@@ -14,12 +14,6 @@ done
 # Kill running Relay
 pkill -x relay 2>/dev/null && echo "Killed running relay" && sleep 1 || true
 STAGE="/tmp/relay-build-$$"
-MACMCP_DIR="../macMCP"
-
-# Build macMCP (Swift)
-echo "Building macMCP..."
-(cd "$MACMCP_DIR" && xcrun swift build -c release)
-MACMCP_BIN="$MACMCP_DIR/.build/release/macmcp"
 
 # Build Go binary with CGO enabled
 echo "Building relay..."
@@ -31,22 +25,18 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/$APP/Contents/MacOS"
 cat relay > "$STAGE/$APP/Contents/MacOS/relay"
 chmod +x "$STAGE/$APP/Contents/MacOS/relay"
-cat "$MACMCP_BIN" > "$STAGE/$APP/Contents/MacOS/macmcp"
-chmod +x "$STAGE/$APP/Contents/MacOS/macmcp"
 cat Info.plist > "$STAGE/$APP/Contents/Info.plist"
 mkdir -p "$STAGE/$APP/Contents/Resources"
-xcrun swift gen-icon.swift "$STAGE/$APP/Contents/Resources"
+cp AppIcon.icns "$STAGE/$APP/Contents/Resources/AppIcon.icns"
 
 # Code signing -- per-binary, innermost first
 IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep -o '"[^"]*"' | head -1 | tr -d '"' || true)
 if [ -n "$IDENTITY" ]; then
     echo "Signing with: $IDENTITY"
-    codesign --force --sign "$IDENTITY" --entitlements macmcp.entitlements --options runtime "$STAGE/$APP/Contents/MacOS/macmcp"
     codesign --force --sign "$IDENTITY" --entitlements Relay.entitlements --options runtime "$STAGE/$APP/Contents/MacOS/relay"
     codesign --force --sign "$IDENTITY" --entitlements Relay.entitlements --options runtime "$STAGE/$APP"
 else
     echo "No Developer ID found, ad-hoc signing"
-    codesign --force --sign - --entitlements macmcp.entitlements "$STAGE/$APP/Contents/MacOS/macmcp"
     codesign --force --sign - --entitlements Relay.entitlements "$STAGE/$APP/Contents/MacOS/relay"
     codesign --force --sign - --entitlements Relay.entitlements "$STAGE/$APP"
 fi
