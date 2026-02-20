@@ -1,0 +1,23 @@
+# IDE
+.idea/
+
+# Build artifacts
+*.app
+*.dSYM/
+relay
+macmcp
+
+# OS
+.DS_Store
+
+# Go
+*.exe
+*.test
+*.out
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
