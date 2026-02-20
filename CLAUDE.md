@@ -6,11 +6,12 @@ Cross-platform MCP orchestrator. Tray app with token-authenticated Unix socket b
 
 - `relay` -- tray app (default). Hosts bridge socket, manages services, shows settings UI.
 - `relay mcp --token TOKEN` -- stdio MCP server. Connects to tray app's bridge socket, proxies tool calls.
+- `relay mcp register|unregister|list` -- CLI for external MCP server management. Writes settings.json directly; sends reconcile to tray app.
 - `relay service register|unregister|list` -- CLI for service self-registration. Writes settings.json directly; tray app picks up changes via 2-second poll.
 
 ## Architecture
 
-Zero built-in services. All tools come from external MCP servers (like macMCP).
+Zero built-in services or MCPs. All tools come from external MCP servers registered via CLI or settings UI.
 
 ```
 main            Entry point
@@ -20,6 +21,7 @@ trayapp.go      App lifecycle, menu, settings IPC, ToolRouter
 settings.go     Config, token auth, permissions, ServiceConfig
 settings_html.go  Settings WKWebView HTML/JS
 external_mcp.go   Stdio MCP client (JSON-RPC 2.0)
+mcp_cmd.go        CLI for mcp register/unregister/list
 service_cmd.go    CLI for service register/unregister/list
 service_registry.go  Background process management
 bridge/         Unix socket IPC. Newline-delimited JSON. No internal deps.
@@ -42,7 +44,7 @@ Wire: newline-delimited JSON. Request types: `ListTools`, `CallTool`, `Reconcile
 
 ## Security
 
-Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions: Off, Read-only, Full. No tokens = all access blocked.
+Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions: Off or On. Per-tool disable. No tokens = all access blocked.
 
 ## Settings UI
 
@@ -51,7 +53,7 @@ Tabs: Services, MCP Servers, Security.
 
 ## macMCP (Sibling Project)
 
-`../macMCP/` -- standalone Swift MCP server with all macOS-native tools (41 tools across 11 services). Registered in Relay as an external MCP server. Built and bundled into `Relay.app/Contents/MacOS/macmcp` by `build.sh`.
+`../macMCP/` -- standalone Swift MCP server with all macOS-native tools (41 tools across 11 services). Installed independently to `~/.local/bin/macmcp` and self-registers with Relay via `relay mcp register`.
 
 ## Key Files
 
@@ -60,6 +62,7 @@ Tabs: Services, MCP Servers, Security.
 - `trayapp.go` -- app lifecycle, menu, settings IPC, ToolRouter (external MCPs only)
 - `settings_html.go` -- HTML/JS for settings WKWebView
 - `settings.go` -- config, token auth, permissions, ServiceConfig (with URL field)
+- `mcp_cmd.go` -- CLI: `relay mcp register|unregister|list`
 - `service_cmd.go` -- CLI: `relay service register|unregister|list`
 - `service_registry.go` -- background process management
 - `external_mcp.go` -- stdio MCP client (JSON-RPC)
@@ -67,7 +70,7 @@ Tabs: Services, MCP Servers, Security.
 ## Build
 
 ```bash
-./build.sh   # builds macMCP + relay -> /Applications/Relay.app
+./build.sh   # builds relay -> /Applications/Relay.app
 ```
 
-Requires: Go 1.22+, Swift 5.9+, Xcode command line tools, macOS.
+Requires: Go 1.22+, macOS.
