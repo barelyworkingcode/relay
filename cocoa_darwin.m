@@ -228,16 +228,6 @@ void cocoa_open_settings(const char* html) {
 }
 
 // ---------------------------------------------------------------------------
-// cocoa_close_settings
-// ---------------------------------------------------------------------------
-void cocoa_close_settings(void) {
-    if (settingsCtrl && settingsCtrl.window) {
-        [settingsCtrl.window close];
-    }
-    settingsCtrl = nil;
-}
-
-// ---------------------------------------------------------------------------
 // cocoa_settings_eval_js
 // ---------------------------------------------------------------------------
 void cocoa_settings_eval_js(const char* js) {

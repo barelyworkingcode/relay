@@ -122,13 +122,11 @@ func (r *ServiceRegistry) StopAll() {
 	}
 }
 
-// CheckAll returns running status for each given service ID.
-func (r *ServiceRegistry) CheckAll(ids []string) map[string]bool {
-	result := make(map[string]bool, len(ids))
+// CleanupDead removes dead processes from the registry.
+func (r *ServiceRegistry) CleanupDead() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, id := range ids {
-		result[id] = r.isRunningLocked(id)
+	for id := range r.processes {
+		r.isRunningLocked(id)
 	}
-	return result
 }

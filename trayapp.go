@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"relaygo/bridge"
@@ -22,7 +21,6 @@ type App struct {
 	registry     *ServiceRegistry
 	bridgeServer *bridge.BridgeServer
 	settingsOpen bool
-	mu           sync.Mutex
 }
 
 // Menu item IDs.
@@ -135,20 +133,7 @@ func (a *App) statusPoller() {
 		if !appRunning.Load() {
 			return
 		}
-		a.mu.Lock()
-		s := LoadSettings()
-		if len(s.Services) == 0 {
-			a.mu.Unlock()
-			continue
-		}
-		ids := make([]string, len(s.Services))
-		for i, svc := range s.Services {
-			ids[i] = svc.ID
-		}
-		statuses := a.registry.CheckAll(ids)
-		a.mu.Unlock()
-
-		_ = statuses
+		a.registry.CleanupDead()
 		a.platform.DispatchToMain(func() {
 			a.updateMenu()
 		})

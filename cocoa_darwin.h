@@ -13,7 +13,6 @@ void cocoa_update_menu(const char* menuJSON);  // JSON array of menu items
 
 // Settings window
 void cocoa_open_settings(const char* html);
-void cocoa_close_settings(void);
 void cocoa_settings_eval_js(const char* js);
 
 // Clipboard

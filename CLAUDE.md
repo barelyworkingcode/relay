@@ -26,7 +26,7 @@ mcp/            MCP types + stdio server (proxies to bridge)
 
 ## Platform Abstraction
 
-`Platform` interface in `platform.go`: Init, Run, SetupTray, UpdateMenu, OpenSettings, CloseSettings, EvalSettingsJS, CopyToClipboard, DispatchToMain, OpenURL.
+`Platform` interface in `platform.go`: Init, Run, SetupTray, UpdateMenu, OpenSettings, EvalSettingsJS, CopyToClipboard, DispatchToMain, OpenURL.
 
 - `cocoa_darwin.go` -- `DarwinPlatform` (macOS, cgo)
 - `platform_windows.go` -- `WindowsPlatform` (stub)
