@@ -30,40 +30,6 @@ const (
 	menuIDSvcBase  = 100 // service items start here
 )
 
-// ensureBuiltinMcps registers bundled MCP servers (e.g. macmcp) if not already
-// present, or migrates existing entries to use relative builtin paths.
-func ensureBuiltinMcps(settings *Settings) {
-	const builtinID = "macmcp"
-	const builtinName = "macMCP"
-	const builtinCmd = "macmcp"
-
-	// Check if the binary actually exists next to us (skip when running via `go run`).
-	if _, err := resolveBuiltinCommand(builtinCmd); err != nil {
-		return
-	}
-
-	for i := range settings.ExternalMcps {
-		if settings.ExternalMcps[i].ID == builtinID {
-			// Already registered -- migrate to builtin if needed.
-			if !settings.ExternalMcps[i].Builtin {
-				settings.ExternalMcps[i].Builtin = true
-				settings.ExternalMcps[i].Command = builtinCmd
-				settings.Save()
-			}
-			return
-		}
-	}
-
-	// Not registered -- add it.
-	settings.AddExternalMcp(ExternalMcp{
-		ID:              builtinID,
-		DisplayName:     builtinName,
-		Command:         builtinCmd,
-		Builtin:         true,
-		DiscoveredTools: []ToolInfo{},
-	})
-}
-
 func runTrayApp() {
 	fmt.Fprintf(os.Stderr, "[relay] starting tray app\n")
 
@@ -74,7 +40,6 @@ func runTrayApp() {
 	fmt.Fprintf(os.Stderr, "[relay] platform initialized\n")
 
 	settings := LoadSettings()
-	ensureBuiltinMcps(settings)
 	fmt.Fprintf(os.Stderr, "[relay] settings loaded\n")
 
 	// External MCP manager.
@@ -372,11 +337,6 @@ func (a *App) onSettingsIpc(body string) {
 		}
 
 		s := LoadSettings()
-		for _, m := range s.ExternalMcps {
-			if m.ID == id && m.Builtin {
-				return
-			}
-		}
 		s.RemoveExternalMcp(id)
 
 		go func() { _ = bridge.SendReconcile() }()

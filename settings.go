@@ -45,7 +45,6 @@ type ExternalMcp struct {
 	Command         string            `json:"command"`
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
-	Builtin         bool              `json:"builtin,omitempty"`
 	DiscoveredTools []ToolInfo        `json:"discovered_tools"`
 }
 
@@ -256,14 +255,23 @@ func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.Save()
 }
 
-// RemoveExternalMcp removes an external MCP and cleans up token permissions.
-// Builtin MCPs cannot be removed.
-func (s *Settings) RemoveExternalMcp(id string) {
-	for _, m := range s.ExternalMcps {
-		if m.ID == id && m.Builtin {
-			return
+// UpdateExternalMcp replaces an external MCP config by ID and persists.
+// Preserves DiscoveredTools from the existing entry if the new one has none.
+func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
+	for i := range s.ExternalMcps {
+		if s.ExternalMcps[i].ID == cfg.ID {
+			if len(cfg.DiscoveredTools) == 0 {
+				cfg.DiscoveredTools = s.ExternalMcps[i].DiscoveredTools
+			}
+			s.ExternalMcps[i] = cfg
+			break
 		}
 	}
+	s.Save()
+}
+
+// RemoveExternalMcp removes an external MCP and cleans up token permissions.
+func (s *Settings) RemoveExternalMcp(id string) {
 	filtered := s.ExternalMcps[:0]
 	for _, m := range s.ExternalMcps {
 		if m.ID != id {
