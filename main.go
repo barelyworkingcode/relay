@@ -8,6 +8,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "service" {
+		runServiceCommand(os.Args[2:])
+		return
+	}
+
 	if len(os.Args) >= 2 && os.Args[1] == "mcp" {
 		// MCP stdio server mode
 		var token string
