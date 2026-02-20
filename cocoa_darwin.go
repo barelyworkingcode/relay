@@ -68,10 +68,6 @@ func cocoaOpenSettings(html string) {
 	C.free(unsafe.Pointer(cs))
 }
 
-func cocoaCloseSettings() {
-	C.cocoa_close_settings()
-}
-
 func cocoaSettingsEvalJS(js string) {
 	cs := C.CString(js)
 	C.cocoa_settings_eval_js(cs)
@@ -103,7 +99,6 @@ func (p *DarwinPlatform) Run()                             { cocoaRunApp() }
 func (p *DarwinPlatform) SetupTray(rgba []byte, w, h int)  { cocoaSetupTray(rgba, w, h) }
 func (p *DarwinPlatform) UpdateMenu(menuJSON string)       { cocoaUpdateMenu(menuJSON) }
 func (p *DarwinPlatform) OpenSettings(html string)         { cocoaOpenSettings(html) }
-func (p *DarwinPlatform) CloseSettings()                   { cocoaCloseSettings() }
 func (p *DarwinPlatform) EvalSettingsJS(js string)         { cocoaSettingsEvalJS(js) }
 func (p *DarwinPlatform) CopyToClipboard(text string)      { cocoaCopyToClipboard(text) }
 func (p *DarwinPlatform) DispatchToMain(fn func())         { dispatchToMain(fn) }

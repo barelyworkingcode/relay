@@ -1,16 +1,13 @@
 package mcp
 
-// ToolAnnotation holds MCP tool annotation hints.
-type ToolAnnotation struct {
-	ReadOnlyHint *bool `json:"readOnlyHint,omitempty"`
-}
+import "encoding/json"
 
 // Tool represents an MCP tool definition.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema interface{}     `json:"inputSchema"`
-	Annotations *ToolAnnotation `json:"annotations,omitempty"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
 	Category    string          `json:"category,omitempty"`
 }
 

@@ -126,8 +126,7 @@ func (s *BridgeServer) handleRequest(line string) BridgeResponse {
 	case "ReconcileExternalMcps":
 		s.router.ReconcileExternalMcps()
 		return BridgeResponse{
-			Type:  "Tools",
-			Tools: json.RawMessage("[]"),
+			Type: "OK",
 		}
 
 	default:

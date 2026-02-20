@@ -12,7 +12,6 @@ func (p *WindowsPlatform) Run()                          { panic("not implemente
 func (p *WindowsPlatform) SetupTray(rgba []byte, w, h int) { panic("not implemented") }
 func (p *WindowsPlatform) UpdateMenu(menuJSON string)    { panic("not implemented") }
 func (p *WindowsPlatform) OpenSettings(html string)      { panic("not implemented") }
-func (p *WindowsPlatform) CloseSettings()                { panic("not implemented") }
 func (p *WindowsPlatform) EvalSettingsJS(js string)      { panic("not implemented") }
 func (p *WindowsPlatform) CopyToClipboard(text string)   { panic("not implemented") }
 func (p *WindowsPlatform) DispatchToMain(fn func())      { panic("not implemented") }
