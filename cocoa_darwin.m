@@ -31,6 +31,8 @@ extern void goOnSettingsClose(void);
 @property (strong) IpcHandler *ipcHandler;
 @end
 
+static SettingsWindowController *settingsCtrl = nil;
+
 @implementation SettingsWindowController
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     goOnSettingsClose();
@@ -38,8 +40,10 @@ extern void goOnSettingsClose(void);
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
-    // webView cleanup
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"ipc"];
     self.webView = nil;
+    self.window = nil;
+    settingsCtrl = nil;
 }
 @end
 
@@ -60,7 +64,6 @@ extern void goOnSettingsClose(void);
 // Statics
 // ---------------------------------------------------------------------------
 static AppDelegate *appDelegate = nil;
-static SettingsWindowController *settingsCtrl = nil;
 
 // ---------------------------------------------------------------------------
 // Menu action target
