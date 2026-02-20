@@ -70,6 +70,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 - **`relay`** (default) -- menubar tray app. Hosts a bridge socket for MCP.
 - **`relay mcp --token <value>`** -- stdio MCP server. Connects to the tray app's bridge socket.
+- **`relay service register|unregister|list`** -- CLI for service self-registration (see below).
 
 The tray app must be running before `relay mcp` can connect.
 
@@ -112,7 +113,21 @@ Provides 41 tools across 11 services:
 
 ## Services
 
-Manage background processes via Settings > Services. Commands run through a login shell so your shell profile is available. Services with a URL field open the browser on tray click. Logs: `~/Library/Application Support/relay/logs/<id>.log`.
+Manage background processes via Settings > Services or the CLI. Commands run through a login shell so your shell profile is available. Services with a URL field open the browser on tray click. Logs: `~/Library/Application Support/relay/logs/<id>.log`.
+
+### CLI Registration
+
+External projects can self-register without the Settings UI:
+
+```bash
+relay service register --name Eve --command node --args server.js --workdir . --url http://localhost:3000 --autostart
+relay service list
+relay service unregister --name Eve
+```
+
+`register` is idempotent -- re-running with the same name updates the existing entry. `--workdir` is resolved to an absolute path. The tray app picks up changes within ~2 seconds.
+
+Flags: `--name` (required), `--command` (required), `--args` (repeatable), `--workdir`, `--url`, `--autostart`, `--env KEY=VALUE` (repeatable), `--id` (defaults to slugified name).
 
 ## External MCP Servers
 

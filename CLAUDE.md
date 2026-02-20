@@ -6,6 +6,7 @@ Cross-platform MCP orchestrator. Tray app with token-authenticated Unix socket b
 
 - `relay` -- tray app (default). Hosts bridge socket, manages services, shows settings UI.
 - `relay mcp --token TOKEN` -- stdio MCP server. Connects to tray app's bridge socket, proxies tool calls.
+- `relay service register|unregister|list` -- CLI for service self-registration. Writes settings.json directly; tray app picks up changes via 2-second poll.
 
 ## Architecture
 
@@ -19,6 +20,7 @@ trayapp.go      App lifecycle, menu, settings IPC, ToolRouter
 settings.go     Config, token auth, permissions, ServiceConfig
 settings_html.go  Settings WKWebView HTML/JS
 external_mcp.go   Stdio MCP client (JSON-RPC 2.0)
+service_cmd.go    CLI for service register/unregister/list
 service_registry.go  Background process management
 bridge/         Unix socket IPC. Newline-delimited JSON. No internal deps.
 mcp/            MCP types + stdio server (proxies to bridge)
@@ -58,6 +60,7 @@ Tabs: Services, MCP Servers, Security.
 - `trayapp.go` -- app lifecycle, menu, settings IPC, ToolRouter (external MCPs only)
 - `settings_html.go` -- HTML/JS for settings WKWebView
 - `settings.go` -- config, token auth, permissions, ServiceConfig (with URL field)
+- `service_cmd.go` -- CLI: `relay service register|unregister|list`
 - `service_registry.go` -- background process management
 - `external_mcp.go` -- stdio MCP client (JSON-RPC)
 
