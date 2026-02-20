@@ -431,9 +431,7 @@ function renderMcpServers() {
             html += ` + "`" + `<div class="mcp-card">
                 <div class="mcp-card-header">
                     <span class="mcp-card-name">${esc(mcp.display_name)}</span>
-                    ${mcp.builtin
-                        ? '<span style="color:#666;font-size:11px">Built-in</span>'
-                        : ` + "`" + `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>` + "`" + `}
+                    <button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>
                 </div>
                 <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
                 <div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>

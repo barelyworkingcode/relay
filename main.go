@@ -14,6 +14,15 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "mcp" {
+		// Check for register/unregister/list subcommands.
+		if len(os.Args) >= 3 {
+			switch os.Args[2] {
+			case "register", "unregister", "list":
+				runMcpCommand(os.Args[2:])
+				return
+			}
+		}
+
 		// MCP stdio server mode
 		var token string
 		for i, arg := range os.Args {

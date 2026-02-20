@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,24 +59,6 @@ func NewExternalMcpManager() *ExternalMcpManager {
 	}
 }
 
-// resolveBuiltinCommand resolves a builtin binary name to an absolute path
-// next to the current executable. Returns an error if the binary doesn't exist.
-func resolveBuiltinCommand(binaryName string) (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve executable: %w", err)
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return "", fmt.Errorf("eval symlinks: %w", err)
-	}
-	candidate := filepath.Join(filepath.Dir(exe), binaryName)
-	if _, err := os.Stat(candidate); err != nil {
-		return "", fmt.Errorf("builtin binary not found: %s", candidate)
-	}
-	return candidate, nil
-}
-
 // StartAll launches all configured external MCP servers.
 func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
 	for i := range mcps {
@@ -88,15 +69,7 @@ func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
 }
 
 func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
-	command := mcpCfg.Command
-	if mcpCfg.Builtin {
-		resolved, err := resolveBuiltinCommand(command)
-		if err != nil {
-			return fmt.Errorf("resolve builtin: %w", err)
-		}
-		command = resolved
-	}
-	cmd := exec.Command(command, mcpCfg.Args...)
+	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
 	for k, v := range mcpCfg.Env {
 		cmd.Env = append(cmd.Environ(), k+"="+v)
 	}
