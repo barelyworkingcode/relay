@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>relay</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.barelyworkingcode.relay</string>
+	<key>CFBundleName</key>
+	<string>Relay</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSContactsUsageDescription</key>
+	<string>Relay's macMCP tools need access to Contacts to read and search your address book.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Relay's macMCP tools need access to Calendars to read and manage events and reminders.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Relay's macMCP tools need your location for weather and mapping features.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Relay's macMCP tools need microphone access for audio capture.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Relay's macMCP tools need to send Apple Events to automate other applications.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Relay's macMCP tools need access to Reminders to read and manage your reminders.</string>
+</dict>
+</plist>
