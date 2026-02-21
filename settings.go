@@ -22,13 +22,14 @@ const (
 
 // StoredToken is a hashed token with per-service permissions.
 type StoredToken struct {
-	Name          string                `json:"name"`
-	Hash          string                `json:"hash"`
-	Prefix        string                `json:"prefix"`
-	Suffix        string                `json:"suffix"`
-	CreatedAt     string                `json:"created_at"`
-	Permissions   map[string]Permission `json:"permissions"`
-	DisabledTools map[string][]string   `json:"disabled_tools,omitempty"`
+	Name          string                         `json:"name"`
+	Hash          string                         `json:"hash"`
+	Prefix        string                         `json:"prefix"`
+	Suffix        string                         `json:"suffix"`
+	CreatedAt     string                         `json:"created_at"`
+	Permissions   map[string]Permission          `json:"permissions"`
+	DisabledTools map[string][]string            `json:"disabled_tools,omitempty"`
+	Context       map[string]json.RawMessage     `json:"context,omitempty"`
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -46,6 +47,7 @@ type ExternalMcp struct {
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
 	DiscoveredTools []ToolInfo        `json:"discovered_tools"`
+	ContextSchema   json.RawMessage   `json:"context_schema,omitempty"`
 }
 
 // ServiceConfig describes a background service managed by Relay.
@@ -390,11 +392,42 @@ func (s *Settings) SetAllToolsDisabled(hash, mcpID string, toolNames []string, d
 	s.Save()
 }
 
+// SetContext sets per-MCP context for a token. Context is passed as _meta to
+// the external MCP on tool calls, enabling per-token restrictions like allowed_dirs.
+func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
+	for i := range s.Tokens {
+		if s.Tokens[i].Hash != hash {
+			continue
+		}
+		if s.Tokens[i].Context == nil {
+			s.Tokens[i].Context = make(map[string]json.RawMessage)
+		}
+		if ctx == nil || len(ctx) == 0 || string(ctx) == "null" {
+			delete(s.Tokens[i].Context, mcpID)
+		} else {
+			s.Tokens[i].Context[mcpID] = ctx
+		}
+		break
+	}
+	s.Save()
+}
+
 // UpdateDiscoveredTools updates the persisted tool list for an external MCP.
 func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == mcpID {
 			s.ExternalMcps[i].DiscoveredTools = tools
+			break
+		}
+	}
+	s.Save()
+}
+
+// UpdateContextSchema updates the persisted context schema for an external MCP.
+func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
+	for i := range s.ExternalMcps {
+		if s.ExternalMcps[i].ID == mcpID {
+			s.ExternalMcps[i].ContextSchema = schema
 			break
 		}
 	}

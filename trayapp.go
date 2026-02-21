@@ -297,6 +297,14 @@ func (a *App) onSettingsIpc(body string) {
 		}
 		s.SetAllToolsDisabled(hash, mcpID, toolNames, disabled)
 
+	case "set_context":
+		hash, _ := msg["hash"].(string)
+		mcpID, _ := msg["mcp_id"].(string)
+		// context is the raw JSON object (e.g. {"allowed_dirs": ["/path"]})
+		contextRaw, _ := json.Marshal(msg["context"])
+		s := LoadSettings()
+		s.SetContext(hash, mcpID, json.RawMessage(contextRaw))
+
 	case "add_external_mcp":
 		displayName, _ := msg["display_name"].(string)
 		command, _ := msg["command"].(string)
@@ -513,7 +521,13 @@ func (r *appRouter) CallTool(name string, args json.RawMessage, token string) (j
 			return nil, fmt.Errorf("access denied: tool '%s' is disabled for this token", name)
 		}
 
-		result, err := r.app.extMgr.CallTool(extID, name, args)
+		// Inject per-token context as _meta for this MCP.
+		var meta json.RawMessage
+		if stored.Context != nil {
+			meta = stored.Context[extID]
+		}
+
+		result, err := r.app.extMgr.CallTool(extID, name, args, meta)
 		if err != nil {
 			return nil, err
 		}

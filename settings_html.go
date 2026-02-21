@@ -613,6 +613,46 @@ function renderPermissions(token) {
             }
             html += '</div>';
         }
+
+        // Context fields driven by MCP's contextSchema
+        const schema = mcp.context_schema;
+        if (expanded && schema && Object.keys(schema).length > 0) {
+            const ctx = (token.context && token.context[mcp.id]) || {};
+            const isOff = perm === 'off';
+            html += '<div class="tool-expansion" style="border-top:1px solid #374151;padding-top:8px;margin-top:4px">';
+
+            for (const [fieldName, fieldDef] of Object.entries(schema)) {
+                const def = fieldDef;
+                const label = def.description || fieldName;
+                const uiHint = def.ui || 'text';
+
+                html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+                html += ` + "`" + `<span style="font-size:11px;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px">${esc(label)}</span>` + "`" + `;
+                html += '</div>';
+
+                if (uiHint === 'directory-list' || (def.type === 'array' && def.items && def.items.type === 'string')) {
+                    // Array of strings UI (directories, paths, etc.)
+                    const items = ctx[fieldName] || [];
+                    if (items.length === 0) {
+                        html += '<div style="font-size:11px;color:#6B7280;margin-bottom:6px">No restrictions</div>';
+                    } else {
+                        for (let di = 0; di < items.length; di++) {
+                            html += ` + "`" + `<div class="tool-row" style="padding:3px 0">
+                                <span class="tool-name" style="font-family:monospace;font-size:11px">${esc(items[di])}</span>
+                                <button class="btn btn-sm" style="font-size:10px;padding:1px 6px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="removeContextItem('${token.hash}','${esc(mcp.id)}','${esc(fieldName)}',${di})">Remove</button>
+                            </div>` + "`" + `;
+                        }
+                    }
+                    const placeholder = uiHint === 'directory-list' ? '/path/to/directory' : 'Enter value';
+                    html += ` + "`" + `<div style="display:flex;gap:4px;margin-top:4px">
+                        <input type="text" id="ctxInput_${token.hash}_${mcp.id}_${fieldName}" placeholder="${placeholder}" style="flex:1;font-size:11px;padding:3px 6px;background:#1F2937;border:1px solid #374151;border-radius:4px;color:#F3F4F6" ${isOff ? 'disabled' : ''} />
+                        <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="addContextItem('${token.hash}','${esc(mcp.id)}','${esc(fieldName)}')">Add</button>
+                    </div>` + "`" + `;
+                }
+            }
+
+            html += '</div>';
+        }
     }
 
     html += '</div>';
@@ -715,6 +755,40 @@ function setAllToolsInCategory(hash, mcpId, category, disabled) {
             ipc(JSON.stringify({ type: 'set_tool_disabled', hash, mcp_id: mcpId, tool_name: tool.name, disabled }));
         }
         if (token.disabled_tools[mcpId].length === 0) delete token.disabled_tools[mcpId];
+    }
+    render();
+}
+
+function addContextItem(hash, mcpId, fieldName) {
+    const input = document.getElementById('ctxInput_' + hash + '_' + mcpId + '_' + fieldName);
+    if (!input) return;
+    const value = input.value.trim();
+    if (!value) return;
+    const token = state.tokens.find(t => t.hash === hash);
+    if (token) {
+        if (!token.context) token.context = {};
+        if (!token.context[mcpId]) token.context[mcpId] = {};
+        if (!token.context[mcpId][fieldName]) token.context[mcpId][fieldName] = [];
+        if (token.context[mcpId][fieldName].indexOf(value) === -1) {
+            token.context[mcpId][fieldName].push(value);
+        }
+        ipc(JSON.stringify({ type: 'set_context', hash, mcp_id: mcpId, context: token.context[mcpId] }));
+    }
+    render();
+}
+
+function removeContextItem(hash, mcpId, fieldName, index) {
+    const token = state.tokens.find(t => t.hash === hash);
+    if (token && token.context && token.context[mcpId] && token.context[mcpId][fieldName]) {
+        token.context[mcpId][fieldName].splice(index, 1);
+        if (token.context[mcpId][fieldName].length === 0) {
+            delete token.context[mcpId][fieldName];
+            if (Object.keys(token.context[mcpId]).length === 0) {
+                delete token.context[mcpId];
+            }
+        }
+        const ctx = (token.context && token.context[mcpId]) || null;
+        ipc(JSON.stringify({ type: 'set_context', hash, mcp_id: mcpId, context: ctx }));
     }
     render();
 }

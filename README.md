@@ -52,6 +52,7 @@ The tray app must be running before `relay mcp --token` can connect.
 - Tokens are 32 random bytes (64 hex chars). Only SHA-256 hash + prefix/suffix stored.
 - Per-token, per-service permissions: **Off** (hidden) or **On**.
 - Individual tools can be disabled per-token.
+- Per-token context injected as `_meta` in tool calls. Context schema is discovered from each MCP's `serverInfo.contextSchema` during handshake -- the settings UI renders editors dynamically (e.g. directory lists for fsMCP).
 - Tool calls proxy through Unix socket to the tray app, which holds macOS TCC permissions.
 
 ## External MCP Servers
@@ -92,6 +93,7 @@ Relay is part of a trio of projects that combine to give LLMs secure access to m
 
 - **[Eve](https://github.com/barelyworkingcode/eve)** -- Multi-provider LLM web interface with projects, file editing, and terminal. Registers as a Relay service for automatic launch (`relay service register`).
 - **[macMCP](https://github.com/barelyworkingcode/macMCP)** -- Standalone Swift MCP server with 41 macOS-native tools (Calendar, Contacts, Mail, Messages, etc.). Self-registers with Relay via `relay mcp register`.
+- **[fsMCP](https://github.com/barelyworkingcode/fsmcp)** -- Cross-platform file system MCP server (read, write, edit, glob, grep, bash). Uses Relay's per-token context for directory scoping.
 
 ## License
 
