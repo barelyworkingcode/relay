@@ -86,9 +86,12 @@ relay service unregister --name Eve
 
 Flags: `--name` (required), `--command` (required), `--args` (repeatable), `--workdir`, `--url`, `--autostart`, `--env KEY=VALUE` (repeatable), `--id` (defaults to slugified name).
 
-## macMCP
+## Related Projects
 
-macOS-native tools (Calendar, Contacts, Mail, Messages, etc.) are provided by [macMCP](../macMCP/), a standalone Swift MCP server. It installs independently and self-registers with Relay via `relay mcp register`.
+Relay is part of a trio of projects that combine to give LLMs secure access to macOS. Each works independently, but together they form a complete stack: **Eve** provides the LLM chat interface, **Relay** handles orchestration and security, and **macMCP** exposes native macOS capabilities. Register macMCP as an MCP server and Eve as a background service, and an LLM session in Eve can read your mail, check your calendar, or send an iMessage -- scoped by per-token permissions.
+
+- **[Eve](https://github.com/barelyworkingcode/eve)** -- Multi-provider LLM web interface with projects, file editing, and terminal. Registers as a Relay service for automatic launch (`relay service register`).
+- **[macMCP](https://github.com/barelyworkingcode/macMCP)** -- Standalone Swift MCP server with 41 macOS-native tools (Calendar, Contacts, Mail, Messages, etc.). Self-registers with Relay via `relay mcp register`.
 
 ## License
 
