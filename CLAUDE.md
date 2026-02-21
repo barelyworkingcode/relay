@@ -44,16 +44,17 @@ Wire: newline-delimited JSON. Request types: `ListTools`, `CallTool`, `Reconcile
 
 ## Security
 
-Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions: Off or On. Per-tool disable. No tokens = all access blocked.
+Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions: Off or On. Per-tool disable. Per-token context injected as `_meta` in tool calls to external MCPs. Context schema discovered from MCP's `serverInfo.contextSchema` during `initialize` handshake -- settings UI renders editors dynamically based on the schema. No tokens = all access blocked.
 
 ## Settings UI
 
 IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS) or `window.chrome.webview.postMessage` (Windows).
 Tabs: Services, MCP Servers, Security.
 
-## macMCP (Sibling Project)
+## Sibling Projects
 
-`../macMCP/` -- standalone Swift MCP server with all macOS-native tools (41 tools across 11 services). Installed independently to `~/.local/bin/macmcp` and self-registers with Relay via `relay mcp register`.
+- `../macMCP/` -- standalone Swift MCP server with 41 macOS-native tools. Installs to `~/.local/bin/macmcp`, self-registers via `relay mcp register`.
+- `../fsMCP/` -- cross-platform TypeScript MCP server with 6 file system tools (read, write, edit, glob, grep, bash). Installs to `~/.local/bin/fsmcp`, self-registers via `relay mcp register`. Uses per-token `_meta.allowed_dirs` context for directory scoping.
 
 ## Key Files
 

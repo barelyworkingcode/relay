@@ -105,9 +105,25 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 			"version": "1.0.0",
 		},
 	}
-	if _, err := conn.sendRequest("initialize", initParams); err != nil {
+	initResp, err := conn.sendRequest("initialize", initParams)
+	if err != nil {
 		conn.kill()
 		return fmt.Errorf("MCP handshake failed: %w", err)
+	}
+
+	// Extract contextSchema from initialize response.
+	var contextSchema json.RawMessage
+	if initResp != nil {
+		var initResult struct {
+			ServerInfo struct {
+				ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
+			} `json:"serverInfo"`
+		}
+		if err := json.Unmarshal(initResp, &initResult); err == nil {
+			if len(initResult.ServerInfo.ContextSchema) > 0 {
+				contextSchema = initResult.ServerInfo.ContextSchema
+			}
+		}
 	}
 
 	// Send initialized notification (no id, no response expected).
@@ -129,7 +145,7 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 	}
 	conn.tools = toolsResult.Tools
 
-	// Persist discovered tools so settings UI can display them.
+	// Persist discovered tools and context schema so settings UI can display them.
 	discoveredTools := make([]ToolInfo, 0, len(toolsResult.Tools))
 	for _, t := range toolsResult.Tools {
 		discoveredTools = append(discoveredTools, ToolInfo{
@@ -140,6 +156,7 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 	}
 	s := LoadSettings()
 	s.UpdateDiscoveredTools(mcpCfg.ID, discoveredTools)
+	s.UpdateContextSchema(mcpCfg.ID, contextSchema)
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
@@ -213,7 +230,9 @@ func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMc
 }
 
 // CallTool invokes a tool on the specified external MCP via JSON-RPC.
-func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage) (*mcp.CallToolResult, error) {
+// If meta is non-nil, it is injected as _meta in the tool call params,
+// enabling per-token context like allowed_dirs.
+func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, meta json.RawMessage) (*mcp.CallToolResult, error) {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -228,6 +247,12 @@ func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage) (*m
 		var arguments interface{}
 		if err := json.Unmarshal(args, &arguments); err == nil {
 			params["arguments"] = arguments
+		}
+	}
+	if meta != nil && len(meta) > 0 && string(meta) != "null" {
+		var metaObj interface{}
+		if err := json.Unmarshal(meta, &metaObj); err == nil {
+			params["_meta"] = metaObj
 		}
 	}
 
@@ -317,10 +342,24 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 		initCh <- initResult{resp, err}
 	}()
 
+	var contextSchema json.RawMessage
 	select {
 	case r := <-initCh:
 		if r.err != nil {
 			return nil, fmt.Errorf("MCP handshake failed: %w", r.err)
+		}
+		// Extract contextSchema from initialize response.
+		if r.resp != nil {
+			var initParsed struct {
+				ServerInfo struct {
+					ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
+				} `json:"serverInfo"`
+			}
+			if err := json.Unmarshal(r.resp, &initParsed); err == nil {
+				if len(initParsed.ServerInfo.ContextSchema) > 0 {
+					contextSchema = initParsed.ServerInfo.ContextSchema
+				}
+			}
 		}
 	case <-time.After(30 * time.Second):
 		return nil, fmt.Errorf("MCP handshake timed out after 30s")
@@ -373,6 +412,7 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 		Args:            args,
 		Env:             env,
 		DiscoveredTools: discoveredTools,
+		ContextSchema:   contextSchema,
 	}, nil
 }
 
