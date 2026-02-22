@@ -87,6 +87,14 @@ relay service unregister --name Eve
 
 Flags: `--name` (required), `--command` (required), `--args` (repeatable), `--workdir`, `--url`, `--autostart`, `--env KEY=VALUE` (repeatable), `--id` (defaults to slugified name).
 
+## Logs
+
+Service and MCP server logs are written to `~/Library/Application Support/Relay/logs/<service-id>.log`.
+
+```bash
+tail -f ~/Library/Application\ Support/Relay/logs/f5tts-daemon.log
+```
+
 ## Related Projects
 
 Relay is part of a suite of projects that combine to give LLMs secure access to macOS. Each works independently, but together they form a complete stack: **Eve** provides the LLM chat interface, **Relay** handles orchestration and security, and **macMCP** exposes native macOS capabilities. Register macMCP as an MCP server and Eve as a background service, and an LLM session in Eve can read your mail, check your calendar, or send an iMessage -- scoped by per-token permissions.
