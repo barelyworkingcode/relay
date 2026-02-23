@@ -101,6 +101,7 @@ func (a *App) statusPoller() {
 		a.registry.CleanupDead()
 		a.platform.DispatchToMain(func() {
 			a.updateMenu()
+			a.pushServiceStatus()
 		})
 	}
 }
@@ -206,7 +207,7 @@ func (a *App) cleanup() {
 
 func (a *App) openSettingsWindow() {
 	s := LoadSettings()
-	html := renderSettingsHTML(s)
+	html := renderSettingsHTML(s, a.registry.RunningIDs())
 	a.platform.OpenSettings(html)
 	a.settingsOpen = true
 }
@@ -219,6 +220,14 @@ func (a *App) evalSettings(js string) {
 	if a.settingsOpen {
 		a.platform.EvalSettingsJS(js)
 	}
+}
+
+func (a *App) pushServiceStatus() {
+	if !a.settingsOpen {
+		return
+	}
+	data, _ := json.Marshal(a.registry.RunningIDs())
+	a.evalSettings(fmt.Sprintf("onServiceStatus(%s)", string(data)))
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
@@ -449,6 +458,26 @@ func (a *App) onSettingsIpc(body string) {
 			}
 		}
 		s.Save()
+
+	case "start_service":
+		id, _ := msg["id"].(string)
+		s := LoadSettings()
+		for i := range s.Services {
+			if s.Services[i].ID == id {
+				if err := a.registry.Start(&s.Services[i]); err != nil {
+					fmt.Fprintf(os.Stderr, "service start: %v\n", err)
+				}
+				break
+			}
+		}
+		a.pushServiceStatus()
+		a.updateMenu()
+
+	case "stop_service":
+		id, _ := msg["id"].(string)
+		a.registry.Stop(id)
+		a.pushServiceStatus()
+		a.updateMenu()
 	}
 }
 

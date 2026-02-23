@@ -7,10 +7,11 @@ import (
 
 // renderSettingsHTML generates the complete HTML for the settings webview.
 // It embeds the current settings as JavaScript variables.
-func renderSettingsHTML(settings *Settings) string {
+func renderSettingsHTML(settings *Settings, runningIDs []string) string {
 	tokensJSON, _ := json.Marshal(settings.Tokens)
 	externalMcpsJSON, _ := json.Marshal(settings.ExternalMcps)
 	userServicesJSON, _ := json.Marshal(settings.Services)
+	runningIDsJSON, _ := json.Marshal(runningIDs)
 
 	exePath, err := os.Executable()
 	if err != nil {
@@ -259,6 +260,9 @@ textarea:focus { outline: none; border-color: #0078d4; }
 .switch input:checked + .slider {
     background: #0078d4;
 }
+.switch-running input:checked + .slider {
+    background: #22c55e;
+}
 .switch input:checked + .slider::before {
     transform: translateX(16px);
 }
@@ -360,6 +364,7 @@ function ipc(msg) {
 const EXE_PATH = ` + string(exeJSON) + `;
 const EXTERNAL_MCPS_INIT = ` + string(externalMcpsJSON) + `;
 const SERVICES_INIT = ` + string(userServicesJSON) + `;
+const RUNNING_IDS_INIT = ` + string(runningIDsJSON) + `;
 
 const CATEGORY_ICONS = {
     Calendar:  { color: '#E8453C', svg: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
@@ -390,6 +395,7 @@ let state = {
     discoveryError: null,
     mcpAddMode: 'form',
     services: SERVICES_INIT,
+    runningServices: RUNNING_IDS_INIT.reduce(function(m, id) { m[id] = true; return m; }, {}),
     editingServiceId: null,
     expandedMcps: {},
 };
@@ -950,6 +956,13 @@ function renderServices() {
                 ${svc.working_dir ? ` + "`" + `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` + "`" + ` : ''}
                 ${svc.url ? ` + "`" + `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` + "`" + ` : ''}
                 <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
+                    <span style="font-size:12px;color:#888">Running</span>
+                    <label class="switch switch-running">
+                        <input type="checkbox" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
                     <span style="font-size:12px;color:#888">Autostart on launch</span>
                     <label class="switch">
                         <input type="checkbox" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
@@ -1102,6 +1115,19 @@ window.onServiceAdded = function(config) {
 window.onServiceRemoved = function(id) {
     state.services = state.services.filter(s => s.id !== id);
     render();
+};
+
+function toggleServiceRunning(id, checked) {
+    state.runningServices[id] = checked;
+    ipc(JSON.stringify({ type: checked ? 'start_service' : 'stop_service', id: id }));
+    render();
+}
+
+window.onServiceStatus = function(runningIds) {
+    var m = {};
+    for (var i = 0; i < runningIds.length; i++) m[runningIds[i]] = true;
+    state.runningServices = m;
+    if (state.page === 'services') render();
 };
 
 render();
