@@ -412,9 +412,12 @@ function showPage(page) {
 
 const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args": ["-y", "@example/server"], "env": {"API_KEY": "..."}}}, null, 2);
 
+var _svcFormRendered = false;
 function render() {
     const el = document.getElementById('content');
     if (state.page === 'services') {
+        if (state.editingServiceId && _svcFormRendered) return;
+        _svcFormRendered = !!state.editingServiceId;
         el.innerHTML = renderServices();
     } else if (state.page === 'mcps') {
         el.innerHTML = renderMcpServers();
