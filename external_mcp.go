@@ -70,6 +70,7 @@ func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
 
 func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
+	setProcessGroup(cmd)
 	for k, v := range mcpCfg.Env {
 		cmd.Env = append(cmd.Environ(), k+"="+v)
 	}
@@ -297,6 +298,7 @@ func (m *ExternalMcpManager) StopAll() {
 // DiscoverExternalMcp performs a one-shot spawn, handshake, tool listing, then kills.
 func DiscoverExternalMcp(displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
 	cmd := exec.Command(command, args...)
+	setProcessGroup(cmd)
 	for k, v := range env {
 		cmd.Env = append(cmd.Environ(), k+"="+v)
 	}
@@ -484,8 +486,8 @@ func (c *externalMcpConn) kill() {
 	if c.stdin != nil {
 		c.stdin.Close()
 	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+	if c.cmd != nil {
+		killProcessGroup(c.cmd)
 		_ = c.cmd.Wait()
 	}
 }

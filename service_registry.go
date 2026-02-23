@@ -64,10 +64,8 @@ func (r *ServiceRegistry) Stop(id string) {
 
 	if cmd, ok := r.processes[id]; ok {
 		delete(r.processes, id)
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+		killProcessGroup(cmd)
+		_ = cmd.Wait()
 	}
 }
 
@@ -120,6 +118,19 @@ func (r *ServiceRegistry) StopAll() {
 	for _, id := range ids {
 		r.Stop(id)
 	}
+}
+
+// RunningIDs returns the IDs of all currently running services.
+func (r *ServiceRegistry) RunningIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.processes))
+	for id := range r.processes {
+		if r.isRunningLocked(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // CleanupDead removes dead processes from the registry.
