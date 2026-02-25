@@ -140,6 +140,13 @@ func goOnSettingsClose() {
 	}
 }
 
+//export goOnAppTerminate
+func goOnAppTerminate() {
+	if appInstance != nil {
+		appInstance.cleanup()
+	}
+}
+
 //export goDispatchCallback
 func goDispatchCallback(ctx unsafe.Pointer) {
 	id := uintptr(ctx)

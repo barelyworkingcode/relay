@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"relaygo/bridge"
@@ -21,6 +24,7 @@ type App struct {
 	registry     *ServiceRegistry
 	bridgeServer *bridge.BridgeServer
 	settingsOpen bool
+	cleanupOnce  sync.Once
 }
 
 // Menu item IDs.
@@ -79,6 +83,16 @@ func runTrayApp() {
 	// Build and set initial menu.
 	app.updateMenu()
 	fmt.Fprintf(os.Stderr, "[relay] menu built\n")
+
+	// Catch termination signals so child processes get cleaned up.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigCh
+		fmt.Fprintf(os.Stderr, "[relay] received %s, cleaning up\n", sig)
+		app.cleanup()
+		os.Exit(0)
+	}()
 
 	// Poll service status every 2s.
 	go app.statusPoller()
@@ -193,12 +207,14 @@ func (a *App) toggleService(index int) {
 }
 
 func (a *App) cleanup() {
-	appRunning.Store(false)
-	a.registry.StopAll()
-	a.extMgr.StopAll()
-	if a.bridgeServer != nil {
-		a.bridgeServer.Close()
-	}
+	a.cleanupOnce.Do(func() {
+		appRunning.Store(false)
+		a.registry.StopAll()
+		a.extMgr.StopAll()
+		if a.bridgeServer != nil {
+			a.bridgeServer.Close()
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +589,19 @@ func (r *appRouter) CallTool(name string, args json.RawMessage, token string) (j
 func (r *appRouter) ReconcileExternalMcps() {
 	settings := LoadSettings()
 	r.app.extMgr.Reconcile(settings.ExternalMcps)
+}
+
+func (r *appRouter) ReloadExternalMcp(id string) {
+	settings := LoadSettings()
+	for i := range settings.ExternalMcps {
+		if settings.ExternalMcps[i].ID == id {
+			if err := r.app.extMgr.Reload(id, &settings.ExternalMcps[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "[relay] failed to reload external MCP '%s': %v\n", id, err)
+			}
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[relay] reload: no external MCP found with id '%s'\n", id)
 }
 
 // ---------------------------------------------------------------------------
