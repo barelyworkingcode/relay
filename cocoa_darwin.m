@@ -7,6 +7,7 @@
 extern void goOnMenuClick(int itemID);
 extern void goOnSettingsIpc(const char* msg);
 extern void goOnSettingsClose(void);
+extern void goOnAppTerminate(void);
 
 // ---------------------------------------------------------------------------
 // IPC handler for WKWebView -> Go
@@ -57,6 +58,9 @@ static SettingsWindowController *settingsCtrl = nil;
 @implementation AppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     // No dock icon, no activation -- handled by LSUIElement in Info.plist
+}
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    goOnAppTerminate();
 }
 @end
 

@@ -121,7 +121,7 @@ func mcpRegister(args []string) {
 		if m.ID == id {
 			s.UpdateExternalMcp(cfg)
 			fmt.Printf("updated mcp %q (%s)\n", name, id)
-			_ = bridge.SendReconcile()
+			_ = bridge.SendReloadMcp(id)
 			return
 		}
 	}

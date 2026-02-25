@@ -205,6 +205,12 @@ func (m *ExternalMcpManager) Reconcile(mcps []ExternalMcp) {
 	}
 }
 
+// Reload stops a running MCP and starts it fresh from the given config.
+func (m *ExternalMcpManager) Reload(id string, cfg *ExternalMcp) error {
+	m.Stop(id)
+	return m.startOne(cfg)
+}
+
 // Tools returns the tool list for a given external MCP.
 func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
 	m.mu.RLock()

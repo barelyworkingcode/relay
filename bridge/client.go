@@ -69,6 +69,22 @@ func SendReconcile() error {
 	return nil
 }
 
+// SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID. No token needed.
+func SendReloadMcp(id string) error {
+	c := &Client{sockPath: SocketPath()}
+	resp, err := c.send(BridgeRequest{
+		Type: "ReloadExternalMcp",
+		Name: id,
+	})
+	if err != nil {
+		return fmt.Errorf("reload request failed: %w", err)
+	}
+	if resp.Type == "Error" {
+		return fmt.Errorf("bridge error: %s", resp.Message)
+	}
+	return nil
+}
+
 // send opens a connection, writes the request, reads one response, and closes.
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	conn, err := net.Dial("unix", c.sockPath)

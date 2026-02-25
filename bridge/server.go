@@ -129,6 +129,12 @@ func (s *BridgeServer) handleRequest(line string) BridgeResponse {
 			Type: "OK",
 		}
 
+	case "ReloadExternalMcp":
+		s.router.ReloadExternalMcp(req.Name)
+		return BridgeResponse{
+			Type: "OK",
+		}
+
 	default:
 		log.Printf("bridge: unknown request type: %s", req.Type)
 		return BridgeResponse{
