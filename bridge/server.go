@@ -135,6 +135,12 @@ func (s *BridgeServer) handleRequest(line string) BridgeResponse {
 			Type: "OK",
 		}
 
+	case "ReloadService":
+		s.router.ReloadService(req.Name)
+		return BridgeResponse{
+			Type: "OK",
+		}
+
 	default:
 		log.Printf("bridge: unknown request type: %s", req.Type)
 		return BridgeResponse{

@@ -83,7 +83,7 @@ relay service list
 relay service unregister --name Eve
 ```
 
-`register` is idempotent -- re-running with the same name updates the existing entry. `--workdir` is resolved to an absolute path. The tray app picks up changes within ~2 seconds.
+`register` is idempotent -- re-running with the same name updates the existing entry and hot-reloads the service if it's currently running (graceful SIGTERM, then restart). Stopped services are not auto-started. `--workdir` is resolved to an absolute path.
 
 Flags: `--name` (required), `--command` (required), `--args` (repeatable), `--workdir`, `--url`, `--autostart`, `--env KEY=VALUE` (repeatable), `--id` (defaults to slugified name).
 

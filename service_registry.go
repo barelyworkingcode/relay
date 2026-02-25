@@ -69,6 +69,21 @@ func (r *ServiceRegistry) Stop(id string) {
 	}
 }
 
+// Reload restarts a running service with new config. If the service is not
+// running, this is a no-op (does not auto-start).
+func (r *ServiceRegistry) Reload(id string, cfg *ServiceConfig) error {
+	r.mu.Lock()
+	wasRunning := r.isRunningLocked(id)
+	r.mu.Unlock()
+
+	if !wasRunning {
+		return nil
+	}
+
+	r.Stop(id)
+	return r.Start(cfg)
+}
+
 // IsRunning checks whether a service process is still alive.
 func (r *ServiceRegistry) IsRunning(id string) bool {
 	r.mu.Lock()
