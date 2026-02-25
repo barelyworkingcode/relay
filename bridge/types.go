@@ -8,7 +8,7 @@ import (
 
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
-	Type      string          `json:"type"`                // "ListTools", "CallTool", "ReconcileExternalMcps", "ReloadExternalMcp"
+	Type      string          `json:"type"`                // "ListTools", "CallTool", "ReconcileExternalMcps", "ReloadExternalMcp", "ReloadService"
 	Name      string          `json:"name,omitempty"`      // tool name for CallTool
 	Arguments json.RawMessage `json:"arguments,omitempty"` // tool arguments for CallTool
 	Token     string          `json:"token,omitempty"`     // auth token
@@ -29,6 +29,7 @@ type ToolRouter interface {
 	CallTool(name string, args json.RawMessage, token string) (json.RawMessage, error)
 	ReconcileExternalMcps()
 	ReloadExternalMcp(id string)
+	ReloadService(id string)
 }
 
 // SocketPath returns the path to the bridge Unix socket.

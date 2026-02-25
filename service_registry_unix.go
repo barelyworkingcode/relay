@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // setProcessGroup puts the command in its own process group so we can kill the
@@ -15,12 +16,28 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// killProcessGroup sends SIGKILL to the entire process group rooted at cmd.
+// killProcessGroup sends SIGTERM to the process group and waits up to 5 seconds
+// for graceful shutdown before falling back to SIGKILL.
 func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		// Negative PID kills the process group.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if cmd.Process == nil {
+		return
 	}
+	pid := cmd.Process.Pid
+
+	// Try graceful shutdown first.
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+
+	// Poll for up to 5 seconds.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Still alive -- force kill.
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func shellQuote(s string) string {

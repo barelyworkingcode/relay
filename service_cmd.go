@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+
+	"relaygo/bridge"
 )
 
 func runServiceCommand(args []string) {
@@ -146,6 +148,10 @@ func serviceRegister(args []string) {
 		if svc.ID == id {
 			s.UpdateService(config)
 			fmt.Printf("updated service %q (%s)\n", name, id)
+			// Tell the tray app to reload (restarts if running).
+			if err := bridge.SendReloadService(id); err != nil {
+				fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+			}
 			return
 		}
 	}

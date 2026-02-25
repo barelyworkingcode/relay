@@ -85,6 +85,22 @@ func SendReloadMcp(id string) error {
 	return nil
 }
 
+// SendReloadService sends a ReloadService request for the given service ID. No token needed.
+func SendReloadService(id string) error {
+	c := &Client{sockPath: SocketPath()}
+	resp, err := c.send(BridgeRequest{
+		Type: "ReloadService",
+		Name: id,
+	})
+	if err != nil {
+		return fmt.Errorf("reload service request failed: %w", err)
+	}
+	if resp.Type == "Error" {
+		return fmt.Errorf("bridge error: %s", resp.Message)
+	}
+	return nil
+}
+
 // send opens a connection, writes the request, reads one response, and closes.
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	conn, err := net.Dial("unix", c.sockPath)

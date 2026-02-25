@@ -591,6 +591,19 @@ func (r *appRouter) ReconcileExternalMcps() {
 	r.app.extMgr.Reconcile(settings.ExternalMcps)
 }
 
+func (r *appRouter) ReloadService(id string) {
+	settings := LoadSettings()
+	for i := range settings.Services {
+		if settings.Services[i].ID == id {
+			if err := r.app.registry.Reload(id, &settings.Services[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "[relay] failed to reload service '%s': %v\n", id, err)
+			}
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[relay] reload: no service found with id '%s'\n", id)
+}
+
 func (r *appRouter) ReloadExternalMcp(id string) {
 	settings := LoadSettings()
 	for i := range settings.ExternalMcps {
