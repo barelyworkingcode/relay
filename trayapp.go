@@ -197,13 +197,20 @@ func (a *App) toggleService(index int) {
 	}
 
 	if a.registry.IsRunning(config.ID) {
-		a.registry.Stop(config.ID)
+		id := config.ID
+		go func() {
+			a.registry.Stop(id)
+			a.platform.DispatchToMain(func() {
+				a.pushServiceStatus()
+				a.updateMenu()
+			})
+		}()
 	} else {
 		if err := a.registry.Start(config); err != nil {
 			fmt.Fprintf(os.Stderr, "service toggle: %v\n", err)
 		}
+		a.updateMenu()
 	}
-	a.updateMenu()
 }
 
 func (a *App) cleanup() {
@@ -491,9 +498,13 @@ func (a *App) onSettingsIpc(body string) {
 
 	case "stop_service":
 		id, _ := msg["id"].(string)
-		a.registry.Stop(id)
-		a.pushServiceStatus()
-		a.updateMenu()
+		go func() {
+			a.registry.Stop(id)
+			a.platform.DispatchToMain(func() {
+				a.pushServiceStatus()
+				a.updateMenu()
+			})
+		}()
 	}
 }
 

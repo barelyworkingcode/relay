@@ -27,8 +27,8 @@ func killProcessGroup(cmd *exec.Cmd) {
 	// Try graceful shutdown first.
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 
-	// Poll for up to 5 seconds.
-	deadline := time.Now().Add(5 * time.Second)
+	// Poll for up to 1 second.
+	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		if !processAlive(pid) {
 			return
