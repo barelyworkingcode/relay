@@ -157,8 +157,8 @@ func GenerateToken(name string, defaultPermissions map[string]Permission) (strin
 	token := StoredToken{
 		Name:        name,
 		Hash:        hash,
-		Prefix:      hash[:6],
-		Suffix:      hash[len(hash)-6:],
+		Prefix:      plaintext[:6],
+		Suffix:      plaintext[len(plaintext)-6:],
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		Permissions: defaultPermissions,
 	}
