@@ -37,6 +37,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "mcpList" {
+		runMcpList(os.Args[2:])
+		return
+	}
+
 	// Tray app mode
 	runTrayApp()
 }
