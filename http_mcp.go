@@ -47,7 +47,7 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 		url:    cfg.URL,
 		config: cfg,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 5 * time.Minute,
 		},
 	}
 	conn.nextID = 1
@@ -187,6 +187,7 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 // parseSSEResponse reads SSE data lines and extracts the JSON-RPC response matching our ID.
 func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json.RawMessage, error) {
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {

@@ -79,15 +79,7 @@ func (r *appRouter) CallTool(name string, args json.RawMessage, token string) (j
 			meta = stored.Context[extID]
 		}
 
-		result, err := r.app.extMgr.CallTool(extID, name, args, meta)
-		if err != nil {
-			return nil, err
-		}
-		data, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		return data, nil
+		return r.app.extMgr.CallTool(extID, name, args, meta)
 	}
 
 	return nil, fmt.Errorf("unknown tool: %s", name)

@@ -258,7 +258,7 @@ func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMc
 // CallTool invokes a tool on the specified external MCP via JSON-RPC.
 // If meta is non-nil, it is injected as _meta in the tool call params,
 // enabling per-token context like allowed_dirs.
-func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, meta json.RawMessage) (*mcp.CallToolResult, error) {
+func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, meta json.RawMessage) (json.RawMessage, error) {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -287,11 +287,7 @@ func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, met
 		return nil, fmt.Errorf("external MCP call failed: %w", err)
 	}
 
-	var result mcp.CallToolResult
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("parse call result: %w", err)
-	}
-	return &result, nil
+	return resp, nil
 }
 
 // Stop kills and removes a specific external MCP connection.
