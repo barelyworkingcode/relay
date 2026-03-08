@@ -9,16 +9,24 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"relaygo/mcp"
 )
 
-// ExternalMcpManager manages connections to external stdio-based MCP servers.
+// mcpConnection abstracts a connection to an external MCP server (stdio or HTTP).
+type mcpConnection interface {
+	sendRequest(method string, params interface{}) (json.RawMessage, error)
+	sendNotification(method string)
+	close()
+	getTools() []mcp.Tool
+	getConfig() ExternalMcp
+}
+
+// ExternalMcpManager manages connections to external MCP servers.
 type ExternalMcpManager struct {
 	mu    sync.RWMutex
-	conns map[string]*externalMcpConn
+	conns map[string]mcpConnection
 }
 
 type externalMcpConn struct {
@@ -28,7 +36,7 @@ type externalMcpConn struct {
 	tools  []mcp.Tool
 	config ExternalMcp
 	mu     sync.Mutex // serializes JSON-RPC requests
-	nextID atomic.Int64
+	nextID int64
 }
 
 // jsonRPCRequest is an outgoing JSON-RPC 2.0 message.
@@ -52,10 +60,80 @@ type jsonRPCError struct {
 	Message string `json:"message"`
 }
 
+// handshakeResult holds the results of an MCP initialize + tools/list sequence.
+type handshakeResult struct {
+	Tools         []mcp.Tool
+	ToolInfos     []ToolInfo
+	ContextSchema json.RawMessage
+}
+
+// mcpHandshake performs the MCP initialize -> notifications/initialized -> tools/list
+// sequence on any mcpConnection. Transport-agnostic.
+func mcpHandshake(conn mcpConnection) (*handshakeResult, error) {
+	initParams := map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo": map[string]interface{}{
+			"name":    "relay",
+			"version": "1.0.0",
+		},
+	}
+	initResp, err := conn.sendRequest("initialize", initParams)
+	if err != nil {
+		return nil, fmt.Errorf("MCP handshake failed: %w", err)
+	}
+
+	contextSchema := extractContextSchema(initResp)
+	conn.sendNotification("notifications/initialized")
+
+	resp, err := conn.sendRequest("tools/list", nil)
+	if err != nil {
+		return nil, fmt.Errorf("tools/list failed: %w", err)
+	}
+
+	var toolsResult struct {
+		Tools []mcp.Tool `json:"tools"`
+	}
+	if err := json.Unmarshal(resp, &toolsResult); err != nil {
+		return nil, fmt.Errorf("parse tools: %w", err)
+	}
+
+	toolInfos := make([]ToolInfo, 0, len(toolsResult.Tools))
+	for _, t := range toolsResult.Tools {
+		toolInfos = append(toolInfos, ToolInfo{
+			Name:        t.Name,
+			Description: t.Description,
+			Category:    toolCategory(t),
+		})
+	}
+
+	return &handshakeResult{
+		Tools:         toolsResult.Tools,
+		ToolInfos:     toolInfos,
+		ContextSchema: contextSchema,
+	}, nil
+}
+
+// extractContextSchema pulls the contextSchema from an initialize response.
+func extractContextSchema(initResp json.RawMessage) json.RawMessage {
+	if initResp == nil {
+		return nil
+	}
+	var result struct {
+		ServerInfo struct {
+			ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
+		} `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(initResp, &result); err == nil && len(result.ServerInfo.ContextSchema) > 0 {
+		return result.ServerInfo.ContextSchema
+	}
+	return nil
+}
+
 // NewExternalMcpManager creates an empty manager.
 func NewExternalMcpManager() *ExternalMcpManager {
 	return &ExternalMcpManager{
-		conns: make(map[string]*externalMcpConn),
+		conns: make(map[string]mcpConnection),
 	}
 }
 
@@ -69,6 +147,13 @@ func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
 }
 
 func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
+	if mcpCfg.IsHTTP() {
+		return m.startHTTP(mcpCfg)
+	}
+	return m.startStdio(mcpCfg)
+}
+
+func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
 	setProcessGroup(cmd)
 	for k, v := range mcpCfg.Env {
@@ -94,70 +179,19 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
 		config: *mcpCfg,
+		nextID: 1,
 	}
-	conn.nextID.Store(1)
 
-	// MCP handshake: initialize
-	initParams := map[string]interface{}{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]interface{}{},
-		"clientInfo": map[string]interface{}{
-			"name":    "relay",
-			"version": "1.0.0",
-		},
-	}
-	initResp, err := conn.sendRequest("initialize", initParams)
+	result, err := mcpHandshake(conn)
 	if err != nil {
-		conn.kill()
-		return fmt.Errorf("MCP handshake failed: %w", err)
+		conn.close()
+		return err
 	}
+	conn.tools = result.Tools
 
-	// Extract contextSchema from initialize response.
-	var contextSchema json.RawMessage
-	if initResp != nil {
-		var initResult struct {
-			ServerInfo struct {
-				ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
-			} `json:"serverInfo"`
-		}
-		if err := json.Unmarshal(initResp, &initResult); err == nil {
-			if len(initResult.ServerInfo.ContextSchema) > 0 {
-				contextSchema = initResult.ServerInfo.ContextSchema
-			}
-		}
-	}
-
-	// Send initialized notification (no id, no response expected).
-	conn.sendNotification("notifications/initialized")
-
-	// List tools.
-	resp, err := conn.sendRequest("tools/list", nil)
-	if err != nil {
-		conn.kill()
-		return fmt.Errorf("list_tools failed: %w", err)
-	}
-
-	var toolsResult struct {
-		Tools []mcp.Tool `json:"tools"`
-	}
-	if err := json.Unmarshal(resp, &toolsResult); err != nil {
-		conn.kill()
-		return fmt.Errorf("parse tools response: %w", err)
-	}
-	conn.tools = toolsResult.Tools
-
-	// Persist discovered tools and context schema so settings UI can display them.
-	discoveredTools := make([]ToolInfo, 0, len(toolsResult.Tools))
-	for _, t := range toolsResult.Tools {
-		discoveredTools = append(discoveredTools, ToolInfo{
-			Name:        t.Name,
-			Description: t.Description,
-			Category:    toolCategory(t),
-		})
-	}
 	s := LoadSettings()
-	s.UpdateDiscoveredTools(mcpCfg.ID, discoveredTools)
-	s.UpdateContextSchema(mcpCfg.ID, contextSchema)
+	s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
+	s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
@@ -216,7 +250,7 @@ func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if conn, ok := m.conns[id]; ok {
-		return conn.tools
+		return conn.getTools()
 	}
 	return nil
 }
@@ -226,9 +260,9 @@ func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMc
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for id, conn := range m.conns {
-		for _, t := range conn.tools {
+		for _, t := range conn.getTools() {
 			if t.Name == toolName {
-				cfg := conn.config
+				cfg := conn.getConfig()
 				return id, &cfg
 			}
 		}
@@ -285,7 +319,7 @@ func (m *ExternalMcpManager) Stop(id string) {
 	m.mu.Unlock()
 
 	if ok {
-		conn.kill()
+		conn.close()
 	}
 }
 
@@ -293,11 +327,11 @@ func (m *ExternalMcpManager) Stop(id string) {
 func (m *ExternalMcpManager) StopAll() {
 	m.mu.Lock()
 	conns := m.conns
-	m.conns = make(map[string]*externalMcpConn)
+	m.conns = make(map[string]mcpConnection)
 	m.mu.Unlock()
 
 	for _, conn := range conns {
-		conn.kill()
+		conn.close()
 	}
 }
 
@@ -327,101 +361,39 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
+		nextID: 1,
 	}
-	conn.nextID.Store(1)
 
-	defer conn.kill()
+	defer conn.close()
 
-	// Handshake with 30s timeout.
-	type initResult struct {
-		resp json.RawMessage
-		err  error
+	// Run handshake with overall timeout (stdio processes can hang).
+	type hsOut struct {
+		result *handshakeResult
+		err    error
 	}
-	initCh := make(chan initResult, 1)
+	ch := make(chan hsOut, 1)
 	go func() {
-		resp, err := conn.sendRequest("initialize", map[string]interface{}{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]interface{}{},
-			"clientInfo": map[string]interface{}{
-				"name":    "relay",
-				"version": "1.0.0",
-			},
-		})
-		initCh <- initResult{resp, err}
+		r, err := mcpHandshake(conn)
+		ch <- hsOut{r, err}
 	}()
 
-	var contextSchema json.RawMessage
 	select {
-	case r := <-initCh:
-		if r.err != nil {
-			return nil, fmt.Errorf("MCP handshake failed: %w", r.err)
+	case out := <-ch:
+		if out.err != nil {
+			return nil, out.err
 		}
-		// Extract contextSchema from initialize response.
-		if r.resp != nil {
-			var initParsed struct {
-				ServerInfo struct {
-					ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
-				} `json:"serverInfo"`
-			}
-			if err := json.Unmarshal(r.resp, &initParsed); err == nil {
-				if len(initParsed.ServerInfo.ContextSchema) > 0 {
-					contextSchema = initParsed.ServerInfo.ContextSchema
-				}
-			}
-		}
+		return &ExternalMcp{
+			ID:              id,
+			DisplayName:     displayName,
+			Command:         command,
+			Args:            args,
+			Env:             env,
+			DiscoveredTools: out.result.ToolInfos,
+			ContextSchema:   out.result.ContextSchema,
+		}, nil
 	case <-time.After(30 * time.Second):
-		return nil, fmt.Errorf("MCP handshake timed out after 30s")
+		return nil, fmt.Errorf("MCP discovery timed out after 30s")
 	}
-
-	conn.sendNotification("notifications/initialized")
-
-	// List tools with 15s timeout.
-	type toolsResult struct {
-		resp json.RawMessage
-		err  error
-	}
-	toolsCh := make(chan toolsResult, 1)
-	go func() {
-		resp, err := conn.sendRequest("tools/list", nil)
-		toolsCh <- toolsResult{resp, err}
-	}()
-
-	var toolsResp json.RawMessage
-	select {
-	case r := <-toolsCh:
-		if r.err != nil {
-			return nil, fmt.Errorf("list_tools failed: %w", r.err)
-		}
-		toolsResp = r.resp
-	case <-time.After(15 * time.Second):
-		return nil, fmt.Errorf("list_tools timed out after 15s")
-	}
-
-	var toolsList struct {
-		Tools []mcp.Tool `json:"tools"`
-	}
-	if err := json.Unmarshal(toolsResp, &toolsList); err != nil {
-		return nil, fmt.Errorf("parse tools: %w", err)
-	}
-
-	discoveredTools := make([]ToolInfo, 0, len(toolsList.Tools))
-	for _, tool := range toolsList.Tools {
-		discoveredTools = append(discoveredTools, ToolInfo{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Category:    toolCategory(tool),
-		})
-	}
-
-	return &ExternalMcp{
-		ID:              id,
-		DisplayName:     displayName,
-		Command:         command,
-		Args:            args,
-		Env:             env,
-		DiscoveredTools: discoveredTools,
-		ContextSchema:   contextSchema,
-	}, nil
 }
 
 // sendRequest sends a JSON-RPC request and reads the response.
@@ -429,7 +401,8 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	id := c.nextID.Add(1) - 1
+	id := c.nextID
+	c.nextID++
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      &id,
@@ -488,7 +461,7 @@ func (c *externalMcpConn) sendNotification(method string) {
 	_, _ = c.stdin.Write(data)
 }
 
-func (c *externalMcpConn) kill() {
+func (c *externalMcpConn) close() {
 	if c.stdin != nil {
 		c.stdin.Close()
 	}
@@ -497,6 +470,9 @@ func (c *externalMcpConn) kill() {
 		_ = c.cmd.Wait()
 	}
 }
+
+func (c *externalMcpConn) getTools() []mcp.Tool   { return c.tools }
+func (c *externalMcpConn) getConfig() ExternalMcp { return c.config }
 
 // toolCategory returns the category for a tool, using the server-supplied
 // value if present, otherwise deriving it from the tool name prefix (the
