@@ -39,15 +39,32 @@ type ToolInfo struct {
 	Category    string `json:"category,omitempty"`
 }
 
-// ExternalMcp describes a stdio-based MCP server managed by Relay.
+// OAuthState stores OAuth 2.1 credentials for HTTP MCP servers.
+type OAuthState struct {
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	TokenExpiry  string `json:"token_expiry,omitempty"`
+}
+
+// ExternalMcp describes an MCP server managed by Relay.
 type ExternalMcp struct {
 	ID              string            `json:"id"`
 	DisplayName     string            `json:"display_name"`
-	Command         string            `json:"command"`
+	Command         string            `json:"command,omitempty"`
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
 	DiscoveredTools []ToolInfo        `json:"discovered_tools"`
 	ContextSchema   json.RawMessage   `json:"context_schema,omitempty"`
+	Transport       string            `json:"transport,omitempty"`    // "stdio" (default) or "http"
+	URL             string            `json:"url,omitempty"`          // MCP endpoint for HTTP transport
+	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
+}
+
+// IsHTTP returns true if this MCP uses the HTTP Streamable transport.
+func (m *ExternalMcp) IsHTTP() bool {
+	return m.Transport == "http"
 }
 
 // ServiceConfig describes a background service managed by Relay.
@@ -408,6 +425,17 @@ func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
 			s.Tokens[i].Context[mcpID] = ctx
 		}
 		break
+	}
+	s.Save()
+}
+
+// UpdateOAuthState updates the OAuth state for an HTTP MCP.
+func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
+	for i := range s.ExternalMcps {
+		if s.ExternalMcps[i].ID == mcpID {
+			s.ExternalMcps[i].OAuthState = oauth
+			break
+		}
 	}
 	s.Save()
 }

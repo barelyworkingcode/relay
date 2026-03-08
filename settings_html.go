@@ -394,6 +394,8 @@ let state = {
     discovering: false,
     discoveryError: null,
     mcpAddMode: 'form',
+    mcpTransport: 'stdio',
+    authenticatingMcp: null,
     services: SERVICES_INIT,
     runningServices: RUNNING_IDS_INIT.reduce(function(m, id) { m[id] = true; return m; }, {}),
     editingServiceId: null,
@@ -435,16 +437,39 @@ function renderMcpServers() {
     if (state.externalMcps.length > 0) {
         for (const mcp of state.externalMcps) {
             const toolCount = (mcp.discovered_tools || []).length;
-            const cmdDisplay = mcp.command.length > 40 ? '...' + mcp.command.slice(-37) : mcp.command;
-            const argsDisplay = mcp.args && mcp.args.length > 0 ? ' ' + mcp.args.join(' ') : '';
-            html += ` + "`" + `<div class="mcp-card">
-                <div class="mcp-card-header">
-                    <span class="mcp-card-name">${esc(mcp.display_name)}</span>
-                    <button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>
-                </div>
-                <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
-                <div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>
-            </div>` + "`" + `;
+            const isHTTP = mcp.transport === 'http';
+            const authenticating = state.authenticatingMcp === mcp.id;
+            html += '<div class="mcp-card">';
+            html += '<div class="mcp-card-header">';
+            html += ` + "`" + `<span class="mcp-card-name">${esc(mcp.display_name)}</span>` + "`" + `;
+            html += '<div style="display:flex;gap:4px;align-items:center">';
+            if (isHTTP) {
+                if (mcp.oauth_state && mcp.oauth_state.access_token) {
+                    html += '<span style="font-size:11px;color:#22c55e;border:1px solid #22c55e;border-radius:3px;padding:2px 6px">Authenticated</span>';
+                } else {
+                    html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
+                }
+            }
+            html += ` + "`" + `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>` + "`" + `;
+            html += '</div></div>';
+            if (isHTTP) {
+                html += ` + "`" + `<div class="mcp-card-cmd">${esc(mcp.url || '')}</div>` + "`" + `;
+                html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+                html += ` + "`" + `<div class="mcp-card-tools" style="margin:0">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>` + "`" + `;
+                if (authenticating) {
+                    html += '<button class="btn btn-sm" disabled><span class="spinner"></span>Authenticating...</button>';
+                } else {
+                    html += ` + "`" + `<button class="btn btn-sm" onclick="authenticateMcp('${esc(mcp.id)}')">Authenticate</button>` + "`" + `;
+                }
+                html += '</div>';
+            } else {
+                const cmd = mcp.command || '';
+                const cmdDisplay = cmd.length > 40 ? '...' + cmd.slice(-37) : cmd;
+                const argsDisplay = mcp.args && mcp.args.length > 0 ? ' ' + mcp.args.join(' ') : '';
+                html += ` + "`" + `<div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>` + "`" + `;
+                html += ` + "`" + `<div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>` + "`" + `;
+            }
+            html += '</div>';
         }
     } else {
         html += '<div class="empty-state">No external MCP servers configured.</div>';
@@ -453,32 +478,50 @@ function renderMcpServers() {
     html += '<div style="margin-top:20px;border-top:1px solid #333;padding-top:16px">';
     html += '<h3>Add MCP Server</h3>';
 
-    const formActive = state.mcpAddMode === 'form';
+    const isStdio = state.mcpTransport === 'stdio';
     html += ` + "`" + `<div style="display:flex;gap:4px;margin-bottom:12px">
-        <button class="perm-btn ${formActive ? 'active' : ''}" onclick="setMcpAddMode('form')">Form</button>
-        <button class="perm-btn ${!formActive ? 'active' : ''}" onclick="setMcpAddMode('json')">Paste JSON</button>
+        <button class="perm-btn ${isStdio ? 'active' : ''}" onclick="setMcpTransport('stdio')">Stdio</button>
+        <button class="perm-btn ${!isStdio ? 'active' : ''}" onclick="setMcpTransport('http')">HTTP</button>
     </div>` + "`" + `;
 
-    if (formActive) {
+    if (!isStdio) {
         html += '<label>Display name</label>';
-        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
-        html += '<label>Command</label>';
-        html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
-        html += '<label>Arguments (space-separated)</label>';
-        html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
-        html += '<label>Environment variables (KEY=VALUE per line)</label>';
-        html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
+        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Krisp" />';
+        html += '<label>URL</label>';
+        html += '<input type="text" id="mcpUrl" placeholder="e.g. https://mcp.krisp.ai/mcp" />';
     } else {
-        html += '<label>Paste a Claude Desktop-style JSON config snippet</label>';
-        html += '<textarea id="mcpJson" rows="8"></textarea>';
-        html += '<p style="color:#666;font-size:11px;margin-top:4px">Accepts <code style="color:#aaa">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
+        const formActive = state.mcpAddMode === 'form';
+        html += ` + "`" + `<div style="display:flex;gap:4px;margin-bottom:12px">
+            <button class="perm-btn ${formActive ? 'active' : ''}" onclick="setMcpAddMode('form')">Form</button>
+            <button class="perm-btn ${!formActive ? 'active' : ''}" onclick="setMcpAddMode('json')">Paste JSON</button>
+        </div>` + "`" + `;
+
+        if (formActive) {
+            html += '<label>Display name</label>';
+            html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
+            html += '<label>Command</label>';
+            html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
+            html += '<label>Arguments (space-separated)</label>';
+            html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
+            html += '<label>Environment variables (KEY=VALUE per line)</label>';
+            html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
+        } else {
+            html += '<label>Paste a Claude Desktop-style JSON config snippet</label>';
+            html += '<textarea id="mcpJson" rows="8"></textarea>';
+            html += '<p style="color:#666;font-size:11px;margin-top:4px">Accepts <code style="color:#aaa">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
+        }
     }
 
     html += '<div style="margin-top:12px">';
     if (state.discovering) {
         html += '<button class="btn" disabled><span class="spinner"></span>Discovering...</button>';
     } else {
-        html += ` + "`" + `<button class="btn" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add</button>` + "`" + `;
+        if (!isStdio) {
+            html += '<button class="btn" onclick="addExternalMcpHttp()">Add</button>';
+        } else {
+            const formActive = state.mcpAddMode === 'form';
+            html += ` + "`" + `<button class="btn" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add</button>` + "`" + `;
+        }
     }
     html += '</div>';
 
@@ -866,6 +909,12 @@ function addExternalMcp() {
     }));
 }
 
+function setMcpTransport(transport) {
+    state.mcpTransport = transport;
+    state.discoveryError = null;
+    render();
+}
+
 function setMcpAddMode(mode) {
     state.mcpAddMode = mode;
     state.discoveryError = null;
@@ -911,9 +960,52 @@ function addExternalMcpFromJson() {
     }));
 }
 
+function addExternalMcpHttp() {
+    const displayName = document.getElementById('mcpDisplayName').value.trim();
+    const url = document.getElementById('mcpUrl').value.trim();
+    if (!displayName || !url) return;
+
+    state.discoveryError = null;
+    ipc(JSON.stringify({
+        type: 'add_external_mcp',
+        display_name: displayName,
+        transport: 'http',
+        url: url,
+    }));
+}
+
+function authenticateMcp(id) {
+    ipc(JSON.stringify({ type: 'authenticate_mcp', id }));
+}
+
 function removeExternalMcp(id) {
     ipc(JSON.stringify({ type: 'remove_external_mcp', id }));
 }
+
+window.onOAuthRequired = function(id) {
+    // Server needs auth -- badge already shown from the added MCP data.
+};
+
+window.onOAuthStarted = function(id) {
+    state.authenticatingMcp = id;
+    render();
+};
+
+window.onOAuthComplete = function(id) {
+    state.authenticatingMcp = null;
+    const mcp = state.externalMcps.find(m => m.id === id);
+    if (mcp) {
+        if (!mcp.oauth_state) mcp.oauth_state = {};
+        mcp.oauth_state.access_token = 'authenticated';
+    }
+    render();
+};
+
+window.onOAuthError = function(id, msg) {
+    state.authenticatingMcp = null;
+    state.discoveryError = 'OAuth failed: ' + msg;
+    render();
+};
 
 window.onDiscoveryStarted = function() {
     state.discovering = true;

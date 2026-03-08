@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -339,12 +341,32 @@ func (a *App) onSettingsIpc(body string) {
 
 	case "add_external_mcp":
 		displayName, _ := msg["display_name"].(string)
+		transport, _ := msg["transport"].(string)
+
+		id := slugify(displayName)
+		if id == "" {
+			return
+		}
+
+		if transport == "http" {
+			mcpURL, _ := msg["url"].(string)
+			if mcpURL == "" {
+				return
+			}
+			if err := validateMcpURL(mcpURL); err != nil {
+				a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escapeJSString(err.Error())))
+				return
+			}
+			a.evalSettings("onDiscoveryStarted()")
+			go a.addHTTPMcp(displayName, id, mcpURL)
+			return
+		}
+
 		command, _ := msg["command"].(string)
 		args := jsonStringArray(msg["args"])
 		env := jsonStringMap(msg["env"])
 
-		id := slugify(displayName)
-		if id == "" || command == "" {
+		if command == "" {
 			return
 		}
 
@@ -369,6 +391,13 @@ func (a *App) onSettingsIpc(body string) {
 				a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
 			})
 		}()
+
+	case "authenticate_mcp":
+		id, _ := msg["id"].(string)
+		if id == "" {
+			return
+		}
+		go a.authenticateMcp(id)
 
 	case "remove_external_mcp":
 		id, _ := msg["id"].(string)
@@ -629,13 +658,101 @@ func (r *appRouter) ReloadExternalMcp(id string) {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP MCP helpers
+// ---------------------------------------------------------------------------
+
+func (a *App) addHTTPMcp(displayName, id, mcpURL string) {
+	result, err := DiscoverHTTPMcp(displayName, id, mcpURL, nil)
+
+	if err != nil && !errors.Is(err, ErrAuthRequired) {
+		a.platform.DispatchToMain(func() {
+			escaped := escapeJSString(err.Error())
+			a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escaped))
+		})
+		return
+	}
+
+	needsAuth := errors.Is(err, ErrAuthRequired)
+
+	a.platform.DispatchToMain(func() {
+		s := LoadSettings()
+		s.AddExternalMcp(*result)
+		go func() { _ = bridge.SendReconcile() }()
+
+		mcpJSON, _ := json.Marshal(result)
+		a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
+
+		if needsAuth {
+			a.evalSettings(fmt.Sprintf("onOAuthRequired('%s')", escapeJSString(id)))
+		}
+	})
+}
+
+func (a *App) authenticateMcp(id string) {
+	s := LoadSettings()
+	var mcpCfg *ExternalMcp
+	for i := range s.ExternalMcps {
+		if s.ExternalMcps[i].ID == id {
+			mcpCfg = &s.ExternalMcps[i]
+			break
+		}
+	}
+	if mcpCfg == nil || !mcpCfg.IsHTTP() {
+		return
+	}
+
+	a.platform.DispatchToMain(func() {
+		a.evalSettings(fmt.Sprintf("onOAuthStarted('%s')", escapeJSString(id)))
+	})
+
+	oauth, err := startOAuthFlow(mcpCfg.URL, a.platform.OpenURL)
+	if err != nil {
+		a.platform.DispatchToMain(func() {
+			escaped := escapeJSString(err.Error())
+			a.evalSettings(fmt.Sprintf("onOAuthError('%s','%s')", escapeJSString(id), escaped))
+		})
+		return
+	}
+
+	a.platform.DispatchToMain(func() {
+		// Persist OAuth state on main thread to avoid concurrent settings writes.
+		s = LoadSettings()
+		s.UpdateOAuthState(id, oauth)
+
+		// Reload the MCP connection with the new tokens.
+		go func() { _ = bridge.SendReloadMcp(id) }()
+
+		a.evalSettings(fmt.Sprintf("onOAuthComplete('%s')", escapeJSString(id)))
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// validateMcpURL checks that the URL has an http or https scheme.
+func validateMcpURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme %q: only http and https are allowed", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("URL is missing a host")
+	}
+	return nil
+}
 
 func escapeJSString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\x00", `\0`)
+	s = strings.ReplaceAll(s, "\u2028", `\u2028`)
+	s = strings.ReplaceAll(s, "\u2029", `\u2029`)
 	return s
 }
 
