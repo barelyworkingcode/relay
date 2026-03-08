@@ -43,6 +43,7 @@ For notarized release builds:
 - **`relay mcp --token <value>`** -- stdio MCP server. Connects to the tray app's bridge socket.
 - **`relay mcp register|unregister|list`** -- CLI for external MCP server management.
 - **`relay mcpList --token <value>`** -- lists all tools available to a token.
+- **`relay mcpExec --token <value> --list|--tool <name> [--args '<json>']`** -- directly calls tools over the bridge socket without the MCP protocol.
 - **`relay service register|unregister|list`** -- CLI for background service management.
 
 The tray app must be running before `relay mcp --token` can connect.
