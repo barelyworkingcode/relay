@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,86 +36,44 @@ func serviceUsage() {
 }
 
 func serviceRegister(args []string) {
-	var (
-		name      string
-		command   string
-		id        string
-		workdir   string
-		url       string
-		autostart bool
-		svcArgs   []string
-		envPairs  []string
-	)
+	fs := flag.NewFlagSet("service register", flag.ExitOnError)
+	name := fs.String("name", "", "display name (required)")
+	command := fs.String("command", "", "command to run (required)")
+	id := fs.String("id", "", "override generated ID")
+	workdir := fs.String("workdir", "", "working directory")
+	url := fs.String("url", "", "service URL")
+	autostart := fs.Bool("autostart", false, "start automatically")
+	var svcArgs, envPairs stringSlice
+	fs.Var(&svcArgs, "args", "command arguments (repeatable)")
+	fs.Var(&envPairs, "env", "environment KEY=VALUE (repeatable)")
+	fs.Parse(args)
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--name":
-			i++
-			if i < len(args) {
-				name = args[i]
-			}
-		case "--command":
-			i++
-			if i < len(args) {
-				command = args[i]
-			}
-		case "--id":
-			i++
-			if i < len(args) {
-				id = args[i]
-			}
-		case "--args":
-			i++
-			if i < len(args) {
-				svcArgs = append(svcArgs, args[i])
-			}
-		case "--workdir":
-			i++
-			if i < len(args) {
-				workdir = args[i]
-			}
-		case "--url":
-			i++
-			if i < len(args) {
-				url = args[i]
-			}
-		case "--env":
-			i++
-			if i < len(args) {
-				envPairs = append(envPairs, args[i])
-			}
-		case "--autostart":
-			autostart = true
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
-	}
-
-	if name == "" {
+	if *name == "" {
 		fmt.Fprintf(os.Stderr, "error: --name is required\n")
 		os.Exit(1)
 	}
-	if command == "" {
+	if *command == "" {
 		fmt.Fprintf(os.Stderr, "error: --command is required\n")
 		os.Exit(1)
 	}
 
-	if id == "" {
-		id = slugify(name)
+	resolvedID := *id
+	if resolvedID == "" {
+		resolvedID = slugify(*name)
 	}
-	if id == "" {
-		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", name)
+	if resolvedID == "" {
+		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", *name)
 		os.Exit(1)
 	}
 
-	if workdir != "" {
-		abs, err := filepath.Abs(workdir)
+	resolvedWorkdir := *workdir
+	if resolvedWorkdir != "" {
+		abs, err := filepath.Abs(resolvedWorkdir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: could not resolve workdir: %v\n", err)
 			os.Exit(1)
 		}
-		workdir = abs
+		resolvedWorkdir = abs
 	}
 
 	var env map[string]string
@@ -131,92 +90,89 @@ func serviceRegister(args []string) {
 	}
 
 	config := ServiceConfig{
-		ID:          id,
-		DisplayName: name,
-		Command:     command,
-		Args:        svcArgs,
+		ID:          resolvedID,
+		DisplayName: *name,
+		Command:     *command,
+		Args:        []string(svcArgs),
 		Env:         env,
-		WorkingDir:  workdir,
-		Autostart:   autostart,
-		URL:         url,
+		WorkingDir:  resolvedWorkdir,
+		Autostart:   *autostart,
+		URL:         *url,
 	}
 
-	s := LoadSettings()
-
-	// Check for existing service with same ID (idempotent update).
-	for _, svc := range s.Services {
-		if svc.ID == id {
-			s.UpdateService(config)
-			fmt.Printf("updated service %q (%s)\n", name, id)
-			// Tell the tray app to reload (restarts if running).
-			if err := bridge.SendReloadService(id); err != nil {
-				fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+	var updated bool
+	var adminSecret string
+	WithSettings(func(s *Settings) {
+		adminSecret = s.AdminSecret
+		for _, svc := range s.Services {
+			if svc.ID == resolvedID {
+				s.UpdateService(config)
+				updated = true
+				return
 			}
-			return
 		}
-	}
+		s.AddService(config)
+	})
 
-	s.AddService(config)
-	fmt.Printf("registered service %q (%s)\n", name, id)
+	if updated {
+		fmt.Printf("updated service %q (%s)\n", *name, resolvedID)
+		if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
+			fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+		}
+	} else {
+		fmt.Printf("registered service %q (%s)\n", *name, resolvedID)
+	}
 }
 
 func serviceUnregister(args []string) {
-	var id, name string
+	fs := flag.NewFlagSet("service unregister", flag.ExitOnError)
+	id := fs.String("id", "", "service ID")
+	name := fs.String("name", "", "service display name")
+	fs.Parse(args)
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--id":
-			i++
-			if i < len(args) {
-				id = args[i]
-			}
-		case "--name":
-			i++
-			if i < len(args) {
-				name = args[i]
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
-	}
-
-	if id == "" && name == "" {
+	if *id == "" && *name == "" {
 		fmt.Fprintf(os.Stderr, "error: --id or --name is required\n")
 		os.Exit(1)
 	}
 
-	s := LoadSettings()
-
-	// Resolve name to ID if needed.
-	if id == "" {
+	var resolvedID string
+	WithSettings(func(s *Settings) {
+		resolvedID = *id
+		if resolvedID == "" {
+			for _, svc := range s.Services {
+				if svc.DisplayName == *name {
+					resolvedID = svc.ID
+					break
+				}
+			}
+		}
+		if resolvedID == "" {
+			return
+		}
+		found := false
 		for _, svc := range s.Services {
-			if svc.DisplayName == name {
-				id = svc.ID
+			if svc.ID == resolvedID {
+				found = true
 				break
 			}
 		}
-		if id == "" {
-			fmt.Fprintf(os.Stderr, "error: no service found with name %q\n", name)
-			os.Exit(1)
+		if !found {
+			resolvedID = ""
+			return
 		}
-	}
+		s.RemoveService(resolvedID)
+	})
 
-	// Verify service exists.
-	found := false
-	for _, svc := range s.Services {
-		if svc.ID == id {
-			found = true
-			break
+	if resolvedID == "" {
+		if *id != "" {
+			fmt.Fprintf(os.Stderr, "error: no service found with id %q\n", *id)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: no service found with name %q\n", *name)
 		}
-	}
-	if !found {
-		fmt.Fprintf(os.Stderr, "error: no service found with id %q\n", id)
 		os.Exit(1)
 	}
 
-	s.RemoveService(id)
-	fmt.Printf("unregistered service %q\n", id)
+	fmt.Printf("unregistered service %q\n", resolvedID)
 }
 
 func serviceList() {

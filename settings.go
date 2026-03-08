@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -84,9 +85,11 @@ type Settings struct {
 	Tokens       []StoredToken   `json:"tokens"`
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
 	Services     []ServiceConfig `json:"services"`
-
-	mu sync.Mutex `json:"-"`
+	AdminSecret  string          `json:"admin_secret,omitempty"`
 }
+
+// settingsMu serializes all settings load-modify-save cycles.
+var settingsMu sync.Mutex
 
 // settingsDir returns the platform config directory for relay.
 func settingsDir() string {
@@ -110,8 +113,8 @@ func defaultSettings() *Settings {
 	}
 }
 
-// LoadSettings reads settings from disk or returns defaults.
-func LoadSettings() *Settings {
+// loadSettingsInternal reads settings from disk. Caller must hold settingsMu.
+func loadSettingsInternal() *Settings {
 	data, err := os.ReadFile(settingsPath())
 	if err != nil {
 		return defaultSettings()
@@ -138,22 +141,52 @@ func LoadSettings() *Settings {
 	return &s
 }
 
-// Save writes settings to disk as pretty-printed JSON.
-func (s *Settings) Save() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// saveSettingsInternal writes settings to disk. Caller must hold settingsMu.
+func saveSettingsInternal(s *Settings) {
 	dir := settingsDir()
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0700)
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to serialize settings: %v\n", err)
+		slog.Error("failed to serialize settings", "error", err)
 		return
 	}
-	if err := os.WriteFile(settingsPath(), data, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write settings: %v\n", err)
+	p := settingsPath()
+	if err := os.WriteFile(p, data, 0600); err != nil {
+		slog.Error("failed to write settings", "error", err)
+		return
 	}
+	// Tighten permissions on existing files that may have been created with 0644.
+	_ = os.Chmod(p, 0600)
+}
+
+// ensureAdminSecret generates an AdminSecret if one is not already set.
+func ensureAdminSecret(s *Settings) {
+	if s.AdminSecret != "" {
+		return
+	}
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		s.AdminSecret = hex.EncodeToString(b[:])
+	}
+}
+
+// LoadSettings reads settings from disk (thread-safe, read-only snapshot).
+// Does not generate or persist an admin secret; use WithSettings for that.
+func LoadSettings() *Settings {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
+	return loadSettingsInternal()
+}
+
+// WithSettings atomically loads settings, calls fn for mutation, then saves.
+func WithSettings(fn func(s *Settings)) {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
+	s := loadSettingsInternal()
+	ensureAdminSecret(s)
+	fn(s)
+	saveSettingsInternal(s)
 }
 
 func hashToken(plaintext string) string {
@@ -182,33 +215,22 @@ func GenerateToken(name string, defaultPermissions map[string]Permission) (strin
 	return plaintext, token
 }
 
-// CheckAuth validates a bearer token against stored hashes.
-// Returns nil on success, or an error describing the failure.
-func (s *Settings) CheckAuth(token string) error {
+// Authenticate validates a bearer token against stored hashes.
+// Returns the matching StoredToken on success, or an error.
+func (s *Settings) Authenticate(plaintext string) (*StoredToken, error) {
 	if len(s.Tokens) == 0 {
-		return fmt.Errorf("no tokens configured")
+		return nil, fmt.Errorf("no tokens configured")
 	}
-	if token == "" {
-		return fmt.Errorf("no token provided")
+	if plaintext == "" {
+		return nil, fmt.Errorf("no token provided")
 	}
-	hash := hashToken(token)
-	for _, t := range s.Tokens {
-		if t.Hash == hash {
-			return nil
-		}
-	}
-	return fmt.Errorf("invalid token")
-}
-
-// ValidateToken returns the matching StoredToken if the plaintext is valid.
-func (s *Settings) ValidateToken(plaintext string) *StoredToken {
 	hash := hashToken(plaintext)
 	for i := range s.Tokens {
 		if s.Tokens[i].Hash == hash {
-			return &s.Tokens[i]
+			return &s.Tokens[i], nil
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("invalid token")
 }
 
 // GetPermission returns the permission level for a token+service pair.
@@ -228,25 +250,23 @@ func (s *Settings) GetPermission(tokenHash, serviceName string) Permission {
 	return PermOn
 }
 
-// DeleteToken removes a token by its hash.
+// DeleteToken removes a token by its hash. Does not save; use within WithSettings.
 func (s *Settings) DeleteToken(hash string) {
-	filtered := s.Tokens[:0]
+	filtered := make([]StoredToken, 0, len(s.Tokens))
 	for _, t := range s.Tokens {
 		if t.Hash != hash {
 			filtered = append(filtered, t)
 		}
 	}
 	s.Tokens = filtered
-	s.Save()
 }
 
-// RevokeAll removes all tokens.
+// RevokeAll removes all tokens. Does not save; use within WithSettings.
 func (s *Settings) RevokeAll() {
 	s.Tokens = []StoredToken{}
-	s.Save()
 }
 
-// UpdatePermission sets a specific permission and persists.
+// UpdatePermission sets a specific permission. Does not save; use within WithSettings.
 func (s *Settings) UpdatePermission(hash, service string, perm Permission) {
 	for i := range s.Tokens {
 		if s.Tokens[i].Hash == hash {
@@ -257,10 +277,10 @@ func (s *Settings) UpdatePermission(hash, service string, perm Permission) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // AddExternalMcp adds an external MCP config and grants full permission to all existing tokens.
+// Does not save; use within WithSettings.
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.ExternalMcps = append(s.ExternalMcps, mcp)
 	for i := range s.Tokens {
@@ -271,11 +291,11 @@ func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 			s.Tokens[i].Permissions[mcp.ID] = PermOn
 		}
 	}
-	s.Save()
 }
 
-// UpdateExternalMcp replaces an external MCP config by ID and persists.
+// UpdateExternalMcp replaces an external MCP config by ID.
 // Preserves DiscoveredTools from the existing entry if the new one has none.
+// Does not save; use within WithSettings.
 func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == cfg.ID {
@@ -286,12 +306,12 @@ func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // RemoveExternalMcp removes an external MCP and cleans up token permissions.
+// Does not save; use within WithSettings.
 func (s *Settings) RemoveExternalMcp(id string) {
-	filtered := s.ExternalMcps[:0]
+	filtered := make([]ExternalMcp, 0, len(s.ExternalMcps))
 	for _, m := range s.ExternalMcps {
 		if m.ID != id {
 			filtered = append(filtered, m)
@@ -302,28 +322,25 @@ func (s *Settings) RemoveExternalMcp(id string) {
 		delete(s.Tokens[i].Permissions, id)
 		delete(s.Tokens[i].DisabledTools, id)
 	}
-	s.Save()
 }
 
-// AddService adds a service config and persists.
+// AddService adds a service config. Does not save; use within WithSettings.
 func (s *Settings) AddService(config ServiceConfig) {
 	s.Services = append(s.Services, config)
-	s.Save()
 }
 
-// RemoveService removes a service by ID and persists.
+// RemoveService removes a service by ID. Does not save; use within WithSettings.
 func (s *Settings) RemoveService(id string) {
-	filtered := s.Services[:0]
+	filtered := make([]ServiceConfig, 0, len(s.Services))
 	for _, svc := range s.Services {
 		if svc.ID != id {
 			filtered = append(filtered, svc)
 		}
 	}
 	s.Services = filtered
-	s.Save()
 }
 
-// UpdateService replaces a service config by ID and persists.
+// UpdateService replaces a service config by ID. Does not save; use within WithSettings.
 func (s *Settings) UpdateService(config ServiceConfig) {
 	for i := range s.Services {
 		if s.Services[i].ID == config.ID {
@@ -331,7 +348,6 @@ func (s *Settings) UpdateService(config ServiceConfig) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // IsToolDisabled returns true if a specific tool is disabled for the given token and MCP.
@@ -353,6 +369,7 @@ func (s *Settings) IsToolDisabled(tokenHash, mcpID, toolName string) bool {
 }
 
 // SetToolDisabled enables or disables a specific tool for a token+MCP pair.
+// Does not save; use within WithSettings.
 func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) {
 	for i := range s.Tokens {
 		if s.Tokens[i].Hash != hash {
@@ -365,13 +382,12 @@ func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) 
 		if disabled {
 			for _, n := range list {
 				if n == toolName {
-					s.Save()
 					return
 				}
 			}
 			s.Tokens[i].DisabledTools[mcpID] = append(list, toolName)
 		} else {
-			filtered := list[:0]
+			filtered := make([]string, 0, len(list))
 			for _, n := range list {
 				if n != toolName {
 					filtered = append(filtered, n)
@@ -385,10 +401,10 @@ func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) 
 		}
 		break
 	}
-	s.Save()
 }
 
 // SetAllToolsDisabled sets all tools for a token+MCP pair to disabled or enabled.
+// Does not save; use within WithSettings.
 func (s *Settings) SetAllToolsDisabled(hash, mcpID string, toolNames []string, disabled bool) {
 	for i := range s.Tokens {
 		if s.Tokens[i].Hash != hash {
@@ -406,11 +422,11 @@ func (s *Settings) SetAllToolsDisabled(hash, mcpID string, toolNames []string, d
 		}
 		break
 	}
-	s.Save()
 }
 
 // SetContext sets per-MCP context for a token. Context is passed as _meta to
 // the external MCP on tool calls, enabling per-token restrictions like allowed_dirs.
+// Does not save; use within WithSettings.
 func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
 	for i := range s.Tokens {
 		if s.Tokens[i].Hash != hash {
@@ -426,10 +442,10 @@ func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
 		}
 		break
 	}
-	s.Save()
 }
 
 // UpdateOAuthState updates the OAuth state for an HTTP MCP.
+// Does not save; use within WithSettings.
 func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == mcpID {
@@ -437,10 +453,10 @@ func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // UpdateDiscoveredTools updates the persisted tool list for an external MCP.
+// Does not save; use within WithSettings.
 func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == mcpID {
@@ -448,10 +464,10 @@ func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // UpdateContextSchema updates the persisted context schema for an external MCP.
+// Does not save; use within WithSettings.
 func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == mcpID {
@@ -459,7 +475,6 @@ func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
 			break
 		}
 	}
-	s.Save()
 }
 
 // AllServiceNames returns all external MCP service names.

@@ -54,11 +54,12 @@ func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, e
 	return resp.Result, nil
 }
 
-// SendReconcile sends a ReconcileExternalMcps request. No token needed.
-func SendReconcile() error {
+// SendReconcile sends a ReconcileExternalMcps request with admin authentication.
+func SendReconcile(token string) error {
 	c := &Client{sockPath: SocketPath()}
 	resp, err := c.send(BridgeRequest{
-		Type: "ReconcileExternalMcps",
+		Type:  "ReconcileExternalMcps",
+		Token: token,
 	})
 	if err != nil {
 		return fmt.Errorf("reconcile request failed: %w", err)
@@ -69,12 +70,13 @@ func SendReconcile() error {
 	return nil
 }
 
-// SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID. No token needed.
-func SendReloadMcp(id string) error {
+// SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID.
+func SendReloadMcp(id, token string) error {
 	c := &Client{sockPath: SocketPath()}
 	resp, err := c.send(BridgeRequest{
-		Type: "ReloadExternalMcp",
-		Name: id,
+		Type:  "ReloadExternalMcp",
+		Name:  id,
+		Token: token,
 	})
 	if err != nil {
 		return fmt.Errorf("reload request failed: %w", err)
@@ -85,12 +87,13 @@ func SendReloadMcp(id string) error {
 	return nil
 }
 
-// SendReloadService sends a ReloadService request for the given service ID. No token needed.
-func SendReloadService(id string) error {
+// SendReloadService sends a ReloadService request for the given service ID.
+func SendReloadService(id, token string) error {
 	c := &Client{sockPath: SocketPath()}
 	resp, err := c.send(BridgeRequest{
-		Type: "ReloadService",
-		Name: id,
+		Type:  "ReloadService",
+		Name:  id,
+		Token: token,
 	})
 	if err != nil {
 		return fmt.Errorf("reload service request failed: %w", err)

@@ -2,13 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +16,9 @@ import (
 
 // appInstance is the singleton tray app, set by runTrayApp and read by Cocoa callbacks.
 var appInstance *App
+
+// appRunning tracks whether the app is still alive (for cleanup).
+var appRunning atomic.Bool
 
 // App is the main tray application state.
 type App struct {
@@ -37,16 +39,18 @@ const (
 )
 
 func runTrayApp() {
-	fmt.Fprintf(os.Stderr, "[relay] starting tray app\n")
+	slog.Info("starting tray app")
 
 	platform := NewPlatform()
 
 	// Initialize platform UI first so app delegate exists before tray setup.
 	platform.Init()
-	fmt.Fprintf(os.Stderr, "[relay] platform initialized\n")
+	slog.Info("platform initialized")
 
+	// Ensure admin secret is generated and persisted on first launch.
+	WithSettings(func(s *Settings) {})
 	settings := LoadSettings()
-	fmt.Fprintf(os.Stderr, "[relay] settings loaded\n")
+	slog.Info("settings loaded")
 
 	// External MCP manager.
 	extMgr := NewExternalMcpManager()
@@ -63,12 +67,12 @@ func runTrayApp() {
 	router := &appRouter{app: app}
 	bs, err := bridge.NewBridgeServer(router)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[relay] failed to start bridge server: %v\n", err)
+		slog.Error("failed to start bridge server", "error", err)
 		os.Exit(1)
 	}
 	app.bridgeServer = bs
 	go bs.Serve()
-	fmt.Fprintf(os.Stderr, "[relay] bridge server started\n")
+	slog.Info("bridge server started")
 
 	// Start external MCPs.
 	extMgr.StartAll(settings.ExternalMcps)
@@ -77,21 +81,21 @@ func runTrayApp() {
 	app.registry.StartAllAutostart(settings.Services)
 
 	// Set up tray icon.
-	fmt.Fprintf(os.Stderr, "[relay] setting up tray icon\n")
+	slog.Info("setting up tray icon")
 	rgba, w, h := CreateIconRGBA()
 	platform.SetupTray(rgba, w, h)
-	fmt.Fprintf(os.Stderr, "[relay] tray icon set up\n")
+	slog.Info("tray icon set up")
 
 	// Build and set initial menu.
 	app.updateMenu()
-	fmt.Fprintf(os.Stderr, "[relay] menu built\n")
+	slog.Info("menu built")
 
 	// Catch termination signals so child processes get cleaned up.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigCh
-		fmt.Fprintf(os.Stderr, "[relay] received %s, cleaning up\n", sig)
+		slog.Info("received signal, cleaning up", "signal", sig)
 		app.cleanup()
 		os.Exit(0)
 	}()
@@ -100,7 +104,7 @@ func runTrayApp() {
 	go app.statusPoller()
 
 	// Block on the platform run loop (must be on main thread).
-	fmt.Fprintf(os.Stderr, "[relay] entering run loop\n")
+	slog.Info("entering run loop")
 	appRunning.Store(true)
 	platform.Run()
 }
@@ -190,7 +194,7 @@ func (a *App) toggleService(index int) {
 	if config.URL != "" {
 		if !a.registry.IsRunning(config.ID) {
 			if err := a.registry.Start(config); err != nil {
-				fmt.Fprintf(os.Stderr, "service start: %v\n", err)
+				slog.Error("service start failed", "error", err)
 			}
 		}
 		a.platform.OpenURL(config.URL)
@@ -209,7 +213,7 @@ func (a *App) toggleService(index int) {
 		}()
 	} else {
 		if err := a.registry.Start(config); err != nil {
-			fmt.Fprintf(os.Stderr, "service toggle: %v\n", err)
+			slog.Error("service toggle failed", "error", err)
 		}
 		a.updateMenu()
 	}
@@ -224,581 +228,4 @@ func (a *App) cleanup() {
 			a.bridgeServer.Close()
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// Settings window
-// ---------------------------------------------------------------------------
-
-func (a *App) openSettingsWindow() {
-	s := LoadSettings()
-	html := renderSettingsHTML(s, a.registry.RunningIDs())
-	a.platform.OpenSettings(html)
-	a.settingsOpen = true
-}
-
-func (a *App) onSettingsClose() {
-	a.settingsOpen = false
-}
-
-func (a *App) evalSettings(js string) {
-	if a.settingsOpen {
-		a.platform.EvalSettingsJS(js)
-	}
-}
-
-func (a *App) pushServiceStatus() {
-	if !a.settingsOpen {
-		return
-	}
-	data, _ := json.Marshal(a.registry.RunningIDs())
-	a.evalSettings(fmt.Sprintf("onServiceStatus(%s)", string(data)))
-}
-
-// onSettingsIpc is called from the WKWebView IPC handler.
-// The message body is a JSON string from the ipc() wrapper.
-func (a *App) onSettingsIpc(body string) {
-	var msg map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &msg); err != nil {
-		return
-	}
-
-	msgType, _ := msg["type"].(string)
-
-	switch msgType {
-	case "generate_token":
-		name, _ := msg["name"].(string)
-		s := LoadSettings()
-		defaultPerms := make(map[string]Permission)
-		for _, svcName := range s.AllServiceNames() {
-			defaultPerms[svcName] = PermOn
-		}
-		plaintext, stored := GenerateToken(name, defaultPerms)
-		s.Tokens = append(s.Tokens, stored)
-		s.Save()
-
-		response := map[string]interface{}{
-			"plaintext": plaintext,
-			"token":     stored,
-		}
-		responseJSON, _ := json.Marshal(response)
-		a.evalSettings(fmt.Sprintf("onTokenGenerated(%s)", string(responseJSON)))
-
-	case "delete_token":
-		hash, _ := msg["hash"].(string)
-		s := LoadSettings()
-		s.DeleteToken(hash)
-		a.evalSettings(fmt.Sprintf("onTokenDeleted('%s')", escapeJSString(hash)))
-
-	case "revoke_all":
-		s := LoadSettings()
-		s.RevokeAll()
-		a.evalSettings("onAllRevoked()")
-
-	case "update_permission":
-		hash, _ := msg["hash"].(string)
-		service, _ := msg["service"].(string)
-		permStr, _ := msg["permission"].(string)
-		perm := PermOn
-		if permStr == "off" {
-			perm = PermOff
-		}
-		s := LoadSettings()
-		s.UpdatePermission(hash, service, perm)
-
-	case "set_tool_disabled":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		toolName, _ := msg["tool_name"].(string)
-		disabled, _ := msg["disabled"].(bool)
-		s := LoadSettings()
-		s.SetToolDisabled(hash, mcpID, toolName, disabled)
-
-	case "set_all_tools_disabled":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		disabled, _ := msg["disabled"].(bool)
-		s := LoadSettings()
-		// Collect tool names from discovered tools for this MCP.
-		var toolNames []string
-		for _, mcp := range s.ExternalMcps {
-			if mcp.ID == mcpID {
-				for _, t := range mcp.DiscoveredTools {
-					toolNames = append(toolNames, t.Name)
-				}
-				break
-			}
-		}
-		s.SetAllToolsDisabled(hash, mcpID, toolNames, disabled)
-
-	case "set_context":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		// context is the raw JSON object (e.g. {"allowed_dirs": ["/path"]})
-		contextRaw, _ := json.Marshal(msg["context"])
-		s := LoadSettings()
-		s.SetContext(hash, mcpID, json.RawMessage(contextRaw))
-
-	case "add_external_mcp":
-		displayName, _ := msg["display_name"].(string)
-		transport, _ := msg["transport"].(string)
-
-		id := slugify(displayName)
-		if id == "" {
-			return
-		}
-
-		if transport == "http" {
-			mcpURL, _ := msg["url"].(string)
-			if mcpURL == "" {
-				return
-			}
-			if err := validateMcpURL(mcpURL); err != nil {
-				a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escapeJSString(err.Error())))
-				return
-			}
-			a.evalSettings("onDiscoveryStarted()")
-			go a.addHTTPMcp(displayName, id, mcpURL)
-			return
-		}
-
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-
-		if command == "" {
-			return
-		}
-
-		a.evalSettings("onDiscoveryStarted()")
-
-		go func() {
-			result, err := DiscoverExternalMcp(displayName, id, command, args, env)
-			a.platform.DispatchToMain(func() {
-				if err != nil {
-					escaped := escapeJSString(err.Error())
-					a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escaped))
-					return
-				}
-
-				s := LoadSettings()
-				s.AddExternalMcp(*result)
-
-				// Notify bridge to reconcile.
-				go func() { _ = bridge.SendReconcile() }()
-
-				mcpJSON, _ := json.Marshal(result)
-				a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
-			})
-		}()
-
-	case "authenticate_mcp":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		go a.authenticateMcp(id)
-
-	case "remove_external_mcp":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-
-		s := LoadSettings()
-		s.RemoveExternalMcp(id)
-
-		go func() { _ = bridge.SendReconcile() }()
-
-		escaped := escapeJSString(id)
-		a.evalSettings(fmt.Sprintf("onExternalMcpRemoved('%s')", escaped))
-
-	case "copy_to_clipboard":
-		if text, ok := msg["text"].(string); ok {
-			a.platform.CopyToClipboard(text)
-		}
-
-	case "add_service":
-		displayName, _ := msg["display_name"].(string)
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-		workingDir, _ := msg["working_dir"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		url, _ := msg["url"].(string)
-
-		id := slugify(displayName)
-		if id == "" || command == "" {
-			return
-		}
-
-		config := ServiceConfig{
-			ID:          id,
-			DisplayName: displayName,
-			Command:     command,
-			Args:        args,
-			Env:         env,
-			WorkingDir:  workingDir,
-			Autostart:   autostart,
-			URL:         url,
-		}
-
-		s := LoadSettings()
-		s.AddService(config)
-
-		if autostart {
-			if err := a.registry.Start(&config); err != nil {
-				fmt.Fprintf(os.Stderr, "service autostart: %v\n", err)
-			}
-		}
-
-		a.updateMenu()
-
-		configJSON, _ := json.Marshal(config)
-		a.evalSettings(fmt.Sprintf("onServiceAdded(%s)", string(configJSON)))
-
-	case "remove_service":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-
-		a.registry.Stop(id)
-		s := LoadSettings()
-		s.RemoveService(id)
-		a.updateMenu()
-
-		escaped := escapeJSString(id)
-		a.evalSettings(fmt.Sprintf("onServiceRemoved('%s')", escaped))
-
-	case "update_service":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		displayName, _ := msg["display_name"].(string)
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-		workingDir, _ := msg["working_dir"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		url, _ := msg["url"].(string)
-
-		config := ServiceConfig{
-			ID:          id,
-			DisplayName: displayName,
-			Command:     command,
-			Args:        args,
-			Env:         env,
-			WorkingDir:  workingDir,
-			Autostart:   autostart,
-			URL:         url,
-		}
-
-		s := LoadSettings()
-		s.UpdateService(config)
-		a.updateMenu()
-
-	case "update_service_autostart":
-		id, _ := msg["id"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		s := LoadSettings()
-		for i := range s.Services {
-			if s.Services[i].ID == id {
-				s.Services[i].Autostart = autostart
-				break
-			}
-		}
-		s.Save()
-
-	case "start_service":
-		id, _ := msg["id"].(string)
-		s := LoadSettings()
-		for i := range s.Services {
-			if s.Services[i].ID == id {
-				if err := a.registry.Start(&s.Services[i]); err != nil {
-					fmt.Fprintf(os.Stderr, "service start: %v\n", err)
-				}
-				break
-			}
-		}
-		a.pushServiceStatus()
-		a.updateMenu()
-
-	case "stop_service":
-		id, _ := msg["id"].(string)
-		go func() {
-			a.registry.Stop(id)
-			a.platform.DispatchToMain(func() {
-				a.pushServiceStatus()
-				a.updateMenu()
-			})
-		}()
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ToolRouter implementation
-// ---------------------------------------------------------------------------
-
-type appRouter struct {
-	app *App
-}
-
-func (r *appRouter) ListTools(token string) (json.RawMessage, error) {
-	settings := LoadSettings()
-	if err := settings.CheckAuth(token); err != nil {
-		return nil, err
-	}
-	stored := settings.ValidateToken(token)
-	if stored == nil {
-		return nil, fmt.Errorf("invalid token")
-	}
-
-	var tools []json.RawMessage
-
-	// External MCP tools.
-	for _, ext := range settings.ExternalMcps {
-		perm := settings.GetPermission(stored.Hash, ext.ID)
-		if perm == PermOff {
-			continue
-		}
-		for _, t := range r.app.extMgr.Tools(ext.ID) {
-			if settings.IsToolDisabled(stored.Hash, ext.ID, t.Name) {
-				continue
-			}
-			data, _ := json.Marshal(t)
-			tools = append(tools, data)
-		}
-	}
-
-	// Build a single JSON array.
-	result := []byte{'['}
-	for i, t := range tools {
-		if i > 0 {
-			result = append(result, ',')
-		}
-		result = append(result, t...)
-	}
-	result = append(result, ']')
-	return result, nil
-}
-
-func (r *appRouter) CallTool(name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	settings := LoadSettings()
-	if err := settings.CheckAuth(token); err != nil {
-		return nil, err
-	}
-	stored := settings.ValidateToken(token)
-	if stored == nil {
-		return nil, fmt.Errorf("invalid token")
-	}
-
-	// Check external MCPs.
-	extID, extMcp := r.app.extMgr.FindToolOwner(name)
-	if extMcp != nil {
-		perm := settings.GetPermission(stored.Hash, extID)
-		if perm == PermOff {
-			return nil, fmt.Errorf("access denied: service '%s' is disabled for this token", extID)
-		}
-
-		if settings.IsToolDisabled(stored.Hash, extID, name) {
-			return nil, fmt.Errorf("access denied: tool '%s' is disabled for this token", name)
-		}
-
-		// Inject per-token context as _meta for this MCP.
-		var meta json.RawMessage
-		if stored.Context != nil {
-			meta = stored.Context[extID]
-		}
-
-		result, err := r.app.extMgr.CallTool(extID, name, args, meta)
-		if err != nil {
-			return nil, err
-		}
-		data, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		return data, nil
-	}
-
-	return nil, fmt.Errorf("unknown tool: %s", name)
-}
-
-func (r *appRouter) ReconcileExternalMcps() {
-	settings := LoadSettings()
-	r.app.extMgr.Reconcile(settings.ExternalMcps)
-}
-
-func (r *appRouter) ReloadService(id string) {
-	settings := LoadSettings()
-	for i := range settings.Services {
-		if settings.Services[i].ID == id {
-			if err := r.app.registry.Reload(id, &settings.Services[i]); err != nil {
-				fmt.Fprintf(os.Stderr, "[relay] failed to reload service '%s': %v\n", id, err)
-			}
-			return
-		}
-	}
-	fmt.Fprintf(os.Stderr, "[relay] reload: no service found with id '%s'\n", id)
-}
-
-func (r *appRouter) ReloadExternalMcp(id string) {
-	settings := LoadSettings()
-	for i := range settings.ExternalMcps {
-		if settings.ExternalMcps[i].ID == id {
-			if err := r.app.extMgr.Reload(id, &settings.ExternalMcps[i]); err != nil {
-				fmt.Fprintf(os.Stderr, "[relay] failed to reload external MCP '%s': %v\n", id, err)
-			}
-			return
-		}
-	}
-	fmt.Fprintf(os.Stderr, "[relay] reload: no external MCP found with id '%s'\n", id)
-}
-
-// ---------------------------------------------------------------------------
-// HTTP MCP helpers
-// ---------------------------------------------------------------------------
-
-func (a *App) addHTTPMcp(displayName, id, mcpURL string) {
-	result, err := DiscoverHTTPMcp(displayName, id, mcpURL, nil)
-
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		a.platform.DispatchToMain(func() {
-			escaped := escapeJSString(err.Error())
-			a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escaped))
-		})
-		return
-	}
-
-	needsAuth := errors.Is(err, ErrAuthRequired)
-
-	a.platform.DispatchToMain(func() {
-		s := LoadSettings()
-		s.AddExternalMcp(*result)
-		go func() { _ = bridge.SendReconcile() }()
-
-		mcpJSON, _ := json.Marshal(result)
-		a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
-
-		if needsAuth {
-			a.evalSettings(fmt.Sprintf("onOAuthRequired('%s')", escapeJSString(id)))
-		}
-	})
-}
-
-func (a *App) authenticateMcp(id string) {
-	s := LoadSettings()
-	var mcpCfg *ExternalMcp
-	for i := range s.ExternalMcps {
-		if s.ExternalMcps[i].ID == id {
-			mcpCfg = &s.ExternalMcps[i]
-			break
-		}
-	}
-	if mcpCfg == nil || !mcpCfg.IsHTTP() {
-		return
-	}
-
-	a.platform.DispatchToMain(func() {
-		a.evalSettings(fmt.Sprintf("onOAuthStarted('%s')", escapeJSString(id)))
-	})
-
-	oauth, err := startOAuthFlow(mcpCfg.URL, a.platform.OpenURL)
-	if err != nil {
-		a.platform.DispatchToMain(func() {
-			escaped := escapeJSString(err.Error())
-			a.evalSettings(fmt.Sprintf("onOAuthError('%s','%s')", escapeJSString(id), escaped))
-		})
-		return
-	}
-
-	a.platform.DispatchToMain(func() {
-		// Persist OAuth state on main thread to avoid concurrent settings writes.
-		s = LoadSettings()
-		s.UpdateOAuthState(id, oauth)
-
-		// Reload the MCP connection with the new tokens.
-		go func() { _ = bridge.SendReloadMcp(id) }()
-
-		a.evalSettings(fmt.Sprintf("onOAuthComplete('%s')", escapeJSString(id)))
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// validateMcpURL checks that the URL has an http or https scheme.
-func validateMcpURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme %q: only http and https are allowed", u.Scheme)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("URL is missing a host")
-	}
-	return nil
-}
-
-func escapeJSString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	s = strings.ReplaceAll(s, "\n", `\n`)
-	s = strings.ReplaceAll(s, "\r", `\r`)
-	s = strings.ReplaceAll(s, "\x00", `\0`)
-	s = strings.ReplaceAll(s, "\u2028", `\u2028`)
-	s = strings.ReplaceAll(s, "\u2029", `\u2029`)
-	return s
-}
-
-func slugify(name string) string {
-	var b strings.Builder
-	for _, c := range strings.ToLower(name) {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			b.WriteRune(c)
-		} else {
-			b.WriteByte('-')
-		}
-	}
-	parts := strings.Split(b.String(), "-")
-	var nonEmpty []string
-	for _, p := range parts {
-		if p != "" {
-			nonEmpty = append(nonEmpty, p)
-		}
-	}
-	return strings.Join(nonEmpty, "-")
-}
-
-func jsonStringArray(v interface{}) []string {
-	arr, ok := v.([]interface{})
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(arr))
-	for _, item := range arr {
-		if s, ok := item.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-func jsonStringMap(v interface{}) map[string]string {
-	obj, ok := v.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	result := make(map[string]string, len(obj))
-	for k, val := range obj {
-		if s, ok := val.(string); ok {
-			result[k] = s
-		}
-	}
-	return result
 }

@@ -1,6 +1,8 @@
 #ifndef COCOA_DARWIN_H
 #define COCOA_DARWIN_H
 
+#include <stdint.h>
+
 // Initialize the Cocoa application (NSApp, delegate, edit menu)
 void cocoa_init_app(void);
 
@@ -22,6 +24,6 @@ void cocoa_copy_to_clipboard(const char* text);
 void cocoa_open_url(const char* url);
 
 // Dispatch goDispatchCallback(ctx) on the main thread
-void cocoa_dispatch_main_callback(void* ctx);
+void cocoa_dispatch_main_callback(uintptr_t ctx);
 
 #endif

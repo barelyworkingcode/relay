@@ -3,7 +3,7 @@ package bridge
 import (
 	"bufio"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -124,25 +124,46 @@ func (s *BridgeServer) handleRequest(line string) BridgeResponse {
 		}
 
 	case "ReconcileExternalMcps":
+		if err := s.router.ValidateAdmin(req.Token); err != nil {
+			return BridgeResponse{
+				Type:    "Error",
+				Code:    -32603,
+				Message: "admin auth: " + err.Error(),
+			}
+		}
 		s.router.ReconcileExternalMcps()
 		return BridgeResponse{
 			Type: "OK",
 		}
 
 	case "ReloadExternalMcp":
+		if err := s.router.ValidateAdmin(req.Token); err != nil {
+			return BridgeResponse{
+				Type:    "Error",
+				Code:    -32603,
+				Message: "admin auth: " + err.Error(),
+			}
+		}
 		s.router.ReloadExternalMcp(req.Name)
 		return BridgeResponse{
 			Type: "OK",
 		}
 
 	case "ReloadService":
+		if err := s.router.ValidateAdmin(req.Token); err != nil {
+			return BridgeResponse{
+				Type:    "Error",
+				Code:    -32603,
+				Message: "admin auth: " + err.Error(),
+			}
+		}
 		s.router.ReloadService(req.Name)
 		return BridgeResponse{
 			Type: "OK",
 		}
 
 	default:
-		log.Printf("bridge: unknown request type: %s", req.Type)
+		slog.Warn("bridge: unknown request type", "type", req.Type)
 		return BridgeResponse{
 			Type:    "Error",
 			Code:    -32601,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -11,50 +12,28 @@ import (
 )
 
 func runMcpExec(args []string) {
-	var (
-		token    string
-		list     bool
-		tool     string
-		toolArgs string
-	)
+	fs := flag.NewFlagSet("mcpExec", flag.ExitOnError)
+	token := fs.String("token", "", "auth token")
+	list := fs.Bool("list", false, "list available tools")
+	tool := fs.String("tool", "", "tool name to call")
+	toolArgs := fs.String("args", "", "tool arguments as JSON")
+	fs.Parse(args)
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--token":
-			i++
-			if i < len(args) {
-				token = args[i]
-			}
-		case "--list":
-			list = true
-		case "--tool":
-			i++
-			if i < len(args) {
-				tool = args[i]
-			}
-		case "--args":
-			i++
-			if i < len(args) {
-				toolArgs = args[i]
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
+	if *token == "" {
+		*token = os.Getenv("RELAY_TOKEN")
 	}
-
-	if token == "" {
+	if *token == "" {
 		fmt.Fprintf(os.Stderr, "Usage: relay mcpExec --token <TOKEN> [--list | --tool <name> [--args '<json>']]\n")
 		os.Exit(1)
 	}
-	if !list && tool == "" {
+	if !*list && *tool == "" {
 		fmt.Fprintf(os.Stderr, "error: must specify --list or --tool\n")
 		os.Exit(1)
 	}
 
-	client := bridge.NewClient(token)
+	client := bridge.NewClient(*token)
 
-	if list {
+	if *list {
 		raw, err := client.ListTools()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -88,15 +67,15 @@ func runMcpExec(args []string) {
 
 	// Call tool.
 	var argsJSON json.RawMessage
-	if toolArgs != "" {
-		if !json.Valid([]byte(toolArgs)) {
+	if *toolArgs != "" {
+		if !json.Valid([]byte(*toolArgs)) {
 			fmt.Fprintf(os.Stderr, "error: invalid --args JSON\n")
 			os.Exit(1)
 		}
-		argsJSON = json.RawMessage(toolArgs)
+		argsJSON = json.RawMessage(*toolArgs)
 	}
 
-	raw, err := client.CallTool(tool, argsJSON)
+	raw, err := client.CallTool(*tool, argsJSON)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

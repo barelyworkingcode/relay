@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"relaygo/jsonrpc"
 	"relaygo/mcp"
 )
 
@@ -37,27 +39,6 @@ type externalMcpConn struct {
 	config ExternalMcp
 	mu     sync.Mutex // serializes JSON-RPC requests
 	nextID int64
-}
-
-// jsonRPCRequest is an outgoing JSON-RPC 2.0 message.
-type jsonRPCRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      *int64      `json:"id,omitempty"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
-}
-
-// jsonRPCResponse is an incoming JSON-RPC 2.0 message.
-type jsonRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      *int64          `json:"id,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *jsonRPCError   `json:"error,omitempty"`
-}
-
-type jsonRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
 }
 
 // handshakeResult holds the results of an MCP initialize + tools/list sequence.
@@ -141,7 +122,7 @@ func NewExternalMcpManager() *ExternalMcpManager {
 func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
 	for i := range mcps {
 		if err := m.startOne(&mcps[i]); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to start external MCP '%s': %v\n", mcps[i].ID, err)
+			slog.Error("failed to start external MCP", "id", mcps[i].ID, "error", err)
 		}
 	}
 }
@@ -156,8 +137,11 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
 	setProcessGroup(cmd)
-	for k, v := range mcpCfg.Env {
-		cmd.Env = append(cmd.Environ(), k+"="+v)
+	if len(mcpCfg.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range mcpCfg.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 
 	stdin, err := cmd.StdinPipe()
@@ -189,9 +173,10 @@ func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	}
 	conn.tools = result.Tools
 
-	s := LoadSettings()
-	s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
-	s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
+	WithSettings(func(s *Settings) {
+		s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
+		s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
+	})
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
@@ -234,7 +219,7 @@ func (m *ExternalMcpManager) Reconcile(mcps []ExternalMcp) {
 
 	for _, cfg := range toStart {
 		if err := m.startOne(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to start external MCP '%s': %v\n", cfg.ID, err)
+			slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
 		}
 	}
 }
@@ -339,8 +324,11 @@ func (m *ExternalMcpManager) StopAll() {
 func DiscoverExternalMcp(displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
 	cmd := exec.Command(command, args...)
 	setProcessGroup(cmd)
-	for k, v := range env {
-		cmd.Env = append(cmd.Environ(), k+"="+v)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 
 	stdin, err := cmd.StdinPipe()
@@ -403,9 +391,9 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 
 	id := c.nextID
 	c.nextID++
-	req := jsonRPCRequest{
+	req := jsonrpc.Request{
 		JSONRPC: "2.0",
-		ID:      &id,
+		ID:      id,
 		Method:  method,
 		Params:  params,
 	}
@@ -427,7 +415,7 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
-		var resp jsonRPCResponse
+		var resp jsonrpc.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
 			// Skip malformed lines (e.g. notifications from server).
 			continue
@@ -438,7 +426,7 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 			continue
 		}
 
-		if *resp.ID == id {
+		if jsonrpc.RespIDEquals(resp.ID, id) {
 			if resp.Error != nil {
 				return nil, fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)
 			}
@@ -452,7 +440,7 @@ func (c *externalMcpConn) sendNotification(method string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req := jsonRPCRequest{
+	req := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  method,
 	}
