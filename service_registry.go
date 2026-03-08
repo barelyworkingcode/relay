@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,7 @@ func NewServiceRegistry() *ServiceRegistry {
 
 func serviceLogDir() string {
 	dir := filepath.Join(settingsDir(), "logs")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0700)
 	return dir
 }
 
@@ -115,7 +116,7 @@ func (r *ServiceRegistry) StartAllAutostart(configs []ServiceConfig) {
 	for i := range configs {
 		if configs[i].Autostart {
 			if err := r.Start(&configs[i]); err != nil {
-				fmt.Fprintf(os.Stderr, "service autostart: %v\n", err)
+				slog.Error("service autostart failed", "error", err)
 			}
 		}
 	}

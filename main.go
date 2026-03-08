@@ -2,12 +2,15 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"relaygo/mcp"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
 	if len(os.Args) >= 2 && os.Args[1] == "service" {
 		runServiceCommand(os.Args[2:])
 		return
@@ -30,6 +33,9 @@ func main() {
 				token = os.Args[i+1]
 			}
 		}
+		if token == "" {
+			token = os.Getenv("RELAY_TOKEN")
+		}
 		if err := mcp.RunMCPServer(token); err != nil {
 			fmt.Fprintf(os.Stderr, "mcp server error: %v\n", err)
 			os.Exit(1)
@@ -38,8 +44,8 @@ func main() {
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "mcpList" {
-		runMcpList(os.Args[2:])
-		return
+		fmt.Fprintf(os.Stderr, "mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list\n")
+		os.Exit(1)
 	}
 
 	if len(os.Args) >= 2 && os.Args[1] == "mcpExec" {

@@ -547,9 +547,12 @@ function renderSecurity() {
 
     if (state.newToken) {
         const mcpConfig = JSON.stringify({
-            relay: {
-                command: EXE_PATH,
-                args: ["mcp", "--token", state.newToken.plaintext]
+            mcpServers: {
+                relay: {
+                    command: EXE_PATH,
+                    args: ["mcp"],
+                    env: { RELAY_TOKEN: state.newToken.plaintext }
+                }
             }
         }, null, 2);
         html += ` + "`" + `<div class="token-banner">

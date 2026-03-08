@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,83 +38,38 @@ func mcpUsage() {
 }
 
 func mcpRegister(args []string) {
-	var (
-		name      string
-		command   string
-		id        string
-		transport string
-		mcpURL    string
-		mcpArgs   []string
-		envPairs  []string
-	)
+	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
+	name := fs.String("name", "", "display name (required)")
+	command := fs.String("command", "", "command to run")
+	id := fs.String("id", "", "override generated ID")
+	transport := fs.String("transport", "stdio", "transport type (stdio or http)")
+	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
+	var mcpArgs, envPairs stringSlice
+	fs.Var(&mcpArgs, "args", "command arguments (repeatable)")
+	fs.Var(&envPairs, "env", "environment KEY=VALUE (repeatable)")
+	fs.Parse(args)
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--name":
-			i++
-			if i < len(args) {
-				name = args[i]
-			}
-		case "--command":
-			i++
-			if i < len(args) {
-				command = args[i]
-			}
-		case "--id":
-			i++
-			if i < len(args) {
-				id = args[i]
-			}
-		case "--transport":
-			i++
-			if i < len(args) {
-				transport = args[i]
-			}
-		case "--url":
-			i++
-			if i < len(args) {
-				mcpURL = args[i]
-			}
-		case "--args":
-			i++
-			if i < len(args) {
-				mcpArgs = append(mcpArgs, args[i])
-			}
-		case "--env":
-			i++
-			if i < len(args) {
-				envPairs = append(envPairs, args[i])
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
-	}
-
-	if name == "" {
+	if *name == "" {
 		fmt.Fprintf(os.Stderr, "error: --name is required\n")
 		os.Exit(1)
 	}
 
-	if transport == "" {
-		transport = "stdio"
-	}
-
-	if transport == "http" {
-		mcpRegisterHTTP(name, id, mcpURL)
+	if *transport == "http" {
+		mcpRegisterHTTP(*name, *id, *mcpURL)
 		return
 	}
 
-	if command == "" {
+	if *command == "" {
 		fmt.Fprintf(os.Stderr, "error: --command is required for stdio transport\n")
 		os.Exit(1)
 	}
 
-	if id == "" {
-		id = slugify(name)
+	resolvedID := *id
+	if resolvedID == "" {
+		resolvedID = slugify(*name)
 	}
-	if id == "" {
-		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", name)
+	if resolvedID == "" {
+		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", *name)
 		os.Exit(1)
 	}
 
@@ -131,29 +87,35 @@ func mcpRegister(args []string) {
 	}
 
 	cfg := ExternalMcp{
-		ID:              id,
-		DisplayName:     name,
-		Command:         command,
-		Args:            mcpArgs,
+		ID:              resolvedID,
+		DisplayName:     *name,
+		Command:         *command,
+		Args:            []string(mcpArgs),
 		Env:             env,
 		DiscoveredTools: []ToolInfo{},
 	}
 
-	s := LoadSettings()
-
-	// Check for existing MCP with same ID (idempotent update).
-	for _, m := range s.ExternalMcps {
-		if m.ID == id {
-			s.UpdateExternalMcp(cfg)
-			fmt.Printf("updated mcp %q (%s)\n", name, id)
-			_ = bridge.SendReloadMcp(id)
-			return
+	var updated bool
+	var adminSecret string
+	WithSettings(func(s *Settings) {
+		adminSecret = s.AdminSecret
+		for _, m := range s.ExternalMcps {
+			if m.ID == resolvedID {
+				s.UpdateExternalMcp(cfg)
+				updated = true
+				return
+			}
 		}
-	}
+		s.AddExternalMcp(cfg)
+	})
 
-	s.AddExternalMcp(cfg)
-	fmt.Printf("registered mcp %q (%s)\n", name, id)
-	_ = bridge.SendReconcile()
+	if updated {
+		fmt.Printf("updated mcp %q (%s)\n", *name, resolvedID)
+		_ = bridge.SendReloadMcp(resolvedID, adminSecret)
+	} else {
+		fmt.Printf("registered mcp %q (%s)\n", *name, resolvedID)
+		_ = bridge.SendReconcile(adminSecret)
+	}
 }
 
 func mcpRegisterHTTP(name, id, mcpURL string) {
@@ -209,20 +171,27 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 		}
 	}
 
-	s := LoadSettings()
-
-	for _, m := range s.ExternalMcps {
-		if m.ID == id {
-			s.UpdateExternalMcp(*result)
-			fmt.Printf("updated mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
-			_ = bridge.SendReloadMcp(id)
-			return
+	var updated bool
+	var adminSecret string
+	WithSettings(func(s *Settings) {
+		adminSecret = s.AdminSecret
+		for _, m := range s.ExternalMcps {
+			if m.ID == id {
+				s.UpdateExternalMcp(*result)
+				updated = true
+				return
+			}
 		}
-	}
+		s.AddExternalMcp(*result)
+	})
 
-	s.AddExternalMcp(*result)
-	fmt.Printf("registered mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
-	_ = bridge.SendReconcile()
+	if updated {
+		fmt.Printf("updated mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
+		_ = bridge.SendReloadMcp(id, adminSecret)
+	} else {
+		fmt.Printf("registered mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
+		_ = bridge.SendReconcile(adminSecret)
+	}
 }
 
 // openBrowserCmd opens a URL in the default browser.
@@ -242,63 +211,57 @@ func openBrowserCmd(url string) {
 }
 
 func mcpUnregister(args []string) {
-	var id, name string
+	fs := flag.NewFlagSet("mcp unregister", flag.ExitOnError)
+	id := fs.String("id", "", "MCP ID")
+	name := fs.String("name", "", "MCP display name")
+	fs.Parse(args)
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--id":
-			i++
-			if i < len(args) {
-				id = args[i]
-			}
-		case "--name":
-			i++
-			if i < len(args) {
-				name = args[i]
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
-	}
-
-	if id == "" && name == "" {
+	if *id == "" && *name == "" {
 		fmt.Fprintf(os.Stderr, "error: --id or --name is required\n")
 		os.Exit(1)
 	}
 
-	s := LoadSettings()
-
-	// Resolve name to ID if needed.
-	if id == "" {
+	var resolvedID string
+	var adminSecret string
+	WithSettings(func(s *Settings) {
+		resolvedID = *id
+		if resolvedID == "" {
+			for _, m := range s.ExternalMcps {
+				if m.DisplayName == *name {
+					resolvedID = m.ID
+					break
+				}
+			}
+		}
+		if resolvedID == "" {
+			return
+		}
+		found := false
 		for _, m := range s.ExternalMcps {
-			if m.DisplayName == name {
-				id = m.ID
+			if m.ID == resolvedID {
+				found = true
 				break
 			}
 		}
-		if id == "" {
-			fmt.Fprintf(os.Stderr, "error: no mcp found with name %q\n", name)
-			os.Exit(1)
+		if !found {
+			resolvedID = ""
+			return
 		}
-	}
+		s.RemoveExternalMcp(resolvedID)
+		adminSecret = s.AdminSecret
+	})
 
-	// Verify MCP exists.
-	found := false
-	for _, m := range s.ExternalMcps {
-		if m.ID == id {
-			found = true
-			break
+	if resolvedID == "" {
+		if *id != "" {
+			fmt.Fprintf(os.Stderr, "error: no mcp found with id %q\n", *id)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: no mcp found with name %q\n", *name)
 		}
-	}
-	if !found {
-		fmt.Fprintf(os.Stderr, "error: no mcp found with id %q\n", id)
 		os.Exit(1)
 	}
 
-	s.RemoveExternalMcp(id)
-	fmt.Printf("unregistered mcp %q\n", id)
-	_ = bridge.SendReconcile()
+	fmt.Printf("unregistered mcp %q\n", resolvedID)
+	_ = bridge.SendReconcile(adminSecret)
 }
 
 func mcpList() {

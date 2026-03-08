@@ -27,6 +27,7 @@ type BridgeResponse struct {
 type ToolRouter interface {
 	ListTools(token string) (json.RawMessage, error)
 	CallTool(name string, args json.RawMessage, token string) (json.RawMessage, error)
+	ValidateAdmin(token string) error
 	ReconcileExternalMcps()
 	ReloadExternalMcp(id string)
 	ReloadService(id string)
@@ -40,6 +41,6 @@ func SocketPath() string {
 		configDir, _ = os.UserHomeDir()
 	}
 	dir := filepath.Join(configDir, "relay")
-	_ = os.MkdirAll(dir, 0o755)
+	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, "relay.sock")
 }

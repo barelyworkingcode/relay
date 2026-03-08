@@ -16,7 +16,7 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// killProcessGroup sends SIGTERM to the process group and waits up to 5 seconds
+// killProcessGroup sends SIGTERM to the process group and waits up to 1 second
 // for graceful shutdown before falling back to SIGKILL.
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process == nil {
@@ -60,8 +60,11 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 	if config.WorkingDir != "" {
 		cmd.Dir = config.WorkingDir
 	}
-	for k, v := range config.Env {
-		cmd.Env = append(cmd.Environ(), k+"="+v)
+	if len(config.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range config.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	return cmd
 }

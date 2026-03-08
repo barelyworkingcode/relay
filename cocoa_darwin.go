@@ -9,7 +9,6 @@ package main
 import "C"
 import (
 	"sync"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -83,7 +82,7 @@ func cocoaCopyToClipboard(text string) {
 // dispatchToMain schedules a Go function to run on the main (UI) thread.
 func dispatchToMain(fn func()) {
 	id := storeCallback(fn)
-	C.cocoa_dispatch_main_callback(unsafe.Pointer(id))
+	C.cocoa_dispatch_main_callback(C.uintptr_t(id))
 }
 
 // ---------------------------------------------------------------------------
@@ -108,12 +107,6 @@ func (p *DarwinPlatform) OpenURL(url string) {
 	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_open_url(cs)
 }
-
-// ---------------------------------------------------------------------------
-// appRunning tracks whether the Cocoa app is still alive (for cleanup)
-// ---------------------------------------------------------------------------
-
-var appRunning atomic.Bool
 
 // ---------------------------------------------------------------------------
 // Exported callbacks invoked from Objective-C
@@ -148,7 +141,7 @@ func goOnAppTerminate() {
 }
 
 //export goDispatchCallback
-func goDispatchCallback(ctx unsafe.Pointer) {
+func goDispatchCallback(ctx C.uintptr_t) {
 	id := uintptr(ctx)
 	fn := loadCallback(id)
 	if fn != nil {

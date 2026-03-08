@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"relaygo/jsonrpc"
 	"relaygo/mcp"
 )
 
@@ -123,9 +124,9 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 
 	id := c.nextID
 	c.nextID++
-	req := jsonRPCRequest{
+	req := jsonrpc.Request{
 		JSONRPC: "2.0",
-		ID:      &id,
+		ID:      id,
 		Method:  method,
 		Params:  params,
 	}
@@ -173,7 +174,7 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 	}
 
 	// Direct JSON response.
-	var rpcResp jsonRPCResponse
+	var rpcResp jsonrpc.Response
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
 	}
@@ -196,7 +197,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 			continue
 		}
 
-		var rpcResp jsonRPCResponse
+		var rpcResp jsonrpc.Response
 		if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
 			// Skip malformed SSE data lines.
 			continue
@@ -207,7 +208,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 			continue
 		}
 
-		if *rpcResp.ID == expectedID {
+		if jsonrpc.RespIDEquals(rpcResp.ID, expectedID) {
 			if rpcResp.Error != nil {
 				return nil, fmt.Errorf("JSON-RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 			}
@@ -224,7 +225,7 @@ func (c *httpMcpConn) sendNotification(method string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req := jsonRPCRequest{
+	req := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  method,
 	}
@@ -278,8 +279,7 @@ func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 
 	conn.onTokenRefresh = func(oauth *OAuthState) {
-		s := LoadSettings()
-		s.UpdateOAuthState(mcpCfg.ID, oauth)
+		WithSettings(func(s *Settings) { s.UpdateOAuthState(mcpCfg.ID, oauth) })
 	}
 
 	result, err := mcpHandshake(conn)
@@ -295,15 +295,16 @@ func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 	}
 	conn.tools = result.Tools
 
-	s := LoadSettings()
-	s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
-	s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
+	WithSettings(func(s *Settings) {
+		s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
+		s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
+	})
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
 	m.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "[relay] HTTP MCP '%s' connected with %d tools\n", mcpCfg.ID, len(result.Tools))
+	slog.Info("HTTP MCP connected", "id", mcpCfg.ID, "tools", len(result.Tools))
 	return nil
 }
 

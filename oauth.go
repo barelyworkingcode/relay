@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -164,16 +164,16 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 	var authServerBase string
 	var scope string
 	if resourceMetaURL != "" {
-		fmt.Fprintf(os.Stderr, "[relay] oauth: found resource_metadata=%s\n", resourceMetaURL)
+		slog.Info("oauth: found resource_metadata", "url", resourceMetaURL)
 		prm, err := fetchProtectedResourceMetadata(resourceMetaURL)
 		if err == nil {
 			if len(prm.AuthorizationServers) > 0 {
 				authServerBase = prm.AuthorizationServers[0]
-				fmt.Fprintf(os.Stderr, "[relay] oauth: authorization server=%s\n", authServerBase)
+				slog.Info("oauth: authorization server", "url", authServerBase)
 			}
 			if len(prm.ScopesSupported) > 0 {
 				scope = strings.Join(prm.ScopesSupported, " ")
-				fmt.Fprintf(os.Stderr, "[relay] oauth: scopes=%s\n", scope)
+				slog.Info("oauth: scopes", "scopes", scope)
 			}
 		}
 	}
@@ -191,7 +191,7 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		if parsed.Path != "" && parsed.Path != "/" {
 			pathAware := base + "/.well-known/oauth-authorization-server" + parsed.Path
 			if meta := tryFetchOAuthMetadata(pathAware); meta != nil {
-				fmt.Fprintf(os.Stderr, "[relay] oauth: discovered metadata at %s\n", pathAware)
+				slog.Info("oauth: discovered metadata", "url", pathAware)
 				return &oauthDiscoveryResult{Metadata: meta, Scope: scope}, nil
 			}
 		}
@@ -199,7 +199,7 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		// Non-path-aware: /.well-known/oauth-authorization-server
 		nonPathAware := base + "/.well-known/oauth-authorization-server"
 		if meta := tryFetchOAuthMetadata(nonPathAware); meta != nil {
-			fmt.Fprintf(os.Stderr, "[relay] oauth: discovered metadata at %s\n", nonPathAware)
+			slog.Info("oauth: discovered metadata", "url", nonPathAware)
 			return &oauthDiscoveryResult{Metadata: meta, Scope: scope}, nil
 		}
 	}
@@ -209,7 +209,7 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 	if authServerBase != "" {
 		fallback = authServerBase
 	}
-	fmt.Fprintf(os.Stderr, "[relay] oauth: using fallback endpoints on %s\n", fallback)
+	slog.Info("oauth: using fallback endpoints", "base", fallback)
 	return &oauthDiscoveryResult{
 		Metadata: &oauthMetadata{
 			AuthorizationEndpoint: fallback + "/authorize",
@@ -238,7 +238,7 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	}
 	body, _ := json.Marshal(regBody)
 
-	fmt.Fprintf(os.Stderr, "[relay] oauth: registering client at %s\n", meta.RegistrationEndpoint)
+	slog.Info("oauth: registering client", "endpoint", meta.RegistrationEndpoint)
 	resp, err := oauthHTTPClient.Post(meta.RegistrationEndpoint, "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)
@@ -258,7 +258,7 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	if regResp.ClientID == "" {
 		return nil, fmt.Errorf("registration response missing client_id")
 	}
-	fmt.Fprintf(os.Stderr, "[relay] oauth: client registered: %s\n", regResp.ClientID)
+	slog.Info("oauth: client registered", "client_id", regResp.ClientID)
 	return &regResp, nil
 }
 
@@ -382,7 +382,7 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	}
 	authURL.RawQuery = q.Encode()
 
-	fmt.Fprintf(os.Stderr, "[relay] oauth: opening browser for authorization\n")
+	slog.Info("oauth: opening browser for authorization")
 
 	// Open browser.
 	openBrowser(authURL.String())
@@ -391,7 +391,7 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	var code string
 	select {
 	case code = <-codeCh:
-		fmt.Fprintf(os.Stderr, "[relay] oauth: received authorization code\n")
+		slog.Info("oauth: received authorization code")
 	case err := <-errCh:
 		server.Close()
 		return nil, err

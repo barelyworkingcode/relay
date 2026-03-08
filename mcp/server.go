@@ -5,30 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 
 	"relaygo/bridge"
+	"relaygo/jsonrpc"
 )
-
-type jsonrpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonrpcResponse struct {
-	JSONRPC string       `json:"jsonrpc"`
-	ID      interface{}  `json:"id,omitempty"`
-	Result  interface{}  `json:"result,omitempty"`
-	Error   *jsonrpcError `json:"error,omitempty"`
-}
-
-type jsonrpcError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-}
 
 // RunMCPServer runs the MCP stdio server, bridging JSON-RPC to the bridge client.
 func RunMCPServer(token string) error {
@@ -45,12 +27,12 @@ func RunMCPServer(token string) error {
 			continue
 		}
 
-		var req jsonrpcRequest
+		var req jsonrpc.ServerRequest
 		if err := json.Unmarshal(line, &req); err != nil {
 			logger.Printf("failed to parse request: %v", err)
-			resp := jsonrpcResponse{
+			resp := jsonrpc.Response{
 				JSONRPC: "2.0",
-				Error: &jsonrpcError{
+				Error: &jsonrpc.Error{
 					Code:    -32700,
 					Message: "parse error: " + err.Error(),
 				},
@@ -75,13 +57,23 @@ func RunMCPServer(token string) error {
 	return nil
 }
 
-func handleMethod(client *bridge.Client, req *jsonrpcRequest, logger *log.Logger) *jsonrpcResponse {
+// marshalResult converts an arbitrary value into json.RawMessage for a Response.
+func marshalResult(v interface{}) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("marshalResult failed", "error", err)
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(data)
+}
+
+func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest, logger *log.Logger) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
-		return &jsonrpcResponse{
+		return &jsonrpc.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: marshalResult(map[string]interface{}{
 				"protocolVersion": "2024-11-05",
 				"capabilities": map[string]interface{}{
 					"tools": map[string]interface{}{},
@@ -90,7 +82,7 @@ func handleMethod(client *bridge.Client, req *jsonrpcRequest, logger *log.Logger
 					"name":    "relay",
 					"version": "1.0.0",
 				},
-			},
+			}),
 		}
 
 	case "notifications/initialized":
@@ -101,21 +93,21 @@ func handleMethod(client *bridge.Client, req *jsonrpcRequest, logger *log.Logger
 		tools, err := client.ListTools()
 		if err != nil {
 			logger.Printf("ListTools error: %v", err)
-			return &jsonrpcResponse{
+			return &jsonrpc.Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
-				Error: &jsonrpcError{
+				Error: &jsonrpc.Error{
 					Code:    -32603,
 					Message: err.Error(),
 				},
 			}
 		}
-		return &jsonrpcResponse{
+		return &jsonrpc.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: marshalResult(map[string]interface{}{
 				"tools": json.RawMessage(tools),
-			},
+			}),
 		}
 
 	case "tools/call":
@@ -125,10 +117,10 @@ func handleMethod(client *bridge.Client, req *jsonrpcRequest, logger *log.Logger
 		}
 		if req.Params != nil {
 			if err := json.Unmarshal(req.Params, &params); err != nil {
-				return &jsonrpcResponse{
+				return &jsonrpc.Response{
 					JSONRPC: "2.0",
 					ID:      req.ID,
-					Error: &jsonrpcError{
+					Error: &jsonrpc.Error{
 						Code:    -32602,
 						Message: "invalid params: " + err.Error(),
 					},
@@ -142,26 +134,26 @@ func handleMethod(client *bridge.Client, req *jsonrpcRequest, logger *log.Logger
 		result, err := client.CallTool(params.Name, params.Arguments)
 		if err != nil {
 			logger.Printf("CallTool(%s) error: %v", params.Name, err)
-			return &jsonrpcResponse{
+			return &jsonrpc.Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
-				Error: &jsonrpcError{
+				Error: &jsonrpc.Error{
 					Code:    -32603,
 					Message: err.Error(),
 				},
 			}
 		}
-		return &jsonrpcResponse{
+		return &jsonrpc.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result:  json.RawMessage(result),
 		}
 
 	default:
-		return &jsonrpcResponse{
+		return &jsonrpc.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Error: &jsonrpcError{
+			Error: &jsonrpc.Error{
 				Code:    -32601,
 				Message: "method not found: " + req.Method,
 			},

@@ -263,9 +263,9 @@ void cocoa_open_url(const char* url) {
 // ---------------------------------------------------------------------------
 // cocoa_dispatch_main_callback
 // ---------------------------------------------------------------------------
-extern void goDispatchCallback(void* ctx);
+extern void goDispatchCallback(uintptr_t ctx);
 
-void cocoa_dispatch_main_callback(void* ctx) {
+void cocoa_dispatch_main_callback(uintptr_t ctx) {
     dispatch_async(dispatch_get_main_queue(), ^{
         goDispatchCallback(ctx);
     });

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -31,8 +32,11 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 	if config.WorkingDir != "" {
 		cmd.Dir = config.WorkingDir
 	}
-	for k, v := range config.Env {
-		cmd.Env = append(cmd.Environ(), k+"="+v)
+	if len(config.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range config.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	return cmd
 }
