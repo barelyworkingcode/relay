@@ -33,7 +33,11 @@ func (a *App) pushServiceStatus() {
 	if !a.settingsOpen {
 		return
 	}
-	data, _ := json.Marshal(a.registry.RunningIDs())
+	data, err := json.Marshal(a.registry.RunningIDs())
+	if err != nil {
+		slog.Error("failed to marshal service status", "error", err)
+		return
+	}
 	a.evalSettings(fmt.Sprintf("onServiceStatus(%s)", string(data)))
 }
 
@@ -54,7 +58,7 @@ func (a *App) onSettingsIpc(body string) {
 		var stored StoredToken
 		WithSettings(func(s *Settings) {
 			defaultPerms := make(map[string]Permission)
-			for _, svcName := range s.AllServiceNames() {
+			for _, svcName := range s.AllExternalMcpIDs() {
 				defaultPerms[svcName] = PermOn
 			}
 			plaintext, stored = GenerateToken(name, defaultPerms)
@@ -65,7 +69,11 @@ func (a *App) onSettingsIpc(body string) {
 			"plaintext": plaintext,
 			"token":     stored,
 		}
-		responseJSON, _ := json.Marshal(response)
+		responseJSON, err := json.Marshal(response)
+		if err != nil {
+			slog.Error("failed to marshal token response", "error", err)
+			return
+		}
 		a.evalSettings(fmt.Sprintf("onTokenGenerated(%s)", string(responseJSON)))
 
 	case "delete_token":
@@ -114,7 +122,11 @@ func (a *App) onSettingsIpc(body string) {
 	case "set_context":
 		hash, _ := msg["hash"].(string)
 		mcpID, _ := msg["mcp_id"].(string)
-		contextRaw, _ := json.Marshal(msg["context"])
+		contextRaw, err := json.Marshal(msg["context"])
+		if err != nil {
+			slog.Error("failed to marshal context", "error", err)
+			return
+		}
 		WithSettings(func(s *Settings) { s.SetContext(hash, mcpID, json.RawMessage(contextRaw)) })
 
 	case "add_external_mcp":
@@ -168,7 +180,11 @@ func (a *App) onSettingsIpc(body string) {
 				// Notify bridge to reconcile.
 				go func() { _ = bridge.SendReconcile(adminSecret) }()
 
-				mcpJSON, _ := json.Marshal(result)
+				mcpJSON, err := json.Marshal(result)
+				if err != nil {
+					slog.Error("failed to marshal external MCP", "error", err)
+					return
+				}
 				a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
 			})
 		}()
@@ -237,7 +253,11 @@ func (a *App) onSettingsIpc(body string) {
 
 		a.updateMenu()
 
-		configJSON, _ := json.Marshal(config)
+		configJSON, err := json.Marshal(config)
+		if err != nil {
+			slog.Error("failed to marshal service config", "error", err)
+			return
+		}
 		a.evalSettings(fmt.Sprintf("onServiceAdded(%s)", string(configJSON)))
 
 	case "remove_service":

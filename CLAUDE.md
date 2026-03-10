@@ -1,6 +1,6 @@
 # Relay (Go)
 
-Cross-platform MCP orchestrator. Tray app with token-authenticated Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management. macOS now, Windows later.
+macOS MCP orchestrator. Tray app with token-authenticated Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management.
 
 ## Modes
 
@@ -30,14 +30,13 @@ bridge/         Unix socket IPC. Newline-delimited JSON. No internal deps.
 mcp/            MCP types + stdio server (proxies to bridge)
 ```
 
-## Platform Abstraction
+## Platform
 
 `Platform` interface in `platform.go`: Init, Run, SetupTray, UpdateMenu, OpenSettings, EvalSettingsJS, CopyToClipboard, DispatchToMain, OpenURL.
 
 - `cocoa_darwin.go` -- `DarwinPlatform` (macOS, cgo)
-- `platform_windows.go` -- `WindowsPlatform` (stub)
 - `init_darwin.go` -- `runtime.LockOSThread` (darwin build tag)
-- `service_registry_unix.go` / `service_registry_windows.go` -- platform shell/process helpers
+- `service_registry_unix.go` -- platform shell/process helpers
 
 ## Bridge
 
@@ -52,7 +51,7 @@ HTTP MCPs use OAuth 2.1 with PKCE (S256). Discovery chain: probe MCP URL for 401
 
 ## Settings UI
 
-IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS) or `window.chrome.webview.postMessage` (Windows).
+IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS).
 Tabs: Services, MCP Servers, Security.
 
 ## Sibling Projects

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 
@@ -15,7 +14,6 @@ import (
 // RunMCPServer runs the MCP stdio server, bridging JSON-RPC to the bridge client.
 func RunMCPServer(token string) error {
 	client := bridge.NewClient(token)
-	logger := log.New(os.Stderr, "mcp: ", log.LstdFlags)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
@@ -29,7 +27,7 @@ func RunMCPServer(token string) error {
 
 		var req jsonrpc.ServerRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			logger.Printf("failed to parse request: %v", err)
+			slog.Error("failed to parse request", "error", err)
 			resp := jsonrpc.Response{
 				JSONRPC: "2.0",
 				Error: &jsonrpc.Error{
@@ -41,13 +39,13 @@ func RunMCPServer(token string) error {
 			continue
 		}
 
-		resp := handleMethod(client, &req, logger)
+		resp := handleMethod(client, &req)
 		if resp == nil {
 			// Notification, no response needed.
 			continue
 		}
 		if err := encoder.Encode(resp); err != nil {
-			logger.Printf("failed to write response: %v", err)
+			slog.Error("failed to write response", "error", err)
 		}
 	}
 
@@ -67,7 +65,7 @@ func marshalResult(v interface{}) json.RawMessage {
 	return json.RawMessage(data)
 }
 
-func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest, logger *log.Logger) *jsonrpc.Response {
+func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
 		return &jsonrpc.Response{
@@ -92,7 +90,7 @@ func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest, logger *log
 	case "tools/list":
 		tools, err := client.ListTools()
 		if err != nil {
-			logger.Printf("ListTools error: %v", err)
+			slog.Error("ListTools failed", "error", err)
 			return &jsonrpc.Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -133,7 +131,7 @@ func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest, logger *log
 
 		result, err := client.CallTool(params.Name, params.Arguments)
 		if err != nil {
-			logger.Printf("CallTool(%s) error: %v", params.Name, err)
+			slog.Error("CallTool failed", "tool", params.Name, "error", err)
 			return &jsonrpc.Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,

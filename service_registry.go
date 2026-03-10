@@ -154,6 +154,8 @@ func (r *ServiceRegistry) CleanupDead() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id := range r.processes {
-		r.isRunningLocked(id)
+		if !r.isRunningLocked(id) {
+			slog.Info("cleaned up dead service", "id", id)
+		}
 	}
 }

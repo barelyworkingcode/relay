@@ -230,10 +230,15 @@ func (c *httpMcpConn) sendNotification(method string) {
 		JSONRPC: "2.0",
 		Method:  method,
 	}
-	body, _ := json.Marshal(req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		slog.Debug("HTTP MCP: failed to marshal notification", "method", method, "error", err)
+		return
+	}
 
 	httpReq, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
 	if err != nil {
+		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -246,6 +251,7 @@ func (c *httpMcpConn) sendNotification(method string) {
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		slog.Debug("HTTP MCP: notification failed", "method", method, "error", err)
 		return
 	}
 	resp.Body.Close()
