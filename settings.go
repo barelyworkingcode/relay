@@ -82,6 +82,7 @@ type ServiceConfig struct {
 
 // Settings holds all persistent Relay configuration.
 type Settings struct {
+	Version      int             `json:"version"`
 	Tokens       []StoredToken   `json:"tokens"`
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
 	Services     []ServiceConfig `json:"services"`
@@ -105,8 +106,11 @@ func settingsPath() string {
 	return filepath.Join(settingsDir(), "settings.json")
 }
 
+const currentSettingsVersion = 1
+
 func defaultSettings() *Settings {
 	return &Settings{
+		Version:      currentSettingsVersion,
 		Tokens:       []StoredToken{},
 		ExternalMcps: []ExternalMcp{},
 		Services:     []ServiceConfig{},
@@ -122,6 +126,10 @@ func loadSettingsInternal() *Settings {
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
 		return defaultSettings()
+	}
+	// Default version for pre-versioned settings files.
+	if s.Version == 0 {
+		s.Version = currentSettingsVersion
 	}
 	// Ensure slices are non-nil for JSON serialization.
 	if s.Tokens == nil {
@@ -477,11 +485,11 @@ func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
 	}
 }
 
-// AllServiceNames returns all external MCP service names.
-func (s *Settings) AllServiceNames() []string {
-	names := make([]string, 0, len(s.ExternalMcps))
+// AllExternalMcpIDs returns the IDs of all configured external MCPs.
+func (s *Settings) AllExternalMcpIDs() []string {
+	ids := make([]string, 0, len(s.ExternalMcps))
 	for _, mcp := range s.ExternalMcps {
-		names = append(names, mcp.ID)
+		ids = append(ids, mcp.ID)
 	}
-	return names
+	return ids
 }

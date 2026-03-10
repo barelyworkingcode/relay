@@ -405,6 +405,10 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 	}
 
 	// Read lines until we get a response matching our ID.
+	// Bail after 1000 non-matching lines to avoid infinite loops if a
+	// server floods notifications.
+	const maxSkip = 1000
+	skipped := 0
 	for {
 		line, err := c.stdout.ReadBytes('\n')
 		if err != nil {
@@ -414,11 +418,19 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 		var resp jsonrpc.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
 			// Skip malformed lines (e.g. notifications from server).
+			skipped++
+			if skipped >= maxSkip {
+				return nil, fmt.Errorf("exceeded %d non-matching lines waiting for response", maxSkip)
+			}
 			continue
 		}
 
 		// Skip notifications (no ID).
 		if resp.ID == nil {
+			skipped++
+			if skipped >= maxSkip {
+				return nil, fmt.Errorf("exceeded %d non-matching lines waiting for response", maxSkip)
+			}
 			continue
 		}
 

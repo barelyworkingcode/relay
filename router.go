@@ -37,7 +37,11 @@ func (r *appRouter) ListTools(token string) (json.RawMessage, error) {
 			if settings.IsToolDisabled(stored.Hash, ext.ID, t.Name) {
 				continue
 			}
-			data, _ := json.Marshal(t)
+			data, err := json.Marshal(t)
+			if err != nil {
+				slog.Error("failed to marshal tool", "tool", t.Name, "error", err)
+				continue
+			}
 			tools = append(tools, data)
 		}
 	}
@@ -149,7 +153,11 @@ func (a *App) addHTTPMcp(displayName, id, mcpURL string) {
 		})
 		go func() { _ = bridge.SendReconcile(adminSecret) }()
 
-		mcpJSON, _ := json.Marshal(result)
+		mcpJSON, err := json.Marshal(result)
+		if err != nil {
+			slog.Error("failed to marshal HTTP MCP", "error", err)
+			return
+		}
 		a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
 
 		if needsAuth {
