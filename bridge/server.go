@@ -61,8 +61,7 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
-	// Allow up to 10MB lines.
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), MaxMessageSize)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -82,6 +81,18 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 			return
 		}
 	}
+}
+
+// requireAdmin validates admin auth and returns an error response if it fails.
+func (s *BridgeServer) requireAdmin(token string) (BridgeResponse, bool) {
+	if err := s.router.ValidateAdmin(token); err != nil {
+		return BridgeResponse{
+			Type:    "Error",
+			Code:    -32603,
+			Message: "admin auth: " + err.Error(),
+		}, false
+	}
+	return BridgeResponse{}, true
 }
 
 func (s *BridgeServer) handleRequest(line string) BridgeResponse {
@@ -124,43 +135,25 @@ func (s *BridgeServer) handleRequest(line string) BridgeResponse {
 		}
 
 	case "ReconcileExternalMcps":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
+		if resp, ok := s.requireAdmin(req.Token); !ok {
+			return resp
 		}
 		s.router.ReconcileExternalMcps()
-		return BridgeResponse{
-			Type: "OK",
-		}
+		return BridgeResponse{Type: "OK"}
 
 	case "ReloadExternalMcp":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
+		if resp, ok := s.requireAdmin(req.Token); !ok {
+			return resp
 		}
 		s.router.ReloadExternalMcp(req.Name)
-		return BridgeResponse{
-			Type: "OK",
-		}
+		return BridgeResponse{Type: "OK"}
 
 	case "ReloadService":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
+		if resp, ok := s.requireAdmin(req.Token); !ok {
+			return resp
 		}
 		s.router.ReloadService(req.Name)
-		return BridgeResponse{
-			Type: "OK",
-		}
+		return BridgeResponse{Type: "OK"}
 
 	default:
 		slog.Warn("bridge: unknown request type", "type", req.Type)

@@ -119,8 +119,9 @@ func (a *App) statusPoller() {
 			return
 		}
 		a.registry.CleanupDead()
+		s := LoadSettings()
 		a.platform.DispatchToMain(func() {
-			a.updateMenu()
+			a.updateMenuWithSettings(s)
 			a.pushServiceStatus()
 		})
 	}
@@ -128,6 +129,10 @@ func (a *App) statusPoller() {
 
 // updateMenu rebuilds the tray menu JSON and pushes it to the platform.
 func (a *App) updateMenu() {
+	a.updateMenuWithSettings(LoadSettings())
+}
+
+func (a *App) updateMenuWithSettings(s *Settings) {
 	type menuItem struct {
 		Title   string `json:"title"`
 		ID      int    `json:"id"`
@@ -137,7 +142,6 @@ func (a *App) updateMenu() {
 	var items []menuItem
 
 	// Service items.
-	s := LoadSettings()
 	for i, svc := range s.Services {
 		running := a.registry.IsRunning(svc.ID)
 		dot := "\U0001F534" // red

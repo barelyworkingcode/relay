@@ -210,11 +210,14 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		fallback = authServerBase
 	}
 	slog.Info("oauth: using fallback endpoints", "base", fallback)
+	authEndpoint, _ := url.JoinPath(fallback, "authorize")
+	tokenEndpoint, _ := url.JoinPath(fallback, "token")
+	regEndpoint, _ := url.JoinPath(fallback, "register")
 	return &oauthDiscoveryResult{
 		Metadata: &oauthMetadata{
-			AuthorizationEndpoint: fallback + "/authorize",
-			TokenEndpoint:         fallback + "/token",
-			RegistrationEndpoint:  fallback + "/register",
+			AuthorizationEndpoint: authEndpoint,
+			TokenEndpoint:         tokenEndpoint,
+			RegistrationEndpoint:  regEndpoint,
 		},
 		Scope: scope,
 	}, nil

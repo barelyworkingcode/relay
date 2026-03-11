@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"relaygo/bridge"
 	"relaygo/jsonrpc"
 	"relaygo/mcp"
 )
@@ -20,23 +21,27 @@ import (
 // ErrAuthRequired indicates the HTTP MCP server returned 401.
 var ErrAuthRequired = errors.New("authentication required (HTTP 401)")
 
-// httpMcpConn implements mcpConnection for Streamable HTTP transport.
-type httpMcpConn struct {
-	url          string
-	sessionID    string
+// httpOAuth holds runtime OAuth token state for an HTTP MCP connection.
+type httpOAuth struct {
+	meta         *oauthMetadata
 	accessToken  string
-	httpClient   *http.Client
-	mu           sync.Mutex
-	nextID       int64
-	tools        []mcp.Tool
-	config       ExternalMcp
-
-	// OAuth refresh fields.
-	oauthMeta    *oauthMetadata
 	refreshToken string
 	clientID     string
 	clientSecret string
 	tokenExpiry  time.Time
+}
+
+// httpMcpConn implements mcpConnection for Streamable HTTP transport.
+type httpMcpConn struct {
+	url        string
+	sessionID  string
+	httpClient *http.Client
+	mu         sync.Mutex
+	nextID     int64
+	tools      []mcp.Tool
+	config     ExternalMcp
+
+	oauth httpOAuth
 
 	// Callback to persist refreshed tokens.
 	onTokenRefresh func(oauth *OAuthState)
@@ -46,20 +51,20 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
 		url:    cfg.URL,
 		config: cfg,
+		nextID: 1,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute,
 		},
 	}
-	conn.nextID = 1
 
 	if cfg.OAuthState != nil {
-		conn.accessToken = cfg.OAuthState.AccessToken
-		conn.refreshToken = cfg.OAuthState.RefreshToken
-		conn.clientID = cfg.OAuthState.ClientID
-		conn.clientSecret = cfg.OAuthState.ClientSecret
+		conn.oauth.accessToken = cfg.OAuthState.AccessToken
+		conn.oauth.refreshToken = cfg.OAuthState.RefreshToken
+		conn.oauth.clientID = cfg.OAuthState.ClientID
+		conn.oauth.clientSecret = cfg.OAuthState.ClientSecret
 		if cfg.OAuthState.TokenExpiry != "" {
 			if t, err := time.Parse(time.RFC3339, cfg.OAuthState.TokenExpiry); err == nil {
-				conn.tokenExpiry = t
+				conn.oauth.tokenExpiry = t
 			}
 		}
 	}
@@ -69,45 +74,44 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 
 // refreshIfNeeded checks token expiry and refreshes if necessary.
 func (c *httpMcpConn) refreshIfNeeded() error {
-	if c.refreshToken == "" || c.tokenExpiry.IsZero() {
+	if c.oauth.refreshToken == "" || c.oauth.tokenExpiry.IsZero() {
 		return nil
 	}
 	// Refresh if within 30 seconds of expiry.
-	if time.Now().Before(c.tokenExpiry.Add(-30 * time.Second)) {
+	if time.Now().Before(c.oauth.tokenExpiry.Add(-30 * time.Second)) {
 		return nil
 	}
 
-	meta := c.oauthMeta
+	meta := c.oauth.meta
 	if meta == nil {
-		var err error
 		discovery, err := discoverOAuth(c.url)
 		if err != nil {
 			return fmt.Errorf("discover OAuth metadata for refresh: %w", err)
 		}
 		meta = discovery.Metadata
-		c.oauthMeta = meta
+		c.oauth.meta = meta
 	}
 
-	tokenResp, err := refreshAccessToken(meta, c.refreshToken, c.clientID, c.clientSecret)
+	tokenResp, err := refreshAccessToken(meta, c.oauth.refreshToken, c.oauth.clientID, c.oauth.clientSecret)
 	if err != nil {
 		return fmt.Errorf("token refresh: %w", err)
 	}
 
-	c.accessToken = tokenResp.AccessToken
+	c.oauth.accessToken = tokenResp.AccessToken
 	if tokenResp.RefreshToken != "" {
-		c.refreshToken = tokenResp.RefreshToken
+		c.oauth.refreshToken = tokenResp.RefreshToken
 	}
 	if tokenResp.ExpiresIn > 0 {
-		c.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
 	if c.onTokenRefresh != nil {
 		c.onTokenRefresh(&OAuthState{
-			ClientID:     c.clientID,
-			ClientSecret: c.clientSecret,
-			AccessToken:  c.accessToken,
-			RefreshToken: c.refreshToken,
-			TokenExpiry:  c.tokenExpiry.UTC().Format(time.RFC3339),
+			ClientID:     c.oauth.clientID,
+			ClientSecret: c.oauth.clientSecret,
+			AccessToken:  c.oauth.accessToken,
+			RefreshToken: c.oauth.refreshToken,
+			TokenExpiry:  c.oauth.tokenExpiry.UTC().Format(time.RFC3339),
 		})
 	}
 
@@ -142,8 +146,8 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if c.accessToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.accessToken)
+	if c.oauth.accessToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
 	}
 	if c.sessionID != "" {
 		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
@@ -187,7 +191,7 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 // parseSSEResponse reads SSE data lines and extracts the JSON-RPC response matching our ID.
 func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json.RawMessage, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), bridge.MaxMessageSize)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -242,8 +246,8 @@ func (c *httpMcpConn) sendNotification(method string) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.accessToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.accessToken)
+	if c.oauth.accessToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
 	}
 	if c.sessionID != "" {
 		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
@@ -266,8 +270,8 @@ func (c *httpMcpConn) close() {
 	if err != nil {
 		return
 	}
-	if c.accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	if c.oauth.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
 	}
 	req.Header.Set("Mcp-Session-Id", c.sessionID)
 

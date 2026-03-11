@@ -149,23 +149,29 @@ func loadSettingsInternal() *Settings {
 	return &s
 }
 
-// saveSettingsInternal writes settings to disk. Caller must hold settingsMu.
-func saveSettingsInternal(s *Settings) {
+// saveSettingsInternal writes settings to disk atomically via temp file + rename.
+// Caller must hold settingsMu.
+func saveSettingsInternal(s *Settings) error {
 	dir := settingsDir()
-	_ = os.MkdirAll(dir, 0700)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create settings dir: %w", err)
+	}
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		slog.Error("failed to serialize settings", "error", err)
-		return
+		return fmt.Errorf("serialize settings: %w", err)
 	}
+
 	p := settingsPath()
-	if err := os.WriteFile(p, data, 0600); err != nil {
-		slog.Error("failed to write settings", "error", err)
-		return
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write temp settings: %w", err)
 	}
-	// Tighten permissions on existing files that may have been created with 0644.
-	_ = os.Chmod(p, 0600)
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename settings: %w", err)
+	}
+	return nil
 }
 
 // ensureAdminSecret generates an AdminSecret if one is not already set.
@@ -188,13 +194,17 @@ func LoadSettings() *Settings {
 }
 
 // WithSettings atomically loads settings, calls fn for mutation, then saves.
-func WithSettings(fn func(s *Settings)) {
+func WithSettings(fn func(s *Settings)) error {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 	s := loadSettingsInternal()
 	ensureAdminSecret(s)
 	fn(s)
-	saveSettingsInternal(s)
+	if err := saveSettingsInternal(s); err != nil {
+		slog.Error("failed to save settings", "error", err)
+		return err
+	}
+	return nil
 }
 
 func hashToken(plaintext string) string {
@@ -287,8 +297,8 @@ func (s *Settings) UpdatePermission(hash, service string, perm Permission) {
 	}
 }
 
-// AddExternalMcp adds an external MCP config and grants full permission to all existing tokens.
-// Does not save; use within WithSettings.
+// AddExternalMcp adds an external MCP config. New MCPs default to PermOff for
+// existing tokens (least privilege). Does not save; use within WithSettings.
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.ExternalMcps = append(s.ExternalMcps, mcp)
 	for i := range s.Tokens {
@@ -296,7 +306,7 @@ func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 			s.Tokens[i].Permissions = make(map[string]Permission)
 		}
 		if _, exists := s.Tokens[i].Permissions[mcp.ID]; !exists {
-			s.Tokens[i].Permissions[mcp.ID] = PermOn
+			s.Tokens[i].Permissions[mcp.ID] = PermOff
 		}
 	}
 }
@@ -443,7 +453,7 @@ func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
 		if s.Tokens[i].Context == nil {
 			s.Tokens[i].Context = make(map[string]json.RawMessage)
 		}
-		if ctx == nil || len(ctx) == 0 || string(ctx) == "null" {
+		if len(ctx) == 0 || string(ctx) == "null" {
 			delete(s.Tokens[i].Context, mcpID)
 		} else {
 			s.Tokens[i].Context[mcpID] = ctx
