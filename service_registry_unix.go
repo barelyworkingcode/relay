@@ -47,7 +47,7 @@ func shellQuote(s string) string {
 func buildCommand(config *ServiceConfig) *exec.Cmd {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		shell = "/bin/zsh"
+		shell = "/bin/sh"
 	}
 
 	fullCmd := shellQuote(config.Command)

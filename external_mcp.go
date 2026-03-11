@@ -31,14 +31,29 @@ type ExternalMcpManager struct {
 	conns map[string]mcpConnection
 }
 
+// pendingResponse holds a channel for delivering a JSON-RPC response to a waiting caller.
+type pendingResponse struct {
+	ch chan readerResult
+}
+
+// readerResult is the value delivered to a pending request's channel.
+type readerResult struct {
+	resp jsonrpc.Response
+	err  error
+}
+
 type externalMcpConn struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
-	stdout *bufio.Reader
 	tools  []mcp.Tool
 	config ExternalMcp
-	mu     sync.Mutex // serializes JSON-RPC requests
-	nextID int64
+
+	mu      sync.Mutex // protects writes to stdin and pending map
+	nextID  int64
+	pending map[int64]*pendingResponse
+
+	readerDone chan struct{} // closed when the reader goroutine exits
+	readerErr  error        // set before readerDone is closed
 }
 
 // handshakeResult holds the results of an MCP initialize + tools/list sequence.
@@ -159,12 +174,15 @@ func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	}
 
 	conn := &externalMcpConn{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-		config: *mcpCfg,
-		nextID: 1,
+		cmd:        cmd,
+		stdin:      stdin,
+		config:     *mcpCfg,
+		nextID:     1,
+		pending:    make(map[int64]*pendingResponse),
+		readerDone: make(chan struct{}),
 	}
+
+	go conn.readLoop(bufio.NewReader(stdout))
 
 	result, err := mcpHandshake(conn)
 	if err != nil {
@@ -275,7 +293,7 @@ func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, met
 			params["arguments"] = arguments
 		}
 	}
-	if meta != nil && len(meta) > 0 && string(meta) != "null" {
+	if len(meta) > 0 && string(meta) != "null" {
 		var metaObj interface{}
 		if err := json.Unmarshal(meta, &metaObj); err == nil {
 			params["_meta"] = metaObj
@@ -342,12 +360,14 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 	}
 
 	conn := &externalMcpConn{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-		nextID: 1,
+		cmd:        cmd,
+		stdin:      stdin,
+		nextID:     1,
+		pending:    make(map[int64]*pendingResponse),
+		readerDone: make(chan struct{}),
 	}
 
+	go conn.readLoop(bufio.NewReader(stdout))
 	defer conn.close()
 
 	// Run handshake with overall timeout (stdio processes can hang).
@@ -380,10 +400,68 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 	}
 }
 
-// sendRequest sends a JSON-RPC request and reads the response.
+// stdioRequestTimeout is the maximum time to wait for a JSON-RPC response from a stdio MCP.
+const stdioRequestTimeout = 5 * time.Minute
+
+// readLoop reads JSON-RPC responses from stdout and dispatches them to waiting callers.
+// Runs in its own goroutine for the lifetime of the connection.
+func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
+	defer close(c.readerDone)
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			c.mu.Lock()
+			c.readerErr = fmt.Errorf("read response: %w", err)
+			// Signal all pending requests that the reader is dead.
+			for id, p := range c.pending {
+				p.ch <- readerResult{err: c.readerErr}
+				delete(c.pending, id)
+			}
+			c.mu.Unlock()
+			return
+		}
+
+		var resp jsonrpc.Response
+		if err := json.Unmarshal(line, &resp); err != nil {
+			continue // skip malformed lines
+		}
+		if resp.ID == nil {
+			continue // skip notifications
+		}
+
+		respID, ok := jsonrpc.RespIDToInt64(resp.ID)
+		if !ok {
+			continue
+		}
+
+		c.mu.Lock()
+		p, exists := c.pending[respID]
+		if exists {
+			delete(c.pending, respID)
+		}
+		c.mu.Unlock()
+
+		if exists {
+			p.ch <- readerResult{resp: resp}
+		}
+	}
+}
+
+// sendRequest sends a JSON-RPC request and waits for the response with a timeout.
 func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.RawMessage, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+
+	// Check if reader is already dead.
+	select {
+	case <-c.readerDone:
+		c.mu.Unlock()
+		if c.readerErr != nil {
+			return nil, c.readerErr
+		}
+		return nil, fmt.Errorf("connection closed")
+	default:
+	}
 
 	id := c.nextID
 	c.nextID++
@@ -396,50 +474,41 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 
 	data, err := json.Marshal(req)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 	data = append(data, '\n')
 
+	p := &pendingResponse{ch: make(chan readerResult, 1)}
+	c.pending[id] = p
+
 	if _, err := c.stdin.Write(data); err != nil {
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, fmt.Errorf("write request: %w", err)
 	}
+	c.mu.Unlock()
 
-	// Read lines until we get a response matching our ID.
-	// Bail after 1000 non-matching lines to avoid infinite loops if a
-	// server floods notifications.
-	const maxSkip = 1000
-	skipped := 0
-	for {
-		line, err := c.stdout.ReadBytes('\n')
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
+	// Wait for response, reader death, or timeout.
+	select {
+	case result := <-p.ch:
+		if result.err != nil {
+			return nil, result.err
 		}
-
-		var resp jsonrpc.Response
-		if err := json.Unmarshal(line, &resp); err != nil {
-			// Skip malformed lines (e.g. notifications from server).
-			skipped++
-			if skipped >= maxSkip {
-				return nil, fmt.Errorf("exceeded %d non-matching lines waiting for response", maxSkip)
-			}
-			continue
+		if result.resp.Error != nil {
+			return nil, fmt.Errorf("JSON-RPC error %d: %s", result.resp.Error.Code, result.resp.Error.Message)
 		}
-
-		// Skip notifications (no ID).
-		if resp.ID == nil {
-			skipped++
-			if skipped >= maxSkip {
-				return nil, fmt.Errorf("exceeded %d non-matching lines waiting for response", maxSkip)
-			}
-			continue
+		return result.resp.Result, nil
+	case <-c.readerDone:
+		if c.readerErr != nil {
+			return nil, c.readerErr
 		}
-
-		if jsonrpc.RespIDEquals(resp.ID, id) {
-			if resp.Error != nil {
-				return nil, fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)
-			}
-			return resp.Result, nil
-		}
+		return nil, fmt.Errorf("connection closed")
+	case <-time.After(stdioRequestTimeout):
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("request timed out after %s", stdioRequestTimeout)
 	}
 }
 
@@ -452,9 +521,15 @@ func (c *externalMcpConn) sendNotification(method string) {
 		JSONRPC: "2.0",
 		Method:  method,
 	}
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		slog.Debug("stdio MCP: failed to marshal notification", "method", method, "error", err)
+		return
+	}
 	data = append(data, '\n')
-	_, _ = c.stdin.Write(data)
+	if _, err := c.stdin.Write(data); err != nil {
+		slog.Debug("stdio MCP: failed to write notification", "method", method, "error", err)
+	}
 }
 
 func (c *externalMcpConn) close() {

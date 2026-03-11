@@ -36,14 +36,20 @@ type Error struct {
 
 // RespIDEquals checks if a JSON-RPC response ID matches an expected int64 value.
 func RespIDEquals(id interface{}, expected int64) bool {
+	v, ok := RespIDToInt64(id)
+	return ok && v == expected
+}
+
+// RespIDToInt64 extracts an int64 from a JSON-RPC response ID.
+func RespIDToInt64(id interface{}) (int64, bool) {
 	switch v := id.(type) {
 	case float64:
-		return int64(v) == expected
+		return int64(v), true
 	case int64:
-		return v == expected
+		return v, true
 	case json.Number:
 		n, err := v.Int64()
-		return err == nil && n == expected
+		return n, err == nil
 	}
-	return false
+	return 0, false
 }

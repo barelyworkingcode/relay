@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 )
 
+// MaxMessageSize is the maximum line/message size for bridge and MCP wire protocols.
+const MaxMessageSize = 10 * 1024 * 1024
+
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
 	Type      string          `json:"type"`                // "ListTools", "CallTool", "ReconcileExternalMcps", "ReloadExternalMcp", "ReloadService"

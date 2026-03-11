@@ -62,30 +62,3 @@ func slugify(name string) string {
 	return strings.Join(nonEmpty, "-")
 }
 
-func jsonStringArray(v interface{}) []string {
-	arr, ok := v.([]interface{})
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(arr))
-	for _, item := range arr {
-		if s, ok := item.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-func jsonStringMap(v interface{}) map[string]string {
-	obj, ok := v.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	result := make(map[string]string, len(obj))
-	for k, val := range obj {
-		if s, ok := val.(string); ok {
-			result[k] = s
-		}
-	}
-	return result
-}

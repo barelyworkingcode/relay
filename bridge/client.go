@@ -123,7 +123,7 @@ func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	}
 
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), MaxMessageSize)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("read failed: %w", err)

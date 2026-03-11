@@ -9,16 +9,23 @@ import (
 	"sync"
 )
 
+// serviceProcess bundles a running process with its log file for cleanup.
+type serviceProcess struct {
+	cmd     *exec.Cmd
+	logFile *os.File
+	done    chan struct{} // closed when cmd.Wait() returns
+}
+
 // ServiceRegistry manages background service child processes.
 type ServiceRegistry struct {
 	mu        sync.Mutex
-	processes map[string]*exec.Cmd
+	processes map[string]*serviceProcess
 }
 
 // NewServiceRegistry creates an empty registry.
 func NewServiceRegistry() *ServiceRegistry {
 	return &ServiceRegistry{
-		processes: make(map[string]*exec.Cmd),
+		processes: make(map[string]*serviceProcess),
 	}
 }
 
@@ -54,19 +61,36 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		return fmt.Errorf("failed to start '%s': %w", config.DisplayName, err)
 	}
 
-	r.processes[config.ID] = cmd
+	proc := &serviceProcess{
+		cmd:     cmd,
+		logFile: logFile,
+		done:    make(chan struct{}),
+	}
+
+	// Reap the process in the background so ProcessState is populated
+	// and we can detect exit via the done channel.
+	go func() {
+		_ = cmd.Wait()
+		logFile.Close()
+		close(proc.done)
+	}()
+
+	r.processes[config.ID] = proc
 	return nil
 }
 
 // Stop kills a service process and waits for it to exit.
 func (r *ServiceRegistry) Stop(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if cmd, ok := r.processes[id]; ok {
+	proc, ok := r.processes[id]
+	if ok {
 		delete(r.processes, id)
-		killProcessGroup(cmd)
-		_ = cmd.Wait()
+	}
+	r.mu.Unlock()
+
+	if ok {
+		killProcessGroup(proc.cmd)
+		<-proc.done
 	}
 }
 
@@ -85,22 +109,17 @@ func (r *ServiceRegistry) IsRunning(id string) bool {
 }
 
 func (r *ServiceRegistry) isRunningLocked(id string) bool {
-	cmd, ok := r.processes[id]
+	proc, ok := r.processes[id]
 	if !ok {
 		return false
 	}
-	// ProcessState is nil if Wait hasn't been called and process hasn't exited.
-	if cmd.ProcessState != nil {
+	select {
+	case <-proc.done:
 		delete(r.processes, id)
 		return false
+	default:
+		return true
 	}
-	if cmd.Process != nil {
-		if !processAlive(cmd.Process.Pid) {
-			delete(r.processes, id)
-			return false
-		}
-	}
-	return true
 }
 
 // StartAllAutostart starts all services with autostart enabled.
