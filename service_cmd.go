@@ -106,6 +106,19 @@ func serviceRegister(args []string) {
 		adminSecret = s.AdminSecret
 		for _, svc := range s.Services {
 			if svc.ID == resolvedID {
+				// Merge: preserve existing fields not specified on CLI
+				if config.Env == nil {
+					config.Env = svc.Env
+				}
+				if len(config.Args) == 0 {
+					config.Args = svc.Args
+				}
+				if config.WorkingDir == "" {
+					config.WorkingDir = svc.WorkingDir
+				}
+				if config.URL == "" {
+					config.URL = svc.URL
+				}
 				s.UpdateService(config)
 				updated = true
 				return
@@ -116,11 +129,12 @@ func serviceRegister(args []string) {
 
 	if updated {
 		fmt.Printf("updated service %q (%s)\n", *name, resolvedID)
-		if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
-			fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
-		}
 	} else {
 		fmt.Printf("registered service %q (%s)\n", *name, resolvedID)
+	}
+
+	if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
 	}
 }
 

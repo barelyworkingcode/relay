@@ -70,17 +70,9 @@ func (r *ServiceRegistry) Stop(id string) {
 	}
 }
 
-// Reload restarts a running service with new config. If the service is not
-// running, this is a no-op (does not auto-start).
+// Reload restarts a service with new config. Stops the service if running,
+// then starts it. Stop is a no-op for non-running services.
 func (r *ServiceRegistry) Reload(id string, cfg *ServiceConfig) error {
-	r.mu.Lock()
-	wasRunning := r.isRunningLocked(id)
-	r.mu.Unlock()
-
-	if !wasRunning {
-		return nil
-	}
-
 	r.Stop(id)
 	return r.Start(cfg)
 }
