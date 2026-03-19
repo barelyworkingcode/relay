@@ -60,7 +60,7 @@ Relay is the hub for 6 connected projects. Cross-project features often require 
 
 Services (managed via `relay service register`):
 
-- `../relayLLM/` -- LLM engine. Providers, sessions, projects, permissions. Eve and relayTelegram connect to its HTTP/WS API.
+- `../relayLLM/` -- LLM engine. Providers, sessions, projects, permissions. Proxies task API and forwards scheduler WebSocket events from relayScheduler. Eve and relayTelegram connect to its HTTP/WS API as their single backend.
 - `../eve/` -- Browser-based LLM frontend. Proxies to relayLLM for all LLM concerns.
 - `../relayScheduler/` -- Task scheduler. Runs LLM prompts on schedule via relayLLM.
 - `../relayTelegram/` -- Telegram bot bridge to relayLLM sessions.
