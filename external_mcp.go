@@ -2,11 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -16,19 +16,29 @@ import (
 	"relaygo/mcp"
 )
 
-// mcpConnection abstracts a connection to an external MCP server (stdio or HTTP).
-type mcpConnection interface {
-	sendRequest(method string, params interface{}) (json.RawMessage, error)
-	sendNotification(method string)
-	close()
-	getTools() []mcp.Tool
-	getConfig() ExternalMcp
+// McpConnection abstracts a connection to an external MCP server (stdio or HTTP).
+type McpConnection interface {
+	SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error)
+	SendNotification(method string)
+	Close()
+	GetTools() []mcp.Tool
+	GetConfig() ExternalMcp
 }
+
+// OnDiscoverFunc is called after a successful MCP handshake with discovered tools and schema.
+// Injected at ExternalMcpManager construction to decouple the manager from Settings persistence.
+type OnDiscoverFunc func(id string, tools []ToolInfo, schema json.RawMessage)
+
+// OnTokenRefreshFunc is called when an HTTP MCP refreshes its OAuth token.
+// Injected at ExternalMcpManager construction to decouple from Settings persistence.
+type OnTokenRefreshFunc func(mcpID string, oauth *OAuthState)
 
 // ExternalMcpManager manages connections to external MCP servers.
 type ExternalMcpManager struct {
-	mu    sync.RWMutex
-	conns map[string]mcpConnection
+	mu             sync.RWMutex
+	conns          map[string]McpConnection
+	onDiscover     OnDiscoverFunc
+	onTokenRefresh OnTokenRefreshFunc
 }
 
 // pendingResponse holds a channel for delivering a JSON-RPC response to a waiting caller.
@@ -42,14 +52,28 @@ type readerResult struct {
 	err  error
 }
 
-type externalMcpConn struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
+// baseMcpConn holds fields and methods shared by stdio and HTTP MCP connections.
+type baseMcpConn struct {
+	nextID int64
 	tools  []mcp.Tool
 	config ExternalMcp
+}
+
+func (b *baseMcpConn) allocID() int64 {
+	id := b.nextID
+	b.nextID++
+	return id
+}
+
+func (b *baseMcpConn) GetTools() []mcp.Tool   { return b.tools }
+func (b *baseMcpConn) GetConfig() ExternalMcp { return b.config }
+
+type externalMcpConn struct {
+	baseMcpConn
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
 
 	mu      sync.Mutex // protects writes to stdin and pending map
-	nextID  int64
 	pending map[int64]*pendingResponse
 
 	readerDone chan struct{} // closed when the reader goroutine exits
@@ -65,7 +89,7 @@ type handshakeResult struct {
 
 // mcpHandshake performs the MCP initialize -> notifications/initialized -> tools/list
 // sequence on any mcpConnection. Transport-agnostic.
-func mcpHandshake(conn mcpConnection) (*handshakeResult, error) {
+func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, error) {
 	initParams := map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]interface{}{},
@@ -74,15 +98,15 @@ func mcpHandshake(conn mcpConnection) (*handshakeResult, error) {
 			"version": "1.0.0",
 		},
 	}
-	initResp, err := conn.sendRequest("initialize", initParams)
+	initResp, err := conn.SendRequest(ctx, "initialize", initParams)
 	if err != nil {
 		return nil, fmt.Errorf("MCP handshake failed: %w", err)
 	}
 
 	contextSchema := extractContextSchema(initResp)
-	conn.sendNotification("notifications/initialized")
+	conn.SendNotification("notifications/initialized")
 
-	resp, err := conn.sendRequest("tools/list", nil)
+	resp, err := conn.SendRequest(ctx, "tools/list", nil)
 	if err != nil {
 		return nil, fmt.Errorf("tools/list failed: %w", err)
 	}
@@ -126,10 +150,13 @@ func extractContextSchema(initResp json.RawMessage) json.RawMessage {
 	return nil
 }
 
-// NewExternalMcpManager creates an empty manager.
-func NewExternalMcpManager() *ExternalMcpManager {
+// NewExternalMcpManager creates a manager with injected callbacks for discovery
+// and token refresh persistence. This keeps the manager decoupled from Settings.
+func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManager {
 	return &ExternalMcpManager{
-		conns: make(map[string]mcpConnection),
+		conns:          make(map[string]McpConnection),
+		onDiscover:     onDiscover,
+		onTokenRefresh: onTokenRefresh,
 	}
 }
 
@@ -152,12 +179,7 @@ func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
 func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
 	setProcessGroup(cmd)
-	if len(mcpCfg.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range mcpCfg.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
+	mergeEnv(cmd, mcpCfg.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -174,27 +196,25 @@ func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 	}
 
 	conn := &externalMcpConn{
-		cmd:        cmd,
-		stdin:      stdin,
-		config:     *mcpCfg,
-		nextID:     1,
-		pending:    make(map[int64]*pendingResponse),
-		readerDone: make(chan struct{}),
+		baseMcpConn: baseMcpConn{nextID: 1, config: *mcpCfg},
+		cmd:         cmd,
+		stdin:       stdin,
+		pending:     make(map[int64]*pendingResponse),
+		readerDone:  make(chan struct{}),
 	}
 
 	go conn.readLoop(bufio.NewReader(stdout))
 
-	result, err := mcpHandshake(conn)
+	result, err := mcpHandshake(context.Background(), conn)
 	if err != nil {
-		conn.close()
+		conn.Close()
 		return err
 	}
 	conn.tools = result.Tools
 
-	WithSettings(func(s *Settings) {
-		s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
-		s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
-	})
+	if m.onDiscover != nil {
+		m.onDiscover(mcpCfg.ID, result.ToolInfos, result.ContextSchema)
+	}
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
@@ -253,7 +273,7 @@ func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if conn, ok := m.conns[id]; ok {
-		return conn.getTools()
+		return conn.GetTools()
 	}
 	return nil
 }
@@ -263,9 +283,9 @@ func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMc
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for id, conn := range m.conns {
-		for _, t := range conn.getTools() {
+		for _, t := range conn.GetTools() {
 			if t.Name == toolName {
-				cfg := conn.getConfig()
+				cfg := conn.GetConfig()
 				return id, &cfg
 			}
 		}
@@ -276,7 +296,7 @@ func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMc
 // CallTool invokes a tool on the specified external MCP via JSON-RPC.
 // If meta is non-nil, it is injected as _meta in the tool call params,
 // enabling per-token context like allowed_dirs.
-func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, meta json.RawMessage) (json.RawMessage, error) {
+func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args json.RawMessage, meta json.RawMessage) (json.RawMessage, error) {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -300,7 +320,7 @@ func (m *ExternalMcpManager) CallTool(id, name string, args json.RawMessage, met
 		}
 	}
 
-	resp, err := conn.sendRequest("tools/call", params)
+	resp, err := conn.SendRequest(ctx, "tools/call", params)
 	if err != nil {
 		return nil, fmt.Errorf("external MCP call failed: %w", err)
 	}
@@ -318,7 +338,7 @@ func (m *ExternalMcpManager) Stop(id string) {
 	m.mu.Unlock()
 
 	if ok {
-		conn.close()
+		conn.Close()
 	}
 }
 
@@ -326,11 +346,11 @@ func (m *ExternalMcpManager) Stop(id string) {
 func (m *ExternalMcpManager) StopAll() {
 	m.mu.Lock()
 	conns := m.conns
-	m.conns = make(map[string]mcpConnection)
+	m.conns = make(map[string]McpConnection)
 	m.mu.Unlock()
 
 	for _, conn := range conns {
-		conn.close()
+		conn.Close()
 	}
 }
 
@@ -338,12 +358,7 @@ func (m *ExternalMcpManager) StopAll() {
 func DiscoverExternalMcp(displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
 	cmd := exec.Command(command, args...)
 	setProcessGroup(cmd)
-	if len(env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
+	mergeEnv(cmd, env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -360,15 +375,15 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 	}
 
 	conn := &externalMcpConn{
-		cmd:        cmd,
-		stdin:      stdin,
-		nextID:     1,
-		pending:    make(map[int64]*pendingResponse),
-		readerDone: make(chan struct{}),
+		baseMcpConn: baseMcpConn{nextID: 1},
+		cmd:         cmd,
+		stdin:       stdin,
+		pending:     make(map[int64]*pendingResponse),
+		readerDone:  make(chan struct{}),
 	}
 
 	go conn.readLoop(bufio.NewReader(stdout))
-	defer conn.close()
+	defer conn.Close()
 
 	// Run handshake with overall timeout (stdio processes can hang).
 	type hsOut struct {
@@ -377,7 +392,7 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 	}
 	ch := make(chan hsOut, 1)
 	go func() {
-		r, err := mcpHandshake(conn)
+		r, err := mcpHandshake(context.Background(), conn)
 		ch <- hsOut{r, err}
 	}()
 
@@ -395,13 +410,24 @@ func DiscoverExternalMcp(displayName, id, command string, args []string, env map
 			DiscoveredTools: out.result.ToolInfos,
 			ContextSchema:   out.result.ContextSchema,
 		}, nil
-	case <-time.After(30 * time.Second):
-		return nil, fmt.Errorf("MCP discovery timed out after 30s")
+	case <-time.After(discoveryTimeout):
+		return nil, fmt.Errorf("MCP discovery timed out after %s", discoveryTimeout)
 	}
 }
 
-// stdioRequestTimeout is the maximum time to wait for a JSON-RPC response from a stdio MCP.
-const stdioRequestTimeout = 5 * time.Minute
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// mcpRequestTimeout is the maximum time to wait for a JSON-RPC response from any MCP.
+const mcpRequestTimeout = 5 * time.Minute
+
+// discoveryTimeout is the maximum time for a one-shot MCP discovery handshake.
+const discoveryTimeout = 30 * time.Second
+
+// ---------------------------------------------------------------------------
+// stdio connection implementation
+// ---------------------------------------------------------------------------
 
 // readLoop reads JSON-RPC responses from stdout and dispatches them to waiting callers.
 // Runs in its own goroutine for the lifetime of the connection.
@@ -448,8 +474,8 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 	}
 }
 
-// sendRequest sends a JSON-RPC request and waits for the response with a timeout.
-func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.RawMessage, error) {
+// SendRequest sends a JSON-RPC request and waits for the response with a timeout.
+func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	c.mu.Lock()
 
 	// Check if reader is already dead.
@@ -463,8 +489,7 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 	default:
 	}
 
-	id := c.nextID
-	c.nextID++
+	id := c.allocID()
 	req := jsonrpc.Request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -489,14 +514,14 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 	}
 	c.mu.Unlock()
 
-	// Wait for response, reader death, or timeout.
+	// Wait for response, reader death, context cancellation, or timeout.
 	select {
 	case result := <-p.ch:
 		if result.err != nil {
 			return nil, result.err
 		}
 		if result.resp.Error != nil {
-			return nil, fmt.Errorf("JSON-RPC error %d: %s", result.resp.Error.Code, result.resp.Error.Message)
+			return nil, formatJSONRPCError(result.resp.Error)
 		}
 		return result.resp.Result, nil
 	case <-c.readerDone:
@@ -504,16 +529,21 @@ func (c *externalMcpConn) sendRequest(method string, params interface{}) (json.R
 			return nil, c.readerErr
 		}
 		return nil, fmt.Errorf("connection closed")
-	case <-time.After(stdioRequestTimeout):
+	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		return nil, fmt.Errorf("request timed out after %s", stdioRequestTimeout)
+		return nil, ctx.Err()
+	case <-time.After(mcpRequestTimeout):
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("request timed out after %s", mcpRequestTimeout)
 	}
 }
 
-// sendNotification sends a JSON-RPC notification (no ID, no response expected).
-func (c *externalMcpConn) sendNotification(method string) {
+// SendNotification sends a JSON-RPC notification (no ID, no response expected).
+func (c *externalMcpConn) SendNotification(method string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -532,7 +562,7 @@ func (c *externalMcpConn) sendNotification(method string) {
 	}
 }
 
-func (c *externalMcpConn) close() {
+func (c *externalMcpConn) Close() {
 	if c.stdin != nil {
 		c.stdin.Close()
 	}
@@ -541,9 +571,6 @@ func (c *externalMcpConn) close() {
 		_ = c.cmd.Wait()
 	}
 }
-
-func (c *externalMcpConn) getTools() []mcp.Tool   { return c.tools }
-func (c *externalMcpConn) getConfig() ExternalMcp { return c.config }
 
 // toolCategory returns the category for a tool, using the server-supplied
 // value if present, otherwise deriving it from the tool name prefix (the

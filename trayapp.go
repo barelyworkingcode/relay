@@ -1,27 +1,30 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"relaygo/bridge"
 )
 
-// appInstance is the singleton tray app, set by runTrayApp and read by Cocoa callbacks.
+// appInstance is the singleton tray app, set by runTrayApp and read by Cocoa
+// callbacks (exported Go functions called from cgo). This global is required
+// because cgo //export functions cannot capture closures or accept user data.
+// It is safe because the tray app is inherently single-instance.
 var appInstance *App
-
-// appRunning tracks whether the app is still alive (for cleanup).
-var appRunning atomic.Bool
 
 // App is the main tray application state.
 type App struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 	settings     *Settings
 	platform     Platform
 	extMgr       *ExternalMcpManager
@@ -31,11 +34,27 @@ type App struct {
 	cleanupOnce  sync.Once
 }
 
+// goFunc launches a tracked goroutine. All goroutines launched this way are
+// waited on during cleanup, ensuring clean shutdown.
+func (a *App) goFunc(fn func()) {
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		fn()
+	}()
+}
+
 // Menu item IDs.
 const (
 	menuIDSettings = 2
 	menuIDExit     = 3
 	menuIDSvcBase  = 100 // service items start here
+)
+
+// Status dot emoji for tray menu service items.
+const (
+	statusDotRunning = "\U0001F7E2" // green circle
+	statusDotStopped = "\U0001F534" // red circle
 )
 
 func runTrayApp() {
@@ -49,13 +68,29 @@ func runTrayApp() {
 
 	// Ensure admin secret is generated and persisted on first launch.
 	WithSettings(func(s *Settings) {})
-	settings := LoadSettings()
+	settings := GetSettings()
 	slog.Info("settings loaded")
 
-	// External MCP manager.
-	extMgr := NewExternalMcpManager()
+	// External MCP manager with injected callbacks for settings persistence.
+	extMgr := NewExternalMcpManager(
+		// onDiscover: persist discovered tools and context schema.
+		func(id string, tools []ToolInfo, schema json.RawMessage) {
+			WithSettings(func(s *Settings) {
+				s.UpdateDiscoveredTools(id, tools)
+				s.UpdateContextSchema(id, schema)
+			})
+		},
+		// onTokenRefresh: persist refreshed OAuth tokens.
+		func(mcpID string, oauth *OAuthState) {
+			WithSettings(func(s *Settings) { s.UpdateOAuthState(mcpID, oauth) })
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	app := &App{
+		ctx:      ctx,
+		cancel:   cancel,
 		settings: settings,
 		platform: platform,
 		extMgr:   extMgr,
@@ -64,14 +99,18 @@ func runTrayApp() {
 	appInstance = app
 
 	// Create and start bridge server.
-	router := &appRouter{app: app}
+	router := &appRouter{
+		tools:    extMgr,
+		services: app.registry,
+		onChange: app.onExternalChange,
+	}
 	bs, err := bridge.NewBridgeServer(router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)
 		os.Exit(1)
 	}
 	app.bridgeServer = bs
-	go bs.Serve()
+	app.goFunc(func() { bs.Serve() })
 	slog.Info("bridge server started")
 
 	// Start external MCPs.
@@ -93,35 +132,57 @@ func runTrayApp() {
 	// Catch termination signals so child processes get cleaned up.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		sig := <-sigCh
-		slog.Info("received signal, cleaning up", "signal", sig)
-		app.cleanup()
-		os.Exit(0)
-	}()
+	app.goFunc(func() {
+		select {
+		case sig := <-sigCh:
+			slog.Info("received signal, cleaning up", "signal", sig)
+			app.cleanup()
+			os.Exit(0)
+		case <-ctx.Done():
+			return
+		}
+	})
 
 	// Poll service status every 2s.
-	go app.statusPoller()
+	app.goFunc(app.statusPoller)
 
 	// Block on the platform run loop (must be on main thread).
 	slog.Info("entering run loop")
-	appRunning.Store(true)
 	platform.Run()
 }
 
+// onExternalChange dispatches UI updates to the main thread after external
+// changes (bridge reconcile, reload). Centralizes the "push settings + update
+// menu" pattern so the router doesn't reach into platform dispatch directly.
+func (a *App) onExternalChange() {
+	a.platform.DispatchToMain(func() {
+		a.pushFullSettings()
+		a.updateMenu()
+	})
+}
+
 // statusPoller periodically checks service status and updates the menu.
+// Only re-reads settings from disk when the file's modtime changes,
+// avoiding unnecessary I/O and JSON parsing on every tick.
 func (a *App) statusPoller() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if !appRunning.Load() {
+	for {
+		select {
+		case <-a.ctx.Done():
 			return
+		case <-ticker.C:
 		}
+
 		a.registry.CleanupDead()
-		s := LoadSettings()
+
+		s := ReloadIfChanged()
+
 		a.platform.DispatchToMain(func() {
-			a.updateMenuWithSettings(s)
+			if s != nil {
+				a.updateMenuWithSettings(s)
+			}
 			a.pushServiceStatus()
 		})
 	}
@@ -129,7 +190,7 @@ func (a *App) statusPoller() {
 
 // updateMenu rebuilds the tray menu JSON and pushes it to the platform.
 func (a *App) updateMenu() {
-	a.updateMenuWithSettings(LoadSettings())
+	a.updateMenuWithSettings(GetSettings())
 }
 
 func (a *App) updateMenuWithSettings(s *Settings) {
@@ -143,10 +204,9 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 
 	// Service items.
 	for i, svc := range s.Services {
-		running := a.registry.IsRunning(svc.ID)
-		dot := "\U0001F534" // red
-		if running {
-			dot = "\U0001F7E2" // green
+		dot := statusDotStopped
+		if a.registry.IsRunning(svc.ID) {
+			dot = statusDotRunning
 		}
 		items = append(items, menuItem{
 			Title:   fmt.Sprintf("%s %s", dot, svc.DisplayName),
@@ -188,7 +248,7 @@ func (a *App) onMenuClick(itemID int) {
 }
 
 func (a *App) toggleService(index int) {
-	s := LoadSettings()
+	s := GetSettings()
 	if index < 0 || index >= len(s.Services) {
 		return
 	}
@@ -208,13 +268,13 @@ func (a *App) toggleService(index int) {
 
 	if a.registry.IsRunning(config.ID) {
 		id := config.ID
-		go func() {
+		a.goFunc(func() {
 			a.registry.Stop(id)
 			a.platform.DispatchToMain(func() {
 				a.pushServiceStatus()
 				a.updateMenu()
 			})
-		}()
+		})
 	} else {
 		if err := a.registry.Start(config); err != nil {
 			slog.Error("service toggle failed", "error", err)
@@ -225,11 +285,12 @@ func (a *App) toggleService(index int) {
 
 func (a *App) cleanup() {
 	a.cleanupOnce.Do(func() {
-		appRunning.Store(false)
+		a.cancel() // signals all tracked goroutines via context
 		a.registry.StopAll()
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
 		}
+		a.wg.Wait() // wait for tracked goroutines to finish
 	})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 
 	"relaygo/bridge"
 	"relaygo/jsonrpc"
-	"relaygo/mcp"
 )
 
 // ErrAuthRequired indicates the HTTP MCP server returned 401.
@@ -23,6 +23,7 @@ var ErrAuthRequired = errors.New("authentication required (HTTP 401)")
 
 // httpOAuth holds runtime OAuth token state for an HTTP MCP connection.
 type httpOAuth struct {
+	url          string // MCP endpoint URL for OAuth discovery
 	meta         *oauthMetadata
 	accessToken  string
 	refreshToken string
@@ -31,31 +32,77 @@ type httpOAuth struct {
 	tokenExpiry  time.Time
 }
 
-// httpMcpConn implements mcpConnection for Streamable HTTP transport.
+// refreshIfNeeded checks token expiry and refreshes if within 30s of expiry.
+// Returns true if tokens were refreshed. Caller must serialize access.
+func (o *httpOAuth) refreshIfNeeded() (bool, error) {
+	if o.refreshToken == "" || o.tokenExpiry.IsZero() {
+		return false, nil
+	}
+	if time.Now().Before(o.tokenExpiry.Add(-30 * time.Second)) {
+		return false, nil
+	}
+
+	meta := o.meta
+	if meta == nil {
+		discovery, err := discoverOAuth(o.url)
+		if err != nil {
+			return false, fmt.Errorf("discover OAuth metadata for refresh: %w", err)
+		}
+		meta = discovery.Metadata
+		o.meta = meta
+	}
+
+	tokenResp, err := refreshAccessToken(meta, o.refreshToken, o.clientID, o.clientSecret)
+	if err != nil {
+		return false, fmt.Errorf("token refresh: %w", err)
+	}
+
+	o.accessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		o.refreshToken = tokenResp.RefreshToken
+	}
+	if tokenResp.ExpiresIn > 0 {
+		o.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+	return true, nil
+}
+
+// toOAuthState converts runtime OAuth state to the persistable OAuthState.
+func (o *httpOAuth) toOAuthState() *OAuthState {
+	return &OAuthState{
+		ClientID:     o.clientID,
+		ClientSecret: o.clientSecret,
+		AccessToken:  o.accessToken,
+		RefreshToken: o.refreshToken,
+		TokenExpiry:  o.tokenExpiry.UTC().Format(time.RFC3339),
+	}
+}
+
+// httpMcpConn implements McpConnection for Streamable HTTP transport.
 type httpMcpConn struct {
+	baseMcpConn
 	url        string
 	sessionID  string
 	httpClient *http.Client
-	mu         sync.Mutex
-	nextID     int64
-	tools      []mcp.Tool
-	config     ExternalMcp
+	mu         sync.Mutex // protects request sending (nextID, sessionID)
+	tokenMu    sync.Mutex // protects OAuth token refresh (separate to avoid blocking requests during refresh)
 
 	oauth httpOAuth
 
-	// Callback to persist refreshed tokens.
+	// Callback to persist refreshed tokens. Injected by ExternalMcpManager.
 	onTokenRefresh func(oauth *OAuthState)
 }
 
 func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
-		url:    cfg.URL,
-		config: cfg,
-		nextID: 1,
+		baseMcpConn: baseMcpConn{nextID: 1, config: cfg},
+		url:         cfg.URL,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: mcpRequestTimeout,
 		},
 	}
+
+	conn.oauth.url = cfg.URL
 
 	if cfg.OAuthState != nil {
 		conn.oauth.accessToken = cfg.OAuthState.AccessToken
@@ -72,62 +119,42 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	return conn
 }
 
-// refreshIfNeeded checks token expiry and refreshes if necessary.
-func (c *httpMcpConn) refreshIfNeeded() error {
-	if c.oauth.refreshToken == "" || c.oauth.tokenExpiry.IsZero() {
-		return nil
-	}
-	// Refresh if within 30 seconds of expiry.
-	if time.Now().Before(c.oauth.tokenExpiry.Add(-30 * time.Second)) {
-		return nil
-	}
-
-	meta := c.oauth.meta
-	if meta == nil {
-		discovery, err := discoverOAuth(c.url)
-		if err != nil {
-			return fmt.Errorf("discover OAuth metadata for refresh: %w", err)
-		}
-		meta = discovery.Metadata
-		c.oauth.meta = meta
-	}
-
-	tokenResp, err := refreshAccessToken(meta, c.oauth.refreshToken, c.oauth.clientID, c.oauth.clientSecret)
+// refreshTokenIfNeeded acquires the token mutex and delegates to httpOAuth.
+// Called outside the request lock to avoid blocking all requests during refresh.
+func (c *httpMcpConn) refreshTokenIfNeeded() error {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	refreshed, err := c.oauth.refreshIfNeeded()
 	if err != nil {
-		return fmt.Errorf("token refresh: %w", err)
+		return err
 	}
-
-	c.oauth.accessToken = tokenResp.AccessToken
-	if tokenResp.RefreshToken != "" {
-		c.oauth.refreshToken = tokenResp.RefreshToken
+	if refreshed && c.onTokenRefresh != nil {
+		c.onTokenRefresh(c.oauth.toOAuthState())
 	}
-	if tokenResp.ExpiresIn > 0 {
-		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-
-	if c.onTokenRefresh != nil {
-		c.onTokenRefresh(&OAuthState{
-			ClientID:     c.oauth.clientID,
-			ClientSecret: c.oauth.clientSecret,
-			AccessToken:  c.oauth.accessToken,
-			RefreshToken: c.oauth.refreshToken,
-			TokenExpiry:  c.oauth.tokenExpiry.UTC().Format(time.RFC3339),
-		})
-	}
-
 	return nil
 }
 
-func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// setHeaders applies common headers (Content-Type, Authorization, Session-Id) to an HTTP request.
+func (c *httpMcpConn) setHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	if c.oauth.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
+	}
+	if c.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+}
 
-	if err := c.refreshIfNeeded(); err != nil {
+func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	// Refresh token outside the request lock to avoid blocking other requests.
+	if err := c.refreshTokenIfNeeded(); err != nil {
 		return nil, err
 	}
 
-	id := c.nextID
-	c.nextID++
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	id := c.allocID()
 	req := jsonrpc.Request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -140,18 +167,12 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	c.setHeaders(httpReq)
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if c.oauth.accessToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
-	}
-	if c.sessionID != "" {
-		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -183,7 +204,7 @@ func (c *httpMcpConn) sendRequest(method string, params interface{}) (json.RawMe
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
 	}
 	if rpcResp.Error != nil {
-		return nil, fmt.Errorf("JSON-RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+		return nil, formatJSONRPCError(rpcResp.Error)
 	}
 	return rpcResp.Result, nil
 }
@@ -215,7 +236,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 
 		if jsonrpc.RespIDEquals(rpcResp.ID, expectedID) {
 			if rpcResp.Error != nil {
-				return nil, fmt.Errorf("JSON-RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+				return nil, formatJSONRPCError(rpcResp.Error)
 			}
 			return rpcResp.Result, nil
 		}
@@ -226,7 +247,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 	return nil, fmt.Errorf("SSE stream ended without matching response")
 }
 
-func (c *httpMcpConn) sendNotification(method string) {
+func (c *httpMcpConn) SendNotification(method string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -245,13 +266,7 @@ func (c *httpMcpConn) sendNotification(method string) {
 		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.oauth.accessToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
-	}
-	if c.sessionID != "" {
-		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
+	c.setHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -261,7 +276,7 @@ func (c *httpMcpConn) sendNotification(method string) {
 	resp.Body.Close()
 }
 
-func (c *httpMcpConn) close() {
+func (c *httpMcpConn) Close() {
 	if c.sessionID == "" {
 		return
 	}
@@ -270,10 +285,7 @@ func (c *httpMcpConn) close() {
 	if err != nil {
 		return
 	}
-	if c.oauth.accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
-	}
-	req.Header.Set("Mcp-Session-Id", c.sessionID)
+	c.setHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -282,18 +294,19 @@ func (c *httpMcpConn) close() {
 	resp.Body.Close()
 }
 
-func (c *httpMcpConn) getTools() []mcp.Tool   { return c.tools }
-func (c *httpMcpConn) getConfig() ExternalMcp { return c.config }
-
 // startHTTP connects to an HTTP MCP server and performs the initialize handshake.
 func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 
-	conn.onTokenRefresh = func(oauth *OAuthState) {
-		WithSettings(func(s *Settings) { s.UpdateOAuthState(mcpCfg.ID, oauth) })
+	// Wire up token refresh to the manager's injected callback.
+	if m.onTokenRefresh != nil {
+		id := mcpCfg.ID
+		conn.onTokenRefresh = func(oauth *OAuthState) {
+			m.onTokenRefresh(id, oauth)
+		}
 	}
 
-	result, err := mcpHandshake(conn)
+	result, err := mcpHandshake(context.Background(), conn)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// Store conn without tools -- UI will show "Authenticate" button.
@@ -306,10 +319,9 @@ func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 	}
 	conn.tools = result.Tools
 
-	WithSettings(func(s *Settings) {
-		s.UpdateDiscoveredTools(mcpCfg.ID, result.ToolInfos)
-		s.UpdateContextSchema(mcpCfg.ID, result.ContextSchema)
-	})
+	if m.onDiscover != nil {
+		m.onDiscover(mcpCfg.ID, result.ToolInfos, result.ContextSchema)
+	}
 
 	m.mu.Lock()
 	m.conns[mcpCfg.ID] = conn
@@ -331,7 +343,7 @@ func DiscoverHTTPMcp(displayName, id, mcpURL string, oauth *OAuthState) (*Extern
 
 	conn := newHTTPMcpConn(cfg)
 
-	result, err := mcpHandshake(conn)
+	result, err := mcpHandshake(context.Background(), conn)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// No session was established, so no close/DELETE needed.
@@ -340,7 +352,7 @@ func DiscoverHTTPMcp(displayName, id, mcpURL string, oauth *OAuthState) (*Extern
 		}
 		return nil, err
 	}
-	conn.close()
+	conn.Close()
 
 	cfg.DiscoveredTools = result.ToolInfos
 	cfg.ContextSchema = result.ContextSchema

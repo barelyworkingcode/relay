@@ -8,33 +8,16 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"text/tabwriter"
 
 	"relaygo/bridge"
 )
 
 func runMcpCommand(args []string) {
-	if len(args) == 0 {
-		mcpUsage()
-		os.Exit(1)
-	}
-
-	switch args[0] {
-	case "register":
-		mcpRegister(args[1:])
-	case "unregister":
-		mcpUnregister(args[1:])
-	case "list":
-		mcpList()
-	default:
-		fmt.Fprintf(os.Stderr, "unknown mcp command: %s\n", args[0])
-		mcpUsage()
-		os.Exit(1)
-	}
-}
-
-func mcpUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: relay mcp <command>\n\nCommands:\n  register     Register or update an external MCP server\n  unregister   Remove an external MCP server\n  list         List registered MCP servers\n")
+	runSubcommands("mcp", []cliSubcommand{
+		{"register", mcpRegister},
+		{"unregister", mcpUnregister},
+		{"list", func(_ []string) { mcpList() }},
+	}, args)
 }
 
 func mcpRegister(args []string) {
@@ -50,8 +33,7 @@ func mcpRegister(args []string) {
 	fs.Parse(args)
 
 	if *name == "" {
-		fmt.Fprintf(os.Stderr, "error: --name is required\n")
-		os.Exit(1)
+		exitError("--name is required")
 	}
 
 	if *transport == "http" {
@@ -60,30 +42,17 @@ func mcpRegister(args []string) {
 	}
 
 	if *command == "" {
-		fmt.Fprintf(os.Stderr, "error: --command is required for stdio transport\n")
-		os.Exit(1)
+		exitError("--command is required for stdio transport")
 	}
 
-	resolvedID := *id
+	resolvedID := resolveID(*id, *name)
 	if resolvedID == "" {
-		resolvedID = slugify(*name)
-	}
-	if resolvedID == "" {
-		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", *name)
-		os.Exit(1)
+		exitError("could not derive ID from name %q", *name)
 	}
 
-	var env map[string]string
-	if len(envPairs) > 0 {
-		env = make(map[string]string, len(envPairs))
-		for _, pair := range envPairs {
-			k, v, ok := strings.Cut(pair, "=")
-			if !ok {
-				fmt.Fprintf(os.Stderr, "error: invalid --env format %q (expected KEY=VALUE)\n", pair)
-				os.Exit(1)
-			}
-			env[k] = v
-		}
+	env, err := parseEnvPairs(envPairs)
+	if err != nil {
+		exitError("%v", err)
 	}
 
 	cfg := ExternalMcp{
@@ -99,41 +68,24 @@ func mcpRegister(args []string) {
 	var adminSecret string
 	WithSettings(func(s *Settings) {
 		adminSecret = s.AdminSecret
-		for _, m := range s.ExternalMcps {
-			if m.ID == resolvedID {
-				s.UpdateExternalMcp(cfg)
-				updated = true
-				return
-			}
-		}
-		s.AddExternalMcp(cfg)
+		updated = s.UpsertExternalMcp(cfg)
 	})
 
-	if updated {
-		fmt.Printf("updated mcp %q (%s)\n", *name, resolvedID)
-		_ = bridge.SendReloadMcp(resolvedID, adminSecret)
-	} else {
-		fmt.Printf("registered mcp %q (%s)\n", *name, resolvedID)
-		_ = bridge.SendReconcile(adminSecret)
-	}
+	printUpsertResult("mcp", *name, resolvedID, updated)
+	notifyMcpChange(updated, resolvedID, adminSecret)
 }
 
 func mcpRegisterHTTP(name, id, mcpURL string) {
 	if mcpURL == "" {
-		fmt.Fprintf(os.Stderr, "error: --url is required for HTTP transport\n")
-		os.Exit(1)
+		exitError("--url is required for HTTP transport")
 	}
 	if err := validateMcpURL(mcpURL); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		exitError("%v", err)
 	}
 
+	id = resolveID(id, name)
 	if id == "" {
-		id = slugify(name)
-	}
-	if id == "" {
-		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", name)
-		os.Exit(1)
+		exitError("could not derive ID from name %q", name)
 	}
 
 	fmt.Printf("discovering HTTP MCP %q at %s...\n", name, mcpURL)
@@ -175,23 +127,11 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 	var adminSecret string
 	WithSettings(func(s *Settings) {
 		adminSecret = s.AdminSecret
-		for _, m := range s.ExternalMcps {
-			if m.ID == id {
-				s.UpdateExternalMcp(*result)
-				updated = true
-				return
-			}
-		}
-		s.AddExternalMcp(*result)
+		updated = s.UpsertExternalMcp(*result)
 	})
 
-	if updated {
-		fmt.Printf("updated mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
-		_ = bridge.SendReloadMcp(id, adminSecret)
-	} else {
-		fmt.Printf("registered mcp %q (%s) with %d tools\n", name, id, len(result.DiscoveredTools))
-		_ = bridge.SendReconcile(adminSecret)
-	}
+	printUpsertResultWithTools("mcp", name, id, updated, len(result.DiscoveredTools))
+	notifyMcpChange(updated, id, adminSecret)
 }
 
 // openBrowserCmd opens a URL in the default browser.
@@ -216,63 +156,20 @@ func mcpUnregister(args []string) {
 	name := fs.String("name", "", "MCP display name")
 	fs.Parse(args)
 
-	if *id == "" && *name == "" {
-		fmt.Fprintf(os.Stderr, "error: --id or --name is required\n")
-		os.Exit(1)
-	}
-
-	var resolvedID string
-	var adminSecret string
-	WithSettings(func(s *Settings) {
-		resolvedID = *id
-		if resolvedID == "" {
-			for _, m := range s.ExternalMcps {
-				if m.DisplayName == *name {
-					resolvedID = m.ID
-					break
-				}
-			}
-		}
-		if resolvedID == "" {
-			return
-		}
-		found := false
-		for _, m := range s.ExternalMcps {
-			if m.ID == resolvedID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			resolvedID = ""
-			return
-		}
-		s.RemoveExternalMcp(resolvedID)
-		adminSecret = s.AdminSecret
-	})
-
-	if resolvedID == "" {
-		if *id != "" {
-			fmt.Fprintf(os.Stderr, "error: no mcp found with id %q\n", *id)
-		} else {
-			fmt.Fprintf(os.Stderr, "error: no mcp found with name %q\n", *name)
-		}
-		os.Exit(1)
-	}
-
-	fmt.Printf("unregistered mcp %q\n", resolvedID)
+	_, adminSecret := resolveAndRemove("mcp", id, name,
+		(*Settings).ResolveMcpID, (*Settings).RemoveExternalMcp)
 	_ = bridge.SendReconcile(adminSecret)
 }
 
 func mcpList() {
-	s := LoadSettings()
+	s := GetSettings()
 
 	if len(s.ExternalMcps) == 0 {
 		fmt.Println("no mcp servers registered")
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tTRANSPORT\tENDPOINT\tTOOLS")
 	for _, m := range s.ExternalMcps {
 		transport := m.Transport
