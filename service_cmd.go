@@ -6,33 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 
 	"relaygo/bridge"
 )
 
 func runServiceCommand(args []string) {
-	if len(args) == 0 {
-		serviceUsage()
-		os.Exit(1)
-	}
-
-	switch args[0] {
-	case "register":
-		serviceRegister(args[1:])
-	case "unregister":
-		serviceUnregister(args[1:])
-	case "list":
-		serviceList()
-	default:
-		fmt.Fprintf(os.Stderr, "unknown service command: %s\n", args[0])
-		serviceUsage()
-		os.Exit(1)
-	}
-}
-
-func serviceUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: relay service <command>\n\nCommands:\n  register     Register or update a service\n  unregister   Remove a service\n  list         List registered services\n")
+	runSubcommands("service", []cliSubcommand{
+		{"register", serviceRegister},
+		{"unregister", serviceUnregister},
+		{"list", func(_ []string) { serviceList() }},
+	}, args)
 }
 
 func serviceRegister(args []string) {
@@ -49,21 +32,15 @@ func serviceRegister(args []string) {
 	fs.Parse(args)
 
 	if *name == "" {
-		fmt.Fprintf(os.Stderr, "error: --name is required\n")
-		os.Exit(1)
+		exitError("--name is required")
 	}
 	if *command == "" {
-		fmt.Fprintf(os.Stderr, "error: --command is required\n")
-		os.Exit(1)
+		exitError("--command is required")
 	}
 
-	resolvedID := *id
+	resolvedID := resolveID(*id, *name)
 	if resolvedID == "" {
-		resolvedID = slugify(*name)
-	}
-	if resolvedID == "" {
-		fmt.Fprintf(os.Stderr, "error: could not derive ID from name %q\n", *name)
-		os.Exit(1)
+		exitError("could not derive ID from name %q", *name)
 	}
 
 	resolvedWorkdir := *workdir
@@ -76,17 +53,9 @@ func serviceRegister(args []string) {
 		resolvedWorkdir = abs
 	}
 
-	var env map[string]string
-	if len(envPairs) > 0 {
-		env = make(map[string]string, len(envPairs))
-		for _, pair := range envPairs {
-			k, v, ok := strings.Cut(pair, "=")
-			if !ok {
-				fmt.Fprintf(os.Stderr, "error: invalid --env format %q (expected KEY=VALUE)\n", pair)
-				os.Exit(1)
-			}
-			env[k] = v
-		}
+	env, err := parseEnvPairs(envPairs)
+	if err != nil {
+		exitError("%v", err)
 	}
 
 	config := ServiceConfig{
@@ -104,34 +73,11 @@ func serviceRegister(args []string) {
 	var adminSecret string
 	WithSettings(func(s *Settings) {
 		adminSecret = s.AdminSecret
-		for _, svc := range s.Services {
-			if svc.ID == resolvedID {
-				// Merge: preserve existing fields not specified on CLI
-				if config.Env == nil {
-					config.Env = svc.Env
-				}
-				if len(config.Args) == 0 {
-					config.Args = svc.Args
-				}
-				if config.WorkingDir == "" {
-					config.WorkingDir = svc.WorkingDir
-				}
-				if config.URL == "" {
-					config.URL = svc.URL
-				}
-				s.UpdateService(config)
-				updated = true
-				return
-			}
-		}
-		s.AddService(config)
+		s.MergeServiceDefaults(&config)
+		updated = s.UpsertService(config)
 	})
 
-	if updated {
-		fmt.Printf("updated service %q (%s)\n", *name, resolvedID)
-	} else {
-		fmt.Printf("registered service %q (%s)\n", *name, resolvedID)
-	}
+	printUpsertResult("service", *name, resolvedID, updated)
 
 	if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
@@ -144,60 +90,19 @@ func serviceUnregister(args []string) {
 	name := fs.String("name", "", "service display name")
 	fs.Parse(args)
 
-	if *id == "" && *name == "" {
-		fmt.Fprintf(os.Stderr, "error: --id or --name is required\n")
-		os.Exit(1)
-	}
-
-	var resolvedID string
-	WithSettings(func(s *Settings) {
-		resolvedID = *id
-		if resolvedID == "" {
-			for _, svc := range s.Services {
-				if svc.DisplayName == *name {
-					resolvedID = svc.ID
-					break
-				}
-			}
-		}
-		if resolvedID == "" {
-			return
-		}
-		found := false
-		for _, svc := range s.Services {
-			if svc.ID == resolvedID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			resolvedID = ""
-			return
-		}
-		s.RemoveService(resolvedID)
-	})
-
-	if resolvedID == "" {
-		if *id != "" {
-			fmt.Fprintf(os.Stderr, "error: no service found with id %q\n", *id)
-		} else {
-			fmt.Fprintf(os.Stderr, "error: no service found with name %q\n", *name)
-		}
-		os.Exit(1)
-	}
-
-	fmt.Printf("unregistered service %q\n", resolvedID)
+	_, _ = resolveAndRemove("service", id, name,
+		(*Settings).ResolveServiceID, (*Settings).RemoveService)
 }
 
 func serviceList() {
-	s := LoadSettings()
+	s := GetSettings()
 
 	if len(s.Services) == 0 {
 		fmt.Println("no services registered")
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := newTabWriter()
 	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART")
 	for _, svc := range s.Services {
 		cmd := svc.Command

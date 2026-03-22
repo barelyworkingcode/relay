@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,8 +29,8 @@ type BridgeResponse struct {
 
 // ToolRouter handles bridge requests. Implemented by the main app.
 type ToolRouter interface {
-	ListTools(token string) (json.RawMessage, error)
-	CallTool(name string, args json.RawMessage, token string) (json.RawMessage, error)
+	ListTools(ctx context.Context, token string) (json.RawMessage, error)
+	CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error)
 	ValidateAdmin(token string) error
 	ReconcileExternalMcps()
 	ReloadExternalMcp(id string)

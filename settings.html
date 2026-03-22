@@ -1207,6 +1207,14 @@ window.onServiceStatus = function(runningIds) {
     if (state.page === 'services') render();
 };
 
+window.onSettingsReloaded = function(data) {
+    state.tokens = data.tokens;
+    state.externalMcps = data.external_mcps;
+    state.services = data.services;
+    state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
+    render();
+};
+
 render();
 </script>
 </body>

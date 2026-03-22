@@ -60,12 +60,7 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 	if config.WorkingDir != "" {
 		cmd.Dir = config.WorkingDir
 	}
-	if len(config.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range config.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
+	mergeEnv(cmd, config.Env)
 	return cmd
 }
 
