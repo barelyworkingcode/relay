@@ -23,8 +23,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	config := *msg
 	config.ID = id
 
-	if err := ctx.Store.With(func(s *Settings) { s.AddService(config) }); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	if !ctx.withSettings(func(s *Settings) { s.AddService(config) }) {
 		return
 	}
 
@@ -47,8 +46,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	ctx.Registry.Stop(msg.ID)
-	if err := ctx.Store.With(func(s *Settings) { s.RemoveService(msg.ID) }); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	if !ctx.withSettings(func(s *Settings) { s.RemoveService(msg.ID) }) {
 		return
 	}
 	ctx.UpdateMenu()
@@ -64,8 +62,7 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 
 	config := *msg
 
-	if err := ctx.Store.With(func(s *Settings) { s.UpdateService(config) }); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	if !ctx.withSettings(func(s *Settings) { s.UpdateService(config) }) {
 		return
 	}
 	ctx.UpdateMenu()
@@ -76,13 +73,11 @@ func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	if err := ctx.Store.With(func(s *Settings) {
+	ctx.withSettings(func(s *Settings) {
 		if svc, _ := s.findServiceByID(msg.ID); svc != nil {
 			svc.Autostart = msg.Autostart
 		}
-	}); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
-	}
+	})
 }
 
 // ipcStartService starts a service synchronously on the IPC thread.

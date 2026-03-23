@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -40,6 +41,58 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 		env[k] = v
 	}
 	return env, nil
+}
+
+// ---------------------------------------------------------------------------
+// Shared register helpers — eliminates duplicate flag/validation/upsert logic
+// between mcp_cmd.go and service_cmd.go.
+// ---------------------------------------------------------------------------
+
+// registerOpts holds flag values common to both mcp and service registration.
+type registerOpts struct {
+	Name     string
+	ID       string
+	Args     stringSlice
+	EnvPairs stringSlice
+}
+
+// addRegisterFlags adds the common --name, --id, --args, --env flags to a flag set.
+func addRegisterFlags(fs *flag.FlagSet, opts *registerOpts) {
+	fs.StringVar(&opts.Name, "name", "", "display name (required)")
+	fs.StringVar(&opts.ID, "id", "", "override generated ID")
+	fs.Var(&opts.Args, "args", "command arguments (repeatable)")
+	fs.Var(&opts.EnvPairs, "env", "environment KEY=VALUE (repeatable)")
+}
+
+// resolveIDAndEnv validates name, resolves the ID, and parses env pairs.
+// Exits on validation failure.
+func (opts *registerOpts) resolveIDAndEnv() (id string, env map[string]string) {
+	if opts.Name == "" {
+		exitError("--name is required")
+	}
+	id = resolveID(opts.ID, opts.Name)
+	if id == "" {
+		exitError("could not derive ID from name %q", opts.Name)
+	}
+	var err error
+	env, err = parseEnvPairs(opts.EnvPairs)
+	if err != nil {
+		exitError("%v", err)
+	}
+	return
+}
+
+// upsertAndPrint atomically upserts an entity via store.With, extracts the
+// admin secret, and prints the result. Returns whether it was an update and the secret.
+func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Settings) bool, toolCount ...int) (updated bool, adminSecret string) {
+	if err := store.With(func(s *Settings) {
+		adminSecret = s.AdminSecret
+		updated = fn(s)
+	}); err != nil {
+		exitError("failed to save settings: %v", err)
+	}
+	printUpsertResult(entity, name, id, updated, toolCount...)
+	return
 }
 
 // exitError prints an error message to stderr and exits with code 1.
@@ -109,21 +162,23 @@ func printUpsertResult(entity, name, id string, updated bool, toolCount ...int) 
 // resolveAndRemove resolves an entity by id/name, removes it via store.With, and
 // prints the result. Returns the resolved ID and admin secret, or exits with an
 // error if not found.
-func resolveAndRemove(store *SettingsStore, entity string, id, name *string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
+func resolveAndRemove(store SettingsStore, entity string, id, name *string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
 	if *id == "" && *name == "" {
 		exitError("--id or --name is required")
 	}
 
 	var resolvedID string
 	var adminSecret string
-	store.With(func(s *Settings) {
+	if err := store.With(func(s *Settings) {
 		resolvedID = resolveFn(s, *id, *name)
 		if resolvedID == "" {
 			return
 		}
 		removeFn(s, resolvedID)
 		adminSecret = s.AdminSecret
-	})
+	}); err != nil {
+		exitError("failed to save settings: %v", err)
+	}
 
 	if resolvedID == "" {
 		if *id != "" {

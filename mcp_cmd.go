@@ -22,24 +22,21 @@ func runMcpCommand(args []string) {
 	}, args)
 }
 
-func mcpRegister(store *SettingsStore, args []string) {
+func mcpRegister(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
-	name := fs.String("name", "", "display name (required)")
+	var opts registerOpts
+	addRegisterFlags(fs, &opts)
 	command := fs.String("command", "", "command to run")
-	id := fs.String("id", "", "override generated ID")
 	transport := fs.String("transport", "stdio", "transport type (stdio or http)")
 	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
-	var mcpArgs, envPairs stringSlice
-	fs.Var(&mcpArgs, "args", "command arguments (repeatable)")
-	fs.Var(&envPairs, "env", "environment KEY=VALUE (repeatable)")
 	fs.Parse(args)
 
-	if *name == "" {
+	if opts.Name == "" {
 		exitError("--name is required")
 	}
 
 	if *transport == "http" {
-		mcpRegisterHTTP(store, *name, *id, *mcpURL)
+		mcpRegisterHTTP(store, opts.Name, opts.ID, *mcpURL)
 		return
 	}
 
@@ -47,37 +44,24 @@ func mcpRegister(store *SettingsStore, args []string) {
 		exitError("--command is required for stdio transport")
 	}
 
-	resolvedID := resolveID(*id, *name)
-	if resolvedID == "" {
-		exitError("could not derive ID from name %q", *name)
-	}
-
-	env, err := parseEnvPairs(envPairs)
-	if err != nil {
-		exitError("%v", err)
-	}
+	id, env := opts.resolveIDAndEnv()
 
 	cfg := ExternalMcp{
-		ID:              resolvedID,
-		DisplayName:     *name,
+		ID:              id,
+		DisplayName:     opts.Name,
 		Command:         *command,
-		Args:            []string(mcpArgs),
+		Args:            []string(opts.Args),
 		Env:             env,
 		DiscoveredTools: []ToolInfo{},
 	}
 
-	var updated bool
-	var adminSecret string
-	store.With(func(s *Settings) {
-		adminSecret = s.AdminSecret
-		updated = s.UpsertExternalMcp(cfg)
+	updated, secret := upsertAndPrint(store, "mcp", opts.Name, id, func(s *Settings) bool {
+		return s.UpsertExternalMcp(cfg)
 	})
-
-	printUpsertResult("mcp", *name, resolvedID, updated)
-	notifyMcpChange(updated, resolvedID, adminSecret)
+	notifyMcpChange(updated, id, secret)
 }
 
-func mcpRegisterHTTP(store *SettingsStore, name, id, mcpURL string) {
+func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
 	if mcpURL == "" {
 		exitError("--url is required for HTTP transport")
 	}
@@ -124,15 +108,10 @@ func mcpRegisterHTTP(store *SettingsStore, name, id, mcpURL string) {
 		}
 	}
 
-	var updated bool
-	var adminSecret string
-	store.With(func(s *Settings) {
-		adminSecret = s.AdminSecret
-		updated = s.UpsertExternalMcp(*result)
-	})
-
-	printUpsertResult("mcp", name, id, updated, len(result.DiscoveredTools))
-	notifyMcpChange(updated, id, adminSecret)
+	updated, secret := upsertAndPrint(store, "mcp", name, id, func(s *Settings) bool {
+		return s.UpsertExternalMcp(*result)
+	}, len(result.DiscoveredTools))
+	notifyMcpChange(updated, id, secret)
 }
 
 // openBrowserCmd opens a URL in the default browser.
@@ -151,7 +130,7 @@ func openBrowserCmd(url string) {
 	}
 }
 
-func mcpUnregister(store *SettingsStore, args []string) {
+func mcpUnregister(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp unregister", flag.ExitOnError)
 	id := fs.String("id", "", "MCP ID")
 	name := fs.String("name", "", "MCP display name")
@@ -162,7 +141,7 @@ func mcpUnregister(store *SettingsStore, args []string) {
 	_ = bridge.SendReconcile(adminSecret)
 }
 
-func mcpList(store *SettingsStore) {
+func mcpList(store SettingsStore) {
 	s := store.Get()
 
 	if len(s.ExternalMcps) == 0 {

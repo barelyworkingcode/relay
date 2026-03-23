@@ -19,30 +19,21 @@ func runServiceCommand(args []string) {
 	}, args)
 }
 
-func serviceRegister(store *SettingsStore, args []string) {
+func serviceRegister(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service register", flag.ExitOnError)
-	name := fs.String("name", "", "display name (required)")
+	var opts registerOpts
+	addRegisterFlags(fs, &opts)
 	command := fs.String("command", "", "command to run (required)")
-	id := fs.String("id", "", "override generated ID")
 	workdir := fs.String("workdir", "", "working directory")
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
-	var svcArgs, envPairs stringSlice
-	fs.Var(&svcArgs, "args", "command arguments (repeatable)")
-	fs.Var(&envPairs, "env", "environment KEY=VALUE (repeatable)")
 	fs.Parse(args)
 
-	if *name == "" {
-		exitError("--name is required")
-	}
 	if *command == "" {
 		exitError("--command is required")
 	}
 
-	resolvedID := resolveID(*id, *name)
-	if resolvedID == "" {
-		exitError("could not derive ID from name %q", *name)
-	}
+	id, env := opts.resolveIDAndEnv()
 
 	resolvedWorkdir := *workdir
 	if resolvedWorkdir != "" {
@@ -53,38 +44,28 @@ func serviceRegister(store *SettingsStore, args []string) {
 		resolvedWorkdir = abs
 	}
 
-	env, err := parseEnvPairs(envPairs)
-	if err != nil {
-		exitError("%v", err)
-	}
-
 	config := ServiceConfig{
-		ID:          resolvedID,
-		DisplayName: *name,
+		ID:          id,
+		DisplayName: opts.Name,
 		Command:     *command,
-		Args:        []string(svcArgs),
+		Args:        []string(opts.Args),
 		Env:         env,
 		WorkingDir:  resolvedWorkdir,
 		Autostart:   *autostart,
 		URL:         *url,
 	}
 
-	var updated bool
-	var adminSecret string
-	store.With(func(s *Settings) {
-		adminSecret = s.AdminSecret
+	_, secret := upsertAndPrint(store, "service", opts.Name, id, func(s *Settings) bool {
 		s.MergeServiceDefaults(&config)
-		updated = s.UpsertService(config)
+		return s.UpsertService(config)
 	})
 
-	printUpsertResult("service", *name, resolvedID, updated)
-
-	if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
+	if err := bridge.SendReloadService(id, secret); err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
 	}
 }
 
-func serviceUnregister(store *SettingsStore, args []string) {
+func serviceUnregister(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service unregister", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
@@ -94,7 +75,7 @@ func serviceUnregister(store *SettingsStore, args []string) {
 		(*Settings).ResolveServiceID, (*Settings).RemoveService)
 }
 
-func serviceList(store *SettingsStore) {
+func serviceList(store SettingsStore) {
 	s := store.Get()
 
 	if len(s.Services) == 0 {

@@ -49,11 +49,10 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 				return
 			}
 
-			if err := ctx.Store.WithAndNotify(
+			if !ctx.withSettingsNotify(
 				func(s *Settings) { s.AddExternalMcp(*result) },
 				bridge.SendReconcile,
-			); err != nil {
-				ctx.UI.EmitEvent("onSettingsError", err.Error())
+			) {
 				return
 			}
 
@@ -77,11 +76,10 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if err := ctx.Store.WithAndNotify(
+	if !ctx.withSettingsNotify(
 		func(s *Settings) { s.RemoveExternalMcp(msg.ID) },
 		bridge.SendReconcile,
-	); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	) {
 		return
 	}
 
@@ -105,11 +103,10 @@ func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 	needsAuth := errors.Is(err, ErrAuthRequired)
 
 	ctx.Platform.DispatchToMain(func() {
-		if err := ctx.Store.WithAndNotify(
+		if !ctx.withSettingsNotify(
 			func(s *Settings) { s.AddExternalMcp(*result) },
 			bridge.SendReconcile,
-		); err != nil {
-			ctx.UI.EmitEvent("onSettingsError", err.Error())
+		) {
 			return
 		}
 
@@ -142,11 +139,10 @@ func authenticateMcp(ctx *IPCContext, id string) {
 	}
 
 	ctx.Platform.DispatchToMain(func() {
-		if err := ctx.Store.WithAndNotify(
+		if !ctx.withSettingsNotify(
 			func(s *Settings) { s.UpdateOAuthState(id, oauth) },
 			func(secret string) error { return bridge.SendReloadMcp(id, secret) },
-		); err != nil {
-			ctx.UI.EmitEvent("onSettingsError", err.Error())
+		) {
 			return
 		}
 

@@ -25,7 +25,7 @@ type App struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
-	store        *SettingsStore
+	store        SettingsStore
 	platform     Platform
 	extMgr       *ExternalMcpManager
 	registry     ServiceManager

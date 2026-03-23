@@ -43,7 +43,7 @@ func makeSettings(perms map[string]Permission, disabled map[string][]string, con
 // newTestRouter creates an appRouter with the given settings and ExternalMcpManager.
 func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRouter {
 	t.Helper()
-	store := &SettingsStore{cache: s}
+	store := &FileSettingsStore{cache: s}
 	return &appRouter{
 		store:    store,
 		tools:    mgr,

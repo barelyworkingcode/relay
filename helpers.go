@@ -26,19 +26,6 @@ func validateMcpURL(rawURL string) error {
 	return nil
 }
 
-// escapeJSString escapes a string for embedding in JS single-quoted string literals.
-func escapeJSString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	s = strings.ReplaceAll(s, "\n", `\n`)
-	s = strings.ReplaceAll(s, "\r", `\r`)
-	s = strings.ReplaceAll(s, "\x00", `\0`)
-	s = strings.ReplaceAll(s, "\u2028", `\u2028`)
-	s = strings.ReplaceAll(s, "\u2029", `\u2029`)
-	return s
-}
-
 // mergeEnv sets up a command's environment by merging env vars into the current environment.
 func mergeEnv(cmd *exec.Cmd, env map[string]string) {
 	if len(env) == 0 {
