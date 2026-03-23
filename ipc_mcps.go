@@ -42,14 +42,14 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onDiscoveryStarted")
 
 	ctx.GoFunc(func() {
-		result, err := DiscoverExternalMcp(msg.DisplayName, id, msg.Command, msg.Args, msg.Env)
+		result, err := DiscoverExternalMcp(ctx.Ctx, msg.DisplayName, id, msg.Command, msg.Args, msg.Env)
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 				return
 			}
 
-			WithSettingsAndNotify(
+			ctx.Store.WithAndNotify(
 				func(s *Settings) { s.AddExternalMcp(*result) },
 				bridge.SendReconcile,
 			)
@@ -74,7 +74,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	WithSettingsAndNotify(
+	ctx.Store.WithAndNotify(
 		func(s *Settings) { s.RemoveExternalMcp(msg.ID) },
 		bridge.SendReconcile,
 	)
@@ -87,7 +87,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
-	result, err := DiscoverHTTPMcp(displayName, id, mcpURL, nil)
+	result, err := DiscoverHTTPMcp(ctx.Ctx, displayName, id, mcpURL, nil)
 
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
 		ctx.Platform.DispatchToMain(func() {
@@ -99,7 +99,7 @@ func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 	needsAuth := errors.Is(err, ErrAuthRequired)
 
 	ctx.Platform.DispatchToMain(func() {
-		WithSettingsAndNotify(
+		ctx.Store.WithAndNotify(
 			func(s *Settings) { s.AddExternalMcp(*result) },
 			bridge.SendReconcile,
 		)
@@ -114,7 +114,7 @@ func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 }
 
 func authenticateMcp(ctx *IPCContext, id string) {
-	s := GetSettings()
+	s := ctx.Store.Get()
 	mcpCfg, _ := s.findMcpByID(id)
 	if mcpCfg == nil || !mcpCfg.IsHTTP() {
 		return
@@ -133,7 +133,7 @@ func authenticateMcp(ctx *IPCContext, id string) {
 	}
 
 	ctx.Platform.DispatchToMain(func() {
-		WithSettingsAndNotify(
+		ctx.Store.WithAndNotify(
 			func(s *Settings) { s.UpdateOAuthState(id, oauth) },
 			func(secret string) error { return bridge.SendReloadMcp(id, secret) },
 		)

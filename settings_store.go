@@ -9,23 +9,26 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"relaygo/bridge"
 )
 
-// settingsMu serializes all settings load-modify-save cycles and cache access.
-var settingsMu sync.Mutex
+// SettingsStore manages settings persistence, caching, and atomic mutations.
+// Create with NewSettingsStore and inject into components that need settings access.
+type SettingsStore struct {
+	mu          sync.Mutex
+	cache       *Settings
+	lastModTime int64
+}
 
-// settingsCache holds the last-loaded settings to avoid re-reading disk on
-// every hot-path request (ListTools, CallTool). Updated by WithSettings and
-// ReloadSettings. Guarded by settingsMu.
-var settingsCache *Settings
+// NewSettingsStore creates a new settings store.
+func NewSettingsStore() *SettingsStore {
+	return &SettingsStore{}
+}
 
 // settingsDir returns the platform config directory for relay.
 func settingsDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir, _ = os.UserHomeDir()
-	}
-	return filepath.Join(dir, "relay")
+	return bridge.ConfigDir()
 }
 
 // settingsPath returns the full path to settings.json.
@@ -44,7 +47,7 @@ func defaultSettings() *Settings {
 	}
 }
 
-// loadSettingsInternal reads settings from disk. Caller must hold settingsMu.
+// loadSettingsInternal reads settings from disk. Caller must hold the mutex.
 func loadSettingsInternal() *Settings {
 	data, err := os.ReadFile(settingsPath())
 	if err != nil {
@@ -77,7 +80,7 @@ func loadSettingsInternal() *Settings {
 }
 
 // saveSettingsInternal writes settings to disk atomically via temp file + rename.
-// Caller must hold settingsMu.
+// Caller must hold the mutex.
 func saveSettingsInternal(s *Settings) error {
 	dir := settingsDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -102,104 +105,147 @@ func saveSettingsInternal(s *Settings) error {
 }
 
 // ensureAdminSecret generates an AdminSecret if one is not already set.
-func ensureAdminSecret(s *Settings) {
+func ensureAdminSecret(s *Settings) error {
 	if s.AdminSecret != "" {
-		return
+		return nil
 	}
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err == nil {
-		s.AdminSecret = hex.EncodeToString(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Errorf("generate admin secret: %w", err)
 	}
+	s.AdminSecret = hex.EncodeToString(b[:])
+	return nil
 }
 
-// deepCopySettings returns a deep copy of the settings, ensuring slice mutations
-// in the copy cannot corrupt the original's underlying arrays.
+// deepCopySettings returns a deep copy of the settings, ensuring slice and map
+// mutations in the copy cannot corrupt the original's underlying data.
 func deepCopySettings(s *Settings) *Settings {
 	cp := *s
 
 	cp.Tokens = make([]StoredToken, len(s.Tokens))
-	copy(cp.Tokens, s.Tokens)
+	for i, tok := range s.Tokens {
+		cp.Tokens[i] = tok
+		if tok.Permissions != nil {
+			cp.Tokens[i].Permissions = make(map[string]Permission, len(tok.Permissions))
+			for k, v := range tok.Permissions {
+				cp.Tokens[i].Permissions[k] = v
+			}
+		}
+		if tok.DisabledTools != nil {
+			cp.Tokens[i].DisabledTools = make(map[string][]string, len(tok.DisabledTools))
+			for k, v := range tok.DisabledTools {
+				names := make([]string, len(v))
+				copy(names, v)
+				cp.Tokens[i].DisabledTools[k] = names
+			}
+		}
+		if tok.Context != nil {
+			cp.Tokens[i].Context = make(map[string]json.RawMessage, len(tok.Context))
+			for k, v := range tok.Context {
+				raw := make(json.RawMessage, len(v))
+				copy(raw, v)
+				cp.Tokens[i].Context[k] = raw
+			}
+		}
+	}
 
 	cp.ExternalMcps = make([]ExternalMcp, len(s.ExternalMcps))
-	copy(cp.ExternalMcps, s.ExternalMcps)
+	for i, m := range s.ExternalMcps {
+		cp.ExternalMcps[i] = m
+		if m.Env != nil {
+			cp.ExternalMcps[i].Env = make(map[string]string, len(m.Env))
+			for k, v := range m.Env {
+				cp.ExternalMcps[i].Env[k] = v
+			}
+		}
+		if m.DiscoveredTools != nil {
+			cp.ExternalMcps[i].DiscoveredTools = make([]ToolInfo, len(m.DiscoveredTools))
+			copy(cp.ExternalMcps[i].DiscoveredTools, m.DiscoveredTools)
+		}
+	}
 
 	cp.Services = make([]ServiceConfig, len(s.Services))
-	copy(cp.Services, s.Services)
+	for i, svc := range s.Services {
+		cp.Services[i] = svc
+		if svc.Env != nil {
+			cp.Services[i].Env = make(map[string]string, len(svc.Env))
+			for k, v := range svc.Env {
+				cp.Services[i].Env[k] = v
+			}
+		}
+	}
 
 	return &cp
 }
 
-// GetSettings returns a deep copy of the cached settings (or reads from disk
-// on first call). Cheap on the hot path. The returned *Settings is a distinct
-// snapshot safe for concurrent read access and slice mutation without holding
-// the lock. Does not generate or persist an admin secret.
-func GetSettings() *Settings {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
-	if settingsCache == nil {
-		settingsCache = loadSettingsInternal()
+// ---------------------------------------------------------------------------
+// SettingsStore methods
+// ---------------------------------------------------------------------------
+
+// Get returns a deep copy of the cached settings (or reads from disk on first
+// call). The returned *Settings is safe for concurrent read and mutation.
+func (ss *SettingsStore) Get() *Settings {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.cache == nil {
+		ss.cache = loadSettingsInternal()
 	}
-	return deepCopySettings(settingsCache)
+	return deepCopySettings(ss.cache)
 }
 
-// ReloadSettings always reads from disk and updates the cache.
-// Returns a deep-copy snapshot, same as Settings.
-// Use when external changes are expected (reconcile, reload, status poll).
-func ReloadSettings() *Settings {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
+// Reload always reads from disk and updates the cache.
+func (ss *SettingsStore) Reload() *Settings {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	s := loadSettingsInternal()
-	settingsCache = s
+	ss.cache = s
 	return deepCopySettings(s)
 }
 
-// lastModTime tracks the settings file's modtime for change detection.
-// Guarded by settingsMu.
-var lastModTime int64
-
 // ReloadIfChanged checks the settings file modtime and reloads only if it changed.
 // Returns the new settings if reloaded, or nil if unchanged.
-func ReloadIfChanged() *Settings {
+func (ss *SettingsStore) ReloadIfChanged() *Settings {
 	info, err := os.Stat(settingsPath())
 	if err != nil {
 		return nil
 	}
 	mt := info.ModTime().UnixNano()
 
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 
-	if mt == lastModTime {
+	if mt == ss.lastModTime {
 		return nil
 	}
-	lastModTime = mt
+	ss.lastModTime = mt
 	s := loadSettingsInternal()
-	settingsCache = s
+	ss.cache = s
 	return deepCopySettings(s)
 }
 
-// WithSettings atomically loads settings, calls fn for mutation, then saves.
+// With atomically loads settings, calls fn for mutation, then saves.
 // Updates the in-memory cache on success.
-func WithSettings(fn func(s *Settings)) error {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
+func (ss *SettingsStore) With(fn func(s *Settings)) error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	s := loadSettingsInternal()
-	ensureAdminSecret(s)
+	if err := ensureAdminSecret(s); err != nil {
+		return err
+	}
 	fn(s)
 	if err := saveSettingsInternal(s); err != nil {
 		slog.Error("failed to save settings", "error", err)
 		return err
 	}
-	settingsCache = s
+	ss.cache = s
 	return nil
 }
 
-// WithSettingsAndNotify atomically mutates settings, then sends a bridge
-// notification in the background using the admin secret. Use this for the
-// common "mutate settings + notify tray app" pattern.
-func WithSettingsAndNotify(fn func(s *Settings), notify func(secret string) error) error {
+// WithAndNotify atomically mutates settings, then sends a bridge notification
+// in the background using the admin secret.
+func (ss *SettingsStore) WithAndNotify(fn func(s *Settings), notify func(secret string) error) error {
 	var secret string
-	err := WithSettings(func(s *Settings) {
+	err := ss.With(func(s *Settings) {
 		fn(s)
 		secret = s.AdminSecret
 	})
@@ -207,4 +253,27 @@ func WithSettingsAndNotify(fn func(s *Settings), notify func(secret string) erro
 		go func() { _ = notify(secret) }()
 	}
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Global convenience functions (delegate to defaultStore)
+// ---------------------------------------------------------------------------
+
+var defaultStore = NewSettingsStore()
+
+// GetSettings returns a deep copy of the cached settings.
+func GetSettings() *Settings { return defaultStore.Get() }
+
+// ReloadSettings always reads from disk and updates the cache.
+func ReloadSettings() *Settings { return defaultStore.Reload() }
+
+// ReloadIfChanged reloads settings from disk only if the file's modtime changed.
+func ReloadIfChanged() *Settings { return defaultStore.ReloadIfChanged() }
+
+// WithSettings atomically loads, mutates, and saves settings.
+func WithSettings(fn func(s *Settings)) error { return defaultStore.With(fn) }
+
+// WithSettingsAndNotify atomically mutates settings and sends a bridge notification.
+func WithSettingsAndNotify(fn func(s *Settings), notify func(secret string) error) error {
+	return defaultStore.WithAndNotify(fn, notify)
 }

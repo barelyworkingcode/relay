@@ -25,6 +25,7 @@ type App struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
+	store        *SettingsStore
 	settings     *Settings
 	platform     Platform
 	extMgr       *ExternalMcpManager
@@ -66,23 +67,25 @@ func runTrayApp() {
 	platform.Init()
 	slog.Info("platform initialized")
 
+	store := NewSettingsStore()
+
 	// Ensure admin secret is generated and persisted on first launch.
-	WithSettings(func(s *Settings) {})
-	settings := GetSettings()
+	store.With(func(s *Settings) {})
+	settings := store.Get()
 	slog.Info("settings loaded")
 
 	// External MCP manager with injected callbacks for settings persistence.
 	extMgr := NewExternalMcpManager(
 		// onDiscover: persist discovered tools and context schema.
 		func(id string, tools []ToolInfo, schema json.RawMessage) {
-			WithSettings(func(s *Settings) {
+			store.With(func(s *Settings) {
 				s.UpdateDiscoveredTools(id, tools)
 				s.UpdateContextSchema(id, schema)
 			})
 		},
 		// onTokenRefresh: persist refreshed OAuth tokens.
 		func(mcpID string, oauth *OAuthState) {
-			WithSettings(func(s *Settings) { s.UpdateOAuthState(mcpID, oauth) })
+			store.With(func(s *Settings) { s.UpdateOAuthState(mcpID, oauth) })
 		},
 	)
 
@@ -91,6 +94,7 @@ func runTrayApp() {
 	app := &App{
 		ctx:      ctx,
 		cancel:   cancel,
+		store:    store,
 		settings: settings,
 		platform: platform,
 		extMgr:   extMgr,
@@ -100,6 +104,7 @@ func runTrayApp() {
 
 	// Create and start bridge server.
 	router := &appRouter{
+		store:    store,
 		tools:    extMgr,
 		services: app.registry,
 		onChange: app.onExternalChange,
@@ -114,7 +119,7 @@ func runTrayApp() {
 	slog.Info("bridge server started")
 
 	// Start external MCPs.
-	extMgr.StartAll(settings.ExternalMcps)
+	extMgr.StartAll(ctx, settings.ExternalMcps)
 
 	// Start autostart services.
 	app.registry.StartAllAutostart(settings.Services)
@@ -177,7 +182,7 @@ func (a *App) statusPoller() {
 
 		a.registry.CleanupDead()
 
-		s := ReloadIfChanged()
+		s := a.store.ReloadIfChanged()
 
 		a.platform.DispatchToMain(func() {
 			if s != nil {
@@ -190,7 +195,7 @@ func (a *App) statusPoller() {
 
 // updateMenu rebuilds the tray menu JSON and pushes it to the platform.
 func (a *App) updateMenu() {
-	a.updateMenuWithSettings(GetSettings())
+	a.updateMenuWithSettings(a.store.Get())
 }
 
 func (a *App) updateMenuWithSettings(s *Settings) {
@@ -248,7 +253,7 @@ func (a *App) onMenuClick(itemID int) {
 }
 
 func (a *App) toggleService(index int) {
-	s := GetSettings()
+	s := a.store.Get()
 	if index < 0 || index >= len(s.Services) {
 		return
 	}

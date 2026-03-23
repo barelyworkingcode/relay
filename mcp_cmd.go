@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -90,7 +91,7 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 
 	fmt.Printf("discovering HTTP MCP %q at %s...\n", name, mcpURL)
 
-	result, err := DiscoverHTTPMcp(name, id, mcpURL, nil)
+	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -105,7 +106,7 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 			result.OAuthState = nil
 		} else {
 			fmt.Println("authentication successful, retrying discovery...")
-			result, err = DiscoverHTTPMcp(name, id, mcpURL, oauth)
+			result, err = DiscoverHTTPMcp(context.Background(), name, id, mcpURL, oauth)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error after auth: %v\n", err)
 				// Still register with the OAuth state.

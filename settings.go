@@ -162,6 +162,8 @@ func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 
 // MergeServiceDefaults fills zero-value fields in cfg from the existing service
 // with the same ID. Useful when CLI flags only specify fields being changed.
+// Autostart is intentionally not merged: its zero value (false) is
+// indistinguishable from "user explicitly set false", so the CLI flag always wins.
 // Does not save; use within WithSettings.
 func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	existing, _ := s.findServiceByID(cfg.ID)

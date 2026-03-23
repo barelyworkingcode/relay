@@ -40,26 +40,12 @@ func makeSettings(perms map[string]Permission, disabled map[string][]string, con
 	}
 }
 
-// setCache installs s into the package-level settingsCache and registers
-// cleanup to nil it out when the test finishes.
-func setCache(t *testing.T, s *Settings) {
-	t.Helper()
-	settingsMu.Lock()
-	settingsCache = s
-	settingsMu.Unlock()
-	t.Cleanup(func() {
-		settingsMu.Lock()
-		settingsCache = nil
-		settingsMu.Unlock()
-	})
-}
-
-// newTestRouter creates an appRouter with the given ExternalMcpManager, installs
-// settings into the cache, and returns the appRouter.
+// newTestRouter creates an appRouter with the given settings and ExternalMcpManager.
 func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRouter {
 	t.Helper()
-	setCache(t, s)
+	store := &SettingsStore{cache: s}
 	return &appRouter{
+		store:    store,
 		tools:    mgr,
 		services: NewServiceRegistry(),
 		onChange: func() {},
