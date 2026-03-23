@@ -84,7 +84,7 @@ type httpMcpConn struct {
 	url        string
 	sessionID  string
 	httpClient *http.Client
-	mu         sync.Mutex // protects request sending (nextID, sessionID)
+	mu         sync.Mutex // protects sessionID and oauth.accessToken snapshots
 	tokenMu    sync.Mutex // protects OAuth token refresh (separate to avoid blocking requests during refresh)
 
 	oauth httpOAuth
@@ -134,14 +134,15 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	return nil
 }
 
-// setHeaders applies common headers (Content-Type, Authorization, Session-Id) to an HTTP request.
-func (c *httpMcpConn) setHeaders(req *http.Request) {
+// setHeadersFrom applies common headers using pre-snapshotted values, avoiding
+// the need to hold a lock during HTTP I/O.
+func (c *httpMcpConn) setHeadersFrom(req *http.Request, accessToken, sessionID string) {
 	req.Header.Set("Content-Type", "application/json")
-	if c.oauth.accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.oauth.accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 }
 
@@ -150,9 +151,6 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	if err := c.refreshTokenIfNeeded(); err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	id := c.allocID()
 	req := jsonrpc.Request{
@@ -167,11 +165,17 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 		return nil, err
 	}
 
+	// Snapshot session state under lock, then release before HTTP I/O.
+	c.mu.Lock()
+	accessToken := c.oauth.accessToken
+	sessionID := c.sessionID
+	c.mu.Unlock()
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request: %w", err)
 	}
-	c.setHeaders(httpReq)
+	c.setHeadersFrom(httpReq, accessToken, sessionID)
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -188,9 +192,11 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// Capture session ID from response.
+	// Update session ID from response under lock.
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.mu.Lock()
 		c.sessionID = sid
+		c.mu.Unlock()
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -248,9 +254,6 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 }
 
 func (c *httpMcpConn) SendNotification(method string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	req := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  method,
@@ -261,12 +264,18 @@ func (c *httpMcpConn) SendNotification(method string) {
 		return
 	}
 
+	// Snapshot session state under lock, then release before HTTP I/O.
+	c.mu.Lock()
+	accessToken := c.oauth.accessToken
+	sessionID := c.sessionID
+	c.mu.Unlock()
+
 	httpReq, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
 	}
-	c.setHeaders(httpReq)
+	c.setHeadersFrom(httpReq, accessToken, sessionID)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -277,7 +286,12 @@ func (c *httpMcpConn) SendNotification(method string) {
 }
 
 func (c *httpMcpConn) Close() {
-	if c.sessionID == "" {
+	c.mu.Lock()
+	accessToken := c.oauth.accessToken
+	sessionID := c.sessionID
+	c.mu.Unlock()
+
+	if sessionID == "" {
 		return
 	}
 	// Send DELETE to end session.
@@ -285,7 +299,7 @@ func (c *httpMcpConn) Close() {
 	if err != nil {
 		return
 	}
-	c.setHeaders(req)
+	c.setHeadersFrom(req, accessToken, sessionID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -343,7 +357,7 @@ func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth 
 
 	conn := newHTTPMcpConn(cfg)
 
-	result, err := mcpHandshake(ctx, conn)
+	result, err := discoverMcp(ctx, conn, cfg)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// No session was established, so no close/DELETE needed.
@@ -354,7 +368,5 @@ func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth 
 	}
 	conn.Close()
 
-	cfg.DiscoveredTools = result.ToolInfos
-	cfg.ContextSchema = result.ContextSchema
-	return &cfg, nil
+	return result, nil
 }

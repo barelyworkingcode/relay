@@ -255,25 +255,3 @@ func (ss *SettingsStore) WithAndNotify(fn func(s *Settings), notify func(secret 
 	return err
 }
 
-// ---------------------------------------------------------------------------
-// Global convenience functions (delegate to defaultStore)
-// ---------------------------------------------------------------------------
-
-var defaultStore = NewSettingsStore()
-
-// GetSettings returns a deep copy of the cached settings.
-func GetSettings() *Settings { return defaultStore.Get() }
-
-// ReloadSettings always reads from disk and updates the cache.
-func ReloadSettings() *Settings { return defaultStore.Reload() }
-
-// ReloadIfChanged reloads settings from disk only if the file's modtime changed.
-func ReloadIfChanged() *Settings { return defaultStore.ReloadIfChanged() }
-
-// WithSettings atomically loads, mutates, and saves settings.
-func WithSettings(fn func(s *Settings)) error { return defaultStore.With(fn) }
-
-// WithSettingsAndNotify atomically mutates settings and sends a bridge notification.
-func WithSettingsAndNotify(fn func(s *Settings), notify func(secret string) error) error {
-	return defaultStore.WithAndNotify(fn, notify)
-}

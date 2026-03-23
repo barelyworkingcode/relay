@@ -14,14 +14,15 @@ import (
 )
 
 func runMcpCommand(args []string) {
+	store := NewSettingsStore()
 	runSubcommands("mcp", []cliSubcommand{
-		{"register", mcpRegister},
-		{"unregister", mcpUnregister},
-		{"list", func(_ []string) { mcpList() }},
+		{"register", func(a []string) { mcpRegister(store, a) }},
+		{"unregister", func(a []string) { mcpUnregister(store, a) }},
+		{"list", func(_ []string) { mcpList(store) }},
 	}, args)
 }
 
-func mcpRegister(args []string) {
+func mcpRegister(store *SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
 	name := fs.String("name", "", "display name (required)")
 	command := fs.String("command", "", "command to run")
@@ -38,7 +39,7 @@ func mcpRegister(args []string) {
 	}
 
 	if *transport == "http" {
-		mcpRegisterHTTP(*name, *id, *mcpURL)
+		mcpRegisterHTTP(store, *name, *id, *mcpURL)
 		return
 	}
 
@@ -67,7 +68,7 @@ func mcpRegister(args []string) {
 
 	var updated bool
 	var adminSecret string
-	WithSettings(func(s *Settings) {
+	store.With(func(s *Settings) {
 		adminSecret = s.AdminSecret
 		updated = s.UpsertExternalMcp(cfg)
 	})
@@ -76,7 +77,7 @@ func mcpRegister(args []string) {
 	notifyMcpChange(updated, resolvedID, adminSecret)
 }
 
-func mcpRegisterHTTP(name, id, mcpURL string) {
+func mcpRegisterHTTP(store *SettingsStore, name, id, mcpURL string) {
 	if mcpURL == "" {
 		exitError("--url is required for HTTP transport")
 	}
@@ -93,8 +94,7 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 
 	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		exitError("%v", err)
 	}
 
 	if errors.Is(err, ErrAuthRequired) {
@@ -126,12 +126,12 @@ func mcpRegisterHTTP(name, id, mcpURL string) {
 
 	var updated bool
 	var adminSecret string
-	WithSettings(func(s *Settings) {
+	store.With(func(s *Settings) {
 		adminSecret = s.AdminSecret
 		updated = s.UpsertExternalMcp(*result)
 	})
 
-	printUpsertResultWithTools("mcp", name, id, updated, len(result.DiscoveredTools))
+	printUpsertResult("mcp", name, id, updated, len(result.DiscoveredTools))
 	notifyMcpChange(updated, id, adminSecret)
 }
 
@@ -151,19 +151,19 @@ func openBrowserCmd(url string) {
 	}
 }
 
-func mcpUnregister(args []string) {
+func mcpUnregister(store *SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp unregister", flag.ExitOnError)
 	id := fs.String("id", "", "MCP ID")
 	name := fs.String("name", "", "MCP display name")
 	fs.Parse(args)
 
-	_, adminSecret := resolveAndRemove("mcp", id, name,
+	_, adminSecret := resolveAndRemove(store, "mcp", id, name,
 		(*Settings).ResolveMcpID, (*Settings).RemoveExternalMcp)
 	_ = bridge.SendReconcile(adminSecret)
 }
 
-func mcpList() {
-	s := GetSettings()
+func mcpList(store *SettingsStore) {
+	s := store.Get()
 
 	if len(s.ExternalMcps) == 0 {
 		fmt.Println("no mcp servers registered")

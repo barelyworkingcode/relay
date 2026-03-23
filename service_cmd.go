@@ -11,14 +11,15 @@ import (
 )
 
 func runServiceCommand(args []string) {
+	store := NewSettingsStore()
 	runSubcommands("service", []cliSubcommand{
-		{"register", serviceRegister},
-		{"unregister", serviceUnregister},
-		{"list", func(_ []string) { serviceList() }},
+		{"register", func(a []string) { serviceRegister(store, a) }},
+		{"unregister", func(a []string) { serviceUnregister(store, a) }},
+		{"list", func(_ []string) { serviceList(store) }},
 	}, args)
 }
 
-func serviceRegister(args []string) {
+func serviceRegister(store *SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service register", flag.ExitOnError)
 	name := fs.String("name", "", "display name (required)")
 	command := fs.String("command", "", "command to run (required)")
@@ -47,8 +48,7 @@ func serviceRegister(args []string) {
 	if resolvedWorkdir != "" {
 		abs, err := filepath.Abs(resolvedWorkdir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: could not resolve workdir: %v\n", err)
-			os.Exit(1)
+			exitError("could not resolve workdir: %v", err)
 		}
 		resolvedWorkdir = abs
 	}
@@ -71,7 +71,7 @@ func serviceRegister(args []string) {
 
 	var updated bool
 	var adminSecret string
-	WithSettings(func(s *Settings) {
+	store.With(func(s *Settings) {
 		adminSecret = s.AdminSecret
 		s.MergeServiceDefaults(&config)
 		updated = s.UpsertService(config)
@@ -84,18 +84,18 @@ func serviceRegister(args []string) {
 	}
 }
 
-func serviceUnregister(args []string) {
+func serviceUnregister(store *SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service unregister", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
 	fs.Parse(args)
 
-	_, _ = resolveAndRemove("service", id, name,
+	_, _ = resolveAndRemove(store, "service", id, name,
 		(*Settings).ResolveServiceID, (*Settings).RemoveService)
 }
 
-func serviceList() {
-	s := GetSettings()
+func serviceList(store *SettingsStore) {
+	s := store.Get()
 
 	if len(s.Services) == 0 {
 		fmt.Println("no services registered")

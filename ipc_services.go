@@ -9,22 +9,8 @@ import (
 // Service IPC handlers
 // ---------------------------------------------------------------------------
 
-// serviceConfigFromMsg converts an IPC service message to a ServiceConfig.
-func serviceConfigFromMsg(msg *ipcServiceMsg, id string) ServiceConfig {
-	return ServiceConfig{
-		ID:          id,
-		DisplayName: msg.DisplayName,
-		Command:     msg.Command,
-		Args:        msg.Args,
-		Env:         msg.Env,
-		WorkingDir:  msg.WorkingDir,
-		Autostart:   msg.Autostart,
-		URL:         msg.URL,
-	}
-}
-
 func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[ipcServiceMsg](raw, "add_service")
+	msg, ok := unmarshalIPC[ServiceConfig](raw, "add_service")
 	if !ok {
 		return
 	}
@@ -34,9 +20,13 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	config := serviceConfigFromMsg(msg, id)
+	config := *msg
+	config.ID = id
 
-	ctx.Store.With(func(s *Settings) { s.AddService(config) })
+	if err := ctx.Store.With(func(s *Settings) { s.AddService(config) }); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return
+	}
 
 	if msg.Autostart {
 		if err := ctx.Registry.Start(&config); err != nil {
@@ -57,21 +47,27 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	ctx.Registry.Stop(msg.ID)
-	ctx.Store.With(func(s *Settings) { s.RemoveService(msg.ID) })
+	if err := ctx.Store.With(func(s *Settings) { s.RemoveService(msg.ID) }); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return
+	}
 	ctx.UpdateMenu()
 
 	ctx.UI.EmitEvent("onServiceRemoved", msg.ID)
 }
 
 func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[ipcServiceMsg](raw, "update_service")
+	msg, ok := unmarshalIPC[ServiceConfig](raw, "update_service")
 	if !ok || msg.ID == "" {
 		return
 	}
 
-	config := serviceConfigFromMsg(msg, msg.ID)
+	config := *msg
 
-	ctx.Store.With(func(s *Settings) { s.UpdateService(config) })
+	if err := ctx.Store.With(func(s *Settings) { s.UpdateService(config) }); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return
+	}
 	ctx.UpdateMenu()
 }
 
@@ -80,11 +76,13 @@ func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	ctx.Store.With(func(s *Settings) {
+	if err := ctx.Store.With(func(s *Settings) {
 		if svc, _ := s.findServiceByID(msg.ID); svc != nil {
 			svc.Autostart = msg.Autostart
 		}
-	})
+	}); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+	}
 }
 
 // ipcStartService starts a service synchronously on the IPC thread.

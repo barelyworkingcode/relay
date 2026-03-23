@@ -9,6 +9,18 @@ import (
 	"sync"
 )
 
+// ServiceManager abstracts service lifecycle operations for testability.
+type ServiceManager interface {
+	Start(config *ServiceConfig) error
+	Stop(id string)
+	Reload(id string, cfg *ServiceConfig) error
+	IsRunning(id string) bool
+	RunningIDs() []string
+	CleanupDead()
+	StartAllAutostart(configs []ServiceConfig)
+	StopAll()
+}
+
 // serviceProcess bundles a running process with its log file for cleanup.
 type serviceProcess struct {
 	cmd     *exec.Cmd
