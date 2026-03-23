@@ -1207,6 +1207,15 @@ window.onServiceStatus = function(runningIds) {
     if (state.page === 'services') render();
 };
 
+window.onSettingsError = function(msg) {
+    console.error('Settings save error:', msg);
+    var banner = document.createElement('div');
+    banner.textContent = 'Failed to save settings: ' + msg;
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:10px;background:#c0392b;color:#fff;text-align:center;z-index:9999;font-size:13px';
+    document.body.appendChild(banner);
+    setTimeout(function() { banner.remove(); }, 5000);
+};
+
 window.onSettingsReloaded = function(data) {
     state.tokens = data.tokens;
     state.externalMcps = data.external_mcps;

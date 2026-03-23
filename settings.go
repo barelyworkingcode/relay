@@ -16,7 +16,7 @@ type Settings struct {
 // ---------------------------------------------------------------------------
 
 // AddExternalMcp adds an external MCP config. New MCPs default to PermOff for
-// existing tokens (least privilege). Does not save; use within WithSettings.
+// existing tokens (least privilege). Does not save; use within store.With.
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.ExternalMcps = append(s.ExternalMcps, mcp)
 	for i := range s.Tokens {
@@ -31,7 +31,7 @@ func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 
 // UpdateExternalMcp replaces an external MCP config by ID.
 // Preserves DiscoveredTools from the existing entry if the new one has none.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 	existing, idx := s.findMcpByID(cfg.ID)
 	if existing == nil {
@@ -44,7 +44,7 @@ func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 }
 
 // RemoveExternalMcp removes an external MCP and cleans up token permissions.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) RemoveExternalMcp(id string) {
 	filtered := make([]ExternalMcp, 0, len(s.ExternalMcps))
 	for _, m := range s.ExternalMcps {
@@ -61,7 +61,7 @@ func (s *Settings) RemoveExternalMcp(id string) {
 
 // UpsertExternalMcp adds or updates an external MCP config.
 // Returns true if it updated an existing entry.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpsertExternalMcp(cfg ExternalMcp) bool {
 	if _, idx := s.findMcpByID(cfg.ID); idx >= 0 {
 		s.UpdateExternalMcp(cfg)
@@ -89,7 +89,7 @@ func (s *Settings) ResolveMcpID(id, name string) string {
 }
 
 // UpdateOAuthState updates the OAuth state for an HTTP MCP.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
 		mcp.OAuthState = oauth
@@ -97,7 +97,7 @@ func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 }
 
 // UpdateDiscoveredTools updates the persisted tool list for an external MCP.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
 	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
 		mcp.DiscoveredTools = tools
@@ -105,7 +105,7 @@ func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
 }
 
 // UpdateContextSchema updates the persisted context schema for an external MCP.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
 	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
 		mcp.ContextSchema = schema
@@ -125,12 +125,12 @@ func (s *Settings) AllExternalMcpIDs() []string {
 // Service CRUD
 // ---------------------------------------------------------------------------
 
-// AddService adds a service config. Does not save; use within WithSettings.
+// AddService adds a service config. Does not save; use within store.With.
 func (s *Settings) AddService(config ServiceConfig) {
 	s.Services = append(s.Services, config)
 }
 
-// RemoveService removes a service by ID. Does not save; use within WithSettings.
+// RemoveService removes a service by ID. Does not save; use within store.With.
 func (s *Settings) RemoveService(id string) {
 	filtered := make([]ServiceConfig, 0, len(s.Services))
 	for _, svc := range s.Services {
@@ -141,7 +141,7 @@ func (s *Settings) RemoveService(id string) {
 	s.Services = filtered
 }
 
-// UpdateService replaces a service config by ID. Does not save; use within WithSettings.
+// UpdateService replaces a service config by ID. Does not save; use within store.With.
 func (s *Settings) UpdateService(config ServiceConfig) {
 	if _, idx := s.findServiceByID(config.ID); idx >= 0 {
 		s.Services[idx] = config
@@ -150,7 +150,7 @@ func (s *Settings) UpdateService(config ServiceConfig) {
 
 // UpsertService adds or updates a service config.
 // Returns true if it updated an existing entry.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 	if _, idx := s.findServiceByID(cfg.ID); idx >= 0 {
 		s.Services[idx] = cfg
@@ -164,7 +164,7 @@ func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 // with the same ID. Useful when CLI flags only specify fields being changed.
 // Autostart is intentionally not merged: its zero value (false) is
 // indistinguishable from "user explicitly set false", so the CLI flag always wins.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	existing, _ := s.findServiceByID(cfg.ID)
 	if existing == nil {

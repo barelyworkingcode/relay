@@ -17,6 +17,12 @@ import (
 	"relaygo/mcp"
 )
 
+// mcpRequestTimeout is the maximum time to wait for a JSON-RPC response from any MCP.
+const mcpRequestTimeout = 5 * time.Minute
+
+// discoveryTimeout is the maximum time for a one-shot MCP discovery handshake.
+const discoveryTimeout = 30 * time.Second
+
 // McpConnection abstracts a connection to an external MCP server (stdio or HTTP).
 type McpConnection interface {
 	SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error)
@@ -241,7 +247,8 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 		desired[mcps[i].ID] = &mcps[i]
 	}
 
-	// Stop removed.
+	// Compute both toStop and toStart in a single critical section to avoid
+	// TOCTOU issues between separate lock acquisitions.
 	m.mu.RLock()
 	var toStop []string
 	for id := range m.conns {
@@ -249,14 +256,6 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 			toStop = append(toStop, id)
 		}
 	}
-	m.mu.RUnlock()
-
-	for _, id := range toStop {
-		m.Stop(id)
-	}
-
-	// Start missing.
-	m.mu.RLock()
 	var toStart []*ExternalMcp
 	for _, mcpCfg := range mcps {
 		if _, ok := m.conns[mcpCfg.ID]; !ok {
@@ -266,6 +265,9 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 	}
 	m.mu.RUnlock()
 
+	for _, id := range toStop {
+		m.Stop(id)
+	}
 	for _, cfg := range toStart {
 		if err := m.startOne(ctx, cfg); err != nil {
 			slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
@@ -365,6 +367,19 @@ func (m *ExternalMcpManager) StopAll() {
 	}
 }
 
+// discoverMcp performs a handshake on an already-connected McpConnection and
+// populates the given ExternalMcp config with discovered tools and context schema.
+// Shared by both stdio and HTTP discovery paths.
+func discoverMcp(ctx context.Context, conn McpConnection, base ExternalMcp) (*ExternalMcp, error) {
+	result, err := mcpHandshake(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	base.DiscoveredTools = result.ToolInfos
+	base.ContextSchema = result.ContextSchema
+	return &base, nil
+}
+
 // DiscoverExternalMcp performs a one-shot spawn, handshake, tool listing, then kills.
 func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
 	conn, err := spawnStdioConn(command, args, env, nil)
@@ -377,30 +392,14 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 	discoverCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
-	result, err := mcpHandshake(discoverCtx, conn)
-	if err != nil {
-		return nil, err
-	}
-	return &ExternalMcp{
-		ID:              id,
-		DisplayName:     displayName,
-		Command:         command,
-		Args:            args,
-		Env:             env,
-		DiscoveredTools: result.ToolInfos,
-		ContextSchema:   result.ContextSchema,
-	}, nil
+	return discoverMcp(discoverCtx, conn, ExternalMcp{
+		ID:          id,
+		DisplayName: displayName,
+		Command:     command,
+		Args:        args,
+		Env:         env,
+	})
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-// mcpRequestTimeout is the maximum time to wait for a JSON-RPC response from any MCP.
-const mcpRequestTimeout = 5 * time.Minute
-
-// discoveryTimeout is the maximum time for a one-shot MCP discovery handshake.
-const discoveryTimeout = 30 * time.Second
 
 // ---------------------------------------------------------------------------
 // stdio connection implementation

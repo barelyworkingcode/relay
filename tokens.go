@@ -74,7 +74,7 @@ func (s *Settings) GetPermission(tokenHash, serviceName string) Permission {
 	return PermOn
 }
 
-// DeleteToken removes a token by its hash. Does not save; use within WithSettings.
+// DeleteToken removes a token by its hash. Does not save; use within store.With.
 func (s *Settings) DeleteToken(hash string) {
 	filtered := make([]StoredToken, 0, len(s.Tokens))
 	for _, t := range s.Tokens {
@@ -85,12 +85,12 @@ func (s *Settings) DeleteToken(hash string) {
 	s.Tokens = filtered
 }
 
-// RevokeAll removes all tokens. Does not save; use within WithSettings.
+// RevokeAll removes all tokens. Does not save; use within store.With.
 func (s *Settings) RevokeAll() {
 	s.Tokens = []StoredToken{}
 }
 
-// UpdatePermission sets a specific permission. Does not save; use within WithSettings.
+// UpdatePermission sets a specific permission. Does not save; use within store.With.
 func (s *Settings) UpdatePermission(hash, service string, perm Permission) {
 	tok, _ := s.findTokenByHash(hash)
 	if tok == nil {
@@ -117,7 +117,7 @@ func (s *Settings) IsToolDisabled(tokenHash, mcpID, toolName string) bool {
 }
 
 // SetToolDisabled enables or disables a specific tool for a token+MCP pair.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) {
 	tok, _ := s.findTokenByHash(hash)
 	if tok == nil {
@@ -150,7 +150,7 @@ func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) 
 }
 
 // SetAllToolsDisabled sets all tools for a token+MCP pair to disabled or enabled.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) SetAllToolsDisabled(hash, mcpID string, toolNames []string, disabled bool) {
 	tok, _ := s.findTokenByHash(hash)
 	if tok == nil {
@@ -170,7 +170,7 @@ func (s *Settings) SetAllToolsDisabled(hash, mcpID string, toolNames []string, d
 
 // SetContext sets per-MCP context for a token. Context is passed as _meta to
 // the external MCP on tool calls, enabling per-token restrictions like allowed_dirs.
-// Does not save; use within WithSettings.
+// Does not save; use within store.With.
 func (s *Settings) SetContext(hash, mcpID string, ctx json.RawMessage) {
 	tok, _ := s.findTokenByHash(hash)
 	if tok == nil {

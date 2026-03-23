@@ -26,10 +26,9 @@ type App struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	store        *SettingsStore
-	settings     *Settings
 	platform     Platform
 	extMgr       *ExternalMcpManager
-	registry     *ServiceRegistry
+	registry     ServiceManager
 	bridgeServer *bridge.BridgeServer
 	settingsOpen bool
 	cleanupOnce  sync.Once
@@ -95,7 +94,6 @@ func runTrayApp() {
 		ctx:      ctx,
 		cancel:   cancel,
 		store:    store,
-		settings: settings,
 		platform: platform,
 		extMgr:   extMgr,
 		registry: NewServiceRegistry(),

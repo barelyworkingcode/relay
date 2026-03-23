@@ -948,39 +948,16 @@ func TestDefaultSettings(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Settings cache: LoadSettings, LoadSettingsFromDisk, WithSettings
+// Settings cache: Get, Reload, With
 // ---------------------------------------------------------------------------
 
-// withTempSettingsDir sets up a temp directory as the settings dir and restores
-// the original after the test. It exploits the fact that settingsDir() uses
-// os.UserConfigDir(). We override XDG_CONFIG_HOME (linux) and redirect on macOS
-// by using a custom env variable. Since settingsDir() calls os.UserConfigDir()
-// which on macOS returns ~/Library/Application Support, we instead work around
-// this by writing directly to the real settingsPath and cleaning up.
-//
-// A cleaner approach: we use WithSettings (which writes to disk + updates cache)
-// and then verify LoadSettings returns cached data.
-//
-// For true isolation we create a temp dir, write settings JSON there, and point
-// tests at the real functions. Since settingsDir()/settingsPath() are not
-// injectable, these tests use the actual config dir but clean up carefully.
-//
-// STRATEGY: We reset the cache, use WithSettings to write a known state, then
-// assert LoadSettings/LoadSettingsFromDisk behave correctly. After each test
-// we reset the cache. This tests the caching logic without needing to override
-// the file path.
+// These tests create fresh SettingsStore instances for each test, ensuring
+// isolation without needing to manipulate global state. Since settingsDir()
+// and settingsPath() are not injectable, these tests use the actual config
+// dir but clean up carefully.
 
 func TestSettingsCache(t *testing.T) {
-	// Save and restore cache state.
-	defaultStore.mu.Lock()
-	origCache := defaultStore.cache
-	defaultStore.cache = nil
-	defaultStore.mu.Unlock()
-	t.Cleanup(func() {
-		defaultStore.mu.Lock()
-		defaultStore.cache = origCache
-		defaultStore.mu.Unlock()
-	})
+	store := NewSettingsStore()
 
 	// Ensure the settings directory exists.
 	dir := settingsDir()
@@ -999,15 +976,13 @@ func TestSettingsCache(t *testing.T) {
 		}
 	})
 
-	t.Run("LoadSettings returns defaults when no file and no cache", func(t *testing.T) {
-		defaultStore.mu.Lock()
-		defaultStore.cache = nil
-		defaultStore.mu.Unlock()
+	t.Run("Get returns defaults when no file and no cache", func(t *testing.T) {
+		store = NewSettingsStore()
 		_ = os.Remove(sp)
 
-		s := GetSettings()
+		s := store.Get()
 		if s == nil {
-			t.Fatal("LoadSettings should never return nil")
+			t.Fatal("Get should never return nil")
 		}
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
@@ -1017,40 +992,33 @@ func TestSettingsCache(t *testing.T) {
 		}
 	})
 
-	t.Run("LoadSettings returns distinct snapshots on each call", func(t *testing.T) {
-		defaultStore.mu.Lock()
-		defaultStore.cache = nil
-		defaultStore.mu.Unlock()
+	t.Run("Get returns distinct snapshots on each call", func(t *testing.T) {
+		store = NewSettingsStore()
 
-		s1 := GetSettings()
-		s2 := GetSettings()
-		// Should be distinct pointers (snapshots), not the same object.
+		s1 := store.Get()
+		s2 := store.Get()
 		if s1 == s2 {
-			t.Fatal("LoadSettings should return distinct snapshot pointers")
+			t.Fatal("Get should return distinct snapshot pointers")
 		}
-		// But structurally equal.
 		if s1.Version != s2.Version || len(s1.Tokens) != len(s2.Tokens) {
 			t.Fatal("snapshots should be structurally equal")
 		}
 	})
 
-	t.Run("WithSettings writes to disk and updates cache", func(t *testing.T) {
-		defaultStore.mu.Lock()
-		defaultStore.cache = nil
-		defaultStore.mu.Unlock()
+	t.Run("With writes to disk and updates cache", func(t *testing.T) {
+		store = NewSettingsStore()
 
-		err := WithSettings(func(s *Settings) {
+		err := store.With(func(s *Settings) {
 			s.Tokens = append(s.Tokens, StoredToken{
 				Name: "cache-test",
 				Hash: "cache-test-hash",
 			})
 		})
 		if err != nil {
-			t.Fatalf("WithSettings failed: %v", err)
+			t.Fatalf("With failed: %v", err)
 		}
 
-		// Cache should now be populated.
-		s := GetSettings()
+		s := store.Get()
 		found := false
 		for _, tok := range s.Tokens {
 			if tok.Name == "cache-test" {
@@ -1059,10 +1027,9 @@ func TestSettingsCache(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatal("cached settings should contain token added by WithSettings")
+			t.Fatal("cached settings should contain token added by With")
 		}
 
-		// Also verify it was persisted to disk.
 		data, err := os.ReadFile(sp)
 		if err != nil {
 			t.Fatalf("failed to read settings from disk: %v", err)
@@ -1079,24 +1046,20 @@ func TestSettingsCache(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatal("disk settings should contain token added by WithSettings")
+			t.Fatal("disk settings should contain token added by With")
 		}
 	})
 
-	t.Run("LoadSettingsFromDisk refreshes cache from disk", func(t *testing.T) {
-		// First, set up some state via WithSettings.
-		defaultStore.mu.Lock()
-		defaultStore.cache = nil
-		defaultStore.mu.Unlock()
+	t.Run("Reload refreshes cache from disk", func(t *testing.T) {
+		store = NewSettingsStore()
 
-		err := WithSettings(func(s *Settings) {
+		err := store.With(func(s *Settings) {
 			s.Tokens = []StoredToken{{Name: "original", Hash: "orig-hash"}}
 		})
 		if err != nil {
-			t.Fatalf("WithSettings failed: %v", err)
+			t.Fatalf("With failed: %v", err)
 		}
 
-		// Now write directly to disk, bypassing cache.
 		modified := Settings{
 			Version: 1,
 			Tokens: []StoredToken{
@@ -1110,43 +1073,38 @@ func TestSettingsCache(t *testing.T) {
 			t.Fatalf("failed to write modified settings: %v", err)
 		}
 
-		// LoadSettings should return the OLD cached value.
-		s := GetSettings()
+		s := store.Get()
 		if len(s.Tokens) == 0 || s.Tokens[0].Name != "original" {
-			t.Fatal("LoadSettings should return cached (stale) value")
+			t.Fatal("Get should return cached (stale) value")
 		}
 
-		// LoadSettingsFromDisk should return the NEW disk value.
-		s = ReloadSettings()
+		s = store.Reload()
 		if len(s.Tokens) == 0 || s.Tokens[0].Name != "disk-written" {
-			t.Fatalf("LoadSettingsFromDisk should return fresh disk data, got %+v", s.Tokens)
+			t.Fatalf("Reload should return fresh disk data, got %+v", s.Tokens)
 		}
 
-		// Subsequent LoadSettings should now return the refreshed cache.
-		s = GetSettings()
+		s = store.Get()
 		if len(s.Tokens) == 0 || s.Tokens[0].Name != "disk-written" {
-			t.Fatal("LoadSettings after LoadSettingsFromDisk should return refreshed data")
+			t.Fatal("Get after Reload should return refreshed data")
 		}
 	})
 
-	t.Run("WithSettings generates AdminSecret if missing", func(t *testing.T) {
-		defaultStore.mu.Lock()
-		defaultStore.cache = nil
-		defaultStore.mu.Unlock()
+	t.Run("With generates AdminSecret if missing", func(t *testing.T) {
+		store = NewSettingsStore()
 		_ = os.Remove(sp)
 
-		err := WithSettings(func(s *Settings) {
+		err := store.With(func(s *Settings) {
 			// no-op mutation; ensureAdminSecret runs before fn.
 		})
 		if err != nil {
-			t.Fatalf("WithSettings failed: %v", err)
+			t.Fatalf("With failed: %v", err)
 		}
 
-		s := GetSettings()
+		s := store.Get()
 		if s.AdminSecret == "" {
-			t.Fatal("AdminSecret should be auto-generated by WithSettings")
+			t.Fatal("AdminSecret should be auto-generated by With")
 		}
-		if len(s.AdminSecret) != 32 { // 16 bytes -> 32 hex chars
+		if len(s.AdminSecret) != 32 {
 			t.Fatalf("AdminSecret should be 32 hex chars, got %d", len(s.AdminSecret))
 		}
 	})
@@ -1225,22 +1183,87 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	}
 }
 
+// TestDeepCopySettings_AllFieldsCovered uses reflection to verify that every
+// map and slice field in Settings (and nested types) is properly deep-copied.
+// This catches regressions when new fields are added but deepCopySettings is
+// not updated.
+func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
+	original := &Settings{
+		Version: 1,
+		Tokens: []StoredToken{{
+			Name:          "t1",
+			Hash:          "h1",
+			Permissions:   map[string]Permission{"x": PermOn},
+			DisabledTools: map[string][]string{"x": {"tool1"}},
+			Context:       map[string]json.RawMessage{"x": json.RawMessage(`{}`)},
+		}},
+		ExternalMcps: []ExternalMcp{{
+			ID:              "mcp1",
+			Env:             map[string]string{"K": "V"},
+			DiscoveredTools: []ToolInfo{{Name: "t"}},
+		}},
+		Services: []ServiceConfig{{
+			ID:  "svc1",
+			Env: map[string]string{"A": "B"},
+		}},
+	}
+
+	cp := deepCopySettings(original)
+
+	// Check top-level slices are different pointers.
+	checkSliceCopy(t, "Tokens", original.Tokens, cp.Tokens)
+	checkSliceCopy(t, "ExternalMcps", original.ExternalMcps, cp.ExternalMcps)
+	checkSliceCopy(t, "Services", original.Services, cp.Services)
+
+	// Check nested maps in Tokens.
+	checkMapCopy(t, "Tokens[0].Permissions", original.Tokens[0].Permissions, cp.Tokens[0].Permissions)
+	checkMapCopy(t, "Tokens[0].DisabledTools", original.Tokens[0].DisabledTools, cp.Tokens[0].DisabledTools)
+	checkMapCopy(t, "Tokens[0].Context", original.Tokens[0].Context, cp.Tokens[0].Context)
+
+	// Check nested maps/slices in ExternalMcps.
+	checkMapCopy(t, "ExternalMcps[0].Env", original.ExternalMcps[0].Env, cp.ExternalMcps[0].Env)
+	checkSliceCopy(t, "ExternalMcps[0].DiscoveredTools", original.ExternalMcps[0].DiscoveredTools, cp.ExternalMcps[0].DiscoveredTools)
+
+	// Check nested maps in Services.
+	checkMapCopy(t, "Services[0].Env", original.Services[0].Env, cp.Services[0].Env)
+}
+
+func checkSliceCopy[T any](t *testing.T, name string, orig, cp []T) {
+	t.Helper()
+	if len(orig) == 0 {
+		return
+	}
+	if &orig[0] == &cp[0] {
+		t.Errorf("deepCopySettings: %s shares backing array with original", name)
+	}
+}
+
+func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K]V) {
+	t.Helper()
+	if orig == nil {
+		return
+	}
+	// Mutate the copy and verify the original is unchanged.
+	origLen := len(orig)
+	var zeroK K
+	for k := range cp {
+		zeroK = k
+		break
+	}
+	delete(cp, zeroK)
+	if len(orig) != origLen {
+		t.Errorf("deepCopySettings: %s shares map with original", name)
+	}
+	// Restore the deleted key (best effort).
+	var zeroV V
+	cp[zeroK] = zeroV
+}
+
 // ---------------------------------------------------------------------------
 // loadSettingsInternal: JSON round-trip and normalization
 // ---------------------------------------------------------------------------
 
 func TestLoadSettingsInternal(t *testing.T) {
-	// Save/restore cache and file.
-	defaultStore.mu.Lock()
-	origCache := defaultStore.cache
-	defaultStore.cache = nil
-	defaultStore.mu.Unlock()
-	t.Cleanup(func() {
-		defaultStore.mu.Lock()
-		defaultStore.cache = origCache
-		defaultStore.mu.Unlock()
-	})
-
 	sp := settingsPath()
 	dir := settingsDir()
 	_ = os.MkdirAll(dir, 0700)
@@ -1258,10 +1281,7 @@ func TestLoadSettingsInternal(t *testing.T) {
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		defaultStore.mu.Lock()
 		s := loadSettingsInternal()
-		defaultStore.mu.Unlock()
-
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
 		}
@@ -1272,10 +1292,7 @@ func TestLoadSettingsInternal(t *testing.T) {
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		defaultStore.mu.Lock()
 		s := loadSettingsInternal()
-		defaultStore.mu.Unlock()
-
 		if s.Tokens == nil {
 			t.Fatal("Tokens should not be nil")
 		}
@@ -1292,10 +1309,7 @@ func TestLoadSettingsInternal(t *testing.T) {
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		defaultStore.mu.Lock()
 		s := loadSettingsInternal()
-		defaultStore.mu.Unlock()
-
 		if len(s.ExternalMcps) != 1 {
 			t.Fatalf("expected 1 MCP, got %d", len(s.ExternalMcps))
 		}
@@ -1306,10 +1320,7 @@ func TestLoadSettingsInternal(t *testing.T) {
 
 	t.Run("returns defaults for missing file", func(t *testing.T) {
 		_ = os.Remove(sp)
-		defaultStore.mu.Lock()
 		s := loadSettingsInternal()
-		defaultStore.mu.Unlock()
-
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
 		}
@@ -1319,10 +1330,7 @@ func TestLoadSettingsInternal(t *testing.T) {
 		if err := os.WriteFile(sp, []byte(`{not json`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		defaultStore.mu.Lock()
 		s := loadSettingsInternal()
-		defaultStore.mu.Unlock()
-
 		if s.Version != 1 {
 			t.Fatalf("expected version 1 for invalid JSON, got %d", s.Version)
 		}
@@ -1334,16 +1342,6 @@ func TestLoadSettingsInternal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSaveSettingsInternal(t *testing.T) {
-	defaultStore.mu.Lock()
-	origCache := defaultStore.cache
-	defaultStore.cache = nil
-	defaultStore.mu.Unlock()
-	t.Cleanup(func() {
-		defaultStore.mu.Lock()
-		defaultStore.cache = origCache
-		defaultStore.mu.Unlock()
-	})
-
 	sp := settingsPath()
 	dir := settingsDir()
 	_ = os.MkdirAll(dir, 0700)
@@ -1363,9 +1361,7 @@ func TestSaveSettingsInternal(t *testing.T) {
 			ExternalMcps: []ExternalMcp{},
 			Services:     []ServiceConfig{},
 		}
-		defaultStore.mu.Lock()
 		err := saveSettingsInternal(s)
-		defaultStore.mu.Unlock()
 		if err != nil {
 			t.Fatalf("saveSettingsInternal failed: %v", err)
 		}
@@ -1385,9 +1381,7 @@ func TestSaveSettingsInternal(t *testing.T) {
 
 	t.Run("no temp file left behind", func(t *testing.T) {
 		s := defaultSettings()
-		defaultStore.mu.Lock()
 		_ = saveSettingsInternal(s)
-		defaultStore.mu.Unlock()
 
 		tmp := sp + ".tmp"
 		if _, err := os.Stat(tmp); !os.IsNotExist(err) {
@@ -1396,13 +1390,8 @@ func TestSaveSettingsInternal(t *testing.T) {
 	})
 
 	t.Run("creates directory if missing", func(t *testing.T) {
-		// Temporarily remove the dir (only if empty or we created it).
-		// This is tricky with the real config dir, so we just verify MkdirAll
-		// doesn't fail on an existing dir.
 		s := defaultSettings()
-		defaultStore.mu.Lock()
 		err := saveSettingsInternal(s)
-		defaultStore.mu.Unlock()
 		if err != nil {
 			t.Fatalf("saveSettingsInternal failed: %v", err)
 		}

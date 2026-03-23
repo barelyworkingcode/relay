@@ -93,34 +93,30 @@ func printSubcommandUsage(verb string, commands []cliSubcommand) {
 }
 
 // printUpsertResult prints a consistent "registered" or "updated" message.
-func printUpsertResult(entity, name, id string, updated bool) {
+// If toolCount is provided, appends "with N tools".
+func printUpsertResult(entity, name, id string, updated bool, toolCount ...int) {
 	verb := "registered"
 	if updated {
 		verb = "updated"
 	}
-	fmt.Printf("%s %s %q (%s)\n", verb, entity, name, id)
-}
-
-// printUpsertResultWithTools is like printUpsertResult but includes a tool count.
-func printUpsertResultWithTools(entity, name, id string, updated bool, toolCount int) {
-	verb := "registered"
-	if updated {
-		verb = "updated"
+	if len(toolCount) > 0 {
+		fmt.Printf("%s %s %q (%s) with %d tools\n", verb, entity, name, id, toolCount[0])
+	} else {
+		fmt.Printf("%s %s %q (%s)\n", verb, entity, name, id)
 	}
-	fmt.Printf("%s %s %q (%s) with %d tools\n", verb, entity, name, id, toolCount)
 }
 
-// resolveAndRemove resolves an entity by id/name, removes it via WithSettings, and
+// resolveAndRemove resolves an entity by id/name, removes it via store.With, and
 // prints the result. Returns the resolved ID and admin secret, or exits with an
 // error if not found.
-func resolveAndRemove(entity string, id, name *string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
+func resolveAndRemove(store *SettingsStore, entity string, id, name *string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
 	if *id == "" && *name == "" {
 		exitError("--id or --name is required")
 	}
 
 	var resolvedID string
 	var adminSecret string
-	WithSettings(func(s *Settings) {
+	store.With(func(s *Settings) {
 		resolvedID = resolveFn(s, *id, *name)
 		if resolvedID == "" {
 			return

@@ -93,7 +93,7 @@ type IPCContext struct {
 	UI         SettingsUI
 	Platform   Platform
 	ExtMgr     *ExternalMcpManager
-	Registry   *ServiceRegistry
+	Registry   ServiceManager
 	UpdateMenu func()
 	GoFunc     func(fn func()) // tracked goroutine launcher
 }
@@ -154,17 +154,6 @@ type ipcIDMsg struct {
 
 type ipcCopyToClipboardMsg struct {
 	Text string `json:"text"`
-}
-
-type ipcServiceMsg struct {
-	ID          string            `json:"id,omitempty"`
-	DisplayName string            `json:"display_name"`
-	Command     string            `json:"command"`
-	Args        []string          `json:"args"`
-	Env         map[string]string `json:"env"`
-	WorkingDir  string            `json:"working_dir"`
-	Autostart   bool              `json:"autostart"`
-	URL         string            `json:"url"`
 }
 
 type ipcUpdateServiceAutostartMsg struct {
