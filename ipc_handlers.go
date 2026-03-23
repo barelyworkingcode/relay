@@ -31,7 +31,7 @@ func (a *App) evalSettings(js string) {
 
 // emitSettingsEvent sends a named event to the settings UI with JSON-marshaled arguments.
 // Each arg is marshaled individually; json.RawMessage values are passed through as-is.
-// This centralizes JS escaping and marshaling, replacing manual fmt.Sprintf+escapeJSString.
+// This centralizes JS escaping and marshaling.
 func (a *App) emitSettingsEvent(name string, args ...interface{}) {
 	if !a.settingsOpen {
 		return
@@ -89,13 +89,33 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
 	Ctx        context.Context
-	Store      *SettingsStore
+	Store      SettingsStore
 	UI         SettingsUI
 	Platform   Platform
 	ExtMgr     *ExternalMcpManager
 	Registry   ServiceManager
 	UpdateMenu func()
 	GoFunc     func(fn func()) // tracked goroutine launcher
+}
+
+// withSettings atomically mutates settings and emits an error event on failure.
+// Returns true on success.
+func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
+	if err := ctx.Store.With(fn); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return false
+	}
+	return true
+}
+
+// withSettingsNotify atomically mutates settings, sends a bridge notification,
+// and emits an error event on failure. Returns true on success.
+func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string) error) bool {
+	if err := ctx.Store.WithAndNotify(fn, notify); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

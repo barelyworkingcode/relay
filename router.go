@@ -46,7 +46,7 @@ func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 // ---------------------------------------------------------------------------
 
 type appRouter struct {
-	store    *SettingsStore
+	store    SettingsStore
 	tools    ToolProvider
 	services ServiceReloader
 	onChange func()

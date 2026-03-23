@@ -54,54 +54,36 @@ func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, e
 	return resp.Result, nil
 }
 
-// SendReconcile sends a ReconcileExternalMcps request with admin authentication.
-func SendReconcile(token string) error {
+// sendAdmin sends an admin request to the bridge and returns any error.
+func sendAdmin(reqType, name, token string) error {
 	c := &Client{sockPath: SocketPath()}
 	resp, err := c.send(BridgeRequest{
-		Type:  "ReconcileExternalMcps",
+		Type:  reqType,
+		Name:  name,
 		Token: token,
 	})
 	if err != nil {
-		return fmt.Errorf("reconcile request failed: %w", err)
+		return fmt.Errorf("%s request failed: %w", reqType, err)
 	}
 	if resp.Type == "Error" {
 		return fmt.Errorf("bridge error: %s", resp.Message)
 	}
 	return nil
+}
+
+// SendReconcile sends a ReconcileExternalMcps request with admin authentication.
+func SendReconcile(token string) error {
+	return sendAdmin("ReconcileExternalMcps", "", token)
 }
 
 // SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID.
 func SendReloadMcp(id, token string) error {
-	c := &Client{sockPath: SocketPath()}
-	resp, err := c.send(BridgeRequest{
-		Type:  "ReloadExternalMcp",
-		Name:  id,
-		Token: token,
-	})
-	if err != nil {
-		return fmt.Errorf("reload request failed: %w", err)
-	}
-	if resp.Type == "Error" {
-		return fmt.Errorf("bridge error: %s", resp.Message)
-	}
-	return nil
+	return sendAdmin("ReloadExternalMcp", id, token)
 }
 
 // SendReloadService sends a ReloadService request for the given service ID.
 func SendReloadService(id, token string) error {
-	c := &Client{sockPath: SocketPath()}
-	resp, err := c.send(BridgeRequest{
-		Type:  "ReloadService",
-		Name:  id,
-		Token: token,
-	})
-	if err != nil {
-		return fmt.Errorf("reload service request failed: %w", err)
-	}
-	if resp.Type == "Error" {
-		return fmt.Errorf("bridge error: %s", resp.Message)
-	}
-	return nil
+	return sendAdmin("ReloadService", id, token)
 }
 
 // send opens a connection, writes the request, reads one response, and closes.

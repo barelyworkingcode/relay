@@ -13,17 +13,26 @@ import (
 	"relaygo/bridge"
 )
 
-// SettingsStore manages settings persistence, caching, and atomic mutations.
+// SettingsStore abstracts settings persistence for testability.
+type SettingsStore interface {
+	Get() *Settings
+	Reload() *Settings
+	ReloadIfChanged() *Settings
+	With(fn func(*Settings)) error
+	WithAndNotify(fn func(*Settings), notify func(string) error) error
+}
+
+// FileSettingsStore implements SettingsStore backed by a JSON file on disk.
 // Create with NewSettingsStore and inject into components that need settings access.
-type SettingsStore struct {
+type FileSettingsStore struct {
 	mu          sync.Mutex
 	cache       *Settings
 	lastModTime int64
 }
 
-// NewSettingsStore creates a new settings store.
-func NewSettingsStore() *SettingsStore {
-	return &SettingsStore{}
+// NewSettingsStore creates a new file-backed settings store.
+func NewSettingsStore() *FileSettingsStore {
+	return &FileSettingsStore{}
 }
 
 // settingsDir returns the platform config directory for relay.
@@ -179,12 +188,12 @@ func deepCopySettings(s *Settings) *Settings {
 }
 
 // ---------------------------------------------------------------------------
-// SettingsStore methods
+// FileSettingsStore methods
 // ---------------------------------------------------------------------------
 
 // Get returns a deep copy of the cached settings (or reads from disk on first
 // call). The returned *Settings is safe for concurrent read and mutation.
-func (ss *SettingsStore) Get() *Settings {
+func (ss *FileSettingsStore) Get() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if ss.cache == nil {
@@ -194,7 +203,7 @@ func (ss *SettingsStore) Get() *Settings {
 }
 
 // Reload always reads from disk and updates the cache.
-func (ss *SettingsStore) Reload() *Settings {
+func (ss *FileSettingsStore) Reload() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	s := loadSettingsInternal()
@@ -204,7 +213,7 @@ func (ss *SettingsStore) Reload() *Settings {
 
 // ReloadIfChanged checks the settings file modtime and reloads only if it changed.
 // Returns the new settings if reloaded, or nil if unchanged.
-func (ss *SettingsStore) ReloadIfChanged() *Settings {
+func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
 	info, err := os.Stat(settingsPath())
 	if err != nil {
 		return nil
@@ -225,7 +234,7 @@ func (ss *SettingsStore) ReloadIfChanged() *Settings {
 
 // With atomically loads settings, calls fn for mutation, then saves.
 // Updates the in-memory cache on success.
-func (ss *SettingsStore) With(fn func(s *Settings)) error {
+func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	s := loadSettingsInternal()
@@ -243,14 +252,18 @@ func (ss *SettingsStore) With(fn func(s *Settings)) error {
 
 // WithAndNotify atomically mutates settings, then sends a bridge notification
 // in the background using the admin secret.
-func (ss *SettingsStore) WithAndNotify(fn func(s *Settings), notify func(secret string) error) error {
+func (ss *FileSettingsStore) WithAndNotify(fn func(s *Settings), notify func(secret string) error) error {
 	var secret string
 	err := ss.With(func(s *Settings) {
 		fn(s)
 		secret = s.AdminSecret
 	})
 	if err == nil {
-		go func() { _ = notify(secret) }()
+		go func() {
+			if nerr := notify(secret); nerr != nil {
+				slog.Warn("bridge notification failed", "error", nerr)
+			}
+		}()
 	}
 	return err
 }
