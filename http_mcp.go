@@ -95,12 +95,12 @@ type httpMcpConn struct {
 
 func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
-		baseMcpConn: baseMcpConn{nextID: 1, config: cfg},
-		url:         cfg.URL,
+		url: cfg.URL,
 		httpClient: &http.Client{
 			Timeout: mcpRequestTimeout,
 		},
 	}
+	conn.config = cfg
 
 	conn.oauth.url = cfg.URL
 
@@ -295,7 +295,7 @@ func (c *httpMcpConn) Close() {
 }
 
 // startHTTP connects to an HTTP MCP server and performs the initialize handshake.
-func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
+func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 
 	// Wire up token refresh to the manager's injected callback.
@@ -306,7 +306,7 @@ func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 		}
 	}
 
-	result, err := mcpHandshake(context.Background(), conn)
+	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// Store conn without tools -- UI will show "Authenticate" button.
@@ -332,7 +332,7 @@ func (m *ExternalMcpManager) startHTTP(mcpCfg *ExternalMcp) error {
 }
 
 // DiscoverHTTPMcp performs a one-shot HTTP handshake and tool listing.
-func DiscoverHTTPMcp(displayName, id, mcpURL string, oauth *OAuthState) (*ExternalMcp, error) {
+func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth *OAuthState) (*ExternalMcp, error) {
 	cfg := ExternalMcp{
 		ID:          id,
 		DisplayName: displayName,
@@ -343,7 +343,7 @@ func DiscoverHTTPMcp(displayName, id, mcpURL string, oauth *OAuthState) (*Extern
 
 	conn := newHTTPMcpConn(cfg)
 
-	result, err := mcpHandshake(context.Background(), conn)
+	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// No session was established, so no close/DELETE needed.

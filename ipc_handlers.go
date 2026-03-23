@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,7 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func (a *App) openSettingsWindow() {
-	s := GetSettings()
+	s := a.store.Get()
 	html := renderSettingsHTML(s, a.registry.RunningIDs())
 	a.platform.OpenSettings(html)
 	a.settingsOpen = true
@@ -62,7 +63,7 @@ func (a *App) pushServiceStatus() {
 // pushFullSettings sends the complete settings state to an open settings window.
 // Called when external changes (CLI commands via bridge) modify settings.json.
 func (a *App) pushFullSettings() {
-	s := GetSettings()
+	s := a.store.Get()
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
 		"tokens":        s.Tokens,
 		"external_mcps": s.ExternalMcps,
@@ -87,6 +88,8 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
+	Ctx        context.Context
+	Store      *SettingsStore
 	UI         SettingsUI
 	Platform   Platform
 	ExtMgr     *ExternalMcpManager
@@ -220,6 +223,8 @@ func (a *App) onSettingsIpc(body string) {
 		return
 	}
 	ctx := &IPCContext{
+		Ctx:        a.ctx,
+		Store:      a.store,
 		UI:         a,
 		Platform:   a.platform,
 		ExtMgr:     a.extMgr,

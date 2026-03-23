@@ -141,13 +141,13 @@ func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) 
 	return BridgeResponse{Type: "Result", Result: result}
 }
 
-func handleReconcile(_ context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
-	router.ReconcileExternalMcps()
+func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
+	router.ReconcileExternalMcps(ctx)
 	return BridgeResponse{Type: "OK"}
 }
 
-func handleReloadMcp(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	router.ReloadExternalMcp(req.Name)
+func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	router.ReloadExternalMcp(ctx, req.Name)
 	return BridgeResponse{Type: "OK"}
 }
 

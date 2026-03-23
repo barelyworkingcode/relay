@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"relaygo/jsonrpc"
@@ -54,15 +55,13 @@ type readerResult struct {
 
 // baseMcpConn holds fields and methods shared by stdio and HTTP MCP connections.
 type baseMcpConn struct {
-	nextID int64
+	nextID atomic.Int64
 	tools  []mcp.Tool
 	config ExternalMcp
 }
 
 func (b *baseMcpConn) allocID() int64 {
-	id := b.nextID
-	b.nextID++
-	return id
+	return b.nextID.Add(1)
 }
 
 func (b *baseMcpConn) GetTools() []mcp.Tool   { return b.tools }
@@ -161,51 +160,63 @@ func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefr
 }
 
 // StartAll launches all configured external MCP servers.
-func (m *ExternalMcpManager) StartAll(mcps []ExternalMcp) {
+func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []ExternalMcp) {
 	for i := range mcps {
-		if err := m.startOne(&mcps[i]); err != nil {
+		if err := m.startOne(ctx, &mcps[i]); err != nil {
 			slog.Error("failed to start external MCP", "id", mcps[i].ID, "error", err)
 		}
 	}
 }
 
-func (m *ExternalMcpManager) startOne(mcpCfg *ExternalMcp) error {
+func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) error {
 	if mcpCfg.IsHTTP() {
-		return m.startHTTP(mcpCfg)
+		return m.startHTTP(ctx, mcpCfg)
 	}
-	return m.startStdio(mcpCfg)
+	return m.startStdio(ctx, mcpCfg)
 }
 
-func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
-	cmd := exec.Command(mcpCfg.Command, mcpCfg.Args...)
+// spawnStdioConn creates and starts a stdio MCP connection.
+// The caller is responsible for calling Close() on error or when done.
+func spawnStdioConn(command string, args []string, env map[string]string, config *ExternalMcp) (*externalMcpConn, error) {
+	cmd := exec.Command(command, args...)
 	setProcessGroup(cmd)
-	mergeEnv(cmd, mcpCfg.Env)
+	mergeEnv(cmd, env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("stdin pipe: %w", err)
+		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stdin.Close()
-		return fmt.Errorf("stdout pipe: %w", err)
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn failed: %w", err)
+		return nil, fmt.Errorf("spawn failed: %w", err)
 	}
 
 	conn := &externalMcpConn{
-		baseMcpConn: baseMcpConn{nextID: 1, config: *mcpCfg},
-		cmd:         cmd,
-		stdin:       stdin,
-		pending:     make(map[int64]*pendingResponse),
-		readerDone:  make(chan struct{}),
+		cmd:        cmd,
+		stdin:      stdin,
+		pending:    make(map[int64]*pendingResponse),
+		readerDone: make(chan struct{}),
+	}
+	if config != nil {
+		conn.config = *config
 	}
 
 	go conn.readLoop(bufio.NewReader(stdout))
+	return conn, nil
+}
 
-	result, err := mcpHandshake(context.Background(), conn)
+func (m *ExternalMcpManager) startStdio(ctx context.Context, mcpCfg *ExternalMcp) error {
+	conn, err := spawnStdioConn(mcpCfg.Command, mcpCfg.Args, mcpCfg.Env, mcpCfg)
+	if err != nil {
+		return err
+	}
+
+	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		conn.Close()
 		return err
@@ -224,7 +235,7 @@ func (m *ExternalMcpManager) startStdio(mcpCfg *ExternalMcp) error {
 }
 
 // Reconcile stops removed MCPs and starts missing ones.
-func (m *ExternalMcpManager) Reconcile(mcps []ExternalMcp) {
+func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) {
 	desired := make(map[string]*ExternalMcp, len(mcps))
 	for i := range mcps {
 		desired[mcps[i].ID] = &mcps[i]
@@ -256,16 +267,16 @@ func (m *ExternalMcpManager) Reconcile(mcps []ExternalMcp) {
 	m.mu.RUnlock()
 
 	for _, cfg := range toStart {
-		if err := m.startOne(cfg); err != nil {
+		if err := m.startOne(ctx, cfg); err != nil {
 			slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
 		}
 	}
 }
 
 // Reload stops a running MCP and starts it fresh from the given config.
-func (m *ExternalMcpManager) Reload(id string, cfg *ExternalMcp) error {
+func (m *ExternalMcpManager) Reload(ctx context.Context, id string, cfg *ExternalMcp) error {
 	m.Stop(id)
-	return m.startOne(cfg)
+	return m.startOne(ctx, cfg)
 }
 
 // Tools returns the tool list for a given external MCP.
@@ -355,64 +366,30 @@ func (m *ExternalMcpManager) StopAll() {
 }
 
 // DiscoverExternalMcp performs a one-shot spawn, handshake, tool listing, then kills.
-func DiscoverExternalMcp(displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
-	cmd := exec.Command(command, args...)
-	setProcessGroup(cmd)
-	mergeEnv(cmd, env)
-
-	stdin, err := cmd.StdinPipe()
+func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
+	conn, err := spawnStdioConn(command, args, env, nil)
 	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
+		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("spawn failed: %w", err)
-	}
-
-	conn := &externalMcpConn{
-		baseMcpConn: baseMcpConn{nextID: 1},
-		cmd:         cmd,
-		stdin:       stdin,
-		pending:     make(map[int64]*pendingResponse),
-		readerDone:  make(chan struct{}),
-	}
-
-	go conn.readLoop(bufio.NewReader(stdout))
 	defer conn.Close()
 
 	// Run handshake with overall timeout (stdio processes can hang).
-	type hsOut struct {
-		result *handshakeResult
-		err    error
-	}
-	ch := make(chan hsOut, 1)
-	go func() {
-		r, err := mcpHandshake(context.Background(), conn)
-		ch <- hsOut{r, err}
-	}()
+	discoverCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
 
-	select {
-	case out := <-ch:
-		if out.err != nil {
-			return nil, out.err
-		}
-		return &ExternalMcp{
-			ID:              id,
-			DisplayName:     displayName,
-			Command:         command,
-			Args:            args,
-			Env:             env,
-			DiscoveredTools: out.result.ToolInfos,
-			ContextSchema:   out.result.ContextSchema,
-		}, nil
-	case <-time.After(discoveryTimeout):
-		return nil, fmt.Errorf("MCP discovery timed out after %s", discoveryTimeout)
+	result, err := mcpHandshake(discoverCtx, conn)
+	if err != nil {
+		return nil, err
 	}
+	return &ExternalMcp{
+		ID:              id,
+		DisplayName:     displayName,
+		Command:         command,
+		Args:            args,
+		Env:             env,
+		DiscoveredTools: result.ToolInfos,
+		ContextSchema:   result.ContextSchema,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +492,9 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 	c.mu.Unlock()
 
 	// Wait for response, reader death, context cancellation, or timeout.
+	timer := time.NewTimer(mcpRequestTimeout)
+	defer timer.Stop()
+
 	select {
 	case result := <-p.ch:
 		if result.err != nil {
@@ -534,7 +514,7 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, ctx.Err()
-	case <-time.After(mcpRequestTimeout):
+	case <-timer.C:
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()

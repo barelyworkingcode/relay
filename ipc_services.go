@@ -36,7 +36,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 
 	config := serviceConfigFromMsg(msg, id)
 
-	WithSettings(func(s *Settings) { s.AddService(config) })
+	ctx.Store.With(func(s *Settings) { s.AddService(config) })
 
 	if msg.Autostart {
 		if err := ctx.Registry.Start(&config); err != nil {
@@ -57,7 +57,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	ctx.Registry.Stop(msg.ID)
-	WithSettings(func(s *Settings) { s.RemoveService(msg.ID) })
+	ctx.Store.With(func(s *Settings) { s.RemoveService(msg.ID) })
 	ctx.UpdateMenu()
 
 	ctx.UI.EmitEvent("onServiceRemoved", msg.ID)
@@ -71,7 +71,7 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 
 	config := serviceConfigFromMsg(msg, msg.ID)
 
-	WithSettings(func(s *Settings) { s.UpdateService(config) })
+	ctx.Store.With(func(s *Settings) { s.UpdateService(config) })
 	ctx.UpdateMenu()
 }
 
@@ -80,7 +80,7 @@ func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	WithSettings(func(s *Settings) {
+	ctx.Store.With(func(s *Settings) {
 		if svc, _ := s.findServiceByID(msg.ID); svc != nil {
 			svc.Autostart = msg.Autostart
 		}
@@ -94,7 +94,7 @@ func ipcStartService(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	s := GetSettings()
+	s := ctx.Store.Get()
 	if svc, _ := s.findServiceByID(msg.ID); svc != nil {
 		if err := ctx.Registry.Start(svc); err != nil {
 			slog.Error("service start failed", "error", err)

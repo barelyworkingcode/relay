@@ -16,7 +16,7 @@ func ipcGenerateToken(ctx *IPCContext, raw json.RawMessage) {
 
 	var plaintext string
 	var stored StoredToken
-	WithSettings(func(s *Settings) {
+	ctx.Store.With(func(s *Settings) {
 		defaultPerms := make(map[string]Permission)
 		for _, svcName := range s.AllExternalMcpIDs() {
 			defaultPerms[svcName] = PermOff
@@ -36,12 +36,12 @@ func ipcDeleteToken(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.Hash == "" {
 		return
 	}
-	WithSettings(func(s *Settings) { s.DeleteToken(msg.Hash) })
+	ctx.Store.With(func(s *Settings) { s.DeleteToken(msg.Hash) })
 	ctx.UI.EmitEvent("onTokenDeleted", msg.Hash)
 }
 
 func ipcRevokeAll(ctx *IPCContext, _ json.RawMessage) {
-	WithSettings(func(s *Settings) { s.RevokeAll() })
+	ctx.Store.With(func(s *Settings) { s.RevokeAll() })
 	ctx.UI.EmitEvent("onAllRevoked")
 }
 
@@ -54,7 +54,7 @@ func ipcUpdatePermission(ctx *IPCContext, raw json.RawMessage) {
 	if msg.Permission == "off" {
 		perm = PermOff
 	}
-	WithSettings(func(s *Settings) { s.UpdatePermission(msg.Hash, msg.Service, perm) })
+	ctx.Store.With(func(s *Settings) { s.UpdatePermission(msg.Hash, msg.Service, perm) })
 }
 
 func ipcSetToolDisabled(ctx *IPCContext, raw json.RawMessage) {
@@ -62,7 +62,7 @@ func ipcSetToolDisabled(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	WithSettings(func(s *Settings) { s.SetToolDisabled(msg.Hash, msg.McpID, msg.ToolName, msg.Disabled) })
+	ctx.Store.With(func(s *Settings) { s.SetToolDisabled(msg.Hash, msg.McpID, msg.ToolName, msg.Disabled) })
 }
 
 func ipcSetAllToolsDisabled(ctx *IPCContext, raw json.RawMessage) {
@@ -70,7 +70,7 @@ func ipcSetAllToolsDisabled(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	WithSettings(func(s *Settings) {
+	ctx.Store.With(func(s *Settings) {
 		var toolNames []string
 		if mcp, _ := s.findMcpByID(msg.McpID); mcp != nil {
 			for _, t := range mcp.DiscoveredTools {
@@ -90,5 +90,5 @@ func ipcSetContext(ctx *IPCContext, raw json.RawMessage) {
 	if err != nil {
 		return
 	}
-	WithSettings(func(s *Settings) { s.SetContext(msg.Hash, msg.McpID, json.RawMessage(contextRaw)) })
+	ctx.Store.With(func(s *Settings) { s.SetContext(msg.Hash, msg.McpID, json.RawMessage(contextRaw)) })
 }

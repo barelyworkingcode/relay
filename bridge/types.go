@@ -32,19 +32,24 @@ type ToolRouter interface {
 	ListTools(ctx context.Context, token string) (json.RawMessage, error)
 	CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error)
 	ValidateAdmin(token string) error
-	ReconcileExternalMcps()
-	ReloadExternalMcp(id string)
+	ReconcileExternalMcps(ctx context.Context)
+	ReloadExternalMcp(ctx context.Context, id string)
 	ReloadService(id string)
+}
+
+// ConfigDir returns the platform config directory for relay.
+func ConfigDir() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		configDir, _ = os.UserHomeDir()
+	}
+	return filepath.Join(configDir, "relay")
 }
 
 // SocketPath returns the path to the bridge Unix socket.
 // Creates the parent directory if it does not exist.
 func SocketPath() string {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		configDir, _ = os.UserHomeDir()
-	}
-	dir := filepath.Join(configDir, "relay")
+	dir := ConfigDir()
 	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, "relay.sock")
 }

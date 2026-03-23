@@ -19,8 +19,8 @@ type ToolProvider interface {
 	Tools(id string) []mcp.Tool
 	FindToolOwner(name string) (string, *ExternalMcp)
 	CallTool(ctx context.Context, id, name string, args, meta json.RawMessage) (json.RawMessage, error)
-	Reconcile(mcps []ExternalMcp)
-	Reload(id string, cfg *ExternalMcp) error
+	Reconcile(ctx context.Context, mcps []ExternalMcp)
+	Reload(ctx context.Context, id string, cfg *ExternalMcp) error
 }
 
 // ServiceReloader abstracts service restart operations.
@@ -46,6 +46,7 @@ func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 // ---------------------------------------------------------------------------
 
 type appRouter struct {
+	store    *SettingsStore
 	tools    ToolProvider
 	services ServiceReloader
 	onChange func()
@@ -53,7 +54,7 @@ type appRouter struct {
 
 // resolveAuth loads settings and authenticates the given token.
 func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
-	s := GetSettings()
+	s := r.store.Get()
 	stored, err := s.Authenticate(token)
 	if err != nil {
 		return nil, nil, err
@@ -111,21 +112,21 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {
-	s := GetSettings()
+	s := r.store.Get()
 	if len(token) == 0 || subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminSecret)) != 1 {
 		return fmt.Errorf("admin authentication failed")
 	}
 	return nil
 }
 
-func (r *appRouter) ReconcileExternalMcps() {
-	settings := ReloadSettings()
-	r.tools.Reconcile(settings.ExternalMcps)
+func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
+	settings := r.store.Reload()
+	r.tools.Reconcile(ctx, settings.ExternalMcps)
 	r.onChange()
 }
 
 func (r *appRouter) ReloadService(id string) {
-	settings := ReloadSettings()
+	settings := r.store.Reload()
 	svc, _ := settings.findServiceByID(id)
 	if svc == nil {
 		slog.Warn("reload: no service found", "id", id)
@@ -137,14 +138,14 @@ func (r *appRouter) ReloadService(id string) {
 	r.onChange()
 }
 
-func (r *appRouter) ReloadExternalMcp(id string) {
-	settings := ReloadSettings()
+func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
+	settings := r.store.Reload()
 	mcpCfg, _ := settings.findMcpByID(id)
 	if mcpCfg == nil {
 		slog.Warn("reload: no external MCP found", "id", id)
 		return
 	}
-	if err := r.tools.Reload(id, mcpCfg); err != nil {
+	if err := r.tools.Reload(ctx, id, mcpCfg); err != nil {
 		slog.Error("failed to reload external MCP", "id", id, "error", err)
 	}
 	r.onChange()
