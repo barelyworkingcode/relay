@@ -14,11 +14,17 @@ import (
 // Interfaces for dependency injection
 // ---------------------------------------------------------------------------
 
-// ToolProvider abstracts access to external MCP connections.
+// ToolProvider abstracts read-only access to external MCP tool data and invocation.
 type ToolProvider interface {
 	Tools(id string) []mcp.Tool
 	FindToolOwner(name string) (string, *ExternalMcp)
 	CallTool(ctx context.Context, id, name string, args, meta json.RawMessage) (json.RawMessage, error)
+}
+
+// ToolManager extends ToolProvider with lifecycle operations for reconciling
+// and reloading MCP connections.
+type ToolManager interface {
+	ToolProvider
 	Reconcile(ctx context.Context, mcps []ExternalMcp)
 	Reload(ctx context.Context, id string, cfg *ExternalMcp) error
 }
@@ -47,7 +53,7 @@ func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 
 type appRouter struct {
 	store    SettingsStore
-	tools    ToolProvider
+	tools    ToolManager
 	services ServiceReloader
 	onChange func()
 }

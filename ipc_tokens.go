@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
 )
 
 // ---------------------------------------------------------------------------
@@ -14,14 +15,23 @@ func ipcGenerateToken(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var plaintext string
-	var stored StoredToken
+	// Generate the token before acquiring the settings lock.
+	// Default permissions are computed inside withSettings to avoid a
+	// TOCTOU race: MCPs could be added between a separate Get() and With().
+	plaintext, stored, err := GenerateToken(msg.Name, nil)
+	if err != nil {
+		slog.Error("failed to generate token", "error", err)
+		ctx.UI.EmitEvent("onSettingsError", "failed to generate token")
+		return
+	}
+
 	if !ctx.withSettings(func(s *Settings) {
-		defaultPerms := make(map[string]Permission)
-		for _, svcName := range s.AllExternalMcpIDs() {
-			defaultPerms[svcName] = PermOff
+		// Set default permissions (all off) using the current MCP list
+		// inside the write lock so no MCPs are missed.
+		stored.Permissions = make(map[string]Permission)
+		for _, id := range s.AllExternalMcpIDs() {
+			stored.Permissions[id] = PermOff
 		}
-		plaintext, stored = GenerateToken(msg.Name, defaultPerms)
 		s.Tokens = append(s.Tokens, stored)
 	}) {
 		return
@@ -60,7 +70,9 @@ func ipcUpdatePermission(ctx *IPCContext, raw json.RawMessage) {
 	if msg.Permission == "off" {
 		perm = PermOff
 	}
-	ctx.withSettings(func(s *Settings) { s.UpdatePermission(msg.Hash, msg.Service, perm) })
+	if !ctx.withSettings(func(s *Settings) { s.UpdatePermission(msg.Hash, msg.Service, perm) }) {
+		return
+	}
 }
 
 func ipcSetToolDisabled(ctx *IPCContext, raw json.RawMessage) {
@@ -68,7 +80,9 @@ func ipcSetToolDisabled(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	ctx.withSettings(func(s *Settings) { s.SetToolDisabled(msg.Hash, msg.McpID, msg.ToolName, msg.Disabled) })
+	if !ctx.withSettings(func(s *Settings) { s.SetToolDisabled(msg.Hash, msg.McpID, msg.ToolName, msg.Disabled) }) {
+		return
+	}
 }
 
 func ipcSetAllToolsDisabled(ctx *IPCContext, raw json.RawMessage) {
@@ -76,7 +90,7 @@ func ipcSetAllToolsDisabled(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	ctx.withSettings(func(s *Settings) {
+	if !ctx.withSettings(func(s *Settings) {
 		var toolNames []string
 		if mcp, _ := s.findMcpByID(msg.McpID); mcp != nil {
 			for _, t := range mcp.DiscoveredTools {
@@ -84,7 +98,9 @@ func ipcSetAllToolsDisabled(ctx *IPCContext, raw json.RawMessage) {
 			}
 		}
 		s.SetAllToolsDisabled(msg.Hash, msg.McpID, toolNames, msg.Disabled)
-	})
+	}) {
+		return
+	}
 }
 
 func ipcSetContext(ctx *IPCContext, raw json.RawMessage) {
@@ -94,7 +110,10 @@ func ipcSetContext(ctx *IPCContext, raw json.RawMessage) {
 	}
 	contextRaw, err := json.Marshal(msg.Context)
 	if err != nil {
+		ctx.UI.EmitEvent("onSettingsError", "failed to save context: "+err.Error())
 		return
 	}
-	ctx.withSettings(func(s *Settings) { s.SetContext(msg.Hash, msg.McpID, json.RawMessage(contextRaw)) })
+	if !ctx.withSettings(func(s *Settings) { s.SetContext(msg.Hash, msg.McpID, json.RawMessage(contextRaw)) }) {
+		return
+	}
 }

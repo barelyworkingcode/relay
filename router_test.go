@@ -24,8 +24,8 @@ func makeSettings(perms map[string]Permission, disabled map[string][]string, con
 	tok := StoredToken{
 		Name:          "test-token",
 		Hash:          hash,
-		Prefix:        testToken[:6],
-		Suffix:        testToken[len(testToken)-6:],
+		Prefix:        testToken[:tokenDisplayLen],
+		Suffix:        testToken[len(testToken)-tokenDisplayLen:],
 		CreatedAt:     "2025-01-01T00:00:00Z",
 		Permissions:   perms,
 		DisabledTools: disabled,
@@ -50,6 +50,38 @@ func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRoute
 		services: NewServiceRegistry(),
 		onChange: func() {},
 	}
+}
+
+// setupRouter builds a test router with the given MCPs registered in both settings
+// and the manager. Each entry maps mcp-id to its mock connection.
+func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage, mocks map[string]*mockMcpConn) *appRouter {
+	t.Helper()
+	s := makeSettings(perms, disabled, ctx)
+	for id := range mocks {
+		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
+	}
+	mgr := NewExternalMcpManager(nil, nil)
+	for id, mock := range mocks {
+		addMockConn(mgr, id, mock)
+	}
+	return newTestRouter(t, s, mgr)
+}
+
+// okHandler returns a sendRequestFunc that always succeeds with the given JSON.
+func okHandler(result string) func(context.Context, string, interface{}) (json.RawMessage, error) {
+	return func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
+		return json.RawMessage(result), nil
+	}
+}
+
+// unmarshalTools parses a JSON tool list result and fails the test on error.
+func unmarshalTools(t *testing.T, raw json.RawMessage) []mcp.Tool {
+	t.Helper()
+	var tools []mcp.Tool
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		t.Fatalf("failed to unmarshal tools: %v", err)
+	}
+	return tools
 }
 
 // ---------------------------------------------------------------------------
@@ -124,33 +156,22 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestListTools_ReturnsPermittedTools(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
-
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools: []mcp.Tool{
-			{Name: "tool_one", Description: "First tool"},
-			{Name: "tool_two", Description: "Second tool"},
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
+				{Name: "tool_one", Description: "First tool"},
+				{Name: "tool_two", Description: "Second tool"},
+			}, nil),
 		},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
+	)
 
-	r := newTestRouter(t, s, mgr)
 	result, err := r.ListTools(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	var tools []mcp.Tool
-	if err := json.Unmarshal(result, &tools); err != nil {
-		t.Fatalf("failed to unmarshal tools: %v", err)
-	}
+	tools := unmarshalTools(t, result)
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
@@ -163,38 +184,20 @@ func TestListTools_ReturnsPermittedTools(t *testing.T) {
 }
 
 func TestListTools_ExcludesPermOffMcp(t *testing.T) {
-	perms := map[string]Permission{
-		"mcp-a": PermOn,
-		"mcp-b": PermOff,
-	}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-		{ID: "mcp-b", DisplayName: "MCP B"},
-	}
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOff}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("alpha_tool"), nil),
+			"mcp-b": newMockConn("mcp-b", simpleTools("beta_tool"), nil),
+		},
+	)
 
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "alpha_tool"}},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.conns["mcp-b"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "beta_tool"}},
-		config: ExternalMcp{ID: "mcp-b"},
-	}
-	mgr.mu.Unlock()
-
-	r := newTestRouter(t, s, mgr)
 	result, err := r.ListTools(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	var tools []mcp.Tool
-	if err := json.Unmarshal(result, &tools); err != nil {
-		t.Fatalf("failed to unmarshal tools: %v", err)
-	}
+	tools := unmarshalTools(t, result)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool (beta excluded), got %d", len(tools))
 	}
@@ -204,35 +207,24 @@ func TestListTools_ExcludesPermOffMcp(t *testing.T) {
 }
 
 func TestListTools_ExcludesDisabledTools(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	disabled := map[string][]string{"mcp-a": {"tool_two"}}
-	s := makeSettings(perms, disabled, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
-
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools: []mcp.Tool{
-			{Name: "tool_one", Description: "Allowed"},
-			{Name: "tool_two", Description: "Disabled"},
-			{Name: "tool_three", Description: "Also allowed"},
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn},
+		map[string][]string{"mcp-a": {"tool_two"}}, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
+				{Name: "tool_one", Description: "Allowed"},
+				{Name: "tool_two", Description: "Disabled"},
+				{Name: "tool_three", Description: "Also allowed"},
+			}, nil),
 		},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
+	)
 
-	r := newTestRouter(t, s, mgr)
 	result, err := r.ListTools(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	var tools []mcp.Tool
-	if err := json.Unmarshal(result, &tools); err != nil {
-		t.Fatalf("failed to unmarshal tools: %v", err)
-	}
+	tools := unmarshalTools(t, result)
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools (tool_two disabled), got %d", len(tools))
 	}
@@ -244,21 +236,13 @@ func TestListTools_ExcludesDisabledTools(t *testing.T) {
 }
 
 func TestListTools_EmptyForTokenWithNoPermittedMcps(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOff}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOff}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("blocked_tool"), nil),
+		},
+	)
 
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "blocked_tool"}},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
-
-	r := newTestRouter(t, s, mgr)
 	result, err := r.ListTools(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -288,28 +272,20 @@ func TestListTools_InvalidToken(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCallTool_Success(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
-
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "do_thing"}},
-		config: ExternalMcp{ID: "mcp-a"},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			if method == "tools/call" {
-				return json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`), nil
-			}
-			return nil, fmt.Errorf("unexpected method: %s", method)
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("do_thing"),
+				func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
+					if method == "tools/call" {
+						return json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`), nil
+					}
+					return nil, fmt.Errorf("unexpected method: %s", method)
+				}),
 		},
-	}
-	mgr.mu.Unlock()
+	)
 
-	r := newTestRouter(t, s, mgr)
-	result, err := r.CallTool(context.Background(),"do_thing", json.RawMessage(`{"x":1}`), testToken)
+	result, err := r.CallTool(context.Background(), "do_thing", json.RawMessage(`{"x":1}`), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -328,22 +304,14 @@ func TestCallTool_Success(t *testing.T) {
 }
 
 func TestCallTool_UnknownTool(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("real_tool"), nil),
+		},
+	)
 
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "real_tool"}},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
-
-	r := newTestRouter(t, s, mgr)
-	_, err := r.CallTool(context.Background(),"nonexistent_tool", nil, testToken)
+	_, err := r.CallTool(context.Background(), "nonexistent_tool", nil, testToken)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -353,22 +321,14 @@ func TestCallTool_UnknownTool(t *testing.T) {
 }
 
 func TestCallTool_DisabledMcp(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOff}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOff}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("blocked_tool"), nil),
+		},
+	)
 
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "blocked_tool"}},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
-
-	r := newTestRouter(t, s, mgr)
-	_, err := r.CallTool(context.Background(),"blocked_tool", nil, testToken)
+	_, err := r.CallTool(context.Background(), "blocked_tool", nil, testToken)
 	if err == nil {
 		t.Fatal("expected error for disabled MCP")
 	}
@@ -381,23 +341,15 @@ func TestCallTool_DisabledMcp(t *testing.T) {
 }
 
 func TestCallTool_DisabledTool(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	disabled := map[string][]string{"mcp-a": {"forbidden_tool"}}
-	s := makeSettings(perms, disabled, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn},
+		map[string][]string{"mcp-a": {"forbidden_tool"}}, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("forbidden_tool"), nil),
+		},
+	)
 
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "forbidden_tool"}},
-		config: ExternalMcp{ID: "mcp-a"},
-	}
-	mgr.mu.Unlock()
-
-	r := newTestRouter(t, s, mgr)
-	_, err := r.CallTool(context.Background(),"forbidden_tool", nil, testToken)
+	_, err := r.CallTool(context.Background(), "forbidden_tool", nil, testToken)
 	if err == nil {
 		t.Fatal("expected error for disabled tool")
 	}
@@ -410,32 +362,24 @@ func TestCallTool_DisabledTool(t *testing.T) {
 }
 
 func TestCallTool_InjectsMetaContext(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	ctx := map[string]json.RawMessage{
-		"mcp-a": json.RawMessage(`{"allowed_dirs":["/tmp","/home"]}`),
-	}
-	s := makeSettings(perms, nil, ctx)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
-
 	var capturedParams map[string]interface{}
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "fs_read"}},
-		config: ExternalMcp{ID: "mcp-a"},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			if p, ok := params.(map[string]interface{}); ok {
-				capturedParams = p
-			}
-			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn}, nil,
+		map[string]json.RawMessage{
+			"mcp-a": json.RawMessage(`{"allowed_dirs":["/tmp","/home"]}`),
 		},
-	}
-	mgr.mu.Unlock()
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("fs_read"),
+				func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
+					if p, ok := params.(map[string]interface{}); ok {
+						capturedParams = p
+					}
+					return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
+				}),
+		},
+	)
 
-	r := newTestRouter(t, s, mgr)
-	_, err := r.CallTool(context.Background(),"fs_read", json.RawMessage(`{"path":"/tmp/f"}`), testToken)
+	_, err := r.CallTool(context.Background(), "fs_read", json.RawMessage(`{"path":"/tmp/f"}`), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -457,30 +401,21 @@ func TestCallTool_InjectsMetaContext(t *testing.T) {
 }
 
 func TestCallTool_NoMetaWhenContextNotSet(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn}
-	// No context set for the token.
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-	}
-
 	var capturedParams map[string]interface{}
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "fs_read"}},
-		config: ExternalMcp{ID: "mcp-a"},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			if p, ok := params.(map[string]interface{}); ok {
-				capturedParams = p
-			}
-			return json.RawMessage(`{"content":[]}`), nil
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("fs_read"),
+				func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
+					if p, ok := params.(map[string]interface{}); ok {
+						capturedParams = p
+					}
+					return json.RawMessage(`{"content":[]}`), nil
+				}),
 		},
-	}
-	mgr.mu.Unlock()
+	)
 
-	r := newTestRouter(t, s, mgr)
-	_, err := r.CallTool(context.Background(),"fs_read", nil, testToken)
+	_, err := r.CallTool(context.Background(), "fs_read", nil, testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -494,44 +429,31 @@ func TestCallTool_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
 
-	_, err := r.CallTool(context.Background(),"any_tool", nil, "wrong-token")
+	_, err := r.CallTool(context.Background(), "any_tool", nil, "wrong-token")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
 }
 
 func TestCallTool_RoutesToCorrectMcp(t *testing.T) {
-	perms := map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn}
-	s := makeSettings(perms, nil, nil)
-	s.ExternalMcps = []ExternalMcp{
-		{ID: "mcp-a", DisplayName: "MCP A"},
-		{ID: "mcp-b", DisplayName: "MCP B"},
-	}
-
 	var calledMcp string
-	mgr := NewExternalMcpManager(nil, nil)
-	mgr.mu.Lock()
-	mgr.conns["mcp-a"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "alpha_do"}},
-		config: ExternalMcp{ID: "mcp-a"},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			calledMcp = "mcp-a"
-			return json.RawMessage(`{"content":[]}`), nil
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn}, nil, nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", simpleTools("alpha_do"),
+				func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
+					calledMcp = "mcp-a"
+					return json.RawMessage(`{"content":[]}`), nil
+				}),
+			"mcp-b": newMockConn("mcp-b", simpleTools("beta_do"),
+				func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
+					calledMcp = "mcp-b"
+					return json.RawMessage(`{"content":[]}`), nil
+				}),
 		},
-	}
-	mgr.conns["mcp-b"] = &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "beta_do"}},
-		config: ExternalMcp{ID: "mcp-b"},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			calledMcp = "mcp-b"
-			return json.RawMessage(`{"content":[]}`), nil
-		},
-	}
-	mgr.mu.Unlock()
+	)
 
-	r := newTestRouter(t, s, mgr)
-
-	_, err := r.CallTool(context.Background(),"beta_do", nil, testToken)
+	_, err := r.CallTool(context.Background(), "beta_do", nil, testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

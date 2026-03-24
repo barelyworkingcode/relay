@@ -3,13 +3,19 @@ package main
 import (
 	"encoding/json"
 	"errors"
-
-	"relaygo/bridge"
 )
 
 // ---------------------------------------------------------------------------
 // External MCP IPC handlers
 // ---------------------------------------------------------------------------
+
+// dispatchError emits a named error event to the settings UI on the main thread.
+// Use from background goroutines where DispatchToMain is required.
+func dispatchError(ctx *IPCContext, event string, args ...interface{}) {
+	ctx.Platform.DispatchToMain(func() {
+		ctx.UI.EmitEvent(event, args...)
+	})
+}
 
 func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcAddExternalMcpMsg](raw, "add_external_mcp")
@@ -19,11 +25,13 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 
 	id := slugify(msg.DisplayName)
 	if id == "" {
+		ctx.UI.EmitEvent("onExternalMcpError", "display name is required")
 		return
 	}
 
 	if msg.Transport == "http" {
 		if msg.URL == "" {
+			ctx.UI.EmitEvent("onExternalMcpError", "URL is required for HTTP transport")
 			return
 		}
 		if err := validateMcpURL(msg.URL); err != nil {
@@ -36,6 +44,7 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	if msg.Command == "" {
+		ctx.UI.EmitEvent("onExternalMcpError", "command is required for stdio transport")
 		return
 	}
 
@@ -49,15 +58,11 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 				return
 			}
 
-			if !ctx.withSettingsNotify(
-				func(s *Settings) { s.AddExternalMcp(*result) },
-				bridge.SendReconcile,
-			) {
+			if !ctx.withSettingsReconcile(func(s *Settings) { s.UpsertExternalMcp(*result) }) {
 				return
 			}
 
-			mcpJSON, _ := json.Marshal(result)
-			ctx.UI.EmitEvent("onExternalMcpAdded", json.RawMessage(mcpJSON))
+			ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(result))
 		})
 	})
 }
@@ -76,10 +81,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if !ctx.withSettingsNotify(
-		func(s *Settings) { s.RemoveExternalMcp(msg.ID) },
-		bridge.SendReconcile,
-	) {
+	if !ctx.withSettingsReconcile(func(s *Settings) { s.RemoveExternalMcp(msg.ID) }) {
 		return
 	}
 
@@ -87,31 +89,25 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP MCP helpers (moved from router.go)
+// HTTP MCP helpers
 // ---------------------------------------------------------------------------
 
 func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 	result, err := DiscoverHTTPMcp(ctx.Ctx, displayName, id, mcpURL, nil)
 
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		ctx.Platform.DispatchToMain(func() {
-			ctx.UI.EmitEvent("onExternalMcpError", err.Error())
-		})
+		dispatchError(ctx, "onExternalMcpError", err.Error())
 		return
 	}
 
 	needsAuth := errors.Is(err, ErrAuthRequired)
 
 	ctx.Platform.DispatchToMain(func() {
-		if !ctx.withSettingsNotify(
-			func(s *Settings) { s.AddExternalMcp(*result) },
-			bridge.SendReconcile,
-		) {
+		if !ctx.withSettingsReconcile(func(s *Settings) { s.UpsertExternalMcp(*result) }) {
 			return
 		}
 
-		mcpJSON, _ := json.Marshal(result)
-		ctx.UI.EmitEvent("onExternalMcpAdded", json.RawMessage(mcpJSON))
+		ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(result))
 
 		if needsAuth {
 			ctx.UI.EmitEvent("onOAuthRequired", id)
@@ -122,7 +118,12 @@ func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 func authenticateMcp(ctx *IPCContext, id string) {
 	s := ctx.Store.Get()
 	mcpCfg, _ := s.findMcpByID(id)
-	if mcpCfg == nil || !mcpCfg.IsHTTP() {
+	if mcpCfg == nil {
+		dispatchError(ctx, "onOAuthError", id, "MCP not found")
+		return
+	}
+	if !mcpCfg.IsHTTP() {
+		dispatchError(ctx, "onOAuthError", id, "only HTTP MCPs support OAuth")
 		return
 	}
 
@@ -132,16 +133,14 @@ func authenticateMcp(ctx *IPCContext, id string) {
 
 	oauth, err := startOAuthFlow(mcpCfg.URL, ctx.Platform.OpenURL)
 	if err != nil {
-		ctx.Platform.DispatchToMain(func() {
-			ctx.UI.EmitEvent("onOAuthError", id, err.Error())
-		})
+		dispatchError(ctx, "onOAuthError", id, err.Error())
 		return
 	}
 
 	ctx.Platform.DispatchToMain(func() {
 		if !ctx.withSettingsNotify(
 			func(s *Settings) { s.UpdateOAuthState(id, oauth) },
-			func(secret string) error { return bridge.SendReloadMcp(id, secret) },
+			func(secret string) error { return ctx.NotifyReloadMcp(id, secret) },
 		) {
 			return
 		}

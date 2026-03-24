@@ -69,7 +69,10 @@ func runTrayApp() {
 	store := NewSettingsStore()
 
 	// Ensure admin secret is generated and persisted on first launch.
-	store.With(func(s *Settings) {})
+	if err := store.EnsureInitialized(); err != nil {
+		slog.Error("failed to initialize settings", "error", err)
+		os.Exit(1)
+	}
 	settings := store.Get()
 	slog.Info("settings loaded")
 
@@ -113,14 +116,15 @@ func runTrayApp() {
 		os.Exit(1)
 	}
 	app.bridgeServer = bs
+
+	// Start external MCPs and autostart services before the bridge accepts
+	// connections, so tool lists and service status are populated when the
+	// first client connects.
+	extMgr.StartAll(ctx, settings.ExternalMcps)
+	app.registry.StartAllAutostart(settings.Services)
+
 	app.goFunc(func() { bs.Serve() })
 	slog.Info("bridge server started")
-
-	// Start external MCPs.
-	extMgr.StartAll(ctx, settings.ExternalMcps)
-
-	// Start autostart services.
-	app.registry.StartAllAutostart(settings.Services)
 
 	// Set up tray icon.
 	slog.Info("setting up tray icon")
@@ -230,6 +234,7 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 
 	data, err := json.Marshal(items)
 	if err != nil {
+		slog.Error("failed to marshal menu items", "error", err)
 		return
 	}
 	a.platform.UpdateMenu(string(data))

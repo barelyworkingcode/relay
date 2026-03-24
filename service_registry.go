@@ -50,6 +50,10 @@ func serviceLogDir() string {
 // Start spawns a service through the platform shell so the user's profile is available.
 // Stdout and stderr go to a log file.
 func (r *ServiceRegistry) Start(config *ServiceConfig) error {
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid service config: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -60,7 +64,7 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	cmd := buildCommand(config)
 
 	logPath := filepath.Join(serviceLogDir(), config.ID+".log")
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
@@ -120,6 +124,9 @@ func (r *ServiceRegistry) IsRunning(id string) bool {
 	return r.isRunningLocked(id)
 }
 
+// isRunningLocked checks whether a process is still alive. If the process has
+// exited, it is removed from the map as a side effect (reaping).
+// Caller must hold r.mu.
 func (r *ServiceRegistry) isRunningLocked(id string) bool {
 	proc, ok := r.processes[id]
 	if !ok {
@@ -176,9 +183,18 @@ func (r *ServiceRegistry) RunningIDs() []string {
 func (r *ServiceRegistry) CleanupDead() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for id := range r.processes {
-		if !r.isRunningLocked(id) {
-			slog.Info("cleaned up dead service", "id", id)
+
+	// Collect dead IDs first to avoid deleting from the map during iteration.
+	var dead []string
+	for id, proc := range r.processes {
+		select {
+		case <-proc.done:
+			dead = append(dead, id)
+		default:
 		}
+	}
+	for _, id := range dead {
+		delete(r.processes, id)
+		slog.Info("cleaned up dead service", "id", id)
 	}
 }

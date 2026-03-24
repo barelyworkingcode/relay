@@ -55,6 +55,17 @@ func unmarshalIPC[T any](raw json.RawMessage, handler string) (*T, bool) {
 	return &msg, true
 }
 
+// marshalForUI marshals a value to json.RawMessage for passing to UI events.
+// Logs and returns "null" on marshal failure rather than silently ignoring the error.
+func marshalForUI(v interface{}) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("failed to marshal for UI", "error", err)
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(data)
+}
+
 // formatJSONRPCError formats a JSON-RPC error response into a Go error.
 func formatJSONRPCError(e *jsonrpc.Error) error {
 	return fmt.Errorf("JSON-RPC error %d: %s", e.Code, e.Message)

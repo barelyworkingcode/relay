@@ -84,14 +84,23 @@ func (opts *registerOpts) resolveIDAndEnv() (id string, env map[string]string) {
 
 // upsertAndPrint atomically upserts an entity via store.With, extracts the
 // admin secret, and prints the result. Returns whether it was an update and the secret.
-func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Settings) bool, toolCount ...int) (updated bool, adminSecret string) {
+// If toolCount >= 0, the tool count is included in the output message.
+func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Settings) bool, toolCount int) (updated bool, adminSecret string) {
 	if err := store.With(func(s *Settings) {
 		adminSecret = s.AdminSecret
 		updated = fn(s)
 	}); err != nil {
 		exitError("failed to save settings: %v", err)
 	}
-	printUpsertResult(entity, name, id, updated, toolCount...)
+	verb := "registered"
+	if updated {
+		verb = "updated"
+	}
+	if toolCount >= 0 {
+		fmt.Printf("%s %s %q (%s) with %d tools\n", verb, entity, name, id, toolCount)
+	} else {
+		fmt.Printf("%s %s %q (%s)\n", verb, entity, name, id)
+	}
 	return
 }
 
@@ -104,10 +113,14 @@ func exitError(format string, args ...interface{}) {
 // notifyMcpChange sends the appropriate bridge message after an MCP upsert.
 // Updated MCPs get a targeted reload; new MCPs trigger a full reconcile.
 func notifyMcpChange(updated bool, id, adminSecret string) {
+	var err error
 	if updated {
-		_ = bridge.SendReloadMcp(id, adminSecret)
+		err = bridge.SendReloadMcp(id, adminSecret)
 	} else {
-		_ = bridge.SendReconcile(adminSecret)
+		err = bridge.SendReconcile(adminSecret)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
 	}
 }
 
@@ -145,32 +158,18 @@ func printSubcommandUsage(verb string, commands []cliSubcommand) {
 	}
 }
 
-// printUpsertResult prints a consistent "registered" or "updated" message.
-// If toolCount is provided, appends "with N tools".
-func printUpsertResult(entity, name, id string, updated bool, toolCount ...int) {
-	verb := "registered"
-	if updated {
-		verb = "updated"
-	}
-	if len(toolCount) > 0 {
-		fmt.Printf("%s %s %q (%s) with %d tools\n", verb, entity, name, id, toolCount[0])
-	} else {
-		fmt.Printf("%s %s %q (%s)\n", verb, entity, name, id)
-	}
-}
-
 // resolveAndRemove resolves an entity by id/name, removes it via store.With, and
 // prints the result. Returns the resolved ID and admin secret, or exits with an
 // error if not found.
-func resolveAndRemove(store SettingsStore, entity string, id, name *string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
-	if *id == "" && *name == "" {
+func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
+	if id == "" && name == "" {
 		exitError("--id or --name is required")
 	}
 
 	var resolvedID string
 	var adminSecret string
 	if err := store.With(func(s *Settings) {
-		resolvedID = resolveFn(s, *id, *name)
+		resolvedID = resolveFn(s, id, name)
 		if resolvedID == "" {
 			return
 		}
@@ -181,10 +180,10 @@ func resolveAndRemove(store SettingsStore, entity string, id, name *string, reso
 	}
 
 	if resolvedID == "" {
-		if *id != "" {
-			exitError("no %s found with id %q", entity, *id)
+		if id != "" {
+			exitError("no %s found with id %q", entity, id)
 		} else {
-			exitError("no %s found with name %q", entity, *name)
+			exitError("no %s found with name %q", entity, name)
 		}
 	}
 

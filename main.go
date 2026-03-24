@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -9,7 +10,13 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	logLevel := slog.LevelInfo
+	if env := os.Getenv("RELAY_LOG_LEVEL"); env != "" {
+		if err := logLevel.UnmarshalText([]byte(env)); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: invalid RELAY_LOG_LEVEL %q, using info\n", env)
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
 	if len(os.Args) < 2 {
 		runTrayApp()

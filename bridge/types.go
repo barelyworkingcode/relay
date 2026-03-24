@@ -1,8 +1,10 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -35,6 +37,14 @@ type ToolRouter interface {
 	ReconcileExternalMcps(ctx context.Context)
 	ReloadExternalMcp(ctx context.Context, id string)
 	ReloadService(id string)
+}
+
+// NewScanner creates a bufio.Scanner configured with the standard bridge buffer
+// size. Used by both server and client to avoid duplicating buffer setup.
+func NewScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64*1024), MaxMessageSize)
+	return s
 }
 
 // ConfigDir returns the platform config directory for relay.
