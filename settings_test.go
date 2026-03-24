@@ -33,9 +33,22 @@ func newTestSettings(t *testing.T, tokens []StoredToken, mcps []ExternalMcp) *Se
 // and returns the plaintext and hash.
 func generateAndStore(t *testing.T, s *Settings, name string) (plaintext, hash string) {
 	t.Helper()
-	pt, tok := GenerateToken(name, nil)
+	pt, tok, err := GenerateToken(name, nil)
+	if err != nil {
+		t.Fatalf("GenerateToken failed: %v", err)
+	}
 	s.Tokens = append(s.Tokens, tok)
 	return pt, tok.Hash
+}
+
+// mustGenerateToken calls GenerateToken and fails the test on error.
+func mustGenerateToken(t *testing.T, name string, perms map[string]Permission) (string, StoredToken) {
+	t.Helper()
+	pt, tok, err := GenerateToken(name, perms)
+	if err != nil {
+		t.Fatalf("GenerateToken failed: %v", err)
+	}
+	return pt, tok
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +86,7 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("empty token string", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		plaintext, tok := GenerateToken("test", nil)
+		plaintext, tok := mustGenerateToken(t, "test", nil)
 		_ = plaintext
 		s.Tokens = append(s.Tokens, tok)
 
@@ -85,7 +98,7 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("valid token", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		plaintext, tok := GenerateToken("mytoken", nil)
+		plaintext, tok := mustGenerateToken(t, "mytoken", nil)
 		s.Tokens = append(s.Tokens, tok)
 
 		result, err := s.Authenticate(plaintext)
@@ -102,7 +115,7 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("invalid token", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		_, tok := GenerateToken("real", nil)
+		_, tok := mustGenerateToken(t, "real", nil)
 		s.Tokens = append(s.Tokens, tok)
 
 		_, err := s.Authenticate("completely-wrong-token")
@@ -133,22 +146,22 @@ func TestAuthenticate(t *testing.T) {
 
 func TestGenerateToken(t *testing.T) {
 	t.Run("returns 64-char hex plaintext", func(t *testing.T) {
-		pt, _ := GenerateToken("t", nil)
+		pt, _ := mustGenerateToken(t, "t", nil)
 		if len(pt) != 64 {
 			t.Fatalf("expected 64-char plaintext, got %d chars", len(pt))
 		}
 	})
 
 	t.Run("stored token fields are populated", func(t *testing.T) {
-		pt, tok := GenerateToken("myname", map[string]Permission{"svc": PermOff})
+		pt, tok := mustGenerateToken(t, "myname", map[string]Permission{"svc": PermOff})
 		if tok.Name != "myname" {
 			t.Fatalf("expected name 'myname', got %q", tok.Name)
 		}
-		if tok.Prefix != pt[:6] {
-			t.Fatalf("prefix mismatch: got %q, want %q", tok.Prefix, pt[:6])
+		if tok.Prefix != pt[:tokenDisplayLen] {
+			t.Fatalf("prefix mismatch: got %q, want %q", tok.Prefix, pt[:tokenDisplayLen])
 		}
-		if tok.Suffix != pt[len(pt)-6:] {
-			t.Fatalf("suffix mismatch: got %q, want %q", tok.Suffix, pt[len(pt)-6:])
+		if tok.Suffix != pt[len(pt)-tokenDisplayLen:] {
+			t.Fatalf("suffix mismatch: got %q, want %q", tok.Suffix, pt[len(pt)-tokenDisplayLen:])
 		}
 		if tok.CreatedAt == "" {
 			t.Fatal("CreatedAt should not be empty")
@@ -159,15 +172,15 @@ func TestGenerateToken(t *testing.T) {
 	})
 
 	t.Run("hash matches hashToken of plaintext", func(t *testing.T) {
-		pt, tok := GenerateToken("check", nil)
+		pt, tok := mustGenerateToken(t, "check", nil)
 		if tok.Hash != hashToken(pt) {
 			t.Fatal("hash does not match hashToken(plaintext)")
 		}
 	})
 
 	t.Run("two calls produce different tokens", func(t *testing.T) {
-		pt1, tok1 := GenerateToken("a", nil)
-		pt2, tok2 := GenerateToken("b", nil)
+		pt1, tok1 := mustGenerateToken(t, "a", nil)
+		pt2, tok2 := mustGenerateToken(t, "b", nil)
 		if pt1 == pt2 {
 			t.Fatal("two generated plaintexts should differ")
 		}
@@ -182,10 +195,10 @@ func TestGenerateToken(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetPermission(t *testing.T) {
-	t.Run("defaults to PermOn for unknown token", func(t *testing.T) {
+	t.Run("defaults to PermOff for unknown token hash", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		if got := s.GetPermission("nonexistent", "svc"); got != PermOn {
-			t.Fatalf("expected PermOn, got %q", got)
+		if got := s.GetPermission("nonexistent", "svc"); got != PermOff {
+			t.Fatalf("expected PermOff for unknown token (defense-in-depth), got %q", got)
 		}
 	})
 
@@ -199,7 +212,7 @@ func TestGetPermission(t *testing.T) {
 
 	t.Run("returns PermOff when set", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		_, tok := GenerateToken("tok", map[string]Permission{"blocked": PermOff})
+		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"blocked": PermOff})
 		s.Tokens = append(s.Tokens, tok)
 		if got := s.GetPermission(tok.Hash, "blocked"); got != PermOff {
 			t.Fatalf("expected PermOff, got %q", got)
@@ -208,7 +221,7 @@ func TestGetPermission(t *testing.T) {
 
 	t.Run("returns PermOn for explicit PermOn", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		_, tok := GenerateToken("tok", map[string]Permission{"allowed": PermOn})
+		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"allowed": PermOn})
 		s.Tokens = append(s.Tokens, tok)
 		if got := s.GetPermission(tok.Hash, "allowed"); got != PermOn {
 			t.Fatalf("expected PermOn, got %q", got)
@@ -217,7 +230,7 @@ func TestGetPermission(t *testing.T) {
 
 	t.Run("legacy non-off value treated as PermOn", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		_, tok := GenerateToken("tok", map[string]Permission{"svc": "full"})
+		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"svc": "full"})
 		s.Tokens = append(s.Tokens, tok)
 		if got := s.GetPermission(tok.Hash, "svc"); got != PermOn {
 			t.Fatalf("expected PermOn for legacy 'full', got %q", got)
@@ -336,7 +349,7 @@ func TestAddExternalMcp(t *testing.T) {
 
 	t.Run("does not overwrite existing permission", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		_, tok := GenerateToken("tok", map[string]Permission{"mcp1": PermOn})
+		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"mcp1": PermOn})
 		s.Tokens = append(s.Tokens, tok)
 
 		mcp := ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
@@ -1089,23 +1102,36 @@ func TestSettingsCache(t *testing.T) {
 		}
 	})
 
-	t.Run("With generates AdminSecret if missing", func(t *testing.T) {
+	t.Run("EnsureInitialized generates AdminSecret if missing", func(t *testing.T) {
 		store = NewSettingsStore()
 		_ = os.Remove(sp)
 
-		err := store.With(func(s *Settings) {
-			// no-op mutation; ensureAdminSecret runs before fn.
-		})
+		err := store.EnsureInitialized()
+		if err != nil {
+			t.Fatalf("EnsureInitialized failed: %v", err)
+		}
+
+		s := store.Get()
+		if s.AdminSecret == "" {
+			t.Fatal("AdminSecret should be auto-generated by EnsureInitialized")
+		}
+		if len(s.AdminSecret) != 32 {
+			t.Fatalf("AdminSecret should be 32 hex chars, got %d", len(s.AdminSecret))
+		}
+	})
+
+	t.Run("With does not generate AdminSecret", func(t *testing.T) {
+		store = NewSettingsStore()
+		_ = os.Remove(sp)
+
+		err := store.With(func(s *Settings) {})
 		if err != nil {
 			t.Fatalf("With failed: %v", err)
 		}
 
 		s := store.Get()
-		if s.AdminSecret == "" {
-			t.Fatal("AdminSecret should be auto-generated by With")
-		}
-		if len(s.AdminSecret) != 32 {
-			t.Fatalf("AdminSecret should be 32 hex chars, got %d", len(s.AdminSecret))
+		if s.AdminSecret != "" {
+			t.Fatal("With should not generate AdminSecret; that is EnsureInitialized's job")
 		}
 	})
 }
@@ -1538,8 +1564,8 @@ func TestIntegrationLifecycle(t *testing.T) {
 	s := newTestSettings(t, nil, nil)
 
 	// 1. Generate two tokens.
-	pt1, tok1 := GenerateToken("alice", nil)
-	pt2, tok2 := GenerateToken("bob", nil)
+	pt1, tok1 := mustGenerateToken(t, "alice", nil)
+	pt2, tok2 := mustGenerateToken(t, "bob", nil)
 	s.Tokens = append(s.Tokens, tok1, tok2)
 
 	// 2. Add two MCPs. Both should default to PermOff for existing tokens.
@@ -1635,7 +1661,7 @@ func TestEdgeCases(t *testing.T) {
 	})
 
 	t.Run("GenerateToken with nil permissions", func(t *testing.T) {
-		_, tok := GenerateToken("nil-perms", nil)
+		_, tok := mustGenerateToken(t, "nil-perms", nil)
 		// Permissions should be nil (not set), which is fine.
 		if tok.Permissions != nil {
 			t.Fatal("nil default permissions should remain nil")
@@ -1644,7 +1670,7 @@ func TestEdgeCases(t *testing.T) {
 
 	t.Run("Authenticate returns pointer into Tokens slice", func(t *testing.T) {
 		s := newTestSettings(t, nil, nil)
-		pt, tok := GenerateToken("ptr-test", nil)
+		pt, tok := mustGenerateToken(t, "ptr-test", nil)
 		s.Tokens = append(s.Tokens, tok)
 
 		result, _ := s.Authenticate(pt)

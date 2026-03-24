@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // Settings holds all persistent Relay configuration.
 type Settings struct {
@@ -46,13 +49,7 @@ func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 // RemoveExternalMcp removes an external MCP and cleans up token permissions.
 // Does not save; use within store.With.
 func (s *Settings) RemoveExternalMcp(id string) {
-	filtered := make([]ExternalMcp, 0, len(s.ExternalMcps))
-	for _, m := range s.ExternalMcps {
-		if m.ID != id {
-			filtered = append(filtered, m)
-		}
-	}
-	s.ExternalMcps = filtered
+	s.ExternalMcps = slices.DeleteFunc(s.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
 	for i := range s.Tokens {
 		delete(s.Tokens[i].Permissions, id)
 		delete(s.Tokens[i].DisabledTools, id)
@@ -132,13 +129,7 @@ func (s *Settings) AddService(config ServiceConfig) {
 
 // RemoveService removes a service by ID. Does not save; use within store.With.
 func (s *Settings) RemoveService(id string) {
-	filtered := make([]ServiceConfig, 0, len(s.Services))
-	for _, svc := range s.Services {
-		if svc.ID != id {
-			filtered = append(filtered, svc)
-		}
-	}
-	s.Services = filtered
+	s.Services = slices.DeleteFunc(s.Services, func(svc ServiceConfig) bool { return svc.ID == id })
 }
 
 // UpdateService replaces a service config by ID. Does not save; use within store.With.
@@ -160,6 +151,14 @@ func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 	return false
 }
 
+// SetServiceAutostart updates the autostart flag for a service by ID.
+// Does not save; use within store.With.
+func (s *Settings) SetServiceAutostart(id string, autostart bool) {
+	if svc, _ := s.findServiceByID(id); svc != nil {
+		svc.Autostart = autostart
+	}
+}
+
 // MergeServiceDefaults fills zero-value fields in cfg from the existing service
 // with the same ID. Useful when CLI flags only specify fields being changed.
 // Autostart is intentionally not merged: its zero value (false) is
@@ -173,7 +172,7 @@ func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	if cfg.Env == nil {
 		cfg.Env = existing.Env
 	}
-	if len(cfg.Args) == 0 {
+	if cfg.Args == nil {
 		cfg.Args = existing.Args
 	}
 	if cfg.WorkingDir == "" {

@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -15,8 +14,7 @@ import (
 func RunMCPServer(token string) error {
 	client := bridge.NewClient(token)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	scanner := bridge.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 
 	for scanner.Scan() {
@@ -28,14 +26,7 @@ func RunMCPServer(token string) error {
 		var req jsonrpc.ServerRequest
 		if err := json.Unmarshal(line, &req); err != nil {
 			slog.Error("failed to parse request", "error", err)
-			resp := jsonrpc.Response{
-				JSONRPC: "2.0",
-				Error: &jsonrpc.Error{
-					Code:    -32700,
-					Message: "parse error: " + err.Error(),
-				},
-			}
-			_ = encoder.Encode(resp)
+			_ = encoder.Encode(rpcError(nil, jsonrpc.CodeParseError, "parse error: "+err.Error()))
 			continue
 		}
 
@@ -56,105 +47,90 @@ func RunMCPServer(token string) error {
 }
 
 // marshalResult converts an arbitrary value into json.RawMessage for a Response.
-func marshalResult(v interface{}) json.RawMessage {
+func marshalResult(v interface{}) (json.RawMessage, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		slog.Error("marshalResult failed", "error", err)
-		return json.RawMessage("null")
+		return nil, fmt.Errorf("marshal result: %w", err)
 	}
-	return json.RawMessage(data)
+	return json.RawMessage(data), nil
+}
+
+// jsonrpcVersion is the protocol version string for all responses.
+const jsonrpcVersion = "2.0"
+
+// rpcResult builds a success Response with the given result for the request ID.
+// If marshaling fails, returns an internal error response instead.
+func rpcResult(id interface{}, result json.RawMessage, err error) *jsonrpc.Response {
+	if err != nil {
+		return rpcError(id, jsonrpc.CodeInternalError, err.Error())
+	}
+	return &jsonrpc.Response{JSONRPC: jsonrpcVersion, ID: id, Result: result}
+}
+
+// rpcError builds an error Response with the given code and message for the request ID.
+func rpcError(id interface{}, code int, msg string) *jsonrpc.Response {
+	return &jsonrpc.Response{JSONRPC: jsonrpcVersion, ID: id, Error: &jsonrpc.Error{Code: code, Message: msg}}
 }
 
 func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
-		return &jsonrpc.Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: marshalResult(map[string]interface{}{
-				"protocolVersion": "2024-11-05",
-				"capabilities": map[string]interface{}{
-					"tools": map[string]interface{}{},
-				},
-				"serverInfo": map[string]interface{}{
-					"name":    "relay",
-					"version": "1.0.0",
-				},
-			}),
-		}
-
+		return handleInitialize(req)
 	case "notifications/initialized":
-		// Notification, no response.
 		return nil
-
 	case "tools/list":
-		tools, err := client.ListTools()
-		if err != nil {
-			slog.Error("ListTools failed", "error", err)
-			return &jsonrpc.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &jsonrpc.Error{
-					Code:    -32603,
-					Message: err.Error(),
-				},
-			}
-		}
-		return &jsonrpc.Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: marshalResult(map[string]interface{}{
-				"tools": json.RawMessage(tools),
-			}),
-		}
-
+		return handleToolsList(client, req)
 	case "tools/call":
-		var params struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		}
-		if req.Params != nil {
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				return &jsonrpc.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: &jsonrpc.Error{
-						Code:    -32602,
-						Message: "invalid params: " + err.Error(),
-					},
-				}
-			}
-		}
-		if params.Arguments == nil {
-			params.Arguments = json.RawMessage("{}")
-		}
-
-		result, err := client.CallTool(params.Name, params.Arguments)
-		if err != nil {
-			slog.Error("CallTool failed", "tool", params.Name, "error", err)
-			return &jsonrpc.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &jsonrpc.Error{
-					Code:    -32603,
-					Message: err.Error(),
-				},
-			}
-		}
-		return &jsonrpc.Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result:  json.RawMessage(result),
-		}
-
+		return handleToolsCall(client, req)
 	default:
-		return &jsonrpc.Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &jsonrpc.Error{
-				Code:    -32601,
-				Message: "method not found: " + req.Method,
-			},
+		return rpcError(req.ID, jsonrpc.CodeMethodNotFound, "method not found: "+req.Method)
+	}
+}
+
+func handleInitialize(req *jsonrpc.ServerRequest) *jsonrpc.Response {
+	data, err := marshalResult(map[string]interface{}{
+		"protocolVersion": ProtocolVersion,
+		"capabilities": map[string]interface{}{
+			"tools": map[string]interface{}{},
+		},
+		"serverInfo": map[string]interface{}{
+			"name":    "relay",
+			"version": "1.0.0",
+		},
+	})
+	return rpcResult(req.ID, data, err)
+}
+
+func handleToolsList(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
+	tools, err := client.ListTools()
+	if err != nil {
+		slog.Error("ListTools failed", "error", err)
+		return rpcError(req.ID, jsonrpc.CodeInternalError, err.Error())
+	}
+	data, err := marshalResult(map[string]interface{}{
+		"tools": json.RawMessage(tools),
+	})
+	return rpcResult(req.ID, data, err)
+}
+
+func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if req.Params != nil {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return rpcError(req.ID, jsonrpc.CodeInvalidParams, "invalid params: "+err.Error())
 		}
 	}
+	if params.Arguments == nil {
+		params.Arguments = json.RawMessage("{}")
+	}
+
+	result, err := client.CallTool(params.Name, params.Arguments)
+	if err != nil {
+		slog.Error("CallTool failed", "tool", params.Name, "error", err)
+		return rpcError(req.ID, jsonrpc.CodeInternalError, err.Error())
+	}
+	return rpcResult(req.ID, json.RawMessage(result), nil)
 }

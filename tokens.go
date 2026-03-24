@@ -6,8 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"time"
 )
+
+// tokenDisplayLen is the number of characters stored as prefix/suffix
+// for token display (e.g. "abc123...xyz789").
+const tokenDisplayLen = 6
 
 // Sentinel errors for authentication failures.
 var (
@@ -23,10 +29,10 @@ func hashToken(plaintext string) string {
 
 // GenerateToken creates a new random token. Returns the plaintext (shown once)
 // and the StoredToken (persisted with hash only).
-func GenerateToken(name string, defaultPermissions map[string]Permission) (string, StoredToken) {
+func GenerateToken(name string, defaultPermissions map[string]Permission) (string, StoredToken, error) {
 	var bytes [32]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		return "", StoredToken{}, fmt.Errorf("generate token: %w", err)
 	}
 	plaintext := hex.EncodeToString(bytes[:])
 	hash := hashToken(plaintext)
@@ -34,12 +40,12 @@ func GenerateToken(name string, defaultPermissions map[string]Permission) (strin
 	token := StoredToken{
 		Name:        name,
 		Hash:        hash,
-		Prefix:      plaintext[:6],
-		Suffix:      plaintext[len(plaintext)-6:],
+		Prefix:      plaintext[:tokenDisplayLen],
+		Suffix:      plaintext[len(plaintext)-tokenDisplayLen:],
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		Permissions: defaultPermissions,
 	}
-	return plaintext, token
+	return plaintext, token, nil
 }
 
 // Authenticate validates a bearer token against stored hashes.
@@ -59,30 +65,25 @@ func (s *Settings) Authenticate(plaintext string) (*StoredToken, error) {
 }
 
 // GetPermission returns the permission level for a token+service pair.
-// Defaults to PermOn if not explicitly set. Legacy "read"/"full" values are treated as PermOn.
+// Defaults to PermOn if the permission is not explicitly set for a known token.
+// Returns PermOff if the token hash is not found (defense-in-depth; callers
+// should authenticate first). Legacy "read"/"full" values are treated as PermOn.
 func (s *Settings) GetPermission(tokenHash, serviceName string) Permission {
 	tok, _ := s.findTokenByHash(tokenHash)
 	if tok == nil {
-		return PermOn
+		return PermOff
 	}
-	if p, ok := tok.Permissions[serviceName]; ok {
-		if p == PermOff {
-			return PermOff
-		}
-		return PermOn
+	if p, ok := tok.Permissions[serviceName]; ok && p == PermOff {
+		return PermOff
 	}
+	// Default to PermOn: unknown token+service pairs are allowed, and legacy
+	// values like "read"/"full" are treated as enabled.
 	return PermOn
 }
 
 // DeleteToken removes a token by its hash. Does not save; use within store.With.
 func (s *Settings) DeleteToken(hash string) {
-	filtered := make([]StoredToken, 0, len(s.Tokens))
-	for _, t := range s.Tokens {
-		if t.Hash != hash {
-			filtered = append(filtered, t)
-		}
-	}
-	s.Tokens = filtered
+	s.Tokens = slices.DeleteFunc(s.Tokens, func(t StoredToken) bool { return t.Hash == hash })
 }
 
 // RevokeAll removes all tokens. Does not save; use within store.With.
@@ -108,12 +109,7 @@ func (s *Settings) IsToolDisabled(tokenHash, mcpID, toolName string) bool {
 	if tok == nil || tok.DisabledTools == nil {
 		return false
 	}
-	for _, name := range tok.DisabledTools[mcpID] {
-		if name == toolName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tok.DisabledTools[mcpID], toolName)
 }
 
 // SetToolDisabled enables or disables a specific tool for a token+MCP pair.
@@ -126,21 +122,12 @@ func (s *Settings) SetToolDisabled(hash, mcpID, toolName string, disabled bool) 
 	if tok.DisabledTools == nil {
 		tok.DisabledTools = make(map[string][]string)
 	}
-	list := tok.DisabledTools[mcpID]
 	if disabled {
-		for _, n := range list {
-			if n == toolName {
-				return
-			}
+		if !slices.Contains(tok.DisabledTools[mcpID], toolName) {
+			tok.DisabledTools[mcpID] = append(tok.DisabledTools[mcpID], toolName)
 		}
-		tok.DisabledTools[mcpID] = append(list, toolName)
 	} else {
-		filtered := make([]string, 0, len(list))
-		for _, n := range list {
-			if n != toolName {
-				filtered = append(filtered, n)
-			}
-		}
+		filtered := slices.DeleteFunc(tok.DisabledTools[mcpID], func(n string) bool { return n == toolName })
 		if len(filtered) == 0 {
 			delete(tok.DisabledTools, mcpID)
 		} else {

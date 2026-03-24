@@ -1,13 +1,14 @@
 package bridge
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
+
+	"relaygo/jsonrpc"
 )
 
 // BridgeServer listens on a Unix socket and routes requests via a ToolRouter.
@@ -70,8 +71,7 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), MaxMessageSize)
+	scanner := NewScanner(conn)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -79,13 +79,16 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 
 		data, err := json.Marshal(resp)
 		if err != nil {
-			data, _ = json.Marshal(bridgeError(-1, err.Error()))
+			data, _ = json.Marshal(bridgeError(jsonrpc.CodeInternalError, err.Error()))
 		}
 		data = append(data, '\n')
 
 		if _, err := conn.Write(data); err != nil {
 			return
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Debug("bridge connection read error", "error", err)
 	}
 }
 
@@ -107,18 +110,18 @@ var bridgeHandlers = map[string]bridgeHandler{
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
 	var req BridgeRequest
 	if err := json.Unmarshal([]byte(line), &req); err != nil {
-		return bridgeError(-32700, "parse error: "+err.Error())
+		return bridgeError(jsonrpc.CodeParseError, "parse error: "+err.Error())
 	}
 
 	h, ok := bridgeHandlers[req.Type]
 	if !ok {
 		slog.Warn("bridge: unknown request type", "type", req.Type)
-		return bridgeError(-32601, "unknown request type: "+req.Type)
+		return bridgeError(jsonrpc.CodeMethodNotFound, "unknown request type: "+req.Type)
 	}
 
 	if h.requireAdmin {
 		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return bridgeError(-32603, "admin auth: "+err.Error())
+			return bridgeError(jsonrpc.CodeUnauthorized, "admin auth: "+err.Error())
 		}
 	}
 
@@ -128,7 +131,7 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	tools, err := router.ListTools(ctx, req.Token)
 	if err != nil {
-		return bridgeError(-32603, err.Error())
+		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: "Tools", Tools: tools}
 }
@@ -136,7 +139,7 @@ func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter)
 func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	result, err := router.CallTool(ctx, req.Name, req.Arguments, req.Token)
 	if err != nil {
-		return bridgeError(-32603, err.Error())
+		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: "Result", Result: result}
 }

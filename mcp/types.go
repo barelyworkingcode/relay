@@ -2,6 +2,9 @@ package mcp
 
 import "encoding/json"
 
+// ProtocolVersion is the MCP protocol version supported by this implementation.
+const ProtocolVersion = "2024-11-05"
+
 // Tool represents an MCP tool definition.
 type Tool struct {
 	Name        string          `json:"name"`

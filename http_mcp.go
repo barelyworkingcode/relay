@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 var ErrAuthRequired = errors.New("authentication required (HTTP 401)")
 
 // httpOAuth holds runtime OAuth token state for an HTTP MCP connection.
+// All fields must be read/written under httpMcpConn.mu.
 type httpOAuth struct {
 	url          string // MCP endpoint URL for OAuth discovery
 	meta         *oauthMetadata
@@ -32,42 +32,8 @@ type httpOAuth struct {
 	tokenExpiry  time.Time
 }
 
-// refreshIfNeeded checks token expiry and refreshes if within 30s of expiry.
-// Returns true if tokens were refreshed. Caller must serialize access.
-func (o *httpOAuth) refreshIfNeeded() (bool, error) {
-	if o.refreshToken == "" || o.tokenExpiry.IsZero() {
-		return false, nil
-	}
-	if time.Now().Before(o.tokenExpiry.Add(-30 * time.Second)) {
-		return false, nil
-	}
-
-	meta := o.meta
-	if meta == nil {
-		discovery, err := discoverOAuth(o.url)
-		if err != nil {
-			return false, fmt.Errorf("discover OAuth metadata for refresh: %w", err)
-		}
-		meta = discovery.Metadata
-		o.meta = meta
-	}
-
-	tokenResp, err := refreshAccessToken(meta, o.refreshToken, o.clientID, o.clientSecret)
-	if err != nil {
-		return false, fmt.Errorf("token refresh: %w", err)
-	}
-
-	o.accessToken = tokenResp.AccessToken
-	if tokenResp.RefreshToken != "" {
-		o.refreshToken = tokenResp.RefreshToken
-	}
-	if tokenResp.ExpiresIn > 0 {
-		o.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-	return true, nil
-}
-
 // toOAuthState converts runtime OAuth state to the persistable OAuthState.
+// Caller must hold httpMcpConn.mu (or ensure no concurrent access).
 func (o *httpOAuth) toOAuthState() *OAuthState {
 	return &OAuthState{
 		ClientID:     o.clientID,
@@ -78,19 +44,39 @@ func (o *httpOAuth) toOAuthState() *OAuthState {
 	}
 }
 
+// mcpSessionIDHeader is the header name for MCP session identification.
+const mcpSessionIDHeader = "Mcp-Session-Id"
+
 // httpMcpConn implements McpConnection for Streamable HTTP transport.
 type httpMcpConn struct {
 	baseMcpConn
 	url        string
 	sessionID  string
 	httpClient *http.Client
-	mu         sync.Mutex // protects sessionID and oauth.accessToken snapshots
-	tokenMu    sync.Mutex // protects OAuth token refresh (separate to avoid blocking requests during refresh)
+	mu         sync.Mutex // protects sessionID and all oauth fields
+	tokenMu    sync.Mutex // serializes refresh operations (separate so non-refresh requests don't block on I/O)
 
 	oauth httpOAuth
 
 	// Callback to persist refreshed tokens. Injected by ExternalMcpManager.
 	onTokenRefresh func(oauth *OAuthState)
+}
+
+// sessionSnapshot holds pre-snapshotted OAuth and session state,
+// captured under lock to avoid holding it during HTTP I/O.
+type sessionSnapshot struct {
+	accessToken string
+	sessionID   string
+}
+
+// snapshot captures OAuth/session state under lock for use in HTTP requests.
+func (c *httpMcpConn) snapshot() sessionSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sessionSnapshot{
+		accessToken: c.oauth.accessToken,
+		sessionID:   c.sessionID,
+	}
 }
 
 func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
@@ -119,30 +105,73 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	return conn
 }
 
-// refreshTokenIfNeeded acquires the token mutex and delegates to httpOAuth.
-// Called outside the request lock to avoid blocking all requests during refresh.
+// refreshTokenIfNeeded checks token expiry and refreshes if within 30s of expiry.
+// Uses tokenMu to serialize refresh operations and mu to synchronize token field
+// access with concurrent SendRequest calls. Network I/O happens without holding mu.
 func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
-	refreshed, err := c.oauth.refreshIfNeeded()
-	if err != nil {
-		return err
+
+	// Read token state under mu.
+	c.mu.Lock()
+	needsRefresh := c.oauth.refreshToken != "" &&
+		!c.oauth.tokenExpiry.IsZero() &&
+		time.Now().After(c.oauth.tokenExpiry.Add(-30*time.Second))
+	if !needsRefresh {
+		c.mu.Unlock()
+		return nil
 	}
-	if refreshed && c.onTokenRefresh != nil {
-		c.onTokenRefresh(c.oauth.toOAuthState())
+	// Snapshot values needed for the HTTP calls.
+	meta := c.oauth.meta
+	refreshToken := c.oauth.refreshToken
+	clientID := c.oauth.clientID
+	clientSecret := c.oauth.clientSecret
+	oauthURL := c.oauth.url
+	c.mu.Unlock()
+
+	// Discover metadata if needed (network I/O, no locks held).
+	if meta == nil {
+		discovery, err := discoverOAuth(oauthURL)
+		if err != nil {
+			return fmt.Errorf("discover OAuth metadata for refresh: %w", err)
+		}
+		meta = discovery.Metadata
+	}
+
+	// Refresh token (network I/O, no locks held).
+	tokenResp, err := refreshAccessToken(meta, refreshToken, clientID, clientSecret)
+	if err != nil {
+		return fmt.Errorf("token refresh: %w", err)
+	}
+
+	// Write results under mu so concurrent SendRequest snapshots see the new token.
+	c.mu.Lock()
+	c.oauth.meta = meta
+	c.oauth.accessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		c.oauth.refreshToken = tokenResp.RefreshToken
+	}
+	if tokenResp.ExpiresIn > 0 {
+		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+	oauthState := c.oauth.toOAuthState()
+	c.mu.Unlock()
+
+	if c.onTokenRefresh != nil {
+		c.onTokenRefresh(oauthState)
 	}
 	return nil
 }
 
-// setHeadersFrom applies common headers using pre-snapshotted values, avoiding
-// the need to hold a lock during HTTP I/O.
-func (c *httpMcpConn) setHeadersFrom(req *http.Request, accessToken, sessionID string) {
+// setHeaders applies common headers using pre-snapshotted session state,
+// avoiding the need to hold a lock during HTTP I/O.
+func (c *httpMcpConn) setHeaders(req *http.Request, snap sessionSnapshot) {
 	req.Header.Set("Content-Type", "application/json")
-	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
+	if snap.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+snap.accessToken)
 	}
-	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+	if snap.sessionID != "" {
+		req.Header.Set(mcpSessionIDHeader, snap.sessionID)
 	}
 }
 
@@ -153,29 +182,18 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	}
 
 	id := c.allocID()
-	req := jsonrpc.Request{
-		JSONRPC: "2.0",
-		ID:      id,
-		Method:  method,
-		Params:  params,
-	}
-
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
 	if err != nil {
 		return nil, err
 	}
 
-	// Snapshot session state under lock, then release before HTTP I/O.
-	c.mu.Lock()
-	accessToken := c.oauth.accessToken
-	sessionID := c.sessionID
-	c.mu.Unlock()
+	snap := c.snapshot()
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request: %w", err)
 	}
-	c.setHeadersFrom(httpReq, accessToken, sessionID)
+	c.setHeaders(httpReq, snap)
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -193,7 +211,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	}
 
 	// Update session ID from response under lock.
-	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+	if sid := resp.Header.Get(mcpSessionIDHeader); sid != "" {
 		c.mu.Lock()
 		c.sessionID = sid
 		c.mu.Unlock()
@@ -217,8 +235,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 
 // parseSSEResponse reads SSE data lines and extracts the JSON-RPC response matching our ID.
 func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json.RawMessage, error) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), bridge.MaxMessageSize)
+	scanner := bridge.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -231,7 +248,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 
 		var rpcResp jsonrpc.Response
 		if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
-			// Skip malformed SSE data lines.
+			slog.Debug("HTTP MCP: skipping malformed SSE data line", "error", err)
 			continue
 		}
 
@@ -250,32 +267,24 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("SSE read error: %w", err)
 	}
-	return nil, fmt.Errorf("SSE stream ended without matching response")
+	return nil, fmt.Errorf("SSE stream ended without matching response for ID %d", expectedID)
 }
 
 func (c *httpMcpConn) SendNotification(method string) {
-	req := jsonrpc.Request{
-		JSONRPC: "2.0",
-		Method:  method,
-	}
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(jsonrpc.NewNotification(method))
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to marshal notification", "method", method, "error", err)
 		return
 	}
 
-	// Snapshot session state under lock, then release before HTTP I/O.
-	c.mu.Lock()
-	accessToken := c.oauth.accessToken
-	sessionID := c.sessionID
-	c.mu.Unlock()
+	snap := c.snapshot()
 
 	httpReq, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
 	}
-	c.setHeadersFrom(httpReq, accessToken, sessionID)
+	c.setHeaders(httpReq, snap)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -286,23 +295,21 @@ func (c *httpMcpConn) SendNotification(method string) {
 }
 
 func (c *httpMcpConn) Close() {
-	c.mu.Lock()
-	accessToken := c.oauth.accessToken
-	sessionID := c.sessionID
-	c.mu.Unlock()
-
-	if sessionID == "" {
+	snap := c.snapshot()
+	if snap.sessionID == "" {
 		return
 	}
-	// Send DELETE to end session.
+	// Send DELETE to end session (best-effort cleanup).
 	req, err := http.NewRequest("DELETE", c.url, nil)
 	if err != nil {
+		slog.Debug("HTTP MCP: failed to create session close request", "url", c.url, "error", err)
 		return
 	}
-	c.setHeadersFrom(req, accessToken, sessionID)
+	c.setHeaders(req, snap)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Debug("HTTP MCP: session close failed", "url", c.url, "error", err)
 		return
 	}
 	resp.Body.Close()
@@ -324,24 +331,14 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			// Store conn without tools -- UI will show "Authenticate" button.
-			m.mu.Lock()
-			m.conns[mcpCfg.ID] = conn
-			m.mu.Unlock()
+			m.setConnection(mcpCfg.ID, conn)
 			return ErrAuthRequired
 		}
+		conn.Close()
 		return err
 	}
-	conn.tools = result.Tools
 
-	if m.onDiscover != nil {
-		m.onDiscover(mcpCfg.ID, result.ToolInfos, result.ContextSchema)
-	}
-
-	m.mu.Lock()
-	m.conns[mcpCfg.ID] = conn
-	m.mu.Unlock()
-
-	slog.Info("HTTP MCP connected", "id", mcpCfg.ID, "tools", len(result.Tools))
+	m.finalizeConnection(mcpCfg.ID, conn, result)
 	return nil
 }
 
@@ -356,17 +353,16 @@ func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth 
 	}
 
 	conn := newHTTPMcpConn(cfg)
+	defer conn.Close() // Safe for all paths: Close is a no-op if no session was established.
 
 	result, err := discoverMcp(ctx, conn, cfg)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
-			// No session was established, so no close/DELETE needed.
 			cfg.DiscoveredTools = []ToolInfo{}
 			return &cfg, ErrAuthRequired
 		}
 		return nil, err
 	}
-	conn.Close()
 
 	return result, nil
 }

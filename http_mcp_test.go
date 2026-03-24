@@ -19,20 +19,25 @@ func newTestHTTPServer(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
+// readJSONRPCID extracts the request ID from a JSON-RPC request body.
+// Centralizes the body-read + unmarshal pattern used across HTTP test handlers.
+func readJSONRPCID(r *http.Request) int64 {
+	body, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	var req struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(body, &req)
+	return req.ID
+}
+
 // jsonRPCHandler returns a handler that responds to any JSON-RPC request with
 // a valid result containing the given payload.
 func jsonRPCHandler(result string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-
-		var req struct {
-			ID int64 `json:"id"`
-		}
-		json.Unmarshal(body, &req)
-
+		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, result)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, id, result)
 	}
 }
 
@@ -41,13 +46,7 @@ func TestHTTPMcpConn_SendRequest_Concurrent(t *testing.T) {
 	requestCount := 0
 
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-
-		var req struct {
-			ID int64 `json:"id"`
-		}
-		json.Unmarshal(body, &req)
+		id := readJSONRPCID(r)
 
 		mu.Lock()
 		requestCount++
@@ -57,7 +56,7 @@ func TestHTTPMcpConn_SendRequest_Concurrent(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"ok":true}}`, req.ID)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"ok":true}}`, id)
 	})
 	defer srv.Close()
 
@@ -121,17 +120,10 @@ func TestHTTPMcpConn_SendRequest_401(t *testing.T) {
 
 func TestHTTPMcpConn_SendRequest_SessionID(t *testing.T) {
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-
-		var req struct {
-			ID int64 `json:"id"`
-		}
-		json.Unmarshal(body, &req)
-
+		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Mcp-Session-Id", "session-abc")
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, req.ID)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, id)
 	})
 	defer srv.Close()
 
@@ -158,19 +150,11 @@ func TestHTTPMcpConn_SendRequest_SessionID(t *testing.T) {
 
 func TestHTTPMcpConn_SSEResponse(t *testing.T) {
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-
-		var req struct {
-			ID int64 `json:"id"`
-		}
-		json.Unmarshal(body, &req)
-
+		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-
 		// Write SSE data.
-		fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}\n\n", req.ID)
+		fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}\n\n", id)
 	})
 	defer srv.Close()
 

@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,6 +20,14 @@ func NewClient(token string) *Client {
 	}
 }
 
+// checkError returns an error if the bridge response is an error response.
+func checkError(resp *BridgeResponse) error {
+	if resp.Type == "Error" {
+		return fmt.Errorf("bridge error (code %d): %s", resp.Code, resp.Message)
+	}
+	return nil
+}
+
 // ListTools sends a ListTools request and returns the raw JSON tool array.
 func (c *Client) ListTools() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
@@ -30,8 +37,8 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
-	if resp.Type == "Error" {
-		return nil, fmt.Errorf("bridge error: %s", resp.Message)
+	if err := checkError(resp); err != nil {
+		return nil, err
 	}
 	return resp.Tools, nil
 }
@@ -46,17 +53,17 @@ func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, e
 		Token:     c.token,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bridge request failed: %w", err)
+		return nil, fmt.Errorf("failed to call tool %q: %w", name, err)
 	}
-	if resp.Type == "Error" {
-		return nil, fmt.Errorf("bridge error (code %d): %s", resp.Code, resp.Message)
+	if err := checkError(resp); err != nil {
+		return nil, err
 	}
 	return resp.Result, nil
 }
 
 // sendAdmin sends an admin request to the bridge and returns any error.
 func sendAdmin(reqType, name, token string) error {
-	c := &Client{sockPath: SocketPath()}
+	c := NewClient(token)
 	resp, err := c.send(BridgeRequest{
 		Type:  reqType,
 		Name:  name,
@@ -65,10 +72,7 @@ func sendAdmin(reqType, name, token string) error {
 	if err != nil {
 		return fmt.Errorf("%s request failed: %w", reqType, err)
 	}
-	if resp.Type == "Error" {
-		return fmt.Errorf("bridge error: %s", resp.Message)
-	}
-	return nil
+	return checkError(resp)
 }
 
 // SendReconcile sends a ReconcileExternalMcps request with admin authentication.
@@ -104,8 +108,7 @@ func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 		return nil, fmt.Errorf("write failed: %w", err)
 	}
 
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), MaxMessageSize)
+	scanner := NewScanner(conn)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("read failed: %w", err)

@@ -2,12 +2,35 @@ package jsonrpc
 
 import "encoding/json"
 
+// Standard JSON-RPC 2.0 error codes.
+const (
+	CodeParseError     = -32700
+	CodeMethodNotFound = -32601
+	CodeInvalidParams  = -32602
+	CodeInternalError  = -32603
+)
+
+// Application-defined error codes (reserved range -32000 to -32099).
+const (
+	CodeUnauthorized = -32001
+)
+
 // Request is an outgoing JSON-RPC 2.0 message.
 type Request struct {
 	JSONRPC string      `json:"jsonrpc"`
 	ID      interface{} `json:"id,omitempty"`
 	Method  string      `json:"method"`
 	Params  interface{} `json:"params,omitempty"`
+}
+
+// NewRequest creates a JSON-RPC 2.0 request with the version field pre-set.
+func NewRequest(id interface{}, method string, params interface{}) Request {
+	return Request{JSONRPC: "2.0", ID: id, Method: method, Params: params}
+}
+
+// NewNotification creates a JSON-RPC 2.0 notification (no ID, no response expected).
+func NewNotification(method string) Request {
+	return Request{JSONRPC: "2.0", Method: method}
 }
 
 // ServerRequest is an incoming JSON-RPC 2.0 message where Params is preserved

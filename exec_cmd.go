@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"relaygo/bridge"
 	"relaygo/mcp"
@@ -51,7 +50,7 @@ func runMcpExec(args []string) {
 			return
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		w := newTabWriter()
 		fmt.Fprintln(w, "TOOL\tDESCRIPTION")
 		for _, t := range tools {
 			desc := t.Description

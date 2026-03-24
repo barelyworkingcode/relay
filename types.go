@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Permission levels for token-based access control.
 type Permission string
@@ -57,6 +60,26 @@ func (m *ExternalMcp) IsHTTP() bool {
 	return m.Transport == "http"
 }
 
+// Validate checks that required fields are present for the configured transport.
+func (m *ExternalMcp) Validate() error {
+	if m.ID == "" {
+		return fmt.Errorf("MCP ID is required")
+	}
+	if m.DisplayName == "" {
+		return fmt.Errorf("MCP display name is required")
+	}
+	if m.IsHTTP() {
+		if m.URL == "" {
+			return fmt.Errorf("URL is required for HTTP transport")
+		}
+	} else {
+		if m.Command == "" {
+			return fmt.Errorf("command is required for stdio transport")
+		}
+	}
+	return nil
+}
+
 // ServiceConfig describes a background service managed by Relay.
 type ServiceConfig struct {
 	ID          string            `json:"id"`
@@ -67,4 +90,18 @@ type ServiceConfig struct {
 	WorkingDir  string            `json:"working_dir,omitempty"`
 	Autostart   bool              `json:"autostart"`
 	URL         string            `json:"url,omitempty"`
+}
+
+// Validate checks that required fields are present.
+func (c *ServiceConfig) Validate() error {
+	if c.ID == "" {
+		return fmt.Errorf("service ID is required")
+	}
+	if c.DisplayName == "" {
+		return fmt.Errorf("service display name is required")
+	}
+	if c.Command == "" {
+		return fmt.Errorf("service command is required")
+	}
+	return nil
 }

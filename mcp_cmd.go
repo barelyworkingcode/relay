@@ -31,10 +31,6 @@ func mcpRegister(store SettingsStore, args []string) {
 	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
 	fs.Parse(args)
 
-	if opts.Name == "" {
-		exitError("--name is required")
-	}
-
 	if *transport == "http" {
 		mcpRegisterHTTP(store, opts.Name, opts.ID, *mcpURL)
 		return
@@ -57,11 +53,14 @@ func mcpRegister(store SettingsStore, args []string) {
 
 	updated, secret := upsertAndPrint(store, "mcp", opts.Name, id, func(s *Settings) bool {
 		return s.UpsertExternalMcp(cfg)
-	})
+	}, -1)
 	notifyMcpChange(updated, id, secret)
 }
 
 func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
+	if name == "" {
+		exitError("--name is required")
+	}
 	if mcpURL == "" {
 		exitError("--url is required for HTTP transport")
 	}
@@ -76,42 +75,52 @@ func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
 
 	fmt.Printf("discovering HTTP MCP %q at %s...\n", name, mcpURL)
 
-	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		exitError("%v", err)
-	}
-
-	if errors.Is(err, ErrAuthRequired) {
-		fmt.Println("server requires authentication, starting OAuth flow...")
-		oauth, oauthErr := startOAuthFlow(mcpURL, openBrowserCmd)
-		if oauthErr != nil {
-			fmt.Fprintf(os.Stderr, "OAuth failed: %v\n", oauthErr)
-			fmt.Println("registering without authentication -- authenticate later via settings UI")
-			result.OAuthState = nil
-		} else {
-			fmt.Println("authentication successful, retrying discovery...")
-			result, err = DiscoverHTTPMcp(context.Background(), name, id, mcpURL, oauth)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error after auth: %v\n", err)
-				// Still register with the OAuth state.
-				result = &ExternalMcp{
-					ID:              id,
-					DisplayName:     name,
-					Transport:       "http",
-					URL:             mcpURL,
-					OAuthState:      oauth,
-					DiscoveredTools: []ToolInfo{},
-				}
-			} else {
-				result.OAuthState = oauth
-			}
-		}
-	}
+	result := discoverHTTPWithAuth(name, id, mcpURL)
 
 	updated, secret := upsertAndPrint(store, "mcp", name, id, func(s *Settings) bool {
 		return s.UpsertExternalMcp(*result)
 	}, len(result.DiscoveredTools))
 	notifyMcpChange(updated, id, secret)
+}
+
+// discoverHTTPWithAuth discovers an HTTP MCP, handling OAuth if the server
+// requires authentication. Always returns a registerable config, even if
+// discovery or auth partially fails.
+func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
+	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
+	if err != nil && !errors.Is(err, ErrAuthRequired) {
+		exitError("%v", err)
+	}
+	if !errors.Is(err, ErrAuthRequired) {
+		return result
+	}
+
+	// Server requires authentication — attempt OAuth flow.
+	fmt.Println("server requires authentication, starting OAuth flow...")
+	oauth, oauthErr := startOAuthFlow(mcpURL, openBrowserCmd)
+	if oauthErr != nil {
+		fmt.Fprintf(os.Stderr, "OAuth failed: %v\n", oauthErr)
+		fmt.Println("registering without authentication -- authenticate later via settings UI")
+		result.OAuthState = nil
+		return result
+	}
+
+	// OAuth succeeded — retry discovery with credentials.
+	fmt.Println("authentication successful, retrying discovery...")
+	result, err = DiscoverHTTPMcp(context.Background(), name, id, mcpURL, oauth)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error after auth: %v\n", err)
+		return &ExternalMcp{
+			ID:              id,
+			DisplayName:     name,
+			Transport:       "http",
+			URL:             mcpURL,
+			OAuthState:      oauth,
+			DiscoveredTools: []ToolInfo{},
+		}
+	}
+	result.OAuthState = oauth
+	return result
 }
 
 // openBrowserCmd opens a URL in the default browser.
@@ -136,9 +145,11 @@ func mcpUnregister(store SettingsStore, args []string) {
 	name := fs.String("name", "", "MCP display name")
 	fs.Parse(args)
 
-	_, adminSecret := resolveAndRemove(store, "mcp", id, name,
+	_, adminSecret := resolveAndRemove(store, "mcp", *id, *name,
 		(*Settings).ResolveMcpID, (*Settings).RemoveExternalMcp)
-	_ = bridge.SendReconcile(adminSecret)
+	if err := bridge.SendReconcile(adminSecret); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+	}
 }
 
 func mcpList(store SettingsStore) {

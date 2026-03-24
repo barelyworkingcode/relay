@@ -155,57 +155,41 @@ func TestMcpHandshake_ContextSchemaExtracted(t *testing.T) {
 // extractContextSchema tests
 // ---------------------------------------------------------------------------
 
-func TestExtractContextSchema_NilInput(t *testing.T) {
-	result := extractContextSchema(nil)
-	if result != nil {
-		t.Errorf("expected nil for nil input, got %s", string(result))
+func TestExtractContextSchema(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    json.RawMessage
+		wantNil  bool
+		wantType string // expected "type" field if non-nil
+	}{
+		{"nil input", nil, true, ""},
+		{"valid with schema", json.RawMessage(`{"serverInfo":{"name":"test","contextSchema":{"type":"object","properties":{"dirs":{"type":"array"}}}}}`), false, "object"},
+		{"no contextSchema", json.RawMessage(`{"serverInfo":{"name":"test","version":"1.0"}}`), true, ""},
+		{"malformed JSON", json.RawMessage(`{not valid json`), true, ""},
+		{"empty serverInfo", json.RawMessage(`{"serverInfo":{}}`), true, ""},
+		{"no serverInfo", json.RawMessage(`{"protocolVersion":"2024-11-05"}`), true, ""},
 	}
-}
 
-func TestExtractContextSchema_ValidResponse(t *testing.T) {
-	resp := json.RawMessage(`{"serverInfo":{"name":"test","contextSchema":{"type":"object","properties":{"dirs":{"type":"array"}}}}}`)
-	result := extractContextSchema(resp)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	var schema map[string]interface{}
-	if err := json.Unmarshal(result, &schema); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-	if schema["type"] != "object" {
-		t.Errorf("expected type 'object', got %v", schema["type"])
-	}
-}
-
-func TestExtractContextSchema_NoContextSchema(t *testing.T) {
-	resp := json.RawMessage(`{"serverInfo":{"name":"test","version":"1.0"}}`)
-	result := extractContextSchema(resp)
-	if result != nil {
-		t.Errorf("expected nil when no contextSchema, got %s", string(result))
-	}
-}
-
-func TestExtractContextSchema_MalformedJSON(t *testing.T) {
-	resp := json.RawMessage(`{not valid json`)
-	result := extractContextSchema(resp)
-	if result != nil {
-		t.Errorf("expected nil for malformed JSON, got %s", string(result))
-	}
-}
-
-func TestExtractContextSchema_EmptyServerInfo(t *testing.T) {
-	resp := json.RawMessage(`{"serverInfo":{}}`)
-	result := extractContextSchema(resp)
-	if result != nil {
-		t.Errorf("expected nil for empty serverInfo, got %s", string(result))
-	}
-}
-
-func TestExtractContextSchema_NoServerInfo(t *testing.T) {
-	resp := json.RawMessage(`{"protocolVersion":"2024-11-05"}`)
-	result := extractContextSchema(resp)
-	if result != nil {
-		t.Errorf("expected nil for missing serverInfo, got %s", string(result))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := extractContextSchema(tc.input)
+			if tc.wantNil {
+				if result != nil {
+					t.Errorf("expected nil, got %s", string(result))
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			var schema map[string]interface{}
+			if err := json.Unmarshal(result, &schema); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			if schema["type"] != tc.wantType {
+				t.Errorf("expected type %q, got %v", tc.wantType, schema["type"])
+			}
+		})
 	}
 }
 
@@ -213,51 +197,27 @@ func TestExtractContextSchema_NoServerInfo(t *testing.T) {
 // toolCategory tests
 // ---------------------------------------------------------------------------
 
-func TestToolCategory_ExplicitCategory(t *testing.T) {
-	tool := mcp.Tool{Name: "foo_bar", Category: "CustomCat"}
-	got := toolCategory(tool)
-	if got != "CustomCat" {
-		t.Errorf("expected 'CustomCat', got %q", got)
+func TestToolCategory(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     mcp.Tool
+		expected string
+	}{
+		{"explicit category", mcp.Tool{Name: "foo_bar", Category: "CustomCat"}, "CustomCat"},
+		{"derived from underscore", mcp.Tool{Name: "foo_bar"}, "Foo"},
+		{"no underscore", mcp.Tool{Name: "foobar"}, ""},
+		{"leading underscore", mcp.Tool{Name: "_bar"}, ""},
+		{"multiple underscores", mcp.Tool{Name: "abc_def_ghi"}, "Abc"},
+		{"uppercase prefix", mcp.Tool{Name: "ABC_action"}, "Abc"},
 	}
-}
 
-func TestToolCategory_DerivedFromUnderscore(t *testing.T) {
-	tool := mcp.Tool{Name: "foo_bar"}
-	got := toolCategory(tool)
-	if got != "Foo" {
-		t.Errorf("expected 'Foo', got %q", got)
-	}
-}
-
-func TestToolCategory_NoUnderscore(t *testing.T) {
-	tool := mcp.Tool{Name: "foobar"}
-	got := toolCategory(tool)
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
-	}
-}
-
-func TestToolCategory_LeadingUnderscore(t *testing.T) {
-	tool := mcp.Tool{Name: "_bar"}
-	got := toolCategory(tool)
-	if got != "" {
-		t.Errorf("expected empty string for leading underscore, got %q", got)
-	}
-}
-
-func TestToolCategory_MultipleUnderscores(t *testing.T) {
-	tool := mcp.Tool{Name: "abc_def_ghi"}
-	got := toolCategory(tool)
-	if got != "Abc" {
-		t.Errorf("expected 'Abc', got %q", got)
-	}
-}
-
-func TestToolCategory_UppercasePrefix(t *testing.T) {
-	tool := mcp.Tool{Name: "ABC_action"}
-	got := toolCategory(tool)
-	if got != "Abc" {
-		t.Errorf("expected 'Abc', got %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolCategory(tc.tool)
+			if got != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, got)
+			}
+		})
 	}
 }
 
@@ -290,17 +250,10 @@ func TestManager_ToolsWithConnection(t *testing.T) {
 		{Name: "fs_read", Description: "Read a file"},
 		{Name: "fs_write", Description: "Write a file"},
 	}
-	mock := &mockMcpConn{
-		tools: expectedTools,
-		config: ExternalMcp{
-			ID:          "test-mcp",
-			DisplayName: "Test MCP",
-		},
-	}
-
-	mgr.mu.Lock()
-	mgr.conns["test-mcp"] = mock
-	mgr.mu.Unlock()
+	addMockConn(mgr, "test-mcp", &mockMcpConn{
+		tools:  expectedTools,
+		config: ExternalMcp{ID: "test-mcp", DisplayName: "Test MCP"},
+	})
 
 	tools := mgr.Tools("test-mcp")
 	if len(tools) != 2 {
@@ -316,20 +269,10 @@ func TestManager_ToolsWithConnection(t *testing.T) {
 
 func TestManager_FindToolOwnerWithConnection(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	mock := &mockMcpConn{
-		tools: []mcp.Tool{
-			{Name: "net_fetch", Description: "Fetch URL"},
-		},
-		config: ExternalMcp{
-			ID:          "net-mcp",
-			DisplayName: "Net MCP",
-			Command:     "/usr/bin/net-mcp",
-		},
-	}
-
-	mgr.mu.Lock()
-	mgr.conns["net-mcp"] = mock
-	mgr.mu.Unlock()
+	addMockConn(mgr, "net-mcp", &mockMcpConn{
+		tools:  simpleTools("net_fetch"),
+		config: ExternalMcp{ID: "net-mcp", DisplayName: "Net MCP", Command: "/usr/bin/net-mcp"},
+	})
 
 	id, cfg := mgr.FindToolOwner("net_fetch")
 	if id != "net-mcp" {
@@ -345,22 +288,15 @@ func TestManager_FindToolOwnerWithConnection(t *testing.T) {
 
 func TestManager_Stop(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	mock := &mockMcpConn{
-		tools: []mcp.Tool{{Name: "test_tool"}},
-	}
-
-	mgr.mu.Lock()
-	mgr.conns["stop-me"] = mock
-	mgr.mu.Unlock()
+	mock := &mockMcpConn{tools: simpleTools("test_tool")}
+	addMockConn(mgr, "stop-me", mock)
 
 	mgr.Stop("stop-me")
 
 	if !mock.closed {
 		t.Error("expected connection to be closed")
 	}
-
-	tools := mgr.Tools("stop-me")
-	if tools != nil {
+	if tools := mgr.Tools("stop-me"); tools != nil {
 		t.Errorf("expected nil tools after stop, got %v", tools)
 	}
 }
@@ -373,13 +309,10 @@ func TestManager_StopNonexistent(t *testing.T) {
 
 func TestManager_StopAll(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	mock1 := &mockMcpConn{tools: []mcp.Tool{{Name: "a_tool"}}}
-	mock2 := &mockMcpConn{tools: []mcp.Tool{{Name: "b_tool"}}}
-
-	mgr.mu.Lock()
-	mgr.conns["mcp-1"] = mock1
-	mgr.conns["mcp-2"] = mock2
-	mgr.mu.Unlock()
+	mock1 := &mockMcpConn{tools: simpleTools("a_tool")}
+	mock2 := &mockMcpConn{tools: simpleTools("b_tool")}
+	addMockConn(mgr, "mcp-1", mock1)
+	addMockConn(mgr, "mcp-2", mock2)
 
 	mgr.StopAll()
 
@@ -389,18 +322,14 @@ func TestManager_StopAll(t *testing.T) {
 	if !mock2.closed {
 		t.Error("expected mock2 to be closed")
 	}
-
-	// Verify the manager has no connections left.
-	tools1 := mgr.Tools("mcp-1")
-	tools2 := mgr.Tools("mcp-2")
-	if tools1 != nil || tools2 != nil {
+	if mgr.Tools("mcp-1") != nil || mgr.Tools("mcp-2") != nil {
 		t.Error("expected no tools after StopAll")
 	}
 }
 
 func TestManager_CallToolNotConnected(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	_, err := mgr.CallTool(context.Background(),"missing", "some_tool", nil, nil)
+	_, err := mgr.CallTool(context.Background(), "missing", "some_tool", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unconnected MCP")
 	}
@@ -412,25 +341,15 @@ func TestManager_CallToolNotConnected(t *testing.T) {
 
 func TestManager_CallToolSuccess(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	mock := &mockMcpConn{
-		tools: []mcp.Tool{{Name: "echo_tool"}},
-		config: ExternalMcp{
-			ID:          "echo-mcp",
-			DisplayName: "Echo MCP",
-		},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
+	addMockConn(mgr, "echo-mcp", newMockConn("echo-mcp", simpleTools("echo_tool"),
+		func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
 			if method != "tools/call" {
 				return nil, fmt.Errorf("unexpected method: %s", method)
 			}
 			return json.RawMessage(`{"content":[{"type":"text","text":"hello"}]}`), nil
-		},
-	}
+		}))
 
-	mgr.mu.Lock()
-	mgr.conns["echo-mcp"] = mock
-	mgr.mu.Unlock()
-
-	result, err := mgr.CallTool(context.Background(),"echo-mcp", "echo_tool", json.RawMessage(`{"msg":"hi"}`), nil)
+	result, err := mgr.CallTool(context.Background(), "echo-mcp", "echo_tool", json.RawMessage(`{"msg":"hi"}`), nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -451,22 +370,16 @@ func TestManager_CallToolSuccess(t *testing.T) {
 func TestManager_CallToolWithMeta(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
 	var capturedParams map[string]interface{}
-	mock := &mockMcpConn{
-		tools: []mcp.Tool{{Name: "fs_tool"}},
-		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
+	addMockConn(mgr, "fs-mcp", newMockConn("fs-mcp", simpleTools("fs_tool"),
+		func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
 			if p, ok := params.(map[string]interface{}); ok {
 				capturedParams = p
 			}
 			return json.RawMessage(`{"content":[]}`), nil
-		},
-	}
-
-	mgr.mu.Lock()
-	mgr.conns["fs-mcp"] = mock
-	mgr.mu.Unlock()
+		}))
 
 	meta := json.RawMessage(`{"allowed_dirs":["/tmp"]}`)
-	_, err := mgr.CallTool(context.Background(),"fs-mcp", "fs_tool", json.RawMessage(`{"path":"/tmp/f"}`), meta)
+	_, err := mgr.CallTool(context.Background(), "fs-mcp", "fs_tool", json.RawMessage(`{"path":"/tmp/f"}`), meta)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -484,19 +397,14 @@ func TestManager_CallToolWithMeta(t *testing.T) {
 
 func TestManager_MultipleConnectionsFindCorrectOwner(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
-	mock1 := &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "alpha_tool"}},
+	addMockConn(mgr, "mcp-alpha", &mockMcpConn{
+		tools:  simpleTools("alpha_tool"),
 		config: ExternalMcp{ID: "mcp-alpha", DisplayName: "Alpha"},
-	}
-	mock2 := &mockMcpConn{
-		tools:  []mcp.Tool{{Name: "beta_tool"}},
+	})
+	addMockConn(mgr, "mcp-beta", &mockMcpConn{
+		tools:  simpleTools("beta_tool"),
 		config: ExternalMcp{ID: "mcp-beta", DisplayName: "Beta"},
-	}
-
-	mgr.mu.Lock()
-	mgr.conns["mcp-alpha"] = mock1
-	mgr.conns["mcp-beta"] = mock2
-	mgr.mu.Unlock()
+	})
 
 	id, cfg := mgr.FindToolOwner("beta_tool")
 	if id != "mcp-beta" {

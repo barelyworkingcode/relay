@@ -58,7 +58,7 @@ func serviceRegister(store SettingsStore, args []string) {
 	_, secret := upsertAndPrint(store, "service", opts.Name, id, func(s *Settings) bool {
 		s.MergeServiceDefaults(&config)
 		return s.UpsertService(config)
-	})
+	}, -1)
 
 	if err := bridge.SendReloadService(id, secret); err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
@@ -71,8 +71,11 @@ func serviceUnregister(store SettingsStore, args []string) {
 	name := fs.String("name", "", "service display name")
 	fs.Parse(args)
 
-	_, _ = resolveAndRemove(store, "service", id, name,
+	resolvedID, adminSecret := resolveAndRemove(store, "service", *id, *name,
 		(*Settings).ResolveServiceID, (*Settings).RemoveService)
+	if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+	}
 }
 
 func serviceList(store SettingsStore) {

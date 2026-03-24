@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"relaygo/bridge"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,14 +90,21 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
-	Ctx        context.Context
-	Store      SettingsStore
-	UI         SettingsUI
-	Platform   Platform
-	ExtMgr     *ExternalMcpManager
-	Registry   ServiceManager
-	UpdateMenu func()
-	GoFunc     func(fn func()) // tracked goroutine launcher
+	Ctx              context.Context
+	Store            SettingsStore
+	UI               SettingsUI
+	Platform         Platform
+	Registry         ServiceManager
+	UpdateMenu       func()
+	GoFunc           func(fn func()) // tracked goroutine launcher
+	NotifyReconcile  func(string) error
+	NotifyReloadMcp  func(id, secret string) error
+}
+
+// withSettingsReconcile atomically mutates settings and sends a reconcile
+// notification to the bridge. Returns true on success.
+func (ctx *IPCContext) withSettingsReconcile(fn func(*Settings)) bool {
+	return ctx.withSettingsNotify(fn, ctx.NotifyReconcile)
 }
 
 // withSettings atomically mutates settings and emits an error event on failure.
@@ -116,6 +125,13 @@ func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string
 		return false
 	}
 	return true
+}
+
+// refreshServiceUI emits current service status and rebuilds the tray menu.
+// Must be called on the main thread.
+func (ctx *IPCContext) refreshServiceUI() {
+	ctx.UI.EmitEvent("onServiceStatus", ctx.Registry.RunningIDs())
+	ctx.UpdateMenu()
 }
 
 // ---------------------------------------------------------------------------
@@ -176,10 +192,50 @@ type ipcCopyToClipboardMsg struct {
 	Text string `json:"text"`
 }
 
+// ipcServiceMsg is the shared message format for add and update service operations.
+// For add: ID is empty (derived from DisplayName). For update: ID is required.
+type ipcServiceMsg struct {
+	ID          string            `json:"id"`
+	DisplayName string            `json:"display_name"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+	WorkingDir  string            `json:"working_dir,omitempty"`
+	Autostart   bool              `json:"autostart"`
+	URL         string            `json:"url,omitempty"`
+}
+
 type ipcUpdateServiceAutostartMsg struct {
 	ID        string `json:"id"`
 	Autostart bool   `json:"autostart"`
 }
+
+// ---------------------------------------------------------------------------
+// IPC message type constants — single source of truth for the JS/Go contract.
+// ---------------------------------------------------------------------------
+
+const (
+	MsgGenerateToken       = "generate_token"
+	MsgDeleteToken         = "delete_token"
+	MsgRevokeAll           = "revoke_all"
+	MsgUpdatePermission    = "update_permission"
+	MsgSetToolDisabled     = "set_tool_disabled"
+	MsgSetAllToolsDisabled = "set_all_tools_disabled"
+	MsgSetContext          = "set_context"
+
+	MsgAddExternalMcp    = "add_external_mcp"
+	MsgAuthenticateMcp   = "authenticate_mcp"
+	MsgRemoveExternalMcp = "remove_external_mcp"
+
+	MsgAddService             = "add_service"
+	MsgRemoveService          = "remove_service"
+	MsgUpdateService          = "update_service"
+	MsgUpdateServiceAutostart = "update_service_autostart"
+	MsgStartService           = "start_service"
+	MsgStopService            = "stop_service"
+
+	MsgCopyToClipboard = "copy_to_clipboard"
+)
 
 // ---------------------------------------------------------------------------
 // IPC dispatch
@@ -191,29 +247,29 @@ var ipcHandlers map[string]func(*IPCContext, json.RawMessage)
 func init() {
 	ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 		// Tokens & permissions (ipc_tokens.go)
-		"generate_token":         ipcGenerateToken,
-		"delete_token":           ipcDeleteToken,
-		"revoke_all":             ipcRevokeAll,
-		"update_permission":      ipcUpdatePermission,
-		"set_tool_disabled":      ipcSetToolDisabled,
-		"set_all_tools_disabled": ipcSetAllToolsDisabled,
-		"set_context":            ipcSetContext,
+		MsgGenerateToken:       ipcGenerateToken,
+		MsgDeleteToken:         ipcDeleteToken,
+		MsgRevokeAll:           ipcRevokeAll,
+		MsgUpdatePermission:    ipcUpdatePermission,
+		MsgSetToolDisabled:     ipcSetToolDisabled,
+		MsgSetAllToolsDisabled: ipcSetAllToolsDisabled,
+		MsgSetContext:          ipcSetContext,
 
 		// External MCPs (ipc_mcps.go)
-		"add_external_mcp":    ipcAddExternalMcp,
-		"authenticate_mcp":    ipcAuthenticateMcp,
-		"remove_external_mcp": ipcRemoveExternalMcp,
+		MsgAddExternalMcp:    ipcAddExternalMcp,
+		MsgAuthenticateMcp:   ipcAuthenticateMcp,
+		MsgRemoveExternalMcp: ipcRemoveExternalMcp,
 
 		// Services (ipc_services.go)
-		"add_service":              ipcAddService,
-		"remove_service":           ipcRemoveService,
-		"update_service":           ipcUpdateService,
-		"update_service_autostart": ipcUpdateServiceAutostart,
-		"start_service":            ipcStartService,
-		"stop_service":             ipcStopService,
+		MsgAddService:             ipcAddService,
+		MsgRemoveService:          ipcRemoveService,
+		MsgUpdateService:          ipcUpdateService,
+		MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
+		MsgStartService:           ipcStartService,
+		MsgStopService:            ipcStopService,
 
 		// Utility
-		"copy_to_clipboard": ipcCopyToClipboard,
+		MsgCopyToClipboard: ipcCopyToClipboard,
 	}
 }
 
@@ -232,14 +288,15 @@ func (a *App) onSettingsIpc(body string) {
 		return
 	}
 	ctx := &IPCContext{
-		Ctx:        a.ctx,
-		Store:      a.store,
-		UI:         a,
-		Platform:   a.platform,
-		ExtMgr:     a.extMgr,
-		Registry:   a.registry,
-		UpdateMenu: a.updateMenu,
-		GoFunc:     a.goFunc,
+		Ctx:             a.ctx,
+		Store:           a.store,
+		UI:              a,
+		Platform:        a.platform,
+		Registry:        a.registry,
+		UpdateMenu:      a.updateMenu,
+		GoFunc:          a.goFunc,
+		NotifyReconcile: bridge.SendReconcile,
+		NotifyReloadMcp: bridge.SendReloadMcp,
 	}
 	handler(ctx, raw)
 }

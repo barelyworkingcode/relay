@@ -29,6 +29,7 @@ type McpConnection interface {
 	SendNotification(method string)
 	Close()
 	GetTools() []mcp.Tool
+	SetTools([]mcp.Tool)
 	GetConfig() ExternalMcp
 }
 
@@ -70,8 +71,9 @@ func (b *baseMcpConn) allocID() int64 {
 	return b.nextID.Add(1)
 }
 
-func (b *baseMcpConn) GetTools() []mcp.Tool   { return b.tools }
-func (b *baseMcpConn) GetConfig() ExternalMcp { return b.config }
+func (b *baseMcpConn) GetTools() []mcp.Tool       { return b.tools }
+func (b *baseMcpConn) SetTools(tools []mcp.Tool)  { b.tools = tools }
+func (b *baseMcpConn) GetConfig() ExternalMcp      { return b.config }
 
 type externalMcpConn struct {
 	baseMcpConn
@@ -96,7 +98,7 @@ type handshakeResult struct {
 // sequence on any mcpConnection. Transport-agnostic.
 func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, error) {
 	initParams := map[string]interface{}{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": mcp.ProtocolVersion,
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]interface{}{
 			"name":    "relay",
@@ -165,16 +167,51 @@ func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefr
 	}
 }
 
-// StartAll launches all configured external MCP servers.
-func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []ExternalMcp) {
-	for i := range mcps {
-		if err := m.startOne(ctx, &mcps[i]); err != nil {
-			slog.Error("failed to start external MCP", "id", mcps[i].ID, "error", err)
-		}
+// setConnection stores a connection, closing any existing connection for the same ID
+// to prevent resource leaks during concurrent operations or reconnections.
+func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
+	m.mu.Lock()
+	old := m.conns[id]
+	m.conns[id] = conn
+	m.mu.Unlock()
+	if old != nil {
+		old.Close()
 	}
 }
 
+// finalizeConnection completes MCP startup after a successful handshake:
+// sets discovered tools on the connection, persists discovery results, and
+// stores the connection in the manager.
+func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
+	conn.SetTools(result.Tools)
+	if m.onDiscover != nil {
+		m.onDiscover(id, result.ToolInfos, result.ContextSchema)
+	}
+	m.setConnection(id, conn)
+	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
+}
+
+// StartAll launches all configured external MCP servers concurrently.
+// Each MCP handshake involves network I/O, so parallel startup avoids
+// linear growth in startup time as MCPs are added.
+func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []ExternalMcp) {
+	var wg sync.WaitGroup
+	for i := range mcps {
+		wg.Add(1)
+		go func(cfg *ExternalMcp) {
+			defer wg.Done()
+			if err := m.startOne(ctx, cfg); err != nil {
+				slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
+			}
+		}(&mcps[i])
+	}
+	wg.Wait()
+}
+
 func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) error {
+	if err := mcpCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid MCP config: %w", err)
+	}
 	if mcpCfg.IsHTTP() {
 		return m.startHTTP(ctx, mcpCfg)
 	}
@@ -227,16 +264,8 @@ func (m *ExternalMcpManager) startStdio(ctx context.Context, mcpCfg *ExternalMcp
 		conn.Close()
 		return err
 	}
-	conn.tools = result.Tools
 
-	if m.onDiscover != nil {
-		m.onDiscover(mcpCfg.ID, result.ToolInfos, result.ContextSchema)
-	}
-
-	m.mu.Lock()
-	m.conns[mcpCfg.ID] = conn
-	m.mu.Unlock()
-
+	m.finalizeConnection(mcpCfg.ID, conn, result)
 	return nil
 }
 
@@ -268,11 +297,19 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 	for _, id := range toStop {
 		m.Stop(id)
 	}
+
+	// Start new MCPs concurrently, matching StartAll behavior.
+	var wg sync.WaitGroup
 	for _, cfg := range toStart {
-		if err := m.startOne(ctx, cfg); err != nil {
-			slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
-		}
+		wg.Add(1)
+		go func(c *ExternalMcp) {
+			defer wg.Done()
+			if err := m.startOne(ctx, c); err != nil {
+				slog.Error("failed to start external MCP", "id", c.ID, "error", err)
+			}
+		}(cfg)
 	}
+	wg.Wait()
 }
 
 // Reload stops a running MCP and starts it fresh from the given config.
@@ -322,15 +359,17 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 	}
 	if args != nil {
 		var arguments interface{}
-		if err := json.Unmarshal(args, &arguments); err == nil {
-			params["arguments"] = arguments
+		if err := json.Unmarshal(args, &arguments); err != nil {
+			return nil, fmt.Errorf("invalid tool arguments: %w", err)
 		}
+		params["arguments"] = arguments
 	}
 	if len(meta) > 0 && string(meta) != "null" {
 		var metaObj interface{}
-		if err := json.Unmarshal(meta, &metaObj); err == nil {
-			params["_meta"] = metaObj
+		if err := json.Unmarshal(meta, &metaObj); err != nil {
+			return nil, fmt.Errorf("invalid tool context metadata: %w", err)
 		}
+		params["_meta"] = metaObj
 	}
 
 	resp, err := conn.SendRequest(ctx, "tools/call", params)
@@ -426,7 +465,8 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 
 		var resp jsonrpc.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
-			continue // skip malformed lines
+			slog.Debug("stdio MCP: skipping malformed response line", "error", err)
+			continue
 		}
 		if resp.ID == nil {
 			continue // skip notifications
@@ -434,6 +474,7 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 
 		respID, ok := jsonrpc.RespIDToInt64(resp.ID)
 		if !ok {
+			slog.Debug("stdio MCP: skipping response with non-numeric ID", "id", resp.ID)
 			continue
 		}
 
@@ -466,14 +507,7 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 	}
 
 	id := c.allocID()
-	req := jsonrpc.Request{
-		JSONRPC: "2.0",
-		ID:      id,
-		Method:  method,
-		Params:  params,
-	}
-
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
@@ -526,11 +560,7 @@ func (c *externalMcpConn) SendNotification(method string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req := jsonrpc.Request{
-		JSONRPC: "2.0",
-		Method:  method,
-	}
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(jsonrpc.NewNotification(method))
 	if err != nil {
 		slog.Debug("stdio MCP: failed to marshal notification", "method", method, "error", err)
 		return

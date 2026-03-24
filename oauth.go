@@ -180,7 +180,7 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 
 	// Step 3: Try to fetch AS metadata.
 	// Try from the authorization server if we found one, otherwise from the MCP host.
-	searchBases := []string{}
+	var searchBases []string
 	if authServerBase != "" {
 		searchBases = append(searchBases, authServerBase)
 	}
@@ -239,7 +239,10 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	if scope != "" {
 		regBody["scope"] = scope
 	}
-	body, _ := json.Marshal(regBody)
+	body, err := json.Marshal(regBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal registration body: %w", err)
+	}
 
 	slog.Info("oauth: registering client", "endpoint", meta.RegistrationEndpoint)
 	resp, err := oauthHTTPClient.Post(meta.RegistrationEndpoint, "application/json", strings.NewReader(string(body)))

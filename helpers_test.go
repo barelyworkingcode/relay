@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -99,7 +100,7 @@ func TestValidateMcpURL_FTPSchemeRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for ftp scheme, got nil")
 	}
-	if want := "unsupported URL scheme"; !contains(err.Error(), want) {
+	if want := "unsupported URL scheme"; !strings.Contains(err.Error(), want) {
 		t.Errorf("error %q should mention %q", err.Error(), want)
 	}
 }
@@ -109,7 +110,7 @@ func TestValidateMcpURL_MissingHostRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing host, got nil")
 	}
-	if want := "missing a host"; !contains(err.Error(), want) {
+	if want := "missing a host"; !strings.Contains(err.Error(), want) {
 		t.Errorf("error %q should mention %q", err.Error(), want)
 	}
 }
@@ -124,17 +125,4 @@ func TestValidateMcpURL_MalformedURL(t *testing.T) {
 	if err := validateMcpURL("://bad"); err == nil {
 		t.Fatal("expected error for malformed URL, got nil")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
