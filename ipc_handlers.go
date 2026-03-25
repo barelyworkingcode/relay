@@ -283,6 +283,7 @@ func (a *App) onSettingsIpc(body string) {
 	raw := json.RawMessage(body)
 	var msg ipcMsg
 	if err := json.Unmarshal(raw, &msg); err != nil {
+		slog.Warn("failed to unmarshal IPC message", "error", err)
 		return
 	}
 

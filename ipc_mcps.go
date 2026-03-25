@@ -99,6 +99,10 @@ func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
 		dispatchError(ctx, "onExternalMcpError", err.Error())
 		return
 	}
+	if result == nil {
+		dispatchError(ctx, "onExternalMcpError", "discovery returned no configuration")
+		return
+	}
 
 	needsAuth := errors.Is(err, ErrAuthRequired)
 

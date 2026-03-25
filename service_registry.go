@@ -46,10 +46,12 @@ func NewServiceRegistry() *ServiceRegistry {
 	}
 }
 
-func serviceLogDir() string {
+func serviceLogDir() (string, error) {
 	dir := filepath.Join(bridge.ConfigDir(), "logs")
-	_ = os.MkdirAll(dir, 0700)
-	return dir
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create log directory: %w", err)
+	}
+	return dir, nil
 }
 
 // Start spawns a service through the platform shell so the user's profile is available.
@@ -68,7 +70,11 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	cmd := buildCommand(config)
 
-	logPath := filepath.Join(serviceLogDir(), config.ID+".log")
+	logDir, err := serviceLogDir()
+	if err != nil {
+		return err
+	}
+	logPath := filepath.Join(logDir, config.ID+".log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)

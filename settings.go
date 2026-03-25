@@ -170,6 +170,12 @@ func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	if existing == nil {
 		return
 	}
+	if cfg.DisplayName == "" {
+		cfg.DisplayName = existing.DisplayName
+	}
+	if cfg.Command == "" {
+		cfg.Command = existing.Command
+	}
 	if cfg.Env == nil {
 		cfg.Env = existing.Env
 	}

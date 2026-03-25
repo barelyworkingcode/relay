@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestResolveAuth_InvalidToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
-	if err != ErrInvalidToken {
+	if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("expected ErrInvalidToken, got %v", err)
 	}
 }
@@ -133,7 +134,7 @@ func TestResolveAuth_NoTokens(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no tokens configured")
 	}
-	if err != ErrNoTokens {
+	if !errors.Is(err, ErrNoTokens) {
 		t.Errorf("expected ErrNoTokens, got %v", err)
 	}
 }
@@ -146,7 +147,7 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty token")
 	}
-	if err != ErrNoToken {
+	if !errors.Is(err, ErrNoToken) {
 		t.Errorf("expected ErrNoToken, got %v", err)
 	}
 }

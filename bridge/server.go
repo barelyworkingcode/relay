@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -152,7 +153,7 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	tools, err := router.ListTools(ctx, req.Token)
 	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
+		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespTools, Tools: tools}
 }
@@ -160,9 +161,20 @@ func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter)
 func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	result, err := router.CallTool(ctx, req.Name, req.Arguments, req.Token)
 	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
+		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespResult, Result: result}
+}
+
+// classifyErrorCode extracts a JSON-RPC error code from the error chain.
+// Router methods wrap auth/permission errors with jsonrpc.CodedError so the
+// bridge can classify them without fragile string matching.
+func classifyErrorCode(err error) int {
+	var coded *jsonrpc.CodedError
+	if errors.As(err, &coded) {
+		return coded.RPCCode
+	}
+	return jsonrpc.CodeInternalError
 }
 
 func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
