@@ -65,13 +65,20 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	ctx.Registry.Stop(msg.ID)
+	// Remove from settings immediately so the UI updates without delay.
 	if !ctx.withSettings(func(s *Settings) { s.RemoveService(msg.ID) }) {
 		return
 	}
-	ctx.UpdateMenu()
-
 	ctx.UI.EmitEvent("onServiceRemoved", msg.ID)
+
+	// Stop the process asynchronously — Stop() blocks waiting for process
+	// exit and must not run on the main/UI thread.
+	ctx.GoFunc(func() {
+		ctx.Registry.Stop(msg.ID)
+		ctx.Platform.DispatchToMain(func() {
+			ctx.refreshServiceUI()
+		})
+	})
 }
 
 func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
@@ -92,13 +99,23 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	// Restart the service if it was running so it picks up the new config.
+	// Reload calls Stop() which blocks waiting for process exit, so run
+	// it off the main/UI thread.
 	if wasRunning {
-		if err := ctx.Registry.Reload(msg.ID, &config); err != nil {
-			slog.Error("service restart after update failed", "id", msg.ID, "error", err)
-			ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service updated but restart failed: %v", err))
-		}
+		ctx.GoFunc(func() {
+			if err := ctx.Registry.Reload(msg.ID, &config); err != nil {
+				slog.Error("service restart after update failed", "id", msg.ID, "error", err)
+				ctx.Platform.DispatchToMain(func() {
+					ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service updated but restart failed: %v", err))
+				})
+			}
+			ctx.Platform.DispatchToMain(func() {
+				ctx.refreshServiceUI()
+			})
+		})
+	} else {
+		ctx.refreshServiceUI()
 	}
-	ctx.refreshServiceUI()
 }
 
 func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {

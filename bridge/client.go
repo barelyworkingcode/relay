@@ -23,7 +23,7 @@ func NewClient(token string) *Client {
 
 // checkError returns an error if the bridge response is an error response.
 func checkError(resp *BridgeResponse) error {
-	if resp.Type == "Error" {
+	if resp.Type == RespError {
 		return fmt.Errorf("bridge error (code %d): %s", resp.Code, resp.Message)
 	}
 	return nil
@@ -32,7 +32,7 @@ func checkError(resp *BridgeResponse) error {
 // ListTools sends a ListTools request and returns the raw JSON tool array.
 func (c *Client) ListTools() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
-		Type:  "ListTools",
+		Type:  ReqListTools,
 		Token: c.token,
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 // Opens a fresh connection per call, matching the Rust implementation.
 func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
-		Type:      "CallTool",
+		Type:      ReqCallTool,
 		Name:      name,
 		Arguments: args,
 		Token:     c.token,
@@ -78,17 +78,17 @@ func sendAdmin(reqType, name, token string) error {
 
 // SendReconcile sends a ReconcileExternalMcps request with admin authentication.
 func SendReconcile(token string) error {
-	return sendAdmin("ReconcileExternalMcps", "", token)
+	return sendAdmin(ReqReconcileExternalMcps, "", token)
 }
 
 // SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID.
 func SendReloadMcp(id, token string) error {
-	return sendAdmin("ReloadExternalMcp", id, token)
+	return sendAdmin(ReqReloadExternalMcp, id, token)
 }
 
 // SendReloadService sends a ReloadService request for the given service ID.
 func SendReloadService(id, token string) error {
-	return sendAdmin("ReloadService", id, token)
+	return sendAdmin(ReqReloadService, id, token)
 }
 
 // bridgeTimeout is the maximum time for a complete bridge round-trip (connect + write + read).

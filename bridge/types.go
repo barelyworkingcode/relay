@@ -12,6 +12,23 @@ import (
 // MaxMessageSize is the maximum line/message size for bridge and MCP wire protocols.
 const MaxMessageSize = 10 * 1024 * 1024
 
+// Request type constants for the bridge wire protocol.
+const (
+	ReqListTools            = "ListTools"
+	ReqCallTool             = "CallTool"
+	ReqReconcileExternalMcps = "ReconcileExternalMcps"
+	ReqReloadExternalMcp    = "ReloadExternalMcp"
+	ReqReloadService        = "ReloadService"
+)
+
+// Response type constants for the bridge wire protocol.
+const (
+	RespTools  = "Tools"
+	RespResult = "Result"
+	RespError  = "Error"
+	RespOK     = "OK"
+)
+
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
 	Type      string          `json:"type"`                // "ListTools", "CallTool", "ReconcileExternalMcps", "ReloadExternalMcp", "ReloadService"
