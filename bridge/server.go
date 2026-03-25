@@ -76,12 +76,17 @@ func (s *BridgeServer) Close() {
 
 // bridgeError creates an error BridgeResponse with the given code and message.
 func bridgeError(code int, msg string) BridgeResponse {
-	return BridgeResponse{Type: "Error", Code: code, Message: msg}
+	return BridgeResponse{Type: RespError, Code: code, Message: msg}
 }
 
 func (s *BridgeServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("bridge handler panic (recovered)", "panic", r)
+		}
+	}()
 
 	// Per-connection context — cancelled when the connection or server closes.
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -116,11 +121,11 @@ type bridgeHandler struct {
 
 // bridgeHandlers maps request types to their handlers.
 var bridgeHandlers = map[string]bridgeHandler{
-	"ListTools": {handle: handleListTools},
-	"CallTool":  {handle: handleCallTool},
-	"ReconcileExternalMcps": {requireAdmin: true, handle: handleReconcile},
-	"ReloadExternalMcp":     {requireAdmin: true, handle: handleReloadMcp},
-	"ReloadService":         {requireAdmin: true, handle: handleReloadService},
+	ReqListTools:             {handle: handleListTools},
+	ReqCallTool:              {handle: handleCallTool},
+	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
+	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
+	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -149,7 +154,7 @@ func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter)
 	if err != nil {
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
-	return BridgeResponse{Type: "Tools", Tools: tools}
+	return BridgeResponse{Type: RespTools, Tools: tools}
 }
 
 func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
@@ -157,20 +162,20 @@ func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) 
 	if err != nil {
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
-	return BridgeResponse{Type: "Result", Result: result}
+	return BridgeResponse{Type: RespResult, Result: result}
 }
 
 func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
 	router.ReconcileExternalMcps(ctx)
-	return BridgeResponse{Type: "OK"}
+	return BridgeResponse{Type: RespOK}
 }
 
 func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	router.ReloadExternalMcp(ctx, req.Name)
-	return BridgeResponse{Type: "OK"}
+	return BridgeResponse{Type: RespOK}
 }
 
 func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	router.ReloadService(req.Name)
-	return BridgeResponse{Type: "OK"}
+	return BridgeResponse{Type: RespOK}
 }
