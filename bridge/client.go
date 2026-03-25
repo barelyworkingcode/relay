@@ -104,7 +104,9 @@ func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	}
 	defer conn.Close()
 
-	_ = conn.SetDeadline(time.Now().Add(bridgeTimeout))
+	if err := conn.SetDeadline(time.Now().Add(bridgeTimeout)); err != nil {
+		return nil, fmt.Errorf("set deadline: %w", err)
+	}
 
 	data, err := json.Marshal(req)
 	if err != nil {

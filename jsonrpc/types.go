@@ -46,9 +46,11 @@ type ServerRequest struct {
 }
 
 // Response is an incoming JSON-RPC 2.0 message.
+// ID intentionally omits `omitempty` so that null IDs are serialized as
+// "id": null (required by JSON-RPC 2.0 spec for parse error responses).
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id,omitempty"`
+	ID      interface{}     `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *Error          `json:"error,omitempty"`
 }

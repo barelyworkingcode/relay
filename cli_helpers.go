@@ -163,29 +163,32 @@ func printSubcommandUsage(verb string, commands []cliSubcommand) {
 
 // resolveAndRemove resolves an entity by id/name, removes it via store.With, and
 // prints the result. Returns the resolved ID and admin secret, or exits with an
-// error if not found. Resolution is done via Get() first to avoid a wasteful
-// disk write when the entity doesn't exist.
+// error if not found. Resolution and removal happen inside the same With() call
+// to avoid a TOCTOU race between Get() and With().
 func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
 	if id == "" && name == "" {
 		exitError("--id or --name is required")
 	}
 
-	// Resolve first without writing to disk.
-	resolvedID := resolveFn(store.Get(), id, name)
+	var resolvedID string
+	var adminSecret string
+	if err := store.With(func(s *Settings) {
+		resolvedID = resolveFn(s, id, name)
+		if resolvedID == "" {
+			return // no-op write; entity not found
+		}
+		removeFn(s, resolvedID)
+		adminSecret = s.AdminSecret
+	}); err != nil {
+		exitError("failed to save settings: %v", err)
+	}
+
 	if resolvedID == "" {
 		if id != "" {
 			exitError("no %s found with id %q", entity, id)
 		} else {
 			exitError("no %s found with name %q", entity, name)
 		}
-	}
-
-	var adminSecret string
-	if err := store.With(func(s *Settings) {
-		removeFn(s, resolvedID)
-		adminSecret = s.AdminSecret
-	}); err != nil {
-		exitError("failed to save settings: %v", err)
 	}
 
 	fmt.Printf("unregistered %s %q\n", entity, resolvedID)

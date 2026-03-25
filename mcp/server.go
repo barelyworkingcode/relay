@@ -75,12 +75,21 @@ func rpcError(id interface{}, code int, msg string) *jsonrpc.Response {
 func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
+		if req.ID == nil {
+			return nil // notification — no response
+		}
 		return handleInitialize(req)
 	case "notifications/initialized":
 		return nil
 	case "tools/list":
+		if req.ID == nil {
+			return nil
+		}
 		return handleToolsList(client, req)
 	case "tools/call":
+		if req.ID == nil {
+			return nil
+		}
 		return handleToolsCall(client, req)
 	default:
 		// JSON-RPC 2.0: servers MUST NOT reply to notifications (no ID).

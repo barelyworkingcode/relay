@@ -31,6 +31,10 @@ func mcpRegister(store SettingsStore, args []string) {
 	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
 	fs.Parse(args)
 
+	if *transport != "stdio" && *transport != "http" {
+		exitError("--transport must be stdio or http")
+	}
+
 	if *transport == "http" {
 		mcpRegisterHTTP(store, opts.Name, opts.ID, *mcpURL)
 		return
@@ -94,6 +98,9 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 	if !errors.Is(err, ErrAuthRequired) {
 		return result
 	}
+	if result == nil {
+		exitError("server requires authentication but discovery returned no config")
+	}
 
 	// Server requires authentication — attempt OAuth flow.
 	fmt.Println("server requires authentication, starting OAuth flow...")
@@ -134,9 +141,11 @@ func openBrowserCmd(url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
-	if err := cmd.Start(); err == nil {
-		go cmd.Wait()
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to open browser: %v\n", err)
+		return
 	}
+	go cmd.Wait()
 }
 
 func mcpUnregister(store SettingsStore, args []string) {

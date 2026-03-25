@@ -85,11 +85,20 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	config := msg.toServiceConfig(msg.ID)
+	wasRunning := ctx.Registry.IsRunning(msg.ID)
 
 	if !ctx.withSettings(func(s *Settings) { s.UpdateService(config) }) {
 		return
 	}
-	ctx.UpdateMenu()
+
+	// Restart the service if it was running so it picks up the new config.
+	if wasRunning {
+		if err := ctx.Registry.Reload(msg.ID, &config); err != nil {
+			slog.Error("service restart after update failed", "id", msg.ID, "error", err)
+			ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service updated but restart failed: %v", err))
+		}
+	}
+	ctx.refreshServiceUI()
 }
 
 func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {

@@ -11,17 +11,20 @@ import (
 //go:embed settings.html
 var settingsHTML string
 
-// mustMarshalJSON marshals v to JSON, returning "[]" on error and logging.
+// mustMarshalJSON marshals v to JSON, returning "null" on error and logging.
 func mustMarshalJSON(label string, v interface{}) string {
 	data, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("failed to marshal settings for UI", "field", label, "error", err)
-		return "[]"
+		return "null"
 	}
 	return string(data)
 }
 
 func renderSettingsHTML(settings *Settings, runningIDs []string) string {
+	if runningIDs == nil {
+		runningIDs = []string{}
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		exePath = ""

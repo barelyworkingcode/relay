@@ -18,10 +18,14 @@ type BridgeServer struct {
 	listener net.Listener
 	sockPath string
 	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // NewBridgeServer creates a BridgeServer bound to the default socket path.
-func NewBridgeServer(router ToolRouter) (*BridgeServer, error) {
+// The provided context is used as the parent for all per-connection contexts,
+// enabling graceful cancellation of in-flight requests during shutdown.
+func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
 	sockPath := SocketPath()
 
 	// Remove stale socket file.
@@ -37,10 +41,14 @@ func NewBridgeServer(router ToolRouter) (*BridgeServer, error) {
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+
 	return &BridgeServer{
 		router:   router,
 		listener: listener,
 		sockPath: sockPath,
+		ctx:      ctx,
+		cancel:   cancel,
 	}, nil
 }
 
@@ -57,8 +65,10 @@ func (s *BridgeServer) Serve() error {
 	}
 }
 
-// Close shuts down the server: closes the listener, waits for connections, removes the socket.
+// Close shuts down the server: cancels in-flight requests, closes the listener,
+// waits for connections, removes the socket.
 func (s *BridgeServer) Close() {
+	s.cancel()
 	_ = s.listener.Close()
 	s.wg.Wait()
 	_ = os.Remove(s.sockPath)
@@ -73,8 +83,8 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
-	// Per-connection context — cancelled when the connection closes.
-	ctx, cancel := context.WithCancel(context.Background())
+	// Per-connection context — cancelled when the connection or server closes.
+	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
 	scanner := NewScanner(conn)

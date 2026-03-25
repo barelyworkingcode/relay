@@ -123,7 +123,7 @@ func runTrayApp() {
 		services: app.registry,
 		onChange: app.onExternalChange,
 	}
-	bs, err := bridge.NewBridgeServer(router)
+	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)
 		os.Exit(1)

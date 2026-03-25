@@ -148,6 +148,7 @@ func (r *appRouter) ReloadService(id string) {
 	}
 	if err := r.services.Reload(id, svc); err != nil {
 		slog.Error("failed to reload service", "id", id, "error", err)
+		return
 	}
 	r.onChange()
 }
@@ -161,6 +162,7 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
 	}
 	if err := r.tools.Reload(ctx, id, mcpCfg); err != nil {
 		slog.Error("failed to reload external MCP", "id", id, "error", err)
+		return
 	}
 	r.onChange()
 }

@@ -66,9 +66,15 @@ func ipcUpdatePermission(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	perm := PermOn
-	if msg.Permission == "off" {
+	var perm Permission
+	switch msg.Permission {
+	case "off":
 		perm = PermOff
+	case "on":
+		perm = PermOn
+	default:
+		slog.Warn("invalid permission value, ignoring", "value", msg.Permission)
+		return
 	}
 	if !ctx.withSettings(func(s *Settings) { s.UpdatePermission(msg.Hash, msg.Service, perm) }) {
 		return

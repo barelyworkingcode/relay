@@ -33,7 +33,8 @@ func main() {
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		runTrayApp()
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [service|mcp|mcpExec]\n", os.Args[1])
+		os.Exit(1)
 	}
 }
 

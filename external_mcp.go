@@ -76,7 +76,9 @@ func (b *baseMcpConn) allocID() int64 {
 func (b *baseMcpConn) GetTools() []mcp.Tool {
 	b.toolsMu.RLock()
 	defer b.toolsMu.RUnlock()
-	return b.tools
+	out := make([]mcp.Tool, len(b.tools))
+	copy(out, b.tools)
+	return out
 }
 
 func (b *baseMcpConn) SetTools(tools []mcp.Tool) {

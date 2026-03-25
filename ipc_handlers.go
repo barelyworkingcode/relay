@@ -47,7 +47,7 @@ func (a *App) emitSettingsEvent(name string, args ...interface{}) {
 		} else {
 			data, err := json.Marshal(arg)
 			if err != nil {
-				slog.Error("failed to marshal settings event", "event", name, "error", err)
+				slog.Error("failed to marshal settings event arg, skipping event", "event", name, "argIndex", len(jsArgs), "error", err)
 				return
 			}
 			jsArgs = append(jsArgs, string(data))
