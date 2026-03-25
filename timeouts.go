@@ -16,6 +16,12 @@ const (
 	// handshake (spawn, initialize, tools/list, kill).
 	MCPDiscoveryTimeout = 30 * time.Second
 
+	// MCPStartupTimeout is the maximum time for a single MCP to complete
+	// its startup handshake during StartAll/Reconcile. This bounds the
+	// HTTP transport path which has no independent per-request timer
+	// (unlike stdio's MCPRequestTimeout fallback).
+	MCPStartupTimeout = 30 * time.Second
+
 	// HTTPSessionCloseTimeout is the best-effort timeout for sending a
 	// DELETE to end an HTTP MCP session during shutdown.
 	HTTPSessionCloseTimeout = 5 * time.Second

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"relaygo/bridge"
+	"relaygo/jsonrpc"
 	"relaygo/mcp"
 )
 
@@ -40,10 +41,10 @@ type ServiceReloader interface {
 // only the MCP-level permission.
 func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 	if s.GetPermission(tokenHash, mcpID) == PermOff {
-		return fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID)
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID))
 	}
 	if toolName != "" && s.IsToolDisabled(tokenHash, mcpID, toolName) {
-		return fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName)
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
 	}
 	return nil
 }
@@ -67,11 +68,13 @@ var (
 )
 
 // resolveAuth loads settings and authenticates the given token.
+// Returns a CodedError with CodeUnauthorized on auth failures so the bridge
+// can classify errors via errors.As instead of fragile string matching.
 func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
 	s := r.store.Get()
 	stored, err := s.Authenticate(token)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, err)
 	}
 	return stored, s, nil
 }

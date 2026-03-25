@@ -180,27 +180,27 @@ func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefr
 // setConnection stores a connection, closing any existing connection for the same ID
 // to prevent resource leaks during concurrent operations or reconnections.
 func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
-	var old McpConnection
-	func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		old = m.conns[id]
-		m.conns[id] = conn
-	}()
+	m.mu.Lock()
+	old := m.conns[id]
+	m.conns[id] = conn
+	m.mu.Unlock()
+
 	if old != nil {
 		old.Close()
 	}
 }
 
 // finalizeConnection completes MCP startup after a successful handshake:
-// sets discovered tools on the connection, persists discovery results, and
-// stores the connection in the manager.
+// stores the connection in the manager, sets discovered tools, and persists
+// discovery results. setConnection is called first so that the lock ordering
+// (m.mu -> toolsMu) is consistent with FindToolOwner and Tools, preventing
+// potential deadlocks from inverted lock acquisition.
 func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
+	m.setConnection(id, conn)
 	conn.SetTools(result.Tools)
 	if m.onDiscover != nil {
 		m.onDiscover(id, result.ToolInfos, result.ContextSchema)
 	}
-	m.setConnection(id, conn)
 	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
 }
 
@@ -240,10 +240,17 @@ func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) 
 	if err := mcpCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid MCP config: %w", err)
 	}
+
+	// Bound the startup handshake so one slow/hung MCP can't block app startup
+	// indefinitely. This is especially important for HTTP MCPs, whose SendRequest
+	// has no independent timer (unlike stdio's MCPRequestTimeout fallback).
+	startCtx, cancel := context.WithTimeout(ctx, MCPStartupTimeout)
+	defer cancel()
+
 	if mcpCfg.IsHTTP() {
-		return m.startHTTP(ctx, mcpCfg)
+		return m.startHTTP(startCtx, mcpCfg)
 	}
-	return m.startStdio(ctx, mcpCfg)
+	return m.startStdio(startCtx, mcpCfg)
 }
 
 // spawnStdioConn creates and starts a stdio MCP connection.
@@ -264,6 +271,8 @@ func spawnStdioConn(command string, args []string, env map[string]string, config
 	}
 
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
 		return nil, fmt.Errorf("spawn failed: %w", err)
 	}
 
@@ -410,16 +419,14 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 
 // Stop kills and removes a specific external MCP connection.
 func (m *ExternalMcpManager) Stop(id string) {
-	var conn McpConnection
-	func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if c, ok := m.conns[id]; ok {
-			conn = c
-			delete(m.conns, id)
-		}
-	}()
-	if conn != nil {
+	m.mu.Lock()
+	conn, ok := m.conns[id]
+	if ok {
+		delete(m.conns, id)
+	}
+	m.mu.Unlock()
+
+	if ok {
 		conn.Close()
 	}
 }
@@ -427,13 +434,10 @@ func (m *ExternalMcpManager) Stop(id string) {
 // StopAll kills all external MCP connections concurrently to avoid one
 // slow connection (e.g., HTTP session DELETE) blocking the shutdown of others.
 func (m *ExternalMcpManager) StopAll() {
-	var conns map[string]McpConnection
-	func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		conns = m.conns
-		m.conns = make(map[string]McpConnection)
-	}()
+	m.mu.Lock()
+	conns := m.conns
+	m.conns = make(map[string]McpConnection)
+	m.mu.Unlock()
 
 	var wg sync.WaitGroup
 	for _, conn := range conns {

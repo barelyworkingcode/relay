@@ -150,9 +150,11 @@ func runTrayApp() {
 	slog.Info("menu built")
 
 	// Catch termination signals so child processes get cleaned up.
+	// This goroutine is NOT tracked via goFunc because cleanup() calls
+	// wg.Wait() — tracking it would deadlock (waiting for itself to finish).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	app.goFunc(func() {
+	go func() {
 		select {
 		case sig := <-sigCh:
 			slog.Info("received signal, cleaning up", "signal", sig)
@@ -161,7 +163,7 @@ func runTrayApp() {
 		case <-ctx.Done():
 			return
 		}
-	})
+	}()
 
 	// Poll service status every 2s.
 	app.goFunc(app.statusPoller)

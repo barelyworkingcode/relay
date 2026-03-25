@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -137,7 +138,7 @@ func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
 	}
 
 	var meta oauthMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
 		return nil
 	}
 	if meta.AuthorizationEndpoint == "" || meta.TokenEndpoint == "" {
@@ -261,7 +262,7 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	}
 
 	var regResp oauthRegistrationResponse
-	if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&regResp); err != nil {
 		return nil, fmt.Errorf("parse registration response: %w", err)
 	}
 	if regResp.ClientID == "" {
@@ -329,7 +330,7 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 			desc := r.URL.Query().Get("error_description")
 			errCh <- fmt.Errorf("OAuth error: %s: %s", errMsg, desc)
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p><p>You can close this window.</p></body></html>", desc)
+			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p><p>You can close this window.</p></body></html>", html.EscapeString(desc))
 			return
 		}
 		code := r.URL.Query().Get("code")
@@ -483,7 +484,7 @@ func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oa
 	}
 
 	var tokenResp oauthTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tokenResp); err != nil {
 		return nil, fmt.Errorf("parse %s response: %w", action, err)
 	}
 	if tokenResp.AccessToken == "" {

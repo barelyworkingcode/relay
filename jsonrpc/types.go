@@ -62,6 +62,22 @@ type Error struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// CodedError wraps an error with a JSON-RPC error code. Use this to propagate
+// error classification across package boundaries without relying on fragile
+// string matching. Bridge handlers use errors.As to extract the code.
+type CodedError struct {
+	RPCCode int
+	Err     error
+}
+
+func (e *CodedError) Error() string { return e.Err.Error() }
+func (e *CodedError) Unwrap() error { return e.Err }
+
+// NewCodedError wraps err with a JSON-RPC error code.
+func NewCodedError(code int, err error) *CodedError {
+	return &CodedError{RPCCode: code, Err: err}
+}
+
 // RespIDEquals checks if a JSON-RPC response ID matches an expected int64 value.
 func RespIDEquals(id interface{}, expected int64) bool {
 	v, ok := RespIDToInt64(id)

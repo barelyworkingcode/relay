@@ -84,7 +84,9 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
 		url: cfg.URL,
 		httpClient: &http.Client{
-			Timeout: MCPRequestTimeout,
+			// No client-level Timeout: it covers the entire transaction including
+			// body reads, which would kill long-running SSE streams. Per-request
+			// deadlines are set via context instead.
 		},
 	}
 	conn.config = cfg
@@ -138,20 +140,18 @@ func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
 // applyRefreshedToken writes refreshed OAuth state under mu and notifies the
 // persistence callback. All lock/unlock is handled via defer.
 func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthTokenResponse) {
-	var oauthState *OAuthState
-	func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.oauth.meta = meta
-		c.oauth.accessToken = tokenResp.AccessToken
-		if tokenResp.RefreshToken != "" {
-			c.oauth.refreshToken = tokenResp.RefreshToken
-		}
-		if tokenResp.ExpiresIn > 0 {
-			c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-		}
-		oauthState = c.oauth.toOAuthState()
-	}()
+	c.mu.Lock()
+	c.oauth.meta = meta
+	c.oauth.accessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		c.oauth.refreshToken = tokenResp.RefreshToken
+	}
+	if tokenResp.ExpiresIn > 0 {
+		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+	oauthState := c.oauth.toOAuthState()
+	c.mu.Unlock()
+
 	if c.onTokenRefresh != nil {
 		c.onTokenRefresh(oauthState)
 	}
@@ -342,7 +342,12 @@ func (c *httpMcpConn) SendNotification(method string) {
 
 	snap := c.snapshot()
 
-	httpReq, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	// Short timeout for notifications — they are best-effort and should not
+	// block the handshake sequence if the server is unresponsive.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
@@ -428,7 +433,12 @@ func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth 
 	conn := newHTTPMcpConn(cfg)
 	defer conn.Close() // Safe for all paths: Close is a no-op if no session was established.
 
-	result, err := discoverMcp(ctx, conn, cfg)
+	// Bound discovery so a hung HTTP server can't block the UI indefinitely.
+	// Matches DiscoverExternalMcp's use of MCPDiscoveryTimeout for stdio.
+	discoverCtx, cancel := context.WithTimeout(ctx, MCPDiscoveryTimeout)
+	defer cancel()
+
+	result, err := discoverMcp(discoverCtx, conn, cfg)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
 			cfg.DiscoveredTools = []ToolInfo{}
