@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -29,6 +30,11 @@ func NewBridgeServer(router ToolRouter) (*BridgeServer, error) {
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, err
+	}
+	// Enforce owner-only access regardless of umask.
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
 	return &BridgeServer{

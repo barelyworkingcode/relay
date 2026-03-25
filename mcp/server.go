@@ -83,6 +83,10 @@ func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Re
 	case "tools/call":
 		return handleToolsCall(client, req)
 	default:
+		// JSON-RPC 2.0: servers MUST NOT reply to notifications (no ID).
+		if req.ID == nil {
+			return nil
+		}
 		return rpcError(req.ID, jsonrpc.CodeMethodNotFound, "method not found: "+req.Method)
 	}
 }
@@ -122,6 +126,9 @@ func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return rpcError(req.ID, jsonrpc.CodeInvalidParams, "invalid params: "+err.Error())
 		}
+	}
+	if params.Name == "" {
+		return rpcError(req.ID, jsonrpc.CodeInvalidParams, "missing required parameter: name")
 	}
 	if params.Arguments == nil {
 		params.Arguments = json.RawMessage("{}")

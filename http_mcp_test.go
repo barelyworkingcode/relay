@@ -175,6 +175,107 @@ func TestHTTPMcpConn_SSEResponse(t *testing.T) {
 	}
 }
 
+func TestHTTPMcpConn_SSEMultiLineData(t *testing.T) {
+	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
+		id := readJSONRPCID(r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Multi-line SSE data: JSON split across two data: lines, terminated by blank line.
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\n", id)
+		fmt.Fprintf(w, "data: \"result\":{\"multi\":true}}\n\n")
+	})
+	defer srv.Close()
+
+	cfg := ExternalMcp{
+		ID:        "test",
+		Transport: "http",
+		URL:       srv.URL,
+	}
+	conn := newHTTPMcpConn(cfg)
+
+	result, err := conn.SendRequest(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed struct {
+		Multi bool `json:"multi"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v (raw: %s)", err, string(result))
+	}
+	if !parsed.Multi {
+		t.Fatalf("expected multi=true, got: %s", string(result))
+	}
+}
+
+func TestHTTPMcpConn_SSENoTrailingBlankLine(t *testing.T) {
+	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
+		id := readJSONRPCID(r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Data line with no trailing blank line — stream ends after data.
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"ok\":true}}\n", id)
+	})
+	defer srv.Close()
+
+	cfg := ExternalMcp{
+		ID:        "test",
+		Transport: "http",
+		URL:       srv.URL,
+	}
+	conn := newHTTPMcpConn(cfg)
+
+	result, err := conn.SendRequest(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v (raw: %s)", err, string(result))
+	}
+	if !parsed.OK {
+		t.Fatalf("expected ok=true, got: %s", string(result))
+	}
+}
+
+func TestHTTPMcpConn_SSEInterleavedNotification(t *testing.T) {
+	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
+		id := readJSONRPCID(r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Notification (no id) before the actual response.
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"found\":true}}\n\n", id)
+	})
+	defer srv.Close()
+
+	cfg := ExternalMcp{
+		ID:        "test",
+		Transport: "http",
+		URL:       srv.URL,
+	}
+	conn := newHTTPMcpConn(cfg)
+
+	result, err := conn.SendRequest(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed struct {
+		Found bool `json:"found"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v (raw: %s)", err, string(result))
+	}
+	if !parsed.Found {
+		t.Fatalf("expected found=true, got: %s", string(result))
+	}
+}
+
 func TestHTTPMcpConn_SendNotification(t *testing.T) {
 	received := make(chan string, 1)
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
