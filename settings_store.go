@@ -82,39 +82,37 @@ func (ss *FileSettingsStore) load() *Settings {
 	return &s
 }
 
+// ensureSlice replaces a nil slice with an empty one of the same type.
+func ensureSlice[T any](s *[]T) {
+	if *s == nil {
+		*s = []T{}
+	}
+}
+
+// ensureMap replaces a nil map with an empty one of the same types.
+func ensureMap[K comparable, V any](m *map[K]V) {
+	if *m == nil {
+		*m = map[K]V{}
+	}
+}
+
 // normalize ensures all slices are non-nil (for JSON serialization) and
 // back-fills default values for fields added in later versions.
 func (s *Settings) normalize() {
 	if s.Version == 0 {
 		s.Version = currentSettingsVersion
 	}
-	if s.Tokens == nil {
-		s.Tokens = []StoredToken{}
-	}
-	if s.ExternalMcps == nil {
-		s.ExternalMcps = []ExternalMcp{}
-	}
-	if s.Services == nil {
-		s.Services = []ServiceConfig{}
-	}
+	ensureSlice(&s.Tokens)
+	ensureSlice(&s.ExternalMcps)
+	ensureSlice(&s.Services)
 	for i := range s.ExternalMcps {
-		if s.ExternalMcps[i].Args == nil {
-			s.ExternalMcps[i].Args = []string{}
-		}
-		if s.ExternalMcps[i].Env == nil {
-			s.ExternalMcps[i].Env = map[string]string{}
-		}
-		if s.ExternalMcps[i].DiscoveredTools == nil {
-			s.ExternalMcps[i].DiscoveredTools = []ToolInfo{}
-		}
+		ensureSlice(&s.ExternalMcps[i].Args)
+		ensureMap(&s.ExternalMcps[i].Env)
+		ensureSlice(&s.ExternalMcps[i].DiscoveredTools)
 	}
 	for i := range s.Services {
-		if s.Services[i].Args == nil {
-			s.Services[i].Args = []string{}
-		}
-		if s.Services[i].Env == nil {
-			s.Services[i].Env = map[string]string{}
-		}
+		ensureSlice(&s.Services[i].Args)
+		ensureMap(&s.Services[i].Env)
 	}
 }
 

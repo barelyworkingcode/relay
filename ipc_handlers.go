@@ -108,11 +108,7 @@ func (ctx *IPCContext) withSettingsReconcile(fn func(*Settings)) bool {
 // withSettings atomically mutates settings and emits an error event on failure.
 // Returns true on success.
 func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
-	if err := ctx.Store.With(fn); err != nil {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
-		return false
-	}
-	return true
+	return ctx.withSettingsNotify(fn, nil)
 }
 
 // withSettingsNotify atomically mutates settings, then dispatches a bridge
@@ -129,11 +125,13 @@ func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 		return false
 	}
-	ctx.GoFunc(func() {
-		if err := notify(secret); err != nil {
-			slog.Warn("bridge notification failed", "error", err)
-		}
-	})
+	if notify != nil {
+		ctx.GoFunc(func() {
+			if err := notify(secret); err != nil {
+				slog.Warn("bridge notification failed", "error", err)
+			}
+		})
+	}
 	return true
 }
 
