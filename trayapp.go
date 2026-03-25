@@ -33,6 +33,7 @@ type App struct {
 	ipcCtx       *IPCContext // pre-built once, reused on every IPC call
 	settingsOpen bool
 	cleanupOnce  sync.Once
+	svcMenuMap   map[int]string // menu item ID -> service ID
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -221,18 +222,23 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 
 	var items []menuItem
 
-	// Service items.
+	// Build menu-item-ID -> service-ID mapping so click handlers resolve by ID,
+	// not positional index (which can go stale if services change between builds).
+	svcMap := make(map[int]string, len(s.Services))
 	for i, svc := range s.Services {
 		dot := statusDotStopped
 		if a.registry.IsRunning(svc.ID) {
 			dot = statusDotRunning
 		}
+		menuID := menuIDSvcBase + i
+		svcMap[menuID] = svc.ID
 		items = append(items, menuItem{
 			Title:   fmt.Sprintf("%s %s", dot, svc.DisplayName),
-			ID:      menuIDSvcBase + i,
+			ID:      menuID,
 			Enabled: true,
 		})
 	}
+	a.svcMenuMap = svcMap
 
 	if len(s.Services) > 0 {
 		items = append(items, menuItem{Title: "-", ID: 0})
@@ -263,16 +269,20 @@ func (a *App) onMenuClick(itemID int) {
 		os.Exit(0)
 
 	case itemID >= menuIDSvcBase:
-		a.toggleService(itemID - menuIDSvcBase)
+		a.toggleService(itemID)
 	}
 }
 
-func (a *App) toggleService(index int) {
-	s := a.store.Get()
-	if index < 0 || index >= len(s.Services) {
+func (a *App) toggleService(menuItemID int) {
+	svcID, ok := a.svcMenuMap[menuItemID]
+	if !ok {
 		return
 	}
-	config := &s.Services[index]
+	s := a.store.Get()
+	config, _ := s.findServiceByID(svcID)
+	if config == nil {
+		return
+	}
 
 	// If the service has a URL, lazy-start and open the URL.
 	if config.URL != "" {

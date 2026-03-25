@@ -206,7 +206,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 		return nil, ErrAuthRequired
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("HTTP MCP %s: HTTP %d: %s", method, resp.StatusCode, string(respBody))
 	}
 
@@ -233,37 +233,73 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	return rpcResp.Result, nil
 }
 
-// parseSSEResponse reads SSE data lines and extracts the JSON-RPC response matching our ID.
+// parseSSEResponse reads SSE events and extracts the JSON-RPC response matching our ID.
+// Per the SSE spec, an event's data can span multiple consecutive "data:" lines
+// (concatenated with newlines) and is terminated by a blank line.
 func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json.RawMessage, error) {
+	const maxDataSize = 1 << 20 // 1 MB cap on buffered SSE event data
 	scanner := bridge.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
+	var dataBuf strings.Builder
+
+	// flush parses the buffered data as a JSON-RPC response. Returns
+	// (result, err, matched) where matched indicates the response ID matched.
+	flush := func() (json.RawMessage, error, bool) {
+		if dataBuf.Len() == 0 {
+			return nil, nil, false
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" {
-			continue
-		}
+		data := dataBuf.String()
+		dataBuf.Reset()
 
 		var rpcResp jsonrpc.Response
 		if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
-			slog.Debug("HTTP MCP: skipping malformed SSE data line", "error", err)
-			continue
+			slog.Debug("HTTP MCP: skipping malformed SSE event", "error", err)
+			return nil, nil, false
 		}
-
-		// Skip notifications (no ID).
 		if rpcResp.ID == nil {
-			continue
+			return nil, nil, false // notification
 		}
-
 		if jsonrpc.RespIDEquals(rpcResp.ID, expectedID) {
 			if rpcResp.Error != nil {
-				return nil, formatJSONRPCError(rpcResp.Error)
+				return nil, formatJSONRPCError(rpcResp.Error), true
 			}
-			return rpcResp.Result, nil
+			return rpcResp.Result, nil, true
+		}
+		return nil, nil, false
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "data:") {
+			// Per SSE spec, strip only a single leading space after the colon.
+			payload := strings.TrimPrefix(line, "data:")
+			payload = strings.TrimPrefix(payload, " ")
+			if payload == "" {
+				continue
+			}
+			if dataBuf.Len()+len(payload)+1 > maxDataSize {
+				return nil, fmt.Errorf("SSE event data exceeds %d bytes", maxDataSize)
+			}
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(payload)
+			continue
+		}
+
+		// Blank line = event boundary; other lines (event:, id:, retry:) are ignored.
+		if line == "" {
+			if result, err, matched := flush(); matched {
+				return result, err
+			}
 		}
 	}
+
+	// Flush any buffered data at end-of-stream (some servers omit trailing blank line).
+	if result, err, matched := flush(); matched {
+		return result, err
+	}
+
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("SSE read error: %w", err)
 	}

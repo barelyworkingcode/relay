@@ -97,6 +97,7 @@ type externalMcpConn struct {
 
 	readerDone chan struct{} // closed when the reader goroutine exits
 	readerErr  error        // set before readerDone is closed
+	closeOnce  sync.Once    // ensures Close is idempotent
 }
 
 // handshakeResult holds the results of an MCP initialize + tools/list sequence.
@@ -606,16 +607,18 @@ func (c *externalMcpConn) SendNotification(method string) {
 }
 
 func (c *externalMcpConn) Close() {
-	if c.stdin != nil {
-		c.stdin.Close()
-	}
-	if c.cmd != nil {
-		killProcessGroup(c.cmd)
-		_ = c.cmd.Wait()
-	}
-	// Wait for readLoop to finish so no goroutine is leaked and all pending
-	// requests are drained before the connection is considered closed.
-	<-c.readerDone
+	c.closeOnce.Do(func() {
+		if c.stdin != nil {
+			c.stdin.Close()
+		}
+		if c.cmd != nil {
+			killProcessGroup(c.cmd)
+			_ = c.cmd.Wait()
+		}
+		// Wait for readLoop to finish so no goroutine is leaked and all pending
+		// requests are drained before the connection is considered closed.
+		<-c.readerDone
+	})
 }
 
 // toolCategory returns the category for a tool, using the server-supplied
