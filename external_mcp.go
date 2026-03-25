@@ -505,7 +505,7 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 
 		var resp jsonrpc.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
-			slog.Debug("stdio MCP: skipping malformed response line", "error", err)
+			slog.Warn("stdio MCP: skipping malformed response line", "error", err)
 			continue
 		}
 		if resp.ID == nil {
@@ -514,7 +514,7 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 
 		respID, ok := jsonrpc.RespIDToInt64(resp.ID)
 		if !ok {
-			slog.Debug("stdio MCP: skipping response with non-numeric ID", "id", resp.ID)
+			slog.Warn("stdio MCP: skipping response with non-numeric ID", "id", resp.ID)
 			continue
 		}
 
