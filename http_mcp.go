@@ -207,7 +207,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("HTTP MCP %s: HTTP %d: %s", method, resp.StatusCode, string(respBody))
 	}
 
 	// Update session ID from response under lock.
@@ -295,12 +295,18 @@ func (c *httpMcpConn) SendNotification(method string) {
 }
 
 func (c *httpMcpConn) Close() {
+	defer c.httpClient.CloseIdleConnections()
+
 	snap := c.snapshot()
 	if snap.sessionID == "" {
 		return
 	}
-	// Send DELETE to end session (best-effort cleanup).
-	req, err := http.NewRequest("DELETE", c.url, nil)
+	// Send DELETE to end session with a short timeout. This is best-effort
+	// cleanup; we don't want an unresponsive server to block app shutdown.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.url, nil)
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create session close request", "url", c.url, "error", err)
 		return

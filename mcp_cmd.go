@@ -147,9 +147,7 @@ func mcpUnregister(store SettingsStore, args []string) {
 
 	_, adminSecret := resolveAndRemove(store, "mcp", *id, *name,
 		(*Settings).ResolveMcpID, (*Settings).RemoveExternalMcp)
-	if err := bridge.SendReconcile(adminSecret); err != nil {
-		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
-	}
+	warnNotifyFailure(bridge.SendReconcile(adminSecret))
 }
 
 func mcpList(store SettingsStore) {

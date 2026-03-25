@@ -964,34 +964,17 @@ func TestDefaultSettings(t *testing.T) {
 // Settings cache: Get, Reload, With
 // ---------------------------------------------------------------------------
 
-// These tests create fresh SettingsStore instances for each test, ensuring
-// isolation without needing to manipulate global state. Since settingsDir()
-// and settingsPath() are not injectable, these tests use the actual config
-// dir but clean up carefully.
+// These tests use NewSettingsStoreAt with a temp directory for full isolation.
 
 func TestSettingsCache(t *testing.T) {
-	store := NewSettingsStore()
-
-	// Ensure the settings directory exists.
-	dir := settingsDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatalf("could not create settings dir: %v", err)
+	newStore := func(t *testing.T) (*FileSettingsStore, string) {
+		t.Helper()
+		dir := t.TempDir()
+		return NewSettingsStoreAt(dir), filepath.Join(dir, "settings.json")
 	}
 
-	// Back up existing settings.json if present.
-	sp := settingsPath()
-	origData, origErr := os.ReadFile(sp)
-	t.Cleanup(func() {
-		if origErr == nil {
-			_ = os.WriteFile(sp, origData, 0600)
-		} else {
-			_ = os.Remove(sp)
-		}
-	})
-
 	t.Run("Get returns defaults when no file and no cache", func(t *testing.T) {
-		store = NewSettingsStore()
-		_ = os.Remove(sp)
+		store, _ := newStore(t)
 
 		s := store.Get()
 		if s == nil {
@@ -1006,7 +989,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 
 	t.Run("Get returns distinct snapshots on each call", func(t *testing.T) {
-		store = NewSettingsStore()
+		store, _ := newStore(t)
 
 		s1 := store.Get()
 		s2 := store.Get()
@@ -1019,7 +1002,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 
 	t.Run("With writes to disk and updates cache", func(t *testing.T) {
-		store = NewSettingsStore()
+		store, sp := newStore(t)
 
 		err := store.With(func(s *Settings) {
 			s.Tokens = append(s.Tokens, StoredToken{
@@ -1064,7 +1047,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 
 	t.Run("Reload refreshes cache from disk", func(t *testing.T) {
-		store = NewSettingsStore()
+		store, sp := newStore(t)
 
 		err := store.With(func(s *Settings) {
 			s.Tokens = []StoredToken{{Name: "original", Hash: "orig-hash"}}
@@ -1103,8 +1086,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 
 	t.Run("EnsureInitialized generates AdminSecret if missing", func(t *testing.T) {
-		store = NewSettingsStore()
-		_ = os.Remove(sp)
+		store, _ := newStore(t)
 
 		err := store.EnsureInitialized()
 		if err != nil {
@@ -1121,8 +1103,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 
 	t.Run("With does not generate AdminSecret", func(t *testing.T) {
-		store = NewSettingsStore()
-		_ = os.Remove(sp)
+		store, _ := newStore(t)
 
 		err := store.With(func(s *Settings) {})
 		if err != nil {
@@ -1286,39 +1267,36 @@ func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K
 }
 
 // ---------------------------------------------------------------------------
-// loadSettingsInternal: JSON round-trip and normalization
+// FileSettingsStore.load: JSON round-trip and normalization
 // ---------------------------------------------------------------------------
 
-func TestLoadSettingsInternal(t *testing.T) {
-	sp := settingsPath()
-	dir := settingsDir()
-	_ = os.MkdirAll(dir, 0700)
-	origData, origErr := os.ReadFile(sp)
-	t.Cleanup(func() {
-		if origErr == nil {
-			_ = os.WriteFile(sp, origData, 0600)
-		} else {
-			_ = os.Remove(sp)
-		}
-	})
+func TestLoad(t *testing.T) {
+	newStore := func(t *testing.T) (*FileSettingsStore, string) {
+		t.Helper()
+		dir := t.TempDir()
+		store := NewSettingsStoreAt(dir)
+		return store, store.path()
+	}
 
 	t.Run("sets version to 1 if missing", func(t *testing.T) {
+		store, sp := newStore(t)
 		data := []byte(`{"tokens":[],"external_mcps":[],"services":[]}`)
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		s := loadSettingsInternal()
+		s := store.load()
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
 		}
 	})
 
 	t.Run("ensures nil slices become non-nil", func(t *testing.T) {
+		store, sp := newStore(t)
 		data := []byte(`{"version":1}`)
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		s := loadSettingsInternal()
+		s := store.load()
 		if s.Tokens == nil {
 			t.Fatal("Tokens should not be nil")
 		}
@@ -1331,11 +1309,12 @@ func TestLoadSettingsInternal(t *testing.T) {
 	})
 
 	t.Run("ensures nil DiscoveredTools in MCPs become non-nil", func(t *testing.T) {
+		store, sp := newStore(t)
 		data := []byte(`{"version":1,"external_mcps":[{"id":"m1","args":[],"env":{}}]}`)
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		s := loadSettingsInternal()
+		s := store.load()
 		if len(s.ExternalMcps) != 1 {
 			t.Fatalf("expected 1 MCP, got %d", len(s.ExternalMcps))
 		}
@@ -1345,18 +1324,19 @@ func TestLoadSettingsInternal(t *testing.T) {
 	})
 
 	t.Run("returns defaults for missing file", func(t *testing.T) {
-		_ = os.Remove(sp)
-		s := loadSettingsInternal()
+		store, _ := newStore(t)
+		s := store.load()
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
 		}
 	})
 
 	t.Run("returns defaults for invalid JSON", func(t *testing.T) {
+		store, sp := newStore(t)
 		if err := os.WriteFile(sp, []byte(`{not json`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		s := loadSettingsInternal()
+		s := store.load()
 		if s.Version != 1 {
 			t.Fatalf("expected version 1 for invalid JSON, got %d", s.Version)
 		}
@@ -1364,32 +1344,28 @@ func TestLoadSettingsInternal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// saveSettingsInternal: atomic write
+// FileSettingsStore.save: atomic write
 // ---------------------------------------------------------------------------
 
-func TestSaveSettingsInternal(t *testing.T) {
-	sp := settingsPath()
-	dir := settingsDir()
-	_ = os.MkdirAll(dir, 0700)
-	origData, origErr := os.ReadFile(sp)
-	t.Cleanup(func() {
-		if origErr == nil {
-			_ = os.WriteFile(sp, origData, 0600)
-		} else {
-			_ = os.Remove(sp)
-		}
-	})
+func TestSave(t *testing.T) {
+	newStore := func(t *testing.T) (*FileSettingsStore, string) {
+		t.Helper()
+		dir := t.TempDir()
+		store := NewSettingsStoreAt(dir)
+		return store, store.path()
+	}
 
 	t.Run("writes valid JSON", func(t *testing.T) {
+		store, sp := newStore(t)
 		s := &Settings{
 			Version:      1,
 			Tokens:       []StoredToken{{Name: "save-test", Hash: "st-hash"}},
 			ExternalMcps: []ExternalMcp{},
 			Services:     []ServiceConfig{},
 		}
-		err := saveSettingsInternal(s)
+		err := store.save(s)
 		if err != nil {
-			t.Fatalf("saveSettingsInternal failed: %v", err)
+			t.Fatalf("save failed: %v", err)
 		}
 
 		data, err := os.ReadFile(sp)
@@ -1406,8 +1382,9 @@ func TestSaveSettingsInternal(t *testing.T) {
 	})
 
 	t.Run("no temp file left behind", func(t *testing.T) {
+		store, sp := newStore(t)
 		s := defaultSettings()
-		_ = saveSettingsInternal(s)
+		_ = store.save(s)
 
 		tmp := sp + ".tmp"
 		if _, err := os.Stat(tmp); !os.IsNotExist(err) {
@@ -1416,10 +1393,14 @@ func TestSaveSettingsInternal(t *testing.T) {
 	})
 
 	t.Run("creates directory if missing", func(t *testing.T) {
+		// Use a subdirectory that doesn't exist yet within the temp dir.
+		base := t.TempDir()
+		dir := filepath.Join(base, "nested")
+		store := NewSettingsStoreAt(dir)
 		s := defaultSettings()
-		err := saveSettingsInternal(s)
+		err := store.save(s)
 		if err != nil {
-			t.Fatalf("saveSettingsInternal failed: %v", err)
+			t.Fatalf("save failed: %v", err)
 		}
 
 		info, err := os.Stat(dir)
@@ -1649,11 +1630,12 @@ func TestIntegrationLifecycle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeCases(t *testing.T) {
-	t.Run("settingsPath is under settingsDir", func(t *testing.T) {
-		dir := settingsDir()
-		path := settingsPath()
+	t.Run("store path is under dir", func(t *testing.T) {
+		dir := t.TempDir()
+		store := NewSettingsStoreAt(dir)
+		path := store.path()
 		if filepath.Dir(path) != dir {
-			t.Fatalf("settingsPath %q should be inside settingsDir %q", path, dir)
+			t.Fatalf("store.path() %q should be inside dir %q", path, dir)
 		}
 		if filepath.Base(path) != "settings.json" {
 			t.Fatalf("settings file should be named settings.json, got %q", filepath.Base(path))

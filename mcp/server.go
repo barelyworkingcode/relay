@@ -56,7 +56,7 @@ func marshalResult(v interface{}) (json.RawMessage, error) {
 }
 
 // jsonrpcVersion is the protocol version string for all responses.
-const jsonrpcVersion = "2.0"
+const jsonrpcVersion = jsonrpc.Version
 
 // rpcResult builds a success Response with the given result for the request ID.
 // If marshaling fails, returns an internal error response instead.

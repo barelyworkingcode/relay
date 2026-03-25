@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"relaygo/bridge"
 	"relaygo/mcp"
 )
 
@@ -57,6 +58,13 @@ type appRouter struct {
 	services ServiceReloader
 	onChange func()
 }
+
+// Compile-time interface assertions.
+var (
+	_ bridge.ToolRouter  = (*appRouter)(nil)
+	_ ToolManager        = (*ExternalMcpManager)(nil)
+	_ ServiceReloader    = (*ServiceRegistry)(nil)
+)
 
 // resolveAuth loads settings and authenticates the given token.
 func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {

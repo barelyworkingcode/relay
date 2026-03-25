@@ -20,8 +20,10 @@ type SettingsStore interface {
 	Reload() *Settings
 	ReloadIfChanged() *Settings
 	With(fn func(*Settings)) error
-	WithAndNotify(fn func(*Settings), notify func(string) error) error
 }
+
+// Compile-time interface assertion.
+var _ SettingsStore = (*FileSettingsStore)(nil)
 
 // FileSettingsStore implements SettingsStore backed by a JSON file on disk.
 // Create with NewSettingsStore and inject into components that need settings access.
@@ -29,21 +31,24 @@ type FileSettingsStore struct {
 	mu          sync.Mutex
 	cache       *Settings
 	lastModTime int64
+	dir         string // config directory (injected for testability)
 }
 
-// NewSettingsStore creates a new file-backed settings store.
+// NewSettingsStore creates a new file-backed settings store using the default
+// platform config directory.
 func NewSettingsStore() *FileSettingsStore {
-	return &FileSettingsStore{}
+	return &FileSettingsStore{dir: bridge.ConfigDir()}
 }
 
-// settingsDir returns the platform config directory for relay.
-func settingsDir() string {
-	return bridge.ConfigDir()
+// NewSettingsStoreAt creates a file-backed settings store rooted at dir.
+// Useful for testing without touching the real config directory.
+func NewSettingsStoreAt(dir string) *FileSettingsStore {
+	return &FileSettingsStore{dir: dir}
 }
 
-// settingsPath returns the full path to settings.json.
-func settingsPath() string {
-	return filepath.Join(settingsDir(), "settings.json")
+// path returns the full path to settings.json.
+func (ss *FileSettingsStore) path() string {
+	return filepath.Join(ss.dir, "settings.json")
 }
 
 const currentSettingsVersion = 1
@@ -57,14 +62,20 @@ func defaultSettings() *Settings {
 	}
 }
 
-// loadSettingsInternal reads settings from disk. Caller must hold the mutex.
-func loadSettingsInternal() *Settings {
-	data, err := os.ReadFile(settingsPath())
+// load reads settings from disk. Caller must hold the mutex.
+// Returns default settings on missing file (expected on first launch) but
+// logs a warning on any other I/O or parse error for observability.
+func (ss *FileSettingsStore) load() *Settings {
+	data, err := os.ReadFile(ss.path())
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read settings file", "error", err)
+		}
 		return defaultSettings()
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
+		slog.Warn("failed to parse settings file, using defaults", "error", err)
 		return defaultSettings()
 	}
 	s.normalize()
@@ -101,11 +112,10 @@ func (s *Settings) normalize() {
 	}
 }
 
-// saveSettingsInternal writes settings to disk atomically via temp file + rename.
+// save writes settings to disk atomically via temp file + rename.
 // Caller must hold the mutex.
-func saveSettingsInternal(s *Settings) error {
-	dir := settingsDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
+func (ss *FileSettingsStore) save(s *Settings) error {
+	if err := os.MkdirAll(ss.dir, 0700); err != nil {
 		return fmt.Errorf("create settings dir: %w", err)
 	}
 
@@ -114,7 +124,7 @@ func saveSettingsInternal(s *Settings) error {
 		return fmt.Errorf("serialize settings: %w", err)
 	}
 
-	p := settingsPath()
+	p := ss.path()
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("write temp settings: %w", err)
@@ -142,18 +152,18 @@ func ensureAdminSecret(s *Settings) error {
 // deepCopySettings returns a deep copy via JSON round-trip. This is correct by
 // construction — new fields are automatically included without manual updates.
 // Performance is irrelevant here: settings are small and copies are infrequent.
+// Panics on marshal/unmarshal failure — Settings is a known JSON-safe struct,
+// so failure indicates a programming error (e.g., adding an unmarshalable field).
+// Panicking is safer than the previous fallback to a shallow copy, which shared
+// underlying slices and maps and could silently corrupt state.
 func deepCopySettings(s *Settings) *Settings {
 	data, err := json.Marshal(s)
 	if err != nil {
-		slog.Error("deepCopySettings: marshal failed, returning shallow copy", "error", err)
-		cp := *s
-		return &cp
+		panic(fmt.Sprintf("deepCopySettings: marshal failed (programming error): %v", err))
 	}
 	var cp Settings
 	if err := json.Unmarshal(data, &cp); err != nil {
-		slog.Error("deepCopySettings: unmarshal failed, returning shallow copy", "error", err)
-		cp := *s
-		return &cp
+		panic(fmt.Sprintf("deepCopySettings: unmarshal failed (programming error): %v", err))
 	}
 	return &cp
 }
@@ -163,16 +173,16 @@ func deepCopySettings(s *Settings) *Settings {
 func (ss *FileSettingsStore) EnsureInitialized() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	s := loadSettingsInternal()
+	s := ss.load()
 	if err := ensureAdminSecret(s); err != nil {
 		return err
 	}
-	if err := saveSettingsInternal(s); err != nil {
+	if err := ss.save(s); err != nil {
 		return err
 	}
 	ss.cache = s
 	// Seed modtime so the first ReloadIfChanged doesn't needlessly reload.
-	if info, err := os.Stat(settingsPath()); err == nil {
+	if info, err := os.Stat(ss.path()); err == nil {
 		ss.lastModTime = info.ModTime().UnixNano()
 	}
 	return nil
@@ -188,7 +198,7 @@ func (ss *FileSettingsStore) Get() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if ss.cache == nil {
-		ss.cache = loadSettingsInternal()
+		ss.cache = ss.load()
 	}
 	return deepCopySettings(ss.cache)
 }
@@ -197,64 +207,60 @@ func (ss *FileSettingsStore) Get() *Settings {
 func (ss *FileSettingsStore) Reload() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	s := loadSettingsInternal()
+	s := ss.load()
 	ss.cache = s
 	return deepCopySettings(s)
 }
 
 // ReloadIfChanged checks the settings file modtime and reloads only if it changed.
 // Returns the new settings if reloaded, or nil if unchanged.
+// Both stat and reload happen under the lock to eliminate any TOCTOU window
+// between checking the modtime and updating the cache. The stat targets a
+// local file so holding the lock during I/O is negligible.
 func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
-	info, err := os.Stat(settingsPath())
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	info, err := os.Stat(ss.path())
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("settings file stat failed", "error", err)
+		}
 		return nil
 	}
 	mt := info.ModTime().UnixNano()
-
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
 
 	if mt == ss.lastModTime {
 		return nil
 	}
 	ss.lastModTime = mt
-	s := loadSettingsInternal()
+	s := ss.load()
 	ss.cache = s
 	return deepCopySettings(s)
 }
 
-// With atomically loads settings, calls fn for mutation, then saves.
-// Updates the in-memory cache on success.
+// With atomically mutates the cached settings and saves to disk.
+// Uses the in-memory cache (deep-copied) rather than re-reading from disk,
+// since the cache is authoritative under the mutex. Updates modtime on
+// success so ReloadIfChanged() won't redundantly re-read what we just wrote.
 // The admin secret must already exist (call EnsureInitialized at startup).
 func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	s := loadSettingsInternal()
+	if ss.cache == nil {
+		ss.cache = ss.load()
+	}
+	s := deepCopySettings(ss.cache)
 	fn(s)
-	if err := saveSettingsInternal(s); err != nil {
+	if err := ss.save(s); err != nil {
 		slog.Error("failed to save settings", "error", err)
 		return err
 	}
 	ss.cache = s
+	if info, err := os.Stat(ss.path()); err == nil {
+		ss.lastModTime = info.ModTime().UnixNano()
+	}
 	return nil
 }
 
-// WithAndNotify atomically mutates settings, then sends a bridge notification
-// using the admin secret. The notification is sent synchronously so callers
-// can control concurrency (e.g., via GoFunc) rather than spawning untracked
-// goroutines that could be lost during shutdown.
-func (ss *FileSettingsStore) WithAndNotify(fn func(s *Settings), notify func(secret string) error) error {
-	var secret string
-	err := ss.With(func(s *Settings) {
-		fn(s)
-		secret = s.AdminSecret
-	})
-	if err != nil {
-		return err
-	}
-	if nerr := notify(secret); nerr != nil {
-		slog.Warn("bridge notification failed", "error", nerr)
-	}
-	return nil
-}
 

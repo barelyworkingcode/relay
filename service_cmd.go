@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -60,9 +59,7 @@ func serviceRegister(store SettingsStore, args []string) {
 		return s.UpsertService(config)
 	}, -1)
 
-	if err := bridge.SendReloadService(id, secret); err != nil {
-		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
-	}
+	warnNotifyFailure(bridge.SendReloadService(id, secret))
 }
 
 func serviceUnregister(store SettingsStore, args []string) {
@@ -73,9 +70,7 @@ func serviceUnregister(store SettingsStore, args []string) {
 
 	resolvedID, adminSecret := resolveAndRemove(store, "service", *id, *name,
 		(*Settings).ResolveServiceID, (*Settings).RemoveService)
-	if err := bridge.SendReloadService(resolvedID, adminSecret); err != nil {
-		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
-	}
+	warnNotifyFailure(bridge.SendReloadService(resolvedID, adminSecret))
 }
 
 func serviceList(store SettingsStore) {
