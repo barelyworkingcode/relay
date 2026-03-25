@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+
+	"relaygo/bridge"
 )
 
 // ServiceManager abstracts service lifecycle operations for testability.
@@ -20,6 +22,9 @@ type ServiceManager interface {
 	StartAllAutostart(configs []ServiceConfig)
 	StopAll()
 }
+
+// Compile-time interface assertions.
+var _ ServiceManager = (*ServiceRegistry)(nil)
 
 // serviceProcess bundles a running process with its log file for cleanup.
 type serviceProcess struct {
@@ -42,7 +47,7 @@ func NewServiceRegistry() *ServiceRegistry {
 }
 
 func serviceLogDir() string {
-	dir := filepath.Join(settingsDir(), "logs")
+	dir := filepath.Join(bridge.ConfigDir(), "logs")
 	_ = os.MkdirAll(dir, 0700)
 	return dir
 }
@@ -84,11 +89,14 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	}
 
 	// Reap the process in the background so ProcessState is populated
-	// and we can detect exit via the done channel.
+	// and we can detect exit via the done channel. Defers ensure done is
+	// always closed even if a panic occurs, preventing Stop() from hanging.
 	go func() {
-		_ = cmd.Wait()
-		logFile.Close()
-		close(proc.done)
+		defer close(proc.done)
+		defer logFile.Close()
+		if err := cmd.Wait(); err != nil {
+			slog.Warn("service exited with error", "id", config.ID, "error", err)
+		}
 	}()
 
 	r.processes[config.ID] = proc
@@ -152,18 +160,27 @@ func (r *ServiceRegistry) StartAllAutostart(configs []ServiceConfig) {
 	}
 }
 
-// StopAll kills all running service processes.
+// StopAll kills all running service processes concurrently to avoid one
+// slow-to-stop service blocking the shutdown of others.
 func (r *ServiceRegistry) StopAll() {
 	r.mu.Lock()
-	ids := make([]string, 0, len(r.processes))
-	for id := range r.processes {
-		ids = append(ids, id)
+	procs := make(map[string]*serviceProcess, len(r.processes))
+	for id, proc := range r.processes {
+		procs[id] = proc
+		delete(r.processes, id)
 	}
 	r.mu.Unlock()
 
-	for _, id := range ids {
-		r.Stop(id)
+	var wg sync.WaitGroup
+	for _, proc := range procs {
+		wg.Add(1)
+		go func(p *serviceProcess) {
+			defer wg.Done()
+			killProcessGroup(p.cmd)
+			<-p.done
+		}(proc)
 	}
+	wg.Wait()
 }
 
 // RunningIDs returns the IDs of all currently running services.

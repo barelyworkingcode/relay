@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,18 +63,29 @@ type readerResult struct {
 
 // baseMcpConn holds fields and methods shared by stdio and HTTP MCP connections.
 type baseMcpConn struct {
-	nextID atomic.Int64
-	tools  []mcp.Tool
-	config ExternalMcp
+	nextID  atomic.Int64
+	toolsMu sync.RWMutex // protects tools
+	tools   []mcp.Tool
+	config  ExternalMcp
 }
 
 func (b *baseMcpConn) allocID() int64 {
 	return b.nextID.Add(1)
 }
 
-func (b *baseMcpConn) GetTools() []mcp.Tool       { return b.tools }
-func (b *baseMcpConn) SetTools(tools []mcp.Tool)  { b.tools = tools }
-func (b *baseMcpConn) GetConfig() ExternalMcp      { return b.config }
+func (b *baseMcpConn) GetTools() []mcp.Tool {
+	b.toolsMu.RLock()
+	defer b.toolsMu.RUnlock()
+	return b.tools
+}
+
+func (b *baseMcpConn) SetTools(tools []mcp.Tool) {
+	b.toolsMu.Lock()
+	defer b.toolsMu.Unlock()
+	b.tools = tools
+}
+
+func (b *baseMcpConn) GetConfig() ExternalMcp { return b.config }
 
 type externalMcpConn struct {
 	baseMcpConn
@@ -201,14 +213,29 @@ func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []ExternalMcp) {
 		go func(cfg *ExternalMcp) {
 			defer wg.Done()
 			if err := m.startOne(ctx, cfg); err != nil {
-				slog.Error("failed to start external MCP", "id", cfg.ID, "error", err)
+				logMcpStartError(cfg.ID, err)
 			}
 		}(&mcps[i])
 	}
 	wg.Wait()
 }
 
+// logMcpStartError logs an MCP startup error at the appropriate level.
+// ErrAuthRequired is expected for HTTP MCPs that need OAuth — log at Info.
+// All other errors are genuine failures — log at Error.
+func logMcpStartError(id string, err error) {
+	if errors.Is(err, ErrAuthRequired) {
+		slog.Info("external MCP requires authentication", "id", id)
+	} else {
+		slog.Error("failed to start external MCP", "id", id, "error", err)
+	}
+}
+
 func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) error {
+	// Don't spawn processes if the context is already cancelled (e.g., during shutdown).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := mcpCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid MCP config: %w", err)
 	}
@@ -305,7 +332,7 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 		go func(c *ExternalMcp) {
 			defer wg.Done()
 			if err := m.startOne(ctx, c); err != nil {
-				slog.Error("failed to start external MCP", "id", c.ID, "error", err)
+				logMcpStartError(c.ID, err)
 			}
 		}(cfg)
 	}
@@ -394,16 +421,23 @@ func (m *ExternalMcpManager) Stop(id string) {
 	}
 }
 
-// StopAll kills all external MCP connections.
+// StopAll kills all external MCP connections concurrently to avoid one
+// slow connection (e.g., HTTP session DELETE) blocking the shutdown of others.
 func (m *ExternalMcpManager) StopAll() {
 	m.mu.Lock()
 	conns := m.conns
 	m.conns = make(map[string]McpConnection)
 	m.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for _, conn := range conns {
-		conn.Close()
+		wg.Add(1)
+		go func(c McpConnection) {
+			defer wg.Done()
+			c.Close()
+		}(conn)
 	}
+	wg.Wait()
 }
 
 // discoverMcp performs a handshake on an already-connected McpConnection and
@@ -579,6 +613,9 @@ func (c *externalMcpConn) Close() {
 		killProcessGroup(c.cmd)
 		_ = c.cmd.Wait()
 	}
+	// Wait for readLoop to finish so no goroutine is leaked and all pending
+	// requests are drained before the connection is considered closed.
+	<-c.readerDone
 }
 
 // toolCategory returns the category for a tool, using the server-supplied

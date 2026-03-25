@@ -30,6 +30,7 @@ type App struct {
 	extMgr       *ExternalMcpManager
 	registry     ServiceManager
 	bridgeServer *bridge.BridgeServer
+	ipcCtx       *IPCContext // pre-built once, reused on every IPC call
 	settingsOpen bool
 	cleanupOnce  sync.Once
 }
@@ -100,6 +101,17 @@ func runTrayApp() {
 		platform: platform,
 		extMgr:   extMgr,
 		registry: NewServiceRegistry(),
+	}
+	app.ipcCtx = &IPCContext{
+		Ctx:             ctx,
+		Store:           store,
+		UI:              app,
+		Platform:        platform,
+		Registry:        app.registry,
+		UpdateMenu:      app.updateMenu,
+		GoFunc:          app.goFunc,
+		NotifyReconcile: bridge.SendReconcile,
+		NotifyReloadMcp: bridge.SendReloadMcp,
 	}
 	appInstance = app
 

@@ -15,6 +15,9 @@ const (
 	CodeUnauthorized = -32001
 )
 
+// Version is the JSON-RPC protocol version string.
+const Version = "2.0"
+
 // Request is an outgoing JSON-RPC 2.0 message.
 type Request struct {
 	JSONRPC string      `json:"jsonrpc"`
@@ -25,12 +28,12 @@ type Request struct {
 
 // NewRequest creates a JSON-RPC 2.0 request with the version field pre-set.
 func NewRequest(id interface{}, method string, params interface{}) Request {
-	return Request{JSONRPC: "2.0", ID: id, Method: method, Params: params}
+	return Request{JSONRPC: Version, ID: id, Method: method, Params: params}
 }
 
 // NewNotification creates a JSON-RPC 2.0 notification (no ID, no response expected).
 func NewNotification(method string) Request {
-	return Request{JSONRPC: "2.0", Method: method}
+	return Request{JSONRPC: Version, Method: method}
 }
 
 // ServerRequest is an incoming JSON-RPC 2.0 message where Params is preserved

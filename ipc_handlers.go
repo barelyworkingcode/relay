@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-
-	"relaygo/bridge"
 )
 
 // ---------------------------------------------------------------------------
@@ -101,8 +99,8 @@ type IPCContext struct {
 	NotifyReloadMcp  func(id, secret string) error
 }
 
-// withSettingsReconcile atomically mutates settings and sends a reconcile
-// notification to the bridge. Returns true on success.
+// withSettingsReconcile atomically mutates settings, then asynchronously sends
+// a reconcile notification to the bridge. Returns true on success (save succeeded).
 func (ctx *IPCContext) withSettingsReconcile(fn func(*Settings)) bool {
 	return ctx.withSettingsNotify(fn, ctx.NotifyReconcile)
 }
@@ -117,13 +115,25 @@ func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
 	return true
 }
 
-// withSettingsNotify atomically mutates settings, sends a bridge notification,
-// and emits an error event on failure. Returns true on success.
+// withSettingsNotify atomically mutates settings, then dispatches a bridge
+// notification asynchronously via GoFunc. This avoids blocking the main/UI
+// thread during bridge round-trips that may trigger MCP process spawning or
+// network I/O. Settings are persisted to disk before the notification is sent,
+// so the notification handler reads the updated state.
 func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string) error) bool {
-	if err := ctx.Store.WithAndNotify(fn, notify); err != nil {
+	var secret string
+	if err := ctx.Store.With(func(s *Settings) {
+		fn(s)
+		secret = s.AdminSecret
+	}); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 		return false
 	}
+	ctx.GoFunc(func() {
+		if err := notify(secret); err != nil {
+			slog.Warn("bridge notification failed", "error", err)
+		}
+	})
 	return true
 }
 
@@ -242,35 +252,31 @@ const (
 // ---------------------------------------------------------------------------
 
 // ipcHandlers maps message types to handler functions.
-var ipcHandlers map[string]func(*IPCContext, json.RawMessage)
+var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
+	// Tokens & permissions (ipc_tokens.go)
+	MsgGenerateToken:       ipcGenerateToken,
+	MsgDeleteToken:         ipcDeleteToken,
+	MsgRevokeAll:           ipcRevokeAll,
+	MsgUpdatePermission:    ipcUpdatePermission,
+	MsgSetToolDisabled:     ipcSetToolDisabled,
+	MsgSetAllToolsDisabled: ipcSetAllToolsDisabled,
+	MsgSetContext:          ipcSetContext,
 
-func init() {
-	ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
-		// Tokens & permissions (ipc_tokens.go)
-		MsgGenerateToken:       ipcGenerateToken,
-		MsgDeleteToken:         ipcDeleteToken,
-		MsgRevokeAll:           ipcRevokeAll,
-		MsgUpdatePermission:    ipcUpdatePermission,
-		MsgSetToolDisabled:     ipcSetToolDisabled,
-		MsgSetAllToolsDisabled: ipcSetAllToolsDisabled,
-		MsgSetContext:          ipcSetContext,
+	// External MCPs (ipc_mcps.go)
+	MsgAddExternalMcp:    ipcAddExternalMcp,
+	MsgAuthenticateMcp:   ipcAuthenticateMcp,
+	MsgRemoveExternalMcp: ipcRemoveExternalMcp,
 
-		// External MCPs (ipc_mcps.go)
-		MsgAddExternalMcp:    ipcAddExternalMcp,
-		MsgAuthenticateMcp:   ipcAuthenticateMcp,
-		MsgRemoveExternalMcp: ipcRemoveExternalMcp,
+	// Services (ipc_services.go)
+	MsgAddService:             ipcAddService,
+	MsgRemoveService:          ipcRemoveService,
+	MsgUpdateService:          ipcUpdateService,
+	MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
+	MsgStartService:           ipcStartService,
+	MsgStopService:            ipcStopService,
 
-		// Services (ipc_services.go)
-		MsgAddService:             ipcAddService,
-		MsgRemoveService:          ipcRemoveService,
-		MsgUpdateService:          ipcUpdateService,
-		MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
-		MsgStartService:           ipcStartService,
-		MsgStopService:            ipcStopService,
-
-		// Utility
-		MsgCopyToClipboard: ipcCopyToClipboard,
-	}
+	// Utility
+	MsgCopyToClipboard: ipcCopyToClipboard,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
@@ -287,18 +293,7 @@ func (a *App) onSettingsIpc(body string) {
 		slog.Warn("unknown IPC message type", "type", msg.Type)
 		return
 	}
-	ctx := &IPCContext{
-		Ctx:             a.ctx,
-		Store:           a.store,
-		UI:              a,
-		Platform:        a.platform,
-		Registry:        a.registry,
-		UpdateMenu:      a.updateMenu,
-		GoFunc:          a.goFunc,
-		NotifyReconcile: bridge.SendReconcile,
-		NotifyReloadMcp: bridge.SendReloadMcp,
-	}
-	handler(ctx, raw)
+	handler(a.ipcCtx, raw)
 }
 
 // ---------------------------------------------------------------------------

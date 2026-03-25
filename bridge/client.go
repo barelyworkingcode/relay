@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 )
 
 // Client connects to the bridge Unix socket to list and call tools.
@@ -90,13 +91,20 @@ func SendReloadService(id, token string) error {
 	return sendAdmin("ReloadService", id, token)
 }
 
+// bridgeTimeout is the maximum time for a complete bridge round-trip (connect + write + read).
+// Tool calls can take minutes (LLM inference, long-running tools), so this is generous.
+const bridgeTimeout = 10 * time.Minute
+
 // send opens a connection, writes the request, reads one response, and closes.
+// Sets a deadline to prevent hanging indefinitely if the tray app is unresponsive.
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	conn, err := net.Dial("unix", c.sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to Relay bridge at %s: %w (is the Relay tray app running?)", c.sockPath, err)
 	}
 	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(bridgeTimeout))
 
 	data, err := json.Marshal(req)
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 )
 
@@ -49,6 +50,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	if config.Autostart {
 		if err := ctx.Registry.Start(&config); err != nil {
 			slog.Error("service autostart failed", "error", err)
+			ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but autostart failed: %v", err))
 		}
 	}
 
@@ -75,6 +77,10 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcServiceMsg](raw, "update_service")
 	if !ok || msg.ID == "" {
+		return
+	}
+	if msg.Command == "" {
+		ctx.UI.EmitEvent("onSettingsError", "command is required")
 		return
 	}
 
@@ -109,6 +115,7 @@ func ipcStartService(ctx *IPCContext, raw json.RawMessage) {
 	if svc, _ := s.findServiceByID(msg.ID); svc != nil {
 		if err := ctx.Registry.Start(svc); err != nil {
 			slog.Error("service start failed", "error", err)
+			ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("failed to start service: %v", err))
 		}
 	}
 	ctx.refreshServiceUI()

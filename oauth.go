@@ -298,6 +298,7 @@ type oauthCallbackServer struct {
 	server   *http.Server
 	codeCh   chan string
 	errCh    chan error
+	done     chan struct{} // closed when Serve goroutine exits
 }
 
 // newOAuthCallbackServer starts a local callback server for the OAuth redirect.
@@ -312,7 +313,7 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
 
 	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2) // capacity 2: handler + Serve goroutine can both send without blocking
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -344,8 +345,10 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 		server:   &http.Server{Handler: mux},
 		codeCh:   codeCh,
 		errCh:    errCh,
+		done:     make(chan struct{}),
 	}
 	go func() {
+		defer close(srv.done)
 		if err := srv.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("callback server: %w", err)
 		}
@@ -367,9 +370,11 @@ func (s *oauthCallbackServer) WaitForCode(timeout time.Duration) (string, error)
 	}
 }
 
-// Close shuts down the callback server and its listener.
+// Close shuts down the callback server, waits for the Serve goroutine to exit,
+// and releases all resources. Safe to call multiple times.
 func (s *oauthCallbackServer) Close() {
 	s.server.Close()
+	<-s.done // wait for Serve goroutine to exit
 }
 
 // startOAuthFlow orchestrates the full OAuth 2.1 flow:

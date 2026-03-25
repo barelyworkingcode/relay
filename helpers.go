@@ -67,7 +67,12 @@ func marshalForUI(v interface{}) json.RawMessage {
 }
 
 // formatJSONRPCError formats a JSON-RPC error response into a Go error.
+// Includes the Data field when present so diagnostic details from external
+// MCPs are not silently discarded.
 func formatJSONRPCError(e *jsonrpc.Error) error {
+	if e.Data != nil {
+		return fmt.Errorf("JSON-RPC error %d: %s (data: %v)", e.Code, e.Message, e.Data)
+	}
 	return fmt.Errorf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 

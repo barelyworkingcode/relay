@@ -110,17 +110,20 @@ func exitError(format string, args ...interface{}) {
 	os.Exit(1)
 }
 
+// warnNotifyFailure prints a non-fatal warning when a bridge notification fails.
+func warnNotifyFailure(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+	}
+}
+
 // notifyMcpChange sends the appropriate bridge message after an MCP upsert.
 // Updated MCPs get a targeted reload; new MCPs trigger a full reconcile.
 func notifyMcpChange(updated bool, id, adminSecret string) {
-	var err error
 	if updated {
-		err = bridge.SendReloadMcp(id, adminSecret)
+		warnNotifyFailure(bridge.SendReloadMcp(id, adminSecret))
 	} else {
-		err = bridge.SendReconcile(adminSecret)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
+		warnNotifyFailure(bridge.SendReconcile(adminSecret))
 	}
 }
 
@@ -160,31 +163,29 @@ func printSubcommandUsage(verb string, commands []cliSubcommand) {
 
 // resolveAndRemove resolves an entity by id/name, removes it via store.With, and
 // prints the result. Returns the resolved ID and admin secret, or exits with an
-// error if not found.
+// error if not found. Resolution is done via Get() first to avoid a wasteful
+// disk write when the entity doesn't exist.
 func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
 	if id == "" && name == "" {
 		exitError("--id or --name is required")
 	}
 
-	var resolvedID string
-	var adminSecret string
-	if err := store.With(func(s *Settings) {
-		resolvedID = resolveFn(s, id, name)
-		if resolvedID == "" {
-			return
-		}
-		removeFn(s, resolvedID)
-		adminSecret = s.AdminSecret
-	}); err != nil {
-		exitError("failed to save settings: %v", err)
-	}
-
+	// Resolve first without writing to disk.
+	resolvedID := resolveFn(store.Get(), id, name)
 	if resolvedID == "" {
 		if id != "" {
 			exitError("no %s found with id %q", entity, id)
 		} else {
 			exitError("no %s found with name %q", entity, name)
 		}
+	}
+
+	var adminSecret string
+	if err := store.With(func(s *Settings) {
+		removeFn(s, resolvedID)
+		adminSecret = s.AdminSecret
+	}); err != nil {
+		exitError("failed to save settings: %v", err)
 	}
 
 	fmt.Printf("unregistered %s %q\n", entity, resolvedID)
