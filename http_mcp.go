@@ -279,7 +279,7 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 
 		var rpcResp jsonrpc.Response
 		if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
-			slog.Debug("HTTP MCP: skipping malformed SSE event", "error", err)
+			slog.Warn("HTTP MCP: skipping malformed SSE event", "error", err)
 			return nil, nil, false
 		}
 		if rpcResp.ID == nil {

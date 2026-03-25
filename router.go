@@ -40,7 +40,7 @@ type ServiceReloader interface {
 // only the MCP-level permission.
 func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 	if s.GetPermission(tokenHash, mcpID) == PermOff {
-		return fmt.Errorf("access denied: service '%s' is disabled for this token", mcpID)
+		return fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID)
 	}
 	if toolName != "" && s.IsToolDisabled(tokenHash, mcpID, toolName) {
 		return fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName)
