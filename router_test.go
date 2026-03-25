@@ -277,7 +277,7 @@ func TestCallTool_Success(t *testing.T) {
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("do_thing"),
 				func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
-					if method == "tools/call" {
+					if method == mcp.MethodToolsCall {
 						return json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`), nil
 					}
 					return nil, fmt.Errorf("unexpected method: %s", method)

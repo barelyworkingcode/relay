@@ -19,9 +19,9 @@ func TestMcpHandshake_Success(t *testing.T) {
 		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
 			callCount++
 			switch method {
-			case "initialize":
+			case mcp.MethodInitialize:
 				return json.RawMessage(`{"serverInfo":{"name":"test-server","version":"0.1"}}`), nil
-			case "tools/list":
+			case mcp.MethodToolsList:
 				return json.RawMessage(`{"tools":[{"name":"fs_read","description":"Read a file","inputSchema":{}},{"name":"fs_write","description":"Write a file","inputSchema":{}}]}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected method: %s", method)
@@ -55,7 +55,7 @@ func TestMcpHandshake_Success(t *testing.T) {
 		t.Errorf("expected category 'Fs', got %q", result.ToolInfos[0].Category)
 	}
 	// Verify notifications/initialized was sent.
-	if len(mock.notifications) != 1 || mock.notifications[0] != "notifications/initialized" {
+	if len(mock.notifications) != 1 || mock.notifications[0] != mcp.MethodInitialized {
 		t.Errorf("expected notifications/initialized, got %v", mock.notifications)
 	}
 	if callCount != 2 {
@@ -66,7 +66,7 @@ func TestMcpHandshake_Success(t *testing.T) {
 func TestMcpHandshake_InitializeFailure(t *testing.T) {
 	mock := &mockMcpConn{
 		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
-			if method == "initialize" {
+			if method == mcp.MethodInitialize {
 				return nil, fmt.Errorf("connection refused")
 			}
 			return nil, fmt.Errorf("unexpected method: %s", method)
@@ -94,9 +94,9 @@ func TestMcpHandshake_ToolsListFailure(t *testing.T) {
 	mock := &mockMcpConn{
 		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
 			switch method {
-			case "initialize":
+			case mcp.MethodInitialize:
 				return json.RawMessage(`{"serverInfo":{"name":"test"}}`), nil
-			case "tools/list":
+			case mcp.MethodToolsList:
 				return nil, fmt.Errorf("tools list timeout")
 			default:
 				return nil, fmt.Errorf("unexpected method: %s", method)
@@ -116,7 +116,7 @@ func TestMcpHandshake_ToolsListFailure(t *testing.T) {
 		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
 	// notifications/initialized should still have been sent (it fires before tools/list).
-	if len(mock.notifications) != 1 || mock.notifications[0] != "notifications/initialized" {
+	if len(mock.notifications) != 1 || mock.notifications[0] != mcp.MethodInitialized {
 		t.Errorf("expected notifications/initialized even on tools/list failure, got %v", mock.notifications)
 	}
 }
@@ -125,9 +125,9 @@ func TestMcpHandshake_ContextSchemaExtracted(t *testing.T) {
 	mock := &mockMcpConn{
 		sendRequestFunc: func(_ context.Context, method string, params interface{}) (json.RawMessage, error) {
 			switch method {
-			case "initialize":
+			case mcp.MethodInitialize:
 				return json.RawMessage(`{"serverInfo":{"name":"ctx-server","contextSchema":{"type":"object","properties":{"allowed_dirs":{"type":"array"}}}}}`), nil
-			case "tools/list":
+			case mcp.MethodToolsList:
 				return json.RawMessage(`{"tools":[]}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected method: %s", method)
@@ -343,7 +343,7 @@ func TestManager_CallToolSuccess(t *testing.T) {
 	mgr := NewExternalMcpManager(nil, nil)
 	addMockConn(mgr, "echo-mcp", newMockConn("echo-mcp", simpleTools("echo_tool"),
 		func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
-			if method != "tools/call" {
+			if method != mcp.MethodToolsCall {
 				return nil, fmt.Errorf("unexpected method: %s", method)
 			}
 			return json.RawMessage(`{"content":[{"type":"text","text":"hello"}]}`), nil

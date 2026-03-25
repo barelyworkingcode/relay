@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"relaygo/mcp"
 )
 
 // newTestHTTPServer creates a test HTTP server that responds with valid JSON-RPC
@@ -109,7 +111,7 @@ func TestHTTPMcpConn_SendRequest_401(t *testing.T) {
 	}
 	conn := newHTTPMcpConn(cfg)
 
-	_, err := conn.SendRequest(context.Background(), "initialize", nil)
+	_, err := conn.SendRequest(context.Background(), mcp.MethodInitialize, nil)
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
@@ -165,7 +167,7 @@ func TestHTTPMcpConn_SSEResponse(t *testing.T) {
 	}
 	conn := newHTTPMcpConn(cfg)
 
-	result, err := conn.SendRequest(context.Background(), "tools/list", nil)
+	result, err := conn.SendRequest(context.Background(), mcp.MethodToolsList, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +295,7 @@ func TestHTTPMcpConn_SendNotification(t *testing.T) {
 	}
 	conn := newHTTPMcpConn(cfg)
 
-	conn.SendNotification("notifications/initialized")
+	conn.SendNotification(mcp.MethodInitialized)
 
 	select {
 	case body := <-received:

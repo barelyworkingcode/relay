@@ -74,19 +74,19 @@ func rpcError(id interface{}, code int, msg string) *jsonrpc.Response {
 
 func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
 	switch req.Method {
-	case "initialize":
+	case MethodInitialize:
 		if req.ID == nil {
 			return nil // notification — no response
 		}
 		return handleInitialize(req)
-	case "notifications/initialized":
+	case MethodInitialized:
 		return nil
-	case "tools/list":
+	case MethodToolsList:
 		if req.ID == nil {
 			return nil
 		}
 		return handleToolsList(client, req)
-	case "tools/call":
+	case MethodToolsCall:
 		if req.ID == nil {
 			return nil
 		}
