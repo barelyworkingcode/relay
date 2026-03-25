@@ -18,6 +18,7 @@ func setProcessGroup(cmd *exec.Cmd) {
 
 // killProcessGroup sends SIGTERM to the process group and waits up to 1 second
 // for graceful shutdown before falling back to SIGKILL.
+// Checks the process group (not just the shell PID) to avoid orphaning children.
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
@@ -27,16 +28,17 @@ func killProcessGroup(cmd *exec.Cmd) {
 	// Try graceful shutdown first.
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 
-	// Poll for up to 1 second.
+	// Poll for up to 1 second. Check the process group, not just the shell PID,
+	// to avoid returning early while children are still running.
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if !processAlive(pid) {
+		if !processGroupAlive(pid) {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Still alive -- force kill.
+	// Still alive -- force kill the entire group.
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
@@ -64,6 +66,9 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 	return cmd
 }
 
-func processAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+// processGroupAlive checks if the process group led by pid has any living members.
+// Uses signal 0 to the negative PID (process group) rather than the individual PID,
+// so children that outlive the shell are still detected.
+func processGroupAlive(pid int) bool {
+	return syscall.Kill(-pid, 0) == nil
 }

@@ -104,17 +104,23 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 }
 
 // Stop kills a service process and waits for it to exit.
+// The process remains in the map while stopping so IsRunning returns true,
+// preventing duplicate spawns from concurrent Start calls.
 func (r *ServiceRegistry) Stop(id string) {
 	r.mu.Lock()
 	proc, ok := r.processes[id]
-	if ok {
-		delete(r.processes, id)
-	}
 	r.mu.Unlock()
 
 	if ok {
 		killProcessGroup(proc.cmd)
 		<-proc.done
+
+		r.mu.Lock()
+		// Only delete if this is still the same process (not replaced by a new Start).
+		if r.processes[id] == proc {
+			delete(r.processes, id)
+		}
+		r.mu.Unlock()
 	}
 }
 
@@ -167,7 +173,6 @@ func (r *ServiceRegistry) StopAll() {
 	procs := make(map[string]*serviceProcess, len(r.processes))
 	for id, proc := range r.processes {
 		procs[id] = proc
-		delete(r.processes, id)
 	}
 	r.mu.Unlock()
 
@@ -181,6 +186,15 @@ func (r *ServiceRegistry) StopAll() {
 		}(proc)
 	}
 	wg.Wait()
+
+	// Clean up after all processes are dead.
+	r.mu.Lock()
+	for id, proc := range procs {
+		if r.processes[id] == proc {
+			delete(r.processes, id)
+		}
+	}
+	r.mu.Unlock()
 }
 
 // RunningIDs returns the IDs of all currently running services.

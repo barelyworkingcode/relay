@@ -553,7 +553,7 @@ function renderSecurity() {
         for (const t of state.tokens) {
             const sel = state.selectedHash === t.hash ? 'selected' : '';
             const date = t.created_at ? t.created_at.split('T')[0] : '';
-            html += `<div class="token-row ${sel}" onclick="selectToken('${t.hash}')">
+            html += `<div class="token-row ${sel}" onclick="selectToken('${esc(t.hash)}')">
                 <span class="token-name">${esc(t.name || 'Unnamed')}</span>
                 <span class="token-hash">${t.prefix}...${t.suffix}</span>
                 <span class="token-date">${date}</span>
@@ -574,14 +574,14 @@ function renderPermissions(token) {
     let html = `<div class="perms-section">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h3 style="margin:0">Permissions for ${esc(token.name || 'Unnamed')}</h3>
-            <button class="btn btn-sm btn-danger" onclick="deleteToken('${token.hash}')">Revoke</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteToken('${esc(token.hash)}')">Revoke</button>
         </div>`;
 
     html += `<div class="perm-row">
         <span class="perm-name set-all">Set All</span>
         <div class="perm-btns">
-            <button class="perm-btn" onclick="setAllPerms('${token.hash}','off')">Off</button>
-            <button class="perm-btn" onclick="setAllPerms('${token.hash}','on')">On</button>
+            <button class="perm-btn" onclick="setAllPerms('${esc(token.hash)}','off')">Off</button>
+            <button class="perm-btn" onclick="setAllPerms('${esc(token.hash)}','on')">On</button>
         </div>
     </div>`;
 
@@ -596,8 +596,8 @@ function renderPermissions(token) {
         html += `<div class="perm-row">
             <span class="perm-name">${plugIcon}${esc(mcp.display_name)}${toolCountLabel}</span>
             <div class="perm-btns">
-                <button class="perm-btn ${perm === 'off' ? 'active' : ''}" onclick="setPerm('${token.hash}','${esc(mcp.id)}','off')">Off</button>
-                <button class="perm-btn ${perm === 'on' ? 'active' : ''}" onclick="setPerm('${token.hash}','${esc(mcp.id)}','on')">On</button>
+                <button class="perm-btn ${perm === 'off' ? 'active' : ''}" onclick="setPerm('${esc(token.hash)}','${esc(mcp.id)}','off')">Off</button>
+                <button class="perm-btn ${perm === 'on' ? 'active' : ''}" onclick="setPerm('${esc(token.hash)}','${esc(mcp.id)}','on')">On</button>
             </div>
         </div>`;
 
@@ -616,8 +616,8 @@ function renderPermissions(token) {
 
             html += '<div class="tool-expansion">';
             html += `<div class="tool-actions">
-                <button onclick="setAllTools('${token.hash}','${esc(mcp.id)}',false)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Enable All</button>
-                <button onclick="setAllTools('${token.hash}','${esc(mcp.id)}',true)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Disable All</button>
+                <button onclick="setAllTools('${esc(token.hash)}','${esc(mcp.id)}',false)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Enable All</button>
+                <button onclick="setAllTools('${esc(token.hash)}','${esc(mcp.id)}',true)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Disable All</button>
             </div>`;
 
             for (const cat of catOrder) {
@@ -628,8 +628,8 @@ function renderPermissions(token) {
                     <span class="cat-name">${esc(cat)}</span>
                     <span class="cat-count">${catTools.length} tool${catTools.length !== 1 ? 's' : ''}</span>
                     <div class="cat-actions">
-                        <button onclick="setAllToolsInCategory('${token.hash}','${esc(mcp.id)}','${esc(cat)}',false)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Enable</button>
-                        <button onclick="setAllToolsInCategory('${token.hash}','${esc(mcp.id)}','${esc(cat)}',true)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Disable</button>
+                        <button onclick="setAllToolsInCategory('${esc(token.hash)}','${esc(mcp.id)}','${esc(cat)}',false)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Enable</button>
+                        <button onclick="setAllToolsInCategory('${esc(token.hash)}','${esc(mcp.id)}','${esc(cat)}',true)" ${isOff ? 'disabled style="opacity:0.4;cursor:default"' : ''}>Disable</button>
                     </div>
                 </div>`;
                 for (const tool of catTools) {
@@ -639,7 +639,7 @@ function renderPermissions(token) {
                         <span class="tool-name">${esc(tool.name)}</span>
                         <span class="tool-desc" title="${esc(tool.description || '')}">${esc(desc)}</span>
                         <label class="switch">
-                            <input type="checkbox" ${!isDisabled ? 'checked' : ''} ${isOff ? 'disabled' : ''} onchange="setToolDisabled('${token.hash}','${esc(mcp.id)}','${esc(tool.name)}',!this.checked)" />
+                            <input type="checkbox" ${!isDisabled ? 'checked' : ''} ${isOff ? 'disabled' : ''} onchange="setToolDisabled('${esc(token.hash)}','${esc(mcp.id)}','${esc(tool.name)}',!this.checked)" />
                             <span class="slider"></span>
                         </label>
                     </div>`;
@@ -673,14 +673,14 @@ function renderPermissions(token) {
                         for (let di = 0; di < items.length; di++) {
                             html += `<div class="tool-row" style="padding:3px 0">
                                 <span class="tool-name" style="font-family:monospace;font-size:11px">${esc(items[di])}</span>
-                                <button class="btn btn-sm" style="font-size:10px;padding:1px 6px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="removeContextItem('${token.hash}','${esc(mcp.id)}','${esc(fieldName)}',${di})">Remove</button>
+                                <button class="btn btn-sm" style="font-size:10px;padding:1px 6px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="removeContextItem('${esc(token.hash)}','${esc(mcp.id)}','${esc(fieldName)}',${di})">Remove</button>
                             </div>`;
                         }
                     }
                     const placeholder = uiHint === 'directory-list' ? '/path/to/directory' : 'Enter value';
                     html += `<div style="display:flex;gap:4px;margin-top:4px">
-                        <input type="text" id="ctxInput_${token.hash}_${mcp.id}_${fieldName}" placeholder="${placeholder}" style="flex:1;font-size:11px;padding:3px 6px;background:#1F2937;border:1px solid #374151;border-radius:4px;color:#F3F4F6" ${isOff ? 'disabled' : ''} />
-                        <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="addContextItem('${token.hash}','${esc(mcp.id)}','${esc(fieldName)}')">Add</button>
+                        <input type="text" id="ctxInput_${esc(token.hash)}_${mcp.id}_${fieldName}" placeholder="${placeholder}" style="flex:1;font-size:11px;padding:3px 6px;background:#1F2937;border:1px solid #374151;border-radius:4px;color:#F3F4F6" ${isOff ? 'disabled' : ''} />
+                        <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" ${isOff ? 'disabled style="opacity:0.4"' : ''} onclick="addContextItem('${esc(token.hash)}','${esc(mcp.id)}','${esc(fieldName)}')">Add</button>
                     </div>`;
                 }
             }
@@ -923,6 +923,9 @@ function addExternalMcpFromJson() {
         render();
         return;
     }
+    if (keys.length > 1) {
+        state.discoveryError = 'Only one server entry is supported per import. ' + (keys.length - 1) + ' extra entries were ignored.';
+    }
 
     const name = keys[0];
     const cfg = parsed[name];
@@ -978,7 +981,7 @@ window.onOAuthComplete = function(id) {
     const mcp = state.externalMcps.find(m => m.id === id);
     if (mcp) {
         if (!mcp.oauth_state) mcp.oauth_state = {};
-        mcp.oauth_state.access_token = 'authenticated';
+        mcp.oauth_state.access_token = 'authenticated'; // UI placeholder only
     }
     render();
 };

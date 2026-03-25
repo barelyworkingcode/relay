@@ -101,6 +101,9 @@ func (s *Settings) normalize() {
 		if s.ExternalMcps[i].Args == nil {
 			s.ExternalMcps[i].Args = []string{}
 		}
+		if s.ExternalMcps[i].Env == nil {
+			s.ExternalMcps[i].Env = map[string]string{}
+		}
 		if s.ExternalMcps[i].DiscoveredTools == nil {
 			s.ExternalMcps[i].DiscoveredTools = []ToolInfo{}
 		}
@@ -108,6 +111,9 @@ func (s *Settings) normalize() {
 	for i := range s.Services {
 		if s.Services[i].Args == nil {
 			s.Services[i].Args = []string{}
+		}
+		if s.Services[i].Env == nil {
+			s.Services[i].Env = map[string]string{}
 		}
 	}
 }
@@ -127,6 +133,7 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	p := ss.path()
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		_ = os.Remove(tmp) // clean up partial temp file
 		return fmt.Errorf("write temp settings: %w", err)
 	}
 	if err := os.Rename(tmp, p); err != nil {

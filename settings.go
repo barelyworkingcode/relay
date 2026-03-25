@@ -46,13 +46,14 @@ func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 	s.ExternalMcps[idx] = cfg
 }
 
-// RemoveExternalMcp removes an external MCP and cleans up token permissions.
-// Does not save; use within store.With.
+// RemoveExternalMcp removes an external MCP and cleans up token permissions,
+// disabled tools, and per-MCP context. Does not save; use within store.With.
 func (s *Settings) RemoveExternalMcp(id string) {
 	s.ExternalMcps = slices.DeleteFunc(s.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
 	for i := range s.Tokens {
 		delete(s.Tokens[i].Permissions, id)
 		delete(s.Tokens[i].DisabledTools, id)
+		delete(s.Tokens[i].Context, id)
 	}
 }
 

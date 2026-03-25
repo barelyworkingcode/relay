@@ -66,6 +66,7 @@ func probeForResourceMetadata(mcpURL string) string {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	req, err := http.NewRequest("POST", mcpURL, strings.NewReader(body))
 	if err != nil {
+		slog.Debug("oauth: probe request creation failed", "url", mcpURL, "error", err)
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -73,11 +74,13 @@ func probeForResourceMetadata(mcpURL string) string {
 
 	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
+		slog.Debug("oauth: probe request failed", "url", mcpURL, "error", err)
 		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
+		slog.Debug("oauth: probe returned non-401", "url", mcpURL, "status", resp.StatusCode)
 		return ""
 	}
 
@@ -116,7 +119,7 @@ func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, 
 	}
 
 	var prm protectedResourceMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&prm); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&prm); err != nil {
 		return nil, fmt.Errorf("parse PRM: %w", err)
 	}
 	return &prm, nil
@@ -252,7 +255,7 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("dynamic client registration failed (HTTP %d): %s\nCheck if the server requires manual client registration at: %s",
 			resp.StatusCode, string(respBody), meta.RegistrationEndpoint)
 	}
@@ -342,7 +345,11 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 
 	srv := &oauthCallbackServer{
 		listener: listener,
-		server:   &http.Server{Handler: mux},
+		server: &http.Server{
+			Handler:           mux,
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+		},
 		codeCh:   codeCh,
 		errCh:    errCh,
 		done:     make(chan struct{}),
@@ -471,7 +478,7 @@ func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oa
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("%s failed (HTTP %d): %s", action, resp.StatusCode, string(body))
 	}
 

@@ -55,6 +55,7 @@ type httpMcpConn struct {
 	httpClient *http.Client
 	mu         sync.Mutex // protects sessionID and all oauth fields
 	tokenMu    sync.Mutex // serializes refresh operations (separate so non-refresh requests don't block on I/O)
+	closeOnce  sync.Once  // ensures Close is idempotent
 
 	oauth httpOAuth
 
@@ -331,6 +332,10 @@ func (c *httpMcpConn) SendNotification(method string) {
 }
 
 func (c *httpMcpConn) Close() {
+	c.closeOnce.Do(c.doClose)
+}
+
+func (c *httpMcpConn) doClose() {
 	defer c.httpClient.CloseIdleConnections()
 
 	snap := c.snapshot()
