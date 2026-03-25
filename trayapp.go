@@ -185,7 +185,7 @@ func (a *App) onExternalChange() {
 // Only re-reads settings from disk when the file's modtime changes,
 // avoiding unnecessary I/O and JSON parsing on every tick.
 func (a *App) statusPoller() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(StatusPollInterval)
 	defer ticker.Stop()
 
 	for {

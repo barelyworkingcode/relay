@@ -18,11 +18,6 @@ import (
 	"relaygo/mcp"
 )
 
-// mcpRequestTimeout is the maximum time to wait for a JSON-RPC response from any MCP.
-const mcpRequestTimeout = 5 * time.Minute
-
-// discoveryTimeout is the maximum time for a one-shot MCP discovery handshake.
-const discoveryTimeout = 30 * time.Second
 
 // McpConnection abstracts a connection to an external MCP server (stdio or HTTP).
 type McpConnection interface {
@@ -120,15 +115,15 @@ func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, er
 			"version": "1.0.0",
 		},
 	}
-	initResp, err := conn.SendRequest(ctx, "initialize", initParams)
+	initResp, err := conn.SendRequest(ctx, mcp.MethodInitialize, initParams)
 	if err != nil {
 		return nil, fmt.Errorf("MCP handshake failed: %w", err)
 	}
 
 	contextSchema := extractContextSchema(initResp)
-	conn.SendNotification("notifications/initialized")
+	conn.SendNotification(mcp.MethodInitialized)
 
-	resp, err := conn.SendRequest(ctx, "tools/list", nil)
+	resp, err := conn.SendRequest(ctx, mcp.MethodToolsList, nil)
 	if err != nil {
 		return nil, fmt.Errorf("tools/list failed: %w", err)
 	}
@@ -185,10 +180,13 @@ func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefr
 // setConnection stores a connection, closing any existing connection for the same ID
 // to prevent resource leaks during concurrent operations or reconnections.
 func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
-	m.mu.Lock()
-	old := m.conns[id]
-	m.conns[id] = conn
-	m.mu.Unlock()
+	var old McpConnection
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		old = m.conns[id]
+		m.conns[id] = conn
+	}()
 	if old != nil {
 		old.Close()
 	}
@@ -402,7 +400,7 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		params["_meta"] = metaObj
 	}
 
-	resp, err := conn.SendRequest(ctx, "tools/call", params)
+	resp, err := conn.SendRequest(ctx, mcp.MethodToolsCall, params)
 	if err != nil {
 		return nil, fmt.Errorf("external MCP call failed: %w", err)
 	}
@@ -412,14 +410,16 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 
 // Stop kills and removes a specific external MCP connection.
 func (m *ExternalMcpManager) Stop(id string) {
-	m.mu.Lock()
-	conn, ok := m.conns[id]
-	if ok {
-		delete(m.conns, id)
-	}
-	m.mu.Unlock()
-
-	if ok {
+	var conn McpConnection
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if c, ok := m.conns[id]; ok {
+			conn = c
+			delete(m.conns, id)
+		}
+	}()
+	if conn != nil {
 		conn.Close()
 	}
 }
@@ -427,10 +427,13 @@ func (m *ExternalMcpManager) Stop(id string) {
 // StopAll kills all external MCP connections concurrently to avoid one
 // slow connection (e.g., HTTP session DELETE) blocking the shutdown of others.
 func (m *ExternalMcpManager) StopAll() {
-	m.mu.Lock()
-	conns := m.conns
-	m.conns = make(map[string]McpConnection)
-	m.mu.Unlock()
+	var conns map[string]McpConnection
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		conns = m.conns
+		m.conns = make(map[string]McpConnection)
+	}()
 
 	var wg sync.WaitGroup
 	for _, conn := range conns {
@@ -465,7 +468,7 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 	defer conn.Close()
 
 	// Run handshake with overall timeout (stdio processes can hang).
-	discoverCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	discoverCtx, cancel := context.WithTimeout(ctx, MCPDiscoveryTimeout)
 	defer cancel()
 
 	return discoverMcp(discoverCtx, conn, ExternalMcp{
@@ -530,39 +533,13 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 
 // SendRequest sends a JSON-RPC request and waits for the response with a timeout.
 func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
-	c.mu.Lock()
-
-	// Check if reader is already dead.
-	select {
-	case <-c.readerDone:
-		c.mu.Unlock()
-		if c.readerErr != nil {
-			return nil, c.readerErr
-		}
-		return nil, fmt.Errorf("connection closed")
-	default:
-	}
-
-	id := c.allocID()
-	data, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
+	id, p, err := c.prepareRequest(method, params)
 	if err != nil {
-		c.mu.Unlock()
 		return nil, err
 	}
-	data = append(data, '\n')
-
-	p := &pendingResponse{ch: make(chan readerResult, 1)}
-	c.pending[id] = p
-
-	if _, err := c.stdin.Write(data); err != nil {
-		delete(c.pending, id)
-		c.mu.Unlock()
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-	c.mu.Unlock()
 
 	// Wait for response, reader death, context cancellation, or timeout.
-	timer := time.NewTimer(mcpRequestTimeout)
+	timer := time.NewTimer(MCPRequestTimeout)
 	defer timer.Stop()
 
 	select {
@@ -580,16 +557,51 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 		}
 		return nil, fmt.Errorf("connection closed")
 	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
+		c.removePending(id)
 		return nil, ctx.Err()
 	case <-timer.C:
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
-		return nil, fmt.Errorf("request timed out after %s", mcpRequestTimeout)
+		c.removePending(id)
+		return nil, fmt.Errorf("request timed out after %s", MCPRequestTimeout)
 	}
+}
+
+// prepareRequest marshals, registers, and writes a JSON-RPC request under the mutex.
+func (c *externalMcpConn) prepareRequest(method string, params interface{}) (int64, *pendingResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if reader is already dead.
+	select {
+	case <-c.readerDone:
+		if c.readerErr != nil {
+			return 0, nil, c.readerErr
+		}
+		return 0, nil, fmt.Errorf("connection closed")
+	default:
+	}
+
+	id := c.allocID()
+	data, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
+	if err != nil {
+		return 0, nil, err
+	}
+	data = append(data, '\n')
+
+	p := &pendingResponse{ch: make(chan readerResult, 1)}
+	c.pending[id] = p
+
+	if _, err := c.stdin.Write(data); err != nil {
+		delete(c.pending, id)
+		return 0, nil, fmt.Errorf("write request: %w", err)
+	}
+	return id, p, nil
+}
+
+// removePending removes a pending request (used on context cancellation or timeout).
+func (c *externalMcpConn) removePending(id int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.pending, id)
 }
 
 // SendNotification sends a JSON-RPC notification (no ID, no response expected).

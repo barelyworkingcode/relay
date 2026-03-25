@@ -84,7 +84,7 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
 		url: cfg.URL,
 		httpClient: &http.Client{
-			Timeout: mcpRequestTimeout,
+			Timeout: MCPRequestTimeout,
 		},
 	}
 	conn.config = cfg
@@ -106,33 +106,74 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	return conn
 }
 
-// refreshTokenIfNeeded checks token expiry and refreshes if within 30s of expiry.
-// Uses tokenMu to serialize refresh operations and mu to synchronize token field
-// access with concurrent SendRequest calls. Network I/O happens without holding mu.
+// tokenRefreshSnap holds values snapshotted under mu for a token refresh.
+type tokenRefreshSnap struct {
+	meta         *oauthMetadata
+	refreshToken string
+	clientID     string
+	clientSecret string
+	oauthURL     string
+}
+
+// tokenRefreshSnapshot reads OAuth state under mu and returns whether a refresh
+// is needed. All lock/unlock is handled via defer.
+func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	needsRefresh := c.oauth.refreshToken != "" &&
+		!c.oauth.tokenExpiry.IsZero() &&
+		time.Now().After(c.oauth.tokenExpiry.Add(-OAuthTokenRefreshWindow))
+	if !needsRefresh {
+		return tokenRefreshSnap{}, false
+	}
+	return tokenRefreshSnap{
+		meta:         c.oauth.meta,
+		refreshToken: c.oauth.refreshToken,
+		clientID:     c.oauth.clientID,
+		clientSecret: c.oauth.clientSecret,
+		oauthURL:     c.oauth.url,
+	}, true
+}
+
+// applyRefreshedToken writes refreshed OAuth state under mu and notifies the
+// persistence callback. All lock/unlock is handled via defer.
+func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthTokenResponse) {
+	var oauthState *OAuthState
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.oauth.meta = meta
+		c.oauth.accessToken = tokenResp.AccessToken
+		if tokenResp.RefreshToken != "" {
+			c.oauth.refreshToken = tokenResp.RefreshToken
+		}
+		if tokenResp.ExpiresIn > 0 {
+			c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+		}
+		oauthState = c.oauth.toOAuthState()
+	}()
+	if c.onTokenRefresh != nil {
+		c.onTokenRefresh(oauthState)
+	}
+}
+
+// refreshTokenIfNeeded checks token expiry and refreshes if within the refresh
+// window. Uses tokenMu to serialize refresh operations and mu to synchronize
+// token field access with concurrent SendRequest calls. Network I/O happens
+// without holding mu.
 func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 
-	// Read token state under mu.
-	c.mu.Lock()
-	needsRefresh := c.oauth.refreshToken != "" &&
-		!c.oauth.tokenExpiry.IsZero() &&
-		time.Now().After(c.oauth.tokenExpiry.Add(-30*time.Second))
+	snap, needsRefresh := c.tokenRefreshSnapshot()
 	if !needsRefresh {
-		c.mu.Unlock()
 		return nil
 	}
-	// Snapshot values needed for the HTTP calls.
-	meta := c.oauth.meta
-	refreshToken := c.oauth.refreshToken
-	clientID := c.oauth.clientID
-	clientSecret := c.oauth.clientSecret
-	oauthURL := c.oauth.url
-	c.mu.Unlock()
 
 	// Discover metadata if needed (network I/O, no locks held).
+	meta := snap.meta
 	if meta == nil {
-		discovery, err := discoverOAuth(oauthURL)
+		discovery, err := discoverOAuth(snap.oauthURL)
 		if err != nil {
 			return fmt.Errorf("discover OAuth metadata for refresh: %w", err)
 		}
@@ -140,27 +181,12 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	}
 
 	// Refresh token (network I/O, no locks held).
-	tokenResp, err := refreshAccessToken(meta, refreshToken, clientID, clientSecret)
+	tokenResp, err := refreshAccessToken(meta, snap.refreshToken, snap.clientID, snap.clientSecret)
 	if err != nil {
 		return fmt.Errorf("token refresh: %w", err)
 	}
 
-	// Write results under mu so concurrent SendRequest snapshots see the new token.
-	c.mu.Lock()
-	c.oauth.meta = meta
-	c.oauth.accessToken = tokenResp.AccessToken
-	if tokenResp.RefreshToken != "" {
-		c.oauth.refreshToken = tokenResp.RefreshToken
-	}
-	if tokenResp.ExpiresIn > 0 {
-		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-	oauthState := c.oauth.toOAuthState()
-	c.mu.Unlock()
-
-	if c.onTokenRefresh != nil {
-		c.onTokenRefresh(oauthState)
-	}
+	c.applyRefreshedToken(meta, tokenResp)
 	return nil
 }
 
@@ -344,7 +370,7 @@ func (c *httpMcpConn) doClose() {
 	}
 	// Send DELETE to end session with a short timeout. This is best-effort
 	// cleanup; we don't want an unresponsive server to block app shutdown.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), HTTPSessionCloseTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", c.url, nil)

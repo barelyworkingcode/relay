@@ -58,7 +58,7 @@ type pkceParams struct {
 	Challenge string
 }
 
-var oauthHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var oauthHTTPClient = &http.Client{Timeout: OAuthHTTPTimeout}
 
 // probeForResourceMetadata sends a request to the MCP URL and extracts the
 // resource_metadata URL from the 401 WWW-Authenticate header.
@@ -443,7 +443,7 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	openBrowser(authURL.String())
 
 	// Wait for callback or timeout.
-	code, err := srv.WaitForCode(5 * time.Minute)
+	code, err := srv.WaitForCode(OAuthCallbackTimeout)
 	if err != nil {
 		return nil, err
 	}
