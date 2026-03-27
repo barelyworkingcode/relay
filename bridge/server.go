@@ -66,11 +66,22 @@ func (s *BridgeServer) Serve() error {
 	}
 }
 
-// Close shuts down the server: cancels in-flight requests, closes the listener,
-// waits for connections, removes the socket.
-func (s *BridgeServer) Close() {
+// StopAccepting stops the server from accepting new connections and cancels
+// all in-flight request contexts. Existing handlers continue running until
+// they return or notice their context is cancelled. This is the first phase
+// of a two-phase shutdown: call StopAccepting early to prevent new work,
+// then call Close after backends are torn down to drain remaining handlers.
+func (s *BridgeServer) StopAccepting() {
 	s.cancel()
 	_ = s.listener.Close()
+}
+
+// Close completes server shutdown: waits for all connection handlers to finish
+// and removes the socket file. If StopAccepting was already called, this only
+// drains and cleans up. Safe to call without a prior StopAccepting — it will
+// stop accepting as part of the close.
+func (s *BridgeServer) Close() {
+	s.StopAccepting()
 	s.wg.Wait()
 	_ = os.Remove(s.sockPath)
 }

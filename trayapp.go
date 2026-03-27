@@ -95,13 +95,31 @@ func runTrayApp() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	registry := NewServiceRegistry()
+
 	app := &App{
 		ctx:      ctx,
 		cancel:   cancel,
 		store:    store,
 		platform: platform,
 		extMgr:   extMgr,
-		registry: NewServiceRegistry(),
+		registry: registry,
+	}
+
+	// Event-driven menu updates: rebuild tray status dots immediately when
+	// any managed process exits, instead of waiting for the next settings
+	// file change or user interaction. Called from the reaper goroutine.
+	// Guarded by ctx check to avoid dispatching UI work after shutdown
+	// starts — the main thread may be blocked in cleanup or state may be
+	// partially torn down.
+	registry.OnProcessExit = func() {
+		if ctx.Err() != nil {
+			return
+		}
+		app.platform.DispatchToMain(func() {
+			app.updateMenu()
+			app.pushServiceStatus()
+		})
 	}
 	app.ipcCtx = &IPCContext{
 		Ctx:             ctx,
@@ -152,6 +170,13 @@ func runTrayApp() {
 	// Catch termination signals so child processes get cleaned up.
 	// This goroutine is NOT tracked via goFunc because cleanup() calls
 	// wg.Wait() — tracking it would deadlock (waiting for itself to finish).
+	//
+	// When ctx is cancelled (by cleanup from the Exit menu or Cocoa
+	// termination), we call signal.Reset to restore the OS default signal
+	// disposition. Without this, signal.Notify continues to intercept
+	// SIGTERM/SIGINT with no goroutine reading the channel, making the
+	// process unkillable by those signals. Restoring the default lets the
+	// kernel terminate the process if cleanup itself hangs.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
@@ -161,6 +186,7 @@ func runTrayApp() {
 			app.cleanup()
 			os.Exit(0)
 		case <-ctx.Done():
+			signal.Stop(sigCh)
 			return
 		}
 	}()
@@ -183,9 +209,11 @@ func (a *App) onExternalChange() {
 	})
 }
 
-// statusPoller periodically checks service status and updates the menu.
-// Only re-reads settings from disk when the file's modtime changes,
-// avoiding unnecessary I/O and JSON parsing on every tick.
+// statusPoller periodically re-reads settings from disk (when the file's
+// modtime changes) to pick up CLI-driven changes, and pushes service status
+// to the settings WebView. Tray menu status dots are updated event-driven
+// via ServiceRegistry.OnProcessExit, not by this poller — see runTrayApp
+// where the callback is wired.
 func (a *App) statusPoller() {
 	ticker := time.NewTicker(StatusPollInterval)
 	defer ticker.Stop()
@@ -315,14 +343,32 @@ func (a *App) toggleService(menuItemID int) {
 	}
 }
 
+// cleanup performs graceful shutdown using a drain-then-kill ordering:
+//
+//  1. Cancel the app context — signals all goroutines to stop.
+//  2. Stop accepting bridge connections — no new requests can arrive.
+//  3. Kill external MCPs — in-flight CallTool requests fail fast,
+//     unblocking any bridge handlers waiting on MCP responses.
+//  4. Drain bridge handlers — wait for in-flight handlers to finish
+//     and remove the socket file.
+//  5. Kill service processes — runs last so it catches any service
+//     spawned by a ReloadService handler that raced with shutdown.
+//  6. Wait for tracked goroutines (statusPoller, Serve loop).
+//
+// This ordering prevents orphan service processes: if StopAll ran before
+// bridge handlers drained, a concurrent Reload handler could Start a new
+// service after StopAll's snapshot, leaving it unmanaged.
 func (a *App) cleanup() {
 	a.cleanupOnce.Do(func() {
-		a.cancel() // signals all tracked goroutines via context
-		a.registry.StopAll()
+		a.cancel()
+		if a.bridgeServer != nil {
+			a.bridgeServer.StopAccepting()
+		}
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
 		}
-		a.wg.Wait() // wait for tracked goroutines to finish
+		a.registry.StopAll()
+		a.wg.Wait()
 	})
 }
