@@ -37,6 +37,13 @@ type serviceProcess struct {
 type ServiceRegistry struct {
 	mu        sync.Mutex
 	processes map[string]*serviceProcess
+
+	// OnProcessExit is called from the reaper goroutine after a managed
+	// process exits. Set once during initialization, before any services
+	// are started, so concurrent reads from reaper goroutines are safe.
+	// Enables event-driven UI updates (e.g., tray menu status dots)
+	// without polling for process state changes.
+	OnProcessExit func()
 }
 
 // NewServiceRegistry creates an empty registry.
@@ -95,9 +102,15 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	}
 
 	// Reap the process in the background so ProcessState is populated
-	// and we can detect exit via the done channel. Defers ensure done is
-	// always closed even if a panic occurs, preventing Stop() from hanging.
+	// and we can detect exit via the done channel. Defers run LIFO:
+	// logFile.Close → close(done) → OnProcessExit, ensuring the done
+	// channel is closed before the exit callback reads process state.
 	go func() {
+		defer func() {
+			if r.OnProcessExit != nil {
+				r.OnProcessExit()
+			}
+		}()
 		defer close(proc.done)
 		defer logFile.Close()
 		if err := cmd.Wait(); err != nil {
