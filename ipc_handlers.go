@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-
-	"relaygo/bridge"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func (a *App) openSettingsWindow() {
-	s := LoadSettings()
+	s := a.store.Get()
 	html := renderSettingsHTML(s, a.registry.RunningIDs())
 	a.platform.OpenSettings(html)
 	a.settingsOpen = true
@@ -29,291 +29,280 @@ func (a *App) evalSettings(js string) {
 	}
 }
 
-func (a *App) pushServiceStatus() {
+// emitSettingsEvent sends a named event to the settings UI with JSON-marshaled arguments.
+// Each arg is marshaled individually; json.RawMessage values are passed through as-is.
+// This centralizes JS escaping and marshaling.
+func (a *App) emitSettingsEvent(name string, args ...interface{}) {
 	if !a.settingsOpen {
 		return
 	}
-	data, _ := json.Marshal(a.registry.RunningIDs())
-	a.evalSettings(fmt.Sprintf("onServiceStatus(%s)", string(data)))
+	if len(args) == 0 {
+		a.platform.EvalSettingsJS(name + "()")
+		return
+	}
+	var jsArgs []string
+	for _, arg := range args {
+		if raw, ok := arg.(json.RawMessage); ok {
+			jsArgs = append(jsArgs, string(raw))
+		} else {
+			data, err := json.Marshal(arg)
+			if err != nil {
+				slog.Error("failed to marshal settings event arg, skipping event", "event", name, "argIndex", len(jsArgs), "error", err)
+				return
+			}
+			jsArgs = append(jsArgs, string(data))
+		}
+	}
+	a.platform.EvalSettingsJS(fmt.Sprintf("%s(%s)", name, strings.Join(jsArgs, ",")))
+}
+
+func (a *App) pushServiceStatus() {
+	a.emitSettingsEvent("onServiceStatus", a.registry.RunningIDs())
+}
+
+// pushFullSettings sends the complete settings state to an open settings window.
+// Called when external changes (CLI commands via bridge) modify settings.json.
+func (a *App) pushFullSettings() {
+	s := a.store.Get()
+	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
+		"tokens":        s.Tokens,
+		"external_mcps": s.ExternalMcps,
+		"services":      s.Services,
+		"running_ids":   a.registry.RunningIDs(),
+	})
+}
+
+// ---------------------------------------------------------------------------
+// IPC decoupling types
+// ---------------------------------------------------------------------------
+
+// SettingsUI emits events to the settings window.
+type SettingsUI interface {
+	EmitEvent(name string, args ...interface{})
+}
+
+// EmitEvent implements SettingsUI for App.
+func (a *App) EmitEvent(name string, args ...interface{}) {
+	a.emitSettingsEvent(name, args...)
+}
+
+// IPCContext provides dependencies to IPC handlers, replacing *App coupling.
+type IPCContext struct {
+	Ctx              context.Context
+	Store            SettingsStore
+	UI               SettingsUI
+	Platform         Platform
+	Registry         ServiceManager
+	UpdateMenu       func()
+	GoFunc           func(fn func()) // tracked goroutine launcher
+	NotifyReconcile  func(string) error
+	NotifyReloadMcp  func(id, secret string) error
+}
+
+// withSettingsReconcile atomically mutates settings, then asynchronously sends
+// a reconcile notification to the bridge. Returns true on success (save succeeded).
+func (ctx *IPCContext) withSettingsReconcile(fn func(*Settings)) bool {
+	return ctx.withSettingsNotify(fn, ctx.NotifyReconcile)
+}
+
+// withSettings atomically mutates settings and emits an error event on failure.
+// Returns true on success.
+func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
+	return ctx.withSettingsNotify(fn, nil)
+}
+
+// withSettingsNotify atomically mutates settings, then dispatches a bridge
+// notification asynchronously via GoFunc. This avoids blocking the main/UI
+// thread during bridge round-trips that may trigger MCP process spawning or
+// network I/O. Settings are persisted to disk before the notification is sent,
+// so the notification handler reads the updated state.
+func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string) error) bool {
+	var secret string
+	if err := ctx.Store.With(func(s *Settings) {
+		fn(s)
+		secret = s.AdminSecret
+	}); err != nil {
+		ctx.UI.EmitEvent("onSettingsError", err.Error())
+		return false
+	}
+	if notify != nil {
+		ctx.GoFunc(func() {
+			if err := notify(secret); err != nil {
+				slog.Warn("bridge notification failed", "error", err)
+			}
+		})
+	}
+	return true
+}
+
+// refreshServiceUI emits current service status and rebuilds the tray menu.
+// Must be called on the main thread.
+func (ctx *IPCContext) refreshServiceUI() {
+	ctx.UI.EmitEvent("onServiceStatus", ctx.Registry.RunningIDs())
+	ctx.UpdateMenu()
+}
+
+// ---------------------------------------------------------------------------
+// IPC message types
+// ---------------------------------------------------------------------------
+
+type ipcMsg struct {
+	Type string `json:"type"`
+}
+
+type ipcGenerateTokenMsg struct {
+	Name string `json:"name"`
+}
+
+type ipcTokenHash struct {
+	Hash string `json:"hash"`
+}
+
+type ipcUpdatePermissionMsg struct {
+	Hash       string `json:"hash"`
+	Service    string `json:"service"`
+	Permission string `json:"permission"`
+}
+
+type ipcSetToolDisabledMsg struct {
+	Hash     string `json:"hash"`
+	McpID    string `json:"mcp_id"`
+	ToolName string `json:"tool_name"`
+	Disabled bool   `json:"disabled"`
+}
+
+type ipcSetAllToolsDisabledMsg struct {
+	Hash     string `json:"hash"`
+	McpID    string `json:"mcp_id"`
+	Disabled bool   `json:"disabled"`
+}
+
+type ipcSetContextMsg struct {
+	Hash    string      `json:"hash"`
+	McpID   string      `json:"mcp_id"`
+	Context interface{} `json:"context"`
+}
+
+type ipcAddExternalMcpMsg struct {
+	DisplayName string            `json:"display_name"`
+	Transport   string            `json:"transport"`
+	URL         string            `json:"url"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+}
+
+type ipcIDMsg struct {
+	ID string `json:"id"`
+}
+
+type ipcCopyToClipboardMsg struct {
+	Text string `json:"text"`
+}
+
+// ipcServiceMsg is the shared message format for add and update service operations.
+// For add: ID is empty (derived from DisplayName). For update: ID is required.
+type ipcServiceMsg struct {
+	ID          string            `json:"id"`
+	DisplayName string            `json:"display_name"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+	WorkingDir  string            `json:"working_dir,omitempty"`
+	Autostart   bool              `json:"autostart"`
+	URL         string            `json:"url,omitempty"`
+}
+
+type ipcUpdateServiceAutostartMsg struct {
+	ID        string `json:"id"`
+	Autostart bool   `json:"autostart"`
+}
+
+// ---------------------------------------------------------------------------
+// IPC message type constants — single source of truth for the JS/Go contract.
+// ---------------------------------------------------------------------------
+
+const (
+	MsgGenerateToken       = "generate_token"
+	MsgDeleteToken         = "delete_token"
+	MsgRevokeAll           = "revoke_all"
+	MsgUpdatePermission    = "update_permission"
+	MsgSetToolDisabled     = "set_tool_disabled"
+	MsgSetAllToolsDisabled = "set_all_tools_disabled"
+	MsgSetContext          = "set_context"
+
+	MsgAddExternalMcp    = "add_external_mcp"
+	MsgAuthenticateMcp   = "authenticate_mcp"
+	MsgRemoveExternalMcp = "remove_external_mcp"
+
+	MsgAddService             = "add_service"
+	MsgRemoveService          = "remove_service"
+	MsgUpdateService          = "update_service"
+	MsgUpdateServiceAutostart = "update_service_autostart"
+	MsgStartService           = "start_service"
+	MsgStopService            = "stop_service"
+
+	MsgCopyToClipboard = "copy_to_clipboard"
+)
+
+// ---------------------------------------------------------------------------
+// IPC dispatch
+// ---------------------------------------------------------------------------
+
+// ipcHandlers maps message types to handler functions.
+var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
+	// Tokens & permissions (ipc_tokens.go)
+	MsgGenerateToken:       ipcGenerateToken,
+	MsgDeleteToken:         ipcDeleteToken,
+	MsgRevokeAll:           ipcRevokeAll,
+	MsgUpdatePermission:    ipcUpdatePermission,
+	MsgSetToolDisabled:     ipcSetToolDisabled,
+	MsgSetAllToolsDisabled: ipcSetAllToolsDisabled,
+	MsgSetContext:          ipcSetContext,
+
+	// External MCPs (ipc_mcps.go)
+	MsgAddExternalMcp:    ipcAddExternalMcp,
+	MsgAuthenticateMcp:   ipcAuthenticateMcp,
+	MsgRemoveExternalMcp: ipcRemoveExternalMcp,
+
+	// Services (ipc_services.go)
+	MsgAddService:             ipcAddService,
+	MsgRemoveService:          ipcRemoveService,
+	MsgUpdateService:          ipcUpdateService,
+	MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
+	MsgStartService:           ipcStartService,
+	MsgStopService:            ipcStopService,
+
+	// Utility
+	MsgCopyToClipboard: ipcCopyToClipboard,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
 // The message body is a JSON string from the ipc() wrapper.
 func (a *App) onSettingsIpc(body string) {
-	var msg map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &msg); err != nil {
+	raw := json.RawMessage(body)
+	var msg ipcMsg
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		slog.Warn("failed to unmarshal IPC message", "error", err)
 		return
 	}
 
-	msgType, _ := msg["type"].(string)
-
-	switch msgType {
-	case "generate_token":
-		name, _ := msg["name"].(string)
-		var plaintext string
-		var stored StoredToken
-		WithSettings(func(s *Settings) {
-			defaultPerms := make(map[string]Permission)
-			for _, svcName := range s.AllServiceNames() {
-				defaultPerms[svcName] = PermOn
-			}
-			plaintext, stored = GenerateToken(name, defaultPerms)
-			s.Tokens = append(s.Tokens, stored)
-		})
-
-		response := map[string]interface{}{
-			"plaintext": plaintext,
-			"token":     stored,
-		}
-		responseJSON, _ := json.Marshal(response)
-		a.evalSettings(fmt.Sprintf("onTokenGenerated(%s)", string(responseJSON)))
-
-	case "delete_token":
-		hash, _ := msg["hash"].(string)
-		WithSettings(func(s *Settings) { s.DeleteToken(hash) })
-		a.evalSettings(fmt.Sprintf("onTokenDeleted('%s')", escapeJSString(hash)))
-
-	case "revoke_all":
-		WithSettings(func(s *Settings) { s.RevokeAll() })
-		a.evalSettings("onAllRevoked()")
-
-	case "update_permission":
-		hash, _ := msg["hash"].(string)
-		service, _ := msg["service"].(string)
-		permStr, _ := msg["permission"].(string)
-		perm := PermOn
-		if permStr == "off" {
-			perm = PermOff
-		}
-		WithSettings(func(s *Settings) { s.UpdatePermission(hash, service, perm) })
-
-	case "set_tool_disabled":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		toolName, _ := msg["tool_name"].(string)
-		disabled, _ := msg["disabled"].(bool)
-		WithSettings(func(s *Settings) { s.SetToolDisabled(hash, mcpID, toolName, disabled) })
-
-	case "set_all_tools_disabled":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		disabled, _ := msg["disabled"].(bool)
-		WithSettings(func(s *Settings) {
-			var toolNames []string
-			for _, mcp := range s.ExternalMcps {
-				if mcp.ID == mcpID {
-					for _, t := range mcp.DiscoveredTools {
-						toolNames = append(toolNames, t.Name)
-					}
-					break
-				}
-			}
-			s.SetAllToolsDisabled(hash, mcpID, toolNames, disabled)
-		})
-
-	case "set_context":
-		hash, _ := msg["hash"].(string)
-		mcpID, _ := msg["mcp_id"].(string)
-		contextRaw, _ := json.Marshal(msg["context"])
-		WithSettings(func(s *Settings) { s.SetContext(hash, mcpID, json.RawMessage(contextRaw)) })
-
-	case "add_external_mcp":
-		displayName, _ := msg["display_name"].(string)
-		transport, _ := msg["transport"].(string)
-
-		id := slugify(displayName)
-		if id == "" {
-			return
-		}
-
-		if transport == "http" {
-			mcpURL, _ := msg["url"].(string)
-			if mcpURL == "" {
-				return
-			}
-			if err := validateMcpURL(mcpURL); err != nil {
-				a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escapeJSString(err.Error())))
-				return
-			}
-			a.evalSettings("onDiscoveryStarted()")
-			go a.addHTTPMcp(displayName, id, mcpURL)
-			return
-		}
-
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-
-		if command == "" {
-			return
-		}
-
-		a.evalSettings("onDiscoveryStarted()")
-
-		go func() {
-			result, err := DiscoverExternalMcp(displayName, id, command, args, env)
-			a.platform.DispatchToMain(func() {
-				if err != nil {
-					escaped := escapeJSString(err.Error())
-					a.evalSettings(fmt.Sprintf("onExternalMcpError('%s')", escaped))
-					return
-				}
-
-				var adminSecret string
-				WithSettings(func(s *Settings) {
-					s.AddExternalMcp(*result)
-					adminSecret = s.AdminSecret
-				})
-
-				// Notify bridge to reconcile.
-				go func() { _ = bridge.SendReconcile(adminSecret) }()
-
-				mcpJSON, _ := json.Marshal(result)
-				a.evalSettings(fmt.Sprintf("onExternalMcpAdded(%s)", string(mcpJSON)))
-			})
-		}()
-
-	case "authenticate_mcp":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		go a.authenticateMcp(id)
-
-	case "remove_external_mcp":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-
-		var adminSecret string
-		WithSettings(func(s *Settings) {
-			s.RemoveExternalMcp(id)
-			adminSecret = s.AdminSecret
-		})
-
-		go func() { _ = bridge.SendReconcile(adminSecret) }()
-
-		escaped := escapeJSString(id)
-		a.evalSettings(fmt.Sprintf("onExternalMcpRemoved('%s')", escaped))
-
-	case "copy_to_clipboard":
-		if text, ok := msg["text"].(string); ok {
-			a.platform.CopyToClipboard(text)
-		}
-
-	case "add_service":
-		displayName, _ := msg["display_name"].(string)
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-		workingDir, _ := msg["working_dir"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		url, _ := msg["url"].(string)
-
-		id := slugify(displayName)
-		if id == "" || command == "" {
-			return
-		}
-
-		config := ServiceConfig{
-			ID:          id,
-			DisplayName: displayName,
-			Command:     command,
-			Args:        args,
-			Env:         env,
-			WorkingDir:  workingDir,
-			Autostart:   autostart,
-			URL:         url,
-		}
-
-		WithSettings(func(s *Settings) { s.AddService(config) })
-
-		if autostart {
-			if err := a.registry.Start(&config); err != nil {
-				slog.Error("service autostart failed", "error", err)
-			}
-		}
-
-		a.updateMenu()
-
-		configJSON, _ := json.Marshal(config)
-		a.evalSettings(fmt.Sprintf("onServiceAdded(%s)", string(configJSON)))
-
-	case "remove_service":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-
-		a.registry.Stop(id)
-		WithSettings(func(s *Settings) { s.RemoveService(id) })
-		a.updateMenu()
-
-		escaped := escapeJSString(id)
-		a.evalSettings(fmt.Sprintf("onServiceRemoved('%s')", escaped))
-
-	case "update_service":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		displayName, _ := msg["display_name"].(string)
-		command, _ := msg["command"].(string)
-		args := jsonStringArray(msg["args"])
-		env := jsonStringMap(msg["env"])
-		workingDir, _ := msg["working_dir"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		url, _ := msg["url"].(string)
-
-		config := ServiceConfig{
-			ID:          id,
-			DisplayName: displayName,
-			Command:     command,
-			Args:        args,
-			Env:         env,
-			WorkingDir:  workingDir,
-			Autostart:   autostart,
-			URL:         url,
-		}
-
-		WithSettings(func(s *Settings) { s.UpdateService(config) })
-		a.updateMenu()
-
-	case "update_service_autostart":
-		id, _ := msg["id"].(string)
-		autostart, _ := msg["autostart"].(bool)
-		WithSettings(func(s *Settings) {
-			for i := range s.Services {
-				if s.Services[i].ID == id {
-					s.Services[i].Autostart = autostart
-					break
-				}
-			}
-		})
-
-	case "start_service":
-		id, _ := msg["id"].(string)
-		s := LoadSettings()
-		for i := range s.Services {
-			if s.Services[i].ID == id {
-				if err := a.registry.Start(&s.Services[i]); err != nil {
-					slog.Error("service start failed", "error", err)
-				}
-				break
-			}
-		}
-		a.pushServiceStatus()
-		a.updateMenu()
-
-	case "stop_service":
-		id, _ := msg["id"].(string)
-		go func() {
-			a.registry.Stop(id)
-			a.platform.DispatchToMain(func() {
-				a.pushServiceStatus()
-				a.updateMenu()
-			})
-		}()
+	handler, ok := ipcHandlers[msg.Type]
+	if !ok {
+		slog.Warn("unknown IPC message type", "type", msg.Type)
+		return
 	}
+	handler(a.ipcCtx, raw)
+}
+
+// ---------------------------------------------------------------------------
+// Utility handlers
+// ---------------------------------------------------------------------------
+
+func ipcCopyToClipboard(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcCopyToClipboardMsg](raw, "copy_to_clipboard")
+	if !ok || msg.Text == "" {
+		return
+	}
+	ctx.Platform.CopyToClipboard(msg.Text)
 }

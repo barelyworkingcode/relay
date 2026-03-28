@@ -2,6 +2,17 @@ package mcp
 
 import "encoding/json"
 
+// ProtocolVersion is the MCP protocol version supported by this implementation.
+const ProtocolVersion = "2024-11-05"
+
+// MCP JSON-RPC method names.
+const (
+	MethodInitialize  = "initialize"
+	MethodInitialized = "notifications/initialized"
+	MethodToolsList   = "tools/list"
+	MethodToolsCall   = "tools/call"
+)
+
 // Tool represents an MCP tool definition.
 type Tool struct {
 	Name        string          `json:"name"`

@@ -57,26 +57,26 @@ func cocoaSetupTray(rgba []byte, w, h int) {
 
 func cocoaUpdateMenu(menuJSON string) {
 	cs := C.CString(menuJSON)
+	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_update_menu(cs)
-	C.free(unsafe.Pointer(cs))
 }
 
 func cocoaOpenSettings(html string) {
 	cs := C.CString(html)
+	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_open_settings(cs)
-	C.free(unsafe.Pointer(cs))
 }
 
 func cocoaSettingsEvalJS(js string) {
 	cs := C.CString(js)
+	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_settings_eval_js(cs)
-	C.free(unsafe.Pointer(cs))
 }
 
 func cocoaCopyToClipboard(text string) {
 	cs := C.CString(text)
+	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_copy_to_clipboard(cs)
-	C.free(unsafe.Pointer(cs))
 }
 
 // dispatchToMain schedules a Go function to run on the main (UI) thread.

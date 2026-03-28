@@ -1,0 +1,5 @@
+# Relay TODO
+
+- [ ] Investigate: `relay service register` cannot connect to bridge socket (`relay.sock`) even though Relay tray app is running. The `ReloadService` request fails with "no such file or directory" on the Unix socket. Possibly the socket path changed, the socket isn't being created, or there's a permissions issue. (Discovered 2026-03-26)
+- [ ] Investigate: Relay tray app shutdown stalls — quitting the app hangs instead of cleanly exiting. May be a service shutdown ordering issue, a blocking goroutine, or a hung cgo/Cocoa call. SIGTERM was ignored by all three processes (Relay, relayScheduler, relayLLM) — required SIGKILL to terminate. (Discovered 2026-03-26)
+- [ ] Eve: Scheduled task session view doesn't update to show completion. Sidebar correctly shows task finished (no spinner) but the main chat window still shows "Running Write..." spinner. Requires a page refresh to see the completed state. Likely the `task_completed` WebSocket event updates the sidebar task status but doesn't trigger a re-render of the active session's message stream. (Discovered 2026-03-26)

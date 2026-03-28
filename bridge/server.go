@@ -1,12 +1,16 @@
 package bridge
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
+
+	"relaygo/jsonrpc"
 )
 
 // BridgeServer listens on a Unix socket and routes requests via a ToolRouter.
@@ -15,10 +19,14 @@ type BridgeServer struct {
 	listener net.Listener
 	sockPath string
 	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // NewBridgeServer creates a BridgeServer bound to the default socket path.
-func NewBridgeServer(router ToolRouter) (*BridgeServer, error) {
+// The provided context is used as the parent for all per-connection contexts,
+// enabling graceful cancellation of in-flight requests during shutdown.
+func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
 	sockPath := SocketPath()
 
 	// Remove stale socket file.
@@ -28,11 +36,20 @@ func NewBridgeServer(router ToolRouter) (*BridgeServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Enforce owner-only access regardless of umask.
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("chmod socket: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
 
 	return &BridgeServer{
 		router:   router,
 		listener: listener,
 		sockPath: sockPath,
+		ctx:      ctx,
+		cancel:   cancel,
 	}, nil
 }
 
@@ -49,32 +66,53 @@ func (s *BridgeServer) Serve() error {
 	}
 }
 
-// Close shuts down the server: closes the listener, waits for connections, removes the socket.
-func (s *BridgeServer) Close() {
+// StopAccepting stops the server from accepting new connections and cancels
+// all in-flight request contexts. Existing handlers continue running until
+// they return or notice their context is cancelled. This is the first phase
+// of a two-phase shutdown: call StopAccepting early to prevent new work,
+// then call Close after backends are torn down to drain remaining handlers.
+func (s *BridgeServer) StopAccepting() {
+	s.cancel()
 	_ = s.listener.Close()
+}
+
+// Close completes server shutdown: waits for all connection handlers to finish
+// and removes the socket file. If StopAccepting was already called, this only
+// drains and cleans up. Safe to call without a prior StopAccepting — it will
+// stop accepting as part of the close.
+func (s *BridgeServer) Close() {
+	s.StopAccepting()
 	s.wg.Wait()
 	_ = os.Remove(s.sockPath)
+}
+
+// bridgeError creates an error BridgeResponse with the given code and message.
+func bridgeError(code int, msg string) BridgeResponse {
+	return BridgeResponse{Type: RespError, Code: code, Message: msg}
 }
 
 func (s *BridgeServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("bridge handler panic (recovered)", "panic", r)
+		}
+	}()
 
-	scanner := bufio.NewScanner(conn)
-	// Allow up to 10MB lines.
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	// Per-connection context — cancelled when the connection or server closes.
+	ctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+
+	scanner := NewScanner(conn)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		resp := s.handleRequest(line)
+		resp := s.handleRequest(ctx, line)
 
 		data, err := json.Marshal(resp)
 		if err != nil {
-			data, _ = json.Marshal(BridgeResponse{
-				Type:    "Error",
-				Code:    -1,
-				Message: err.Error(),
-			})
+			data, _ = json.Marshal(bridgeError(jsonrpc.CodeInternalError, err.Error()))
 		}
 		data = append(data, '\n')
 
@@ -82,92 +120,85 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 			return
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		slog.Debug("bridge connection read error", "error", err)
+	}
 }
 
-func (s *BridgeServer) handleRequest(line string) BridgeResponse {
+// bridgeHandler defines a handler for a bridge request type.
+type bridgeHandler struct {
+	requireAdmin bool
+	handle       func(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse
+}
+
+// bridgeHandlers maps request types to their handlers.
+var bridgeHandlers = map[string]bridgeHandler{
+	ReqListTools:             {handle: handleListTools},
+	ReqCallTool:              {handle: handleCallTool},
+	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
+	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
+	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
+}
+
+func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
 	var req BridgeRequest
 	if err := json.Unmarshal([]byte(line), &req); err != nil {
-		return BridgeResponse{
-			Type:    "Error",
-			Code:    -32700,
-			Message: "parse error: " + err.Error(),
-		}
+		return bridgeError(jsonrpc.CodeParseError, "parse error: "+err.Error())
 	}
 
-	switch req.Type {
-	case "ListTools":
-		tools, err := s.router.ListTools(req.Token)
-		if err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: err.Error(),
-			}
-		}
-		return BridgeResponse{
-			Type:  "Tools",
-			Tools: tools,
-		}
-
-	case "CallTool":
-		result, err := s.router.CallTool(req.Name, req.Arguments, req.Token)
-		if err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: err.Error(),
-			}
-		}
-		return BridgeResponse{
-			Type:   "Result",
-			Result: result,
-		}
-
-	case "ReconcileExternalMcps":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
-		}
-		s.router.ReconcileExternalMcps()
-		return BridgeResponse{
-			Type: "OK",
-		}
-
-	case "ReloadExternalMcp":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
-		}
-		s.router.ReloadExternalMcp(req.Name)
-		return BridgeResponse{
-			Type: "OK",
-		}
-
-	case "ReloadService":
-		if err := s.router.ValidateAdmin(req.Token); err != nil {
-			return BridgeResponse{
-				Type:    "Error",
-				Code:    -32603,
-				Message: "admin auth: " + err.Error(),
-			}
-		}
-		s.router.ReloadService(req.Name)
-		return BridgeResponse{
-			Type: "OK",
-		}
-
-	default:
+	h, ok := bridgeHandlers[req.Type]
+	if !ok {
 		slog.Warn("bridge: unknown request type", "type", req.Type)
-		return BridgeResponse{
-			Type:    "Error",
-			Code:    -32601,
-			Message: "unknown request type: " + req.Type,
+		return bridgeError(jsonrpc.CodeMethodNotFound, "unknown request type: "+req.Type)
+	}
+
+	if h.requireAdmin {
+		if err := s.router.ValidateAdmin(req.Token); err != nil {
+			return bridgeError(jsonrpc.CodeUnauthorized, "admin auth: "+err.Error())
 		}
 	}
+
+	return h.handle(ctx, &req, s.router)
+}
+
+func handleListTools(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	tools, err := router.ListTools(ctx, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespTools, Tools: tools}
+}
+
+func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	result, err := router.CallTool(ctx, req.Name, req.Arguments, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespResult, Result: result}
+}
+
+// classifyErrorCode extracts a JSON-RPC error code from the error chain.
+// Router methods wrap auth/permission errors with jsonrpc.CodedError so the
+// bridge can classify them without fragile string matching.
+func classifyErrorCode(err error) int {
+	var coded *jsonrpc.CodedError
+	if errors.As(err, &coded) {
+		return coded.RPCCode
+	}
+	return jsonrpc.CodeInternalError
+}
+
+func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
+	router.ReconcileExternalMcps(ctx)
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	router.ReloadExternalMcp(ctx, req.Name)
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	router.ReloadService(req.Name)
+	return BridgeResponse{Type: RespOK}
 }

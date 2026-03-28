@@ -97,12 +97,18 @@ Service and MCP server logs are written to `~/Library/Application Support/Relay/
 tail -f ~/Library/Application\ Support/Relay/logs/f5tts-daemon.log
 ```
 
-## Related Projects
+## Ecosystem
 
-Relay is part of a suite of projects that combine to give LLMs secure access to macOS. Each works independently, but together they form a complete stack: **Eve** provides the LLM chat interface, **Relay** handles orchestration and security, and **macMCP** exposes native macOS capabilities. Register macMCP as an MCP server and Eve as a background service, and an LLM session in Eve can read your mail, check your calendar, or send an iMessage -- scoped by per-token permissions.
+Relay orchestrates 6 connected projects. Each works independently, but together they form a complete stack for giving LLMs secure access to macOS.
 
-- **[Eve](https://github.com/barelyworkingcode/eve)** -- Multi-provider LLM web interface with projects, file editing, and terminal. Registers as a Relay service for automatic launch (`relay service register`).
-- **[macMCP](https://github.com/barelyworkingcode/macMCP)** -- Standalone Swift MCP server with 41 macOS-native tools (Calendar, Contacts, Mail, Messages, etc.). Self-registers with Relay via `relay mcp register`.
+**Services** (managed via `relay service register`):
+- **[relayLLM](https://github.com/barelyworkingcode/relayLLM)** -- LLM engine service. Manages providers (Claude, Gemini, LM Studio), sessions, projects, and permissions.
+- **[Eve](https://github.com/barelyworkingcode/eve)** -- Browser-based LLM chat interface with projects, file editing, and terminal.
+- **[relayScheduler](https://github.com/barelyworkingcode/relayScheduler)** -- Task scheduler. Runs LLM prompts on schedule via relayLLM.
+- **[relayTelegram](https://github.com/barelyworkingcode/relayTelegram)** -- Telegram bot bridge to relayLLM sessions.
+
+**MCP Servers** (managed via `relay mcp register`):
+- **[macMCP](https://github.com/barelyworkingcode/macMCP)** -- Swift MCP server with 41 macOS-native tools (Calendar, Contacts, Mail, Messages, etc.).
 - **[fsMCP](https://github.com/barelyworkingcode/fsmcp)** -- Cross-platform file system MCP server (read, write, edit, glob, grep, bash). Uses Relay's per-token context for directory scoping.
 
 ## License

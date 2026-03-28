@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -58,7 +59,7 @@ type pkceParams struct {
 	Challenge string
 }
 
-var oauthHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var oauthHTTPClient = &http.Client{Timeout: OAuthHTTPTimeout}
 
 // probeForResourceMetadata sends a request to the MCP URL and extracts the
 // resource_metadata URL from the 401 WWW-Authenticate header.
@@ -66,6 +67,7 @@ func probeForResourceMetadata(mcpURL string) string {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	req, err := http.NewRequest("POST", mcpURL, strings.NewReader(body))
 	if err != nil {
+		slog.Debug("oauth: probe request creation failed", "url", mcpURL, "error", err)
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -73,11 +75,13 @@ func probeForResourceMetadata(mcpURL string) string {
 
 	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
+		slog.Debug("oauth: probe request failed", "url", mcpURL, "error", err)
 		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
+		slog.Debug("oauth: probe returned non-401", "url", mcpURL, "status", resp.StatusCode)
 		return ""
 	}
 
@@ -116,7 +120,7 @@ func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, 
 	}
 
 	var prm protectedResourceMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&prm); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&prm); err != nil {
 		return nil, fmt.Errorf("parse PRM: %w", err)
 	}
 	return &prm, nil
@@ -134,7 +138,7 @@ func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
 	}
 
 	var meta oauthMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
 		return nil
 	}
 	if meta.AuthorizationEndpoint == "" || meta.TokenEndpoint == "" {
@@ -180,7 +184,7 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 
 	// Step 3: Try to fetch AS metadata.
 	// Try from the authorization server if we found one, otherwise from the MCP host.
-	searchBases := []string{}
+	var searchBases []string
 	if authServerBase != "" {
 		searchBases = append(searchBases, authServerBase)
 	}
@@ -210,11 +214,14 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		fallback = authServerBase
 	}
 	slog.Info("oauth: using fallback endpoints", "base", fallback)
+	authEndpoint, _ := url.JoinPath(fallback, "authorize")
+	tokenEndpoint, _ := url.JoinPath(fallback, "token")
+	regEndpoint, _ := url.JoinPath(fallback, "register")
 	return &oauthDiscoveryResult{
 		Metadata: &oauthMetadata{
-			AuthorizationEndpoint: fallback + "/authorize",
-			TokenEndpoint:         fallback + "/token",
-			RegistrationEndpoint:  fallback + "/register",
+			AuthorizationEndpoint: authEndpoint,
+			TokenEndpoint:         tokenEndpoint,
+			RegistrationEndpoint:  regEndpoint,
 		},
 		Scope: scope,
 	}, nil
@@ -236,7 +243,10 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	if scope != "" {
 		regBody["scope"] = scope
 	}
-	body, _ := json.Marshal(regBody)
+	body, err := json.Marshal(regBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal registration body: %w", err)
+	}
 
 	slog.Info("oauth: registering client", "endpoint", meta.RegistrationEndpoint)
 	resp, err := oauthHTTPClient.Post(meta.RegistrationEndpoint, "application/json", strings.NewReader(string(body)))
@@ -246,13 +256,13 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("dynamic client registration failed (HTTP %d): %s\nCheck if the server requires manual client registration at: %s",
 			resp.StatusCode, string(respBody), meta.RegistrationEndpoint)
 	}
 
 	var regResp oauthRegistrationResponse
-	if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&regResp); err != nil {
 		return nil, fmt.Errorf("parse registration response: %w", err)
 	}
 	if regResp.ClientID == "" {
@@ -285,6 +295,96 @@ func generateState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// oauthCallbackServer manages the local HTTP server that receives the OAuth
+// authorization callback. It owns the listener, server, and result channels.
+type oauthCallbackServer struct {
+	listener net.Listener
+	server   *http.Server
+	codeCh   chan string
+	errCh    chan error
+	done     chan struct{} // closed when Serve goroutine exits
+}
+
+// newOAuthCallbackServer starts a local callback server for the OAuth redirect.
+// Returns the server and the redirect URI that should be registered with the AS.
+func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, "", fmt.Errorf("start callback server: %w", err)
+	}
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
+
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 2) // capacity 2: handler + Serve goroutine can both send without blocking
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != expectedState {
+			errCh <- fmt.Errorf("OAuth state mismatch")
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			return
+		}
+		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
+			desc := r.URL.Query().Get("error_description")
+			errCh <- fmt.Errorf("OAuth error: %s: %s", errMsg, desc)
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p><p>You can close this window.</p></body></html>", html.EscapeString(desc))
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errCh <- fmt.Errorf("no authorization code in callback")
+			http.Error(w, "Missing code", http.StatusBadRequest)
+			return
+		}
+		codeCh <- code
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html><body><h2>Authorization Successful</h2><p>You can close this window and return to Relay.</p></body></html>")
+	})
+
+	srv := &oauthCallbackServer{
+		listener: listener,
+		server: &http.Server{
+			Handler:           mux,
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+		},
+		codeCh:   codeCh,
+		errCh:    errCh,
+		done:     make(chan struct{}),
+	}
+	go func() {
+		defer close(srv.done)
+		if err := srv.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("callback server: %w", err)
+		}
+	}()
+
+	return srv, redirectURI, nil
+}
+
+// WaitForCode blocks until an authorization code is received, an error occurs,
+// or the timeout expires.
+func (s *oauthCallbackServer) WaitForCode(timeout time.Duration) (string, error) {
+	select {
+	case code := <-s.codeCh:
+		return code, nil
+	case err := <-s.errCh:
+		return "", err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("OAuth flow timed out waiting for authorization (%v)", timeout)
+	}
+}
+
+// Close shuts down the callback server, waits for the Serve goroutine to exit,
+// and releases all resources. Safe to call multiple times.
+func (s *oauthCallbackServer) Close() {
+	s.server.Close()
+	<-s.done // wait for Serve goroutine to exit
+}
+
 // startOAuthFlow orchestrates the full OAuth 2.1 flow:
 //  1. Discover metadata (PRM chain + path-aware well-known)
 //  2. Start local callback server
@@ -300,74 +400,32 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	}
 	meta := discovery.Metadata
 
-	// Start local callback server on a random port.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// PKCE + state (no cleanup needed on failure).
+	pkce, err := generatePKCE()
 	if err != nil {
-		return nil, fmt.Errorf("start callback server: %w", err)
+		return nil, err
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
+	state, err := generateState()
+	if err != nil {
+		return nil, err
+	}
+
+	// Start local callback server.
+	srv, redirectURI, err := newOAuthCallbackServer(state)
+	if err != nil {
+		return nil, err
+	}
+	defer srv.Close()
 
 	// Dynamic client registration.
 	reg, err := dynamicClientRegister(meta, redirectURI, discovery.Scope)
 	if err != nil {
-		listener.Close()
 		return nil, err
 	}
-
-	// PKCE.
-	pkce, err := generatePKCE()
-	if err != nil {
-		listener.Close()
-		return nil, err
-	}
-
-	state, err := generateState()
-	if err != nil {
-		listener.Close()
-		return nil, err
-	}
-
-	// Channel to receive the authorization code.
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("state") != state {
-			errCh <- fmt.Errorf("OAuth state mismatch")
-			http.Error(w, "State mismatch", http.StatusBadRequest)
-			return
-		}
-		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
-			desc := r.URL.Query().Get("error_description")
-			errCh <- fmt.Errorf("OAuth error: %s: %s", errMsg, desc)
-			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p><p>You can close this window.</p></body></html>", desc)
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			errCh <- fmt.Errorf("no authorization code in callback")
-			http.Error(w, "Missing code", http.StatusBadRequest)
-			return
-		}
-		codeCh <- code
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, "<html><body><h2>Authorization Successful</h2><p>You can close this window and return to Relay.</p></body></html>")
-	})
-
-	server := &http.Server{Handler: mux}
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("callback server: %w", err)
-		}
-	}()
 
 	// Build authorization URL.
 	authURL, err := url.Parse(meta.AuthorizationEndpoint)
 	if err != nil {
-		server.Close()
 		return nil, fmt.Errorf("invalid authorization endpoint: %w", err)
 	}
 	q := authURL.Query()
@@ -383,24 +441,14 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	authURL.RawQuery = q.Encode()
 
 	slog.Info("oauth: opening browser for authorization")
-
-	// Open browser.
 	openBrowser(authURL.String())
 
 	// Wait for callback or timeout.
-	var code string
-	select {
-	case code = <-codeCh:
-		slog.Info("oauth: received authorization code")
-	case err := <-errCh:
-		server.Close()
+	code, err := srv.WaitForCode(OAuthCallbackTimeout)
+	if err != nil {
 		return nil, err
-	case <-time.After(5 * time.Minute):
-		server.Close()
-		return nil, fmt.Errorf("OAuth flow timed out waiting for authorization (5 minutes)")
 	}
-
-	server.Close()
+	slog.Info("oauth: received authorization code")
 
 	// Exchange code for tokens.
 	tokenResp, err := exchangeCode(meta, code, pkce.Verifier, redirectURI, reg.ClientID, reg.ClientSecret)
@@ -421,6 +469,30 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	return oauthState, nil
 }
 
+// postTokenEndpoint POSTs form data to the token endpoint and decodes the response.
+// Shared by exchangeCode and refreshAccessToken.
+func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oauthTokenResponse, error) {
+	resp, err := oauthHTTPClient.PostForm(meta.TokenEndpoint, data)
+	if err != nil {
+		return nil, fmt.Errorf("%s request failed: %w", action, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("%s failed (HTTP %d): %s", action, resp.StatusCode, string(body))
+	}
+
+	var tokenResp oauthTokenResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("parse %s response: %w", action, err)
+	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("%s response missing access_token", action)
+	}
+	return &tokenResp, nil
+}
+
 // exchangeCode exchanges an authorization code for tokens.
 func exchangeCode(meta *oauthMetadata, code, verifier, redirectURI, clientID, clientSecret string) (*oauthTokenResponse, error) {
 	data := url.Values{
@@ -433,26 +505,7 @@ func exchangeCode(meta *oauthMetadata, code, verifier, redirectURI, clientID, cl
 	if clientSecret != "" {
 		data.Set("client_secret", clientSecret)
 	}
-
-	resp, err := oauthHTTPClient.PostForm(meta.TokenEndpoint, data)
-	if err != nil {
-		return nil, fmt.Errorf("token exchange request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token exchange failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResp oauthTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, fmt.Errorf("parse token response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("token response missing access_token")
-	}
-	return &tokenResp, nil
+	return postTokenEndpoint(meta, data, "token exchange")
 }
 
 // refreshAccessToken uses a refresh token to obtain a new access token.
@@ -465,24 +518,5 @@ func refreshAccessToken(meta *oauthMetadata, refreshToken, clientID, clientSecre
 	if clientSecret != "" {
 		data.Set("client_secret", clientSecret)
 	}
-
-	resp, err := oauthHTTPClient.PostForm(meta.TokenEndpoint, data)
-	if err != nil {
-		return nil, fmt.Errorf("token refresh request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResp oauthTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, fmt.Errorf("parse refresh response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("refresh response missing access_token")
-	}
-	return &tokenResp, nil
+	return postTokenEndpoint(meta, data, "token refresh")
 }
