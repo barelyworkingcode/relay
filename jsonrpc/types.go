@@ -2,12 +2,38 @@ package jsonrpc
 
 import "encoding/json"
 
+// Standard JSON-RPC 2.0 error codes.
+const (
+	CodeParseError     = -32700
+	CodeMethodNotFound = -32601
+	CodeInvalidParams  = -32602
+	CodeInternalError  = -32603
+)
+
+// Application-defined error codes (reserved range -32000 to -32099).
+const (
+	CodeUnauthorized = -32001
+)
+
+// Version is the JSON-RPC protocol version string.
+const Version = "2.0"
+
 // Request is an outgoing JSON-RPC 2.0 message.
 type Request struct {
 	JSONRPC string      `json:"jsonrpc"`
 	ID      interface{} `json:"id,omitempty"`
 	Method  string      `json:"method"`
 	Params  interface{} `json:"params,omitempty"`
+}
+
+// NewRequest creates a JSON-RPC 2.0 request with the version field pre-set.
+func NewRequest(id interface{}, method string, params interface{}) Request {
+	return Request{JSONRPC: Version, ID: id, Method: method, Params: params}
+}
+
+// NewNotification creates a JSON-RPC 2.0 notification (no ID, no response expected).
+func NewNotification(method string) Request {
+	return Request{JSONRPC: Version, Method: method}
 }
 
 // ServerRequest is an incoming JSON-RPC 2.0 message where Params is preserved
@@ -20,9 +46,11 @@ type ServerRequest struct {
 }
 
 // Response is an incoming JSON-RPC 2.0 message.
+// ID intentionally omits `omitempty` so that null IDs are serialized as
+// "id": null (required by JSON-RPC 2.0 spec for parse error responses).
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id,omitempty"`
+	ID      interface{}     `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *Error          `json:"error,omitempty"`
 }
@@ -34,16 +62,38 @@ type Error struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// CodedError wraps an error with a JSON-RPC error code. Use this to propagate
+// error classification across package boundaries without relying on fragile
+// string matching. Bridge handlers use errors.As to extract the code.
+type CodedError struct {
+	RPCCode int
+	Err     error
+}
+
+func (e *CodedError) Error() string { return e.Err.Error() }
+func (e *CodedError) Unwrap() error { return e.Err }
+
+// NewCodedError wraps err with a JSON-RPC error code.
+func NewCodedError(code int, err error) *CodedError {
+	return &CodedError{RPCCode: code, Err: err}
+}
+
 // RespIDEquals checks if a JSON-RPC response ID matches an expected int64 value.
 func RespIDEquals(id interface{}, expected int64) bool {
+	v, ok := RespIDToInt64(id)
+	return ok && v == expected
+}
+
+// RespIDToInt64 extracts an int64 from a JSON-RPC response ID.
+func RespIDToInt64(id interface{}) (int64, bool) {
 	switch v := id.(type) {
 	case float64:
-		return int64(v) == expected
+		return int64(v), true
 	case int64:
-		return v == expected
+		return v, true
 	case json.Number:
 		n, err := v.Int64()
-		return err == nil && n == expected
+		return n, err == nil
 	}
-	return false
+	return 0, false
 }

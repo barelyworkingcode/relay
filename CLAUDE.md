@@ -1,6 +1,6 @@
 # Relay (Go)
 
-Cross-platform MCP orchestrator. Tray app with token-authenticated Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management. macOS now, Windows later.
+macOS MCP orchestrator. Tray app with token-authenticated Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management.
 
 ## Modes
 
@@ -30,14 +30,13 @@ bridge/         Unix socket IPC. Newline-delimited JSON. No internal deps.
 mcp/            MCP types + stdio server (proxies to bridge)
 ```
 
-## Platform Abstraction
+## Platform
 
 `Platform` interface in `platform.go`: Init, Run, SetupTray, UpdateMenu, OpenSettings, EvalSettingsJS, CopyToClipboard, DispatchToMain, OpenURL.
 
 - `cocoa_darwin.go` -- `DarwinPlatform` (macOS, cgo)
-- `platform_windows.go` -- `WindowsPlatform` (stub)
 - `init_darwin.go` -- `runtime.LockOSThread` (darwin build tag)
-- `service_registry_unix.go` / `service_registry_windows.go` -- platform shell/process helpers
+- `service_registry_unix.go` -- platform shell/process helpers
 
 ## Bridge
 
@@ -52,13 +51,24 @@ HTTP MCPs use OAuth 2.1 with PKCE (S256). Discovery chain: probe MCP URL for 401
 
 ## Settings UI
 
-IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS) or `window.chrome.webview.postMessage` (Windows).
+IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS).
 Tabs: Services, MCP Servers, Security.
 
-## Sibling Projects
+## Ecosystem
 
-- `../macMCP/` -- standalone Swift MCP server with 41 macOS-native tools. Installs to `~/.local/bin/macmcp`, self-registers via `relay mcp register`.
-- `../fsMCP/` -- cross-platform TypeScript MCP server with 6 file system tools (read, write, edit, glob, grep, bash). Installs to `~/.local/bin/fsmcp`, self-registers via `relay mcp register`. Uses per-token `_meta.allowed_dirs` context for directory scoping.
+Relay is the hub for 6 connected projects. Cross-project features often require changes in multiple repos.
+
+Services (managed via `relay service register`):
+
+- `../relayLLM/` -- LLM engine. Providers, sessions, projects, permissions. Proxies task API and forwards scheduler WebSocket events from relayScheduler. Eve and relayTelegram connect to its HTTP/WS API as their single backend.
+- `../eve/` -- Browser-based LLM frontend. Proxies to relayLLM for all LLM concerns.
+- `../relayScheduler/` -- Task scheduler. Runs LLM prompts on schedule via relayLLM.
+- `../relayTelegram/` -- Telegram bot bridge to relayLLM sessions.
+
+MCP Servers (managed via `relay mcp register`):
+
+- `../macMCP/` -- Swift MCP server with 41 macOS-native tools. Installs to `~/.local/bin/macmcp`.
+- `../fsMCP/` -- TypeScript MCP server with 6 file system tools. Installs to `~/.local/bin/fsmcp`. Uses per-token `_meta.allowed_dirs` context for directory scoping.
 
 ## Key Files
 
