@@ -141,6 +141,10 @@ func runTrayApp() {
 		services: app.registry,
 		onChange: app.onExternalChange,
 	}
+	// Share the in-memory service token store between the router (auth) and
+	// the registry (token lifecycle). Tokens live only in memory — no cleanup
+	// needed on crash.
+	registry.TokenStore = &router.serviceTokens
 	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)

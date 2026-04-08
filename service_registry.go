@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,15 +30,20 @@ var _ ServiceManager = (*ServiceRegistry)(nil)
 
 // serviceProcess bundles a running process with its log file for cleanup.
 type serviceProcess struct {
-	cmd     *exec.Cmd
-	logFile *os.File
-	done    chan struct{} // closed when cmd.Wait() returns
+	cmd       *exec.Cmd
+	logFile   *os.File
+	done      chan struct{} // closed when cmd.Wait() returns
+	tokenHash string       // in-memory service token hash (empty if none)
 }
 
 // ServiceRegistry manages background service child processes.
 type ServiceRegistry struct {
 	mu        sync.Mutex
 	processes map[string]*serviceProcess
+
+	// TokenStore holds ephemeral in-memory tokens for managed services.
+	// Set during initialization, before any services are started.
+	TokenStore *serviceTokenStore
 
 	// OnProcessExit is called from the reaper goroutine after a managed
 	// process exits. Set once during initialization, before any services
@@ -77,6 +84,30 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	cmd := buildCommand(config)
 
+	// Generate an ephemeral service token and inject Relay MCP env vars.
+	var tokenHash string
+	if r.TokenStore != nil {
+		rawToken := generateRandomHex(32)
+		tokenHash = hashToken(rawToken)
+		r.TokenStore.Register(tokenHash)
+
+		relayBin, _ := os.Executable()
+		relayBin, _ = filepath.EvalSymlinks(relayBin)
+
+		mergeEnv(cmd, map[string]string{
+			"RELAY_MCP_TOKEN":   rawToken,
+			"RELAY_MCP_COMMAND": relayBin,
+		})
+	}
+
+	// Clean up the service token on any error path before the process starts.
+	committed := false
+	defer func() {
+		if !committed && tokenHash != "" {
+			r.TokenStore.Remove(tokenHash)
+		}
+	}()
+
 	logDir, err := serviceLogDir()
 	if err != nil {
 		return err
@@ -94,11 +125,13 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		logFile.Close()
 		return fmt.Errorf("failed to start '%s': %w", config.DisplayName, err)
 	}
+	committed = true
 
 	proc := &serviceProcess{
-		cmd:     cmd,
-		logFile: logFile,
-		done:    make(chan struct{}),
+		cmd:       cmd,
+		logFile:   logFile,
+		done:      make(chan struct{}),
+		tokenHash: tokenHash,
 	}
 
 	// Reap the process in the background so ProcessState is populated
@@ -113,6 +146,10 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		}()
 		defer close(proc.done)
 		defer logFile.Close()
+		// Clean up ephemeral token on exit.
+		if proc.tokenHash != "" && r.TokenStore != nil {
+			defer r.TokenStore.Remove(proc.tokenHash)
+		}
 		if err := cmd.Wait(); err != nil {
 			slog.Warn("service exited with error", "id", config.ID, "error", err)
 		}
@@ -120,6 +157,15 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	r.processes[config.ID] = proc
 	return nil
+}
+
+// generateRandomHex returns a random hex string of the given byte length.
+func generateRandomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 // Stop kills a service process and waits for it to exit.
