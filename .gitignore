@@ -4,7 +4,9 @@
 # Build artifacts
 *.app
 *.dSYM/
+bin/
 relay
+relaygo
 macmcp
 
 # OS
@@ -21,3 +23,6 @@ __pycache__/
 
 # Environment
 .env
+
+# Scratch
+prompt.md
