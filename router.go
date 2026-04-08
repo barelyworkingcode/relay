@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"relaygo/bridge"
 	"relaygo/jsonrpc"
@@ -54,10 +55,46 @@ func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
 // ---------------------------------------------------------------------------
 
 type appRouter struct {
-	store    SettingsStore
-	tools    ToolManager
-	services ServiceReloader
-	onChange func()
+	store         SettingsStore
+	tools         ToolManager
+	services      ServiceReloader
+	onChange      func()
+	serviceTokens serviceTokenStore
+}
+
+// serviceTokenStore holds ephemeral in-memory tokens for managed services.
+// Tokens are never persisted — if Relay crashes, both the tokens and the
+// services that use them disappear together.
+type serviceTokenStore struct {
+	mu     sync.Mutex
+	hashes map[string]*StoredToken // hash → synthetic StoredToken with full access
+}
+
+// Register adds an in-memory service token.
+func (s *serviceTokenStore) Register(hash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hashes == nil {
+		s.hashes = make(map[string]*StoredToken)
+	}
+	s.hashes[hash] = &StoredToken{
+		Name: "service",
+		Hash: hash,
+	}
+}
+
+// Remove deletes an in-memory service token.
+func (s *serviceTokenStore) Remove(hash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.hashes, hash)
+}
+
+// Lookup checks if a hash matches an in-memory service token.
+func (s *serviceTokenStore) Lookup(hash string) *StoredToken {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hashes[hash]
 }
 
 // Compile-time interface assertions.
@@ -68,10 +105,21 @@ var (
 )
 
 // resolveAuth loads settings and authenticates the given token.
-// Returns a CodedError with CodeUnauthorized on auth failures so the bridge
-// can classify errors via errors.As instead of fragile string matching.
+// Checks in-memory service tokens first (full access, no per-MCP permissions),
+// then falls back to stored tokens in settings.
 func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
+	if token == "" {
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+	}
+
 	s := r.store.Get()
+
+	// Check ephemeral service tokens first.
+	hash := hashToken(token)
+	if tok := r.serviceTokens.Lookup(hash); tok != nil {
+		return tok, s, nil
+	}
+
 	stored, err := s.Authenticate(token)
 	if err != nil {
 		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, err)
@@ -85,15 +133,16 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 		return nil, err
 	}
 
+	isServiceToken := stored.Name == "service"
 	tools := make([]mcp.Tool, 0)
 
 	// External MCP tools.
 	for _, ext := range settings.ExternalMcps {
-		if checkToolAccess(settings, stored.Hash, ext.ID, "") != nil {
+		if !isServiceToken && checkToolAccess(settings, stored.Hash, ext.ID, "") != nil {
 			continue
 		}
 		for _, t := range r.tools.Tools(ext.ID) {
-			if checkToolAccess(settings, stored.Hash, ext.ID, t.Name) != nil {
+			if !isServiceToken && checkToolAccess(settings, stored.Hash, ext.ID, t.Name) != nil {
 				continue
 			}
 			tools = append(tools, t)
@@ -109,11 +158,15 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		return nil, err
 	}
 
+	isServiceToken := stored.Name == "service"
+
 	// Check external MCPs.
 	extID, extMcp := r.tools.FindToolOwner(name)
 	if extMcp != nil {
-		if err := checkToolAccess(settings, stored.Hash, extID, name); err != nil {
-			return nil, err
+		if !isServiceToken {
+			if err := checkToolAccess(settings, stored.Hash, extID, name); err != nil {
+				return nil, err
+			}
 		}
 
 		// Inject per-token context as _meta for this MCP.
