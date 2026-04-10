@@ -86,6 +86,130 @@ static MenuTarget *menuTarget = nil;
 @end
 
 // ---------------------------------------------------------------------------
+// Toggle row view — draws hover highlight like native menu items
+// ---------------------------------------------------------------------------
+@interface ToggleRowView : NSView
+@end
+
+@implementation ToggleRowView
+
+- (BOOL)allowsVibrancy { return NO; }
+
+- (void)drawRect:(NSRect)dirtyRect {
+    if (self.enclosingMenuItem.isHighlighted) {
+        NSRect inset = NSInsetRect(self.bounds, 4.0, 1.0);
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:inset
+                                                             xRadius:4.0 yRadius:4.0];
+        [[NSColor selectedContentBackgroundColor] set];
+        [path fill];
+    }
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    // Remove stale tracking areas
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    if (self.window) {
+        NSTrackingArea *area = [[NSTrackingArea alloc]
+            initWithRect:NSZeroRect
+                 options:(NSTrackingMouseEnteredAndExited |
+                          NSTrackingActiveInActiveApp |
+                          NSTrackingInVisibleRect)
+                   owner:self
+                userInfo:nil];
+        [self addTrackingArea:area];
+    }
+}
+
+- (void)mouseEntered:(NSEvent *)event { [self setNeedsDisplay:YES]; }
+- (void)mouseExited:(NSEvent *)event  { [self setNeedsDisplay:YES]; }
+- (void)mouseUp:(NSEvent *)event      { /* absorb so menu stays open */ }
+@end
+
+// ---------------------------------------------------------------------------
+// Custom toggle switch — draws a pill-shaped on/off control
+// ---------------------------------------------------------------------------
+@interface ToggleSwitch : NSControl
+@property (nonatomic) BOOL on;
+@end
+
+@implementation ToggleSwitch
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) { _on = NO; }
+    return self;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    NSRect bounds = self.bounds;
+    CGFloat h = bounds.size.height;
+    CGFloat r = h / 2.0;
+
+    // Track
+    NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:bounds
+                                                          xRadius:r yRadius:r];
+    if (self.on) {
+        [[NSColor controlAccentColor] set];
+    } else {
+        [[NSColor secondaryLabelColor] set];
+    }
+    [track fill];
+
+    // Knob
+    CGFloat inset = 2.0;
+    CGFloat knobD = h - inset * 2;
+    CGFloat knobX = self.on ? (bounds.size.width - knobD - inset) : inset;
+    NSBezierPath *knob = [NSBezierPath bezierPathWithOvalInRect:
+        NSMakeRect(knobX, inset, knobD, knobD)];
+    [[NSColor whiteColor] set];
+    [knob fill];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    [self sendAction:self.action to:self.target];
+}
+
+@end
+
+// ---------------------------------------------------------------------------
+// Toggle action target
+// ---------------------------------------------------------------------------
+@interface ToggleTarget : NSObject
+- (void)toggleChanged:(ToggleSwitch *)sender;
+@end
+
+static ToggleTarget *toggleTarget = nil;
+
+@implementation ToggleTarget
+- (void)toggleChanged:(ToggleSwitch *)sender {
+    int itemID = (int)sender.tag;
+    goOnMenuClick(itemID);
+}
+@end
+
+// ---------------------------------------------------------------------------
+// Label click target (URL service labels)
+// ---------------------------------------------------------------------------
+@interface LabelClickTarget : NSObject
+- (void)labelClicked:(NSButton *)sender;
+@end
+
+static LabelClickTarget *labelClickTarget = nil;
+
+@implementation LabelClickTarget
+- (void)labelClicked:(NSButton *)sender {
+    NSString *url = sender.toolTip;  // URL stored in toolTip
+    if (url && url.length > 0) {
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
+        [appDelegate.statusItem.menu cancelTrackingWithoutAnimation];
+    }
+}
+@end
+
+// ---------------------------------------------------------------------------
 // cocoa_init_app  -- create NSApplication, delegate, menu target, edit menu
 // ---------------------------------------------------------------------------
 void cocoa_init_app(void) {
@@ -96,6 +220,8 @@ void cocoa_init_app(void) {
     [NSApp setDelegate:appDelegate];
 
     menuTarget = [[MenuTarget alloc] init];
+    toggleTarget = [[ToggleTarget alloc] init];
+    labelClickTarget = [[LabelClickTarget alloc] init];
 
     // Set up Edit menu so Cmd+C/V/X/A work in WKWebView
     NSMenu *mainMenu = [[NSMenu alloc] init];
@@ -178,6 +304,70 @@ void cocoa_update_menu(const char* menuJSON) {
             continue;
         }
 
+        NSNumber *isToggle = item[@"toggle"];
+        if (isToggle && [isToggle boolValue]) {
+            NSNumber *isOn = item[@"on"];
+            NSString *url = item[@"url"];
+
+            CGFloat viewHeight = 30.0;
+            CGFloat hPad = 14.0;
+            CGFloat switchLabelGap = 8.0;
+            NSFont *menuFont = [NSFont menuFontOfSize:0];
+
+            ToggleRowView *rowView = [[ToggleRowView alloc] initWithFrame:
+                NSMakeRect(0, 0, 250.0, viewHeight)];
+
+            // Custom toggle switch
+            CGFloat swW = 36.0, swH = 20.0;
+            ToggleSwitch *toggle = [[ToggleSwitch alloc] initWithFrame:
+                NSMakeRect(hPad, round((viewHeight - swH) / 2.0), swW, swH)];
+            toggle.on = (isOn && [isOn boolValue]);
+            toggle.target = toggleTarget;
+            toggle.action = @selector(toggleChanged:);
+            toggle.tag = [itemID integerValue];
+            [rowView addSubview:toggle];
+
+            CGFloat labelX = NSMaxX(toggle.frame) + switchLabelGap;
+
+            if (url && url.length > 0) {
+                // Clickable label for URL services
+                NSButton *btn = [NSButton buttonWithTitle:title
+                                                   target:labelClickTarget
+                                                   action:@selector(labelClicked:)];
+                btn.bordered = NO;
+                btn.font = menuFont;
+                btn.contentTintColor = [NSColor labelColor];
+                btn.toolTip = url;
+                [btn sizeToFit];
+                NSRect btnFrame = btn.frame;
+                btnFrame.origin.x = labelX;
+                btnFrame.origin.y = (viewHeight - btnFrame.size.height) / 2.0;
+                btn.frame = btnFrame;
+                [rowView addSubview:btn];
+            } else {
+                // Plain label for non-URL services
+                NSTextField *label = [NSTextField labelWithString:title];
+                label.font = menuFont;
+                label.textColor = [NSColor labelColor];
+                label.lineBreakMode = NSLineBreakByTruncatingTail;
+                [label sizeToFit];
+                NSRect labelFrame = label.frame;
+                labelFrame.origin.x = labelX;
+                labelFrame.origin.y = (viewHeight - labelFrame.size.height) / 2.0;
+                label.frame = labelFrame;
+                [rowView addSubview:label];
+            }
+
+            NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:@""
+                                                        action:nil
+                                                 keyEquivalent:@""];
+            mi.view = rowView;
+            mi.tag = [itemID integerValue];
+            [menu addItem:mi];
+            continue;
+        }
+
+        // Standard menu item (Settings, Exit, etc.)
         NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:title
                                                     action:@selector(menuItemClicked:)
                                              keyEquivalent:@""];

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -53,11 +52,6 @@ const (
 	menuIDSvcBase  = 100 // service items start here
 )
 
-// Status dot emoji for tray menu service items.
-const (
-	statusDotRunning = "\U0001F7E2" // green circle
-	statusDotStopped = "\U0001F534" // red circle
-)
 
 func runTrayApp() {
 	slog.Info("starting tray app")
@@ -252,6 +246,9 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 		Title   string `json:"title"`
 		ID      int    `json:"id"`
 		Enabled bool   `json:"enabled"`
+		Toggle  bool   `json:"toggle,omitempty"`
+		On      bool   `json:"on,omitempty"`
+		URL     string `json:"url,omitempty"`
 	}
 
 	var items []menuItem
@@ -260,16 +257,15 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 	// not positional index (which can go stale if services change between builds).
 	svcMap := make(map[int]string, len(s.Services))
 	for i, svc := range s.Services {
-		dot := statusDotStopped
-		if a.registry.IsRunning(svc.ID) {
-			dot = statusDotRunning
-		}
 		menuID := menuIDSvcBase + i
 		svcMap[menuID] = svc.ID
 		items = append(items, menuItem{
-			Title:   fmt.Sprintf("%s %s", dot, svc.DisplayName),
+			Title:   svc.DisplayName,
 			ID:      menuID,
 			Enabled: true,
+			Toggle:  true,
+			On:      a.registry.IsRunning(svc.ID),
+			URL:     svc.URL,
 		})
 	}
 	a.svcMenuMap = svcMap
@@ -315,18 +311,6 @@ func (a *App) toggleService(menuItemID int) {
 	s := a.store.Get()
 	config, _ := s.findServiceByID(svcID)
 	if config == nil {
-		return
-	}
-
-	// If the service has a URL, lazy-start and open the URL.
-	if config.URL != "" {
-		if !a.registry.IsRunning(config.ID) {
-			if err := a.registry.Start(config); err != nil {
-				slog.Error("service start failed", "error", err)
-			}
-		}
-		a.platform.OpenURL(config.URL)
-		a.updateMenu()
 		return
 	}
 
