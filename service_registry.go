@@ -23,6 +23,7 @@ type ServiceManager interface {
 	CleanupDead()
 	StartAllAutostart(configs []ServiceConfig)
 	StopAll()
+	CloseLLMChannel()
 }
 
 // Compile-time interface assertions.
@@ -44,6 +45,13 @@ type ServiceRegistry struct {
 	// TokenStore holds ephemeral in-memory tokens for managed services.
 	// Set during initialization, before any services are started.
 	TokenStore *serviceTokenStore
+
+	// LLMChannel is the orchestrator-issued credential pair (bearer token +
+	// Unix socket path) for the Eve↔relayLLM channel. When non-nil, services
+	// matched by participatesInLLMChannel() get RELAY_LLM_TOKEN and
+	// RELAY_LLM_SOCKET injected into their environment at spawn time.
+	// Set during initialization, before any services are started.
+	LLMChannel *LLMChannel
 
 	// OnProcessExit is called from the reaper goroutine after a managed
 	// process exits. Set once during initialization, before any services
@@ -97,6 +105,21 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		mergeEnv(cmd, map[string]string{
 			"RELAY_MCP_TOKEN":   rawToken,
 			"RELAY_MCP_COMMAND": relayBin,
+		})
+	}
+
+	// LLM channel: when spawning Eve or relayLLM, inject the shared bearer
+	// token and Unix socket path so the two processes can authenticate each
+	// other without writing credentials to disk. Created lazily on first use
+	// — both processes get the same pair, regardless of start order.
+	if r.LLMChannel != nil && participatesInLLMChannel(config.ID) {
+		llmToken, llmSocket, err := r.LLMChannel.Ensure()
+		if err != nil {
+			return fmt.Errorf("provision llm channel for %s: %w", config.ID, err)
+		}
+		mergeEnv(cmd, map[string]string{
+			"RELAY_LLM_TOKEN":  llmToken,
+			"RELAY_LLM_SOCKET": llmSocket,
 		})
 	}
 
@@ -273,6 +296,14 @@ func (r *ServiceRegistry) RunningIDs() []string {
 		}
 	}
 	return ids
+}
+
+// CloseLLMChannel unlinks the Eve↔relayLLM Unix socket if one was provisioned.
+// No-op when LLMChannel is unset (e.g. in tests). Safe to call multiple times.
+func (r *ServiceRegistry) CloseLLMChannel() {
+	if r.LLMChannel != nil {
+		r.LLMChannel.Close()
+	}
 }
 
 // CleanupDead removes dead processes from the registry.

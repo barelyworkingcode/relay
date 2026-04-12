@@ -139,6 +139,12 @@ func runTrayApp() {
 	// the registry (token lifecycle). Tokens live only in memory — no cleanup
 	// needed on crash.
 	registry.TokenStore = &router.serviceTokens
+
+	// Provision the Eve↔relayLLM channel. Lazy: the bearer token + Unix
+	// socket path are generated on the first spawn that participates
+	// (Eve or relayLLM, whichever comes first), then reused for the other.
+	// See relay_llm_channel.go for the rationale and the participant list.
+	registry.LLMChannel = NewLLMChannel()
 	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)
@@ -357,6 +363,9 @@ func (a *App) cleanup() {
 			a.bridgeServer.Close()
 		}
 		a.registry.StopAll()
+		// Unlink the LLM channel socket after the children that depend on it
+		// have stopped. The token persists in-memory until the process exits.
+		a.registry.CloseLLMChannel()
 		a.wg.Wait()
 	})
 }

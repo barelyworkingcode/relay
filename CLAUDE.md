@@ -49,6 +49,22 @@ Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions:
 
 HTTP MCPs use OAuth 2.1 with PKCE (S256). Discovery chain: probe MCP URL for 401 `WWW-Authenticate` -> fetch Protected Resource Metadata (RFC 9728) for authorization server + scopes -> fetch AS metadata (path-aware well-known). Scopes from PRM `scopes_supported` are passed to both dynamic client registration and the authorization URL. OAuth state persisted in settings.json. Tokens auto-refresh on expiry.
 
+### Ephemeral service tokens (existing)
+
+`service_registry.go` injects an ephemeral `RELAY_MCP_TOKEN` + `RELAY_MCP_COMMAND` into every spawned child service (eve, relayLLM, relayScheduler, relayTelegram). The token is 32 random bytes (`generateRandomHex(32)`), hashed into the in-memory `TokenStore` on spawn, and removed from the store when the process exits. This is the primary mechanism for child services to reach the bridge socket.
+
+### Eve ↔ relayLLM internal channel
+
+Separate from the MCP bridge above, Eve and relayLLM talk to each other directly (Eve forwards session/message/permission/terminal traffic to relayLLM as its only backend). That channel has its own authentication and transport hardening. The `relay` orchestrator issues and injects credentials at spawn time:
+
+- **`RELAY_LLM_SOCKET`** — path to a Unix domain socket allocated under `<UserConfigDir>/relay/relay-llm-<pid>.sock`. The orchestrator creates the parent dir with mode `0700`, and passes the path into **both** Eve's and relayLLM's environment. relayLLM binds this socket with mode `0600` at startup; Eve dials it via `http.Agent({ socketPath })` and `ws({ agent })`. The orchestrator unlinks the socket on graceful shutdown.
+- **`RELAY_LLM_TOKEN`** — ephemeral 32-byte hex bearer token, generated the same way `RELAY_MCP_TOKEN` is, and injected into **both** Eve and relayLLM at spawn. Eve sends it on every HTTP request and every WebSocket upgrade as `Authorization: Bearer <token>`. Used as defense-in-depth on top of the socket's FS permissions; required unconditionally when the channel falls back to TCP for split-host deployments.
+- **Lifetime.** Per-process: removed from the in-memory store when either Eve or relayLLM exits. Never written to disk.
+- **Scope.** This token is **not** the same as `RELAY_MCP_TOKEN` and must not be reused — the MCP bridge and the LLM session channel are separate trust boundaries. Multiplexing the two would mean that leaking one credential would grant access to the other, which is exactly what the split is designed to prevent.
+- **Fallback (split-host).** If the orchestrator does not allocate a socket (e.g. operator-managed deployment where Eve and relayLLM run on different hosts), Eve consumes `RELAY_LLM_URL` (must be `https://` off-loopback) + `RELAY_LLM_TOKEN` (must be set) + optional `RELAY_LLM_CA`. Eve's `assertStartupConfig()` fail-closes the process on any insecure combination.
+
+Implementation lives in `relay_llm_channel.go` (`LLMChannel` type, `participatesInLLMChannel()` service-ID matcher) and `service_registry.go` (`Start()` injects `RELAY_LLM_TOKEN` + `RELAY_LLM_SOCKET` for participating services, `CloseLLMChannel()` unlinks the socket on shutdown). Full rationale and end-to-end verification results live in `../eve/plans/cozy-honking-toast.md`.
+
 ## Settings UI
 
 IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS).
