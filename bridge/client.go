@@ -62,6 +62,37 @@ func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, e
 	return resp.Result, nil
 }
 
+// ListProjects sends a ListProjects request and returns the raw JSON project array.
+func (c *Client) ListProjects() (json.RawMessage, error) {
+	resp, err := c.send(BridgeRequest{
+		Type:  ReqListProjects,
+		Token: c.token,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list projects: %w", err)
+	}
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+// GetProject sends a GetProject request and returns the raw JSON project.
+func (c *Client) GetProject(id string) (json.RawMessage, error) {
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqGetProject,
+		ProjectID: id,
+		Token:     c.token,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project %q: %w", id, err)
+	}
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
 // sendAdmin sends an admin request to the bridge and returns any error.
 func sendAdmin(reqType, name, token string) error {
 	c := NewClient(token)

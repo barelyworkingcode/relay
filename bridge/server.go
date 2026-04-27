@@ -138,6 +138,8 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
 	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
 	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
+	ReqListProjects:          {handle: handleListProjects},
+	ReqGetProject:            {handle: handleGetProject},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -201,4 +203,20 @@ func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter)
 func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
 	router.ReloadService(req.Name)
 	return BridgeResponse{Type: RespOK}
+}
+
+func handleListProjects(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	data, err := router.ListProjects(req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespProjects, Data: data}
+}
+
+func handleGetProject(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	data, err := router.GetProject(req.ProjectID, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespProject, Data: data}
 }
