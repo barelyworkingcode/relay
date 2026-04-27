@@ -72,16 +72,8 @@ func runTrayApp() {
 	settings := store.Get()
 	slog.Info("settings loaded")
 
-	// External MCP manager with injected callbacks for settings persistence.
+	// External MCP manager with injected callback for OAuth token refresh persistence.
 	extMgr := NewExternalMcpManager(
-		// onDiscover: persist discovered tools and context schema.
-		func(id string, tools []ToolInfo, schema json.RawMessage) {
-			store.With(func(s *Settings) {
-				s.UpdateDiscoveredTools(id, tools)
-				s.UpdateContextSchema(id, schema)
-			})
-		},
-		// onTokenRefresh: persist refreshed OAuth tokens.
 		func(mcpID string, oauth *OAuthState) {
 			store.With(func(s *Settings) { s.UpdateOAuthState(mcpID, oauth) })
 		},

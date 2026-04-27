@@ -8,9 +8,9 @@ import (
 // Settings holds all persistent Relay configuration.
 type Settings struct {
 	Version      int             `json:"version"`
-	Tokens       []StoredToken   `json:"tokens"`
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
 	Services     []ServiceConfig `json:"services"`
+	Projects     []Project       `json:"projects"`
 	AdminSecret  string          `json:"admin_secret,omitempty"`
 }
 
@@ -18,43 +18,24 @@ type Settings struct {
 // MCP CRUD — methods are small and cohesive with the Settings struct.
 // ---------------------------------------------------------------------------
 
-// AddExternalMcp adds an external MCP config. New MCPs default to PermOff for
-// existing tokens (least privilege). Does not save; use within store.With.
+// AddExternalMcp adds an external MCP config. Does not save; use within store.With.
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.ExternalMcps = append(s.ExternalMcps, mcp)
-	for i := range s.Tokens {
-		if s.Tokens[i].Permissions == nil {
-			s.Tokens[i].Permissions = make(map[string]Permission)
-		}
-		if _, exists := s.Tokens[i].Permissions[mcp.ID]; !exists {
-			s.Tokens[i].Permissions[mcp.ID] = PermOff
-		}
-	}
 }
 
 // UpdateExternalMcp replaces an external MCP config by ID.
-// Preserves DiscoveredTools from the existing entry if the new one has none.
 // Does not save; use within store.With.
 func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
-	existing, idx := s.findMcpByID(cfg.ID)
-	if existing == nil {
+	_, idx := s.findMcpByID(cfg.ID)
+	if idx < 0 {
 		return
-	}
-	if len(cfg.DiscoveredTools) == 0 {
-		cfg.DiscoveredTools = existing.DiscoveredTools
 	}
 	s.ExternalMcps[idx] = cfg
 }
 
-// RemoveExternalMcp removes an external MCP and cleans up token permissions,
-// disabled tools, and per-MCP context. Does not save; use within store.With.
+// RemoveExternalMcp removes an external MCP. Does not save; use within store.With.
 func (s *Settings) RemoveExternalMcp(id string) {
 	s.ExternalMcps = slices.DeleteFunc(s.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
-	for i := range s.Tokens {
-		delete(s.Tokens[i].Permissions, id)
-		delete(s.Tokens[i].DisabledTools, id)
-		delete(s.Tokens[i].Context, id)
-	}
 }
 
 // UpsertExternalMcp adds or updates an external MCP config.
@@ -91,22 +72,6 @@ func (s *Settings) ResolveMcpID(id, name string) string {
 func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
 		mcp.OAuthState = oauth
-	}
-}
-
-// UpdateDiscoveredTools updates the persisted tool list for an external MCP.
-// Does not save; use within store.With.
-func (s *Settings) UpdateDiscoveredTools(mcpID string, tools []ToolInfo) {
-	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
-		mcp.DiscoveredTools = tools
-	}
-}
-
-// UpdateContextSchema updates the persisted context schema for an external MCP.
-// Does not save; use within store.With.
-func (s *Settings) UpdateContextSchema(mcpID string, schema json.RawMessage) {
-	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
-		mcp.ContextSchema = schema
 	}
 }
 
@@ -208,18 +173,128 @@ func (s *Settings) ResolveServiceID(id, name string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Lookup helpers — eliminate repeated linear scans
+// Project CRUD
 // ---------------------------------------------------------------------------
 
-// findTokenByHash returns the token with the given hash and its index, or nil, -1.
-func (s *Settings) findTokenByHash(hash string) (*StoredToken, int) {
-	for i := range s.Tokens {
-		if s.Tokens[i].Hash == hash {
-			return &s.Tokens[i], i
+// AddProject adds a project and its associated token.
+// Does not save; use within store.With.
+func (s *Settings) AddProject(p Project) {
+	s.Projects = append(s.Projects, p)
+}
+
+// RemoveProject removes a project by ID.
+// Does not save; use within store.With.
+func (s *Settings) RemoveProject(id string) {
+	s.Projects = slices.DeleteFunc(s.Projects, func(p Project) bool { return p.ID == id })
+}
+
+// UpdateProjectMcps updates the allowed MCP IDs for a project and syncs
+// the associated token's permissions and context.
+// schemas maps MCP IDs to their runtime context schemas.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectMcps(id string, mcpIDs []string, schemas map[string]json.RawMessage) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.AllowedMcpIDs = mcpIDs
+	s.SyncProjectToken(proj, schemas)
+}
+
+// UpdateProjectModels updates the allowed models for a project.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectModels(id string, models []string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.AllowedModels = models
+}
+
+// UpdateProjectName updates a project's name.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectName(id string, name string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.Name = name
+}
+
+// UpdateProjectPath updates a project's path and syncs token context.
+// schemas maps MCP IDs to their runtime context schemas.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]json.RawMessage) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.Path = path
+	s.SyncProjectToken(proj, schemas)
+}
+
+// SyncProjectToken updates the project's disabled tools and context to match
+// its current allowedMcpIDs and path. Permissions are derived at auth time
+// from AllowedMcpIDs, so they're not stored.
+// schemas maps MCP IDs to their runtime context schemas (from ExternalMcpManager).
+// If schemas is nil, filesystem auto-detection is skipped.
+func (s *Settings) SyncProjectToken(proj *Project, schemas map[string]json.RawMessage) {
+	if proj.Context == nil {
+		proj.Context = make(map[string]json.RawMessage)
+	}
+	if proj.DisabledTools == nil {
+		proj.DisabledTools = make(map[string][]string)
+	}
+	// Resolve which MCP IDs to configure: all registered if wildcard.
+	mcpIDs := proj.AllowedMcpIDs
+	if isWildcard(mcpIDs) {
+		mcpIDs = s.AllExternalMcpIDs()
+	}
+	// Clean stale entries for MCPs no longer in the allowed set.
+	allowed := make(map[string]bool, len(mcpIDs))
+	for _, id := range mcpIDs {
+		allowed[id] = true
+	}
+	for id := range proj.Context {
+		if !allowed[id] {
+			delete(proj.Context, id)
 		}
 	}
-	return nil, -1
+	for id := range proj.DisabledTools {
+		if !allowed[id] {
+			delete(proj.DisabledTools, id)
+		}
+	}
+	for _, mcpID := range mcpIDs {
+		if schemaHasField(schemas[mcpID], "allowed_dirs") {
+			ctx, _ := json.Marshal(map[string]interface{}{
+				"allowed_dirs": []string{proj.Path},
+			})
+			proj.Context[mcpID] = ctx
+			// Disable fs_bash by default for filesystem MCPs.
+			if !slices.Contains(proj.DisabledTools[mcpID], "fs_bash") {
+				proj.DisabledTools[mcpID] = append(proj.DisabledTools[mcpID], "fs_bash")
+			}
+		}
+	}
 }
+
+// schemaHasField checks if a context schema declares a given field.
+func schemaHasField(schema json.RawMessage, field string) bool {
+	if len(schema) == 0 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &fields); err != nil {
+		return false
+	}
+	_, ok := fields[field]
+	return ok
+}
+
+// ---------------------------------------------------------------------------
+// Lookup helpers — eliminate repeated linear scans
+// ---------------------------------------------------------------------------
 
 // findMcpByID returns the MCP with the given ID and its index, or nil, -1.
 func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {
@@ -239,4 +314,80 @@ func (s *Settings) findServiceByID(id string) (*ServiceConfig, int) {
 		}
 	}
 	return nil, -1
+}
+
+// findProjectByID returns the project with the given ID and its index, or nil, -1.
+func (s *Settings) findProjectByID(id string) (*Project, int) {
+	for i := range s.Projects {
+		if s.Projects[i].ID == id {
+			return &s.Projects[i], i
+		}
+	}
+	return nil, -1
+}
+
+// findProjectByTokenHash returns the project whose token matches the given hash.
+func (s *Settings) findProjectByTokenHash(hash string) *Project {
+	for i := range s.Projects {
+		if s.Projects[i].TokenHash == hash {
+			return &s.Projects[i]
+		}
+	}
+	return nil
+}
+
+// isWildcard returns true if the list contains a single "*" entry,
+// meaning "allow all".
+func isWildcard(ids []string) bool {
+	return len(ids) == 1 && ids[0] == "*"
+}
+
+// AuthenticateProject validates a bearer token against project token hashes.
+// Returns a synthetic StoredToken with permissions derived from AllowedMcpIDs.
+func (s *Settings) AuthenticateProject(plaintext string) (*StoredToken, error) {
+	if plaintext == "" {
+		return nil, ErrNoToken
+	}
+	stored := s.AuthenticateProjectByHash(hashToken(plaintext))
+	if stored == nil {
+		return nil, ErrInvalidToken
+	}
+	return stored, nil
+}
+
+// AuthenticateProjectByHash finds a project by pre-computed token hash and
+// returns a synthetic StoredToken with derived permissions. Returns nil if
+// no project matches. Used by resolveAuth to avoid double-hashing.
+func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
+	proj := s.findProjectByTokenHash(hash)
+	if proj == nil {
+		return nil
+	}
+	// Wildcard: nil permissions map — checkToolAccess treats missing keys as allowed.
+	if isWildcard(proj.AllowedMcpIDs) {
+		return &StoredToken{
+			Name:          "project:" + proj.Name,
+			Hash:          hash,
+			DisabledTools: proj.DisabledTools,
+			Context:       proj.Context,
+		}
+	}
+	// Explicit list: only store PermOff entries (deny-set).
+	perms := make(map[string]Permission)
+	allowed := make(map[string]bool, len(proj.AllowedMcpIDs))
+	for _, id := range proj.AllowedMcpIDs {
+		allowed[id] = true
+	}
+	for _, mcp := range s.ExternalMcps {
+		if !allowed[mcp.ID] {
+			perms[mcp.ID] = PermOff
+		}
+	}
+	return &StoredToken{
+		Name:          "project:" + proj.Name,
+		Hash:          hash,
+		Permissions:   perms,
+		DisabledTools: proj.DisabledTools,
+		Context:       proj.Context,
+	}
 }

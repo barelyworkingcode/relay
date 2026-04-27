@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,316 +11,17 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-// newTestSettings returns a *Settings with the given tokens and MCPs.
-func newTestSettings(t *testing.T, tokens []StoredToken, mcps []ExternalMcp) *Settings {
+// newTestSettings returns a *Settings with the given MCPs.
+func newTestSettings(t *testing.T, mcps []ExternalMcp) *Settings {
 	t.Helper()
-	if tokens == nil {
-		tokens = []StoredToken{}
-	}
 	if mcps == nil {
 		mcps = []ExternalMcp{}
 	}
 	return &Settings{
 		Version:      1,
-		Tokens:       tokens,
 		ExternalMcps: mcps,
 		Services:     []ServiceConfig{},
 	}
-}
-
-// generateAndStore creates a token via GenerateToken, appends it to s.Tokens,
-// and returns the plaintext and hash.
-func generateAndStore(t *testing.T, s *Settings, name string) (plaintext, hash string) {
-	t.Helper()
-	pt, tok, err := GenerateToken(name, nil)
-	if err != nil {
-		t.Fatalf("GenerateToken failed: %v", err)
-	}
-	s.Tokens = append(s.Tokens, tok)
-	return pt, tok.Hash
-}
-
-// mustGenerateToken calls GenerateToken and fails the test on error.
-func mustGenerateToken(t *testing.T, name string, perms map[string]Permission) (string, StoredToken) {
-	t.Helper()
-	pt, tok, err := GenerateToken(name, perms)
-	if err != nil {
-		t.Fatalf("GenerateToken failed: %v", err)
-	}
-	return pt, tok
-}
-
-// ---------------------------------------------------------------------------
-// Sentinel errors
-// ---------------------------------------------------------------------------
-
-func TestSentinelErrors(t *testing.T) {
-	t.Run("ErrNoTokens is distinct", func(t *testing.T) {
-		if errors.Is(ErrNoTokens, ErrNoToken) {
-			t.Fatal("ErrNoTokens should not match ErrNoToken")
-		}
-		if errors.Is(ErrNoTokens, ErrInvalidToken) {
-			t.Fatal("ErrNoTokens should not match ErrInvalidToken")
-		}
-	})
-	t.Run("ErrNoToken is distinct", func(t *testing.T) {
-		if errors.Is(ErrNoToken, ErrInvalidToken) {
-			t.Fatal("ErrNoToken should not match ErrInvalidToken")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Authenticate
-// ---------------------------------------------------------------------------
-
-func TestAuthenticate(t *testing.T) {
-	t.Run("no tokens configured", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, err := s.Authenticate("anything")
-		if !errors.Is(err, ErrNoTokens) {
-			t.Fatalf("expected ErrNoTokens, got %v", err)
-		}
-	})
-
-	t.Run("empty token string", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		plaintext, tok := mustGenerateToken(t, "test", nil)
-		_ = plaintext
-		s.Tokens = append(s.Tokens, tok)
-
-		_, err := s.Authenticate("")
-		if !errors.Is(err, ErrNoToken) {
-			t.Fatalf("expected ErrNoToken, got %v", err)
-		}
-	})
-
-	t.Run("valid token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		plaintext, tok := mustGenerateToken(t, "mytoken", nil)
-		s.Tokens = append(s.Tokens, tok)
-
-		result, err := s.Authenticate(plaintext)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result.Name != "mytoken" {
-			t.Fatalf("expected token name 'mytoken', got %q", result.Name)
-		}
-		if result.Hash != tok.Hash {
-			t.Fatal("returned token hash does not match")
-		}
-	})
-
-	t.Run("invalid token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, tok := mustGenerateToken(t, "real", nil)
-		s.Tokens = append(s.Tokens, tok)
-
-		_, err := s.Authenticate("completely-wrong-token")
-		if !errors.Is(err, ErrInvalidToken) {
-			t.Fatalf("expected ErrInvalidToken, got %v", err)
-		}
-	})
-
-	t.Run("multiple tokens finds correct one", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, _ = generateAndStore(t, s, "first")
-		pt2, _ := generateAndStore(t, s, "second")
-		_, _ = generateAndStore(t, s, "third")
-
-		result, err := s.Authenticate(pt2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result.Name != "second" {
-			t.Fatalf("expected 'second', got %q", result.Name)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// GenerateToken
-// ---------------------------------------------------------------------------
-
-func TestGenerateToken(t *testing.T) {
-	t.Run("returns 64-char hex plaintext", func(t *testing.T) {
-		pt, _ := mustGenerateToken(t, "t", nil)
-		if len(pt) != 64 {
-			t.Fatalf("expected 64-char plaintext, got %d chars", len(pt))
-		}
-	})
-
-	t.Run("stored token fields are populated", func(t *testing.T) {
-		pt, tok := mustGenerateToken(t, "myname", map[string]Permission{"svc": PermOff})
-		if tok.Name != "myname" {
-			t.Fatalf("expected name 'myname', got %q", tok.Name)
-		}
-		if tok.Prefix != pt[:tokenDisplayLen] {
-			t.Fatalf("prefix mismatch: got %q, want %q", tok.Prefix, pt[:tokenDisplayLen])
-		}
-		if tok.Suffix != pt[len(pt)-tokenDisplayLen:] {
-			t.Fatalf("suffix mismatch: got %q, want %q", tok.Suffix, pt[len(pt)-tokenDisplayLen:])
-		}
-		if tok.CreatedAt == "" {
-			t.Fatal("CreatedAt should not be empty")
-		}
-		if tok.Permissions["svc"] != PermOff {
-			t.Fatalf("expected PermOff for 'svc', got %q", tok.Permissions["svc"])
-		}
-	})
-
-	t.Run("hash matches hashToken of plaintext", func(t *testing.T) {
-		pt, tok := mustGenerateToken(t, "check", nil)
-		if tok.Hash != hashToken(pt) {
-			t.Fatal("hash does not match hashToken(plaintext)")
-		}
-	})
-
-	t.Run("two calls produce different tokens", func(t *testing.T) {
-		pt1, tok1 := mustGenerateToken(t, "a", nil)
-		pt2, tok2 := mustGenerateToken(t, "b", nil)
-		if pt1 == pt2 {
-			t.Fatal("two generated plaintexts should differ")
-		}
-		if tok1.Hash == tok2.Hash {
-			t.Fatal("two generated hashes should differ")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// GetPermission
-// ---------------------------------------------------------------------------
-
-func TestGetPermission(t *testing.T) {
-	t.Run("defaults to PermOff for unknown token hash", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		if got := s.GetPermission("nonexistent", "svc"); got != PermOff {
-			t.Fatalf("expected PermOff for unknown token (defense-in-depth), got %q", got)
-		}
-	})
-
-	t.Run("defaults to PermOn for unset service", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		if got := s.GetPermission(hash, "unknown-svc"); got != PermOn {
-			t.Fatalf("expected PermOn, got %q", got)
-		}
-	})
-
-	t.Run("returns PermOff when set", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"blocked": PermOff})
-		s.Tokens = append(s.Tokens, tok)
-		if got := s.GetPermission(tok.Hash, "blocked"); got != PermOff {
-			t.Fatalf("expected PermOff, got %q", got)
-		}
-	})
-
-	t.Run("returns PermOn for explicit PermOn", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"allowed": PermOn})
-		s.Tokens = append(s.Tokens, tok)
-		if got := s.GetPermission(tok.Hash, "allowed"); got != PermOn {
-			t.Fatalf("expected PermOn, got %q", got)
-		}
-	})
-
-	t.Run("legacy non-off value treated as PermOn", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"svc": "full"})
-		s.Tokens = append(s.Tokens, tok)
-		if got := s.GetPermission(tok.Hash, "svc"); got != PermOn {
-			t.Fatalf("expected PermOn for legacy 'full', got %q", got)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// DeleteToken
-// ---------------------------------------------------------------------------
-
-func TestDeleteToken(t *testing.T) {
-	t.Run("removes the correct token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, h1 := generateAndStore(t, s, "keep")
-		_, h2 := generateAndStore(t, s, "delete")
-
-		s.DeleteToken(h2)
-		if len(s.Tokens) != 1 {
-			t.Fatalf("expected 1 token, got %d", len(s.Tokens))
-		}
-		if s.Tokens[0].Hash != h1 {
-			t.Fatal("wrong token was removed")
-		}
-	})
-
-	t.Run("no-op for unknown hash", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		generateAndStore(t, s, "stay")
-		s.DeleteToken("bogus")
-		if len(s.Tokens) != 1 {
-			t.Fatalf("expected 1 token, got %d", len(s.Tokens))
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// RevokeAll
-// ---------------------------------------------------------------------------
-
-func TestRevokeAll(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
-	generateAndStore(t, s, "a")
-	generateAndStore(t, s, "b")
-	generateAndStore(t, s, "c")
-
-	s.RevokeAll()
-	if len(s.Tokens) != 0 {
-		t.Fatalf("expected 0 tokens after RevokeAll, got %d", len(s.Tokens))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdatePermission
-// ---------------------------------------------------------------------------
-
-func TestUpdatePermission(t *testing.T) {
-	t.Run("sets permission on existing token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		s.UpdatePermission(hash, "mcp1", PermOff)
-		if got := s.GetPermission(hash, "mcp1"); got != PermOff {
-			t.Fatalf("expected PermOff, got %q", got)
-		}
-
-		s.UpdatePermission(hash, "mcp1", PermOn)
-		if got := s.GetPermission(hash, "mcp1"); got != PermOn {
-			t.Fatalf("expected PermOn, got %q", got)
-		}
-	})
-
-	t.Run("no-op for unknown hash", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		// Should not panic.
-		s.UpdatePermission("nonexistent", "svc", PermOff)
-	})
-
-	t.Run("initializes nil permissions map", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		tok := StoredToken{Name: "bare", Hash: "h1"}
-		s.Tokens = append(s.Tokens, tok)
-
-		s.UpdatePermission("h1", "svc", PermOff)
-		if s.Tokens[0].Permissions == nil {
-			t.Fatal("permissions map should have been initialized")
-		}
-		if s.Tokens[0].Permissions["svc"] != PermOff {
-			t.Fatalf("expected PermOff, got %q", s.Tokens[0].Permissions["svc"])
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -329,9 +29,8 @@ func TestUpdatePermission(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAddExternalMcp(t *testing.T) {
-	t.Run("adds MCP and defaults token permissions to PermOff", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
+	t.Run("adds MCP to slice", func(t *testing.T) {
+		s := newTestSettings(t, nil)
 
 		mcp := ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
 		s.AddExternalMcp(mcp)
@@ -342,53 +41,23 @@ func TestAddExternalMcp(t *testing.T) {
 		if s.ExternalMcps[0].ID != "mcp1" {
 			t.Fatalf("expected ID 'mcp1', got %q", s.ExternalMcps[0].ID)
 		}
-		if got := s.GetPermission(hash, "mcp1"); got != PermOff {
-			t.Fatalf("new MCP should default to PermOff for existing tokens, got %q", got)
-		}
-	})
-
-	t.Run("does not overwrite existing permission", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, tok := mustGenerateToken(t, "tok", map[string]Permission{"mcp1": PermOn})
-		s.Tokens = append(s.Tokens, tok)
-
-		mcp := ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
-		s.AddExternalMcp(mcp)
-
-		if got := s.GetPermission(tok.Hash, "mcp1"); got != PermOn {
-			t.Fatalf("pre-existing PermOn should be preserved, got %q", got)
-		}
 	})
 }
 
 func TestRemoveExternalMcp(t *testing.T) {
-	t.Run("removes MCP and cleans up token permissions", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		mcp := ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
-		s.AddExternalMcp(mcp)
-
-		// Also set up a disabled tool for this MCP.
-		s.SetToolDisabled(hash, "mcp1", "tool1", true)
+	t.Run("removes MCP from slice", func(t *testing.T) {
+		s := newTestSettings(t, nil)
+		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"})
 
 		s.RemoveExternalMcp("mcp1")
 
 		if len(s.ExternalMcps) != 0 {
 			t.Fatalf("expected 0 MCPs, got %d", len(s.ExternalMcps))
 		}
-		// Permission for removed MCP should be gone.
-		tok, _ := s.findTokenByHash(hash)
-		if _, exists := tok.Permissions["mcp1"]; exists {
-			t.Fatal("permission for removed MCP should be deleted")
-		}
-		if _, exists := tok.DisabledTools["mcp1"]; exists {
-			t.Fatal("disabled tools for removed MCP should be deleted")
-		}
 	})
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.AddExternalMcp(ExternalMcp{ID: "keep"})
 		s.RemoveExternalMcp("nonexistent")
 		if len(s.ExternalMcps) != 1 {
@@ -402,20 +71,18 @@ func TestRemoveExternalMcp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUpdateExternalMcp(t *testing.T) {
-	t.Run("preserves DiscoveredTools when new has none", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+	t.Run("replaces config by ID", func(t *testing.T) {
+		s := newTestSettings(t, nil)
 		s.AddExternalMcp(ExternalMcp{
-			ID:              "mcp1",
-			DisplayName:     "Old",
-			Command:         "/old",
-			DiscoveredTools: []ToolInfo{{Name: "t1", Description: "desc1"}},
+			ID:          "mcp1",
+			DisplayName: "Old",
+			Command:     "/old",
 		})
 
 		s.UpdateExternalMcp(ExternalMcp{
 			ID:          "mcp1",
 			DisplayName: "New",
 			Command:     "/new",
-			// DiscoveredTools is nil/empty.
 		})
 
 		mcp, _ := s.findMcpByID("mcp1")
@@ -428,283 +95,22 @@ func TestUpdateExternalMcp(t *testing.T) {
 		if mcp.Command != "/new" {
 			t.Fatalf("expected Command '/new', got %q", mcp.Command)
 		}
-		if len(mcp.DiscoveredTools) != 1 || mcp.DiscoveredTools[0].Name != "t1" {
-			t.Fatal("DiscoveredTools should be preserved from old config")
-		}
-	})
-
-	t.Run("replaces DiscoveredTools when new has them", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		s.AddExternalMcp(ExternalMcp{
-			ID:              "mcp1",
-			DiscoveredTools: []ToolInfo{{Name: "old_tool"}},
-		})
-
-		s.UpdateExternalMcp(ExternalMcp{
-			ID:              "mcp1",
-			DiscoveredTools: []ToolInfo{{Name: "new_tool"}},
-		})
-
-		mcp, _ := s.findMcpByID("mcp1")
-		if len(mcp.DiscoveredTools) != 1 || mcp.DiscoveredTools[0].Name != "new_tool" {
-			t.Fatal("DiscoveredTools should be replaced with new values")
-		}
 	})
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		// Should not panic.
 		s.UpdateExternalMcp(ExternalMcp{ID: "nonexistent", DisplayName: "Ghost"})
 	})
 }
 
 // ---------------------------------------------------------------------------
-// IsToolDisabled / SetToolDisabled
+// findMcpByID / findServiceByID
 // ---------------------------------------------------------------------------
-
-func TestIsToolDisabled(t *testing.T) {
-	t.Run("false for unknown token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		if s.IsToolDisabled("nope", "mcp1", "t1") {
-			t.Fatal("expected false for unknown token")
-		}
-	})
-
-	t.Run("false by default", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		if s.IsToolDisabled(hash, "mcp1", "t1") {
-			t.Fatal("expected false by default")
-		}
-	})
-
-	t.Run("true after disabling", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		s.SetToolDisabled(hash, "mcp1", "t1", true)
-
-		if !s.IsToolDisabled(hash, "mcp1", "t1") {
-			t.Fatal("expected true after disabling")
-		}
-	})
-
-	t.Run("false after re-enabling", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		s.SetToolDisabled(hash, "mcp1", "t1", true)
-		s.SetToolDisabled(hash, "mcp1", "t1", false)
-
-		if s.IsToolDisabled(hash, "mcp1", "t1") {
-			t.Fatal("expected false after re-enabling")
-		}
-	})
-}
-
-func TestSetToolDisabled(t *testing.T) {
-	t.Run("disable is idempotent", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		s.SetToolDisabled(hash, "mcp1", "t1", true)
-		s.SetToolDisabled(hash, "mcp1", "t1", true) // duplicate
-
-		tok, _ := s.findTokenByHash(hash)
-		if len(tok.DisabledTools["mcp1"]) != 1 {
-			t.Fatalf("expected 1 disabled tool, got %d", len(tok.DisabledTools["mcp1"]))
-		}
-	})
-
-	t.Run("enable cleans up empty list", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		s.SetToolDisabled(hash, "mcp1", "t1", true)
-		s.SetToolDisabled(hash, "mcp1", "t1", false)
-
-		tok, _ := s.findTokenByHash(hash)
-		if _, exists := tok.DisabledTools["mcp1"]; exists {
-			t.Fatal("empty disabled tool list should be removed from map")
-		}
-	})
-
-	t.Run("enable keeps other tools disabled", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-		s.SetToolDisabled(hash, "mcp1", "t1", true)
-		s.SetToolDisabled(hash, "mcp1", "t2", true)
-		s.SetToolDisabled(hash, "mcp1", "t1", false)
-
-		tok, _ := s.findTokenByHash(hash)
-		if len(tok.DisabledTools["mcp1"]) != 1 {
-			t.Fatalf("expected 1 remaining disabled tool, got %d", len(tok.DisabledTools["mcp1"]))
-		}
-		if tok.DisabledTools["mcp1"][0] != "t2" {
-			t.Fatalf("expected 't2' to remain, got %q", tok.DisabledTools["mcp1"][0])
-		}
-	})
-
-	t.Run("no-op for unknown token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		// Should not panic.
-		s.SetToolDisabled("nonexistent", "mcp1", "t1", true)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// SetAllToolsDisabled
-// ---------------------------------------------------------------------------
-
-func TestSetAllToolsDisabled(t *testing.T) {
-	t.Run("disable all", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		tools := []string{"t1", "t2", "t3"}
-		s.SetAllToolsDisabled(hash, "mcp1", tools, true)
-
-		for _, name := range tools {
-			if !s.IsToolDisabled(hash, "mcp1", name) {
-				t.Fatalf("expected %q to be disabled", name)
-			}
-		}
-	})
-
-	t.Run("enable all removes key", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		s.SetAllToolsDisabled(hash, "mcp1", []string{"t1", "t2"}, true)
-		s.SetAllToolsDisabled(hash, "mcp1", []string{"t1", "t2"}, false)
-
-		tok, _ := s.findTokenByHash(hash)
-		if _, exists := tok.DisabledTools["mcp1"]; exists {
-			t.Fatal("enabling all should remove the MCP key from DisabledTools")
-		}
-	})
-
-	t.Run("disable all makes a copy of input slice", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		tools := []string{"t1", "t2"}
-		s.SetAllToolsDisabled(hash, "mcp1", tools, true)
-
-		// Mutate the original slice.
-		tools[0] = "mutated"
-
-		tok, _ := s.findTokenByHash(hash)
-		if tok.DisabledTools["mcp1"][0] != "t1" {
-			t.Fatal("SetAllToolsDisabled should copy, not alias the input slice")
-		}
-	})
-
-	t.Run("no-op for unknown token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		// Should not panic.
-		s.SetAllToolsDisabled("nonexistent", "mcp1", []string{"t1"}, true)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// SetContext
-// ---------------------------------------------------------------------------
-
-func TestSetContext(t *testing.T) {
-	t.Run("set context value", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		ctx := json.RawMessage(`{"allowed_dirs": ["/tmp"]}`)
-		s.SetContext(hash, "mcp1", ctx)
-
-		tok, _ := s.findTokenByHash(hash)
-		if tok.Context == nil {
-			t.Fatal("Context map should be initialized")
-		}
-		if string(tok.Context["mcp1"]) != `{"allowed_dirs": ["/tmp"]}` {
-			t.Fatalf("unexpected context: %s", string(tok.Context["mcp1"]))
-		}
-	})
-
-	t.Run("clear context with empty value", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		s.SetContext(hash, "mcp1", json.RawMessage(`{"key":"val"}`))
-		s.SetContext(hash, "mcp1", json.RawMessage{})
-
-		tok, _ := s.findTokenByHash(hash)
-		if _, exists := tok.Context["mcp1"]; exists {
-			t.Fatal("empty context should delete the key")
-		}
-	})
-
-	t.Run("clear context with null", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "tok")
-
-		s.SetContext(hash, "mcp1", json.RawMessage(`{"key":"val"}`))
-		s.SetContext(hash, "mcp1", json.RawMessage(`null`))
-
-		tok, _ := s.findTokenByHash(hash)
-		if _, exists := tok.Context["mcp1"]; exists {
-			t.Fatal("null context should delete the key")
-		}
-	})
-
-	t.Run("no-op for unknown token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		// Should not panic.
-		s.SetContext("nonexistent", "mcp1", json.RawMessage(`{}`))
-	})
-}
-
-// ---------------------------------------------------------------------------
-// findTokenByHash / findMcpByID / findServiceByID
-// ---------------------------------------------------------------------------
-
-func TestFindTokenByHash(t *testing.T) {
-	t.Run("finds existing token", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "target")
-
-		tok, idx := s.findTokenByHash(hash)
-		if tok == nil {
-			t.Fatal("expected to find token")
-		}
-		if tok.Name != "target" {
-			t.Fatalf("expected name 'target', got %q", tok.Name)
-		}
-		if idx != 0 {
-			t.Fatalf("expected index 0, got %d", idx)
-		}
-	})
-
-	t.Run("returns nil for missing hash", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		tok, idx := s.findTokenByHash("missing")
-		if tok != nil {
-			t.Fatal("expected nil for missing hash")
-		}
-		if idx != -1 {
-			t.Fatalf("expected index -1, got %d", idx)
-		}
-	})
-
-	t.Run("returns pointer into slice (mutations apply)", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		_, hash := generateAndStore(t, s, "mutable")
-
-		tok, _ := s.findTokenByHash(hash)
-		tok.Name = "changed"
-
-		if s.Tokens[0].Name != "changed" {
-			t.Fatal("mutation via returned pointer should affect the slice")
-		}
-	})
-}
 
 func TestFindMcpByID(t *testing.T) {
 	t.Run("finds existing MCP", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "First"})
 		s.AddExternalMcp(ExternalMcp{ID: "mcp2", DisplayName: "Second"})
 
@@ -721,7 +127,7 @@ func TestFindMcpByID(t *testing.T) {
 	})
 
 	t.Run("returns nil for missing ID", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		mcp, idx := s.findMcpByID("nope")
 		if mcp != nil {
 			t.Fatal("expected nil for missing ID")
@@ -734,7 +140,7 @@ func TestFindMcpByID(t *testing.T) {
 
 func TestFindServiceByID(t *testing.T) {
 	t.Run("finds existing service", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "Alpha"})
 		s.AddService(ServiceConfig{ID: "svc2", DisplayName: "Beta"})
 
@@ -751,7 +157,7 @@ func TestFindServiceByID(t *testing.T) {
 	})
 
 	t.Run("returns nil for missing ID", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		svc, idx := s.findServiceByID("nope")
 		if svc != nil {
 			t.Fatal("expected nil for missing ID")
@@ -768,7 +174,7 @@ func TestFindServiceByID(t *testing.T) {
 
 func TestAddRemoveService(t *testing.T) {
 	t.Run("add and remove", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "One"})
 		s.AddService(ServiceConfig{ID: "svc2", DisplayName: "Two"})
 
@@ -788,7 +194,7 @@ func TestAddRemoveService(t *testing.T) {
 
 func TestUpdateService(t *testing.T) {
 	t.Run("updates existing service", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "Old", Command: "/old"})
 		s.UpdateService(ServiceConfig{ID: "svc1", DisplayName: "New", Command: "/new"})
 
@@ -802,18 +208,18 @@ func TestUpdateService(t *testing.T) {
 	})
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		// Should not panic.
 		s.UpdateService(ServiceConfig{ID: "nonexistent"})
 	})
 }
 
 // ---------------------------------------------------------------------------
-// UpdateOAuthState / UpdateDiscoveredTools / UpdateContextSchema
+// UpdateOAuthState
 // ---------------------------------------------------------------------------
 
 func TestUpdateOAuthState(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
+	s := newTestSettings(t, nil)
 	s.AddExternalMcp(ExternalMcp{ID: "mcp1", Transport: "http", URL: "https://example.com"})
 
 	oauth := &OAuthState{ClientID: "cid", AccessToken: "at"}
@@ -831,44 +237,12 @@ func TestUpdateOAuthState(t *testing.T) {
 	s.UpdateOAuthState("nonexistent", oauth)
 }
 
-func TestUpdateDiscoveredTools(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
-	s.AddExternalMcp(ExternalMcp{ID: "mcp1"})
-
-	tools := []ToolInfo{{Name: "tool1", Description: "desc"}}
-	s.UpdateDiscoveredTools("mcp1", tools)
-
-	mcp, _ := s.findMcpByID("mcp1")
-	if len(mcp.DiscoveredTools) != 1 || mcp.DiscoveredTools[0].Name != "tool1" {
-		t.Fatal("DiscoveredTools should be updated")
-	}
-
-	// No-op for unknown.
-	s.UpdateDiscoveredTools("nonexistent", tools)
-}
-
-func TestUpdateContextSchema(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
-	s.AddExternalMcp(ExternalMcp{ID: "mcp1"})
-
-	schema := json.RawMessage(`{"type":"object"}`)
-	s.UpdateContextSchema("mcp1", schema)
-
-	mcp, _ := s.findMcpByID("mcp1")
-	if string(mcp.ContextSchema) != `{"type":"object"}` {
-		t.Fatalf("unexpected ContextSchema: %s", string(mcp.ContextSchema))
-	}
-
-	// No-op for unknown.
-	s.UpdateContextSchema("nonexistent", schema)
-}
-
 // ---------------------------------------------------------------------------
 // AllExternalMcpIDs
 // ---------------------------------------------------------------------------
 
 func TestAllExternalMcpIDs(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
+	s := newTestSettings(t, nil)
 	s.AddExternalMcp(ExternalMcp{ID: "b"})
 	s.AddExternalMcp(ExternalMcp{ID: "a"})
 	s.AddExternalMcp(ExternalMcp{ID: "c"})
@@ -912,35 +286,6 @@ func TestIsHTTP(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// hashToken
-// ---------------------------------------------------------------------------
-
-func TestHashToken(t *testing.T) {
-	t.Run("deterministic", func(t *testing.T) {
-		h1 := hashToken("hello")
-		h2 := hashToken("hello")
-		if h1 != h2 {
-			t.Fatal("same input should produce same hash")
-		}
-	})
-
-	t.Run("different inputs produce different hashes", func(t *testing.T) {
-		h1 := hashToken("hello")
-		h2 := hashToken("world")
-		if h1 == h2 {
-			t.Fatal("different inputs should produce different hashes")
-		}
-	})
-
-	t.Run("output is 64-char hex", func(t *testing.T) {
-		h := hashToken("test")
-		if len(h) != 64 {
-			t.Fatalf("expected 64-char hex, got %d chars", len(h))
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // defaultSettings
 // ---------------------------------------------------------------------------
 
@@ -949,14 +294,14 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Version != 1 {
 		t.Fatalf("expected version 1, got %d", s.Version)
 	}
-	if s.Tokens == nil || len(s.Tokens) != 0 {
-		t.Fatal("Tokens should be non-nil empty slice")
-	}
 	if s.ExternalMcps == nil || len(s.ExternalMcps) != 0 {
 		t.Fatal("ExternalMcps should be non-nil empty slice")
 	}
 	if s.Services == nil || len(s.Services) != 0 {
 		t.Fatal("Services should be non-nil empty slice")
+	}
+	if s.Projects == nil || len(s.Projects) != 0 {
+		t.Fatal("Projects should be non-nil empty slice")
 	}
 }
 
@@ -983,9 +328,6 @@ func TestSettingsCache(t *testing.T) {
 		if s.Version != 1 {
 			t.Fatalf("expected version 1, got %d", s.Version)
 		}
-		if len(s.Tokens) != 0 {
-			t.Fatal("expected no tokens in default settings")
-		}
 	})
 
 	t.Run("Get returns distinct snapshots on each call", func(t *testing.T) {
@@ -996,7 +338,7 @@ func TestSettingsCache(t *testing.T) {
 		if s1 == s2 {
 			t.Fatal("Get should return distinct snapshot pointers")
 		}
-		if s1.Version != s2.Version || len(s1.Tokens) != len(s2.Tokens) {
+		if s1.Version != s2.Version {
 			t.Fatal("snapshots should be structurally equal")
 		}
 	})
@@ -1005,9 +347,9 @@ func TestSettingsCache(t *testing.T) {
 		store, sp := newStore(t)
 
 		err := store.With(func(s *Settings) {
-			s.Tokens = append(s.Tokens, StoredToken{
-				Name: "cache-test",
-				Hash: "cache-test-hash",
+			s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{
+				ID:          "cache-test-mcp",
+				DisplayName: "Cache Test",
 			})
 		})
 		if err != nil {
@@ -1016,14 +358,14 @@ func TestSettingsCache(t *testing.T) {
 
 		s := store.Get()
 		found := false
-		for _, tok := range s.Tokens {
-			if tok.Name == "cache-test" {
+		for _, mcp := range s.ExternalMcps {
+			if mcp.ID == "cache-test-mcp" {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatal("cached settings should contain token added by With")
+			t.Fatal("cached settings should contain MCP added by With")
 		}
 
 		data, err := os.ReadFile(sp)
@@ -1035,14 +377,14 @@ func TestSettingsCache(t *testing.T) {
 			t.Fatalf("failed to parse settings from disk: %v", err)
 		}
 		found = false
-		for _, tok := range diskSettings.Tokens {
-			if tok.Name == "cache-test" {
+		for _, mcp := range diskSettings.ExternalMcps {
+			if mcp.ID == "cache-test-mcp" {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatal("disk settings should contain token added by With")
+			t.Fatal("disk settings should contain MCP added by With")
 		}
 	})
 
@@ -1050,18 +392,15 @@ func TestSettingsCache(t *testing.T) {
 		store, sp := newStore(t)
 
 		err := store.With(func(s *Settings) {
-			s.Tokens = []StoredToken{{Name: "original", Hash: "orig-hash"}}
+			s.ExternalMcps = []ExternalMcp{{ID: "original", DisplayName: "Original"}}
 		})
 		if err != nil {
 			t.Fatalf("With failed: %v", err)
 		}
 
 		modified := Settings{
-			Version: 1,
-			Tokens: []StoredToken{
-				{Name: "disk-written", Hash: "disk-hash"},
-			},
-			ExternalMcps: []ExternalMcp{},
+			Version:      1,
+			ExternalMcps: []ExternalMcp{{ID: "disk-written", DisplayName: "Disk"}},
 			Services:     []ServiceConfig{},
 		}
 		data, _ := json.Marshal(modified)
@@ -1070,17 +409,17 @@ func TestSettingsCache(t *testing.T) {
 		}
 
 		s := store.Get()
-		if len(s.Tokens) == 0 || s.Tokens[0].Name != "original" {
+		if len(s.ExternalMcps) == 0 || s.ExternalMcps[0].ID != "original" {
 			t.Fatal("Get should return cached (stale) value")
 		}
 
 		s = store.Reload()
-		if len(s.Tokens) == 0 || s.Tokens[0].Name != "disk-written" {
-			t.Fatalf("Reload should return fresh disk data, got %+v", s.Tokens)
+		if len(s.ExternalMcps) == 0 || s.ExternalMcps[0].ID != "disk-written" {
+			t.Fatalf("Reload should return fresh disk data, got %+v", s.ExternalMcps)
 		}
 
 		s = store.Get()
-		if len(s.Tokens) == 0 || s.Tokens[0].Name != "disk-written" {
+		if len(s.ExternalMcps) == 0 || s.ExternalMcps[0].ID != "disk-written" {
 			t.Fatal("Get after Reload should return refreshed data")
 		}
 	})
@@ -1124,18 +463,10 @@ func TestSettingsCache(t *testing.T) {
 func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	original := &Settings{
 		Version: 1,
-		Tokens: []StoredToken{{
-			Name: "t1",
-			Hash: "h1",
-			Permissions:   map[string]Permission{"mcp-a": PermOn},
-			DisabledTools: map[string][]string{"mcp-a": {"tool1"}},
-			Context:       map[string]json.RawMessage{"mcp-a": json.RawMessage(`{"key":"val"}`)},
-		}},
 		ExternalMcps: []ExternalMcp{{
-			ID:              "mcp-a",
-			DisplayName:     "A",
-			Env:             map[string]string{"FOO": "bar"},
-			DiscoveredTools: []ToolInfo{{Name: "tool1"}},
+			ID:          "mcp-a",
+			DisplayName: "A",
+			Env:         map[string]string{"FOO": "bar"},
 		}},
 		Services: []ServiceConfig{{
 			ID:  "svc-a",
@@ -1146,68 +477,31 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	cp := deepCopySettings(original)
 
 	// Mutate every map and slice in the copy.
-	cp.Tokens[0].Permissions["mcp-a"] = PermOff
-	cp.Tokens[0].Permissions["mcp-new"] = PermOn
-	cp.Tokens[0].DisabledTools["mcp-a"] = append(cp.Tokens[0].DisabledTools["mcp-a"], "tool2")
-	cp.Tokens[0].DisabledTools["mcp-new"] = []string{"x"}
-	cp.Tokens[0].Context["mcp-a"] = json.RawMessage(`{"changed":true}`)
-	cp.Tokens[0].Context["mcp-new"] = json.RawMessage(`{}`)
 	cp.ExternalMcps[0].Env["FOO"] = "changed"
 	cp.ExternalMcps[0].Env["NEW"] = "added"
-	cp.ExternalMcps[0].DiscoveredTools = append(cp.ExternalMcps[0].DiscoveredTools, ToolInfo{Name: "tool2"})
 	cp.Services[0].Env["BAZ"] = "changed"
 
 	// Verify original is untouched.
-	if original.Tokens[0].Permissions["mcp-a"] != PermOn {
-		t.Fatal("original token Permissions was corrupted")
-	}
-	if _, ok := original.Tokens[0].Permissions["mcp-new"]; ok {
-		t.Fatal("original token Permissions has unexpected key")
-	}
-	if len(original.Tokens[0].DisabledTools["mcp-a"]) != 1 {
-		t.Fatalf("original DisabledTools corrupted: got %v", original.Tokens[0].DisabledTools["mcp-a"])
-	}
-	if _, ok := original.Tokens[0].DisabledTools["mcp-new"]; ok {
-		t.Fatal("original DisabledTools has unexpected key")
-	}
-	if string(original.Tokens[0].Context["mcp-a"]) != `{"key":"val"}` {
-		t.Fatalf("original Context corrupted: got %s", original.Tokens[0].Context["mcp-a"])
-	}
-	if _, ok := original.Tokens[0].Context["mcp-new"]; ok {
-		t.Fatal("original Context has unexpected key")
-	}
 	if original.ExternalMcps[0].Env["FOO"] != "bar" {
 		t.Fatal("original ExternalMcp Env was corrupted")
 	}
 	if _, ok := original.ExternalMcps[0].Env["NEW"]; ok {
 		t.Fatal("original ExternalMcp Env has unexpected key")
 	}
-	if len(original.ExternalMcps[0].DiscoveredTools) != 1 {
-		t.Fatal("original DiscoveredTools was corrupted")
-	}
 	if original.Services[0].Env["BAZ"] != "qux" {
 		t.Fatal("original Service Env was corrupted")
 	}
 }
 
-// TestDeepCopySettings_AllFieldsCovered uses reflection to verify that every
-// map and slice field in Settings (and nested types) is properly deep-copied.
-// This catches regressions when new fields are added but deepCopySettings is
-// not updated.
+// TestDeepCopySettings_AllFieldsCovered uses mutation to verify that maps and
+// slices in Settings are properly deep-copied. This catches regressions when
+// new fields are added but deepCopySettings is not updated.
 func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
 	original := &Settings{
 		Version: 1,
-		Tokens: []StoredToken{{
-			Name:          "t1",
-			Hash:          "h1",
-			Permissions:   map[string]Permission{"x": PermOn},
-			DisabledTools: map[string][]string{"x": {"tool1"}},
-			Context:       map[string]json.RawMessage{"x": json.RawMessage(`{}`)},
-		}},
 		ExternalMcps: []ExternalMcp{{
-			ID:              "mcp1",
-			Env:             map[string]string{"K": "V"},
-			DiscoveredTools: []ToolInfo{{Name: "t"}},
+			ID:  "mcp1",
+			Env: map[string]string{"K": "V"},
 		}},
 		Services: []ServiceConfig{{
 			ID:  "svc1",
@@ -1218,18 +512,11 @@ func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
 	cp := deepCopySettings(original)
 
 	// Check top-level slices are different pointers.
-	checkSliceCopy(t, "Tokens", original.Tokens, cp.Tokens)
 	checkSliceCopy(t, "ExternalMcps", original.ExternalMcps, cp.ExternalMcps)
 	checkSliceCopy(t, "Services", original.Services, cp.Services)
 
-	// Check nested maps in Tokens.
-	checkMapCopy(t, "Tokens[0].Permissions", original.Tokens[0].Permissions, cp.Tokens[0].Permissions)
-	checkMapCopy(t, "Tokens[0].DisabledTools", original.Tokens[0].DisabledTools, cp.Tokens[0].DisabledTools)
-	checkMapCopy(t, "Tokens[0].Context", original.Tokens[0].Context, cp.Tokens[0].Context)
-
-	// Check nested maps/slices in ExternalMcps.
+	// Check nested maps in ExternalMcps.
 	checkMapCopy(t, "ExternalMcps[0].Env", original.ExternalMcps[0].Env, cp.ExternalMcps[0].Env)
-	checkSliceCopy(t, "ExternalMcps[0].DiscoveredTools", original.ExternalMcps[0].DiscoveredTools, cp.ExternalMcps[0].DiscoveredTools)
 
 	// Check nested maps in Services.
 	checkMapCopy(t, "Services[0].Env", original.Services[0].Env, cp.Services[0].Env)
@@ -1280,7 +567,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("sets version to 1 if missing", func(t *testing.T) {
 		store, sp := newStore(t)
-		data := []byte(`{"tokens":[],"external_mcps":[],"services":[]}`)
+		data := []byte(`{"external_mcps":[],"services":[]}`)
 		if err := os.WriteFile(sp, data, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -1297,29 +584,11 @@ func TestLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := store.load()
-		if s.Tokens == nil {
-			t.Fatal("Tokens should not be nil")
-		}
 		if s.ExternalMcps == nil {
 			t.Fatal("ExternalMcps should not be nil")
 		}
 		if s.Services == nil {
 			t.Fatal("Services should not be nil")
-		}
-	})
-
-	t.Run("ensures nil DiscoveredTools in MCPs become non-nil", func(t *testing.T) {
-		store, sp := newStore(t)
-		data := []byte(`{"version":1,"external_mcps":[{"id":"m1","args":[],"env":{}}]}`)
-		if err := os.WriteFile(sp, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		s := store.load()
-		if len(s.ExternalMcps) != 1 {
-			t.Fatalf("expected 1 MCP, got %d", len(s.ExternalMcps))
-		}
-		if s.ExternalMcps[0].DiscoveredTools == nil {
-			t.Fatal("DiscoveredTools should not be nil")
 		}
 	})
 
@@ -1359,8 +628,7 @@ func TestSave(t *testing.T) {
 		store, sp := newStore(t)
 		s := &Settings{
 			Version:      1,
-			Tokens:       []StoredToken{{Name: "save-test", Hash: "st-hash"}},
-			ExternalMcps: []ExternalMcp{},
+			ExternalMcps: []ExternalMcp{{ID: "save-test", DisplayName: "Save Test"}},
 			Services:     []ServiceConfig{},
 		}
 		err := store.save(s)
@@ -1376,7 +644,7 @@ func TestSave(t *testing.T) {
 		if err := json.Unmarshal(data, &loaded); err != nil {
 			t.Fatalf("written file is not valid JSON: %v", err)
 		}
-		if len(loaded.Tokens) != 1 || loaded.Tokens[0].Name != "save-test" {
+		if len(loaded.ExternalMcps) != 1 || loaded.ExternalMcps[0].ID != "save-test" {
 			t.Fatal("saved data does not match")
 		}
 	})
@@ -1446,22 +714,6 @@ func TestEnsureAdminSecret(t *testing.T) {
 func TestSettingsJSONRoundTrip(t *testing.T) {
 	original := &Settings{
 		Version: 1,
-		Tokens: []StoredToken{
-			{
-				Name:        "tok1",
-				Hash:        "h1",
-				Prefix:      "aaaaaa",
-				Suffix:      "zzzzzz",
-				CreatedAt:   "2025-01-01T00:00:00Z",
-				Permissions: map[string]Permission{"mcp1": PermOn, "mcp2": PermOff},
-				DisabledTools: map[string][]string{
-					"mcp1": {"tool_a"},
-				},
-				Context: map[string]json.RawMessage{
-					"mcp1": json.RawMessage(`{"dirs":["/tmp"]}`),
-				},
-			},
-		},
 		ExternalMcps: []ExternalMcp{
 			{
 				ID:          "mcp1",
@@ -1469,10 +721,7 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 				Command:     "/usr/bin/test",
 				Args:        []string{"--flag"},
 				Env:         map[string]string{"KEY": "VAL"},
-				DiscoveredTools: []ToolInfo{
-					{Name: "tool_a", Description: "A tool"},
-				},
-				Transport: "stdio",
+				Transport:   "stdio",
 			},
 		},
 		Services: []ServiceConfig{
@@ -1502,12 +751,6 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 	if restored.Version != 1 {
 		t.Fatalf("version: got %d, want 1", restored.Version)
 	}
-	if len(restored.Tokens) != 1 {
-		t.Fatalf("tokens: got %d, want 1", len(restored.Tokens))
-	}
-	if restored.Tokens[0].Permissions["mcp2"] != PermOff {
-		t.Fatal("mcp2 permission should be PermOff")
-	}
 	if len(restored.ExternalMcps) != 1 {
 		t.Fatalf("mcps: got %d, want 1", len(restored.ExternalMcps))
 	}
@@ -1519,109 +762,6 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 	}
 	if restored.AdminSecret != "secret123" {
 		t.Fatalf("admin secret: got %q, want 'secret123'", restored.AdminSecret)
-	}
-
-	// Verify context round-trips.
-	ctx := restored.Tokens[0].Context["mcp1"]
-	if string(ctx) != `{"dirs":["/tmp"]}` {
-		t.Fatalf("context round-trip failed: %s", string(ctx))
-	}
-
-	// Verify disabled tools round-trip.
-	dt := restored.Tokens[0].DisabledTools["mcp1"]
-	if len(dt) != 1 || dt[0] != "tool_a" {
-		t.Fatalf("disabled tools round-trip failed: %v", dt)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Integration: full lifecycle
-// ---------------------------------------------------------------------------
-
-func TestIntegrationLifecycle(t *testing.T) {
-	// This test exercises a realistic sequence of operations on a single
-	// Settings instance without touching the file system.
-
-	s := newTestSettings(t, nil, nil)
-
-	// 1. Generate two tokens.
-	pt1, tok1 := mustGenerateToken(t, "alice", nil)
-	pt2, tok2 := mustGenerateToken(t, "bob", nil)
-	s.Tokens = append(s.Tokens, tok1, tok2)
-
-	// 2. Add two MCPs. Both should default to PermOff for existing tokens.
-	s.AddExternalMcp(ExternalMcp{ID: "fs", DisplayName: "File System MCP"})
-	s.AddExternalMcp(ExternalMcp{ID: "mac", DisplayName: "macOS MCP"})
-
-	if s.GetPermission(tok1.Hash, "fs") != PermOff {
-		t.Fatal("new MCP should default to PermOff")
-	}
-	if s.GetPermission(tok2.Hash, "mac") != PermOff {
-		t.Fatal("new MCP should default to PermOff")
-	}
-
-	// 3. Grant alice access to fs, bob access to mac.
-	s.UpdatePermission(tok1.Hash, "fs", PermOn)
-	s.UpdatePermission(tok2.Hash, "mac", PermOn)
-
-	if s.GetPermission(tok1.Hash, "fs") != PermOn {
-		t.Fatal("alice should have PermOn for fs")
-	}
-	if s.GetPermission(tok2.Hash, "mac") != PermOn {
-		t.Fatal("bob should have PermOn for mac")
-	}
-	if s.GetPermission(tok1.Hash, "mac") != PermOff {
-		t.Fatal("alice should have PermOff for mac")
-	}
-
-	// 4. Disable a specific tool for alice on fs.
-	s.SetToolDisabled(tok1.Hash, "fs", "delete_file", true)
-	if !s.IsToolDisabled(tok1.Hash, "fs", "delete_file") {
-		t.Fatal("delete_file should be disabled for alice")
-	}
-	if s.IsToolDisabled(tok2.Hash, "fs", "delete_file") {
-		t.Fatal("delete_file should not be disabled for bob")
-	}
-
-	// 5. Set context for alice on fs.
-	s.SetContext(tok1.Hash, "fs", json.RawMessage(`{"allowed_dirs":["/home/alice"]}`))
-	aliceTok, _ := s.findTokenByHash(tok1.Hash)
-	if string(aliceTok.Context["fs"]) != `{"allowed_dirs":["/home/alice"]}` {
-		t.Fatal("alice context for fs should be set")
-	}
-
-	// 6. Authenticate both tokens.
-	result, err := s.Authenticate(pt1)
-	if err != nil || result.Name != "alice" {
-		t.Fatalf("alice auth failed: %v", err)
-	}
-	result, err = s.Authenticate(pt2)
-	if err != nil || result.Name != "bob" {
-		t.Fatalf("bob auth failed: %v", err)
-	}
-
-	// 7. Remove the fs MCP. Should clean up permissions and disabled tools.
-	s.RemoveExternalMcp("fs")
-	aliceTok, _ = s.findTokenByHash(tok1.Hash)
-	if _, exists := aliceTok.Permissions["fs"]; exists {
-		t.Fatal("fs permission should be cleaned up after removal")
-	}
-	if _, exists := aliceTok.DisabledTools["fs"]; exists {
-		t.Fatal("fs disabled tools should be cleaned up after removal")
-	}
-
-	// 8. Delete bob's token.
-	s.DeleteToken(tok2.Hash)
-	_, err = s.Authenticate(pt2)
-	if !errors.Is(err, ErrInvalidToken) {
-		t.Fatalf("expected ErrInvalidToken after delete, got %v", err)
-	}
-
-	// 9. Revoke all.
-	s.RevokeAll()
-	_, err = s.Authenticate(pt1)
-	if !errors.Is(err, ErrNoTokens) {
-		t.Fatalf("expected ErrNoTokens after RevokeAll, got %v", err)
 	}
 }
 
@@ -1641,54 +781,12 @@ func TestEdgeCases(t *testing.T) {
 			t.Fatalf("settings file should be named settings.json, got %q", filepath.Base(path))
 		}
 	})
-
-	t.Run("GenerateToken with nil permissions", func(t *testing.T) {
-		_, tok := mustGenerateToken(t, "nil-perms", nil)
-		// Permissions should be nil (not set), which is fine.
-		if tok.Permissions != nil {
-			t.Fatal("nil default permissions should remain nil")
-		}
-	})
-
-	t.Run("Authenticate returns pointer into Tokens slice", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		pt, tok := mustGenerateToken(t, "ptr-test", nil)
-		s.Tokens = append(s.Tokens, tok)
-
-		result, _ := s.Authenticate(pt)
-		result.Name = "mutated"
-		if s.Tokens[0].Name != "mutated" {
-			t.Fatal("Authenticate should return a pointer into the Tokens slice")
-		}
-	})
-
-	t.Run("SetToolDisabled with nil DisabledTools initializes map", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		tok := StoredToken{Name: "bare", Hash: "bare-hash"}
-		s.Tokens = append(s.Tokens, tok)
-
-		s.SetToolDisabled("bare-hash", "mcp1", "t1", true)
-		if s.Tokens[0].DisabledTools == nil {
-			t.Fatal("DisabledTools should be initialized")
-		}
-	})
-
-	t.Run("SetContext with nil Context initializes map", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
-		tok := StoredToken{Name: "bare", Hash: "bare-hash"}
-		s.Tokens = append(s.Tokens, tok)
-
-		s.SetContext("bare-hash", "mcp1", json.RawMessage(`{"k":"v"}`))
-		if s.Tokens[0].Context == nil {
-			t.Fatal("Context should be initialized")
-		}
-	})
 }
 
 func TestUpsertExternalMcp(t *testing.T) {
 	t.Run("inserts new MCP and returns false", func(t *testing.T) {
-		s := newTestSettings(t, []StoredToken{{Hash: "h1", Permissions: map[string]Permission{}}}, nil)
-		cfg := ExternalMcp{ID: "new-mcp", DisplayName: "New", DiscoveredTools: []ToolInfo{}}
+		s := newTestSettings(t, nil)
+		cfg := ExternalMcp{ID: "new-mcp", DisplayName: "New"}
 		updated := s.UpsertExternalMcp(cfg)
 		if updated {
 			t.Fatal("expected insert (false), got update (true)")
@@ -1696,17 +794,13 @@ func TestUpsertExternalMcp(t *testing.T) {
 		if len(s.ExternalMcps) != 1 || s.ExternalMcps[0].ID != "new-mcp" {
 			t.Fatal("MCP not added")
 		}
-		// AddExternalMcp should have set PermOff for existing tokens.
-		if s.Tokens[0].Permissions["new-mcp"] != PermOff {
-			t.Fatal("expected PermOff default for new MCP")
-		}
 	})
 
 	t.Run("updates existing MCP and returns true", func(t *testing.T) {
-		s := newTestSettings(t, nil, []ExternalMcp{
-			{ID: "mcp1", DisplayName: "Old", Command: "old-cmd", DiscoveredTools: []ToolInfo{{Name: "tool1"}}},
+		s := newTestSettings(t, []ExternalMcp{
+			{ID: "mcp1", DisplayName: "Old", Command: "old-cmd"},
 		})
-		cfg := ExternalMcp{ID: "mcp1", DisplayName: "Updated", Command: "new-cmd", DiscoveredTools: []ToolInfo{}}
+		cfg := ExternalMcp{ID: "mcp1", DisplayName: "Updated", Command: "new-cmd"}
 		updated := s.UpsertExternalMcp(cfg)
 		if !updated {
 			t.Fatal("expected update (true), got insert (false)")
@@ -1717,16 +811,12 @@ func TestUpsertExternalMcp(t *testing.T) {
 		if s.ExternalMcps[0].Command != "new-cmd" {
 			t.Fatal("command not updated")
 		}
-		// UpdateExternalMcp preserves tools when new has none.
-		if len(s.ExternalMcps[0].DiscoveredTools) != 1 {
-			t.Fatal("DiscoveredTools should be preserved")
-		}
 	})
 }
 
 func TestUpsertService(t *testing.T) {
 	t.Run("inserts new service and returns false", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		cfg := ServiceConfig{ID: "svc1", DisplayName: "Svc 1", Command: "cmd"}
 		updated := s.UpsertService(cfg)
 		if updated {
@@ -1738,7 +828,7 @@ func TestUpsertService(t *testing.T) {
 	})
 
 	t.Run("updates existing service and returns true", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.Services = []ServiceConfig{{ID: "svc1", DisplayName: "Old", Command: "old-cmd"}}
 		cfg := ServiceConfig{ID: "svc1", DisplayName: "New", Command: "new-cmd"}
 		updated := s.UpsertService(cfg)
@@ -1756,7 +846,7 @@ func TestUpsertService(t *testing.T) {
 
 func TestMergeServiceDefaults(t *testing.T) {
 	t.Run("fills zero-value fields from existing", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.Services = []ServiceConfig{{
 			ID:         "svc1",
 			Command:    "cmd",
@@ -1785,7 +875,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 	})
 
 	t.Run("does not overwrite non-zero fields", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		s.Services = []ServiceConfig{{
 			ID:         "svc1",
 			Args:       []string{"--old"},
@@ -1816,7 +906,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 	})
 
 	t.Run("no-op for unknown service", func(t *testing.T) {
-		s := newTestSettings(t, nil, nil)
+		s := newTestSettings(t, nil)
 		cfg := ServiceConfig{ID: "missing", Command: "cmd"}
 		s.MergeServiceDefaults(&cfg)
 		if cfg.Command != "cmd" {
@@ -1826,7 +916,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 }
 
 func TestResolveMcpID(t *testing.T) {
-	s := newTestSettings(t, nil, []ExternalMcp{
+	s := newTestSettings(t, []ExternalMcp{
 		{ID: "mcp1", DisplayName: "My MCP"},
 		{ID: "mcp2", DisplayName: "Other MCP"},
 	})
@@ -1863,7 +953,7 @@ func TestResolveMcpID(t *testing.T) {
 }
 
 func TestResolveServiceID(t *testing.T) {
-	s := newTestSettings(t, nil, nil)
+	s := newTestSettings(t, nil)
 	s.Services = []ServiceConfig{
 		{ID: "svc1", DisplayName: "My Service"},
 		{ID: "svc2", DisplayName: "Other Service"},

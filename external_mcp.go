@@ -29,10 +29,6 @@ type McpConnection interface {
 	GetConfig() ExternalMcp
 }
 
-// OnDiscoverFunc is called after a successful MCP handshake with discovered tools and schema.
-// Injected at ExternalMcpManager construction to decouple the manager from Settings persistence.
-type OnDiscoverFunc func(id string, tools []ToolInfo, schema json.RawMessage)
-
 // OnTokenRefreshFunc is called when an HTTP MCP refreshes its OAuth token.
 // Injected at ExternalMcpManager construction to decouple from Settings persistence.
 type OnTokenRefreshFunc func(mcpID string, oauth *OAuthState)
@@ -41,7 +37,7 @@ type OnTokenRefreshFunc func(mcpID string, oauth *OAuthState)
 type ExternalMcpManager struct {
 	mu             sync.RWMutex
 	conns          map[string]McpConnection
-	onDiscover     OnDiscoverFunc
+	schemas        map[string]json.RawMessage // id → context schema (runtime-only)
 	onTokenRefresh OnTokenRefreshFunc
 }
 
@@ -167,12 +163,12 @@ func extractContextSchema(initResp json.RawMessage) json.RawMessage {
 	return nil
 }
 
-// NewExternalMcpManager creates a manager with injected callbacks for discovery
-// and token refresh persistence. This keeps the manager decoupled from Settings.
-func NewExternalMcpManager(onDiscover OnDiscoverFunc, onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManager {
+// NewExternalMcpManager creates a manager with an injected callback for OAuth
+// token refresh persistence. This keeps the manager decoupled from Settings.
+func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManager {
 	return &ExternalMcpManager{
 		conns:          make(map[string]McpConnection),
-		onDiscover:     onDiscover,
+		schemas:        make(map[string]json.RawMessage),
 		onTokenRefresh: onTokenRefresh,
 	}
 }
@@ -191,15 +187,17 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 }
 
 // finalizeConnection completes MCP startup after a successful handshake:
-// stores the connection in the manager, sets discovered tools, and persists
-// discovery results. setConnection is called first so that the lock ordering
+// stores the connection in the manager, sets discovered tools, and caches
+// the context schema. setConnection is called first so that the lock ordering
 // (m.mu -> toolsMu) is consistent with FindToolOwner and Tools, preventing
 // potential deadlocks from inverted lock acquisition.
 func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
 	m.setConnection(id, conn)
 	conn.SetTools(result.Tools)
-	if m.onDiscover != nil {
-		m.onDiscover(id, result.ToolInfos, result.ContextSchema)
+	if len(result.ContextSchema) > 0 {
+		m.mu.Lock()
+		m.schemas[id] = result.ContextSchema
+		m.mu.Unlock()
 	}
 	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
 }
@@ -365,6 +363,37 @@ func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
 	return nil
 }
 
+// GetContextSchema returns the runtime context schema for an MCP, or nil if not connected.
+func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.schemas[id]
+}
+
+// ToolInfos returns a summary of discovered tools for an MCP (name, description, category).
+func (m *ExternalMcpManager) ToolInfos(id string) []ToolInfo {
+	m.mu.RLock()
+	conn, ok := m.conns[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	tools := conn.GetTools()
+	infos := make([]ToolInfo, len(tools))
+	for i, t := range tools {
+		infos[i] = ToolInfo{Name: t.Name, Description: t.Description, Category: toolCategory(t)}
+	}
+	return infos
+}
+
+// IsConnected returns true if an MCP connection is active.
+func (m *ExternalMcpManager) IsConnected(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.conns[id]
+	return ok
+}
+
 // FindToolOwner returns the ID and config of the external MCP that owns the named tool.
 func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMcp) {
 	m.mu.RLock()
@@ -424,6 +453,7 @@ func (m *ExternalMcpManager) Stop(id string) {
 	if ok {
 		delete(m.conns, id)
 	}
+	delete(m.schemas, id)
 	m.mu.Unlock()
 
 	if ok {
@@ -437,6 +467,7 @@ func (m *ExternalMcpManager) StopAll() {
 	m.mu.Lock()
 	conns := m.conns
 	m.conns = make(map[string]McpConnection)
+	m.schemas = make(map[string]json.RawMessage)
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup

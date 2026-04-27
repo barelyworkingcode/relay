@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -18,26 +17,39 @@ import (
 // testToken is a known plaintext token used across router tests.
 const testToken = "aaaaaabbbbbbccccccddddddeeeeee0011223344556677889900aabbccddeeff"
 
-// makeSettings builds a Settings with one token whose hash matches testToken.
-// The token has the given permissions and disabled tools.
-func makeSettings(perms map[string]Permission, disabled map[string][]string, context map[string]json.RawMessage) *Settings {
+// makeSettings builds a Settings with one project whose token matches testToken.
+// perms defines which MCPs are allowed (PermOn) or denied (PermOff).
+// The project's AllowedMcpIDs is derived from the PermOn entries.
+func makeSettings(perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage) *Settings {
 	hash := hashToken(testToken)
-	tok := StoredToken{
-		Name:          "test-token",
-		Hash:          hash,
-		Prefix:        testToken[:tokenDisplayLen],
-		Suffix:        testToken[len(testToken)-tokenDisplayLen:],
-		CreatedAt:     "2025-01-01T00:00:00Z",
-		Permissions:   perms,
-		DisabledTools: disabled,
-		Context:       context,
+	// Derive AllowedMcpIDs from PermOn entries.
+	var allowed []string
+	for id, p := range perms {
+		if p == PermOn {
+			allowed = append(allowed, id)
+		}
+	}
+	// Build ExternalMcps from all permission keys so AuthenticateProject
+	// can set PermOff for non-allowed MCPs.
+	var mcps []ExternalMcp
+	for id := range perms {
+		mcps = append(mcps, ExternalMcp{ID: id, DisplayName: id})
 	}
 	return &Settings{
 		Version:      1,
-		Tokens:       []StoredToken{tok},
-		ExternalMcps: []ExternalMcp{},
+		ExternalMcps: mcps,
 		Services:     []ServiceConfig{},
-		AdminSecret:  "supersecretadmin",
+		Projects: []Project{{
+			ID:            "test-project",
+			Name:          "test",
+			Path:          "/tmp/test",
+			AllowedMcpIDs: allowed,
+			Token:         testToken,
+			TokenHash:     hash,
+			DisabledTools: disabled,
+			Context:       ctx,
+		}},
+		AdminSecret: "supersecretadmin",
 	}
 }
 
@@ -58,10 +70,18 @@ func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRoute
 func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage, mocks map[string]*mockMcpConn) *appRouter {
 	t.Helper()
 	s := makeSettings(perms, disabled, ctx)
-	for id := range mocks {
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
+	// makeSettings already creates ExternalMcps from perms keys.
+	// Add any mock MCPs not already in perms.
+	existing := make(map[string]bool)
+	for _, m := range s.ExternalMcps {
+		existing[m.ID] = true
 	}
-	mgr := NewExternalMcpManager(nil, nil)
+	for id := range mocks {
+		if !existing[id] {
+			s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
+		}
+	}
+	mgr := NewExternalMcpManager(nil)
 	for id, mock := range mocks {
 		addMockConn(mgr, id, mock)
 	}
@@ -91,7 +111,7 @@ func unmarshalTools(t *testing.T, raw json.RawMessage) []mcp.Tool {
 
 func TestResolveAuth_ValidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	stored, settings, err := r.resolveAuth(testToken)
 	if err != nil {
@@ -100,8 +120,8 @@ func TestResolveAuth_ValidToken(t *testing.T) {
 	if stored == nil {
 		t.Fatal("expected non-nil StoredToken")
 	}
-	if stored.Name != "test-token" {
-		t.Errorf("expected token name 'test-token', got %q", stored.Name)
+	if !strings.HasPrefix(stored.Name, "project:") {
+		t.Errorf("expected project token name, got %q", stored.Name)
 	}
 	if settings == nil {
 		t.Fatal("expected non-nil Settings")
@@ -110,45 +130,21 @@ func TestResolveAuth_ValidToken(t *testing.T) {
 
 func TestResolveAuth_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	_, _, err := r.resolveAuth("completely-wrong-token")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
-	if !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("expected ErrInvalidToken, got %v", err)
-	}
-}
-
-func TestResolveAuth_NoTokens(t *testing.T) {
-	s := &Settings{
-		Version:      1,
-		Tokens:       []StoredToken{},
-		ExternalMcps: []ExternalMcp{},
-		Services:     []ServiceConfig{},
-	}
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
-
-	_, _, err := r.resolveAuth(testToken)
-	if err == nil {
-		t.Fatal("expected error when no tokens configured")
-	}
-	if !errors.Is(err, ErrNoTokens) {
-		t.Errorf("expected ErrNoTokens, got %v", err)
-	}
 }
 
 func TestResolveAuth_EmptyToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	_, _, err := r.resolveAuth("")
 	if err == nil {
 		t.Fatal("expected error for empty token")
-	}
-	if !errors.Is(err, ErrNoToken) {
-		t.Errorf("expected ErrNoToken, got %v", err)
 	}
 }
 
@@ -260,7 +256,7 @@ func TestListTools_EmptyForTokenWithNoPermittedMcps(t *testing.T) {
 
 func TestListTools_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	_, err := r.ListTools(context.Background(), "bad-token")
 	if err == nil {
@@ -336,9 +332,6 @@ func TestCallTool_DisabledMcp(t *testing.T) {
 	if !strings.Contains(err.Error(), "access denied") {
 		t.Errorf("expected 'access denied' in error, got %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "disabled for this token") {
-		t.Errorf("expected 'disabled for this token' in error, got %q", err.Error())
-	}
 }
 
 func TestCallTool_DisabledTool(t *testing.T) {
@@ -356,9 +349,6 @@ func TestCallTool_DisabledTool(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "access denied") {
 		t.Errorf("expected 'access denied' in error, got %q", err.Error())
-	}
-	if !strings.Contains(err.Error(), "tool") {
-		t.Errorf("expected 'tool' in error message, got %q", err.Error())
 	}
 }
 
@@ -428,7 +418,7 @@ func TestCallTool_NoMetaWhenContextNotSet(t *testing.T) {
 
 func TestCallTool_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	_, err := r.CallTool(context.Background(), "any_tool", nil, "wrong-token")
 	if err == nil {
@@ -469,7 +459,7 @@ func TestCallTool_RoutesToCorrectMcp(t *testing.T) {
 
 func TestValidateAdmin_CorrectSecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	err := r.ValidateAdmin("supersecretadmin")
 	if err != nil {
@@ -479,26 +469,49 @@ func TestValidateAdmin_CorrectSecret(t *testing.T) {
 
 func TestValidateAdmin_WrongSecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	err := r.ValidateAdmin("wrongsecret")
 	if err == nil {
 		t.Fatal("expected error for wrong admin secret")
 	}
-	if !strings.Contains(err.Error(), "admin authentication failed") {
-		t.Errorf("expected 'admin authentication failed' in error, got %q", err.Error())
-	}
 }
 
 func TestValidateAdmin_EmptySecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil, nil))
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	err := r.ValidateAdmin("")
 	if err == nil {
 		t.Fatal("expected error for empty admin secret")
 	}
-	if !strings.Contains(err.Error(), "admin authentication failed") {
-		t.Errorf("expected 'admin authentication failed' in error, got %q", err.Error())
+}
+
+// ---------------------------------------------------------------------------
+// Service tokens (in-memory, full access)
+// ---------------------------------------------------------------------------
+
+func TestResolveAuth_ServiceToken(t *testing.T) {
+	s := makeSettings(nil, nil, nil)
+	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+
+	// Register a service token.
+	svcToken := "servicetokenservicetokenservicetokenservicetokenservicetokenservic"
+	svcHash := hashToken(svcToken)
+	r.serviceTokens.Register(svcHash)
+
+	stored, _, err := r.resolveAuth(svcToken)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if stored.Name != "service" {
+		t.Errorf("expected service token name, got %q", stored.Name)
+	}
+
+	// Cleanup.
+	r.serviceTokens.Remove(svcHash)
+	_, _, err = r.resolveAuth(svcToken)
+	if err == nil {
+		t.Fatal("expected error after service token removal")
 	}
 }

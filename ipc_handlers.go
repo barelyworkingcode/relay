@@ -65,7 +65,6 @@ func (a *App) pushServiceStatus() {
 func (a *App) pushFullSettings() {
 	s := a.store.Get()
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
-		"tokens":        s.Tokens,
 		"external_mcps": s.ExternalMcps,
 		"services":      s.Services,
 		"running_ids":   a.registry.RunningIDs(),
@@ -150,39 +149,6 @@ type ipcMsg struct {
 	Type string `json:"type"`
 }
 
-type ipcGenerateTokenMsg struct {
-	Name string `json:"name"`
-}
-
-type ipcTokenHash struct {
-	Hash string `json:"hash"`
-}
-
-type ipcUpdatePermissionMsg struct {
-	Hash       string `json:"hash"`
-	Service    string `json:"service"`
-	Permission string `json:"permission"`
-}
-
-type ipcSetToolDisabledMsg struct {
-	Hash     string `json:"hash"`
-	McpID    string `json:"mcp_id"`
-	ToolName string `json:"tool_name"`
-	Disabled bool   `json:"disabled"`
-}
-
-type ipcSetAllToolsDisabledMsg struct {
-	Hash     string `json:"hash"`
-	McpID    string `json:"mcp_id"`
-	Disabled bool   `json:"disabled"`
-}
-
-type ipcSetContextMsg struct {
-	Hash    string      `json:"hash"`
-	McpID   string      `json:"mcp_id"`
-	Context interface{} `json:"context"`
-}
-
 type ipcAddExternalMcpMsg struct {
 	DisplayName string            `json:"display_name"`
 	Transport   string            `json:"transport"`
@@ -223,14 +189,6 @@ type ipcUpdateServiceAutostartMsg struct {
 // ---------------------------------------------------------------------------
 
 const (
-	MsgGenerateToken       = "generate_token"
-	MsgDeleteToken         = "delete_token"
-	MsgRevokeAll           = "revoke_all"
-	MsgUpdatePermission    = "update_permission"
-	MsgSetToolDisabled     = "set_tool_disabled"
-	MsgSetAllToolsDisabled = "set_all_tools_disabled"
-	MsgSetContext          = "set_context"
-
 	MsgAddExternalMcp    = "add_external_mcp"
 	MsgAuthenticateMcp   = "authenticate_mcp"
 	MsgRemoveExternalMcp = "remove_external_mcp"
@@ -251,15 +209,6 @@ const (
 
 // ipcHandlers maps message types to handler functions.
 var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
-	// Tokens & permissions (ipc_tokens.go)
-	MsgGenerateToken:       ipcGenerateToken,
-	MsgDeleteToken:         ipcDeleteToken,
-	MsgRevokeAll:           ipcRevokeAll,
-	MsgUpdatePermission:    ipcUpdatePermission,
-	MsgSetToolDisabled:     ipcSetToolDisabled,
-	MsgSetAllToolsDisabled: ipcSetAllToolsDisabled,
-	MsgSetContext:          ipcSetContext,
-
 	// External MCPs (ipc_mcps.go)
 	MsgAddExternalMcp:    ipcAddExternalMcp,
 	MsgAuthenticateMcp:   ipcAuthenticateMcp,
