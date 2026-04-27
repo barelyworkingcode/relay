@@ -219,6 +219,36 @@ func (r *appRouter) ReloadService(id string) {
 	r.onChange()
 }
 
+// ListProjects returns all projects. Requires a valid service token.
+func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
+	stored, _, err := r.resolveAuth(token)
+	if err != nil {
+		return nil, err
+	}
+	if stored.Name != serviceTokenName {
+		return nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("ListProjects requires a service token"))
+	}
+	s := r.store.Get()
+	return json.Marshal(s.Projects)
+}
+
+// GetProject returns a single project by ID. Requires a valid service token.
+func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
+	stored, _, err := r.resolveAuth(token)
+	if err != nil {
+		return nil, err
+	}
+	if stored.Name != serviceTokenName {
+		return nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("GetProject requires a service token"))
+	}
+	s := r.store.Get()
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
+	}
+	return json.Marshal(proj)
+}
+
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
 	settings := r.store.Reload()
 	mcpCfg, _ := settings.findMcpByID(id)
