@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"relaygo/bridge"
@@ -37,15 +38,20 @@ type ServiceReloader interface {
 	Reload(id string, cfg *ServiceConfig) error
 }
 
-// checkToolAccess verifies that the given token has permission to access
+// checkToolAccess verifies that the resolved token has permission to access
 // the specified MCP and (optionally) tool. Pass empty toolName to check
-// only the MCP-level permission.
-func checkToolAccess(s *Settings, tokenHash, mcpID, toolName string) error {
-	if s.GetPermission(tokenHash, mcpID) == PermOff {
+// only the MCP-level permission. Operates on the StoredToken directly so it
+// works for both external tokens (from Tokens[]) and project tokens (inline).
+func checkToolAccess(tok *StoredToken, mcpID, toolName string) error {
+	// Check MCP-level permission.
+	if perm, ok := tok.Permissions[mcpID]; ok && perm == PermOff {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID))
 	}
-	if toolName != "" && s.IsToolDisabled(tokenHash, mcpID, toolName) {
-		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
+	// Check tool-level disabling.
+	if toolName != "" && tok.DisabledTools != nil {
+		if slices.Contains(tok.DisabledTools[mcpID], toolName) {
+			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
+		}
 	}
 	return nil
 }
@@ -61,6 +67,9 @@ type appRouter struct {
 	onChange      func()
 	serviceTokens serviceTokenStore
 }
+
+// serviceTokenName identifies service tokens in the Name field.
+const serviceTokenName = "service"
 
 // serviceTokenStore holds ephemeral in-memory tokens for managed services.
 // Tokens are never persisted — if Relay crashes, both the tokens and the
@@ -78,7 +87,7 @@ func (s *serviceTokenStore) Register(hash string) {
 		s.hashes = make(map[string]*StoredToken)
 	}
 	s.hashes[hash] = &StoredToken{
-		Name: "service",
+		Name: serviceTokenName,
 		Hash: hash,
 	}
 }
@@ -106,7 +115,7 @@ var (
 
 // resolveAuth loads settings and authenticates the given token.
 // Checks in-memory service tokens first (full access, no per-MCP permissions),
-// then falls back to stored tokens in settings.
+// then project tokens (inline permissions), then external tokens in settings.
 func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
 	if token == "" {
 		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
@@ -120,11 +129,12 @@ func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
 		return tok, s, nil
 	}
 
-	stored, err := s.Authenticate(token)
-	if err != nil {
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, err)
+	// Check project tokens (inline permissions). Reuse hash from above.
+	if stored := s.AuthenticateProjectByHash(hash); stored != nil {
+		return stored, s, nil
 	}
-	return stored, s, nil
+
+	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrInvalidToken)
 }
 
 func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
@@ -133,16 +143,16 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 		return nil, err
 	}
 
-	isServiceToken := stored.Name == "service"
+	isServiceToken := stored.Name == serviceTokenName
 	tools := make([]mcp.Tool, 0)
 
 	// External MCP tools.
 	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(settings, stored.Hash, ext.ID, "") != nil {
+		if !isServiceToken && checkToolAccess(stored, ext.ID, "") != nil {
 			continue
 		}
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(settings, stored.Hash, ext.ID, t.Name) != nil {
+			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name) != nil {
 				continue
 			}
 			tools = append(tools, t)
@@ -153,18 +163,18 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	stored, settings, err := r.resolveAuth(token)
+	stored, _, err := r.resolveAuth(token)
 	if err != nil {
 		return nil, err
 	}
 
-	isServiceToken := stored.Name == "service"
+	isServiceToken := stored.Name == serviceTokenName
 
 	// Check external MCPs.
 	extID, extMcp := r.tools.FindToolOwner(name)
 	if extMcp != nil {
 		if !isServiceToken {
-			if err := checkToolAccess(settings, stored.Hash, extID, name); err != nil {
+			if err := checkToolAccess(stored, extID, name); err != nil {
 				return nil, err
 			}
 		}

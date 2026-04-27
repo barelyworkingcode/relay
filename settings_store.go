@@ -56,9 +56,9 @@ const currentSettingsVersion = 1
 func defaultSettings() *Settings {
 	return &Settings{
 		Version:      currentSettingsVersion,
-		Tokens:       []StoredToken{},
 		ExternalMcps: []ExternalMcp{},
 		Services:     []ServiceConfig{},
+		Projects:     []Project{},
 	}
 }
 
@@ -102,17 +102,20 @@ func (s *Settings) normalize() {
 	if s.Version == 0 {
 		s.Version = currentSettingsVersion
 	}
-	ensureSlice(&s.Tokens)
 	ensureSlice(&s.ExternalMcps)
 	ensureSlice(&s.Services)
 	for i := range s.ExternalMcps {
 		ensureSlice(&s.ExternalMcps[i].Args)
 		ensureMap(&s.ExternalMcps[i].Env)
-		ensureSlice(&s.ExternalMcps[i].DiscoveredTools)
 	}
 	for i := range s.Services {
 		ensureSlice(&s.Services[i].Args)
 		ensureMap(&s.Services[i].Env)
+	}
+	ensureSlice(&s.Projects)
+	for i := range s.Projects {
+		ensureSlice(&s.Projects[i].AllowedMcpIDs)
+		ensureSlice(&s.Projects[i].AllowedModels)
 	}
 }
 

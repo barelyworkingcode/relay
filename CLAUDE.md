@@ -1,104 +1,78 @@
 # Relay (Go)
 
-macOS MCP orchestrator. Tray app with token-authenticated Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management.
+macOS MCP orchestrator and project manager. Tray app with project-scoped auth, Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management.
 
 ## Modes
 
-- `relay` -- tray app (default). Hosts bridge socket, manages services, shows settings UI.
-- `relay mcp --token TOKEN` -- stdio MCP server. Connects to tray app's bridge socket, proxies tool calls.
-- `relay mcp register|unregister|list` -- CLI for external MCP server management. Supports `--transport stdio` (default) and `--transport http --url <endpoint>`. Writes settings.json directly; sends reconcile to tray app.
-- `relay service register|unregister|list` -- CLI for service self-registration. Writes settings.json directly; tray app picks up changes via 2-second poll.
+- `relay` -- tray app (default). Hosts bridge socket, manages services and projects, shows settings UI.
+- `relay mcp --token TOKEN` -- stdio MCP server. Connects to bridge socket, proxies tool calls. Token determines visible MCPs/tools.
+- `relay mcp register|unregister|list` -- CLI for external MCP server management.
+- `relay service register|unregister|list` -- CLI for service self-registration.
 
 ## Architecture
 
-Zero built-in services or MCPs. All tools come from external MCP servers registered via CLI or settings UI. Supports both stdio and HTTP (Streamable HTTP, MCP spec 2025-03-26) transports.
+Relay owns projects, MCPs, and services. relayLLM is a pure LLM execution engine — it receives directory + model + token from callers and has no project awareness. Eve fetches projects from relay, resolves templates, and passes explicit params to relayLLM.
+
+Request flow: Browser → Eve (WS) → relayLLM → LLM API. When the LLM calls a tool: relayLLM's MCP manager → `relay mcp` subprocess (project token) → bridge socket → router (auth, filter, _meta inject) → actual MCP server (fsMCP, macMCP, etc.) → result back up the chain.
+
+### Key files
 
 ```
-main            Entry point
-platform.go     Platform interface (UI abstraction)
-cocoa_darwin.*  macOS Platform implementation (cgo + Obj-C)
-trayapp.go      App lifecycle, menu, settings IPC, ToolRouter
-settings.go     Config, token auth, permissions, ServiceConfig
-settings_html.go  Settings WKWebView HTML/JS
-external_mcp.go   mcpConnection interface + stdio MCP client (JSON-RPC 2.0)
-http_mcp.go       HTTP Streamable transport (httpMcpConn)
-oauth.go          OAuth 2.1 flow (metadata discovery, PKCE, dynamic registration, token exchange/refresh)
-mcp_cmd.go        CLI for mcp register/unregister/list
-service_cmd.go    CLI for service register/unregister/list
-service_registry.go  Background process management
-bridge/         Unix socket IPC. Newline-delimited JSON. No internal deps.
-mcp/            MCP types + stdio server (proxies to bridge)
+trayapp.go          App lifecycle, menu, settings IPC, ToolRouter
+settings.go         Config, project CRUD, permission derivation, SyncProjectToken
+project.go          CreateProjectWithToken, token generation
+tokens.go           hashToken, auth sentinel errors
+types.go            StoredToken, Project, ChatTemplate, ExternalMcp, ServiceConfig
+router.go           Auth (service → project tokens), tool filtering, _meta injection
+external_mcp.go     mcpConnection interface + stdio/HTTP MCP clients, runtime schema storage
+settings_html.go    Settings WKWebView HTML/JS
+mcp_cmd.go          CLI: relay mcp register/unregister/list
+service_cmd.go      CLI: relay service register/unregister/list
+service_registry.go Background process management, ephemeral service tokens
+bridge/             Unix socket IPC. Newline-delimited JSON.
+mcp/                MCP types + stdio server (proxies to bridge)
 ```
 
-## Platform
+## Projects
 
-`Platform` interface in `platform.go`: Init, Run, SetupTray, UpdateMenu, OpenSettings, EvalSettingsJS, CopyToClipboard, DispatchToMain, OpenURL.
+Projects are the primary infrastructure boundary in `settings.json`. Each binds: path, allowed MCPs, allowed models, chat templates, scoped token, disabled tools, and context.
 
-- `cocoa_darwin.go` -- `DarwinPlatform` (macOS, cgo)
-- `init_darwin.go` -- `runtime.LockOSThread` (darwin build tag)
-- `service_registry_unix.go` -- platform shell/process helpers
+- `allowed_mcp_ids: ["*"]` = all registered MCPs. Explicit IDs to restrict.
+- `allowed_models: ["*"]` = all models. Explicit IDs to restrict.
+- Permissions derived at auth time from `allowed_mcp_ids` — not stored separately.
+- `fs_bash` auto-disabled for filesystem MCPs. `allowed_dirs` auto-set to project path.
 
-## Bridge
-
-Socket: `<UserConfigDir>/relay/relay.sock`
-Wire: newline-delimited JSON. Request types: `ListTools`, `CallTool`, `ReconcileExternalMcps`. Auth via token on every request.
+Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → derive permissions from `allowed_mcp_ids` + registered MCPs → return `StoredToken` view with permissions + disabled_tools + context.
 
 ## Security
 
-Token-based. SHA-256 hashed, only prefix/suffix stored. Per-service permissions: Off or On. Per-tool disable. Per-token context injected as `_meta` in tool calls to external MCPs. Context schema discovered from MCP's `serverInfo.contextSchema` during `initialize` handshake -- settings UI renders editors dynamically based on the schema. No tokens = all access blocked.
+- **Project tokens** -- inline in project (plaintext + SHA-256 hash). The token IS the security boundary.
+- **Service tokens** -- ephemeral, in-memory. Full bridge access. For administrative operations.
+- **Eve ↔ relayLLM** -- separate trust boundary (`RELAY_LLM_TOKEN` + Unix socket). See `relay_llm_channel.go`.
+- **OAuth 2.1** -- HTTP MCPs use PKCE, dynamic registration, auto-refresh. See `oauth.go`.
 
-HTTP MCPs use OAuth 2.1 with PKCE (S256). Discovery chain: probe MCP URL for 401 `WWW-Authenticate` -> fetch Protected Resource Metadata (RFC 9728) for authorization server + scopes -> fetch AS metadata (path-aware well-known). Scopes from PRM `scopes_supported` are passed to both dynamic client registration and the authorization URL. OAuth state persisted in settings.json. Tokens auto-refresh on expiry.
+## MCP Runtime Data
 
-### Ephemeral service tokens (existing)
-
-`service_registry.go` injects an ephemeral `RELAY_MCP_TOKEN` + `RELAY_MCP_COMMAND` into every spawned child service (eve, relayLLM, relayScheduler, relayTelegram). The token is 32 random bytes (`generateRandomHex(32)`), hashed into the in-memory `TokenStore` on spawn, and removed from the store when the process exits. This is the primary mechanism for child services to reach the bridge socket.
-
-### Eve ↔ relayLLM internal channel
-
-Separate from the MCP bridge above, Eve and relayLLM talk to each other directly (Eve forwards session/message/permission/terminal traffic to relayLLM as its only backend). That channel has its own authentication and transport hardening. The `relay` orchestrator issues and injects credentials at spawn time:
-
-- **`RELAY_LLM_SOCKET`** — path to a Unix domain socket allocated under `<UserConfigDir>/relay/relay-llm-<pid>.sock`. The orchestrator creates the parent dir with mode `0700`, and passes the path into **both** Eve's and relayLLM's environment. relayLLM binds this socket with mode `0600` at startup; Eve dials it via `http.Agent({ socketPath })` and `ws({ agent })`. The orchestrator unlinks the socket on graceful shutdown.
-- **`RELAY_LLM_TOKEN`** — ephemeral 32-byte hex bearer token, generated the same way `RELAY_MCP_TOKEN` is, and injected into **both** Eve and relayLLM at spawn. Eve sends it on every HTTP request and every WebSocket upgrade as `Authorization: Bearer <token>`. Used as defense-in-depth on top of the socket's FS permissions; required unconditionally when the channel falls back to TCP for split-host deployments.
-- **Lifetime.** Per-process: removed from the in-memory store when either Eve or relayLLM exits. Never written to disk.
-- **Scope.** This token is **not** the same as `RELAY_MCP_TOKEN` and must not be reused — the MCP bridge and the LLM session channel are separate trust boundaries. Multiplexing the two would mean that leaking one credential would grant access to the other, which is exactly what the split is designed to prevent.
-- **Fallback (split-host).** If the orchestrator does not allocate a socket (e.g. operator-managed deployment where Eve and relayLLM run on different hosts), Eve consumes `RELAY_LLM_URL` (must be `https://` off-loopback) + `RELAY_LLM_TOKEN` (must be set) + optional `RELAY_LLM_CA`. Eve's `assertStartupConfig()` fail-closes the process on any insecure combination.
-
-Implementation lives in `relay_llm_channel.go` (`LLMChannel` type, `participatesInLLMChannel()` service-ID matcher) and `service_registry.go` (`Start()` injects `RELAY_LLM_TOKEN` + `RELAY_LLM_SOCKET` for participating services, `CloseLLMChannel()` unlinks the socket on shutdown). Full rationale and end-to-end verification results live in `../eve/plans/cozy-honking-toast.md`.
+`discovered_tools` and `context_schema` are `json:"-"` — runtime-only, held in `ExternalMcpManager`, never persisted. Settings UI queries the live manager.
 
 ## Settings UI
 
-IPC: `ipc(json)` JS wrapper -> `window.webkit.messageHandlers.ipc.postMessage` (macOS).
-Tabs: Services, MCP Servers, Security.
+IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage` (macOS).
+Tabs: Services, MCP Servers, Projects.
 
 ## Ecosystem
 
-Relay is the hub for 6 connected projects. Cross-project features often require changes in multiple repos.
-
 Services (managed via `relay service register`):
 
-- `../relayLLM/` -- LLM engine. Providers, sessions, projects, permissions. Proxies task API and forwards scheduler WebSocket events from relayScheduler. Eve and relayTelegram connect to its HTTP/WS API as their single backend.
-- `../eve/` -- Browser-based LLM frontend. Proxies to relayLLM for all LLM concerns.
-- `../relayScheduler/` -- Task scheduler. Runs LLM prompts on schedule via relayLLM.
-- `../relayTelegram/` -- Telegram bot bridge to relayLLM sessions.
+- `../relayLLM/` -- LLM execution engine. Receives directory + model + token. No project awareness.
+- `../eve/` -- Browser-based frontend. Fetches projects from relay, resolves templates.
+- `../relayScheduler/` -- Task scheduler. Runs LLM prompts on schedule.
+- `../relayTelegram/` -- Telegram bot bridge.
 
 MCP Servers (managed via `relay mcp register`):
 
-- `../macMCP/` -- Swift MCP server with 41 macOS-native tools. Installs to `~/.local/bin/macmcp`.
-- `../fsMCP/` -- TypeScript MCP server with 6 file system tools. Installs to `~/.local/bin/fsmcp`. Uses per-token `_meta.allowed_dirs` context for directory scoping.
-
-## Key Files
-
-- `cocoa_darwin.h/m` -- Obj-C: NSApplication, NSStatusBar, NSWindow+WKWebView, clipboard, dispatch, openURL
-- `cocoa_darwin.go` -- cgo bridge: Go wrappers, DarwinPlatform, //export callbacks
-- `trayapp.go` -- app lifecycle, menu, settings IPC, ToolRouter (external MCPs only)
-- `settings_html.go` -- HTML/JS for settings WKWebView
-- `settings.go` -- config, token auth, permissions, ServiceConfig (with URL field)
-- `mcp_cmd.go` -- CLI: `relay mcp register|unregister|list`
-- `service_cmd.go` -- CLI: `relay service register|unregister|list`
-- `service_registry.go` -- background process management
-- `external_mcp.go` -- mcpConnection interface + stdio MCP client (JSON-RPC)
-- `http_mcp.go` -- HTTP Streamable transport (httpMcpConn)
-- `oauth.go` -- OAuth 2.1 (metadata discovery, PKCE, dynamic client registration, token exchange/refresh)
+- `../macMCP/` -- Swift, 41 macOS-native tools.
+- `../fsMCP/` -- TypeScript, 6 file system tools. Uses `_meta.allowed_dirs` for directory scoping.
 
 ## Build
 

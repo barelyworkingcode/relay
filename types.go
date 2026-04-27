@@ -13,16 +13,14 @@ const (
 	PermOn  Permission = "on"
 )
 
-// StoredToken is a hashed token with per-service permissions.
+// StoredToken represents resolved auth credentials with per-MCP permissions.
+// Used by the router for service tokens and project token views.
 type StoredToken struct {
-	Name          string                         `json:"name"`
-	Hash          string                         `json:"hash"`
-	Prefix        string                         `json:"prefix"`
-	Suffix        string                         `json:"suffix"`
-	CreatedAt     string                         `json:"created_at"`
-	Permissions   map[string]Permission          `json:"permissions"`
-	DisabledTools map[string][]string            `json:"disabled_tools,omitempty"`
-	Context       map[string]json.RawMessage     `json:"context,omitempty"`
+	Name          string
+	Hash          string
+	Permissions   map[string]Permission
+	DisabledTools map[string][]string
+	Context       map[string]json.RawMessage
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -48,8 +46,8 @@ type ExternalMcp struct {
 	Command         string            `json:"command,omitempty"`
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
-	DiscoveredTools []ToolInfo        `json:"discovered_tools"`
-	ContextSchema   json.RawMessage   `json:"context_schema,omitempty"`
+	DiscoveredTools []ToolInfo        `json:"-"` // runtime-only; populated from live MCP connection
+	ContextSchema   json.RawMessage   `json:"-"` // runtime-only; discovered during MCP handshake
 	Transport       string            `json:"transport,omitempty"`    // "stdio" (default) or "http"
 	URL             string            `json:"url,omitempty"`          // MCP endpoint for HTTP transport
 	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
@@ -90,6 +88,34 @@ type ServiceConfig struct {
 	WorkingDir  string            `json:"working_dir,omitempty"`
 	Autostart   bool              `json:"autostart"`
 	URL         string            `json:"url,omitempty"`
+}
+
+// ChatTemplate defines a reusable session preset within a project.
+type ChatTemplate struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Model        string `json:"model"`
+	Mode         string `json:"mode,omitempty"`            // "text" | "voice"
+	Voice        string `json:"voice,omitempty"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
+}
+
+// Project defines an infrastructure boundary: a directory, a set of MCPs,
+// allowed models, chat templates, and a scoped auth token.
+type Project struct {
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Path          string         `json:"path"`
+	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
+	AllowedModels []string       `json:"allowed_models"`
+	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
+	Token         string         `json:"token"`      // plaintext (settings.json is 0600)
+	TokenHash     string         `json:"token_hash"`
+	CreatedAt     string         `json:"created_at"`
+
+	// Per-project tool/context scoping (derived from allowed_mcp_ids at auth time).
+	DisabledTools map[string][]string        `json:"disabled_tools,omitempty"`
+	Context       map[string]json.RawMessage `json:"context,omitempty"`
 }
 
 // Validate checks that required fields are present.

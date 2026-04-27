@@ -35,6 +35,5 @@ func renderSettingsHTML(settings *Settings, runningIDs []string) string {
 		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", settings.ExternalMcps),
 		"__SERVICES_JSON__", mustMarshalJSON("services", settings.Services),
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
-		"__TOKENS_JSON__", mustMarshalJSON("tokens", settings.Tokens),
 	).Replace(settingsHTML)
 }

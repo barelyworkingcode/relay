@@ -226,7 +226,7 @@ func TestToolCategory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestManager_ToolsUnknownID(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	tools := mgr.Tools("nonexistent")
 	if tools != nil {
 		t.Errorf("expected nil for unknown ID, got %v", tools)
@@ -234,7 +234,7 @@ func TestManager_ToolsUnknownID(t *testing.T) {
 }
 
 func TestManager_FindToolOwnerUnknown(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	id, cfg := mgr.FindToolOwner("no_such_tool")
 	if id != "" {
 		t.Errorf("expected empty id, got %q", id)
@@ -245,7 +245,7 @@ func TestManager_FindToolOwnerUnknown(t *testing.T) {
 }
 
 func TestManager_ToolsWithConnection(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	expectedTools := []mcp.Tool{
 		{Name: "fs_read", Description: "Read a file"},
 		{Name: "fs_write", Description: "Write a file"},
@@ -268,7 +268,7 @@ func TestManager_ToolsWithConnection(t *testing.T) {
 }
 
 func TestManager_FindToolOwnerWithConnection(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "net-mcp", &mockMcpConn{
 		tools:  simpleTools("net_fetch"),
 		config: ExternalMcp{ID: "net-mcp", DisplayName: "Net MCP", Command: "/usr/bin/net-mcp"},
@@ -287,7 +287,7 @@ func TestManager_FindToolOwnerWithConnection(t *testing.T) {
 }
 
 func TestManager_Stop(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	mock := &mockMcpConn{tools: simpleTools("test_tool")}
 	addMockConn(mgr, "stop-me", mock)
 
@@ -302,13 +302,13 @@ func TestManager_Stop(t *testing.T) {
 }
 
 func TestManager_StopNonexistent(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	// Should not panic.
 	mgr.Stop("does-not-exist")
 }
 
 func TestManager_StopAll(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	mock1 := &mockMcpConn{tools: simpleTools("a_tool")}
 	mock2 := &mockMcpConn{tools: simpleTools("b_tool")}
 	addMockConn(mgr, "mcp-1", mock1)
@@ -328,7 +328,7 @@ func TestManager_StopAll(t *testing.T) {
 }
 
 func TestManager_CallToolNotConnected(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	_, err := mgr.CallTool(context.Background(), "missing", "some_tool", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unconnected MCP")
@@ -340,7 +340,7 @@ func TestManager_CallToolNotConnected(t *testing.T) {
 }
 
 func TestManager_CallToolSuccess(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "echo-mcp", newMockConn("echo-mcp", simpleTools("echo_tool"),
 		func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
 			if method != mcp.MethodToolsCall {
@@ -368,7 +368,7 @@ func TestManager_CallToolSuccess(t *testing.T) {
 }
 
 func TestManager_CallToolWithMeta(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	var capturedParams map[string]interface{}
 	addMockConn(mgr, "fs-mcp", newMockConn("fs-mcp", simpleTools("fs_tool"),
 		func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
@@ -396,7 +396,7 @@ func TestManager_CallToolWithMeta(t *testing.T) {
 }
 
 func TestManager_MultipleConnectionsFindCorrectOwner(t *testing.T) {
-	mgr := NewExternalMcpManager(nil, nil)
+	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "mcp-alpha", &mockMcpConn{
 		tools:  simpleTools("alpha_tool"),
 		config: ExternalMcp{ID: "mcp-alpha", DisplayName: "Alpha"},

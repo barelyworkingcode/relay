@@ -47,12 +47,11 @@ func mcpRegister(store SettingsStore, args []string) {
 	id, env := opts.resolveIDAndEnv()
 
 	cfg := ExternalMcp{
-		ID:              id,
-		DisplayName:     opts.Name,
-		Command:         *command,
-		Args:            []string(opts.Args),
-		Env:             env,
-		DiscoveredTools: []ToolInfo{},
+		ID:          id,
+		DisplayName: opts.Name,
+		Command:     *command,
+		Args:        []string(opts.Args),
+		Env:         env,
 	}
 
 	updated, secret := upsertAndPrint(store, "mcp", opts.Name, id, func(s *Settings) bool {
@@ -83,7 +82,7 @@ func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
 
 	updated, secret := upsertAndPrint(store, "mcp", name, id, func(s *Settings) bool {
 		return s.UpsertExternalMcp(*result)
-	}, len(result.DiscoveredTools))
+	}, -1)
 	notifyMcpChange(updated, id, secret)
 }
 
@@ -118,12 +117,11 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error after auth: %v\n", err)
 		return &ExternalMcp{
-			ID:              id,
-			DisplayName:     name,
-			Transport:       "http",
-			URL:             mcpURL,
-			OAuthState:      oauth,
-			DiscoveredTools: []ToolInfo{},
+			ID:          id,
+			DisplayName: name,
+			Transport:   "http",
+			URL:         mcpURL,
+			OAuthState:  oauth,
 		}
 	}
 	result.OAuthState = oauth
@@ -168,7 +166,7 @@ func mcpList(store SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "ID\tNAME\tTRANSPORT\tENDPOINT\tTOOLS")
+	fmt.Fprintln(w, "ID\tNAME\tTRANSPORT\tENDPOINT")
 	for _, m := range s.ExternalMcps {
 		transport := m.Transport
 		if transport == "" {
@@ -183,7 +181,7 @@ func mcpList(store SettingsStore) {
 				endpoint += " " + strings.Join(m.Args, " ")
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", m.ID, m.DisplayName, transport, endpoint, len(m.DiscoveredTools))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.ID, m.DisplayName, transport, endpoint)
 	}
 	w.Flush()
 }
