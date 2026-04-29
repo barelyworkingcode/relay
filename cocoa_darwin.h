@@ -17,9 +17,6 @@ void cocoa_update_menu(const char* menuJSON);  // JSON array of menu items
 void cocoa_open_settings(const char* html);
 void cocoa_settings_eval_js(const char* js);
 
-// Clipboard
-void cocoa_copy_to_clipboard(const char* text);
-
 // Open URL in default browser
 void cocoa_open_url(const char* url);
 

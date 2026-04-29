@@ -162,10 +162,6 @@ type ipcIDMsg struct {
 	ID string `json:"id"`
 }
 
-type ipcCopyToClipboardMsg struct {
-	Text string `json:"text"`
-}
-
 // ipcServiceMsg is the shared message format for add and update service operations.
 // For add: ID is empty (derived from DisplayName). For update: ID is required.
 type ipcServiceMsg struct {
@@ -199,8 +195,6 @@ const (
 	MsgUpdateServiceAutostart = "update_service_autostart"
 	MsgStartService           = "start_service"
 	MsgStopService            = "stop_service"
-
-	MsgCopyToClipboard = "copy_to_clipboard"
 )
 
 // ---------------------------------------------------------------------------
@@ -221,9 +215,6 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
 	MsgStartService:           ipcStartService,
 	MsgStopService:            ipcStopService,
-
-	// Utility
-	MsgCopyToClipboard: ipcCopyToClipboard,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
@@ -244,14 +235,3 @@ func (a *App) onSettingsIpc(body string) {
 	handler(a.ipcCtx, raw)
 }
 
-// ---------------------------------------------------------------------------
-// Utility handlers
-// ---------------------------------------------------------------------------
-
-func ipcCopyToClipboard(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[ipcCopyToClipboardMsg](raw, "copy_to_clipboard")
-	if !ok || msg.Text == "" {
-		return
-	}
-	ctx.Platform.CopyToClipboard(msg.Text)
-}

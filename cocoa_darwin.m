@@ -434,15 +434,6 @@ void cocoa_settings_eval_js(const char* js) {
 }
 
 // ---------------------------------------------------------------------------
-// cocoa_copy_to_clipboard
-// ---------------------------------------------------------------------------
-void cocoa_copy_to_clipboard(const char* text) {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
-    [pb clearContents];
-    [pb setString:[NSString stringWithUTF8String:text] forType:NSPasteboardTypeString];
-}
-
-// ---------------------------------------------------------------------------
 // cocoa_open_url
 // ---------------------------------------------------------------------------
 void cocoa_open_url(const char* url) {
