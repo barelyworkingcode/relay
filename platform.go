@@ -8,7 +8,6 @@ type Platform interface {
 	UpdateMenu(menuJSON string)
 	OpenSettings(html string)
 	EvalSettingsJS(js string)
-	CopyToClipboard(text string)
 	DispatchToMain(fn func())
 	OpenURL(url string)
 }
