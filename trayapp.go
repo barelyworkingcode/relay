@@ -21,18 +21,19 @@ var appInstance *App
 
 // App is the main tray application state.
 type App struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	store        SettingsStore
-	platform     Platform
-	extMgr       *ExternalMcpManager
-	registry     ServiceManager
-	bridgeServer *bridge.BridgeServer
-	ipcCtx       *IPCContext // pre-built once, reused on every IPC call
-	settingsOpen bool
-	cleanupOnce  sync.Once
-	svcMenuMap   map[int]string // menu item ID -> service ID
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	store          SettingsStore
+	platform       Platform
+	extMgr         *ExternalMcpManager
+	registry       ServiceManager
+	bridgeServer   *bridge.BridgeServer
+	frontendServer *FrontendServer
+	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
+	settingsOpen   bool
+	cleanupOnce    sync.Once
+	svcMenuMap     map[int]string // menu item ID -> service ID
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -132,10 +133,9 @@ func runTrayApp() {
 	// needed on crash.
 	registry.TokenStore = &router.serviceTokens
 
-	// Provision the Eve↔relayLLM channel. Lazy: the bearer token + Unix
-	// socket path are generated on the first spawn that participates
-	// (Eve or relayLLM, whichever comes first), then reused for the other.
-	// See relay_llm_channel.go for the rationale and the participant list.
+	// Provision the front-door channel. Lazy: the frontend/internal socket
+	// pairs and bearer tokens are generated on the first participating spawn,
+	// then reused for the others. See relay_llm_channel.go.
 	registry.LLMChannel = NewLLMChannel()
 	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
@@ -143,6 +143,26 @@ func runTrayApp() {
 		os.Exit(1)
 	}
 	app.bridgeServer = bs
+
+	// Eagerly materialize the channel so the frontend HTTP server can bind
+	// before any consumer (Eve, scheduler) starts up. Children inherit the
+	// same credentials at spawn time via service_registry.
+	creds, err := registry.LLMChannel.Ensure()
+	if err != nil {
+		slog.Error("failed to provision llm channel", "error", err)
+		os.Exit(1)
+	}
+	frontend, err := NewFrontendServer(store, creds)
+	if err != nil {
+		slog.Error("failed to start frontend server", "error", err)
+		os.Exit(1)
+	}
+	app.frontendServer = frontend
+	app.goFunc(func() {
+		if err := frontend.Serve(); err != nil {
+			slog.Error("frontend server exited with error", "error", err)
+		}
+	})
 
 	// Start external MCPs and autostart services before the bridge accepts
 	// connections, so tool lists and service status are populated when the
@@ -354,9 +374,18 @@ func (a *App) cleanup() {
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
 		}
+		// Stop the frontend server before the children that proxy to relayLLM
+		// — once relayLLM dies, in-flight proxied requests fail with 502
+		// rather than hanging.
+		if a.frontendServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			a.frontendServer.Shutdown(ctx)
+			cancel()
+		}
 		a.registry.StopAll()
-		// Unlink the LLM channel socket after the children that depend on it
-		// have stopped. The token persists in-memory until the process exits.
+		// Unlink the LLM channel sockets after the children that depend on
+		// them have stopped. Tokens persist in-memory until the process
+		// exits.
 		a.registry.CloseLLMChannel()
 		a.wg.Wait()
 	})

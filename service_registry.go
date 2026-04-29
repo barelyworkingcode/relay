@@ -46,11 +46,8 @@ type ServiceRegistry struct {
 	// Set during initialization, before any services are started.
 	TokenStore *serviceTokenStore
 
-	// LLMChannel is the orchestrator-issued credential pair (bearer token +
-	// Unix socket path) for the Eve↔relayLLM channel. When non-nil, services
-	// matched by participatesInLLMChannel() get RELAY_LLM_TOKEN and
-	// RELAY_LLM_SOCKET injected into their environment at spawn time.
-	// Set during initialization, before any services are started.
+	// LLMChannel issues credentials for the front-door channel. Set during
+	// initialization, before any services are started.
 	LLMChannel *LLMChannel
 
 	// OnProcessExit is called from the reaper goroutine after a managed
@@ -108,19 +105,14 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		})
 	}
 
-	// LLM channel: when spawning Eve or relayLLM, inject the shared bearer
-	// token and Unix socket path so the two processes can authenticate each
-	// other without writing credentials to disk. Created lazily on first use
-	// — both processes get the same pair, regardless of start order.
-	if r.LLMChannel != nil && participatesInLLMChannel(config.ID) {
-		llmToken, llmSocket, err := r.LLMChannel.Ensure()
+	// Front-door channel: relay sits between Eve/scheduler and relayLLM.
+	// EnvFor returns the right pair of socket/token vars per service.
+	if r.LLMChannel != nil {
+		creds, err := r.LLMChannel.Ensure()
 		if err != nil {
 			return fmt.Errorf("provision llm channel for %s: %w", config.ID, err)
 		}
-		mergeEnv(cmd, map[string]string{
-			"RELAY_LLM_TOKEN":  llmToken,
-			"RELAY_LLM_SOCKET": llmSocket,
-		})
+		mergeEnv(cmd, creds.EnvFor(config.ID))
 	}
 
 	// Clean up the service token on any error path before the process starts.

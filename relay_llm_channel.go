@@ -10,91 +10,109 @@ import (
 	"relaygo/bridge"
 )
 
-// LLMChannel holds the shared bearer token and Unix socket path the
-// orchestrator uses to bind Eve and relayLLM together.
-//
-// Both processes are spawned by the orchestrator, and both must agree on a
-// credential pair before they can talk to each other. The orchestrator is the
-// trusted issuer: it generates a fresh token + allocates a socket path on
-// first need, then injects the SAME pair into both processes via environment
-// variables at spawn time. Neither credential ever touches disk.
-//
-// The channel is per-orchestrator-lifetime: created lazily, persists across
-// individual service restarts (so an Eve restart can rejoin a relayLLM that's
-// still running), and torn down when the orchestrator exits.
-//
-// This is intentionally separate from the existing RELAY_MCP_TOKEN bridge
-// channel — see relay/CLAUDE.md "Eve ↔ relayLLM internal channel" and
-// eve/plans/cozy-honking-toast.md Section B for the rationale. Multiplexing
-// the two would mean a leaked credential in one channel grants access to the
-// other.
-type LLMChannel struct {
-	mu         sync.Mutex
-	token      string
-	socketPath string
+// Endpoint pairs a Unix socket path with a bearer token. Both sockets are
+// 0600 in a 0700 parent dir; the token is defense-in-depth.
+type Endpoint struct {
+	Socket string
+	Token  string
 }
 
-// NewLLMChannel returns an empty (uninitialized) channel. Credentials are
-// generated on the first Ensure() call.
+// LLMChannelCreds holds the credentials the orchestrator hands out to the
+// processes wired into the front-door channel.
+//
+//	Eve / relayScheduler  ──→  Frontend (relay binds)  ──→  Internal (relayLLM binds)
+type LLMChannelCreds struct {
+	Frontend Endpoint
+	Internal Endpoint
+}
+
+// Env vars injected into spawned services. Constants prevent silent typo
+// drift across the four-process surface.
+const (
+	EnvFrontendSocket = "RELAY_FRONTEND_SOCKET"
+	EnvFrontendToken  = "RELAY_FRONTEND_TOKEN"
+	EnvInternalSocket = "RELAY_LLM_INTERNAL_SOCKET"
+	EnvInternalToken  = "RELAY_LLM_INTERNAL_TOKEN"
+)
+
+// LLMChannel lazily provisions LLMChannelCreds on first Ensure() call and
+// holds them for the orchestrator's lifetime. Safe for concurrent use.
+type LLMChannel struct {
+	mu    sync.Mutex
+	creds LLMChannelCreds
+	ready bool
+}
+
 func NewLLMChannel() *LLMChannel { return &LLMChannel{} }
 
-// Ensure returns the bearer token and Unix socket path, generating them on
-// first call. Safe to call concurrently from multiple Start() goroutines.
-func (c *LLMChannel) Ensure() (token, socketPath string, err error) {
+// Ensure returns the credential set, generating it on first call.
+func (c *LLMChannel) Ensure() (LLMChannelCreds, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.token != "" && c.socketPath != "" {
-		return c.token, c.socketPath, nil
+	if c.ready {
+		return c.creds, nil
 	}
 
-	// The socket lives next to the existing bridge.sock so it inherits the
-	// same 0700 parent directory and is easy to find from the relay config
-	// dir if an operator needs to inspect it.
 	dir := bridge.ConfigDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", "", fmt.Errorf("create relay config dir: %w", err)
+		return LLMChannelCreds{}, fmt.Errorf("create relay config dir: %w", err)
 	}
 
-	socketPath = filepath.Join(dir, fmt.Sprintf("relay-llm-%d.sock", os.Getpid()))
-	// Remove any stale socket from a previous orchestrator instance whose
-	// PID happened to be reused. Best-effort.
-	_ = os.Remove(socketPath)
+	pid := os.Getpid()
+	c.creds = LLMChannelCreds{
+		Frontend: Endpoint{
+			Socket: filepath.Join(dir, fmt.Sprintf("relay-frontend-%d.sock", pid)),
+			Token:  generateRandomHex(32),
+		},
+		Internal: Endpoint{
+			Socket: filepath.Join(dir, fmt.Sprintf("relay-llm-%d.sock", pid)),
+			Token:  generateRandomHex(32),
+		},
+	}
+	// Best-effort cleanup of stale sockets from a previous orchestrator
+	// instance whose PID happened to be reused.
+	_ = os.Remove(c.creds.Frontend.Socket)
+	_ = os.Remove(c.creds.Internal.Socket)
 
-	c.token = generateRandomHex(32)
-	c.socketPath = socketPath
-
-	slog.Info("provisioned llm channel", "socket", socketPath)
-	return c.token, c.socketPath, nil
+	c.ready = true
+	slog.Info("provisioned llm channel",
+		"frontend_socket", c.creds.Frontend.Socket,
+		"internal_socket", c.creds.Internal.Socket)
+	return c.creds, nil
 }
 
-// Close unlinks the socket file. Called from orchestrator cleanup. The token
-// is left in the struct (the orchestrator process is exiting anyway) so any
-// late spawn attempt during shutdown still finds a usable value rather than
-// regenerating it; the file removal is the operative cleanup.
+// Close unlinks both socket files. Tokens persist in-memory until the
+// process exits.
 func (c *LLMChannel) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.socketPath == "" {
-		return
-	}
-	if err := os.Remove(c.socketPath); err != nil && !os.IsNotExist(err) {
-		slog.Warn("failed to unlink llm socket", "path", c.socketPath, "error", err)
+	for _, p := range []string{c.creds.Frontend.Socket, c.creds.Internal.Socket} {
+		if p == "" {
+			continue
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to unlink llm channel socket", "path", p, "error", err)
+		}
 	}
 }
 
-// participatesInLLMChannel reports whether a service should receive
-// RELAY_LLM_TOKEN and RELAY_LLM_SOCKET at spawn time.
-//
-// Match is on the slugified service ID — registering with `relay service
-// register --name Eve` produces id "eve", `--name relayLLM` produces "relayllm",
-// `--name relay-LLM` produces "relay-llm". A new participant must be added
-// here explicitly so the credential surface stays bounded.
-func participatesInLLMChannel(id string) bool {
-	switch id {
-	case "eve", "relayllm", "relay-llm":
-		return true
-	default:
-		return false
+// EnvFor returns the env vars to inject into a spawned service. Empty map
+// means the service is not part of the channel. Match is on slugified ID.
+// New participants must be added explicitly so the credential surface
+// stays bounded.
+func (c LLMChannelCreds) EnvFor(serviceID string) map[string]string {
+	switch serviceID {
+	case "relayllm", "relay-llm":
+		return map[string]string{
+			EnvInternalSocket: c.Internal.Socket,
+			EnvInternalToken:  c.Internal.Token,
+		}
+	case "eve", "relayscheduler", "relay-scheduler":
+		return map[string]string{
+			EnvFrontendSocket: c.Frontend.Socket,
+			EnvFrontendToken:  c.Frontend.Token,
+		}
 	}
+	return nil
 }
