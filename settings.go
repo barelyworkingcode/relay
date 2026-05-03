@@ -233,6 +233,18 @@ func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]
 	s.SyncProjectToken(proj, schemas)
 }
 
+// UpdateProjectChatTemplates replaces a project's chat_templates list.
+// Templates are scoped to the project and have no token/context impact, so
+// no SyncProjectToken call is needed.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplate) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.ChatTemplates = templates
+}
+
 // SyncProjectToken updates the project's disabled tools and context to match
 // its current allowedMcpIDs and path. Permissions are derived at auth time
 // from AllowedMcpIDs, so they're not stored.
