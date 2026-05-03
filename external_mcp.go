@@ -370,6 +370,19 @@ func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
 	return m.schemas[id]
 }
 
+// AllContextSchemas returns a snapshot copy of all known MCP context schemas,
+// keyed by MCP ID. Used by the project routes when (re)scoping a project's
+// token across every allowed MCP.
+func (m *ExternalMcpManager) AllContextSchemas() map[string]json.RawMessage {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]json.RawMessage, len(m.schemas))
+	for id, schema := range m.schemas {
+		out[id] = schema
+	}
+	return out
+}
+
 // ToolInfos returns a summary of discovered tools for an MCP (name, description, category).
 func (m *ExternalMcpManager) ToolInfos(id string) []ToolInfo {
 	m.mu.RLock()
