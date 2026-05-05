@@ -68,12 +68,19 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
-		"name":             "Alpha",
-		"path":             tmpDir,
-		"allowed_mcp_ids":  []string{"fsmcp"},
-		"allowed_models":   []string{"claude-opus"},
-		"chat_templates": []map[string]string{
-			{"id": "t1", "name": "Quick", "model": "claude-sonnet", "system_prompt": "be brief"},
+		"name":            "Alpha",
+		"path":            tmpDir,
+		"allowed_mcp_ids": []string{"fsmcp"},
+		"allowed_models":  []string{"claude-opus"},
+		"chat_templates": []map[string]interface{}{
+			{
+				"id":               "t1",
+				"name":             "Quick",
+				"model":            "claude-sonnet",
+				"system_prompt":    "be brief",
+				"append_claude_md": true,
+				"use_relay_tools":  true,
+			},
 		},
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -91,6 +98,9 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	}
 	if len(created.ChatTemplates) != 1 || created.ChatTemplates[0].SystemPrompt != "be brief" {
 		t.Errorf("chat_templates not round-tripped: %+v", created.ChatTemplates)
+	}
+	if !created.ChatTemplates[0].AppendClaudeMd || !created.ChatTemplates[0].UseRelayTools {
+		t.Errorf("template bool flags not round-tripped on create: %+v", created.ChatTemplates[0])
 	}
 
 	// GET single
@@ -180,9 +190,22 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 
 	// Patch the templates list — exercises the new UpdateProjectChatTemplates mutator.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
-		"chat_templates": []map[string]string{
-			{"id": "tmpl-a", "name": "A", "model": "claude-sonnet", "system_prompt": "alpha"},
-			{"id": "tmpl-b", "name": "B", "model": "claude-haiku", "mode": "voice", "voice": "af_heart"},
+		"chat_templates": []map[string]interface{}{
+			{
+				"id":              "tmpl-a",
+				"name":            "A",
+				"model":           "claude-sonnet",
+				"system_prompt":   "alpha",
+				"use_relay_tools": true,
+			},
+			{
+				"id":               "tmpl-b",
+				"name":             "B",
+				"model":            "claude-haiku",
+				"mode":             "voice",
+				"voice":            "af_heart",
+				"append_claude_md": true,
+			},
 		},
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -197,6 +220,12 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 	}
 	if withTemplates.ChatTemplates[1].Mode != "voice" || withTemplates.ChatTemplates[1].Voice != "af_heart" {
 		t.Errorf("voice template fields not round-tripped: %+v", withTemplates.ChatTemplates[1])
+	}
+	if !withTemplates.ChatTemplates[0].UseRelayTools || withTemplates.ChatTemplates[0].AppendClaudeMd {
+		t.Errorf("template[0] bool flags not round-tripped on update: %+v", withTemplates.ChatTemplates[0])
+	}
+	if !withTemplates.ChatTemplates[1].AppendClaudeMd || withTemplates.ChatTemplates[1].UseRelayTools {
+		t.Errorf("template[1] bool flags not round-tripped on update: %+v", withTemplates.ChatTemplates[1])
 	}
 }
 
