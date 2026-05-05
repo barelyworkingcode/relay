@@ -92,12 +92,14 @@ type ServiceConfig struct {
 
 // ChatTemplate defines a reusable session preset within a project.
 type ChatTemplate struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Model        string `json:"model"`
-	Mode         string `json:"mode,omitempty"`            // "text" | "voice"
-	Voice        string `json:"voice,omitempty"`
-	SystemPrompt string `json:"system_prompt,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Model          string `json:"model"`
+	Mode           string `json:"mode,omitempty"`            // "text" | "voice"
+	Voice          string `json:"voice,omitempty"`
+	SystemPrompt   string `json:"system_prompt,omitempty"`
+	AppendClaudeMd bool   `json:"append_claude_md,omitempty"`
+	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
 }
 
 // Project defines an infrastructure boundary: a directory, a set of MCPs,
