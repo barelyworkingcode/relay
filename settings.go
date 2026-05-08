@@ -245,6 +245,16 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 	proj.ChatTemplates = templates
 }
 
+// UpdateProjectPermissionPolicy replaces a project's permission policy.
+// Pass nil to clear. Does not save; use within store.With.
+func (s *Settings) UpdateProjectPermissionPolicy(id string, policy *PermissionPolicy) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.PermissionPolicy = policy
+}
+
 // SyncProjectToken updates the project's disabled tools and context to match
 // its current allowedMcpIDs and path. Permissions are derived at auth time
 // from AllowedMcpIDs, so they're not stored.

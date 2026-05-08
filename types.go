@@ -102,6 +102,21 @@ type ChatTemplate struct {
 	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
 }
 
+// PermissionPolicy is a per-project Claude permission policy. Forwarded to
+// relayLLM in the session Settings; relayLLM uses it for both Claude CLI
+// flags (--permission-mode, --allowedTools, --disallowedTools) and to
+// short-circuit permission requests in the hook (no WebSocket roundtrip
+// for matched rules).
+//
+// Tool patterns match Claude CLI's grammar: "ToolName" matches any use,
+// "ToolName:argPrefix" matches uses whose serialized input starts with
+// argPrefix (e.g. "Bash:ls *").
+type PermissionPolicy struct {
+	DefaultMode  string   `json:"default_mode,omitempty"`  // default|acceptEdits|plan|bypassPermissions
+	AllowedTools []string `json:"allowed_tools,omitempty"` // patterns
+	DeniedTools  []string `json:"denied_tools,omitempty"`  // patterns
+}
+
 // Project defines an infrastructure boundary: a directory, a set of MCPs,
 // allowed models, chat templates, and a scoped auth token.
 type Project struct {
@@ -111,13 +126,16 @@ type Project struct {
 	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
 	AllowedModels []string       `json:"allowed_models"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
-	Token         string         `json:"token"`      // plaintext (settings.json is 0600)
+	Token         string         `json:"token"` // plaintext (settings.json is 0600)
 	TokenHash     string         `json:"token_hash"`
 	CreatedAt     string         `json:"created_at"`
 
 	// Per-project tool/context scoping (derived from allowed_mcp_ids at auth time).
 	DisabledTools map[string][]string        `json:"disabled_tools,omitempty"`
 	Context       map[string]json.RawMessage `json:"context,omitempty"`
+
+	// Per-project Claude permission policy.
+	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
 }
 
 // Validate checks that required fields are present.
