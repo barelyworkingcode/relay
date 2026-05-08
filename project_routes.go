@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -40,14 +41,19 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 
 	mux.HandleFunc("POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name          string         `json:"name"`
-			Path          string         `json:"path"`
-			AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
-			AllowedModels []string       `json:"allowed_models"`
-			ChatTemplates []ChatTemplate `json:"chat_templates"`
+			Name             string            `json:"name"`
+			Path             string            `json:"path"`
+			AllowedMcpIDs    []string          `json:"allowed_mcp_ids"`
+			AllowedModels    []string          `json:"allowed_models"`
+			ChatTemplates    []ChatTemplate    `json:"chat_templates"`
+			PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 
@@ -60,6 +66,12 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 				body.ChatTemplates,
 				mcps.AllContextSchemas(),
 			)
+			if createErr == nil && body.PermissionPolicy != nil {
+				s.UpdateProjectPermissionPolicy(created.ID, body.PermissionPolicy)
+				if proj, _ := s.findProjectByID(created.ID); proj != nil {
+					created = *proj
+				}
+			}
 		}); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -76,15 +88,22 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
 		var body struct {
-			Name          *string         `json:"name,omitempty"`
-			Path          *string         `json:"path,omitempty"`
-			AllowedMcpIDs *[]string       `json:"allowed_mcp_ids,omitempty"`
-			AllowedModels *[]string       `json:"allowed_models,omitempty"`
-			ChatTemplates *[]ChatTemplate `json:"chat_templates,omitempty"`
+			Name             *string            `json:"name,omitempty"`
+			Path             *string            `json:"path,omitempty"`
+			AllowedMcpIDs    *[]string          `json:"allowed_mcp_ids,omitempty"`
+			AllowedModels    *[]string          `json:"allowed_models,omitempty"`
+			ChatTemplates    *[]ChatTemplate    `json:"chat_templates,omitempty"`
+			PermissionPolicy *PermissionPolicy  `json:"permission_policy,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
+		}
+		if body.PermissionPolicy != nil {
+			if err := validatePermissionPolicy(body.PermissionPolicy); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 
 		// Schemas are only needed when path or MCPs change; defer the fetch
@@ -114,6 +133,14 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			}
 			if body.ChatTemplates != nil {
 				s.UpdateProjectChatTemplates(id, *body.ChatTemplates)
+			}
+			if body.PermissionPolicy != nil {
+				policy := body.PermissionPolicy
+				// Empty struct (no fields set) is treated as "clear policy".
+				if policy.DefaultMode == "" && len(policy.AllowedTools) == 0 && len(policy.DeniedTools) == 0 {
+					policy = nil
+				}
+				s.UpdateProjectPermissionPolicy(id, policy)
 			}
 			if proj, _ := s.findProjectByID(id); proj != nil {
 				updated = *proj
@@ -163,6 +190,30 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+}
+
+var validPermissionModes = map[string]bool{
+	"":                  true, // empty = inherit (default)
+	"default":           true,
+	"acceptEdits":       true,
+	"plan":              true,
+	"bypassPermissions": true,
+}
+
+// validatePermissionPolicy rejects unknown modes and oversized tool lists.
+// Tool patterns are not parsed here — Claude CLI accepts a wide grammar
+// (e.g. "Bash(ls *)") and we don't want to drift from upstream rules.
+func validatePermissionPolicy(p *PermissionPolicy) error {
+	if p == nil {
+		return nil
+	}
+	if !validPermissionModes[p.DefaultMode] {
+		return fmt.Errorf("invalid default_mode: %s", p.DefaultMode)
+	}
+	if len(p.AllowedTools) > 256 || len(p.DeniedTools) > 256 {
+		return fmt.Errorf("tool list exceeds 256 entries")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

@@ -272,6 +272,82 @@ func TestProjectRoutes_Delete(t *testing.T) {
 	}
 }
 
+func TestProjectRoutes_PermissionPolicy(t *testing.T) {
+	srv, _ := newProjectRoutesServer(t)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	// Create with policy.
+	_, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name": "PolicyProj",
+		"path": tmpDir,
+		"permission_policy": map[string]interface{}{
+			"default_mode":  "plan",
+			"allowed_tools": []string{"Read", "Grep", "Glob"},
+			"denied_tools":  []string{"Write"},
+		},
+	})
+	var created Project
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	if created.PermissionPolicy == nil {
+		t.Fatalf("policy not persisted on create")
+	}
+	if created.PermissionPolicy.DefaultMode != "plan" {
+		t.Errorf("default_mode round-trip: got %q", created.PermissionPolicy.DefaultMode)
+	}
+	if len(created.PermissionPolicy.AllowedTools) != 3 || created.PermissionPolicy.AllowedTools[0] != "Read" {
+		t.Errorf("allowed_tools round-trip: %+v", created.PermissionPolicy.AllowedTools)
+	}
+
+	// Update policy via PUT.
+	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"permission_policy": map[string]interface{}{
+			"default_mode": "default",
+			"allowed_tools": []string{"Read"},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update policy: status %d body %s", resp.StatusCode, body)
+	}
+	var updated Project
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatalf("decode updated: %v", err)
+	}
+	if updated.PermissionPolicy == nil || updated.PermissionPolicy.DefaultMode != "default" {
+		t.Errorf("policy update not applied: %+v", updated.PermissionPolicy)
+	}
+	if len(updated.PermissionPolicy.DeniedTools) != 0 {
+		t.Errorf("denied_tools should have been cleared: %+v", updated.PermissionPolicy.DeniedTools)
+	}
+
+	// Empty policy struct clears the policy.
+	resp, _ = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"permission_policy": map[string]interface{}{},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear policy: status %d", resp.StatusCode)
+	}
+	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
+	var after Project
+	json.Unmarshal(body, &after)
+	if after.PermissionPolicy != nil {
+		t.Errorf("policy not cleared by empty struct: %+v", after.PermissionPolicy)
+	}
+
+	// Invalid mode rejected.
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"permission_policy": map[string]interface{}{
+			"default_mode": "totallyMadeUp",
+		},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid mode, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
 func TestProjectRoutes_ListMcps(t *testing.T) {
 	srv, _ := newProjectRoutesServer(t)
 	defer srv.Close()
