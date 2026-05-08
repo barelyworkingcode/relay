@@ -509,7 +509,7 @@ function renderServices() {
                 <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
                     <span style="font-size:12px;color:#888">Running</span>
                     <label class="switch switch-running">
-                        <input type="checkbox" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
+                        <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
                         <span class="slider"></span>
                     </label>
                 </div>
@@ -678,7 +678,15 @@ window.onServiceStatus = function(runningIds) {
     var m = {};
     for (var i = 0; i < runningIds.length; i++) m[runningIds[i]] = true;
     state.runningServices = m;
-    if (state.page === 'services') render();
+    if (state.page !== 'services') return;
+    // Surgically update each toggle in place. A full re-render fires every
+    // 2s from the status poller and would wipe text the user is typing into
+    // the Add/Edit Service form.
+    for (var i = 0; i < state.services.length; i++) {
+        var svc = state.services[i];
+        var cb = document.querySelector('[data-svc-running="' + svc.id + '"]');
+        if (cb) cb.checked = !!m[svc.id];
+    }
 };
 
 window.onSettingsError = function(msg) {
