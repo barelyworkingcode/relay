@@ -93,6 +93,32 @@ func (c *Client) GetProject(id string) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
+// ResolvePtyEnv asks relay for the env bundle (token, working dir, skill path)
+// needed to spawn a project-scoped PTY. Service-token authentication required.
+// As a side effect, regenerates the project's SKILL.md if req.RegenSkills says so.
+func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return PtyEnvResponse{}, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqResolvePtyEnv,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return PtyEnvResponse{}, fmt.Errorf("resolve pty env: %w", err)
+	}
+	if err := checkError(resp); err != nil {
+		return PtyEnvResponse{}, err
+	}
+	var out PtyEnvResponse
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return PtyEnvResponse{}, fmt.Errorf("parse response: %w", err)
+	}
+	return out, nil
+}
+
 // sendAdmin sends an admin request to the bridge and returns any error.
 func sendAdmin(reqType, name, token string) error {
 	c := NewClient(token)

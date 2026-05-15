@@ -152,7 +152,7 @@ func runTrayApp() {
 		slog.Error("failed to provision llm channel", "error", err)
 		os.Exit(1)
 	}
-	frontend, err := NewFrontendServer(store, extMgr, creds)
+	frontend, err := NewFrontendServer(store, extMgr, creds, router)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -172,6 +172,7 @@ func runTrayApp() {
 
 	app.goFunc(func() { bs.Serve() })
 	slog.Info("bridge server started")
+
 
 	// Set up tray icon.
 	slog.Info("setting up tray icon")

@@ -21,6 +21,7 @@ const (
 	ReqReloadService         = "ReloadService"
 	ReqListProjects          = "ListProjects"
 	ReqGetProject            = "GetProject"
+	ReqResolvePtyEnv         = "ResolvePtyEnv"
 )
 
 // Response type constants for the bridge wire protocol.
@@ -31,7 +32,41 @@ const (
 	RespOK       = "OK"
 	RespProjects = "Projects"
 	RespProject  = "Project"
+	RespPtyEnv   = "PtyEnv"
 )
+
+// Wire values for PtyEnvRequest.RegenSkills. Cross-repo callers should
+// reference these constants instead of hand-typing strings.
+const (
+	RegenSkillsAlways       = "always"
+	RegenSkillsSkipIfExists = "skipIfExists"
+	RegenSkillsNever        = "never"
+)
+
+// PtyEnvRequest is the payload for ReqResolvePtyEnv requests, carried in
+// BridgeRequest.Arguments as JSON. Service-token caller required.
+//
+// RelayLLM substitutes ${project.path} into SkillPath before sending so relay
+// does not have to know about template variables.
+//
+// Project resolution: Project is tried first (as ID then name); if empty or
+// unmatched, Directory is matched against Project.Path. PTY launches from
+// eve typically only carry the directory, so Directory is the common path.
+type PtyEnvRequest struct {
+	Project     string `json:"project,omitempty"`   // project ID or name
+	Directory   string `json:"directory,omitempty"` // fallback: match against Project.Path
+	RegenSkills string `json:"regen_skills"`        // RegenSkillsAlways | RegenSkillsSkipIfExists | RegenSkillsNever
+	SkillPath   string `json:"skill_path"`          // skill directory (containing SKILL.md)
+}
+
+// PtyEnvResponse is returned as BridgeResponse.Data on a successful
+// ReqResolvePtyEnv. RelayToken is the project's plaintext token — handle with
+// care (env-var only, never in argv or files).
+type PtyEnvResponse struct {
+	RelayToken string `json:"relay_token"`
+	WorkingDir string `json:"working_dir"`
+	SkillPath  string `json:"skill_path"`
+}
 
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
@@ -62,6 +97,7 @@ type ToolRouter interface {
 	ReloadService(id string)
 	ListProjects(token string) (json.RawMessage, error)
 	GetProject(id string, token string) (json.RawMessage, error)
+	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
 }
 
 // NewScanner creates a bufio.Scanner configured with the standard bridge buffer

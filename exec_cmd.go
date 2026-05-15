@@ -12,8 +12,9 @@ import (
 
 func runMcpExec(args []string) {
 	fs := flag.NewFlagSet("mcpExec", flag.ExitOnError)
-	token := fs.String("token", "", "auth token")
+	token := fs.String("token", "", "auth token (prefer RELAY_TOKEN env)")
 	list := fs.Bool("list", false, "list available tools")
+	schema := fs.Bool("schema", false, "with --list, emit JSON including each tool's input schema")
 	tool := fs.String("tool", "", "tool name to call")
 	toolArgs := fs.String("args", "", "tool arguments as JSON")
 	fs.Parse(args)
@@ -22,11 +23,13 @@ func runMcpExec(args []string) {
 		*token = os.Getenv("RELAY_TOKEN")
 	}
 	if *token == "" {
-		fmt.Fprintf(os.Stderr, "Usage: relay mcpExec --token <TOKEN> [--list | --tool <name> [--args '<json>']]\n")
+		fmt.Fprintln(os.Stderr, "error: RELAY_TOKEN not set (and --token not provided)")
+		fmt.Fprintln(os.Stderr, "  export RELAY_TOKEN=<project-token>  # find it in Settings UI → Projects")
+		fmt.Fprintln(os.Stderr, "Usage: relay mcp call [--list [--schema] | --tool <name> [--args '<json>']]")
 		os.Exit(1)
 	}
 	if !*list && *tool == "" {
-		fmt.Fprintf(os.Stderr, "error: must specify --list or --tool\n")
+		fmt.Fprintln(os.Stderr, "error: must specify --list or --tool")
 		os.Exit(1)
 	}
 
@@ -43,6 +46,18 @@ func runMcpExec(args []string) {
 		if err := json.Unmarshal(raw, &tools); err != nil {
 			fmt.Fprintf(os.Stderr, "error parsing tools: %v\n", err)
 			os.Exit(1)
+		}
+
+		if *schema {
+			// Emit full tool definitions (including input schemas) as pretty JSON.
+			// Skill generators consume this to render parameter docs.
+			out, err := json.MarshalIndent(tools, "", "  ")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error encoding tools: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(string(out))
+			return
 		}
 
 		if len(tools) == 0 {
