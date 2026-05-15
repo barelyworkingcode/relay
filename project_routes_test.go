@@ -29,7 +29,7 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 		}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas))
+	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), nil)
 	return httptest.NewServer(mux), store
 }
 

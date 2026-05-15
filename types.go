@@ -136,6 +136,12 @@ type Project struct {
 
 	// Per-project Claude permission policy.
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
+
+	// GenerateSkill controls whether out-of-band hooks (project save,
+	// MCP reconcile, project delete) maintain a SKILL.md under
+	// <Path>/.claude/skills/relay/. The PTY-launch regen path is controlled
+	// per-template, not per-project, so it runs independent of this flag.
+	GenerateSkill bool `json:"generate_skill,omitempty"`
 }
 
 // Validate checks that required fields are present.

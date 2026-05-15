@@ -1,16 +1,46 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 )
 
 // ContextSchemasProvider supplies MCP context schemas required when
 // (re)scoping a project's token. Implemented by *ExternalMcpManager.
 type ContextSchemasProvider interface {
 	AllContextSchemas() map[string]json.RawMessage
+}
+
+// projectSkillDir is the on-disk directory (under Project.Path) where
+// relay-managed skills live. Claude Code auto-discovers from .claude/skills/;
+// Pi.Dev gets pointed at this directory via --skill in its PTY template.
+func projectSkillDir(proj Project) string {
+	if proj.Path == "" {
+		return ""
+	}
+	return filepath.Join(proj.Path, ".claude", "skills", "relay")
+}
+
+// reconcileProjectSkill brings the on-disk skill state into sync with the
+// project's GenerateSkill flag. Toggling on regenerates; deletion removes.
+// Toggling off leaves a stale file in place — the user removes it manually
+// if desired. Best-effort: errors are logged, not returned.
+func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project) {
+	if !proj.GenerateSkill {
+		return
+	}
+	dir := projectSkillDir(proj)
+	if dir == "" {
+		slog.Warn("skill regen skipped: project has no path", "project", proj.Name)
+		return
+	}
+	if _, err := EmitSkill(ctx, lister, proj, dir, RegenAlways); err != nil {
+		slog.Warn("project skill regen failed", "project", proj.Name, "error", err)
+	}
 }
 
 // RegisterProjectRoutes wires the project HTTP endpoints. Payloads are
@@ -21,7 +51,10 @@ type ContextSchemasProvider interface {
 // (CreateProjectWithToken, UpdateProject*, RemoveProject) inside store.With.
 // Settings are persisted on save; cross-process state stays consistent
 // because relay's bridge re-reads settings on every ListProjects/GetProject.
-func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps ContextSchemasProvider) {
+//
+// skillLister resolves the live tool set for a project token; supplying nil
+// disables out-of-band skill regen.
+func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps ContextSchemasProvider, skillLister SkillLister) {
 	mux.HandleFunc("GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects := store.Get().Projects
 		if projects == nil {
@@ -47,6 +80,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			AllowedModels    []string          `json:"allowed_models"`
 			ChatTemplates    []ChatTemplate    `json:"chat_templates"`
 			PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
+			GenerateSkill    bool              `json:"generate_skill,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -66,11 +100,19 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 				body.ChatTemplates,
 				mcps.AllContextSchemas(),
 			)
-			if createErr == nil && body.PermissionPolicy != nil {
+			if createErr != nil {
+				return
+			}
+			if body.PermissionPolicy != nil {
 				s.UpdateProjectPermissionPolicy(created.ID, body.PermissionPolicy)
+			}
+			if body.GenerateSkill {
 				if proj, _ := s.findProjectByID(created.ID); proj != nil {
-					created = *proj
+					proj.GenerateSkill = true
 				}
+			}
+			if proj, _ := s.findProjectByID(created.ID); proj != nil {
+				created = *proj
 			}
 		}); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -79,6 +121,9 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		if createErr != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": createErr.Error()})
 			return
+		}
+		if skillLister != nil {
+			reconcileProjectSkill(r.Context(), skillLister, created)
 		}
 		writeJSON(w, http.StatusCreated, created)
 	})
@@ -94,6 +139,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			AllowedModels    *[]string          `json:"allowed_models,omitempty"`
 			ChatTemplates    *[]ChatTemplate    `json:"chat_templates,omitempty"`
 			PermissionPolicy *PermissionPolicy  `json:"permission_policy,omitempty"`
+			GenerateSkill    *bool              `json:"generate_skill,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -142,6 +188,11 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 				}
 				s.UpdateProjectPermissionPolicy(id, policy)
 			}
+			if body.GenerateSkill != nil {
+				if proj, _ := s.findProjectByID(id); proj != nil {
+					proj.GenerateSkill = *body.GenerateSkill
+				}
+			}
 			if proj, _ := s.findProjectByID(id); proj != nil {
 				updated = *proj
 				found = true
@@ -154,17 +205,23 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
+		if skillLister != nil {
+			reconcileProjectSkill(r.Context(), skillLister, updated)
+		}
 		writeJSON(w, http.StatusOK, updated)
 	})
 
 	mux.HandleFunc("DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var existed bool
+		var removed Project
 		if err := store.With(func(s *Settings) {
-			if proj, _ := s.findProjectByID(id); proj == nil {
+			proj, _ := s.findProjectByID(id)
+			if proj == nil {
 				return
 			}
 			existed = true
+			removed = *proj
 			s.RemoveProject(id)
 		}); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -173,6 +230,11 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		if !existed {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
+		}
+		if dir := projectSkillDir(removed); dir != "" {
+			if err := RemoveSkill(dir); err != nil {
+				slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

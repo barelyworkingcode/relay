@@ -140,6 +140,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
 	ReqListProjects:          {handle: handleListProjects},
 	ReqGetProject:            {handle: handleGetProject},
+	ReqResolvePtyEnv:         {handle: handleResolvePtyEnv},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -219,4 +220,23 @@ func handleGetProject(_ context.Context, req *BridgeRequest, router ToolRouter) 
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespProject, Data: data}
+}
+
+func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_pty_env: missing arguments")
+	}
+	var p PtyEnvRequest
+	if err := json.Unmarshal(req.Arguments, &p); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "resolve_pty_env: "+err.Error())
+	}
+	resp, err := router.ResolvePtyEnv(ctx, p, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return bridgeError(jsonrpc.CodeInternalError, err.Error())
+	}
+	return BridgeResponse{Type: RespPtyEnv, Data: data}
 }
