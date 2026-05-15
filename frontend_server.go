@@ -28,7 +28,9 @@ type FrontendServer struct {
 }
 
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.
-func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, creds LLMChannelCreds) (*FrontendServer, error) {
+// skillLister supplies the live tool list used for out-of-band SKILL.md
+// regeneration on project mutations; pass nil to disable.
+func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, creds LLMChannelCreds, skillLister SkillLister) (*FrontendServer, error) {
 	if creds.Frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -37,7 +39,7 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, creds L
 	}
 
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, mcps)
+	RegisterProjectRoutes(mux, store, mcps, skillLister)
 
 	// Catch-all proxy: any /api/* not matched by a more specific handler
 	// (project routes above) falls through to relayLLM. New relayLLM

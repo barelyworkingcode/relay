@@ -46,6 +46,9 @@ func runMcpOrServer(args []string) {
 		case "register", "unregister", "list":
 			runMcpCommand(args)
 			return
+		case "call":
+			runMcpExec(args[1:])
+			return
 		}
 	}
 

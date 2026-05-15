@@ -202,7 +202,28 @@ func (r *appRouter) ValidateAdmin(token string) error {
 func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
 	settings := r.store.Reload()
 	r.tools.Reconcile(ctx, settings.ExternalMcps)
+	r.regenProjectSkills(ctx, settings)
 	r.onChange()
+}
+
+// regenProjectSkills updates SKILL.md for every project with GenerateSkill: true.
+// Best-effort: errors are logged, not returned. Called after MCP reconcile so
+// generated skills reflect the new tool surface. If the underlying MCP processes
+// have not yet fully initialized, the skill picks up the new tools on the
+// next regen trigger (next PTY launch, next project save, next reconcile).
+func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) {
+	for _, proj := range settings.Projects {
+		if !proj.GenerateSkill {
+			continue
+		}
+		dir := projectSkillDir(proj)
+		if dir == "" {
+			continue
+		}
+		if _, err := EmitSkill(ctx, r, proj, dir, RegenAlways); err != nil {
+			slog.Warn("post-reconcile skill regen failed", "project", proj.Name, "error", err)
+		}
+	}
 }
 
 func (r *appRouter) ReloadService(id string) {
@@ -219,34 +240,92 @@ func (r *appRouter) ReloadService(id string) {
 	r.onChange()
 }
 
-// ListProjects returns all projects. Requires a valid service token.
-func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
+// requireServiceToken authenticates a token and rejects anything that isn't
+// a service token. Returns CodeUnauthorized on failure with op named in the
+// error for caller-friendly logging.
+func (r *appRouter) requireServiceToken(token, op string) error {
 	stored, _, err := r.resolveAuth(token)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if stored.Name != serviceTokenName {
-		return nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("ListProjects requires a service token"))
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires a service token", op))
 	}
-	s := r.store.Get()
-	return json.Marshal(s.Projects)
+	return nil
+}
+
+// ListProjects returns all projects. Requires a valid service token.
+func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
+	if err := r.requireServiceToken(token, "ListProjects"); err != nil {
+		return nil, err
+	}
+	return json.Marshal(r.store.Get().Projects)
 }
 
 // GetProject returns a single project by ID. Requires a valid service token.
 func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
-	stored, _, err := r.resolveAuth(token)
-	if err != nil {
+	if err := r.requireServiceToken(token, "GetProject"); err != nil {
 		return nil, err
 	}
-	if stored.Name != serviceTokenName {
-		return nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("GetProject requires a service token"))
-	}
-	s := r.store.Get()
-	proj, _ := s.findProjectByID(id)
+	proj, _ := r.store.Get().findProjectByID(id)
 	if proj == nil {
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
 	}
 	return json.Marshal(proj)
+}
+
+// ResolvePtyEnv returns the env bundle (token, working dir, skill path) for
+// spawning a project-scoped PTY. As a side effect, regenerates SKILL.md if
+// the caller requests it. Service-token authentication required.
+//
+// RelayToken in the response is the project's plaintext token; the caller
+// (relayLLM) must inject it as RELAY_TOKEN env in the spawned process and
+// never expose it in argv, files, or logs.
+func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
+	if err := r.requireServiceToken(token, "ResolvePtyEnv"); err != nil {
+		return bridge.PtyEnvResponse{}, err
+	}
+
+	proj := findProjectForPty(r.store.Get(), req.Project, req.Directory)
+	if proj == nil {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
+	}
+
+	mode := RegenMode(req.RegenSkills)
+	if mode == "" {
+		mode = RegenNever
+	}
+	if mode != RegenNever {
+		if req.SkillPath == "" {
+			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("skill_path required when regen_skills != never"))
+		}
+		if _, err := EmitSkill(ctx, r, *proj, req.SkillPath, mode); err != nil {
+			return bridge.PtyEnvResponse{}, fmt.Errorf("regen skill: %w", err)
+		}
+	}
+
+	return bridge.PtyEnvResponse{
+		RelayToken: proj.Token,
+		WorkingDir: proj.Path,
+		SkillPath:  req.SkillPath,
+	}, nil
+}
+
+// findProjectForPty resolves the project for a PTY launch. Eve's terminal_create
+// only carries the working directory, so we accept either an explicit project
+// identifier (ID or name) or a directory match against Project.Path, in a
+// single pass over the project list.
+func findProjectForPty(s *Settings, project, directory string) *Project {
+	for i := range s.Projects {
+		p := &s.Projects[i]
+		if project != "" && (p.ID == project || p.Name == project) {
+			return p
+		}
+		if project == "" && directory != "" && p.Path == directory {
+			return p
+		}
+	}
+	return nil
 }
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
