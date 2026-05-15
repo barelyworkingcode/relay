@@ -66,7 +66,7 @@ Services (managed via `relay service register`):
 
 - `../relayLLM/` -- LLM execution engine. Receives directory + model + token. No project awareness.
 - `../eve/` -- Browser-based frontend. Fetches projects from relay, resolves templates.
-- `../relayScheduler/` -- Task scheduler. Runs LLM prompts on schedule.
+- `../relayScheduler/` -- Task scheduler. Runs LLM prompts (chat tasks) or PTY commands (terminal tasks via relayLLM templates) on schedule. PTY task output is persisted by relayLLM's on-disk log files; Eve replays completed runs via `GET /api/terminals/{id}/log`.
 - `../relayTelegram/` -- Telegram bot bridge.
 
 MCP Servers (managed via `relay mcp register`):
