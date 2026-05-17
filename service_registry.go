@@ -20,6 +20,7 @@ type ServiceManager interface {
 	Reload(id string, cfg *ServiceConfig) error
 	IsRunning(id string) bool
 	RunningIDs() []string
+	PIDsByServiceID() map[string]int
 	CleanupDead()
 	StartAllAutostart(configs []ServiceConfig)
 	StopAll()
@@ -288,6 +289,25 @@ func (r *ServiceRegistry) RunningIDs() []string {
 		}
 	}
 	return ids
+}
+
+// PIDsByServiceID returns the OS PID of each currently-running service. Dead
+// entries are reaped (via isRunningLocked) and entries with no spawned Process
+// handle are skipped. Used by the tray menu to sample subtree memory.
+func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]int, len(r.processes))
+	for id, proc := range r.processes {
+		if !r.isRunningLocked(id) {
+			continue
+		}
+		if proc.cmd == nil || proc.cmd.Process == nil {
+			continue
+		}
+		out[id] = proc.cmd.Process.Pid
+	}
+	return out
 }
 
 // CloseLLMChannel unlinks the Eve↔relayLLM Unix socket if one was provisioned.

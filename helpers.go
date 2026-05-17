@@ -76,6 +76,28 @@ func formatJSONRPCError(e *jsonrpc.Error) error {
 	return fmt.Errorf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 
+// formatBytes renders a byte count for display in the tray menu's aux column.
+// Output is kept short (≤ 7 chars) so the right-aligned column stays narrow.
+func formatBytes(b uint64) string {
+	const (
+		kib = 1024
+		mib = 1024 * kib
+		gib = 1024 * mib
+	)
+	switch {
+	case b == 0:
+		return ""
+	case b < kib:
+		return "<1 KB"
+	case b < mib:
+		return fmt.Sprintf("%d KB", (b+kib/2)/kib)
+	case b < gib:
+		return fmt.Sprintf("%d MB", (b+mib/2)/mib)
+	default:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(gib))
+	}
+}
+
 func slugify(name string) string {
 	var b strings.Builder
 	for _, c := range strings.ToLower(name) {

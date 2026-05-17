@@ -308,14 +308,17 @@ void cocoa_update_menu(const char* menuJSON) {
         if (isToggle && [isToggle boolValue]) {
             NSNumber *isOn = item[@"on"];
             NSString *url = item[@"url"];
+            NSString *aux = item[@"aux"];
 
+            CGFloat viewWidth = 290.0;
             CGFloat viewHeight = 30.0;
             CGFloat hPad = 14.0;
             CGFloat switchLabelGap = 8.0;
+            CGFloat auxGap = 12.0;
             NSFont *menuFont = [NSFont menuFontOfSize:0];
 
             ToggleRowView *rowView = [[ToggleRowView alloc] initWithFrame:
-                NSMakeRect(0, 0, 250.0, viewHeight)];
+                NSMakeRect(0, 0, viewWidth, viewHeight)];
 
             // Custom toggle switch
             CGFloat swW = 36.0, swH = 20.0;
@@ -329,6 +332,25 @@ void cocoa_update_menu(const char* menuJSON) {
 
             CGFloat labelX = NSMaxX(toggle.frame) + switchLabelGap;
 
+            // Tabular digits so the aux value doesn't kern as it changes.
+            CGFloat labelRightBound = viewWidth - hPad;
+            if (aux.length > 0) {
+                NSTextField *auxLabel = [NSTextField labelWithString:aux];
+                auxLabel.font = [NSFont monospacedDigitSystemFontOfSize:11
+                                                                 weight:NSFontWeightRegular];
+                auxLabel.textColor = [NSColor secondaryLabelColor];
+                auxLabel.alignment = NSTextAlignmentRight;
+                [auxLabel sizeToFit];
+                NSRect auxFrame = auxLabel.frame;
+                auxFrame.origin.x = viewWidth - hPad - auxFrame.size.width;
+                auxFrame.origin.y = (viewHeight - auxFrame.size.height) / 2.0;
+                auxLabel.frame = auxFrame;
+                [rowView addSubview:auxLabel];
+                labelRightBound = auxFrame.origin.x - auxGap;
+            }
+
+            CGFloat maxLabelWidth = labelRightBound - labelX;
+
             if (url && url.length > 0) {
                 // Clickable label for URL services
                 NSButton *btn = [NSButton buttonWithTitle:title
@@ -338,8 +360,12 @@ void cocoa_update_menu(const char* menuJSON) {
                 btn.font = menuFont;
                 btn.contentTintColor = [NSColor labelColor];
                 btn.toolTip = url;
+                [[btn cell] setLineBreakMode:NSLineBreakByTruncatingTail];
                 [btn sizeToFit];
                 NSRect btnFrame = btn.frame;
+                if (btnFrame.size.width > maxLabelWidth) {
+                    btnFrame.size.width = maxLabelWidth;
+                }
                 btnFrame.origin.x = labelX;
                 btnFrame.origin.y = (viewHeight - btnFrame.size.height) / 2.0;
                 btn.frame = btnFrame;
@@ -352,6 +378,9 @@ void cocoa_update_menu(const char* menuJSON) {
                 label.lineBreakMode = NSLineBreakByTruncatingTail;
                 [label sizeToFit];
                 NSRect labelFrame = label.frame;
+                if (labelFrame.size.width > maxLabelWidth) {
+                    labelFrame.size.width = maxLabelWidth;
+                }
                 labelFrame.origin.x = labelX;
                 labelFrame.origin.y = (viewHeight - labelFrame.size.height) / 2.0;
                 label.frame = labelFrame;
