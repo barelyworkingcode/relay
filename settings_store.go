@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/tidwall/jsonc"
+
 	"relaygo/bridge"
 )
 
@@ -65,6 +67,10 @@ func defaultSettings() *Settings {
 // load reads settings from disk. Caller must hold the mutex.
 // Returns default settings on missing file (expected on first launch) but
 // logs a warning on any other I/O or parse error for observability.
+//
+// JSONC comments (// and /* */) are stripped before parsing so users can
+// hand-edit settings.json with comment blocks to toggle sections. Comments
+// don't survive writes — save() goes through json.MarshalIndent.
 func (ss *FileSettingsStore) load() *Settings {
 	data, err := os.ReadFile(ss.path())
 	if err != nil {
@@ -74,7 +80,7 @@ func (ss *FileSettingsStore) load() *Settings {
 		return defaultSettings()
 	}
 	var s Settings
-	if err := json.Unmarshal(data, &s); err != nil {
+	if err := json.Unmarshal(jsonc.ToJSON(data), &s); err != nil {
 		slog.Warn("failed to parse settings file, using defaults", "error", err)
 		return defaultSettings()
 	}
