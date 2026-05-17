@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,6 +35,18 @@ type App struct {
 	settingsOpen   bool
 	cleanupOnce    sync.Once
 	svcMenuMap     map[int]string // menu item ID -> service ID
+
+	// rssByID is the most recent per-service subtree memory sample, refreshed
+	// by statusPoller. Treated as immutable once published — the writer always
+	// stores a fresh map rather than mutating in place, so readers can use the
+	// loaded map without copying.
+	rssByID atomic.Pointer[map[string]uint64]
+
+	// lastMenuJSON caches the most recently dispatched menu JSON so the poller
+	// can skip platform.UpdateMenu calls when nothing has changed. macOS
+	// rebuilds NSMenu via removeAllItems; suppressing no-op updates avoids
+	// redraw churn while the menu is open.
+	lastMenuJSON string
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -227,10 +240,14 @@ func (a *App) onExternalChange() {
 }
 
 // statusPoller periodically re-reads settings from disk (when the file's
-// modtime changes) to pick up CLI-driven changes, and pushes service status
-// to the settings WebView. Tray menu status dots are updated event-driven
-// via ServiceRegistry.OnProcessExit, not by this poller — see runTrayApp
-// where the callback is wired.
+// modtime changes) to pick up CLI-driven changes, samples per-service memory
+// usage, and pushes service status to the settings WebView. The tray menu is
+// also rebuilt every tick so the memory readout stays fresh; updateMenu
+// short-circuits on the platform when nothing changed.
+//
+// Process-exit menu updates are still event-driven via
+// ServiceRegistry.OnProcessExit (see runTrayApp) so a stopped service's
+// toggle flips immediately, not on the next 2s tick.
 func (a *App) statusPoller() {
 	ticker := time.NewTicker(StatusPollInterval)
 	defer ticker.Stop()
@@ -244,12 +261,30 @@ func (a *App) statusPoller() {
 
 		a.registry.CleanupDead()
 
+		// Sample memory off the main thread; ps takes ~5ms and we don't want
+		// to block the UI dispatch behind it.
+		pidByID := a.registry.PIDsByServiceID()
+		roots := make([]int, 0, len(pidByID))
+		for _, pid := range pidByID {
+			roots = append(roots, pid)
+		}
+		rssByPID := SampleRSSByRoot(roots)
+		rssByID := make(map[string]uint64, len(pidByID))
+		for id, pid := range pidByID {
+			rssByID[id] = rssByPID[pid]
+		}
+		a.rssByID.Store(&rssByID)
+
 		s := a.store.ReloadIfChanged()
 
 		a.platform.DispatchToMain(func() {
-			if s != nil {
-				a.updateMenuWithSettings(s)
+			// store.Get() deep-copies, so prefer the already-loaded snapshot
+			// from ReloadIfChanged when present and pay the copy only on miss.
+			cur := s
+			if cur == nil {
+				cur = a.store.Get()
 			}
+			a.updateMenuWithSettings(cur)
 			a.pushServiceStatus()
 		})
 	}
@@ -268,6 +303,14 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 		Toggle  bool   `json:"toggle,omitempty"`
 		On      bool   `json:"on,omitempty"`
 		URL     string `json:"url,omitempty"`
+		Aux     string `json:"aux,omitempty"`
+	}
+
+	// One registry-lock acquisition rather than IsRunning() per service.
+	pidByID := a.registry.PIDsByServiceID()
+	var rss map[string]uint64
+	if p := a.rssByID.Load(); p != nil {
+		rss = *p
 	}
 
 	var items []menuItem
@@ -278,13 +321,19 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 	for i, svc := range s.Services {
 		menuID := menuIDSvcBase + i
 		svcMap[menuID] = svc.ID
+		_, running := pidByID[svc.ID]
+		var aux string
+		if running {
+			aux = formatBytes(rss[svc.ID])
+		}
 		items = append(items, menuItem{
 			Title:   svc.DisplayName,
 			ID:      menuID,
 			Enabled: true,
 			Toggle:  true,
-			On:      a.registry.IsRunning(svc.ID),
+			On:      running,
 			URL:     svc.URL,
+			Aux:     aux,
 		})
 	}
 	a.svcMenuMap = svcMap
@@ -304,7 +353,14 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 		slog.Error("failed to marshal menu items", "error", err)
 		return
 	}
-	a.platform.UpdateMenu(string(data))
+	jsonStr := string(data)
+	// Skip the cgo hop when nothing has changed — avoids redraw churn while
+	// the menu is open and the 2s poll keeps firing.
+	if jsonStr == a.lastMenuJSON {
+		return
+	}
+	a.lastMenuJSON = jsonStr
+	a.platform.UpdateMenu(jsonStr)
 }
 
 // onMenuClick is called from the platform menu action on the main thread.
