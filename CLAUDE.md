@@ -7,7 +7,7 @@ macOS MCP orchestrator and project manager. Tray app with project-scoped auth, U
 - `relay` -- tray app (default). Hosts bridge socket, manages services and projects, shows settings UI.
 - `relay mcp --token TOKEN` -- stdio MCP server. Connects to bridge socket, proxies tool calls. Token determines visible MCPs/tools.
 - `relay mcp register|unregister|list` -- CLI for external MCP server management.
-- `relay service register|unregister|list` -- CLI for service self-registration.
+- `relay service register|unregister|restart|list` -- CLI for service self-registration. `restart` sends a `ReloadService` bridge message; the tray does Stop → Start in place.
 
 ## Architecture
 
@@ -27,8 +27,11 @@ router.go           Auth (service → project tokens), tool filtering, _meta inj
 external_mcp.go     mcpConnection interface + stdio/HTTP MCP clients, runtime schema storage
 settings_html.go    Settings WKWebView HTML/JS
 mcp_cmd.go          CLI: relay mcp register/unregister/list
-service_cmd.go      CLI: relay service register/unregister/list
+service_cmd.go      CLI: relay service register/unregister/restart/list
 service_registry.go Background process management, ephemeral service tokens
+service_pidfile.go  Pidfile read/write under run/. Enables orphan reclaim on
+                    next launch when the tray is SIGKILLed (children otherwise
+                    reparent to launchd and keep their listen ports).
 bridge/             Unix socket IPC. Newline-delimited JSON.
 mcp/                MCP types + stdio server (proxies to bridge)
 ```
