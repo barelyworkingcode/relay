@@ -131,7 +131,7 @@ For notarized release builds:
 - **`relay mcp register|unregister|list`** — CLI for external MCP server management.
 - **`relay mcpList --token <value>`** — lists tools available to a token.
 - **`relay mcpExec --token <value> --list|--tool <name> [--args '<json>']`** — calls tools directly over the bridge.
-- **`relay service register|unregister|list`** — CLI for background service management.
+- **`relay service register|unregister|restart|list`** — CLI for background service management. `restart` performs an in-place Stop+Start via the running tray.
 
 ## Security
 
@@ -161,15 +161,22 @@ Manage background processes via Settings or CLI. Commands run through a login sh
 ```bash
 relay service register --name Eve --command node --args server.js --workdir . --url http://localhost:3000 --autostart
 relay service list
+relay service restart --name Eve     # or --id <service-id>
 relay service unregister --name Eve
 ```
 
-`register` is idempotent and hot-reloads running services.
+`register` is idempotent and hot-reloads running services. `restart` does a clean Stop → Start through the running tray, so listen ports and ephemeral tokens are released and reissued.
+
+### Crash recovery
+
+When the tray exits cleanly, each service is SIGTERMed by the reaper goroutine and its pidfile removed. When the tray is SIGKILLed or force-quit, children get reparented to launchd and keep their listen ports — the next launch would otherwise fail autostart with `EADDRINUSE`.
+
+To make this self-healing, every spawned service writes its process-group PID to `~/Library/Application Support/relay/run/<service-id>.pid`. On the next tray launch, `ReclaimOrphans` runs immediately before autostart: for each pidfile it (1) checks the process group is still alive, (2) verifies the command line still matches the configured service via BSD `ps` (defeats PID recycling), then SIGTERMs the group. Stale pidfiles are removed silently.
 
 ## Logs
 
 ```bash
-tail -f ~/Library/Application\ Support/Relay/logs/<service-id>.log
+tail -f ~/Library/Application\ Support/relay/logs/<service-id>.log
 ```
 
 ## Ecosystem

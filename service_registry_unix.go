@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -71,4 +72,44 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 // so children that outlive the shell are still detected.
 func processGroupAlive(pid int) bool {
 	return syscall.Kill(-pid, 0) == nil
+}
+
+// processCommand returns the command line for pid as reported by BSD `ps`,
+// or "" if the process does not exist or ps fails. Used to confirm a pid we
+// recovered from a pidfile still belongs to the service we expect — pids get
+// recycled, so without this check we could SIGTERM an unrelated process.
+func processCommand(pid int) string {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// reclaimOrphan terminates the process group led by pid if and only if it is
+// still alive AND its command line still references expectCommand. Returns
+// true when a live process was signaled (caller logs the reclaim); false on
+// stale pidfiles or pid-recycling mismatches.
+//
+// Mirrors killProcessGroup's SIGTERM → poll → SIGKILL pattern but extends the
+// grace window to 2s, since reclaim runs at tray startup where a slightly
+// longer wait is preferable to SIGKILLing a daemon mid-shutdown.
+func reclaimOrphan(pid int, expectCommand string) bool {
+	if !processGroupAlive(pid) {
+		return false
+	}
+	if expectCommand != "" && !strings.Contains(processCommand(pid), expectCommand) {
+		return false
+	}
+
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processGroupAlive(pid) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	return true
 }
