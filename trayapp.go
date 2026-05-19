@@ -181,6 +181,11 @@ func runTrayApp() {
 	// connections, so tool lists and service status are populated when the
 	// first client connects.
 	extMgr.StartAll(ctx, settings.ExternalMcps)
+	// Reclaim orphans from a previous tray session that was killed before
+	// the reaper could SIGTERM its children. Without this, autostart of any
+	// port-binding service (scheduler, kokoro, whisper, comfy) fails with
+	// EADDRINUSE on every restart. Must run before StartAllAutostart.
+	app.registry.ReclaimOrphans(settings.Services)
 	app.registry.StartAllAutostart(settings.Services)
 
 	app.goFunc(func() { bs.Serve() })

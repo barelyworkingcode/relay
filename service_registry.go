@@ -22,6 +22,7 @@ type ServiceManager interface {
 	RunningIDs() []string
 	PIDsByServiceID() map[string]int
 	CleanupDead()
+	ReclaimOrphans(configs []ServiceConfig)
 	StartAllAutostart(configs []ServiceConfig)
 	StopAll()
 	CloseLLMChannel()
@@ -143,6 +144,13 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	}
 	committed = true
 
+	// Record the process group leader so a future tray session can reclaim
+	// this child if we are SIGKILLed before the reaper runs. Best-effort —
+	// pidfile failure must not abort a successful spawn.
+	if err := writePidFile(config.ID, cmd.Process.Pid); err != nil {
+		slog.Warn("write pidfile failed", "id", config.ID, "error", err)
+	}
+
 	proc := &serviceProcess{
 		cmd:       cmd,
 		logFile:   logFile,
@@ -154,6 +162,7 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	// and we can detect exit via the done channel. Defers run LIFO:
 	// logFile.Close → close(done) → OnProcessExit, ensuring the done
 	// channel is closed before the exit callback reads process state.
+	serviceID := config.ID
 	go func() {
 		defer func() {
 			if r.OnProcessExit != nil {
@@ -162,12 +171,15 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		}()
 		defer close(proc.done)
 		defer logFile.Close()
+		// Pidfile removal pairs with writePidFile above; on clean exit we
+		// leave nothing for the next session to reclaim.
+		defer removePidFile(serviceID)
 		// Clean up ephemeral token on exit.
 		if proc.tokenHash != "" && r.TokenStore != nil {
 			defer r.TokenStore.Remove(proc.tokenHash)
 		}
 		if err := cmd.Wait(); err != nil {
-			slog.Warn("service exited with error", "id", config.ID, "error", err)
+			slog.Warn("service exited with error", "id", serviceID, "error", err)
 		}
 	}()
 
@@ -233,6 +245,36 @@ func (r *ServiceRegistry) isRunningLocked(id string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// ReclaimOrphans terminates leftover service processes from a previous tray
+// session. Reads one pidfile per service written at spawn time by Start,
+// verifies the pid still belongs to that service (BSD `ps` lookup to defeat
+// pid recycling), then SIGTERMs the process group like StopAll would. Stale
+// pidfiles are silently removed.
+//
+// Why: when the tray is SIGKILLed, panics, or is force-quit, the reaper
+// goroutine in Start cannot run and child processes are reparented to
+// launchd (PPID 1). They keep listening on their bound ports, so the next
+// autostart attempt fails with "address already in use". Calling this
+// immediately before StartAllAutostart restores a clean baseline.
+func (r *ServiceRegistry) ReclaimOrphans(configs []ServiceConfig) {
+	for i := range configs {
+		cfg := &configs[i]
+		pid, err := readPidFile(cfg.ID)
+		if err != nil {
+			slog.Warn("read pidfile failed", "id", cfg.ID, "error", err)
+			continue
+		}
+		if pid == 0 {
+			continue
+		}
+		if reclaimOrphan(pid, cfg.Command) {
+			slog.Warn("reclaimed orphan service from previous session",
+				"id", cfg.ID, "pid", pid)
+		}
+		removePidFile(cfg.ID)
 	}
 }
 

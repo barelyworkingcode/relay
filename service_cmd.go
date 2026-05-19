@@ -14,6 +14,7 @@ func runServiceCommand(args []string) {
 	runSubcommands("service", []cliSubcommand{
 		{"register", func(a []string) { serviceRegister(store, a) }},
 		{"unregister", func(a []string) { serviceUnregister(store, a) }},
+		{"restart", func(a []string) { serviceRestart(store, a) }},
 		{"list", func(_ []string) { serviceList(store) }},
 	}, args)
 }
@@ -71,6 +72,33 @@ func serviceUnregister(store SettingsStore, args []string) {
 	resolvedID, adminSecret := resolveAndRemove(store, "service", *id, *name,
 		(*Settings).ResolveServiceID, (*Settings).RemoveService)
 	warnNotifyFailure(bridge.SendReloadService(resolvedID, adminSecret))
+}
+
+// serviceRestart triggers an in-place Stop+Start of a service via the bridge.
+// Sends the same ReloadService message that an upsert sends, which the tray
+// already implements as Stop → Start. Without a running tray this is a no-op
+// (the warning surfaces via warnNotifyFailure).
+func serviceRestart(store SettingsStore, args []string) {
+	fs := flag.NewFlagSet("service restart", flag.ExitOnError)
+	id := fs.String("id", "", "service ID")
+	name := fs.String("name", "", "service display name")
+	fs.Parse(args)
+
+	if *id == "" && *name == "" {
+		exitError("--id or --name is required")
+	}
+
+	s := store.Get()
+	resolvedID := s.ResolveServiceID(*id, *name)
+	if resolvedID == "" {
+		if *id != "" {
+			exitError("no service found with id %q", *id)
+		}
+		exitError("no service found with name %q", *name)
+	}
+
+	fmt.Printf("restarting service %q\n", resolvedID)
+	warnNotifyFailure(bridge.SendReloadService(resolvedID, s.AdminSecret))
 }
 
 func serviceList(store SettingsStore) {
