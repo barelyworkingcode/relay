@@ -11,29 +11,42 @@ macOS MCP orchestrator and project manager. Tray app with project-scoped auth, U
 
 ## Architecture
 
-Relay owns projects, MCPs, and services. relayLLM is a pure LLM execution engine — it receives directory + model + token from callers and has no project awareness. Eve fetches projects from relay, resolves templates, and passes explicit params to relayLLM.
+Relay is the container: it owns projects, MCPs, services, and the user-facing front door. Specific service knowledge lives in services, not in relay. Each enhanced service (relayLLM, relayScheduler, etc.) declares a manifest describing the routes it serves; relay's front-door dispatcher routes inbound traffic accordingly. See `plans/service-manifest-spec.md` for the protocol.
 
-Request flow: Browser → Eve (WS) → relayLLM → LLM API. When the LLM calls a tool: relayLLM's MCP manager → `relay mcp` subprocess (project token) → bridge socket → router (auth, filter, _meta inject) → actual MCP server (fsMCP, macMCP, etc.) → result back up the chain.
+Request flow: Browser → Eve → relay frontend socket → dispatcher → matching enhanced service. When an LLM in that service calls a tool: service's MCP client → `relay mcp` subprocess (project token) → bridge socket → router (auth, filter, _meta inject) → actual MCP server (fsMCP, macMCP, etc.) → result back up the chain.
 
 ### Key files
 
 ```
-trayapp.go          App lifecycle, menu, settings IPC, ToolRouter
-settings.go         Config, project CRUD, permission derivation, SyncProjectToken
-project.go          CreateProjectWithToken, token generation
-tokens.go           hashToken, auth sentinel errors
-types.go            StoredToken, Project, ChatTemplate, ExternalMcp, ServiceConfig
-router.go           Auth (service → project tokens), tool filtering, _meta injection
-external_mcp.go     mcpConnection interface + stdio/HTTP MCP clients, runtime schema storage
-settings_html.go    Settings WKWebView HTML/JS
-mcp_cmd.go          CLI: relay mcp register/unregister/list
-service_cmd.go      CLI: relay service register/unregister/restart/list
-service_registry.go Background process management, ephemeral service tokens
-service_pidfile.go  Pidfile read/write under run/. Enables orphan reclaim on
-                    next launch when the tray is SIGKILLed (children otherwise
-                    reparent to launchd and keep their listen ports).
-bridge/             Unix socket IPC. Newline-delimited JSON.
-mcp/                MCP types + stdio server (proxies to bridge)
+trayapp.go             App lifecycle, menu, settings IPC, ToolRouter wiring
+settings.go            Config, project CRUD, permission derivation, SyncProjectToken
+project.go             CreateProjectWithToken, token generation
+tokens.go              hashToken, auth sentinel errors
+types.go               StoredToken, Project, ChatTemplate, ExternalMcp, ServiceConfig
+router.go              Auth (service → project tokens), tool filtering, _meta injection,
+                       appRouter.RegisterManifest bridges to the enhanced-services registry
+external_mcp.go        mcpConnection interface + stdio/HTTP MCP clients, runtime schema storage
+settings_html.go       Settings WKWebView HTML/JS
+mcp_cmd.go             CLI: relay mcp register/unregister/list
+service_cmd.go         CLI: relay service register/unregister/restart/list
+service_registry.go    Background process management, ephemeral service tokens.
+                       Injects RELAY_BRIDGE_SOCKET + RELAY_SERVICE_ID into every spawn.
+service_pidfile.go     Pidfile read/write under run/. Enables orphan reclaim on
+                       next launch when the tray is SIGKILLed.
+relay_llm_channel.go   Frontend channel: provisions the front-door Unix socket + bearer
+                       token that Eve and other frontend consumers dial. (Name retained
+                       for branch hygiene; rename to frontend_channel.go pending.)
+enhanced_services.go   In-memory registry of relay-enhanced services. Bridge handler
+                       writes on RegisterManifest; service_registry.Forget on exit;
+                       front-door dispatcher reads via LookupByPath. Caches a per-
+                       service *httputil.ReverseProxy with a pooling Transport.
+frontend_server.go     Frontend HTTP server on the Unix socket. Project routes are
+                       wired locally; everything else falls through to the dispatcher.
+frontend_dispatcher.go Manifest-driven HTTP + WS dispatcher (one handler for both).
+bridge/                Unix socket IPC. Newline-delimited JSON. Includes the
+                       RegisterManifest request type and Manifest/Status/Action types.
+mcp/                   MCP types + stdio server (proxies to bridge)
+plans/service-manifest-spec.md  Service manifest protocol design.
 ```
 
 ## Projects
@@ -47,11 +60,20 @@ Projects are the primary infrastructure boundary in `settings.json`. Each binds:
 
 Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → derive permissions from `allowed_mcp_ids` + registered MCPs → return `StoredToken` view with permissions + disabled_tools + context.
 
+## Service Manifest (Enhanced Services)
+
+Every spawned service receives `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID` env vars. Services that implement the manifest protocol dial the bridge with a `RegisterManifest` payload declaring (a) the routes they serve, (b) their internal Unix socket + bearer token, and (c) optional status endpoint / actions. Generic services ignore the env vars; relay never dispatches to them.
+
+The dispatcher (`frontend_dispatcher.go`) does longest-prefix-match on registered routes; matches forward to the service's internal socket using its declared bearer token. WS upgrades are handled by the same dispatcher.
+
+The protocol is intentionally minimal — no `version`, no capability declarations, no service-ID hardcoding anywhere in relay. The full design and migration plan live in `plans/service-manifest-spec.md`.
+
 ## Security
 
 - **Project tokens** -- inline in project (plaintext + SHA-256 hash). The token IS the security boundary.
 - **Service tokens** -- ephemeral, in-memory. Full bridge access. For administrative operations.
-- **Eve ↔ relayLLM** -- separate trust boundary (`RELAY_LLM_TOKEN` + Unix socket). See `relay_llm_channel.go`.
+- **Frontend channel** -- Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` with `RELAY_FRONTEND_TOKEN` (Unix socket, 0600 perms). Bearer-checked on every HTTP + WS request before dispatch.
+- **Enhanced internal sockets** -- each enhanced service picks its own internal socket + token and tells relay both via `RegisterManifest`. Relay strips inbound Authorization and injects the service-declared token when proxying. Distinct from frontend creds.
 - **OAuth 2.1** -- HTTP MCPs use PKCE, dynamic registration, auto-refresh. See `oauth.go`.
 
 ## MCP Runtime Data
@@ -65,11 +87,11 @@ Tabs: Services, MCP Servers, Projects.
 
 ## Ecosystem
 
-Services (managed via `relay service register`):
+Services (managed via `relay service register`). First-party services are reference implementations of the manifest protocol — no privileged path in relay:
 
-- `../relayLLM/` -- LLM execution engine. Receives directory + model + token. No project awareness.
-- `../eve/` -- Browser-based frontend. Fetches projects from relay, resolves templates.
-- `../relayScheduler/` -- Task scheduler. Runs LLM prompts (chat tasks) or PTY commands (terminal tasks via relayLLM templates) on schedule. PTY task output is persisted by relayLLM's on-disk log files; Eve replays completed runs via `GET /api/terminals/{id}/log`.
+- `../relayLLM/` -- LLM execution engine. Registers manifest covering `/api/sessions/*`, `/api/terminals/*`, `/api/models`, `/api/permission`, `/api/llama/*`, `/api/status`, `/api/generated/*`, `/ws`.
+- `../eve/` -- Browser-based frontend. Dials relay's frontend socket; relay dispatches to whatever backend serves each path.
+- `../relayScheduler/` -- Task scheduler. Registers its own manifest covering `/api/tasks/*`; dispatched directly (no longer proxied through relayLLM).
 - `../relayTelegram/` -- Telegram bot bridge.
 
 MCP Servers (managed via `relay mcp register`):

@@ -141,6 +141,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqListProjects:          {handle: handleListProjects},
 	ReqGetProject:            {handle: handleGetProject},
 	ReqResolvePtyEnv:         {handle: handleResolvePtyEnv},
+	ReqRegisterManifest:      {handle: handleRegisterManifest},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -239,4 +240,21 @@ func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRou
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespPtyEnv, Data: data}
+}
+
+func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "register_manifest: missing arguments")
+	}
+	var r RegisterManifestRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "register_manifest: "+err.Error())
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.RegisterManifest(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
 }

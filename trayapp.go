@@ -134,11 +134,17 @@ func runTrayApp() {
 	}
 	appInstance = app
 
+	// Enhanced-services registry: bridge handler writes on RegisterManifest;
+	// service_registry calls Forget on exit; the front-door dispatcher reads.
+	enhancedRegistry := NewEnhancedServiceRegistry(nil)
+	registry.Enhanced = enhancedRegistry
+
 	// Create and start bridge server.
 	router := &appRouter{
 		store:    store,
 		tools:    extMgr,
 		services: app.registry,
+		enhanced: enhancedRegistry,
 		onChange: app.onExternalChange,
 	}
 	// Share the in-memory service token store between the router (auth) and
@@ -146,10 +152,7 @@ func runTrayApp() {
 	// needed on crash.
 	registry.TokenStore = &router.serviceTokens
 
-	// Provision the front-door channel. Lazy: the frontend/internal socket
-	// pairs and bearer tokens are generated on the first participating spawn,
-	// then reused for the others. See relay_llm_channel.go.
-	registry.LLMChannel = NewLLMChannel()
+	registry.FrontendChannel = NewFrontendChannel()
 	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)
@@ -157,15 +160,15 @@ func runTrayApp() {
 	}
 	app.bridgeServer = bs
 
-	// Eagerly materialize the channel so the frontend HTTP server can bind
-	// before any consumer (Eve, scheduler) starts up. Children inherit the
-	// same credentials at spawn time via service_registry.
-	creds, err := registry.LLMChannel.Ensure()
+	// Materialize the channel up front so the frontend HTTP server can bind
+	// before any client (Eve, scheduler) tries to dial it. Spawned services
+	// inherit the same credentials via service_registry.
+	frontendEndpoint, err := registry.FrontendChannel.Ensure()
 	if err != nil {
-		slog.Error("failed to provision llm channel", "error", err)
+		slog.Error("failed to provision frontend channel", "error", err)
 		os.Exit(1)
 	}
-	frontend, err := NewFrontendServer(store, extMgr, creds, router)
+	frontend, err := NewFrontendServer(store, extMgr, frontendEndpoint, enhancedRegistry, router)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -448,7 +451,7 @@ func (a *App) cleanup() {
 		// Unlink the LLM channel sockets after the children that depend on
 		// them have stopped. Tokens persist in-memory until the process
 		// exits.
-		a.registry.CloseLLMChannel()
+		a.registry.CloseFrontendChannel()
 		a.wg.Wait()
 	})
 }

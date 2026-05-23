@@ -8,10 +8,13 @@ macOS MCP orchestrator and project manager. Manages external MCP servers, backgr
 graph TB
     subgraph Relay["Relay (tray app)"]
         Settings["settings.json<br/><i>projects, MCPs, services</i>"]
+        Frontend["Frontend Socket<br/><i>relay-frontend-*.sock</i>"]
+        Dispatcher["Frontend Dispatcher<br/><i>manifest-driven routing</i>"]
         Bridge["Bridge Socket<br/><i>relay.sock</i>"]
         Router["Router<br/><i>auth, filter, _meta inject</i>"]
         MCPMgr["ExternalMcpManager<br/><i>spawns MCP processes</i>"]
         SvcReg["ServiceRegistry<br/><i>spawns services</i>"]
+        EnhReg["EnhancedServiceRegistry<br/><i>per-service manifests</i>"]
     end
 
     subgraph MCPs["MCP Servers"]
@@ -20,20 +23,30 @@ graph TB
         Other["searchMCP, Krisp, ..."]
     end
 
-    subgraph Services["Managed Services"]
-        relayLLM["relayLLM<br/><i>LLM execution engine</i>"]
-        Eve["Eve<br/><i>browser frontend</i>"]
-        Scheduler["relayScheduler"]
-        Telegram["relayTelegram"]
+    subgraph Services["Managed Services (enhanced)"]
+        relayLLM["relayLLM<br/><i>sessions, terminals, llama</i>"]
+        Scheduler["relayScheduler<br/><i>scheduled tasks</i>"]
+        Other2["..."]
     end
 
-    Browser["Browser"] -->|WebAuthn| Eve
-    Eve -->|RELAY_LLM_TOKEN| relayLLM
-    relayLLM -->|"relay mcp (project token)"| Bridge
+    Eve["Eve<br/><i>browser frontend</i>"]
+
+    Eve -->|RELAY_FRONTEND_TOKEN| Frontend
+    Frontend --> Dispatcher
+    Dispatcher -->|lookup by manifest route| EnhReg
+    Dispatcher -.->|dispatches /api/sessions/*| relayLLM
+    Dispatcher -.->|dispatches /api/tasks/*| Scheduler
+
+    relayLLM -->|RegisterManifest| Bridge
+    Scheduler -->|RegisterManifest| Bridge
     Bridge --> Router
+    Router --> EnhReg
+
+    relayLLM -->|"relay mcp (project token)"| Bridge
     Router --> MCPMgr
     MCPMgr --> fsMCP & macMCP & Other
-    SvcReg -->|spawns| relayLLM & Eve & Scheduler & Telegram
+
+    SvcReg -->|spawns + injects RELAY_BRIDGE_SOCKET| relayLLM & Scheduler & Other2
     Settings -.->|config| Router & MCPMgr & SvcReg
 ```
 
@@ -45,6 +58,7 @@ How a user prompt becomes a tool call:
 sequenceDiagram
     participant B as Browser
     participant E as Eve
+    participant F as Relay Frontend
     participant L as relayLLM
     participant LLM as LLM API
     participant R as relay mcp
@@ -52,7 +66,9 @@ sequenceDiagram
     participant MCP as MCP Server
 
     B->>E: user message (WebSocket)
-    E->>L: forward message
+    E->>F: forward message (RELAY_FRONTEND_TOKEN)
+    F->>F: dispatcher: longest-prefix match → relayLLM
+    F->>L: proxy to relayLLM internal socket
     L->>LLM: prompt + tool definitions
     LLM-->>L: tool_use (e.g. fs_read)
 
@@ -65,9 +81,12 @@ sequenceDiagram
     R-->>L: result
     L->>LLM: tool result → next turn
     LLM-->>L: text response
-    L-->>E: stream events
+    L-->>F: stream events
+    F-->>E: stream events
     E-->>B: render in UI
 ```
+
+For `/api/tasks/*` traffic the same flow applies — relay's dispatcher routes to relayScheduler directly instead of relayLLM, based on each service's registered manifest. No service holds hardcoded knowledge of another. See [`plans/service-manifest-spec.md`](./plans/service-manifest-spec.md).
 
 ## Projects
 
@@ -136,8 +155,9 @@ For notarized release builds:
 ## Security
 
 - **Project tokens** — each project gets a scoped token. Permissions derived from `allowed_mcp_ids` at auth time. Token + SHA-256 hash stored in `settings.json` (mode 0600).
-- **Service tokens** — ephemeral, in-memory. Injected into managed services at spawn. Full bridge access for administrative operations.
-- **Eve ↔ relayLLM** — separate trust boundary. `RELAY_LLM_TOKEN` + Unix socket (mode 0600). Not reusable as MCP token.
+- **Service tokens** — ephemeral, in-memory. Injected into managed services at spawn (`RELAY_MCP_TOKEN`). Full bridge access for administrative operations.
+- **Frontend channel** — Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` (Unix socket, mode 0600) with `RELAY_FRONTEND_TOKEN`. Bearer-checked on every HTTP + WS request before dispatch.
+- **Enhanced internal sockets** — each enhanced service picks its own internal socket + token and declares both in its `RegisterManifest` payload. Relay strips inbound Authorization and injects the service-declared token when proxying.
 - **OAuth 2.1** — HTTP MCPs use PKCE (S256), dynamic client registration, auto-refresh.
 - **MCP data is runtime-only** — tool definitions and context schemas discovered during handshake, never persisted.
 

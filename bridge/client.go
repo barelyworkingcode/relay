@@ -119,6 +119,26 @@ func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	return out, nil
 }
 
+// RegisterManifest tells relay where to reach this service and what it
+// exposes. Called on startup after the service has picked + bound its
+// own internal socket. Service-token authentication required.
+// Re-registration with the same serviceID replaces the prior record.
+func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqRegisterManifest,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return fmt.Errorf("register manifest: %w", err)
+	}
+	return checkError(resp)
+}
+
 // sendAdmin sends an admin request to the bridge and returns any error.
 func sendAdmin(reqType, name, token string) error {
 	c := NewClient(token)
