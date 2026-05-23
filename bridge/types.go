@@ -22,6 +22,7 @@ const (
 	ReqListProjects          = "ListProjects"
 	ReqGetProject            = "GetProject"
 	ReqResolvePtyEnv         = "ResolvePtyEnv"
+	ReqRegisterManifest      = "RegisterManifest"
 )
 
 // Response type constants for the bridge wire protocol.
@@ -98,6 +99,13 @@ type ToolRouter interface {
 	ListProjects(token string) (json.RawMessage, error)
 	GetProject(id string, token string) (json.RawMessage, error)
 	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
+
+	// RegisterManifest stores an enhanced service's registration after the
+	// bridge has done schema-level validation. The router authenticates
+	// the service token, detects route conflicts, and updates the
+	// front-door dispatch table. Re-registration with the same ServiceID
+	// replaces the prior record.
+	RegisterManifest(ctx context.Context, req RegisterManifestRequest, token string) error
 }
 
 // NewScanner creates a bufio.Scanner configured with the standard bridge buffer

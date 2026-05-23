@@ -64,6 +64,7 @@ type appRouter struct {
 	store         SettingsStore
 	tools         ToolManager
 	services      ServiceReloader
+	enhanced      *EnhancedServiceRegistry
 	onChange      func()
 	serviceTokens serviceTokenStore
 }
@@ -340,4 +341,23 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
 		return
 	}
 	r.onChange()
+}
+
+// RegisterManifest authenticates the service token then forwards the full
+// record to the enhanced-services registry. The registry handles conflict
+// detection and triggers an onChange notification so the front-door
+// dispatcher rebuilds its routing table.
+func (r *appRouter) RegisterManifest(_ context.Context, req bridge.RegisterManifestRequest, token string) error {
+	if err := r.requireServiceToken(token, bridge.ReqRegisterManifest); err != nil {
+		return err
+	}
+	if err := r.enhanced.RegisterManifest(req.ServiceID, req.InternalSocket, req.InternalToken, req.Manifest); err != nil {
+		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, err)
+	}
+	slog.Info("manifest registered",
+		"service", req.ServiceID,
+		"socket", req.InternalSocket,
+		"routes", req.Manifest.Routes,
+		"actions", len(req.Manifest.Actions))
+	return nil
 }

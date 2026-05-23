@@ -79,6 +79,13 @@ func (m *ExternalMcp) Validate() error {
 }
 
 // ServiceConfig describes a background service managed by Relay.
+//
+// Enhancement is automatic: every spawned service receives a
+// RELAY_BRIDGE_SOCKET env var. A service that implements the manifest
+// protocol (see plans/service-manifest-spec.md) detects the env var,
+// binds its own listener, and sends RegisterManifest to relay; thereafter
+// it receives front-door traffic dispatched by relay. A generic service
+// just ignores the env var — relay never dispatches to it.
 type ServiceConfig struct {
 	ID          string            `json:"id"`
 	DisplayName string            `json:"display_name"`

@@ -25,7 +25,7 @@ type ServiceManager interface {
 	ReclaimOrphans(configs []ServiceConfig)
 	StartAllAutostart(configs []ServiceConfig)
 	StopAll()
-	CloseLLMChannel()
+	CloseFrontendChannel()
 }
 
 // Compile-time interface assertions.
@@ -48,9 +48,16 @@ type ServiceRegistry struct {
 	// Set during initialization, before any services are started.
 	TokenStore *serviceTokenStore
 
-	// LLMChannel issues credentials for the front-door channel. Set during
-	// initialization, before any services are started.
-	LLMChannel *LLMChannel
+	// FrontendChannel issues the frontend socket+token the front door
+	// listens on. Set during initialization, before any services start.
+	FrontendChannel *FrontendChannel
+
+	// Enhanced holds the runtime state of relay-enhanced services
+	// (per-service internal sockets, registered manifests). The bridge
+	// handler writes via RegisterManifest when a service sends its
+	// manifest; Forget is called on exit. Read by the front-door
+	// dispatcher.
+	Enhanced *EnhancedServiceRegistry
 
 	// OnProcessExit is called from the reaper goroutine after a managed
 	// process exits. Set once during initialization, before any services
@@ -107,15 +114,21 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		})
 	}
 
-	// Front-door channel: relay sits between Eve/scheduler and relayLLM.
-	// EnvFor returns the right pair of socket/token vars per service.
-	if r.LLMChannel != nil {
-		creds, err := r.LLMChannel.Ensure()
+	// Every spawned service receives frontend creds + bridge socket + its
+	// own service ID. Services that don't need a particular var ignore it;
+	// services that implement the manifest protocol dial the bridge to
+	// register themselves.
+	if r.FrontendChannel != nil {
+		endpoint, err := r.FrontendChannel.Ensure()
 		if err != nil {
-			return fmt.Errorf("provision llm channel for %s: %w", config.ID, err)
+			return fmt.Errorf("provision frontend channel for %s: %w", config.ID, err)
 		}
-		mergeEnv(cmd, creds.EnvFor(config.ID))
+		mergeEnv(cmd, endpoint.FrontendEnv())
 	}
+	mergeEnv(cmd, map[string]string{
+		EnvBridgeSocket: bridge.SocketPath(),
+		EnvServiceID:    config.ID,
+	})
 
 	// Clean up the service token on any error path before the process starts.
 	committed := false
@@ -177,6 +190,12 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		// Clean up ephemeral token on exit.
 		if proc.tokenHash != "" && r.TokenStore != nil {
 			defer r.TokenStore.Remove(proc.tokenHash)
+		}
+		// Forget any manifest registration so the dispatcher stops trying
+		// to route to a dead socket. Safe no-op for generic services that
+		// never registered.
+		if r.Enhanced != nil {
+			defer r.Enhanced.Forget(serviceID)
 		}
 		if err := cmd.Wait(); err != nil {
 			slog.Warn("service exited with error", "id", serviceID, "error", err)
@@ -352,11 +371,11 @@ func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
 	return out
 }
 
-// CloseLLMChannel unlinks the Eve↔relayLLM Unix socket if one was provisioned.
-// No-op when LLMChannel is unset (e.g. in tests). Safe to call multiple times.
-func (r *ServiceRegistry) CloseLLMChannel() {
-	if r.LLMChannel != nil {
-		r.LLMChannel.Close()
+// CloseFrontendChannel unlinks the frontend Unix socket if one was
+// provisioned. Safe to call multiple times.
+func (r *ServiceRegistry) CloseFrontendChannel() {
+	if r.FrontendChannel != nil {
+		r.FrontendChannel.Close()
 	}
 }
 
