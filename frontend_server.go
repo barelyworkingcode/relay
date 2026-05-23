@@ -15,12 +15,13 @@ import (
 )
 
 // FrontendServer hosts the HTTP API that Eve and relayScheduler consume. It
-// owns the relay-frontend Unix socket, registers project endpoints directly,
-// and reverse-proxies everything else to relayLLM.
+// owns the relay-frontend Unix socket, registers project endpoints directly
+// (projects are a relay-internal concern), and dispatches everything else
+// to whichever enhanced service registered for the route prefix.
 //
 // The frontend bearer token is validated on every request and WS upgrade.
-// relay then injects the *internal* token before dialing relayLLM — the two
-// trust boundaries stay distinct.
+// The dispatcher then injects each service's own internal token before
+// dialing it — the two trust boundaries stay distinct.
 type FrontendServer struct {
 	socketPath string
 	server     *http.Server
@@ -30,25 +31,30 @@ type FrontendServer struct {
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.
 // skillLister supplies the live tool list used for out-of-band SKILL.md
 // regeneration on project mutations; pass nil to disable.
-func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, creds LLMChannelCreds, skillLister SkillLister) (*FrontendServer, error) {
-	if creds.Frontend.Socket == "" {
+//
+// The dispatcher is the single handler for every route not claimed by
+// relay-internal endpoints (project routes). It reads from the enhanced-
+// services registry to pick a target service per request — no hardcoded
+// per-service handlers live here.
+func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister) (*FrontendServer, error) {
+	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
-	if creds.Internal.Socket == "" {
-		return nil, errors.New("internal socket path is empty")
+	if enhanced == nil {
+		return nil, errors.New("enhanced-services registry is nil")
 	}
 
 	mux := http.NewServeMux()
 	RegisterProjectRoutes(mux, store, mcps, skillLister)
 
-	// Catch-all proxy: any /api/* not matched by a more specific handler
-	// (project routes above) falls through to relayLLM. New relayLLM
-	// endpoints work without a relay-side allowlist update.
-	httpProxy := newRelayLLMProxy(creds.Internal)
-	mux.Handle("/api/", httpProxy)
-	mux.Handle("/ws", newRelayLLMWSProxy(creds.Internal))
+	// Catch-all dispatcher: any path not matched by a more specific handler
+	// (project routes above) is resolved against the manifest registry and
+	// reverse-proxied to the matching enhanced service. WS upgrades are
+	// handled by the same dispatcher (it detects them from the request).
+	dispatcher := NewFrontendDispatcher(enhanced)
+	mux.Handle("/", dispatcher)
 
-	handler := frontendBearerAuth(creds.Frontend.Token, frontendRecover(mux))
+	handler := frontendBearerAuth(frontend.Token, frontendRecover(mux))
 
 	srv := &http.Server{
 		Handler: handler,
@@ -58,23 +64,23 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, creds L
 		IdleTimeout:       5 * time.Minute,
 	}
 
-	if err := os.MkdirAll(filepath.Dir(creds.Frontend.Socket), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(frontend.Socket), 0o700); err != nil {
 		return nil, fmt.Errorf("create frontend socket dir: %w", err)
 	}
-	_ = os.Remove(creds.Frontend.Socket)
-	ln, err := net.Listen("unix", creds.Frontend.Socket)
+	_ = os.Remove(frontend.Socket)
+	ln, err := net.Listen("unix", frontend.Socket)
 	if err != nil {
 		return nil, fmt.Errorf("listen on frontend socket: %w", err)
 	}
-	if err := os.Chmod(creds.Frontend.Socket, 0o600); err != nil {
+	if err := os.Chmod(frontend.Socket, 0o600); err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("chmod frontend socket: %w", err)
 	}
 
 	slog.Info("frontend server bound",
-		"socket", creds.Frontend.Socket, "auth", creds.Frontend.Token != "")
+		"socket", frontend.Socket, "auth", frontend.Token != "")
 	return &FrontendServer{
-		socketPath: creds.Frontend.Socket,
+		socketPath: frontend.Socket,
 		server:     srv,
 		listener:   ln,
 	}, nil
