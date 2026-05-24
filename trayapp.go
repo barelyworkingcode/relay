@@ -147,6 +147,7 @@ func runTrayApp() {
 		GoFunc:                 app.goFunc,
 		NotifyReconcile:        bridge.SendReconcile,
 		NotifyReloadMcp:        bridge.SendReloadMcp,
+		Tools:                  extMgr,
 	}
 
 	// Create and start bridge server.
@@ -157,6 +158,9 @@ func runTrayApp() {
 		enhanced: enhancedRegistry,
 		onChange: app.onExternalChange,
 	}
+	// router implements SkillLister (ListTools); set it on the IPC context
+	// now that it exists so the Projects-tab "Regen Now" button can run.
+	app.ipcCtx.SkillLister = router
 	// Share the in-memory service token store between the router (auth) and
 	// the registry (token lifecycle). Tokens live only in memory — no cleanup
 	// needed on crash.
@@ -178,7 +182,16 @@ func runTrayApp() {
 		slog.Error("failed to provision frontend channel", "error", err)
 		os.Exit(1)
 	}
-	frontend, err := NewFrontendServer(store, extMgr, frontendEndpoint, enhancedRegistry, router)
+	// onProjectsChanged refreshes the tray Settings webview when projects
+	// mutate via the HTTP API (Eve, scheduler, CLI). Local IPC mutations
+	// fire their own emit events; this fan-out keeps the in-tray Projects
+	// tab in sync with edits made elsewhere.
+	onProjectsChanged := func() {
+		if app != nil {
+			app.pushFullProjects()
+		}
+	}
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

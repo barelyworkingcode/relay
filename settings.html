@@ -185,11 +185,42 @@ textarea:focus { outline: none; border-color: #0078d4; }
 .svc-actions { display: flex; gap: 4px; }
 .svc-err { color: #e55; font-size: 12px; margin-top: 8px; }
 .svc-empty { color: #666; font-size: 12px; padding: 8px 0; }
+
+/* ---- Projects tab ---- */
+.proj-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
+.proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.proj-card-name { font-weight: 500; font-size: 13px; color: #e0e0e0; }
+.proj-card-path { color: #888; font-size: 11px; font-family: 'SF Mono', Monaco, monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card-meta { color: #666; font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+.proj-card-meta span { white-space: nowrap; }
+.proj-section { border: 1px solid #2a2a2a; border-radius: 6px; padding: 12px 14px; margin-top: 12px; }
+.proj-section-title { font-size: 12px; font-weight: 600; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.proj-section-help { color: #777; font-size: 11px; margin-bottom: 8px; }
+.proj-mcp-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #232323; }
+.proj-mcp-row:last-child { border-bottom: none; }
+.proj-mcp-name { font-size: 12px; color: #ccc; }
+.proj-mcp-name.dangling { color: #888; text-decoration: line-through; }
+.proj-tool-picker { padding: 8px 0 8px 16px; border-left: 2px solid #333; margin: 4px 0 8px 8px; }
+.proj-tool-row { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; font-size: 12px; color: #aaa; }
+.proj-tool-row.stale { color: #f59e0b; }
+.proj-tool-row input[type=checkbox] { margin-top: 2px; }
+.proj-tool-row .desc { font-size: 11px; color: #777; margin-top: 1px; }
+.proj-tool-empty { color: #666; font-size: 11px; padding: 4px 0; font-style: italic; }
+.proj-token-field { display: flex; gap: 6px; align-items: center; }
+.proj-token-field input { flex: 1; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; }
+.proj-token-banner { background: #1a3a52; border: 1px solid #0078d4; border-radius: 4px; padding: 8px 12px; margin-top: 8px; font-size: 12px; color: #cde; }
+.proj-token-banner code { color: #fff; background: rgba(0,0,0,0.4); padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; word-break: break-all; }
+.proj-template-card { border: 1px solid #2a2a2a; border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
+.proj-template-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.proj-form-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid #333; display: flex; gap: 8px; }
+.proj-error { color: #e55; font-size: 12px; margin-top: 8px; }
+.proj-ok { color: #22c55e; font-size: 12px; margin-top: 8px; }
 </style></head>
 <body>
 <div class="sidebar">
     <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
+    <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
 </div>
 <div class="content" id="content"></div>
@@ -204,6 +235,8 @@ function ipc(msg) {
 const EXTERNAL_MCPS_INIT = __EXTERNAL_MCPS_JSON__;
 const SERVICES_INIT = __SERVICES_JSON__;
 const RUNNING_IDS_INIT = __RUNNING_IDS_JSON__;
+const PROJECTS_INIT = __PROJECTS_JSON__;
+const MCP_TOOL_CACHE_INIT = __MCP_TOOL_CACHE_JSON__;
 
 let state = {
     page: 'services',
@@ -222,11 +255,23 @@ let state = {
     serviceStatuses: {},      // serviceId -> ServiceStatusSnapshot
     serviceActionPending: {}, // key "svc|action|rowKey" -> true while in flight
     serviceActionError: {},   // serviceId -> last error string (cleared on next ok)
+
+    // Projects tab.
+    projects: PROJECTS_INIT,
+    mcpToolCache: MCP_TOOL_CACHE_INIT,     // mcpId -> [{name, description, category}]
+    editingProjectId: null,                 // null = list, 'new' = create form, '<id>' = edit
+    projectForm: null,                      // in-flight form values (kept out of state.projects until Save)
+    projectFormError: null,
+    projectTokenVisible: {},                // id -> bool (eye toggle)
+    projectFreshToken: {},                  // id -> plaintext shown once after rotate
+    projectSkillRegen: {},                  // id -> { ok, message, t } (last regen result)
+    projectError: null,
+    rotatingProjectId: null,
 };
 
 function showPage(page) {
     state.page = page;
-    const pages = ['services', 'mcps', 'inspector'];
+    const pages = ['services', 'mcps', 'projects', 'inspector'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
@@ -236,6 +281,7 @@ function showPage(page) {
 const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args": ["-y", "@example/server"], "env": {"API_KEY": "..."}}}, null, 2);
 
 var _svcFormRendered = false;
+var _projFormRendered = false;
 function render() {
     const el = document.getElementById('content');
     if (state.page === 'services') {
@@ -244,6 +290,15 @@ function render() {
         el.innerHTML = renderServices();
     } else if (state.page === 'inspector') {
         el.innerHTML = renderServiceInspector();
+    } else if (state.page === 'projects') {
+        // Suppress re-render of the project form while the user is typing.
+        // The tri-state buttons toggle state.projectForm.* and call render()
+        // explicitly, so this guard only kicks in for external pushes
+        // (onProjectsReloaded, onProjectUpdated) — same pattern the services
+        // form uses to avoid wiping in-flight edits.
+        if (state.editingProjectId && _projFormRendered) return;
+        _projFormRendered = !!state.editingProjectId;
+        el.innerHTML = renderProjects();
     } else {
         el.innerHTML = renderMcpServers();
         const ta = document.getElementById('mcpJson');
@@ -728,6 +783,651 @@ window.onSettingsReloaded = function(data) {
     state.externalMcps = data.external_mcps;
     state.services = data.services;
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
+    if (data.projects) state.projects = data.projects;
+    render();
+};
+
+window.onProjectsReloaded = function(projects) {
+    state.projects = projects || [];
+    // External mutation — drop in-flight form edits to avoid showing stale data.
+    if (state.editingProjectId && state.editingProjectId !== 'new') {
+        const stillExists = state.projects.some(p => p.id === state.editingProjectId);
+        if (!stillExists) {
+            state.editingProjectId = null;
+            state.projectForm = null;
+        }
+    }
+    if (state.page === 'projects') render();
+};
+
+// ---------------------------------------------------------------------------
+// Projects tab — list view + edit form with tri-state tool picker.
+//
+// State model: a single in-flight `state.projectForm` object holds the user's
+// uncommitted edits. Tri-state buttons and tool checkboxes mutate it; Save
+// dispatches `update_project` with the entire patch. The render-suppress flag
+// (_projFormRendered) prevents external pushes (onProjectsReloaded) from
+// blowing away keystrokes mid-edit.
+// ---------------------------------------------------------------------------
+
+const PROJ_MCP_WILDCARD = '*';
+
+function renderProjects() {
+    if (state.editingProjectId) return renderProjectForm();
+
+    let html = '<h2>Projects</h2>';
+    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
+
+    if (state.projectError) {
+        html += '<div class="proj-error">' + esc(state.projectError) + '</div>';
+    }
+
+    if (state.projects.length === 0) {
+        html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> below to create one.</div>';
+    } else {
+        for (const p of state.projects) {
+            const allowedCount = p.allowed_mcp_ids && p.allowed_mcp_ids.length > 0
+                ? (p.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_mcp_ids.length))
+                : '0';
+            const modelsCount = p.allowed_models && p.allowed_models.length > 0
+                ? (p.allowed_models[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_models.length))
+                : '0';
+            const skillState = p.generate_skill ? 'auto' : 'off';
+            const policy = (p.permission_policy && p.permission_policy.default_mode) || '—';
+            const regen = state.projectSkillRegen[p.id];
+            html += '<div class="proj-card">';
+            html += '<div class="proj-card-header">';
+            html += '<span class="proj-card-name">' + esc(p.name) + '</span>';
+            html += '<div style="display:flex;gap:4px">';
+            html += '<button class="btn btn-sm" onclick="editProject(\'' + esc(p.id) + '\')">Edit</button>';
+            html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="removeProject(\'' + esc(p.id) + '\', \'' + esc(p.name) + '\')">Delete</button>';
+            html += '</div></div>';
+            html += '<div class="proj-card-path">' + esc(p.path || '(no path)') + '</div>';
+            html += '<div class="proj-card-meta">';
+            html += '<span>MCPs: <strong>' + esc(allowedCount) + '</strong></span>';
+            html += '<span>Models: <strong>' + esc(modelsCount) + '</strong></span>';
+            html += '<span>Policy: <strong>' + esc(policy) + '</strong></span>';
+            html += '<span>Skill: <strong>' + esc(skillState) + '</strong></span>';
+            html += '</div>';
+            if (regen) {
+                const cls = regen.ok ? 'proj-ok' : 'proj-error';
+                html += '<div class="' + cls + '">' + (regen.ok ? '✓ Regenerated: ' : '✗ Regen failed: ') + esc(regen.message) + '</div>';
+            }
+            html += '</div>';
+        }
+    }
+
+    html += '<div style="margin-top:16px"><button class="btn" onclick="newProject()">+ New Project</button></div>';
+    return html;
+}
+
+function blankProjectForm() {
+    return {
+        id: null,
+        name: '',
+        path: '',
+        allowed_mcp_ids: [PROJ_MCP_WILDCARD],   // wildcard by default
+        allowed_models: [PROJ_MCP_WILDCARD],
+        chat_templates: [],
+        permission_policy: { default_mode: '', allowed_tools: [], denied_tools: [] },
+        generate_skill: false,
+        disabled_tools: {},                      // mcpID -> [toolName, ...]
+    };
+}
+
+function projectFormFromExisting(p) {
+    // Deep-clone so edits don't mutate state.projects until Save.
+    const policy = p.permission_policy || {};
+    return {
+        id: p.id,
+        name: p.name || '',
+        path: p.path || '',
+        allowed_mcp_ids: (p.allowed_mcp_ids || []).slice(),
+        allowed_models: (p.allowed_models || []).slice(),
+        chat_templates: JSON.parse(JSON.stringify(p.chat_templates || [])),
+        permission_policy: {
+            default_mode: policy.default_mode || '',
+            allowed_tools: (policy.allowed_tools || []).slice(),
+            denied_tools: (policy.denied_tools || []).slice(),
+        },
+        generate_skill: !!p.generate_skill,
+        disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
+        token: p.token || '',
+    };
+}
+
+function newProject() {
+    state.editingProjectId = 'new';
+    state.projectForm = blankProjectForm();
+    state.projectFormError = null;
+    _projFormRendered = false;
+    render();
+}
+
+function editProject(id) {
+    const p = state.projects.find(x => x.id === id);
+    if (!p) return;
+    state.editingProjectId = id;
+    state.projectForm = projectFormFromExisting(p);
+    state.projectFormError = null;
+    _projFormRendered = false;
+    render();
+}
+
+function cancelProjectEdit() {
+    state.editingProjectId = null;
+    state.projectForm = null;
+    state.projectFormError = null;
+    _projFormRendered = false;
+    render();
+}
+
+function regenProjectSkill(id) {
+    ipc(JSON.stringify({ type: 'regen_project_skill', id }));
+}
+
+function removeProject(id, name) {
+    if (!confirm('Delete project "' + name + '"?\nThis revokes its token immediately and removes its SKILL.md.')) return;
+    ipc(JSON.stringify({ type: 'remove_project', id }));
+}
+
+function rotateProjectToken(id, name) {
+    if (!confirm('Rotate the bearer token for "' + name + '"?\n\nAny active Eve / relayLLM / CLI session using the old token will get auth errors and must re-authenticate.\n\nThe new token will be shown ONCE — copy it before navigating away.')) return;
+    state.rotatingProjectId = id;
+    ipc(JSON.stringify({ type: 'rotate_project_token', id }));
+}
+
+function toggleProjectTokenVisible(id) {
+    state.projectTokenVisible[id] = !state.projectTokenVisible[id];
+    _projFormRendered = false;
+    render();
+}
+
+function copyProjectToken(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+    }
+}
+
+// ---- Tri-state helpers ----
+
+function projMcpState(form, mcpID) {
+    if (isProjMcpWildcard(form)) return 'all';
+    if (form.allowed_mcp_ids.indexOf(mcpID) < 0) return 'none';
+    const disabled = form.disabled_tools[mcpID] || [];
+    return disabled.length > 0 ? 'selected' : 'all';
+}
+
+function isProjMcpWildcard(form) {
+    return form.allowed_mcp_ids.length === 1 && form.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD;
+}
+
+function setProjMcpState(mcpID, newState) {
+    const f = state.projectForm;
+    if (!f) return;
+    // Expand wildcard into the explicit list before the first per-MCP edit so
+    // subsequent toggles work on a real ID set. Wildcard is reachable again
+    // via the wildcard toggle button.
+    if (isProjMcpWildcard(f)) {
+        f.allowed_mcp_ids = state.externalMcps.map(m => m.id);
+        f.disabled_tools = {};
+    }
+    if (newState === 'none') {
+        f.allowed_mcp_ids = f.allowed_mcp_ids.filter(id => id !== mcpID);
+        delete f.disabled_tools[mcpID];
+    } else if (newState === 'all') {
+        if (f.allowed_mcp_ids.indexOf(mcpID) < 0) f.allowed_mcp_ids.push(mcpID);
+        delete f.disabled_tools[mcpID];
+    } else { // 'selected'
+        if (f.allowed_mcp_ids.indexOf(mcpID) < 0) f.allowed_mcp_ids.push(mcpID);
+        // Mark with empty disabled list so derivation returns 'selected'; the
+        // moment the user unchecks a tool, that tool name goes in.
+        if (!f.disabled_tools[mcpID]) f.disabled_tools[mcpID] = [];
+        // Trigger a tool-list fetch if we don't already have it cached.
+        if (!state.mcpToolCache[mcpID]) {
+            ipc(JSON.stringify({ type: 'list_mcp_tools', mcp_id: mcpID }));
+        }
+    }
+    _projFormRendered = false;
+    render();
+}
+
+function setProjMcpWildcard(checked) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (checked) {
+        f.allowed_mcp_ids = [PROJ_MCP_WILDCARD];
+        f.disabled_tools = {};
+    } else {
+        // Drop wildcard; start with no MCPs (user picks explicitly).
+        f.allowed_mcp_ids = [];
+    }
+    _projFormRendered = false;
+    render();
+}
+
+function toggleProjTool(mcpID, toolName, isChecked) {
+    const f = state.projectForm;
+    if (!f) return;
+    const live = state.mcpToolCache[mcpID] || [];
+    const liveNames = live.map(t => t.name);
+    // "Selected" semantics: disabled_tools[mcpID] = liveNames - checked.
+    const currentlyDisabled = new Set(f.disabled_tools[mcpID] || []);
+    if (isChecked) {
+        currentlyDisabled.delete(toolName);
+    } else {
+        currentlyDisabled.add(toolName);
+    }
+    // Preserve any disabled-tool names that no longer exist in the live MCP
+    // (renamed/removed). They're invisible permissively, but the user may
+    // want to keep the entry until they explicitly prune.
+    for (const name of (f.disabled_tools[mcpID] || [])) {
+        if (liveNames.indexOf(name) < 0) currentlyDisabled.add(name);
+    }
+    f.disabled_tools[mcpID] = Array.from(currentlyDisabled);
+}
+
+function setProjModelsWildcard(checked) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (checked) {
+        f.allowed_models = [PROJ_MCP_WILDCARD];
+    } else {
+        f.allowed_models = [];
+    }
+    _projFormRendered = false;
+    render();
+}
+
+function isProjModelsWildcard(f) {
+    return f.allowed_models.length === 1 && f.allowed_models[0] === PROJ_MCP_WILDCARD;
+}
+
+// ---- Form renderer ----
+
+function renderProjectForm() {
+    const f = state.projectForm;
+    if (!f) return '<div class="empty-state">No form state.</div>';
+    const isNew = !f.id;
+    const title = isNew ? 'New Project' : 'Edit Project';
+
+    let html = '<h2>' + esc(title) + '</h2>';
+    if (state.projectFormError) {
+        html += '<div class="proj-error">' + esc(state.projectFormError) + '</div>';
+    }
+
+    // ---- Identity ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += '<label>Project name</label>';
+    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="e.g. Acme Website" />';
+    html += '<label>Project path</label>';
+    html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+    html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
+    html += '</div>';
+
+    // ---- Allowed MCPs + tri-state picker ----
+    const wild = isProjMcpWildcard(f);
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Allowed MCPs &amp; Tools</div>';
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += '<span>Allow all registered MCPs (wildcard <code>*</code>)</span>';
+    html += '<label class="switch"><input type="checkbox" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+    html += '</div>';
+
+    if (!wild) {
+        const registered = state.externalMcps.slice();
+        // Surface dangling refs (MCP IDs that no longer exist in registry).
+        const registeredIds = new Set(registered.map(m => m.id));
+        const dangling = f.allowed_mcp_ids.filter(id => id !== PROJ_MCP_WILDCARD && !registeredIds.has(id));
+        if (registered.length === 0 && dangling.length === 0) {
+            html += '<div class="proj-tool-empty">No MCPs registered yet. Add one in the <strong>MCP Servers</strong> tab.</div>';
+        }
+        for (const mcp of registered) {
+            const st = projMcpState(f, mcp.id);
+            html += '<div class="proj-mcp-row">';
+            html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:#666;font-size:11px">(' + esc(mcp.id) + ')</span></span>';
+            html += '<div class="perm-btns">';
+            html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'all\')">All tools</button>';
+            html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'selected\')">Selected</button>';
+            html += '<button class="perm-btn ' + (st === 'none' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'none\')">No tools</button>';
+            html += '</div>';
+            html += '</div>';
+            if (st === 'selected') {
+                html += renderProjToolPicker(mcp.id, f);
+            }
+        }
+        for (const id of dangling) {
+            html += '<div class="proj-mcp-row">';
+            html += '<span class="proj-mcp-name dangling">' + esc(id) + ' (no longer registered)</span>';
+            html += '<button class="perm-btn" onclick="setProjMcpState(\'' + esc(id) + '\', \'none\')">Remove</button>';
+            html += '</div>';
+        }
+    }
+    html += '</div>';
+
+    // ---- Allowed models ----
+    const modelsWild = isProjModelsWildcard(f);
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Allowed Models</div>';
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += '<span>Allow all models (wildcard <code>*</code>)</span>';
+    html += '<label class="switch"><input type="checkbox" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
+    html += '</div>';
+    if (!modelsWild) {
+        const csv = f.allowed_models.filter(m => m !== PROJ_MCP_WILDCARD).join(', ');
+        html += '<label>Model IDs (comma-separated)</label>';
+        html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
+    }
+    html += '</div>';
+
+    // ---- Chat templates ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Chat Templates</div>';
+    html += '<p class="proj-section-help">Per-project chat starting points used by Eve. Each template gets a Run-time model, mode, and optional system prompt.</p>';
+    if (f.chat_templates.length === 0) {
+        html += '<div class="proj-tool-empty">No templates.</div>';
+    }
+    for (let i = 0; i < f.chat_templates.length; i++) {
+        const t = f.chat_templates[i];
+        html += '<div class="proj-template-card">';
+        html += '<div class="proj-template-header">';
+        html += '<input type="text" placeholder="Template name" value="' + esc(t.name || '') + '" onchange="state.projectForm.chat_templates[' + i + '].name = this.value" style="flex:1;margin-right:8px" />';
+        html += '<button class="btn btn-sm btn-danger" onclick="removeProjTemplate(' + i + ')">Remove</button>';
+        html += '</div>';
+        html += '<label>Model</label>';
+        html += '<input type="text" value="' + esc(t.model || '') + '" placeholder="claude-sonnet" onchange="state.projectForm.chat_templates[' + i + '].model = this.value" />';
+        html += '<label>System prompt</label>';
+        html += '<textarea rows="3" onchange="state.projectForm.chat_templates[' + i + '].system_prompt = this.value">' + esc(t.system_prompt || '') + '</textarea>';
+        html += '<div class="toggle-row" style="margin:6px 0 0;padding:4px 0">';
+        html += '<span style="font-size:12px">Append CLAUDE.md</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (t.append_claude_md ? 'checked' : '') + ' onchange="state.projectForm.chat_templates[' + i + '].append_claude_md = this.checked" /><span class="slider"></span></label>';
+        html += '</div>';
+        html += '<div class="toggle-row" style="margin:0;padding:4px 0">';
+        html += '<span style="font-size:12px">Use relay tools</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (t.use_relay_tools ? 'checked' : '') + ' onchange="state.projectForm.chat_templates[' + i + '].use_relay_tools = this.checked" /><span class="slider"></span></label>';
+        html += '</div>';
+        html += '</div>';
+    }
+    html += '<button class="btn btn-sm" onclick="addProjTemplate()">+ Template</button>';
+    html += '</div>';
+
+    // ---- Permission policy ----
+    const pol = f.permission_policy;
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Permission Policy</div>';
+    html += '<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).</p>';
+    html += '<label>Default mode</label>';
+    html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value" style="width:100%;padding:6px 8px;background:#2d2d2d;border:1px solid #444;border-radius:4px;color:#e0e0e0;margin-top:4px">';
+    for (const m of ['', 'default', 'acceptEdits', 'plan', 'bypassPermissions']) {
+        const sel = pol.default_mode === m ? 'selected' : '';
+        html += '<option value="' + esc(m) + '" ' + sel + '>' + (m || '(inherit)') + '</option>';
+    }
+    html += '</select>';
+    html += '<label>Allowed tools (one per line)</label>';
+    html += '<textarea id="projAllowedTools" rows="3" placeholder="Read&#10;Grep&#10;Bash(ls *)">' + esc(pol.allowed_tools.join('\n')) + '</textarea>';
+    html += '<label>Denied tools (one per line)</label>';
+    html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join('\n')) + '</textarea>';
+    html += '</div>';
+
+    // ---- Skill ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
+    html += '<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project\'s tools.</p>';
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += '<span>Auto-generate SKILL.md</span>';
+    html += '<label class="switch"><input type="checkbox" ' + (f.generate_skill ? 'checked' : '') + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
+    html += '</div>';
+    if (!isNew) {
+        html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(f.id) + '\')">Regenerate now</button></div>';
+        const regen = state.projectSkillRegen[f.id];
+        if (regen) {
+            const cls = regen.ok ? 'proj-ok' : 'proj-error';
+            html += '<div class="' + cls + '">' + (regen.ok ? '✓ Regenerated: ' : '✗ Regen failed: ') + esc(regen.message) + '</div>';
+        }
+    }
+    html += '</div>';
+
+    // ---- Token (edit only) ----
+    if (!isNew) {
+        const visible = !!state.projectTokenVisible[f.id];
+        const fresh = state.projectFreshToken[f.id];
+        const display = visible ? f.token : (f.token ? '•'.repeat(Math.min(40, f.token.length)) : '');
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Bearer Token</div>';
+        html += '<p class="proj-section-help">Project-scoped token presented by Eve, relayLLM, and <code>relay mcp --token</code>. Tokens are inline; rotating invalidates the prior token immediately.</p>';
+        html += '<div class="proj-token-field">';
+        html += '<input type="text" readonly value="' + esc(display) + '" />';
+        html += '<button class="btn btn-sm" onclick="toggleProjectTokenVisible(\'' + esc(f.id) + '\')">' + (visible ? 'Hide' : 'Show') + '</button>';
+        html += '<button class="btn btn-sm" onclick="copyProjectToken(\'' + esc(f.token) + '\')">Copy</button>';
+        html += '<button class="btn btn-sm btn-danger" onclick="rotateProjectToken(\'' + esc(f.id) + '\', \'' + esc(f.name) + '\')">Rotate</button>';
+        html += '</div>';
+        if (fresh) {
+            html += '<div class="proj-token-banner">';
+            html += 'New token issued — copy now, this is the only banner that will show it: <code>' + esc(fresh) + '</code>';
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+
+    // ---- Actions ----
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn" onclick="saveProjectForm()">' + (isNew ? 'Create' : 'Save') + '</button>';
+    html += '<button class="btn btn-danger" onclick="cancelProjectEdit()">Cancel</button>';
+    html += '</div>';
+
+    return html;
+}
+
+function renderProjToolPicker(mcpID, f) {
+    const live = state.mcpToolCache[mcpID];
+    let html = '<div class="proj-tool-picker">';
+    if (!live) {
+        html += '<div class="proj-tool-empty"><span class="spinner"></span>Loading tools…</div>';
+        html += '</div>';
+        return html;
+    }
+    if (live.length === 0) {
+        html += '<div class="proj-tool-empty">No tools discovered. If this is an HTTP MCP, authenticate it in the <strong>MCP Servers</strong> tab first.</div>';
+        html += '</div>';
+        return html;
+    }
+    const disabledSet = new Set(f.disabled_tools[mcpID] || []);
+    for (const t of live) {
+        const checked = !disabledSet.has(t.name);
+        html += '<label class="proj-tool-row">';
+        html += '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleProjTool(\'' + esc(mcpID) + '\', \'' + esc(t.name) + '\', this.checked)" />';
+        html += '<div><div>' + esc(t.name) + '</div>';
+        if (t.description) html += '<div class="desc">' + esc(oneLineProj(t.description)) + '</div>';
+        html += '</div></label>';
+    }
+    // Stale entries — names in disabled_tools that aren't in the live list.
+    const liveNames = new Set(live.map(t => t.name));
+    for (const name of (f.disabled_tools[mcpID] || [])) {
+        if (liveNames.has(name)) continue;
+        html += '<label class="proj-tool-row stale" title="No longer present in the MCP\'s tool list">';
+        html += '<input type="checkbox" checked onchange="pruneStaleDisabledTool(\'' + esc(mcpID) + '\', \'' + esc(name) + '\', this.checked)" />';
+        html += '<div><div>' + esc(name) + '</div><div class="desc">stale — uncheck to remove</div></div>';
+        html += '</label>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function oneLineProj(s) {
+    return String(s).replace(/\s+/g, ' ').slice(0, 140);
+}
+
+function pruneStaleDisabledTool(mcpID, name, kept) {
+    if (kept) return; // user wants to keep it; no-op
+    const f = state.projectForm;
+    if (!f) return;
+    f.disabled_tools[mcpID] = (f.disabled_tools[mcpID] || []).filter(n => n !== name);
+    _projFormRendered = false;
+    render();
+}
+
+function addProjTemplate() {
+    const f = state.projectForm;
+    if (!f) return;
+    f.chat_templates.push({
+        id: 'tpl-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+        name: '',
+        model: '',
+        mode: 'text',
+        voice: '',
+        system_prompt: '',
+        append_claude_md: false,
+        use_relay_tools: true,
+    });
+    _projFormRendered = false;
+    render();
+}
+
+function removeProjTemplate(idx) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.chat_templates.splice(idx, 1);
+    _projFormRendered = false;
+    render();
+}
+
+function harvestProjectForm() {
+    const f = state.projectForm;
+    if (!f) return null;
+    const name = (document.getElementById('projName') || {}).value || f.name;
+    const path = (document.getElementById('projPath') || {}).value || f.path;
+    let allowedModels = f.allowed_models;
+    if (!isProjModelsWildcard(f)) {
+        const csv = (document.getElementById('projModels') || {}).value || '';
+        allowedModels = csv.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    const allowedToolsTA = document.getElementById('projAllowedTools');
+    const deniedToolsTA = document.getElementById('projDeniedTools');
+    const policy = {
+        default_mode: f.permission_policy.default_mode,
+        allowed_tools: allowedToolsTA ? allowedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
+        denied_tools: deniedToolsTA ? deniedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.denied_tools,
+    };
+    // Merge live DOM values for chat templates (system prompts/names typed in
+    // textareas already pushed into f via inline onchange handlers).
+    return {
+        name: name.trim(),
+        path: path.trim(),
+        allowed_mcp_ids: f.allowed_mcp_ids,
+        allowed_models: allowedModels,
+        chat_templates: f.chat_templates,
+        permission_policy: policy,
+        generate_skill: f.generate_skill,
+        disabled_tools: f.disabled_tools,
+    };
+}
+
+function saveProjectForm() {
+    const f = state.projectForm;
+    if (!f) return;
+    const payload = harvestProjectForm();
+    if (!payload) return;
+    if (!payload.name) {
+        state.projectFormError = 'Project name is required';
+        _projFormRendered = false;
+        render();
+        return;
+    }
+    if (!payload.path) {
+        state.projectFormError = 'Project path is required';
+        _projFormRendered = false;
+        render();
+        return;
+    }
+    state.projectFormError = null;
+
+    if (!f.id) {
+        ipc(JSON.stringify(Object.assign({ type: 'create_project' }, payload)));
+    } else {
+        ipc(JSON.stringify(Object.assign({ type: 'update_project', id: f.id }, payload)));
+    }
+}
+
+// ---- Project IPC event handlers ----
+
+window.onProjectAdded = function(p) {
+    if (!p || !p.id) return;
+    // Replace any provisional entry with the real persisted row.
+    state.projects = state.projects.filter(x => x.id !== p.id).concat(p);
+    state.editingProjectId = null;
+    state.projectForm = null;
+    state.projectError = null;
+    _projFormRendered = false;
+    render();
+};
+
+window.onProjectUpdated = function(p) {
+    if (!p || !p.id) return;
+    state.projects = state.projects.map(x => x.id === p.id ? p : x);
+    // If we're editing this project from the form, refresh local form state
+    // so server-side mutations (e.g. SyncProjectToken auto-disabling fs_bash)
+    // are visible without dropping the user's other in-flight edits.
+    if (state.editingProjectId === p.id && state.projectForm) {
+        // Pull authoritative disabled_tools + token; leave free-text fields
+        // alone so we don't clobber what the user just typed.
+        state.projectForm.disabled_tools = JSON.parse(JSON.stringify(p.disabled_tools || {}));
+        state.projectForm.token = p.token || state.projectForm.token;
+    }
+    state.projectError = null;
+    if (state.page !== 'projects' || !state.editingProjectId) {
+        _projFormRendered = false;
+        render();
+    }
+};
+
+window.onProjectRemoved = function(id) {
+    state.projects = state.projects.filter(x => x.id !== id);
+    delete state.projectTokenVisible[id];
+    delete state.projectFreshToken[id];
+    delete state.projectSkillRegen[id];
+    if (state.editingProjectId === id) {
+        state.editingProjectId = null;
+        state.projectForm = null;
+    }
+    _projFormRendered = false;
+    render();
+};
+
+window.onProjectTokenRotated = function(id, plaintext) {
+    state.rotatingProjectId = null;
+    state.projectFreshToken[id] = plaintext;
+    // Update the project's inline token in our local copy so subsequent edits
+    // reflect the new value (the backend stores it inline too).
+    const p = state.projects.find(x => x.id === id);
+    if (p) p.token = plaintext;
+    if (state.projectForm && state.projectForm.id === id) {
+        state.projectForm.token = plaintext;
+        state.projectTokenVisible[id] = true; // reveal so the banner code is meaningful
+    }
+    _projFormRendered = false;
+    render();
+};
+
+window.onProjectSkillRegen = function(id, ok, message) {
+    state.projectSkillRegen[id] = { ok: !!ok, message: message || '', t: Date.now() };
+    _projFormRendered = false;
+    render();
+};
+
+window.onMcpToolsListed = function(mcpID, tools) {
+    state.mcpToolCache[mcpID] = tools || [];
+    if (state.page === 'projects' && state.editingProjectId) {
+        _projFormRendered = false;
+        render();
+    }
+};
+
+window.onProjectError = function(msg) {
+    state.projectError = msg;
+    state.projectFormError = msg;
+    _projFormRendered = false;
     render();
 };
 

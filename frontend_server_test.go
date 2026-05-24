@@ -29,11 +29,14 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 	}
 	enhanced := NewEnhancedServiceRegistry(nil)
 
+	extMgr := NewExternalMcpManager(nil)
 	srv, err := NewFrontendServer(
 		store,
-		NewExternalMcpManager(nil),
+		extMgr,
+		extMgr,
 		Endpoint{Socket: sock, Token: token},
 		enhanced,
+		nil,
 		nil,
 	)
 	if err != nil {

@@ -255,6 +255,74 @@ func (s *Settings) UpdateProjectPermissionPolicy(id string, policy *PermissionPo
 	proj.PermissionPolicy = policy
 }
 
+// RotateProjectToken generates fresh credentials for a project, replacing
+// both Token and TokenHash. Returns the new plaintext, or "" and false if
+// the project id is unknown.
+//
+// Rotation invalidates the old token at the very next AuthenticateProject
+// call: any Eve/relayLLM/CLI session still holding the old plaintext will
+// get an auth failure on its next request and must re-auth.
+//
+// Does not save; use within store.With.
+func (s *Settings) RotateProjectToken(id string) (string, bool) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return "", false
+	}
+	plaintext, hash := generateProjectToken()
+	proj.Token = plaintext
+	proj.TokenHash = hash
+	return plaintext, true
+}
+
+// UpdateProjectDisabledTools replaces the per-MCP disabled-tools slice for a
+// project. An empty (or nil) slice deletes the map key so the serialized form
+// stays minimal.
+//
+// Refuses MCPs that are not currently in the project's AllowedMcpIDs (and the
+// project is not wildcard) — disabling tools for an unallowed MCP would be a
+// no-op at runtime but a future allow-MCP change would silently inherit a
+// stale list. Returning early keeps the model honest.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectDisabledTools(id, mcpID string, disabled []string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+		return
+	}
+	if proj.DisabledTools == nil {
+		proj.DisabledTools = make(map[string][]string)
+	}
+	if len(disabled) == 0 {
+		delete(proj.DisabledTools, mcpID)
+		return
+	}
+	cleaned := make([]string, 0, len(disabled))
+	seen := make(map[string]bool, len(disabled))
+	for _, t := range disabled {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		cleaned = append(cleaned, t)
+	}
+	proj.DisabledTools[mcpID] = cleaned
+}
+
+// SetProjectGenerateSkill toggles the GenerateSkill flag. Extracted from the
+// HTTP route so the IPC path can reuse the same mutation without duplicating
+// the lookup. Does not save; use within store.With.
+func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.GenerateSkill = gen
+}
+
 // SyncProjectToken updates the project's disabled tools and context to match
 // its current allowedMcpIDs and path. Permissions are derived at auth time
 // from AllowedMcpIDs, so they're not stored.
