@@ -32,11 +32,17 @@ type FrontendServer struct {
 // skillLister supplies the live tool list used for out-of-band SKILL.md
 // regeneration on project mutations; pass nil to disable.
 //
+// tools enumerates the live MCP tool list for the project-picker UI; nil
+// makes the GET /api/mcps/{id}/tools endpoint return 503.
+//
+// onProjectsChanged fires after every successful project mutation so the
+// tray Settings webview can rebuild its state; nil suppresses fan-out.
+//
 // The dispatcher is the single handler for every route not claimed by
 // relay-internal endpoints (project routes). It reads from the enhanced-
 // services registry to pick a target service per request — no hardcoded
 // per-service handlers live here.
-func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister) (*FrontendServer, error) {
+func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools MCPToolsProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -45,7 +51,7 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, fronten
 	}
 
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, mcps, skillLister)
+	RegisterProjectRoutes(mux, store, mcps, tools, skillLister, onProjectsChanged)
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
 	// (project routes above) is resolved against the manifest registry and

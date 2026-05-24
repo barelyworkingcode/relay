@@ -26,6 +26,13 @@ func TestIPCDispatch_AllDeclaredMessageTypesHaveHandlers(t *testing.T) {
 		MsgStartService,
 		MsgStopService,
 		MsgServiceAction,
+		MsgCreateProject,
+		MsgUpdateProject,
+		MsgRemoveProject,
+		MsgRotateProjectToken,
+		MsgRegenProjectSkill,
+		MsgUpdateProjectDisabledTools,
+		MsgListMcpTools,
 	}
 	for _, m := range required {
 		if _, ok := ipcHandlers[m]; !ok {

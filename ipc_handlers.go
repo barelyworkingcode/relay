@@ -14,7 +14,7 @@ import (
 
 func (a *App) openSettingsWindow() {
 	s := a.store.Get()
-	html := renderSettingsHTML(s, a.registry.RunningIDs())
+	html := renderSettingsHTML(s, a.registry.RunningIDs(), a.buildToolCache(s))
 	a.platform.OpenSettings(html)
 	a.settingsOpen = true
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
@@ -72,7 +72,32 @@ func (a *App) pushFullSettings() {
 		"external_mcps": s.ExternalMcps,
 		"services":      s.Services,
 		"running_ids":   a.registry.RunningIDs(),
+		"projects":      s.Projects,
 	})
+}
+
+// buildToolCache snapshots the live per-MCP tool list for first-paint of
+// the Projects tab. Missing MCPs (not registered or not connected yet) are
+// represented as empty slices so the UI renders consistently — the picker
+// handles empties with an "authenticate this MCP first" hint.
+func (a *App) buildToolCache(s *Settings) map[string][]ToolInfo {
+	out := make(map[string][]ToolInfo, len(s.ExternalMcps))
+	for _, m := range s.ExternalMcps {
+		infos := a.extMgr.ToolInfos(m.ID)
+		if infos == nil {
+			infos = []ToolInfo{}
+		}
+		out[m.ID] = infos
+	}
+	return out
+}
+
+// pushFullProjects sends only the projects slice. Used as the
+// ProjectsChangedFn callback from the frontend HTTP server — when Eve, the
+// scheduler, or the CLI mutates a project the in-tray UI re-renders.
+// Cheaper than pushFullSettings when only projects changed.
+func (a *App) pushFullProjects() {
+	a.emitSettingsEvent("onProjectsReloaded", a.store.Get().Projects)
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +127,13 @@ type IPCContext struct {
 	GoFunc                  func(fn func()) // tracked goroutine launcher
 	NotifyReconcile         func(string) error
 	NotifyReloadMcp         func(id, secret string) error
+	// Tools is the live tool registry used by the Projects tab tri-state
+	// picker. nil means "no tool data available" — handlers degrade by
+	// emitting empty lists rather than panicking.
+	Tools                   MCPToolsProvider
+	// SkillLister is the same interface skills.go uses; threaded here so the
+	// Regen Now button can run without re-importing *appRouter.
+	SkillLister             SkillLister
 }
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends
@@ -201,6 +233,15 @@ const (
 	MsgUpdateServiceAutostart = "update_service_autostart"
 	MsgStartService           = "start_service"
 	MsgStopService            = "stop_service"
+
+	// Projects (ipc_projects.go)
+	MsgCreateProject              = "create_project"
+	MsgUpdateProject              = "update_project"
+	MsgRemoveProject              = "remove_project"
+	MsgRotateProjectToken         = "rotate_project_token"
+	MsgRegenProjectSkill          = "regen_project_skill"
+	MsgUpdateProjectDisabledTools = "update_project_disabled_tools"
+	MsgListMcpTools               = "list_mcp_tools"
 )
 
 // ---------------------------------------------------------------------------
@@ -224,6 +265,15 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 
 	// Service Inspector (ipc_service_action.go)
 	MsgServiceAction: ipcServiceAction,
+
+	// Projects (ipc_projects.go)
+	MsgCreateProject:              ipcCreateProject,
+	MsgUpdateProject:              ipcUpdateProject,
+	MsgRemoveProject:              ipcRemoveProject,
+	MsgRotateProjectToken:         ipcRotateProjectToken,
+	MsgRegenProjectSkill:          ipcRegenProjectSkill,
+	MsgUpdateProjectDisabledTools: ipcUpdateProjectDisabledTools,
+	MsgListMcpTools:               ipcListMcpTools,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

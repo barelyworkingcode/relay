@@ -51,6 +51,11 @@ ipc_service_action.go      Generic action dispatcher. UI sends {serviceId, actio
                            (whitelist), substitutes row keys into pathTemplate with
                            URL-escaping, and dispatches via the status client. Refuses
                            anything not declared in the manifest.
+ipc_projects.go            Projects-tab IPC handlers: create/update/remove project,
+                           rotate_project_token, regen_project_skill, update_project_
+                           disabled_tools, list_mcp_tools. Shares all Settings mutators
+                           with project_routes.go so HTTP (Eve) and IPC (tray UI) paths
+                           are interchangeable.
 frontend_server.go     Frontend HTTP server on the Unix socket. Project routes are
                        wired locally; everything else falls through to the dispatcher.
 frontend_dispatcher.go Manifest-driven HTTP + WS dispatcher (one handler for both).
@@ -94,7 +99,13 @@ The protocol is intentionally minimal — no `version`, no capability declaratio
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage` (macOS).
-Tabs: Services, MCP Servers, Projects.
+Tabs: Services, MCP Servers, Projects, Service Inspector.
+
+### Projects tab
+
+Native, co-equal with Eve's project dialog — both hit the same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via `project_routes.go`). The tri-state per-MCP picker exposes `DisabledTools`; the token panel surfaces rotate-now (via `RotateProjectToken`); the Skill section surfaces `GenerateSkill` plus a manual `EmitSkill` trigger. Cross-process changes propagate live: HTTP project mutations fire the `onProjectsChanged` callback (wired through `NewFrontendServer`) which calls `pushFullProjects()` so an open Settings window re-renders.
+
+See `docs/decisions/004-project-mgmt-in-relay.md`.
 
 ## Ecosystem
 
