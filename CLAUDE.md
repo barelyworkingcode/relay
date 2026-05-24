@@ -40,6 +40,17 @@ enhanced_services.go   In-memory registry of relay-enhanced services. Bridge han
                        writes on RegisterManifest; service_registry.Forget on exit;
                        front-door dispatcher reads via LookupByPath. Caches a per-
                        service *httputil.ReverseProxy with a pooling Transport.
+service_status_client.go   Generic per-service HTTP-over-Unix-socket client. Used by
+                           the Service Inspector for status polling + action dispatch.
+                           Holds zero service-specific knowledge.
+service_status_poller.go   Per-tick fan-out: polls every registered service's manifest-
+                           declared status endpoint, emits the batch (one snapshot per
+                           service) to the settings WebView via onServiceStatusBatch.
+ipc_service_action.go      Generic action dispatcher. UI sends {serviceId, actionId,
+                           row}; relay looks the action up in that service's manifest
+                           (whitelist), substitutes row keys into pathTemplate with
+                           URL-escaping, and dispatches via the status client. Refuses
+                           anything not declared in the manifest.
 frontend_server.go     Frontend HTTP server on the Unix socket. Project routes are
                        wired locally; everything else falls through to the dispatcher.
 frontend_dispatcher.go Manifest-driven HTTP + WS dispatcher (one handler for both).

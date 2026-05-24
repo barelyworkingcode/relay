@@ -17,6 +17,10 @@ func (a *App) openSettingsWindow() {
 	html := renderSettingsHTML(s, a.registry.RunningIDs())
 	a.platform.OpenSettings(html)
 	a.settingsOpen = true
+	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
+	// handles its own main-thread hop for the WebView emit; the HTTP polling
+	// stays off-main so it can't block the UI on a slow service.
+	a.goFunc(a.pushServiceStatusBatch)
 }
 
 func (a *App) onSettingsClose() {
@@ -87,15 +91,17 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
-	Ctx              context.Context
-	Store            SettingsStore
-	UI               SettingsUI
-	Platform         Platform
-	Registry         ServiceManager
-	UpdateMenu       func()
-	GoFunc           func(fn func()) // tracked goroutine launcher
-	NotifyReconcile  func(string) error
-	NotifyReloadMcp  func(id, secret string) error
+	Ctx                     context.Context
+	Store                   SettingsStore
+	UI                      SettingsUI
+	Platform                Platform
+	Registry                ServiceManager
+	Enhanced                *EnhancedServiceRegistry
+	UpdateMenu              func()
+	PushServiceStatusBatch  func() // re-poll and emit after an action lands
+	GoFunc                  func(fn func()) // tracked goroutine launcher
+	NotifyReconcile         func(string) error
+	NotifyReloadMcp         func(id, secret string) error
 }
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends
@@ -215,6 +221,9 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgUpdateServiceAutostart: ipcUpdateServiceAutostart,
 	MsgStartService:           ipcStartService,
 	MsgStopService:            ipcStopService,
+
+	// Service Inspector (ipc_service_action.go)
+	MsgServiceAction: ipcServiceAction,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

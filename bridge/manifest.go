@@ -42,6 +42,11 @@ type ActionDecl struct {
 	Label        string `json:"label"`
 	Method       string `json:"method"`
 	PathTemplate string `json:"pathTemplate"`
+	// ForEach names a top-level array key in the service's status response.
+	// When set, the UI renders one button per row in that array and
+	// substitutes the row's keys into PathTemplate's {placeholders}.
+	// Empty = single global button with no substitution.
+	ForEach string `json:"forEach,omitempty"`
 }
 
 // RegisterManifestRequest is the Arguments payload for a ReqRegisterManifest

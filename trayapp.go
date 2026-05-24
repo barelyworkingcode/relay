@@ -47,6 +47,13 @@ type App struct {
 	// rebuilds NSMenu via removeAllItems; suppressing no-op updates avoids
 	// redraw churn while the menu is open.
 	lastMenuJSON string
+
+	// lastStatusBatchDigest fingerprints the most recently emitted service-
+	// status batch (FetchedAt zeroed). Identical batches across ticks are
+	// suppressed so the inspector's WebView doesn't re-render every 2s for
+	// no reason. Pointer so atomic.CompareAndSwap on a content-derived value
+	// is straightforward.
+	lastStatusBatchDigest atomic.Pointer[[32]byte]
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -121,23 +128,26 @@ func runTrayApp() {
 			app.pushServiceStatus()
 		})
 	}
-	app.ipcCtx = &IPCContext{
-		Ctx:             ctx,
-		Store:           store,
-		UI:              app,
-		Platform:        platform,
-		Registry:        app.registry,
-		UpdateMenu:      app.updateMenu,
-		GoFunc:          app.goFunc,
-		NotifyReconcile: bridge.SendReconcile,
-		NotifyReloadMcp: bridge.SendReloadMcp,
-	}
 	appInstance = app
 
 	// Enhanced-services registry: bridge handler writes on RegisterManifest;
 	// service_registry calls Forget on exit; the front-door dispatcher reads.
 	enhancedRegistry := NewEnhancedServiceRegistry(nil)
 	registry.Enhanced = enhancedRegistry
+
+	app.ipcCtx = &IPCContext{
+		Ctx:                    ctx,
+		Store:                  store,
+		UI:                     app,
+		Platform:               platform,
+		Registry:               app.registry,
+		Enhanced:               enhancedRegistry,
+		UpdateMenu:             app.updateMenu,
+		PushServiceStatusBatch: app.pushServiceStatusBatch,
+		GoFunc:                 app.goFunc,
+		NotifyReconcile:        bridge.SendReconcile,
+		NotifyReloadMcp:        bridge.SendReloadMcp,
+	}
 
 	// Create and start bridge server.
 	router := &appRouter{
@@ -295,6 +305,9 @@ func (a *App) statusPoller() {
 			a.updateMenuWithSettings(cur)
 			a.pushServiceStatus()
 		})
+		// Service status polling makes HTTP calls per service — must stay
+		// off-main. pushServiceStatusBatch hops to main itself for the emit.
+		a.pushServiceStatusBatch()
 	}
 }
 

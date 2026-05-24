@@ -33,20 +33,32 @@ type EnhancedService struct {
 	proxy          *httputil.ReverseProxy
 }
 
-// dispatcherTargetURL is a placeholder URL parsed once; the actual address
-// is set by the DialContext in newServiceProxy below.
-var dispatcherTargetURL, _ = url.Parse("http://internal.relay.localsocket")
+// internalUnixHostURL is the placeholder host portion used for all
+// service-internal HTTP requests. DialContext ignores the host (we always
+// dial a Unix socket), but net/url and net/http both need *something*
+// parseable. Shared so reverse proxies and the per-service status client
+// agree on the canonical placeholder.
+const internalUnixHostURL = "http://internal.relay.localsocket"
+
+var dispatcherTargetURL, _ = url.Parse(internalUnixHostURL)
+
+// newUnixHTTPTransport returns an http.Transport whose DialContext is
+// pinned to one Unix socket. Used by both the reverse proxy (one per
+// enhanced service) and the status client (one per service-status call).
+func newUnixHTTPTransport(socket string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		},
+	}
+}
 
 // newServiceProxy builds the reverse proxy used to forward HTTP requests
 // to this service. Strips inbound Authorization (the frontend's token,
 // already validated) and injects the service-declared internal token.
 func newServiceProxy(serviceID, internalSocket, internalToken string) *httputil.ReverseProxy {
 	rp := httputil.NewSingleHostReverseProxy(dispatcherTargetURL)
-	rp.Transport = &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", internalSocket)
-		},
-	}
+	rp.Transport = newUnixHTTPTransport(internalSocket)
 	rp.FlushInterval = -1
 	originalDirector := rp.Director
 	rp.Director = func(req *http.Request) {

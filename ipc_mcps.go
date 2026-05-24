@@ -9,12 +9,20 @@ import (
 // External MCP IPC handlers
 // ---------------------------------------------------------------------------
 
-// dispatchError emits a named error event to the settings UI on the main thread.
-// Use from background goroutines where DispatchToMain is required.
-func dispatchError(ctx *IPCContext, event string, args ...interface{}) {
+// dispatchEmit emits a named event to the settings UI on the main thread.
+// Use from background goroutines: WKWebView's evaluateJavaScript must run
+// on the main thread or it crashes the process.
+func dispatchEmit(ctx *IPCContext, event string, args ...interface{}) {
 	ctx.Platform.DispatchToMain(func() {
 		ctx.UI.EmitEvent(event, args...)
 	})
+}
+
+// dispatchError is preserved as a synonym for legacy ipc_mcps callers.
+// Prefer dispatchEmit at new call sites; the events emitted are not
+// always errors.
+func dispatchError(ctx *IPCContext, event string, args ...interface{}) {
+	dispatchEmit(ctx, event, args...)
 }
 
 func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {

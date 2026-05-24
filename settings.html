@@ -168,11 +168,29 @@ textarea:focus { outline: none; border-color: #0078d4; }
     opacity: 0.4;
     cursor: default;
 }
+.svc-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
+.svc-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.svc-card-title { font-weight: 500; font-size: 13px; color: #e0e0e0; }
+.svc-badge { display: inline-block; padding: 1px 6px; font-size: 10px; border-radius: 3px; margin-left: 6px; }
+.svc-badge.ok { color: #22c55e; border: 1px solid #22c55e; }
+.svc-badge.offline { color: #888; border: 1px solid #555; }
+.svc-badge.err { color: #e55; border: 1px solid #e55; }
+.svc-stats { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 12px; color: #ccc; font-size: 13px; }
+.svc-stat-label { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.svc-stat-value { font-size: 16px; font-weight: 500; color: #fff; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.svc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.svc-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 500; border-bottom: 1px solid #2a2a2a; }
+.svc-table td { padding: 6px 8px; border-bottom: 1px solid #232323; color: #ccc; font-variant-numeric: tabular-nums; }
+.svc-table tr.pending td { opacity: 0.4; }
+.svc-actions { display: flex; gap: 4px; }
+.svc-err { color: #e55; font-size: 12px; margin-top: 8px; }
+.svc-empty { color: #666; font-size: 12px; padding: 8px 0; }
 </style></head>
 <body>
 <div class="sidebar">
     <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
+    <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
 </div>
 <div class="content" id="content"></div>
 
@@ -198,11 +216,17 @@ let state = {
     services: SERVICES_INIT,
     runningServices: RUNNING_IDS_INIT.reduce(function(m, id) { m[id] = true; return m; }, {}),
     editingServiceId: null,
+    // Service Inspector state. Each snapshot in serviceStatuses carries
+    // its own manifest, so we derive button layouts from the snapshot —
+    // no separate manifest map to keep in sync.
+    serviceStatuses: {},      // serviceId -> ServiceStatusSnapshot
+    serviceActionPending: {}, // key "svc|action|rowKey" -> true while in flight
+    serviceActionError: {},   // serviceId -> last error string (cleared on next ok)
 };
 
 function showPage(page) {
     state.page = page;
-    const pages = ['services', 'mcps'];
+    const pages = ['services', 'mcps', 'inspector'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
@@ -218,6 +242,8 @@ function render() {
         if (state.editingServiceId && _svcFormRendered) return;
         _svcFormRendered = !!state.editingServiceId;
         el.innerHTML = renderServices();
+    } else if (state.page === 'inspector') {
+        el.innerHTML = renderServiceInspector();
     } else {
         el.innerHTML = renderMcpServers();
         const ta = document.getElementById('mcpJson');
@@ -703,6 +729,244 @@ window.onSettingsReloaded = function(data) {
     state.services = data.services;
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     render();
+};
+
+// Service Inspector — generic renderer driven by each service's manifest
+// (carried inside its status snapshot) plus the snapshot itself.
+
+function renderServiceInspector() {
+    let html = '<h2>Service Inspector</h2>';
+    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Live status and actions for every relay-enhanced service. Panels are rendered generically from each service\'s declared manifest.</p>';
+
+    const ids = Object.keys(state.serviceStatuses).sort();
+    if (ids.length === 0) {
+        html += '<div class="empty-state">No relay-enhanced services are currently registered. Start one (e.g. relayLLM) to see its status here.</div>';
+        return html;
+    }
+    for (const id of ids) {
+        html += renderServicePanel(id);
+    }
+    return html;
+}
+
+function serviceBadgeHTML(snap, manifest) {
+    if (snap && snap.ok)  return '<span class="svc-badge ok">ok</span>';
+    if (snap && !snap.ok) return '<span class="svc-badge err">error</span>';
+    if (!manifest.status) return '<span class="svc-badge offline">no status declared</span>';
+    return '<span class="svc-badge offline">offline</span>';
+}
+
+function renderServicePanel(serviceId) {
+    const snap = state.serviceStatuses[serviceId];
+    const manifest = (snap && snap.manifest) || {};
+    const actions = manifest.actions || [];
+
+    let html = '<div class="svc-card">';
+    html += `<div class="svc-card-header"><div><span class="svc-card-title">${esc(serviceId)}</span>${serviceBadgeHTML(snap, manifest)}</div><div></div></div>`;
+
+    if (snap && !snap.ok) {
+        html += `<div class="svc-err">${esc(snap.error || 'fetch failed')}</div>`;
+    }
+
+    const status = snap && snap.ok ? snap.status : null;
+    if (status && typeof status === 'object') {
+        html += renderStatusPayload(serviceId, status, actions);
+    } else if (manifest.status) {
+        html += '<div class="svc-empty">Waiting for first status snapshot…</div>';
+    }
+
+    const globalActions = actions.filter(a => !a.forEach);
+    if (globalActions.length > 0) {
+        html += '<div class="svc-actions" style="margin-top:10px">';
+        for (const action of globalActions) {
+            html += renderActionButton(serviceId, action, null);
+        }
+        html += '</div>';
+    }
+
+    const err = state.serviceActionError[serviceId];
+    if (err) {
+        html += `<div class="svc-err">${esc(err)}</div>`;
+    }
+
+    html += '</div>';
+    return html;
+}
+
+// renderStatusPayload walks a free-form JSON object and emits a key/value
+// list for scalars + a table for any top-level array. forEach actions
+// attach one button per row to the table whose key matches the action's
+// `forEach` field.
+function renderStatusPayload(serviceId, payload, actions) {
+    let html = '';
+    const scalarKeys = [];
+    const arrayKeys = [];
+    for (const k of Object.keys(payload)) {
+        const v = payload[k];
+        if (Array.isArray(v)) {
+            arrayKeys.push(k);
+        } else if (v !== null && typeof v !== 'object') {
+            scalarKeys.push(k);
+        }
+    }
+
+    if (scalarKeys.length > 0) {
+        html += '<div class="svc-stats">';
+        for (const k of scalarKeys) {
+            html += `<div><div class="svc-stat-label">${esc(k)}</div><div class="svc-stat-value">${esc(formatScalar(payload[k]))}</div></div>`;
+        }
+        html += '</div>';
+    }
+
+    for (const k of arrayKeys) {
+        html += renderArrayBlock(serviceId, k, payload[k], actions);
+    }
+    return html;
+}
+
+function renderArrayBlock(serviceId, arrayKey, rows, actions) {
+    let html = `<div style="margin-top:12px"><div class="svc-stat-label" style="margin-bottom:4px">${esc(arrayKey)}</div>`;
+    if (!rows || rows.length === 0) {
+        html += '<div class="svc-empty">empty</div></div>';
+        return html;
+    }
+
+    // Discover columns from the union of row keys, with a stable order
+    // (insertion order of the first row, then any extras at the end).
+    const columns = [];
+    const seen = {};
+    for (const row of rows) {
+        if (row && typeof row === 'object') {
+            for (const k of Object.keys(row)) {
+                if (!seen[k]) { seen[k] = true; columns.push(k); }
+            }
+        }
+    }
+
+    const rowActions = actions.filter(a => a.forEach === arrayKey);
+
+    html += '<table class="svc-table"><thead><tr>';
+    for (const col of columns) {
+        html += `<th>${esc(col)}</th>`;
+    }
+    if (rowActions.length > 0) {
+        html += '<th style="width:1%">actions</th>';
+    }
+    html += '</tr></thead><tbody>';
+
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || {};
+        const rowKey = JSON.stringify(row);
+        const pendingClass = isAnyActionPending(serviceId, rowActions, rowKey) ? ' class="pending"' : '';
+        html += `<tr${pendingClass}>`;
+        for (const col of columns) {
+            html += `<td>${esc(formatScalar(row[col]))}</td>`;
+        }
+        if (rowActions.length > 0) {
+            html += '<td><div class="svc-actions">';
+            for (const action of rowActions) {
+                html += renderActionButton(serviceId, action, row);
+            }
+            html += '</div></td>';
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
+}
+
+// Buttons carry their dispatch payload as data-* attributes; a single
+// delegated click listener (installed once on document) reads them. This
+// keeps re-renders free of per-button handler wiring.
+function renderActionButton(serviceId, action, row) {
+    const rowJson = row ? JSON.stringify(row) : '';
+    const pending = !!state.serviceActionPending[serviceId + '|' + action.id + '|' + rowJson];
+    const danger = String(action.method || '').toUpperCase() === 'DELETE';
+    const cls = 'btn btn-sm' + (danger ? ' btn-danger' : '');
+    const label = pending ? '<span class="spinner"></span>' + esc(action.label) : esc(action.label);
+    return `<button class="${cls} svc-action-btn"`
+        + ` data-svc="${esc(serviceId)}"`
+        + ` data-action="${esc(action.id)}"`
+        + ` data-row="${esc(rowJson)}"`
+        + (pending ? ' disabled' : '')
+        + `>${label}</button>`;
+}
+
+document.addEventListener('click', function(e) {
+    const btn = e.target.closest && e.target.closest('.svc-action-btn');
+    if (!btn || btn.disabled) return;
+    const row = btn.dataset.row ? JSON.parse(btn.dataset.row) : null;
+    dispatchServiceAction(btn.dataset.svc, btn.dataset.action, row);
+});
+
+function isAnyActionPending(serviceId, actions, rowKey) {
+    for (const a of actions) {
+        if (state.serviceActionPending[serviceId + '|' + a.id + '|' + rowKey]) return true;
+    }
+    return false;
+}
+
+function dispatchServiceAction(serviceId, actionId, row) {
+    const rowKey = row ? JSON.stringify(row) : '';
+    state.serviceActionPending[serviceId + '|' + actionId + '|' + rowKey] = true;
+    if (state.page === 'inspector') render();
+    ipc(JSON.stringify({
+        type: 'service_action',
+        serviceId: serviceId,
+        actionId: actionId,
+        row: row || undefined,
+    }));
+}
+
+// Loose ISO 8601 detector — matches what Go's time.Format(time.RFC3339)
+// emits ("2026-05-24T03:14:01Z" or with offset). Restrictive enough that
+// an alias like "foo-bar" or a port like "8090" won't accidentally match.
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
+
+function formatScalar(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'boolean') return v ? 'true' : 'false';
+    if (typeof v === 'string' && ISO_8601_RE.test(v)) return formatRelativeTime(v);
+    return String(v);
+}
+
+// Render an RFC3339 timestamp as "5m ago" / "2h 14m ago" / "3d ago" so
+// humans can read it. Falls back to the raw string on parse failure.
+function formatRelativeTime(iso) {
+    const t = Date.parse(iso);
+    if (isNaN(t)) return iso;
+    let delta = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (delta < 5) return 'just now';
+    if (delta < 60) return delta + 's ago';
+    const m = Math.floor(delta / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    if (h < 24) return remM > 0 ? h + 'h ' + remM + 'm ago' : h + 'h ago';
+    const d = Math.floor(h / 24);
+    const remH = h % 24;
+    return remH > 0 ? d + 'd ' + remH + 'h ago' : d + 'd ago';
+}
+
+window.onServiceStatusBatch = function(batch) {
+    const next = {};
+    for (const snap of (batch || [])) {
+        next[snap.serviceId] = snap;
+    }
+    state.serviceStatuses = next;
+    if (state.page === 'inspector') render();
+};
+
+window.onServiceActionResult = function(result) {
+    if (!result) return;
+    const rowKey = result.row ? JSON.stringify(result.row) : '';
+    delete state.serviceActionPending[result.serviceId + '|' + result.actionId + '|' + rowKey];
+    if (result.ok) {
+        delete state.serviceActionError[result.serviceId];
+    } else {
+        state.serviceActionError[result.serviceId] = result.error || 'action failed';
+    }
+    if (state.page === 'inspector') render();
 };
 
 render();
