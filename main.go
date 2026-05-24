@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
+	"relaygo/bridge"
 	"relaygo/mcp"
 )
 
@@ -18,24 +20,56 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
-	if len(os.Args) < 2 {
+	// --config-dir is a global flag that may precede any subcommand. It
+	// reroutes settings, pidfiles, logs, and the bridge socket to the given
+	// directory — enables multi-instance use, the demo harness
+	// (scripts/demo.sh), and as a graceful production surface for the same
+	// override the test suite uses. See bridge.SetConfigDir.
+	args := os.Args[1:]
+	args = applyConfigDirFlag(args)
+
+	if len(args) == 0 {
 		runTrayApp()
 		return
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "service":
-		runServiceCommand(os.Args[2:])
+		runServiceCommand(args[1:])
 	case "mcp":
-		runMcpOrServer(os.Args[2:])
+		runMcpOrServer(args[1:])
 	case "mcpExec":
-		runMcpExec(os.Args[2:])
+		runMcpExec(args[1:])
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [service|mcp|mcpExec]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec]\n", args[0])
 		os.Exit(1)
 	}
+}
+
+// applyConfigDirFlag consumes a leading --config-dir <path> (or --config-dir=<path>)
+// argument if present, calls bridge.SetConfigDir, and returns the remaining
+// args. Kept pre-flag.Parse because each subcommand uses its own flag.FlagSet
+// and we need the override applied before any subcommand initializes anything
+// that reads ConfigDir.
+func applyConfigDirFlag(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	const eqPrefix = "--config-dir="
+	switch {
+	case args[0] == "--config-dir":
+		if len(args) < 2 {
+			exitError("--config-dir requires a path argument")
+		}
+		bridge.SetConfigDir(args[1])
+		return args[2:]
+	case strings.HasPrefix(args[0], eqPrefix):
+		bridge.SetConfigDir(args[0][len(eqPrefix):])
+		return args[1:]
+	}
+	return args
 }
 
 // runMcpOrServer dispatches to MCP management subcommands or runs the stdio

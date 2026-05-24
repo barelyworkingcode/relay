@@ -113,7 +113,58 @@ MCP Servers (managed via `relay mcp register`):
 ## Build
 
 ```bash
-./build.sh   # builds relay -> /Applications/Relay.app
+./build.sh              # default: builds + installs to /Applications/Relay.app and launches it
+./build.sh --test       # runs the hermetic test suite first; aborts install if anything fails
+./build.sh --release    # signs + notarizes + emits /tmp/Relay.dmg (Developer ID required)
 ```
 
+`--test` and `--release` may be combined; `--release` implies `--test`.
+
 Requires: Go 1.22+, macOS.
+
+## Testing
+
+**Headline rule:** No test may read or mutate the real user config directory (`~/Library/Application Support/relay/`). Tests must always route through `mkSandboxRelayHome(t)` (defined in `support_test.go`), which redirects `bridge.ConfigDir()` to a per-test `t.TempDir()` populated from `test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite if anything in the real ConfigDir is modified during a test run.
+
+### Three tiers
+
+| Command | What runs | When |
+|---|---|---|
+| `go test ./...` | Hermetic suite — pure Go, no spawned binaries, no user files | Every commit (pre-commit hook) |
+| `go test -tags=live ./...` | Spawns the real `../relayLLM` binary and exercises end-to-end | Manually after relay↔relayLLM boundary changes |
+| `go test -race ./...` | Hermetic suite + race detector | Weekly, or before merging concurrency changes |
+
+### Install the pre-commit hook (one-time per clone)
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs `go build ./... && go vet ./... && go test ./...` on any commit that touches `*.go`, `go.mod`, or `go.sum`. Skip with `git commit --no-verify` in emergencies only.
+
+### Adding a test
+
+1. Decide the tier (see ADR-001 — `docs/decisions/001-testing-strategy.md`). 95% of tests belong in the default hermetic tier.
+2. If your test reads or writes settings, pidfiles, logs, or the bridge socket: call `mkSandboxRelayHome(t)` first.
+3. If your test needs a working router + bridge + frontend: call `newTestRouter(t)`.
+4. If your test exercises a service that registers a manifest: use `FakeService(t, manifest)` (or `FakeRelayLLMService(t)` for the relayLLM contract).
+5. If your test needs a real spawned subprocess: use the `cmd/testservice` binary (built automatically by `TestMain`), never an `exec.Command` mock.
+6. Live-tier tests get `//go:build live` and `t.Skip` gracefully if `../relayLLM` isn't built.
+
+### Demo & screenshot harness
+
+`scripts/demo.sh` launches relay against a writable copy of `test/fixtures/relay-home/` in `/tmp`, so screenshots and screencasts are reproducible and never expose real data. See the script's `--help` for `--reset` and `--scenario <name>` options. The same fixture tree backs both the test suite and the demo harness — see ADR-003 for content rules (no PII, no real tokens, no machine paths).
+
+### What's NOT tested
+
+- Cocoa tray UI (`platform_darwin.go`, menu rendering, dock interactions) — exercise via `scripts/demo.sh`.
+- Real `launchd` integration — services spawned by `service_registry` are tested with the in-tree `cmd/testservice` binary instead.
+- OAuth 2.1 callbacks against real providers — the `oauth_test.go` suite covers PKCE/dynamic registration in isolation; live OAuth round-trips are manual.
+- Notarization / code-signing — exercised by `./build.sh --release`, not in the test suite.
+
+### Reference docs
+
+- `docs/decisions/001-testing-strategy.md` — three-tier model, sandbox rule
+- `docs/decisions/002-test-seams.md` — which production seams exist and why
+- `docs/decisions/003-fixture-layout.md` — fixture tree, content rules
+- `docs/testing-roadmap.md` — next services to bring up to this standard (eve, fsMCP, macMCP)

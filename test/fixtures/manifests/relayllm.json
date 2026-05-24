@@ -1,0 +1,35 @@
+{
+  "_comment": "Cross-repo contract: the manifest relayLLM registers with relay. The hermetic FakeRelayLLMService loads this; the live-tier test (-tags=live) asserts the real binary still registers this set. relayLLM is expected to add a matching contract test that asserts its actual generated manifest equals this file. Update both sides in lockstep.",
+  "routes": [
+    "/api/sessions",
+    "/api/sessions/",
+    "/api/terminals",
+    "/api/terminals/",
+    "/api/terminal/",
+    "/api/models",
+    "/api/permission",
+    "/api/llama/",
+    "/api/status",
+    "/api/generated/",
+    "/ws"
+  ],
+  "status": {
+    "path": "/api/status"
+  },
+  "actions": [
+    {
+      "id": "endSession",
+      "label": "End",
+      "method": "DELETE",
+      "pathTemplate": "/api/sessions/{id}",
+      "forEach": "sessions"
+    },
+    {
+      "id": "killTerminal",
+      "label": "Kill",
+      "method": "DELETE",
+      "pathTemplate": "/api/terminals/{id}",
+      "forEach": "terminals"
+    }
+  ]
+}
