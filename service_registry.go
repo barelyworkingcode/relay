@@ -109,8 +109,8 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		relayBin, _ = filepath.EvalSymlinks(relayBin)
 
 		mergeEnv(cmd, map[string]string{
-			"RELAY_MCP_TOKEN":   rawToken,
-			"RELAY_MCP_COMMAND": relayBin,
+			EnvMcpToken:   rawToken,
+			EnvMcpCommand: relayBin,
 		})
 	}
 

@@ -44,6 +44,20 @@ const (
 	RegenSkillsNever        = "never"
 )
 
+// Env vars relay injects into every spawned service. The full set is the
+// service-spawn ABI: anything a service-side process needs to dial relay
+// or identify itself. Lives in bridge so test binaries (cmd/testservice)
+// and cross-repo consumers can import the names without depending on the
+// relay main package.
+const (
+	EnvFrontendSocket = "RELAY_FRONTEND_SOCKET"
+	EnvFrontendToken  = "RELAY_FRONTEND_TOKEN"
+	EnvBridgeSocket   = "RELAY_BRIDGE_SOCKET"
+	EnvServiceID      = "RELAY_SERVICE_ID"
+	EnvMcpToken       = "RELAY_MCP_TOKEN"
+	EnvMcpCommand     = "RELAY_MCP_COMMAND"
+)
+
 // PtyEnvRequest is the payload for ReqResolvePtyEnv requests, carried in
 // BridgeRequest.Arguments as JSON. Service-token caller required.
 //
@@ -116,8 +130,30 @@ func NewScanner(r io.Reader) *bufio.Scanner {
 	return s
 }
 
-// ConfigDir returns the platform config directory for relay.
+// configDirOverride is set by SetConfigDirForTest or the --config-dir CLI flag
+// (see main.go). When non-empty it bypasses os.UserConfigDir, ensuring tests
+// and multi-instance runs cannot accidentally touch the user's real config.
+//
+// Reads are unsynchronized: callers set the override during init/test setup
+// before any concurrent ConfigDir() calls.
+var configDirOverride string
+
+// SetConfigDirForTest redirects ConfigDir() to dir. Test-only seam — the
+// production CLI flag (--config-dir) sets the same variable through
+// SetConfigDir below. Call SetConfigDirForTest("") in t.Cleanup to restore.
+func SetConfigDirForTest(dir string) { configDirOverride = dir }
+
+// SetConfigDir is the production entrypoint for the --config-dir flag.
+// Identical to SetConfigDirForTest but named for non-test callsites so
+// grep'ing for the test seam stays clean.
+func SetConfigDir(dir string) { configDirOverride = dir }
+
+// ConfigDir returns the platform config directory for relay. Honors any
+// override set via SetConfigDir / SetConfigDirForTest.
 func ConfigDir() string {
+	if configDirOverride != "" {
+		return configDirOverride
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir, _ = os.UserHomeDir()

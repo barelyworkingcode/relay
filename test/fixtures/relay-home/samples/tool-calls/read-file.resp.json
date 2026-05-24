@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "package main\n\nimport (\n\t\"log/slog\"\n\t\"net/http\"\n\t\"os\"\n)\n\nfunc main() {\n\taddr := os.Getenv(\"ADDR\")\n\tif addr == \"\" {\n\t\taddr = \":8080\"\n\t}\n\t// ...\n}\n"
+      }
+    ],
+    "isError": false
+  }
+}

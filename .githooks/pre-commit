@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Pre-commit hook: gate every commit on the hermetic test suite.
+#
+# Install once per clone:
+#   git config core.hooksPath .githooks
+#
+# Skip on emergency:
+#   git commit --no-verify
+#
+# What runs:
+#   1. go build ./...        — fail fast on compile errors
+#   2. go vet ./...          — cheap static checks
+#   3. go test ./...         — hermetic suite (no external deps, no user files)
+#
+# What does NOT run:
+#   - -tags=live  (needs ../relayLLM binary; spawned subprocesses)
+#   - go test -race (slower; run via `make race` or .githooks/pre-push)
+
+set -e
+
+# Only run if any Go file is staged. Lets non-Go commits (docs, fixtures) skip.
+if ! git diff --cached --name-only | grep -qE '\.(go|mod|sum)$'; then
+    exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+start=$(date +%s)
+
+echo "→ go build ./..."
+if ! go build ./...; then
+    echo "✗ build failed; commit aborted"
+    exit 1
+fi
+
+echo "→ go vet ./..."
+if ! go vet ./...; then
+    echo "✗ vet failed; commit aborted"
+    exit 1
+fi
+
+echo "→ go test ./..."
+if ! go test ./...; then
+    echo "✗ tests failed; commit aborted"
+    echo "  (rerun with: go test -v ./...)"
+    exit 1
+fi
+
+elapsed=$(($(date +%s) - start))
+echo "✓ pre-commit checks passed in ${elapsed}s"

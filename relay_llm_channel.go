@@ -26,12 +26,16 @@ type FrontendChannel struct {
 	ready    bool
 }
 
-// Env vars injected into every spawned service.
+// Env vars injected into every spawned service. Re-exported aliases of
+// the canonical names declared in the bridge package so existing call
+// sites keep their import paths stable.
 const (
-	EnvFrontendSocket = "RELAY_FRONTEND_SOCKET"
-	EnvFrontendToken  = "RELAY_FRONTEND_TOKEN"
-	EnvBridgeSocket   = "RELAY_BRIDGE_SOCKET"
-	EnvServiceID      = "RELAY_SERVICE_ID"
+	EnvFrontendSocket = bridge.EnvFrontendSocket
+	EnvFrontendToken  = bridge.EnvFrontendToken
+	EnvBridgeSocket   = bridge.EnvBridgeSocket
+	EnvServiceID      = bridge.EnvServiceID
+	EnvMcpToken       = bridge.EnvMcpToken
+	EnvMcpCommand     = bridge.EnvMcpCommand
 )
 
 // NewFrontendChannel returns a fresh, unprovisioned channel.
