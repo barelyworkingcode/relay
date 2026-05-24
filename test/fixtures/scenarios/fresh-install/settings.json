@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "admin_secret": "test-admin-secret-fresh-install-00",
+  "external_mcps": [],
+  "services": [],
+  "projects": []
+}
