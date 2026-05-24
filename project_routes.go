@@ -15,6 +15,17 @@ type ContextSchemasProvider interface {
 	AllContextSchemas() map[string]json.RawMessage
 }
 
+// MCPToolsProvider supplies the live tool list for a registered MCP. The
+// project picker UI needs this to render the per-tool selector. Implemented
+// by *ExternalMcpManager; nil-safe in route handlers.
+type MCPToolsProvider interface {
+	ToolInfos(id string) []ToolInfo
+}
+
+// ProjectsChangedFn is fired after any successful project mutation so the
+// tray UI can refresh. nil = no fan-out.
+type ProjectsChangedFn func()
+
 // projectSkillDir is the on-disk directory (under Project.Path) where
 // relay-managed skills live. Claude Code auto-discovers from .claude/skills/;
 // Pi.Dev gets pointed at this directory via --skill in its PTY template.
@@ -54,7 +65,18 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // skillLister resolves the live tool set for a project token; supplying nil
 // disables out-of-band skill regen.
-func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps ContextSchemasProvider, skillLister SkillLister) {
+//
+// tools enumerates the live MCP tool list for the project-picker UI; nil
+// makes the GET /api/mcps/{id}/tools route return 503.
+//
+// onChange fires after any successful create/update/delete/rotate so the
+// tray-window state can re-render. nil = no fan-out (tests use this).
+func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps ContextSchemasProvider, tools MCPToolsProvider, skillLister SkillLister, onChange ProjectsChangedFn) {
+	notify := func() {
+		if onChange != nil {
+			onChange()
+		}
+	}
 	mux.HandleFunc("GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects := store.Get().Projects
 		if projects == nil {
@@ -125,6 +147,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, created)
 		}
+		notify()
 		writeJSON(w, http.StatusCreated, created)
 	})
 
@@ -208,6 +231,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, updated)
 		}
+		notify()
 		writeJSON(w, http.StatusOK, updated)
 	})
 
@@ -236,6 +260,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 				slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
 			}
 		}
+		notify()
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -251,6 +276,71 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			})
 		}
 		writeJSON(w, http.StatusOK, out)
+	})
+
+	// POST /api/projects/{id}/rotate_token — rotate the project's bearer
+	// credential. Returns the new plaintext exactly once; clients must capture
+	// it. Old token stops authenticating on the next request.
+	mux.HandleFunc("POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var newPlaintext string
+		var ok bool
+		if err := store.With(func(s *Settings) {
+			newPlaintext, ok = s.RotateProjectToken(id)
+		}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+			return
+		}
+		notify()
+		writeJSON(w, http.StatusOK, map[string]string{"token": newPlaintext})
+	})
+
+	// POST /api/projects/{id}/regen_skill — force a SKILL.md regen for one
+	// project regardless of GenerateSkill (the toggle gates *automatic* regen;
+	// this is the explicit "do it now" button).
+	mux.HandleFunc("POST /api/projects/{id}/regen_skill", func(w http.ResponseWriter, r *http.Request) {
+		if skillLister == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill regeneration not available in this mode"})
+			return
+		}
+		id := r.PathValue("id")
+		proj, _ := store.Get().findProjectByID(id)
+		if proj == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+			return
+		}
+		dir := projectSkillDir(*proj)
+		if dir == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project has no path"})
+			return
+		}
+		path, err := EmitSkill(r.Context(), skillLister, *proj, dir, RegenAlways)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"path": path})
+	})
+
+	// GET /api/mcps/{id}/tools — live tool list for the project picker.
+	// 503 when no provider is wired (test contexts) or 404 when MCP is unknown
+	// / not connected yet.
+	mux.HandleFunc("GET /api/mcps/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
+		if tools == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool list not available"})
+			return
+		}
+		infos := tools.ToolInfos(r.PathValue("id"))
+		if infos == nil {
+			// Distinguish unknown from empty-but-connected for the UI hint.
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP not registered or not connected"})
+			return
+		}
+		writeJSON(w, http.StatusOK, infos)
 	})
 }
 
