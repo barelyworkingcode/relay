@@ -26,6 +26,12 @@ type Manifest struct {
 	// Actions are user-triggerable RPCs that surface as buttons in the
 	// settings UI. Optional.
 	Actions []ActionDecl `json:"actions,omitempty"`
+
+	// Resources are typed record collections the service exposes for CRUD
+	// management in the Service Inspector. Each ResourceDecl declares the
+	// REST endpoints (list/create/update/delete) and a field schema; the
+	// Inspector renders a generic table + form. Optional.
+	Resources []ResourceDecl `json:"resources,omitempty"`
 }
 
 // StatusDecl is the read-only status endpoint relay polls for the service.
@@ -48,6 +54,68 @@ type ActionDecl struct {
 	// Empty = single global button with no substitution.
 	ForEach string `json:"forEach,omitempty"`
 }
+
+// ResourceDecl declares a typed collection the service manages. The Service
+// Inspector renders one collapsible section per resource: a table of List()
+// results plus optional Add/Edit forms generated from Fields. The Update and
+// Delete endpoints' PathTemplate is substituted with the row's {id} (always
+// the literal "id" field of each record).
+//
+// V1 deliberately omits search/pagination, server-defined options/enums, and
+// nested objects. The minimal contract a service must satisfy:
+//   - List returns a JSON array of objects.
+//   - Create accepts an object body, returns the created object.
+//   - Update accepts a partial object body, returns the updated object.
+//   - Delete returns any 2xx on success.
+type ResourceDecl struct {
+	ID    string `json:"id"`              // stable identifier (e.g. "pty_templates")
+	Label string `json:"label"`           // UI header (e.g. "Terminal Templates")
+	Help  string `json:"help,omitempty"`  // optional one-line description shown under the header
+
+	List   EndpointDecl  `json:"list"`
+	Create *EndpointDecl `json:"create,omitempty"`
+	Update *EndpointDecl `json:"update,omitempty"` // pathTemplate must contain {id}
+	Delete *EndpointDecl `json:"delete,omitempty"` // pathTemplate must contain {id}
+
+	// Fields drives both the table columns and the form layout. Each field's
+	// ID is the JSON key inside a record. The order here is the display order.
+	Fields []FieldDecl `json:"fields"`
+
+	// ProtectedField, if set, names a boolean field on each record. Rows where
+	// that field is true have Edit/Delete buttons suppressed in the UI. The
+	// service is responsible for rejecting protected mutations server-side
+	// too; this is only a UI affordance.
+	ProtectedField string `json:"protectedField,omitempty"`
+}
+
+// EndpointDecl is one HTTP endpoint for a resource operation.
+type EndpointDecl struct {
+	Method       string `json:"method"`       // GET|POST|PUT|DELETE|PATCH
+	PathTemplate string `json:"pathTemplate"` // may contain {id} for update/delete
+}
+
+// FieldDecl describes one field on a resource record. Used both for table
+// display and for generating Add/Edit form inputs.
+type FieldDecl struct {
+	ID          string `json:"id"`                    // JSON key in the record
+	Label       string `json:"label"`                 // human-readable label
+	Type        string `json:"type"`                  // see field types below
+	Placeholder string `json:"placeholder,omitempty"` // input placeholder
+	Help        string `json:"help,omitempty"`        // help text under the input
+	Required    bool   `json:"required,omitempty"`    // required on Create
+	ReadOnly    bool   `json:"readOnly,omitempty"`    // shown in table, hidden in form
+	HideInTable bool   `json:"hideInTable,omitempty"` // shown in form, hidden in table
+}
+
+// Field types recognized by the V1 Inspector renderer.
+const (
+	FieldTypeText      = "text"      // single-line string
+	FieldTypeTextarea  = "textarea"  // multi-line string
+	FieldTypeBool      = "bool"      // checkbox / toggle
+	FieldTypeNumber    = "number"    // numeric input
+	FieldTypeStringArr = "string[]"  // textarea, one entry per line, stored as []string
+	FieldTypeStringMap = "stringMap" // textarea, KEY=VALUE per line, stored as map[string]string
+)
 
 // RegisterManifestRequest is the Arguments payload for a ReqRegisterManifest
 // bridge call. Sent by an enhanced service on startup, after its internal
@@ -126,6 +194,75 @@ func (m *Manifest) Validate() error {
 		if !strings.HasPrefix(a.PathTemplate, "/") {
 			return fmt.Errorf("manifest: actions[%d] (%q): pathTemplate %q must start with %q", i, a.ID, a.PathTemplate, "/")
 		}
+	}
+	resourceIDs := make(map[string]bool, len(m.Resources))
+	for i, res := range m.Resources {
+		if res.ID == "" {
+			return fmt.Errorf("manifest: resources[%d].id is empty", i)
+		}
+		if resourceIDs[res.ID] {
+			return fmt.Errorf("manifest: resources[%d].id %q is duplicated", i, res.ID)
+		}
+		resourceIDs[res.ID] = true
+		if res.Label == "" {
+			return fmt.Errorf("manifest: resources[%d] (%q): label is empty", i, res.ID)
+		}
+		if err := validateEndpoint("resources["+res.ID+"].list", res.List, false); err != nil {
+			return err
+		}
+		if res.Create != nil {
+			if err := validateEndpoint("resources["+res.ID+"].create", *res.Create, false); err != nil {
+				return err
+			}
+		}
+		if res.Update != nil {
+			if err := validateEndpoint("resources["+res.ID+"].update", *res.Update, true); err != nil {
+				return err
+			}
+		}
+		if res.Delete != nil {
+			if err := validateEndpoint("resources["+res.ID+"].delete", *res.Delete, true); err != nil {
+				return err
+			}
+		}
+		if len(res.Fields) == 0 {
+			return fmt.Errorf("manifest: resources[%d] (%q): fields is empty", i, res.ID)
+		}
+		fieldIDs := make(map[string]bool, len(res.Fields))
+		for j, f := range res.Fields {
+			if f.ID == "" {
+				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d].id is empty", i, res.ID, j)
+			}
+			if fieldIDs[f.ID] {
+				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d].id %q is duplicated", i, res.ID, j, f.ID)
+			}
+			fieldIDs[f.ID] = true
+			switch f.Type {
+			case FieldTypeText, FieldTypeTextarea, FieldTypeBool, FieldTypeNumber, FieldTypeStringArr, FieldTypeStringMap:
+			default:
+				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d] (%q): type %q is not supported", i, res.ID, j, f.ID, f.Type)
+			}
+		}
+		if res.ProtectedField != "" && !fieldIDs[res.ProtectedField] {
+			return fmt.Errorf("manifest: resources[%d] (%q): protectedField %q is not declared in fields", i, res.ID, res.ProtectedField)
+		}
+	}
+	return nil
+}
+
+// validateEndpoint checks one EndpointDecl. requireIDPlaceholder is true for
+// update/delete, which need a {id} substitution in their pathTemplate.
+func validateEndpoint(label string, ep EndpointDecl, requireIDPlaceholder bool) error {
+	switch strings.ToUpper(ep.Method) {
+	case "GET", "POST", "PUT", "DELETE", "PATCH":
+	default:
+		return fmt.Errorf("manifest: %s.method %q is not a supported HTTP verb", label, ep.Method)
+	}
+	if !strings.HasPrefix(ep.PathTemplate, "/") {
+		return fmt.Errorf("manifest: %s.pathTemplate %q must start with %q", label, ep.PathTemplate, "/")
+	}
+	if requireIDPlaceholder && !strings.Contains(ep.PathTemplate, "{id}") {
+		return fmt.Errorf("manifest: %s.pathTemplate %q must contain {id}", label, ep.PathTemplate)
 	}
 	return nil
 }

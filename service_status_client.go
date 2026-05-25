@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,7 +44,7 @@ func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
 // path. Relay stays payload-agnostic — the bytes flow straight through to
 // the settings UI's generic renderer.
 func (c *ServiceStatusClient) GetStatus(ctx context.Context, path string) (json.RawMessage, error) {
-	return c.do(ctx, http.MethodGet, path)
+	return c.do(ctx, http.MethodGet, path, nil)
 }
 
 // DoAction fires a manifest-declared action. Returns the response body
@@ -51,13 +52,27 @@ func (c *ServiceStatusClient) GetStatus(ctx context.Context, path string) (json.
 // action that returns one. Errors are returned for 4xx/5xx as well as
 // transport failures.
 func (c *ServiceStatusClient) DoAction(ctx context.Context, method, path string) (json.RawMessage, error) {
-	return c.do(ctx, method, path)
+	return c.do(ctx, method, path, nil)
 }
 
-func (c *ServiceStatusClient) do(ctx context.Context, method, path string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, method, internalUnixHostURL+path, nil)
+// DoResource is the resource-CRUD entrypoint. Takes an optional JSON body
+// (nil for GET/DELETE, marshaled object for POST/PUT/PATCH) and returns
+// the response body verbatim for the UI to deserialize.
+func (c *ServiceStatusClient) DoResource(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
+	return c.do(ctx, method, path, body)
+}
+
+func (c *ServiceStatusClient) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, internalUnixHostURL+path, reader)
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -68,12 +83,12 @@ func (c *ServiceStatusClient) do(ctx context.Context, method, path string) (json
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, string(body))
+		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, string(respBody))
 	}
-	return json.RawMessage(body), nil
+	return json.RawMessage(respBody), nil
 }
