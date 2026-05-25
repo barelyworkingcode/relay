@@ -11,10 +11,9 @@ import (
 	"time"
 )
 
-// TccResetTimeout caps the --request-permissions spawn so a buggy MCP can't
-// hang the IPC handler indefinitely. macMCP's PermissionsService uses a 30s
-// RunLoop; this leaves headroom for stragglers without making the user wait
-// forever for a silent failure.
+// TccResetTimeout caps the --check-permissions spawn so a buggy MCP can't
+// hang the IPC handler indefinitely. The MCP just reads TCC status and exits
+// near-instantly under normal conditions; this is a safety net.
 const TccResetTimeout = 60 * time.Second
 
 // parseTccServices parses a comma-separated list of TCC service short names
@@ -80,14 +79,18 @@ type ResetMcpPermissionsResult struct {
 //   1. Resolve the MCP binary's bundle identifier by reading the .app's
 //      Info.plist (walks up from the command path to find Contents/Info.plist).
 //   2. Run `tccutil reset <Service> <bundleID>` for each declared TCC service.
-//   3. Re-spawn the MCP binary with --request-permissions using the same
-//      exec.Command shape as external_mcp.go's normal stdio spawn so TCC
-//      attribution matches what the user will hit at runtime (the responsible
-//      parent is the relay tray, just like real MCP traffic).
+//   3. Fire Relay-side TCC primers (Calendar / Contacts / Reminders), which
+//      surface "Relay wants to access X" prompts from Relay's own process.
+//      Grants flow to the MCP via responsible-parent attribution at runtime.
+//      See mcp_permissions_darwin.go.
+//   4. Spawn the MCP binary with --check-permissions using the same
+//      exec.Command shape as external_mcp.go's normal stdio spawn so the
+//      post-state status report comes from the runtime attribution context.
 //
-// Wait-bound by TccResetTimeout. The MCP must support --request-permissions;
-// MCPs that don't (e.g. fsMCP, which has no protected APIs to request) should
-// register without --tcc-services so this isn't offered for them.
+// Wait-bound by TccResetTimeout. The MCP must support --check-permissions
+// (or the deprecated --request-permissions alias); MCPs without protected
+// APIs (e.g. fsMCP) should register without --tcc-services so this isn't
+// offered for them.
 func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 	if len(mcp.TccServices) == 0 {
 		return nil, fmt.Errorf("MCP %q declares no TCC services (--tcc-services not set at registration)", mcp.ID)
@@ -119,11 +122,21 @@ func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 		result.ResetServices = append(result.ResetServices, canonical)
 	}
 
-	// Spawn the MCP with --request-permissions using the SAME exec.Command
-	// pattern as external_mcp.go's spawnStdioConn (env merge + parent =
-	// relay tray). Critically NOT `open`, which would reparent to launchd
-	// and create different TCC attribution from the runtime path.
-	cmd := exec.Command(mcp.Command, "--request-permissions")
+	// "Primer" pass: request matching grants from Relay's own process. macOS
+	// suppresses TCC prompts for background apps spawned by other background
+	// apps (the macmcp-via-relay-tray chain). Relay (/Applications-resident,
+	// activation-capable) can prompt successfully -- its grants then flow to
+	// the spawned MCP via TCC's responsible-parent attribution at runtime.
+	// Skipped if the platform doesn't expose primer functions (e.g. tests).
+	primeRelayTccPermissions(mcp.TccServices, result)
+
+	// Spawn the MCP with --check-permissions so it prints its current TCC
+	// status (post-primer) into result.SpawnOutput for the UI summary.
+	// Using exec.Command directly (same shape as external_mcp.go's normal
+	// stdio spawn) means TCC attribution matches the runtime path. We do
+	// NOT use `open` -- that would reparent to launchd and break the
+	// responsible-parent chain the primer just established.
+	cmd := exec.Command(mcp.Command, "--check-permissions")
 	mergeEnv(cmd, mcp.Env)
 
 	var buf bytes.Buffer
@@ -132,7 +145,7 @@ func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("spawn %s --request-permissions: %w", mcp.Command, err)
+		return nil, fmt.Errorf("spawn %s --check-permissions: %w", mcp.Command, err)
 	}
 	go func() { done <- cmd.Wait() }()
 

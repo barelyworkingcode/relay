@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa -framework WebKit
+#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework EventKit -framework Contacts
 #include "cocoa_darwin.h"
 #include <stdlib.h>
 */
@@ -77,6 +77,30 @@ func cocoaSettingsEvalJS(js string) {
 func dispatchToMain(fn func()) {
 	id := storeCallback(fn)
 	C.cocoa_dispatch_main_callback(C.uintptr_t(id))
+}
+
+// cocoaRequestTccCalendar / Contacts / Reminders trigger TCC prompts from
+// Relay's own process. Each blocks the calling goroutine (not the main
+// thread) for up to timeoutSec while the user responds, then returns true
+// iff access is granted. Used as primers before relay spawns an MCP that
+// needs these services -- the MCP inherits Relay's grant via TCC's
+// responsible-parent attribution.
+//
+// Bracket batches with cocoaBeginForegroundActivation / End -- macOS
+// suppresses TCC prompts for .accessory (LSUIElement) apps.
+func cocoaBeginForegroundActivation() { C.cocoa_begin_foreground_activation() }
+func cocoaEndForegroundActivation()   { C.cocoa_end_foreground_activation() }
+
+func cocoaRequestTccCalendar(timeoutSec int) bool {
+	return C.cocoa_request_tcc_calendar(C.int(timeoutSec)) != 0
+}
+
+func cocoaRequestTccContacts(timeoutSec int) bool {
+	return C.cocoa_request_tcc_contacts(C.int(timeoutSec)) != 0
+}
+
+func cocoaRequestTccReminders(timeoutSec int) bool {
+	return C.cocoa_request_tcc_reminders(C.int(timeoutSec)) != 0
 }
 
 // ---------------------------------------------------------------------------

@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 )
 
-// ipcResetMcpPermissions clears TCC entries for the MCP's declared services
-// and re-spawns it with --request-permissions so prompts fire attributed to
-// the same responsible parent (relay tray) the MCP will have at runtime.
+// ipcResetMcpPermissions runs the Reset Permissions flow for an MCP:
+// clears existing TCC grants, fires Relay-side TCC primer prompts so the
+// user can grant the needed services to Relay's own bundle (MCPs inherit
+// via responsible-parent attribution), then spawns the MCP with
+// --check-permissions to report final status in the UI summary.
 //
-// The actual work runs off the main thread because tccutil + the MCP's
-// permission RunLoop can take tens of seconds; main-thread blocking would
-// freeze the WebView. Results emit back via onMcpPermissionsReset.
+// The actual work runs off the main thread because tccutil + the Relay
+// TCC primers + the MCP spawn can take tens of seconds; main-thread
+// blocking would freeze the WebView. Results emit back via
+// onMcpPermissionsReset.
 func ipcResetMcpPermissions(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcIDMsg](raw, "reset_mcp_permissions")
 	if !ok || msg.ID == "" {
