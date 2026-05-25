@@ -29,6 +29,7 @@ func mcpRegister(store SettingsStore, args []string) {
 	command := fs.String("command", "", "command to run")
 	transport := fs.String("transport", "stdio", "transport type (stdio or http)")
 	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
+	tccServices := fs.String("tcc-services", "", "comma-separated TCC services the MCP needs (e.g. calendar,contacts,reminders,microphone,appleevents)")
 	fs.Parse(args)
 
 	if *transport != "stdio" && *transport != "http" {
@@ -52,6 +53,7 @@ func mcpRegister(store SettingsStore, args []string) {
 		Command:     *command,
 		Args:        []string(opts.Args),
 		Env:         env,
+		TccServices: parseTccServices(*tccServices),
 	}
 
 	updated, secret := upsertAndPrint(store, "mcp", opts.Name, id, func(s *Settings) bool {

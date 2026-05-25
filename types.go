@@ -51,6 +51,15 @@ type ExternalMcp struct {
 	Transport       string            `json:"transport,omitempty"`    // "stdio" (default) or "http"
 	URL             string            `json:"url,omitempty"`          // MCP endpoint for HTTP transport
 	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
+
+	// TccServices lists the macOS TCC services this MCP needs (e.g.
+	// ["calendar","contacts","reminders","microphone","appleevents"]).
+	// Drives the Settings UI's "Reset Permissions" button: relay runs
+	// tccutil reset for each service against the MCP binary's bundle ID,
+	// then re-spawns the binary with --request-permissions using the same
+	// exec path it uses for normal stdio MCPs so TCC attribution matches
+	// what the user will hit at runtime.
+	TccServices []string `json:"tcc_services,omitempty"`
 }
 
 // IsHTTP returns true if this MCP uses the HTTP Streamable transport.
