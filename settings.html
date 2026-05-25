@@ -351,7 +351,9 @@ function renderMcpServers() {
     }
 
     for (const mcp of state.externalMcps) {
-        const toolCount = (mcp.discovered_tools || []).length;
+        // discovered_tools is runtime-only on the Go side (json:"-"), so the
+        // live count comes from mcpToolCache — same data, single source.
+        const toolCount = (state.mcpToolCache[mcp.id] || []).length;
         const isHTTP = mcp.transport === 'http';
         const authenticating = state.authenticatingMcp === mcp.id;
         html += '<div class="mcp-card">';
@@ -885,6 +887,7 @@ window.onSettingsReloaded = function(data) {
     state.services = data.services;
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
+    if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     // Push-sourced repaint of the currently visible tab; render() itself
     // skips if a form is mid-edit. Other tabs pick up the fresh state on
     // next switch — no need to repaint them now.
@@ -1058,8 +1061,10 @@ function copyProjectToken(text) {
 function projMcpState(form, mcpID) {
     if (isProjMcpWildcard(form)) return 'all';
     if (form.allowed_mcp_ids.indexOf(mcpID) < 0) return 'none';
-    const disabled = form.disabled_tools[mcpID] || [];
-    return disabled.length > 0 ? 'selected' : 'all';
+    // Key presence (even with an empty array) is the "selected mode" sentinel —
+    // setProjMcpState writes `[]` when the user clicks Selected before unchecking
+    // anything. Length-based checks here would flip the UI back to "All tools".
+    return Object.prototype.hasOwnProperty.call(form.disabled_tools || {}, mcpID) ? 'selected' : 'all';
 }
 
 function isProjMcpWildcard(form) {
