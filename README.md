@@ -136,6 +136,18 @@ For notarized release builds:
 ./build.sh --release
 ```
 
+### Code signing
+
+All builds run codesign with hardened runtime so dev and release behavior stay in sync. The first `Developer ID Application` cert in your login keychain is picked automatically; if none exists, the build falls back to ad-hoc signing (fine for local dev, won't pass Gatekeeper).
+
+To pin a specific cert when multiple are present:
+
+```bash
+RELAY_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
+
+Sibling services (`../relayLLM/build.sh`, `../relayScheduler/build.sh`) use the same selection logic and honor the same env var, so all four binaries ship under one identity.
+
 ## Usage
 
 1. Launch Relay from `/Applications/Relay.app`
