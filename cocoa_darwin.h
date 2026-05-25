@@ -23,4 +23,21 @@ void cocoa_open_url(const char* url);
 // Dispatch goDispatchCallback(ctx) on the main thread
 void cocoa_dispatch_main_callback(uintptr_t ctx);
 
+// Trigger TCC permission prompts from Relay's own process so the resulting
+// grants are keyed to com.barelyworkingcode.relay. MCPs that relay spawns
+// (e.g. macmcp) inherit these grants via TCC's responsible-parent attribution
+// at runtime. Each function blocks the calling thread (not the main thread)
+// until the request resolves or timeoutSec elapses. Returns 1 if access is
+// granted (already or after prompt), 0 otherwise.
+//
+// Bracket a batch of these calls with begin/end_foreground_activation so
+// Relay bumps from .accessory (LSUIElement tray) to .regular for the
+// duration -- macOS Sequoia suppresses TCC prompts for accessory apps,
+// even /Applications-resident ones.
+void cocoa_begin_foreground_activation(void);
+void cocoa_end_foreground_activation(void);
+int cocoa_request_tcc_calendar(int timeoutSec);
+int cocoa_request_tcc_contacts(int timeoutSec);
+int cocoa_request_tcc_reminders(int timeoutSec);
+
 #endif

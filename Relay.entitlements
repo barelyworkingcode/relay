@@ -4,5 +4,26 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!--
+		Hardened runtime gates Calendar / Contacts / Microphone access on these
+		entitlements: tccd silently denies requests (no prompt shown) when an
+		app calls the corresponding API without declaring intent up front. Verified
+		via tccd logs showing "service: kTCCServiceCalendar requires entitlement
+		com.apple.security.personal-information.calendars but it is missing".
+		Reminders and Location aren't gated this way today, hence those services
+		"just worked" while Calendar/Contacts silently failed.
+	-->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+	<key>com.apple.security.personal-information.addressbook</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!--
+		Allow Relay to be the responsible parent for Apple Events sent by its
+		child MCPs (e.g. macMCP spawns osascript for Mail / Messages tools).
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

@@ -56,9 +56,10 @@ type ExternalMcp struct {
 	// ["calendar","contacts","reminders","microphone","appleevents"]).
 	// Drives the Settings UI's "Reset Permissions" button: relay runs
 	// tccutil reset for each service against the MCP binary's bundle ID,
-	// then re-spawns the binary with --request-permissions using the same
-	// exec path it uses for normal stdio MCPs so TCC attribution matches
-	// what the user will hit at runtime.
+	// fires Relay-side primer prompts (so the user grants Relay the
+	// services and the MCP inherits via responsible-parent attribution),
+	// then spawns the MCP with --check-permissions for a final status
+	// summary. See mcp_permissions.go.
 	TccServices []string `json:"tcc_services,omitempty"`
 }
 

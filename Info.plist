@@ -19,7 +19,17 @@
 	<key>NSContactsUsageDescription</key>
 	<string>Relay's macMCP tools need access to Contacts to read and search your address book.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Relay's macMCP tools need access to Calendars to read and manage events and reminders.</string>
+	<string>Relay's macMCP tools need access to Calendars to read and manage events.</string>
+	<!--
+		macOS 14+ requires the new Full Access keys for the EKEventStore
+		requestFullAccess APIs. Without them, requestFullAccessToEvents /
+		requestFullAccessToReminders silently no-op (no prompt, no state
+		change). The legacy keys above stay for older macOS versions.
+	-->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Relay's macMCP tools need full access to Calendars to read and manage events.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Relay's macMCP tools need full access to Reminders to read and manage your reminders.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Relay's macMCP tools need your location for weather and mapping features.</string>
 	<key>NSMicrophoneUsageDescription</key>
