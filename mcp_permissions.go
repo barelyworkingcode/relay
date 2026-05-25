@@ -87,10 +87,9 @@ type ResetMcpPermissionsResult struct {
 //      exec.Command shape as external_mcp.go's normal stdio spawn so the
 //      post-state status report comes from the runtime attribution context.
 //
-// Wait-bound by TccResetTimeout. The MCP must support --check-permissions
-// (or the deprecated --request-permissions alias); MCPs without protected
-// APIs (e.g. fsMCP) should register without --tcc-services so this isn't
-// offered for them.
+// Wait-bound by TccResetTimeout. The MCP must support --check-permissions;
+// MCPs without protected APIs (e.g. fsMCP) should register without
+// --tcc-services so this isn't offered for them.
 func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 	if len(mcp.TccServices) == 0 {
 		return nil, fmt.Errorf("MCP %q declares no TCC services (--tcc-services not set at registration)", mcp.ID)
