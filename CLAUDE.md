@@ -91,6 +91,7 @@ The protocol is intentionally minimal — no `version`, no capability declaratio
 - **Frontend channel** -- Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` with `RELAY_FRONTEND_TOKEN` (Unix socket, 0600 perms). Bearer-checked on every HTTP + WS request before dispatch.
 - **Enhanced internal sockets** -- each enhanced service picks its own internal socket + token and tells relay both via `RegisterManifest`. Relay strips inbound Authorization and injects the service-declared token when proxying. Distinct from frontend creds.
 - **OAuth 2.1** -- HTTP MCPs use PKCE, dynamic registration, auto-refresh. See `oauth.go`.
+- **TCC permissions** -- Relay holds the personal-information entitlements (`Relay.entitlements`) and fires the user prompts from its own process. MCPs declare what they need with `--tcc-services foo,bar` at registration and inherit Relay's grants via TCC's responsible-parent attribution at runtime. Settings UI's "Reset Permissions" button per MCP drives the flow. Full rationale + checklist for adding a new TCC service: `docs/decisions/005-tcc-permissions.md`.
 
 ## MCP Runtime Data
 
@@ -178,4 +179,6 @@ The hook runs `go build ./... && go vet ./... && go test ./...` on any commit th
 - `docs/decisions/001-testing-strategy.md` — three-tier model, sandbox rule
 - `docs/decisions/002-test-seams.md` — which production seams exist and why
 - `docs/decisions/003-fixture-layout.md` — fixture tree, content rules
+- `docs/decisions/004-project-mgmt-in-relay.md` — native project tab, mutator-sharing
+- `docs/decisions/005-tcc-permissions.md` — Relay holds TCC entitlements, MCPs inherit via responsible-parent attribution
 - `docs/testing-roadmap.md` — next services to bring up to this standard (eve, fsMCP, macMCP)
