@@ -1465,21 +1465,13 @@ window.onProjectAdded = function(p) {
 window.onProjectUpdated = function(p) {
     if (!p || !p.id) return;
     state.projects = state.projects.map(x => x.id === p.id ? p : x);
-    // If we're editing this project from the form, refresh local form state
-    // so server-side mutations (e.g. SyncProjectToken auto-disabling fs_bash)
-    // are visible without dropping the user's other in-flight edits.
-    if (state.editingProjectId === p.id && state.projectForm) {
-        // Pull authoritative disabled_tools + token; leave free-text fields
-        // alone so we don't clobber what the user just typed.
-        state.projectForm.disabled_tools = JSON.parse(JSON.stringify(p.disabled_tools || {}));
-        state.projectForm.token = p.token || state.projectForm.token;
+    // Close the edit form on successful save so we return to the list, matching
+    // onProjectAdded and the Save flows in Services / Service Inspector.
+    if (state.editingProjectId === p.id) {
+        state.editingProjectId = null;
+        state.projectForm = null;
     }
     state.projectError = null;
-    // Only repaint when the projects tab is visible AND the user isn't
-    // actively editing this project (form is open) — render('push') will
-    // self-skip on edit anyway, but the surgical state merge above means
-    // we want the list view to refresh even if a different project is
-    // open in the form (rare, but possible after a tab away/back).
     if (state.page === 'projects') render('push');
 };
 
