@@ -16,8 +16,41 @@ import (
 // near-instantly under normal conditions; this is a safety net.
 const TccResetTimeout = 60 * time.Second
 
-// parseTccServices parses a comma-separated list of TCC service short names
-// from the --tcc-services CLI flag, trimming whitespace and dropping empties.
+// canonicalTccService maps short / aliased TCC service names to their
+// canonical lowercase form. Centralizing here means downstream code (the
+// tccutil reset loop, the Relay primer dispatch) can switch on canonical
+// names without re-doing alias resolution. Unknown names pass through
+// unchanged so a user-supplied service that we don't recognize still
+// reaches tccutil verbatim instead of being silently dropped.
+func canonicalTccService(name string) string {
+	switch strings.ToLower(name) {
+	case "calendar", "calendars":
+		return "calendar"
+	case "contacts", "addressbook":
+		return "contacts"
+	case "reminders":
+		return "reminders"
+	case "microphone", "mic":
+		return "microphone"
+	case "camera":
+		return "camera"
+	case "appleevents", "automation":
+		return "appleevents"
+	case "photos":
+		return "photos"
+	case "screencapture", "screenrecording":
+		return "screencapture"
+	case "fda", "fulldisk", "fulldiskaccess":
+		return "fulldiskaccess"
+	case "location":
+		return "location"
+	default:
+		return strings.ToLower(name)
+	}
+}
+
+// parseTccServices parses a comma-separated list of TCC service names from
+// the --tcc-services CLI flag and returns canonical lowercase forms.
 func parseTccServices(raw string) []string {
 	if raw == "" {
 		return nil
@@ -26,7 +59,7 @@ func parseTccServices(raw string) []string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if s := strings.TrimSpace(p); s != "" {
-			out = append(out, s)
+			out = append(out, canonicalTccService(s))
 		}
 	}
 	if len(out) == 0 {
@@ -35,34 +68,33 @@ func parseTccServices(raw string) []string {
 	return out
 }
 
-// tccutilServiceName maps the short names we accept on --tcc-services to the
-// canonical names tccutil(1) recognizes. Unrecognized names pass through
-// unchanged so we don't silently drop a service the user wrote explicitly.
-func tccutilServiceName(short string) string {
-	switch strings.ToLower(short) {
-	case "calendar", "calendars":
+// tccutilServiceName maps canonical TCC service names to the spellings
+// tccutil(1) recognizes. Returns "" for canonical names that have no
+// tccutil mapping (e.g. "location" -- per-system, not per-app).
+func tccutilServiceName(canonical string) string {
+	switch canonical {
+	case "calendar":
 		return "Calendar"
-	case "contacts", "addressbook":
+	case "contacts":
 		return "AddressBook"
 	case "reminders":
 		return "Reminders"
-	case "microphone", "mic":
+	case "microphone":
 		return "Microphone"
 	case "camera":
 		return "Camera"
-	case "appleevents", "automation":
+	case "appleevents":
 		return "AppleEvents"
 	case "photos":
 		return "Photos"
-	case "screencapture", "screenrecording":
+	case "screencapture":
 		return "ScreenCapture"
-	case "fda", "fulldisk", "fulldiskaccess":
+	case "fulldiskaccess":
 		return "SystemPolicyAllFiles"
 	case "location":
-		// Location is per-system, not per-app via tccutil. Skipped.
 		return ""
 	default:
-		return short
+		return canonical
 	}
 }
 

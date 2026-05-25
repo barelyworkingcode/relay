@@ -30,22 +30,18 @@ func primeRelayTccPermissions(services []string, result *ResetMcpPermissionsResu
 	cocoaBeginForegroundActivation()
 	defer cocoaEndForegroundActivation()
 
-	var lines []string
-	lines = append(lines, "--- Relay TCC primer ---")
+	// Services are already canonicalized by parseTccServices; no alias matching
+	// needed here. Services without a Cocoa primer (microphone, appleevents)
+	// rely on first-use prompts from the MCP itself at runtime and skip silently.
+	lines := []string{"--- Relay TCC primer ---"}
 	for _, svc := range services {
-		switch strings.ToLower(svc) {
-		case "calendar", "calendars":
-			ok := cocoaRequestTccCalendar(PrimerTimeoutSec)
-			lines = append(lines, fmt.Sprintf("  calendar: relay grant = %s", grantWord(ok)))
+		switch svc {
+		case "calendar":
+			lines = append(lines, fmt.Sprintf("  calendar: relay grant = %s", grantWord(cocoaRequestTccCalendar(PrimerTimeoutSec))))
 		case "reminders":
-			ok := cocoaRequestTccReminders(PrimerTimeoutSec)
-			lines = append(lines, fmt.Sprintf("  reminders: relay grant = %s", grantWord(ok)))
-		case "contacts", "addressbook":
-			ok := cocoaRequestTccContacts(PrimerTimeoutSec)
-			lines = append(lines, fmt.Sprintf("  contacts: relay grant = %s", grantWord(ok)))
-		default:
-			// Services without a Cocoa primer (microphone, appleevents, etc.)
-			// rely on first-use prompts from the MCP itself at runtime.
+			lines = append(lines, fmt.Sprintf("  reminders: relay grant = %s", grantWord(cocoaRequestTccReminders(PrimerTimeoutSec))))
+		case "contacts":
+			lines = append(lines, fmt.Sprintf("  contacts: relay grant = %s", grantWord(cocoaRequestTccContacts(PrimerTimeoutSec))))
 		}
 	}
 	if len(lines) > 1 {
