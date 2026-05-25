@@ -96,3 +96,75 @@ func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 		t.Error("empty routes must be rejected — relay can't dispatch to a service with no claims")
 	}
 }
+
+func TestManifestValidate_ResourcesHappyPath(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Resources: []ResourceDecl{{
+			ID:    "pty_templates",
+			Label: "Terminal Templates",
+			List:  EndpointDecl{Method: "GET", PathTemplate: "/api/terminal/templates"},
+			Create: &EndpointDecl{Method: "POST", PathTemplate: "/api/terminal/templates"},
+			Update: &EndpointDecl{Method: "PUT", PathTemplate: "/api/terminal/templates/{id}"},
+			Delete: &EndpointDecl{Method: "DELETE", PathTemplate: "/api/terminal/templates/{id}"},
+			Fields: []FieldDecl{
+				{ID: "name", Label: "Name", Type: FieldTypeText, Required: true},
+				{ID: "command", Label: "Command", Type: FieldTypeText, Required: true},
+				{ID: "args", Label: "Arguments", Type: FieldTypeStringArr},
+				{ID: "env", Label: "Environment", Type: FieldTypeStringMap},
+				{ID: "builtIn", Label: "Built-in", Type: FieldTypeBool, ReadOnly: true},
+			},
+			ProtectedField: "builtIn",
+		}},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestManifestValidate_ResourceUpdateRequiresIDPlaceholder(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Resources: []ResourceDecl{{
+			ID:    "x", Label: "X",
+			List:   EndpointDecl{Method: "GET", PathTemplate: "/x"},
+			Update: &EndpointDecl{Method: "PUT", PathTemplate: "/x"}, // no {id}
+			Fields: []FieldDecl{{ID: "name", Label: "Name", Type: FieldTypeText}},
+		}},
+	}
+	err := m.Validate()
+	if err == nil || !strings.Contains(err.Error(), "{id}") {
+		t.Errorf("want {id} placeholder error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ResourceRejectsUnknownFieldType(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Resources: []ResourceDecl{{
+			ID: "x", Label: "X",
+			List:   EndpointDecl{Method: "GET", PathTemplate: "/x"},
+			Fields: []FieldDecl{{ID: "name", Label: "Name", Type: "magic-string"}},
+		}},
+	}
+	err := m.Validate()
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("want unsupported-type error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ResourceProtectedFieldMustBeDeclared(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Resources: []ResourceDecl{{
+			ID: "x", Label: "X",
+			List:           EndpointDecl{Method: "GET", PathTemplate: "/x"},
+			Fields:         []FieldDecl{{ID: "name", Label: "Name", Type: FieldTypeText}},
+			ProtectedField: "builtIn", // not in fields
+		}},
+	}
+	err := m.Validate()
+	if err == nil || !strings.Contains(err.Error(), "protectedField") {
+		t.Errorf("want protectedField-not-declared error, got %v", err)
+	}
+}

@@ -53,15 +53,32 @@ The detection is a deployment fact, not a code fork. The service has one config 
       "method":       "DELETE",
       "pathTemplate": "/api/llama/instances/{alias}"
     }
+  ],
+  "resources": [
+    {
+      "id":     "pty_templates",
+      "label":  "Terminal Templates",
+      "list":   { "method": "GET",    "pathTemplate": "/api/terminal/templates" },
+      "create": { "method": "POST",   "pathTemplate": "/api/terminal/templates" },
+      "update": { "method": "PUT",    "pathTemplate": "/api/terminal/templates/{id}" },
+      "delete": { "method": "DELETE", "pathTemplate": "/api/terminal/templates/{id}" },
+      "fields": [
+        { "id": "name",    "label": "Name",    "type": "text",      "required": true },
+        { "id": "command", "label": "Command", "type": "text",      "required": true },
+        { "id": "args",    "label": "Args",    "type": "string[]" },
+        { "id": "env",     "label": "Env",     "type": "stringMap" },
+        { "id": "builtIn", "label": "Built-in","type": "bool",      "readOnly": true }
+      ],
+      "protectedField": "builtIn"
+    }
   ]
 }
 ```
 
-That's the entire schema for V1.
-
 - **`routes`**: path prefixes (and exact paths) the service serves. Drives relay's front-door dispatcher. WebSocket paths are valid entries.
 - **`status`**: a single GET endpoint relay polls (~2s) to render in the settings UI. Free-form JSON; the UI renders it generically.
 - **`actions`**: user-triggerable RPCs that show up as buttons in the settings UI. V1: flat — one declaration = one global button. `pathTemplate` is a literal HTTP path (no substitution).
+- **`resources`**: typed record collections the service manages. The Inspector renders one collapsible section per resource with a table view + Add/Edit form generated from `fields`. Update/Delete `pathTemplate` must contain `{id}` (substituted from the row's `id` field). `protectedField` names a bool field whose `true` rows suppress Edit/Delete buttons in the UI (the service is still responsible for rejecting protected mutations server-side). Supported field types: `text`, `textarea`, `bool`, `number`, `string[]`, `stringMap`.
 
 No `version`, `consumes`, `provides`, `logs`, `schema`, or auth declarations. When a real need shows up, add the field; defer until then.
 

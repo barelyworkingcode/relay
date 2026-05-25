@@ -37,6 +37,9 @@ body {
 }
 h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
 h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #ccc; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.page-header h2 { margin: 0; }
+.page-intro { color: #888; font-size: 12px; margin-bottom: 16px; }
 label {
     display: block;
     margin-top: 12px;
@@ -186,6 +189,22 @@ textarea:focus { outline: none; border-color: #0078d4; }
 .svc-err { color: #e55; font-size: 12px; margin-top: 8px; }
 .svc-empty { color: #666; font-size: 12px; padding: 8px 0; }
 
+/* ---- Service Inspector: manifest-declared resources ---- */
+.svc-resource { border: 1px solid #2a2a2a; border-radius: 6px; margin-top: 12px; }
+.svc-resource-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; cursor: pointer; background: #181818; border-radius: 6px 6px 0 0; user-select: none; }
+.svc-resource-header:hover { background: #1f1f1f; }
+.svc-resource-header.closed { border-radius: 6px; }
+.svc-resource-title { font-size: 12px; font-weight: 600; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
+.svc-resource-title .chevron { display: inline-block; width: 10px; margin-right: 6px; transition: transform 0.15s; transform: rotate(-90deg); }
+.svc-resource-header.open .svc-resource-title .chevron { transform: rotate(0deg); }
+.svc-resource-count { color: #666; font-size: 11px; font-weight: 400; margin-left: 6px; }
+.svc-resource-body { padding: 10px 12px 12px; }
+.svc-resource-help { color: #777; font-size: 11px; margin-bottom: 8px; }
+.svc-resource-empty { color: #666; font-size: 12px; padding: 6px 0; }
+.svc-resource-form label { margin-top: 8px; }
+.svc-resource-form-actions { margin-top: 14px; display: flex; gap: 8px; }
+.svc-resource-error { color: #e55; font-size: 12px; margin-top: 8px; }
+
 /* ---- Projects tab ---- */
 .proj-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
 .proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
@@ -246,15 +265,26 @@ let state = {
     mcpAddMode: 'form',
     mcpTransport: 'stdio',
     authenticatingMcp: null,
+    editingMcpId: null,                 // null = list, 'new' = add form (no edit support yet)
     services: SERVICES_INIT,
     runningServices: RUNNING_IDS_INIT.reduce(function(m, id) { m[id] = true; return m; }, {}),
-    editingServiceId: null,
+    editingServiceId: null,             // null = list, 'new' = add form, '<id>' = edit form
     // Service Inspector state. Each snapshot in serviceStatuses carries
     // its own manifest, so we derive button layouts from the snapshot —
     // no separate manifest map to keep in sync.
     serviceStatuses: {},      // serviceId -> ServiceStatusSnapshot
     serviceActionPending: {}, // key "svc|action|rowKey" -> true while in flight
     serviceActionError: {},   // serviceId -> last error string (cleared on next ok)
+
+    // Per-service resource (manifest.resources) CRUD state. Keyed by
+    // "svcId|resId" because (service, resource) is the natural unit — a
+    // service can declare multiple resources independently.
+    serviceResources: {},        // key -> [records] (last list result). Presence = list has loaded at least once.
+    serviceResourceOpen: {},     // key -> bool (section expanded)
+    serviceResourceEditing: {},  // key -> null | 'new' | recordId
+    serviceResourceForm: {},     // key -> {field values} in-flight
+    serviceResourceError: {},    // key -> string
+    serviceResourcePending: {},  // key -> bool (any op in flight)
 
     // Projects tab.
     projects: PROJECTS_INIT,
@@ -280,26 +310,26 @@ function showPage(page) {
 
 const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args": ["-y", "@example/server"], "env": {"API_KEY": "..."}}}, null, 2);
 
-var _svcFormRendered = false;
-var _projFormRendered = false;
-function render() {
+// render(source) repaints #content. When source === 'push' (IPC-driven),
+// skip the repaint if a form for the current tab is open so we don't wipe
+// keystrokes mid-edit. User-initiated renders always proceed — tab switches
+// and explicit form mutations must always reflect on screen.
+function render(source) {
     const el = document.getElementById('content');
+    const fromPush = source === 'push';
     if (state.page === 'services') {
-        if (state.editingServiceId && _svcFormRendered) return;
-        _svcFormRendered = !!state.editingServiceId;
+        if (fromPush && state.editingServiceId) return;
         el.innerHTML = renderServices();
     } else if (state.page === 'inspector') {
+        // Status poller fires render('push') every 2s — skip when ANY resource
+        // form is open so the user's keystrokes survive between ticks.
+        if (fromPush && anyResourceFormOpen()) return;
         el.innerHTML = renderServiceInspector();
     } else if (state.page === 'projects') {
-        // Suppress re-render of the project form while the user is typing.
-        // The tri-state buttons toggle state.projectForm.* and call render()
-        // explicitly, so this guard only kicks in for external pushes
-        // (onProjectsReloaded, onProjectUpdated) — same pattern the services
-        // form uses to avoid wiping in-flight edits.
-        if (state.editingProjectId && _projFormRendered) return;
-        _projFormRendered = !!state.editingProjectId;
+        if (fromPush && state.editingProjectId) return;
         el.innerHTML = renderProjects();
     } else {
+        if (fromPush && state.editingMcpId) return;
         el.innerHTML = renderMcpServers();
         const ta = document.getElementById('mcpJson');
         if (ta) ta.placeholder = JSON_PLACEHOLDER;
@@ -307,52 +337,65 @@ function render() {
 }
 
 function renderMcpServers() {
-    let html = '<h2>MCP Servers</h2>';
-    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Add external MCP servers so clients only need to connect to Relay.</p>';
+    if (state.editingMcpId) return renderMcpForm();
 
-    if (state.externalMcps.length > 0) {
-        for (const mcp of state.externalMcps) {
-            const toolCount = (mcp.discovered_tools || []).length;
-            const isHTTP = mcp.transport === 'http';
-            const authenticating = state.authenticatingMcp === mcp.id;
-            html += '<div class="mcp-card">';
-            html += '<div class="mcp-card-header">';
-            html += `<span class="mcp-card-name">${esc(mcp.display_name)}</span>`;
-            html += '<div style="display:flex;gap:4px;align-items:center">';
-            if (isHTTP) {
-                if (mcp.oauth_state && mcp.oauth_state.access_token) {
-                    html += '<span style="font-size:11px;color:#22c55e;border:1px solid #22c55e;border-radius:3px;padding:2px 6px">Authenticated</span>';
-                } else {
-                    html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
-                }
-            }
-            html += `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>`;
-            html += '</div></div>';
-            if (isHTTP) {
-                html += `<div class="mcp-card-cmd">${esc(mcp.url || '')}</div>`;
-                html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
-                html += `<div class="mcp-card-tools" style="margin:0">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
-                if (authenticating) {
-                    html += '<button class="btn btn-sm" disabled><span class="spinner"></span>Authenticating...</button>';
-                } else {
-                    html += `<button class="btn btn-sm" onclick="authenticateMcp('${esc(mcp.id)}')">Authenticate</button>`;
-                }
-                html += '</div>';
-            } else {
-                const cmd = mcp.command || '';
-                const cmdDisplay = cmd.length > 40 ? '...' + cmd.slice(-37) : cmd;
-                const argsDisplay = mcp.args && mcp.args.length > 0 ? ' ' + mcp.args.join(' ') : '';
-                html += `<div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>`;
-                html += `<div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
-            }
-            html += '</div>';
-        }
-    } else {
-        html += '<div class="empty-state">No external MCP servers configured.</div>';
+    let html = '<div class="page-header">';
+    html += '<h2>MCP Servers</h2>';
+    html += '<button class="btn" onclick="newMcp()">+ New MCP Server</button>';
+    html += '</div>';
+    html += '<p class="page-intro">Add external MCP servers so clients only need to connect to Relay.</p>';
+
+    if (state.externalMcps.length === 0) {
+        html += '<div class="empty-state">No external MCP servers configured. Click <strong>+ New MCP Server</strong> to add one.</div>';
+        return html;
     }
 
-    html += '<div style="margin-top:20px;border-top:1px solid #333;padding-top:16px">';
-    html += '<h3>Add MCP Server</h3>';
+    for (const mcp of state.externalMcps) {
+        const toolCount = (mcp.discovered_tools || []).length;
+        const isHTTP = mcp.transport === 'http';
+        const authenticating = state.authenticatingMcp === mcp.id;
+        html += '<div class="mcp-card">';
+        html += '<div class="mcp-card-header">';
+        html += `<span class="mcp-card-name">${esc(mcp.display_name)}</span>`;
+        html += '<div style="display:flex;gap:4px;align-items:center">';
+        if (isHTTP) {
+            if (mcp.oauth_state && mcp.oauth_state.access_token) {
+                html += '<span style="font-size:11px;color:#22c55e;border:1px solid #22c55e;border-radius:3px;padding:2px 6px">Authenticated</span>';
+            } else {
+                html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
+            }
+        }
+        html += `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>`;
+        html += '</div></div>';
+        if (isHTTP) {
+            html += `<div class="mcp-card-cmd">${esc(mcp.url || '')}</div>`;
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+            html += `<div class="mcp-card-tools" style="margin:0">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
+            if (authenticating) {
+                html += '<button class="btn btn-sm" disabled><span class="spinner"></span>Authenticating...</button>';
+            } else {
+                html += `<button class="btn btn-sm" onclick="authenticateMcp('${esc(mcp.id)}')">Authenticate</button>`;
+            }
+            html += '</div>';
+        } else {
+            const cmd = mcp.command || '';
+            const cmdDisplay = cmd.length > 40 ? '...' + cmd.slice(-37) : cmd;
+            const argsDisplay = mcp.args && mcp.args.length > 0 ? ' ' + mcp.args.join(' ') : '';
+            html += `<div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>`;
+            html += `<div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
+// Form view for adding an MCP server. There is no edit flow today — MCPs are
+// add-or-remove; editingMcpId is always 'new' while this is rendered.
+function renderMcpForm() {
+    let html = '<div class="page-header">';
+    html += '<h2>New MCP Server</h2>';
+    html += '<button class="btn btn-danger btn-sm" onclick="cancelMcpEdit()">Cancel</button>';
+    html += '</div>';
 
     const isStdio = state.mcpTransport === 'stdio';
     html += `<div style="display:flex;gap:4px;margin-bottom:12px">
@@ -388,16 +431,17 @@ function renderMcpServers() {
         }
     }
 
-    html += '<div style="margin-top:12px">';
+    html += '<div style="margin-top:16px;display:flex;gap:8px">';
     if (state.discovering) {
         html += '<button class="btn" disabled><span class="spinner"></span>Discovering...</button>';
     } else {
         if (!isStdio) {
-            html += '<button class="btn" onclick="addExternalMcpHttp()">Add</button>';
+            html += '<button class="btn" onclick="addExternalMcpHttp()">Add MCP Server</button>';
         } else {
             const formActive = state.mcpAddMode === 'form';
-            html += `<button class="btn" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add</button>`;
+            html += `<button class="btn" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add MCP Server</button>`;
         }
+        html += '<button class="btn btn-danger" onclick="cancelMcpEdit()">Cancel</button>';
     }
     html += '</div>';
 
@@ -405,7 +449,6 @@ function renderMcpServers() {
         html += `<div class="error-msg">${esc(state.discoveryError)}</div>`;
     }
 
-    html += '</div>';
     return html;
 }
 
@@ -511,6 +554,19 @@ function addExternalMcpHttp() {
     }));
 }
 
+function newMcp() {
+    state.editingMcpId = 'new';
+    state.discoveryError = null;
+    render();
+}
+
+function cancelMcpEdit() {
+    state.editingMcpId = null;
+    state.discoveryError = null;
+    state.discovering = false;
+    render();
+}
+
 function authenticateMcp(id) {
     ipc(JSON.stringify({ type: 'authenticate_mcp', id }));
 }
@@ -523,9 +579,19 @@ window.onOAuthRequired = function(id) {
     // Server needs auth -- badge already shown from the added MCP data.
 };
 
+// renderMcpPush is the gate for every MCP-tab push handler. List-affecting
+// pushes (`bypassForm: false`) honor the form-protect guard so keystrokes
+// survive. Form-affecting pushes (`bypassForm: true` — discovery spinner,
+// error banner) bypass the guard when the form is open, since the new
+// state belongs *inside* the form and the user needs to see it.
+function renderMcpPush(bypassForm) {
+    if (state.page !== 'mcps') return;
+    render(bypassForm && state.editingMcpId ? undefined : 'push');
+}
+
 window.onOAuthStarted = function(id) {
     state.authenticatingMcp = id;
-    render();
+    renderMcpPush(false);
 };
 
 window.onOAuthComplete = function(id) {
@@ -535,80 +601,98 @@ window.onOAuthComplete = function(id) {
         if (!mcp.oauth_state) mcp.oauth_state = {};
         mcp.oauth_state.access_token = 'authenticated'; // UI placeholder only
     }
-    render();
+    renderMcpPush(false);
 };
 
 window.onOAuthError = function(id, msg) {
     state.authenticatingMcp = null;
     state.discoveryError = 'OAuth failed: ' + msg;
-    render();
+    renderMcpPush(true);
 };
 
 window.onDiscoveryStarted = function() {
     state.discovering = true;
     state.discoveryError = null;
-    render();
+    renderMcpPush(true);
 };
 
 window.onExternalMcpAdded = function(mcp) {
     state.discovering = false;
     state.discoveryError = null;
     state.externalMcps.push(mcp);
-    render();
+    state.editingMcpId = null; // close form on successful add
+    renderMcpPush(false);
 };
 
 window.onExternalMcpError = function(msg) {
     state.discovering = false;
     state.discoveryError = msg;
-    render();
+    renderMcpPush(true);
 };
 
 window.onExternalMcpRemoved = function(id) {
     state.externalMcps = state.externalMcps.filter(m => m.id !== id);
-    render();
+    renderMcpPush(false);
 };
 
 function renderServices() {
-    let html = '<h2>Services</h2>';
-    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Manage background processes. These appear in the tray menu for quick start/stop.</p>';
+    if (state.editingServiceId) return renderServiceForm();
 
-    if (state.services.length > 0) {
-        for (const svc of state.services) {
-            const cmdDisplay = svc.command.length > 40 ? '...' + svc.command.slice(-37) : svc.command;
-            const argsDisplay = svc.args && svc.args.length > 0 ? ' ' + svc.args.join(' ') : '';
-            html += `<div class="mcp-card">
-                <div class="mcp-card-header">
-                    <span class="mcp-card-name">${esc(svc.display_name)}</span>
-                    <div style="display:flex;gap:4px">
-                        <button class="btn btn-sm" onclick="editService('${esc(svc.id)}')">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="removeService('${esc(svc.id)}')">Remove</button>
-                    </div>
-                </div>
-                <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
-                ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ''}
-                ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ''}
-                <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                    <span style="font-size:12px;color:#888">Running</span>
-                    <label class="switch switch-running">
-                        <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                    <span style="font-size:12px;color:#888">Autostart on launch</span>
-                    <label class="switch">
-                        <input type="checkbox" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
-                        <span class="slider"></span>
-                    </label>
-                </div>
-            </div>`;
-        }
-    } else {
-        html += '<div class="empty-state">No services configured.</div>';
+    let html = '<div class="page-header">';
+    html += '<h2>Services</h2>';
+    html += '<button class="btn" onclick="newService()">+ New Service</button>';
+    html += '</div>';
+    html += '<p class="page-intro">Manage background processes. These appear in the tray menu for quick start/stop.</p>';
+
+    if (state.services.length === 0) {
+        html += '<div class="empty-state">No services configured. Click <strong>+ New Service</strong> to add one.</div>';
+        return html;
     }
 
-    const editing = state.editingServiceId ? state.services.find(s => s.id === state.editingServiceId) : null;
-    const title = editing ? 'Edit Service' : 'Add Service';
+    for (const svc of state.services) {
+        const cmdDisplay = svc.command.length > 40 ? '...' + svc.command.slice(-37) : svc.command;
+        const argsDisplay = svc.args && svc.args.length > 0 ? ' ' + svc.args.join(' ') : '';
+        html += `<div class="mcp-card">
+            <div class="mcp-card-header">
+                <span class="mcp-card-name">${esc(svc.display_name)}</span>
+                <div style="display:flex;gap:4px">
+                    <button class="btn btn-sm" onclick="editService('${esc(svc.id)}')">Edit</button>
+                    <button class="btn btn-sm btn-danger" onclick="removeService('${esc(svc.id)}')">Remove</button>
+                </div>
+            </div>
+            <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
+            ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ''}
+            ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ''}
+            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
+                <span style="font-size:12px;color:#888">Running</span>
+                <label class="switch switch-running">
+                    <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
+                <span style="font-size:12px;color:#888">Autostart on launch</span>
+                <label class="switch">
+                    <input type="checkbox" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>`;
+    }
+    return html;
+}
+
+// Form view for adding or editing a service. Mirrors the Projects pattern:
+// state.editingServiceId === 'new' for add, '<id>' for edit.
+function renderServiceForm() {
+    const isNew = state.editingServiceId === 'new';
+    const editing = isNew ? null : state.services.find(s => s.id === state.editingServiceId);
+    if (!isNew && !editing) {
+        // Stale edit target (e.g. service removed externally); fall back to list.
+        state.editingServiceId = null;
+        return renderServices();
+    }
+    const title = isNew ? 'New Service' : 'Edit Service';
     const dn = editing ? esc(editing.display_name) : '';
     const cm = editing ? esc(editing.command) : '';
     const ar = editing ? esc((editing.args || []).join(' ')) : '';
@@ -617,9 +701,12 @@ function renderServices() {
     const as_ = editing ? editing.autostart : false;
     const ur = editing ? esc(editing.url || '') : '';
 
-    html += '<div style="margin-top:20px;border-top:1px solid #333;padding-top:16px">';
-    html += `<h3>${title}</h3>`;
-    html += `<label>Display name${editing ? ' <span style="color:#666;font-size:11px">(id: ' + esc(editing.id) + ')</span>' : ''}</label>`;
+    let html = '<div class="page-header">';
+    html += `<h2>${title}${editing ? ' <span style="color:#666;font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : ''}</h2>`;
+    html += '<button class="btn btn-danger btn-sm" onclick="cancelServiceEdit()">Cancel</button>';
+    html += '</div>';
+
+    html += '<label>Display name</label>';
     html += `<input type="text" id="svcDisplayName" value="${dn}" placeholder="e.g. My API Server" />`;
     html += '<label>Command</label>';
     html += `<input type="text" id="svcCommand" value="${cm}" placeholder="e.g. node or /usr/local/bin/my-server" />`;
@@ -639,14 +726,16 @@ function renderServices() {
         </label>
     </div>`;
     if (editing) {
-        html += `<div style="margin-top:8px;display:flex;gap:8px">
+        html += `<div style="margin-top:16px;display:flex;gap:8px">
             <button class="btn" onclick="saveServiceEdit()">Save</button>
             <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
         </div>`;
     } else {
-        html += '<div style="margin-top:8px"><button class="btn" onclick="addService()">Add</button></div>';
+        html += `<div style="margin-top:16px;display:flex;gap:8px">
+            <button class="btn" onclick="addService()">Add Service</button>
+            <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
+        </div>`;
     }
-    html += '</div>';
     return html;
 }
 
@@ -673,6 +762,11 @@ function svcFormValues() {
     return { displayName, command, args, env, workingDir, autostart, url };
 }
 
+function newService() {
+    state.editingServiceId = 'new';
+    render();
+}
+
 function addService() {
     const v = svcFormValues();
     if (!v.displayName || !v.command) return;
@@ -687,6 +781,9 @@ function addService() {
         autostart: v.autostart,
         url: v.url || null,
     }));
+    // Form stays open until onServiceAdded confirms — that handler clears
+    // editingServiceId. If the add fails (onSettingsError), the form stays
+    // up so the user can fix and retry.
 }
 
 function editService(id) {
@@ -741,12 +838,16 @@ function updateServiceAutostart(id, checked) {
 
 window.onServiceAdded = function(config) {
     state.services.push(config);
-    render();
+    // Close the New Service form on successful add so we return to the list.
+    if (state.editingServiceId === 'new') state.editingServiceId = null;
+    if (state.page === 'services') render('push');
 };
 
 window.onServiceRemoved = function(id) {
     state.services = state.services.filter(s => s.id !== id);
-    render();
+    // If the user happened to be editing the removed service, bail out.
+    if (state.editingServiceId === id) state.editingServiceId = null;
+    if (state.page === 'services') render('push');
 };
 
 function toggleServiceRunning(id, checked) {
@@ -784,7 +885,10 @@ window.onSettingsReloaded = function(data) {
     state.services = data.services;
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
-    render();
+    // Push-sourced repaint of the currently visible tab; render() itself
+    // skips if a form is mid-edit. Other tabs pick up the fresh state on
+    // next switch — no need to repaint them now.
+    render('push');
 };
 
 window.onProjectsReloaded = function(projects) {
@@ -797,7 +901,7 @@ window.onProjectsReloaded = function(projects) {
             state.projectForm = null;
         }
     }
-    if (state.page === 'projects') render();
+    if (state.page === 'projects') render('push');
 };
 
 // ---------------------------------------------------------------------------
@@ -805,9 +909,10 @@ window.onProjectsReloaded = function(projects) {
 //
 // State model: a single in-flight `state.projectForm` object holds the user's
 // uncommitted edits. Tri-state buttons and tool checkboxes mutate it; Save
-// dispatches `update_project` with the entire patch. The render-suppress flag
-// (_projFormRendered) prevents external pushes (onProjectsReloaded) from
-// blowing away keystrokes mid-edit.
+// dispatches `update_project` with the entire patch. Push-sourced renders
+// (onProjectsReloaded, etc.) pass source='push' so render() can skip the
+// repaint while editingProjectId is set, preserving keystrokes mid-edit.
+// User-initiated render() calls always proceed (no source arg).
 // ---------------------------------------------------------------------------
 
 const PROJ_MCP_WILDCARD = '*';
@@ -815,15 +920,18 @@ const PROJ_MCP_WILDCARD = '*';
 function renderProjects() {
     if (state.editingProjectId) return renderProjectForm();
 
-    let html = '<h2>Projects</h2>';
-    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
+    let html = '<div class="page-header">';
+    html += '<h2>Projects</h2>';
+    html += '<button class="btn" onclick="newProject()">+ New Project</button>';
+    html += '</div>';
+    html += '<p class="page-intro">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
 
     if (state.projectError) {
         html += '<div class="proj-error">' + esc(state.projectError) + '</div>';
     }
 
     if (state.projects.length === 0) {
-        html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> below to create one.</div>';
+        html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> to create one.</div>';
     } else {
         for (const p of state.projects) {
             const allowedCount = p.allowed_mcp_ids && p.allowed_mcp_ids.length > 0
@@ -858,7 +966,6 @@ function renderProjects() {
         }
     }
 
-    html += '<div style="margin-top:16px"><button class="btn" onclick="newProject()">+ New Project</button></div>';
     return html;
 }
 
@@ -901,7 +1008,6 @@ function newProject() {
     state.editingProjectId = 'new';
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
-    _projFormRendered = false;
     render();
 }
 
@@ -911,7 +1017,6 @@ function editProject(id) {
     state.editingProjectId = id;
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
-    _projFormRendered = false;
     render();
 }
 
@@ -919,7 +1024,6 @@ function cancelProjectEdit() {
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectFormError = null;
-    _projFormRendered = false;
     render();
 }
 
@@ -940,7 +1044,6 @@ function rotateProjectToken(id, name) {
 
 function toggleProjectTokenVisible(id) {
     state.projectTokenVisible[id] = !state.projectTokenVisible[id];
-    _projFormRendered = false;
     render();
 }
 
@@ -989,7 +1092,6 @@ function setProjMcpState(mcpID, newState) {
             ipc(JSON.stringify({ type: 'list_mcp_tools', mcp_id: mcpID }));
         }
     }
-    _projFormRendered = false;
     render();
 }
 
@@ -1003,7 +1105,6 @@ function setProjMcpWildcard(checked) {
         // Drop wildcard; start with no MCPs (user picks explicitly).
         f.allowed_mcp_ids = [];
     }
-    _projFormRendered = false;
     render();
 }
 
@@ -1036,7 +1137,6 @@ function setProjModelsWildcard(checked) {
     } else {
         f.allowed_models = [];
     }
-    _projFormRendered = false;
     render();
 }
 
@@ -1264,7 +1364,6 @@ function pruneStaleDisabledTool(mcpID, name, kept) {
     const f = state.projectForm;
     if (!f) return;
     f.disabled_tools[mcpID] = (f.disabled_tools[mcpID] || []).filter(n => n !== name);
-    _projFormRendered = false;
     render();
 }
 
@@ -1281,7 +1380,6 @@ function addProjTemplate() {
         append_claude_md: false,
         use_relay_tools: true,
     });
-    _projFormRendered = false;
     render();
 }
 
@@ -1289,7 +1387,6 @@ function removeProjTemplate(idx) {
     const f = state.projectForm;
     if (!f) return;
     f.chat_templates.splice(idx, 1);
-    _projFormRendered = false;
     render();
 }
 
@@ -1331,13 +1428,11 @@ function saveProjectForm() {
     if (!payload) return;
     if (!payload.name) {
         state.projectFormError = 'Project name is required';
-        _projFormRendered = false;
         render();
         return;
     }
     if (!payload.path) {
         state.projectFormError = 'Project path is required';
-        _projFormRendered = false;
         render();
         return;
     }
@@ -1359,8 +1454,7 @@ window.onProjectAdded = function(p) {
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectError = null;
-    _projFormRendered = false;
-    render();
+    if (state.page === 'projects') render('push');
 };
 
 window.onProjectUpdated = function(p) {
@@ -1376,10 +1470,12 @@ window.onProjectUpdated = function(p) {
         state.projectForm.token = p.token || state.projectForm.token;
     }
     state.projectError = null;
-    if (state.page !== 'projects' || !state.editingProjectId) {
-        _projFormRendered = false;
-        render();
-    }
+    // Only repaint when the projects tab is visible AND the user isn't
+    // actively editing this project (form is open) — render('push') will
+    // self-skip on edit anyway, but the surgical state merge above means
+    // we want the list view to refresh even if a different project is
+    // open in the form (rare, but possible after a tab away/back).
+    if (state.page === 'projects') render('push');
 };
 
 window.onProjectRemoved = function(id) {
@@ -1391,8 +1487,7 @@ window.onProjectRemoved = function(id) {
         state.editingProjectId = null;
         state.projectForm = null;
     }
-    _projFormRendered = false;
-    render();
+    if (state.page === 'projects') render('push');
 };
 
 window.onProjectTokenRotated = function(id, plaintext) {
@@ -1406,29 +1501,25 @@ window.onProjectTokenRotated = function(id, plaintext) {
         state.projectForm.token = plaintext;
         state.projectTokenVisible[id] = true; // reveal so the banner code is meaningful
     }
-    _projFormRendered = false;
-    render();
+    if (state.page === 'projects') render('push');
 };
 
 window.onProjectSkillRegen = function(id, ok, message) {
     state.projectSkillRegen[id] = { ok: !!ok, message: message || '', t: Date.now() };
-    _projFormRendered = false;
-    render();
+    if (state.page === 'projects') render('push');
 };
 
 window.onMcpToolsListed = function(mcpID, tools) {
     state.mcpToolCache[mcpID] = tools || [];
     if (state.page === 'projects' && state.editingProjectId) {
-        _projFormRendered = false;
-        render();
+        render('push');
     }
 };
 
 window.onProjectError = function(msg) {
     state.projectError = msg;
     state.projectFormError = msg;
-    _projFormRendered = false;
-    render();
+    if (state.page === 'projects') render('push');
 };
 
 // Service Inspector — generic renderer driven by each service's manifest
@@ -1460,6 +1551,7 @@ function renderServicePanel(serviceId) {
     const snap = state.serviceStatuses[serviceId];
     const manifest = (snap && snap.manifest) || {};
     const actions = manifest.actions || [];
+    const resources = manifest.resources || [];
 
     let html = '<div class="svc-card">';
     html += `<div class="svc-card-header"><div><span class="svc-card-title">${esc(serviceId)}</span>${serviceBadgeHTML(snap, manifest)}</div><div></div></div>`;
@@ -1484,6 +1576,10 @@ function renderServicePanel(serviceId) {
         html += '</div>';
     }
 
+    for (const resource of resources) {
+        html += renderResourceSection(serviceId, resource);
+    }
+
     const err = state.serviceActionError[serviceId];
     if (err) {
         html += `<div class="svc-err">${esc(err)}</div>`;
@@ -1492,6 +1588,354 @@ function renderServicePanel(serviceId) {
     html += '</div>';
     return html;
 }
+
+// ---------------------------------------------------------------------------
+// Manifest-declared resources (manifest.resources[])
+//
+// Generic CRUD UI: each ResourceDecl renders one collapsible section with a
+// list view + Add/Edit form. The schema drives both — fields produce table
+// columns AND form inputs. Built-in records (where ProtectedField is true)
+// suppress Edit/Delete in the UI; the service must reject them server-side
+// too.
+// ---------------------------------------------------------------------------
+
+function resKey(serviceId, resourceId) { return serviceId + '|' + resourceId; }
+
+// anyResourceFormOpen reports whether any (service, resource) pair has an
+// edit/new form on screen. Drives the Inspector's form-protect guard so
+// the 2s status poll doesn't wipe in-flight keystrokes.
+function anyResourceFormOpen() {
+    for (const k of Object.keys(state.serviceResourceEditing)) {
+        if (state.serviceResourceEditing[k]) return true;
+    }
+    return false;
+}
+
+// renderResourceSection renders one resource block. Side effect: fires the
+// list IPC on first render so the count populates before the section is
+// expanded. The status poller re-runs render every 2s — the `key in
+// serviceResources` guard prevents a refetch storm.
+function renderResourceSection(serviceId, resource) {
+    const key = resKey(serviceId, resource.id);
+    const open = !!state.serviceResourceOpen[key];
+    const records = state.serviceResources[key];
+    const loaded = records !== undefined;
+
+    if (!loaded && !state.serviceResourcePending[key]) {
+        dispatchResourceOp(serviceId, resource.id, 'list', null, null);
+    }
+
+    let html = '<div class="svc-resource">';
+    html += `<div class="svc-resource-header ${open ? 'open' : 'closed'}" onclick="toggleResourceSection('${esc(serviceId)}','${esc(resource.id)}')">`;
+    html += `<span class="svc-resource-title"><span class="chevron">▼</span>${esc(resource.label)}<span class="svc-resource-count">${loaded ? '(' + records.length + ')' : '(loading…)'}</span></span>`;
+    if (open && resource.create) {
+        // stopPropagation so clicking the button doesn't also collapse the section.
+        html += `<button class="btn btn-sm" onclick="event.stopPropagation();newResourceRecord('${esc(serviceId)}','${esc(resource.id)}')">+ New</button>`;
+    }
+    html += '</div>';
+
+    if (open) {
+        html += '<div class="svc-resource-body">';
+        if (resource.help) {
+            html += `<div class="svc-resource-help">${esc(resource.help)}</div>`;
+        }
+        const err = state.serviceResourceError[key];
+        if (err) html += `<div class="svc-resource-error">${esc(err)}</div>`;
+
+        const editing = state.serviceResourceEditing[key];
+        if (editing) {
+            html += renderResourceForm(serviceId, resource);
+        } else {
+            html += renderResourceList(serviceId, resource);
+        }
+        html += '</div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+function renderResourceList(serviceId, resource) {
+    const key = resKey(serviceId, resource.id);
+    const records = state.serviceResources[key];
+    if (records === undefined) {
+        return '<div class="svc-resource-empty">Loading…</div>';
+    }
+    if (records.length === 0) {
+        return '<div class="svc-resource-empty">No records.</div>';
+    }
+    const tableColumns = resource.fields.filter(f => !f.hideInTable);
+
+    let html = '<table class="svc-table"><thead><tr>';
+    for (const f of tableColumns) {
+        html += `<th>${esc(f.label || f.id)}</th>`;
+    }
+    if (resource.update || resource.delete) {
+        html += '<th style="width:1%">actions</th>';
+    }
+    html += '</tr></thead><tbody>';
+
+    for (const rec of records) {
+        const id = rec && rec.id;
+        const protectedFlag = resource.protectedField ? !!(rec && rec[resource.protectedField]) : false;
+        html += '<tr>';
+        for (const f of tableColumns) {
+            html += `<td>${esc(formatFieldValue(rec ? rec[f.id] : null, f.type))}</td>`;
+        }
+        if (resource.update || resource.delete) {
+            html += '<td><div class="svc-actions">';
+            if (!protectedFlag && resource.update && id) {
+                html += `<button class="btn btn-sm" onclick="editResourceRecord('${esc(serviceId)}','${esc(resource.id)}','${esc(id)}')">Edit</button>`;
+            }
+            if (!protectedFlag && resource.delete && id) {
+                const label = (rec && (rec.name || rec.id)) || id;
+                html += `<button class="btn btn-sm btn-danger" onclick="deleteResourceRecord('${esc(serviceId)}','${esc(resource.id)}','${esc(id)}','${esc(label)}')">Delete</button>`;
+            }
+            html += '</div></td>';
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
+// formatFieldValue converts a record value to its table display form. Picks
+// a representation per declared field type so long lists/maps don't blow out
+// table cells.
+function formatFieldValue(v, type) {
+    if (v === null || v === undefined) return '';
+    switch (type) {
+        case 'bool':
+            return v ? 'yes' : 'no';
+        case 'string[]':
+            return Array.isArray(v) ? v.join(' ') : String(v);
+        case 'stringMap':
+            if (v && typeof v === 'object') {
+                return Object.keys(v).map(k => k + '=' + v[k]).join(' ');
+            }
+            return '';
+        default:
+            return formatScalar(v);
+    }
+}
+
+function renderResourceForm(serviceId, resource) {
+    const key = resKey(serviceId, resource.id);
+    const editing = state.serviceResourceEditing[key];
+    const form = state.serviceResourceForm[key] || {};
+    const isNew = editing === 'new';
+    const title = isNew ? 'New ' + (resource.label || 'record') : 'Edit ' + (resource.label || 'record');
+
+    let html = `<h3 style="margin-top:4px">${esc(title)}</h3>`;
+    html += '<div class="svc-resource-form">';
+    for (const f of resource.fields) {
+        if (f.readOnly && isNew) continue; // don't surface read-only fields in the new form
+        const value = form[f.id];
+        html += renderFieldInput(serviceId, resource.id, f, value, !!f.readOnly);
+    }
+    html += '</div>';
+    html += '<div class="svc-resource-form-actions">';
+    html += `<button class="btn" onclick="saveResourceForm('${esc(serviceId)}','${esc(resource.id)}')">${isNew ? 'Create' : 'Save'}</button>`;
+    html += `<button class="btn btn-danger" onclick="cancelResourceEdit('${esc(serviceId)}','${esc(resource.id)}')">Cancel</button>`;
+    html += '</div>';
+    return html;
+}
+
+function renderFieldInput(serviceId, resourceId, field, value, readOnly) {
+    const inputId = 'res-' + serviceId + '-' + resourceId + '-' + field.id;
+    const ro = readOnly ? ' disabled' : '';
+    const ph = field.placeholder ? ` placeholder="${esc(field.placeholder)}"` : '';
+    // Belt-and-suspenders against macOS smart-text substitution mangling
+    // command-line args / env values (the AppDelegate disables these via
+    // NSUserDefaults too).
+    const noFix = ' autocorrect="off" autocapitalize="off" spellcheck="false"';
+    let html = `<label>${esc(field.label || field.id)}${field.required ? ' *' : ''}</label>`;
+    switch (field.type) {
+        case 'textarea':
+            html += `<textarea id="${esc(inputId)}" rows="3"${ph}${noFix}${ro}>${esc(value || '')}</textarea>`;
+            break;
+        case 'bool':
+            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:#888">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${esc(inputId)}" ${value ? 'checked' : ''}${ro}/><span class="slider"></span></label></div>`;
+            return html; // toggle row carries its own help slot
+        case 'number':
+            html += `<input type="number" id="${esc(inputId)}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${ro}/>`;
+            break;
+        case 'string[]':
+            html += `<textarea id="${esc(inputId)}" rows="3"${ph}${noFix}${ro}>${esc(Array.isArray(value) ? value.join('\n') : (value || ''))}</textarea>`;
+            break;
+        case 'stringMap':
+            html += `<textarea id="${esc(inputId)}" rows="3" placeholder="KEY=VALUE per line"${noFix}${ro}>${esc(formatStringMapForInput(value))}</textarea>`;
+            break;
+        default: // text
+            html += `<input type="text" id="${esc(inputId)}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${noFix}${ro}/>`;
+    }
+    if (field.help) {
+        html += `<div style="color:#777;font-size:11px;margin-top:2px">${esc(field.help)}</div>`;
+    }
+    return html;
+}
+
+function formatStringMapForInput(v) {
+    if (!v || typeof v !== 'object') return '';
+    return Object.keys(v).map(k => k + '=' + v[k]).join('\n');
+}
+
+function toggleResourceSection(serviceId, resourceId) {
+    const key = resKey(serviceId, resourceId);
+    state.serviceResourceOpen[key] = !state.serviceResourceOpen[key];
+    if (state.page === 'inspector') render();
+}
+
+function newResourceRecord(serviceId, resourceId) {
+    const key = resKey(serviceId, resourceId);
+    state.serviceResourceEditing[key] = 'new';
+    state.serviceResourceForm[key] = {};
+    state.serviceResourceError[key] = null;
+    state.serviceResourceOpen[key] = true;
+    if (state.page === 'inspector') render();
+}
+
+function editResourceRecord(serviceId, resourceId, id) {
+    const key = resKey(serviceId, resourceId);
+    const records = state.serviceResources[key] || [];
+    const rec = records.find(r => r && r.id === id);
+    if (!rec) return;
+    state.serviceResourceEditing[key] = id;
+    state.serviceResourceForm[key] = JSON.parse(JSON.stringify(rec));
+    state.serviceResourceError[key] = null;
+    if (state.page === 'inspector') render();
+}
+
+function cancelResourceEdit(serviceId, resourceId) {
+    const key = resKey(serviceId, resourceId);
+    state.serviceResourceEditing[key] = null;
+    state.serviceResourceForm[key] = null;
+    state.serviceResourceError[key] = null;
+    if (state.page === 'inspector') render();
+}
+
+function deleteResourceRecord(serviceId, resourceId, id, label) {
+    if (!confirm('Delete "' + label + '"?')) return;
+    dispatchResourceOp(serviceId, resourceId, 'delete', id, null);
+}
+
+// harvestResourceForm reads each declared field's input back out of the DOM
+// into a typed object suitable for the service's create/update endpoint.
+// Returns null on validation failure (required missing) AFTER setting an
+// error message in state.
+function harvestResourceForm(serviceId, resource) {
+    const key = resKey(serviceId, resource.id);
+    const out = {};
+    const editing = state.serviceResourceEditing[key];
+    const existing = state.serviceResourceForm[key] || {};
+    for (const f of resource.fields) {
+        if (f.readOnly) {
+            // Preserve server-supplied read-only fields verbatim (e.g. builtIn)
+            // so PUT doesn't drop them. Server-side validation is still the
+            // source of truth.
+            if (f.id in existing) out[f.id] = existing[f.id];
+            continue;
+        }
+        const inputId = 'res-' + serviceId + '-' + resource.id + '-' + f.id;
+        const el = document.getElementById(inputId);
+        if (!el) continue;
+        let v;
+        switch (f.type) {
+            case 'bool':
+                v = el.checked;
+                break;
+            case 'number': {
+                const txt = el.value.trim();
+                v = txt === '' ? null : Number(txt);
+                if (txt !== '' && Number.isNaN(v)) {
+                    state.serviceResourceError[key] = (f.label || f.id) + ' must be a number';
+                    return null;
+                }
+                break;
+            }
+            case 'string[]':
+                v = el.value.split('\n').map(s => s.trim()).filter(Boolean);
+                break;
+            case 'stringMap': {
+                v = {};
+                for (const line of el.value.split('\n')) {
+                    const eq = line.indexOf('=');
+                    if (eq <= 0) continue;
+                    v[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+                }
+                break;
+            }
+            default:
+                v = el.value.trim();
+        }
+        if (f.required && (v === '' || v === null || v === undefined)) {
+            state.serviceResourceError[key] = (f.label || f.id) + ' is required';
+            return null;
+        }
+        out[f.id] = v;
+    }
+    // Carry forward the id on edit so the server can match (only relevant if
+    // the service echoes it; the path already carries it).
+    if (editing && editing !== 'new') out.id = editing;
+    return out;
+}
+
+function saveResourceForm(serviceId, resourceId) {
+    const key = resKey(serviceId, resourceId);
+    const snap = state.serviceStatuses[serviceId];
+    const manifest = (snap && snap.manifest) || {};
+    const resource = (manifest.resources || []).find(r => r.id === resourceId);
+    if (!resource) return;
+    const record = harvestResourceForm(serviceId, resource);
+    if (!record) {
+        if (state.page === 'inspector') render();
+        return;
+    }
+    const editing = state.serviceResourceEditing[key];
+    if (editing === 'new') {
+        dispatchResourceOp(serviceId, resourceId, 'create', null, record);
+    } else if (editing) {
+        dispatchResourceOp(serviceId, resourceId, 'update', editing, record);
+    }
+}
+
+function dispatchResourceOp(serviceId, resourceId, op, id, record) {
+    const key = resKey(serviceId, resourceId);
+    state.serviceResourcePending[key] = true;
+    const msg = { type: 'service_resource', serviceId: serviceId, resourceId: resourceId, op: op };
+    if (id) msg.id = id;
+    if (record) msg.record = record;
+    ipc(JSON.stringify(msg));
+}
+
+window.onServiceResourceResult = function(result) {
+    if (!result) return;
+    const key = resKey(result.serviceId, result.resourceId);
+    state.serviceResourcePending[key] = false;
+    if (!result.ok) {
+        state.serviceResourceError[key] = result.error || (result.op + ' failed');
+        if (state.page === 'inspector') render('push');
+        return;
+    }
+    state.serviceResourceError[key] = null;
+    switch (result.op) {
+        case 'list':
+            state.serviceResources[key] = Array.isArray(result.body) ? result.body : [];
+            break;
+        case 'create':
+        case 'update':
+            // Close the form and re-list to pick up server-applied defaults
+            // (timestamps, computed fields, etc.).
+            state.serviceResourceEditing[key] = null;
+            state.serviceResourceForm[key] = null;
+            dispatchResourceOp(result.serviceId, result.resourceId, 'list', null, null);
+            return; // render will fire when the list result lands
+        case 'delete':
+            dispatchResourceOp(result.serviceId, result.resourceId, 'list', null, null);
+            return;
+    }
+    if (state.page === 'inspector') render('push');
+};
 
 // renderStatusPayload walks a free-form JSON object and emits a key/value
 // list for scalars + a table for any top-level array. forEach actions
@@ -1592,11 +2036,27 @@ function renderActionButton(serviceId, action, row) {
         + `>${label}</button>`;
 }
 
+// Delegated handler for Service Inspector action buttons. Wrapped in
+// try/catch so a malformed data-row (or a bug in dispatchServiceAction)
+// can't poison the document click queue — the listener stays subscribed
+// for subsequent clicks even when one click fails.
 document.addEventListener('click', function(e) {
-    const btn = e.target.closest && e.target.closest('.svc-action-btn');
-    if (!btn || btn.disabled) return;
-    const row = btn.dataset.row ? JSON.parse(btn.dataset.row) : null;
-    dispatchServiceAction(btn.dataset.svc, btn.dataset.action, row);
+    try {
+        const btn = e.target.closest && e.target.closest('.svc-action-btn');
+        if (!btn || btn.disabled) return;
+        let row = null;
+        if (btn.dataset.row) {
+            try {
+                row = JSON.parse(btn.dataset.row);
+            } catch (parseErr) {
+                console.warn('svc-action-btn: bad data-row JSON', btn.dataset.row, parseErr);
+                return;
+            }
+        }
+        dispatchServiceAction(btn.dataset.svc, btn.dataset.action, row);
+    } catch (err) {
+        console.error('svc-action-btn click handler failed', err);
+    }
 });
 
 function isAnyActionPending(serviceId, actions, rowKey) {
@@ -1609,7 +2069,9 @@ function isAnyActionPending(serviceId, actions, rowKey) {
 function dispatchServiceAction(serviceId, actionId, row) {
     const rowKey = row ? JSON.stringify(row) : '';
     state.serviceActionPending[serviceId + '|' + actionId + '|' + rowKey] = true;
-    if (state.page === 'inspector') render();
+    // 'push'-tagged so an action click in the status table doesn't wipe a
+    // resource form the user happens to have open further down the panel.
+    if (state.page === 'inspector') render('push');
     ipc(JSON.stringify({
         type: 'service_action',
         serviceId: serviceId,
@@ -1654,7 +2116,7 @@ window.onServiceStatusBatch = function(batch) {
         next[snap.serviceId] = snap;
     }
     state.serviceStatuses = next;
-    if (state.page === 'inspector') render();
+    if (state.page === 'inspector') render('push');
 };
 
 window.onServiceActionResult = function(result) {
@@ -1666,7 +2128,7 @@ window.onServiceActionResult = function(result) {
     } else {
         state.serviceActionError[result.serviceId] = result.error || 'action failed';
     }
-    if (state.page === 'inspector') render();
+    if (state.page === 'inspector') render('push');
 };
 
 render();

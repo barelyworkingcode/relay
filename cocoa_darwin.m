@@ -58,6 +58,20 @@ static SettingsWindowController *settingsCtrl = nil;
 @implementation AppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     // No dock icon, no activation -- handled by LSUIElement in Info.plist
+    //
+    // Disable macOS text substitutions inside any text field we host.
+    // WKWebView text inputs inherit these from NSTextInputContext, and the
+    // dash substitution silently turns command-line args like
+    // "--dangerously-skip-permissions" into "—dangerously-skip-permissions"
+    // (em dash), breaking flag parsing for spawned binaries.
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
+        @"NSAutomaticDashSubstitutionEnabled":     @NO,
+        @"NSAutomaticQuoteSubstitutionEnabled":    @NO,
+        @"NSAutomaticPeriodSubstitutionEnabled":   @NO,
+        @"NSAutomaticTextReplacementEnabled":      @NO,
+        @"NSAutomaticSpellingCorrectionEnabled":   @NO,
+        @"NSAutomaticCapitalizationEnabled":       @NO,
+    }];
 }
 - (void)applicationWillTerminate:(NSNotification *)notification {
     goOnAppTerminate();
