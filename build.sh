@@ -67,17 +67,24 @@ cat Info.plist > "$STAGE/$APP/Contents/Info.plist"
 mkdir -p "$STAGE/$APP/Contents/Resources"
 cp AppIcon.icns "$STAGE/$APP/Contents/Resources/AppIcon.icns"
 
-# Code signing -- per-binary, innermost first
-IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep -o '"[^"]*"' | head -1 | tr -d '"' || true)
+# Code signing -- per-binary, innermost first.
+# Both branches enable hardened runtime so dev builds catch the same entitlement
+# / JIT / dlopen issues that would otherwise only surface at notarization time.
+# RELAY_SIGN_IDENTITY lets you pin a specific cert when multiple are present.
+IDENTITY="${RELAY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep -o '"[^"]*"' | head -1 | tr -d '"' || true)}"
 if [ -n "$IDENTITY" ]; then
     echo "Signing with: $IDENTITY"
-    codesign --force --sign "$IDENTITY" --entitlements Relay.entitlements --options runtime "$STAGE/$APP/Contents/MacOS/relay"
-    codesign --force --sign "$IDENTITY" --entitlements Relay.entitlements --options runtime "$STAGE/$APP"
+    SIGN_ARGS=(--force --sign "$IDENTITY" --entitlements Relay.entitlements --options runtime --timestamp)
 else
     echo "No Developer ID found, ad-hoc signing"
-    codesign --force --sign - --entitlements Relay.entitlements "$STAGE/$APP/Contents/MacOS/relay"
-    codesign --force --sign - --entitlements Relay.entitlements "$STAGE/$APP"
+    # Ad-hoc can't --timestamp (no cert authority), but runtime stays on for parity.
+    SIGN_ARGS=(--force --sign - --entitlements Relay.entitlements --options runtime)
 fi
+codesign "${SIGN_ARGS[@]}" "$STAGE/$APP/Contents/MacOS/relay"
+codesign "${SIGN_ARGS[@]}" "$STAGE/$APP"
+
+# Fail fast on malformed signatures rather than at launch / notarization.
+codesign --verify --deep --strict --verbose=2 "$STAGE/$APP"
 
 # Move to destination
 rm -rf "$DEST"
