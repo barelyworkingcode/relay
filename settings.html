@@ -367,6 +367,11 @@ function renderMcpServers() {
                 html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
             }
         }
+        if (mcp.tcc_services && mcp.tcc_services.length > 0) {
+            const busy = state.resettingMcpPermissions === mcp.id;
+            const label = busy ? 'Resetting…' : 'Reset Permissions';
+            html += `<button class="btn btn-sm" onclick="resetMcpPermissions('${esc(mcp.id)}')" ${busy ? 'disabled' : ''}>${label}</button>`;
+        }
         html += `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>`;
         html += '</div></div>';
         if (isHTTP) {
@@ -635,6 +640,45 @@ window.onExternalMcpError = function(msg) {
 window.onExternalMcpRemoved = function(id) {
     state.externalMcps = state.externalMcps.filter(m => m.id !== id);
     renderMcpPush(false);
+};
+
+// Reset TCC permissions for an MCP. The backend clears tccutil entries for
+// each declared service and re-spawns the MCP with --request-permissions —
+// the spawn uses the same exec.Command shape as normal stdio MCP startup so
+// TCC attributes the resulting prompts to the same responsible parent (relay
+// tray) that the MCP runs under at runtime. The user should approve any
+// system dialogs that appear while this is running.
+function resetMcpPermissions(id) {
+    const mcp = state.externalMcps.find(m => m.id === id);
+    if (!mcp) return;
+    const services = (mcp.tcc_services || []).join(', ');
+    if (!confirm('Reset TCC permissions for "' + mcp.display_name + '"?\n\n' +
+        'This clears existing grants for: ' + services + '\n' +
+        'Then launches the MCP with --request-permissions to trigger fresh prompts.\n\n' +
+        'Approve any system dialogs that appear after clicking OK. Can take up to 60s.')) return;
+    state.resettingMcpPermissions = id;
+    renderMcpPush(false);
+    ipc(JSON.stringify({ type: 'reset_mcp_permissions', id }));
+}
+
+window.onMcpPermissionsReset = function(id, result) {
+    state.resettingMcpPermissions = null;
+    renderMcpPush(false);
+    if (!result || !result.ok) {
+        alert('Reset failed: ' + (result && result.error ? result.error : 'unknown error'));
+        return;
+    }
+    let summary = 'Reset permissions for bundle ' + result.bundle_id + '\n\n';
+    if (result.reset_services && result.reset_services.length) {
+        summary += 'Cleared: ' + result.reset_services.join(', ') + '\n\n';
+    }
+    if (result.skipped_reasons && result.skipped_reasons.length) {
+        summary += 'Skipped:\n  ' + result.skipped_reasons.join('\n  ') + '\n\n';
+    }
+    if (result.spawn_output) {
+        summary += '--- MCP --request-permissions output ---\n' + result.spawn_output;
+    }
+    alert(summary);
 };
 
 function renderServices() {

@@ -229,9 +229,10 @@ type ipcUpdateServiceAutostartMsg struct {
 // ---------------------------------------------------------------------------
 
 const (
-	MsgAddExternalMcp    = "add_external_mcp"
-	MsgAuthenticateMcp   = "authenticate_mcp"
-	MsgRemoveExternalMcp = "remove_external_mcp"
+	MsgAddExternalMcp        = "add_external_mcp"
+	MsgAuthenticateMcp       = "authenticate_mcp"
+	MsgRemoveExternalMcp     = "remove_external_mcp"
+	MsgResetMcpPermissions   = "reset_mcp_permissions"
 
 	MsgAddService             = "add_service"
 	MsgRemoveService          = "remove_service"
@@ -256,10 +257,11 @@ const (
 
 // ipcHandlers maps message types to handler functions.
 var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
-	// External MCPs (ipc_mcps.go)
-	MsgAddExternalMcp:    ipcAddExternalMcp,
-	MsgAuthenticateMcp:   ipcAuthenticateMcp,
-	MsgRemoveExternalMcp: ipcRemoveExternalMcp,
+	// External MCPs (ipc_mcps.go, ipc_mcp_permissions.go)
+	MsgAddExternalMcp:      ipcAddExternalMcp,
+	MsgAuthenticateMcp:     ipcAuthenticateMcp,
+	MsgRemoveExternalMcp:   ipcRemoveExternalMcp,
+	MsgResetMcpPermissions: ipcResetMcpPermissions,
 
 	// Services (ipc_services.go)
 	MsgAddService:             ipcAddService,
