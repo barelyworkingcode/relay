@@ -26,7 +26,7 @@ extern void goOnAppTerminate(void);
 // ---------------------------------------------------------------------------
 // Settings window delegate
 // ---------------------------------------------------------------------------
-@interface SettingsWindowController : NSObject <NSWindowDelegate>
+@interface SettingsWindowController : NSObject <NSWindowDelegate, WKUIDelegate>
 @property (strong) NSWindow *window;
 @property (strong) WKWebView *webView;
 @property (strong) IpcHandler *ipcHandler;
@@ -45,6 +45,57 @@ static SettingsWindowController *settingsCtrl = nil;
     self.webView = nil;
     self.window = nil;
     settingsCtrl = nil;
+}
+
+// WKWebView suppresses window.alert / confirm / prompt by default; the host
+// must implement these WKUIDelegate methods or the calls silently no-op,
+// which means existing Settings-UI confirm() guards (delete project, rotate
+// token, reset MCP permissions) all run as if the user clicked "Cancel".
+// We wire them to plain NSAlert so they behave as the JS expects.
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptAlertPanelWithMessage:(NSString *)message
+                      initiatedByFrame:(WKFrameInfo *)frame
+                     completionHandler:(void (^)(void))completionHandler {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Relay";
+    alert.informativeText = message;
+    [alert addButtonWithTitle:@"OK"];
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse _) {
+        completionHandler();
+    }];
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptConfirmPanelWithMessage:(NSString *)message
+                        initiatedByFrame:(WKFrameInfo *)frame
+                       completionHandler:(void (^)(BOOL result))completionHandler {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Relay";
+    alert.informativeText = message;
+    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        completionHandler(response == NSAlertFirstButtonReturn);
+    }];
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+                              defaultText:(NSString *)defaultText
+                         initiatedByFrame:(WKFrameInfo *)frame
+                        completionHandler:(void (^)(NSString * _Nullable result))completionHandler {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Relay";
+    alert.informativeText = prompt;
+    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 24)];
+    input.stringValue = defaultText ?: @"";
+    alert.accessoryView = input;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        completionHandler(response == NSAlertFirstButtonReturn ? input.stringValue : nil);
+    }];
 }
 @end
 
@@ -456,6 +507,9 @@ void cocoa_open_settings(const char* html) {
 
     WKWebView *webView = [[WKWebView alloc] initWithFrame:window.contentView.bounds configuration:config];
     webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    // SettingsWindowController implements WKUIDelegate so JS alert / confirm /
+    // prompt actually surface as NSAlert sheets (default is silent no-op).
+    webView.UIDelegate = settingsCtrl;
     settingsCtrl.webView = webView;
 
     [window.contentView addSubview:webView];
