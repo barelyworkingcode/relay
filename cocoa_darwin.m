@@ -593,36 +593,24 @@ void cocoa_end_foreground_activation(void) {
 
 int cocoa_request_tcc_calendar(int timeoutSec) {
     EKAuthorizationStatus status = [EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent];
-    NSLog(@"relay-tcc: calendar request entered, status=%ld", (long)status);
     if (status == EKAuthorizationStatusFullAccess || status == EKAuthorizationStatusAuthorized) return 1;
-    if (status != EKAuthorizationStatusNotDetermined) {
-        NSLog(@"relay-tcc: calendar status is non-prompting (%ld), returning 0", (long)status);
-        return 0;
-    }
+    if (status != EKAuthorizationStatusNotDetermined) return 0;
 
     EKEventStore *store = [[EKEventStore alloc] init];
     __block BOOL ok = NO;
-    __block BOOL completed = NO;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    NSLog(@"relay-tcc: calendar calling requestFullAccessToEvents...");
     if (@available(macOS 14.0, *)) {
-        [store requestFullAccessToEventsWithCompletion:^(BOOL granted, NSError *err) {
+        [store requestFullAccessToEventsWithCompletion:^(BOOL granted, NSError *_) {
             ok = granted;
-            completed = YES;
-            NSLog(@"relay-tcc: calendar completion fired, granted=%d, err=%@", granted, err);
             dispatch_semaphore_signal(sem);
         }];
     } else {
-        [store requestAccessToEntityType:EKEntityTypeEvent completion:^(BOOL granted, NSError *err) {
+        [store requestAccessToEntityType:EKEntityTypeEvent completion:^(BOOL granted, NSError *_) {
             ok = granted;
-            completed = YES;
-            NSLog(@"relay-tcc: calendar (legacy) completion fired, granted=%d, err=%@", granted, err);
             dispatch_semaphore_signal(sem);
         }];
     }
-    int signaled = wait_for_completion(sem, timeoutSec);
-    NSLog(@"relay-tcc: calendar wait returned signaled=%d completed=%d ok=%d", signaled, completed, ok);
-    if (!signaled) return 0;
+    if (!wait_for_completion(sem, timeoutSec)) return 0;
     return ok ? 1 : 0;
 }
 
@@ -651,27 +639,17 @@ int cocoa_request_tcc_reminders(int timeoutSec) {
 
 int cocoa_request_tcc_contacts(int timeoutSec) {
     CNAuthorizationStatus status = [CNContactStore authorizationStatusForEntityType:CNEntityTypeContacts];
-    NSLog(@"relay-tcc: contacts request entered, status=%ld", (long)status);
     if (status == CNAuthorizationStatusAuthorized) return 1;
-    if (status != CNAuthorizationStatusNotDetermined) {
-        NSLog(@"relay-tcc: contacts status is non-prompting (%ld), returning 0", (long)status);
-        return 0;
-    }
+    if (status != CNAuthorizationStatusNotDetermined) return 0;
 
     CNContactStore *store = [[CNContactStore alloc] init];
     __block BOOL ok = NO;
-    __block BOOL completed = NO;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    NSLog(@"relay-tcc: contacts calling requestAccessForEntityType...");
-    [store requestAccessForEntityType:CNEntityTypeContacts completionHandler:^(BOOL granted, NSError *err) {
+    [store requestAccessForEntityType:CNEntityTypeContacts completionHandler:^(BOOL granted, NSError *_) {
         ok = granted;
-        completed = YES;
-        NSLog(@"relay-tcc: contacts completion fired, granted=%d, err=%@", granted, err);
         dispatch_semaphore_signal(sem);
     }];
-    int signaled = wait_for_completion(sem, timeoutSec);
-    NSLog(@"relay-tcc: contacts wait returned signaled=%d completed=%d ok=%d", signaled, completed, ok);
-    if (!signaled) return 0;
+    if (!wait_for_completion(sem, timeoutSec)) return 0;
     return ok ? 1 : 0;
 }
 
