@@ -66,13 +66,19 @@ func (a *App) pushServiceStatus() {
 
 // pushFullSettings sends the complete settings state to an open settings window.
 // Called when external changes (CLI commands via bridge) modify settings.json.
+//
+// mcp_tool_cache is included so the MCP Servers tab's tool counts (and the
+// Projects picker) reflect the current live connection state after MCP
+// adds/removes/auth — discovered_tools is runtime-only and never serialized
+// on ExternalMcp itself.
 func (a *App) pushFullSettings() {
 	s := a.store.Get()
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
-		"external_mcps": s.ExternalMcps,
-		"services":      s.Services,
-		"running_ids":   a.registry.RunningIDs(),
-		"projects":      s.Projects,
+		"external_mcps":  s.ExternalMcps,
+		"services":       s.Services,
+		"running_ids":    a.registry.RunningIDs(),
+		"projects":       s.Projects,
+		"mcp_tool_cache": a.buildToolCache(s),
 	})
 }
 
