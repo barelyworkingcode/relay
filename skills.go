@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"relaygo/bridge"
 	"relaygo/mcp"
@@ -313,11 +314,22 @@ func synthesizeDescription(bucketKey string, tools []mcp.Tool) string {
 		fmt.Fprintf(&b, " Use this skill whenever the user's request relates to %s — e.g. %s.", strings.ToLower(bucketKey), trigger)
 	}
 
-	out := b.String()
+	// Collapse whitespace first so the byte budget reflects the final form.
+	out := oneLine(b.String())
 	if len(out) > descMaxLen {
-		out = strings.TrimSpace(out[:descMaxLen-1]) + "…"
+		// Truncate on a UTF-8 rune boundary — descriptions carry multi-byte
+		// runes (em-dashes, ellipses, accents) harvested from tool text, and a
+		// byte-index cut could split one, emitting invalid UTF-8 into the very
+		// YAML frontmatter this skill feeds to strict parsers.
+		cut := descMaxLen - len("…")
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = strings.TrimSpace(out[:cut]) + "…"
 	}
-	return yamlEscape(oneLine(out))
+	// Escape last, over the complete (already-truncated) string, so the
+	// double-quoted scalar can never end on a half-written escape sequence.
+	return yamlEscape(out)
 }
 
 // nameToPhrase turns a tool name into a short English capability phrase:
