@@ -14,9 +14,40 @@ import (
 	"sync/atomic"
 	"time"
 
+	"relaygo/bridge"
 	"relaygo/jsonrpc"
 	"relaygo/mcp"
 )
+
+// progressConn is the optional capability of an McpConnection that can route
+// MCP notifications/progress back to a per-call handler. Only the stdio
+// connection implements it; HTTP/mock connections simply don't, and progress
+// is silently skipped for them (type assertion fails).
+type progressConn interface {
+	registerProgress(token string, fn func(json.RawMessage))
+	unregisterProgress(token string)
+}
+
+// progressTokenSeq backs newProgressToken — a process-wide unique counter so
+// concurrent calls on the same connection get distinct progress tokens.
+var progressTokenSeq atomic.Int64
+
+func newProgressToken() string {
+	return fmt.Sprintf("relay-prog-%d", progressTokenSeq.Add(1))
+}
+
+// progressTokenString normalizes a JSON progressToken (string or number) to
+// the string form relay uses as its map key.
+func progressTokenString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return fmt.Sprintf("%v", t)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
 
 
 // McpConnection abstracts a connection to an external MCP server (stdio or HTTP).
@@ -85,12 +116,55 @@ type externalMcpConn struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu      sync.Mutex // protects writes to stdin and pending map
-	pending map[int64]*pendingResponse
+	mu       sync.Mutex // protects writes to stdin, the pending map, and progress
+	pending  map[int64]*pendingResponse
+	progress map[string]func(json.RawMessage) // progressToken → handler (per in-flight call)
 
 	readerDone chan struct{} // closed when the reader goroutine exits
 	readerErr  error        // set before readerDone is closed
 	closeOnce  sync.Once    // ensures Close is idempotent
+}
+
+// registerProgress installs a per-call handler keyed by progressToken; the
+// reader goroutine routes matching notifications/progress to it.
+func (c *externalMcpConn) registerProgress(token string, fn func(json.RawMessage)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.progress == nil {
+		c.progress = make(map[string]func(json.RawMessage))
+	}
+	c.progress[token] = fn
+}
+
+func (c *externalMcpConn) unregisterProgress(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.progress, token)
+}
+
+// routeNotification dispatches a JSON-RPC notification (no ID) from the server.
+// Only notifications/progress are handled; anything else is ignored, matching
+// the previous drop-everything behavior.
+func (c *externalMcpConn) routeNotification(line []byte) {
+	var note struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(line, &note); err != nil || note.Method != mcp.MethodProgress {
+		return
+	}
+	var tok struct {
+		ProgressToken interface{} `json:"progressToken"`
+	}
+	if err := json.Unmarshal(note.Params, &tok); err != nil {
+		return
+	}
+	c.mu.Lock()
+	fn := c.progress[progressTokenString(tok.ProgressToken)]
+	c.mu.Unlock()
+	if fn != nil {
+		fn(note.Params)
+	}
 }
 
 // handshakeResult holds the results of an MCP initialize + tools/list sequence.
@@ -443,12 +517,33 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		}
 		params["arguments"] = arguments
 	}
+
+	metaMap := map[string]interface{}{}
 	if len(meta) > 0 && string(meta) != "null" {
-		var metaObj interface{}
-		if err := json.Unmarshal(meta, &metaObj); err != nil {
+		if err := json.Unmarshal(meta, &metaMap); err != nil {
 			return nil, fmt.Errorf("invalid tool context metadata: %w", err)
 		}
-		params["_meta"] = metaObj
+	}
+
+	// If the caller wants progress and this connection can route it, allocate
+	// a progressToken, advertise it to the server via _meta, and bridge inbound
+	// notifications/progress to the caller's sink for the duration of the call.
+	if sink := bridge.ProgressFromContext(ctx); sink != nil {
+		if pc, ok := conn.(progressConn); ok {
+			token := newProgressToken()
+			metaMap["progressToken"] = token
+			pc.registerProgress(token, func(raw json.RawMessage) {
+				var u bridge.ProgressUpdate
+				if err := json.Unmarshal(raw, &u); err == nil {
+					sink(u)
+				}
+			})
+			defer pc.unregisterProgress(token)
+		}
+	}
+
+	if len(metaMap) > 0 {
+		params["_meta"] = metaMap
 	}
 
 	resp, err := conn.SendRequest(ctx, mcp.MethodToolsCall, params)
@@ -557,7 +652,10 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 			continue
 		}
 		if resp.ID == nil {
-			continue // skip notifications
+			// Server→client notification (e.g. notifications/progress). Route
+			// it to any registered per-call handler; ignore otherwise.
+			c.routeNotification(line)
+			continue
 		}
 
 		respID, ok := jsonrpc.RespIDToInt64(resp.ID)

@@ -11,6 +11,10 @@ const (
 	MethodInitialized = "notifications/initialized"
 	MethodToolsList   = "tools/list"
 	MethodToolsCall   = "tools/call"
+	// MethodProgress is the standard MCP server→client progress notification.
+	// A client opts in by including _meta.progressToken on a request; the
+	// server then emits these referencing that token.
+	MethodProgress = "notifications/progress"
 )
 
 // Tool represents an MCP tool definition.

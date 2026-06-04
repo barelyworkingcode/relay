@@ -5,20 +5,38 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"relaygo/bridge"
 	"relaygo/jsonrpc"
 )
 
 // RunMCPServer runs the MCP stdio server, bridging JSON-RPC to the bridge client.
+//
+// tools/call requests are handled on their own goroutine so a long-running
+// call (e.g. image generation, minutes) doesn't block other tool calls or the
+// progress notifications it streams. All stdout writes go through a single
+// mutex-guarded emit so concurrent responses/notifications never interleave.
+// The handshake methods (initialize / tools/list / notifications) stay inline
+// to preserve their natural ordering.
 func RunMCPServer(token string) error {
 	client := bridge.NewClient(token)
 
 	scanner := bridge.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
+	var writeMu sync.Mutex
+	emit := func(v interface{}) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := encoder.Encode(v); err != nil {
+			slog.Error("failed to write response", "error", err)
+		}
+	}
 
+	var wg sync.WaitGroup
 	for scanner.Scan() {
-		line := scanner.Bytes()
+		// Copy: scanner reuses its buffer, and tools/call handling runs async.
+		line := append([]byte(nil), scanner.Bytes()...)
 		if len(line) == 0 {
 			continue
 		}
@@ -26,20 +44,26 @@ func RunMCPServer(token string) error {
 		var req jsonrpc.ServerRequest
 		if err := json.Unmarshal(line, &req); err != nil {
 			slog.Error("failed to parse request", "error", err)
-			_ = encoder.Encode(rpcError(nil, jsonrpc.CodeParseError, "parse error: "+err.Error()))
+			emit(rpcError(nil, jsonrpc.CodeParseError, "parse error: "+err.Error()))
 			continue
 		}
 
-		resp := handleMethod(client, &req)
-		if resp == nil {
-			// Notification, no response needed.
+		if req.Method == MethodToolsCall && req.ID != nil {
+			wg.Add(1)
+			reqCopy := req
+			go func() {
+				defer wg.Done()
+				handleToolsCall(client, &reqCopy, emit)
+			}()
 			continue
 		}
-		if err := encoder.Encode(resp); err != nil {
-			slog.Error("failed to write response", "error", err)
+
+		if resp := handleMethod(client, &req); resp != nil {
+			emit(resp)
 		}
 	}
 
+	wg.Wait()
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("stdin read error: %w", err)
 	}
@@ -87,10 +111,10 @@ func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Re
 		}
 		return handleToolsList(client, req)
 	case MethodToolsCall:
-		if req.ID == nil {
-			return nil
-		}
-		return handleToolsCall(client, req)
+		// tools/call is routed to its own goroutine in RunMCPServer (so it can
+		// stream progress). Reaching here means a malformed notification-form
+		// tools/call (no ID) — nothing to reply to.
+		return nil
 	default:
 		// JSON-RPC 2.0: servers MUST NOT reply to notifications (no ID).
 		if req.ID == nil {
@@ -126,27 +150,58 @@ func handleToolsList(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc
 	return rpcResult(req.ID, data, err)
 }
 
-func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
+// handleToolsCall proxies a tools/call to the bridge and writes the result via
+// emit. If the caller included _meta.progressToken, downstream progress is
+// streamed back as notifications/progress referencing that same token.
+func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest, emit func(interface{})) {
 	var params struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
+		Meta      struct {
+			ProgressToken interface{} `json:"progressToken"`
+		} `json:"_meta"`
 	}
 	if req.Params != nil {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return rpcError(req.ID, jsonrpc.CodeInvalidParams, "invalid params: "+err.Error())
+			emit(rpcError(req.ID, jsonrpc.CodeInvalidParams, "invalid params: "+err.Error()))
+			return
 		}
 	}
 	if params.Name == "" {
-		return rpcError(req.ID, jsonrpc.CodeInvalidParams, "missing required parameter: name")
+		emit(rpcError(req.ID, jsonrpc.CodeInvalidParams, "missing required parameter: name"))
+		return
 	}
 	if params.Arguments == nil {
 		params.Arguments = json.RawMessage("{}")
 	}
 
-	result, err := client.CallTool(params.Name, params.Arguments)
+	var onProgress func(bridge.ProgressUpdate)
+	if token := params.Meta.ProgressToken; token != nil {
+		onProgress = func(u bridge.ProgressUpdate) {
+			emit(progressNotification(token, u))
+		}
+	}
+
+	result, err := client.CallToolStreaming(params.Name, params.Arguments, onProgress)
 	if err != nil {
 		slog.Error("CallTool failed", "tool", params.Name, "error", err)
-		return rpcError(req.ID, jsonrpc.CodeInternalError, err.Error())
+		emit(rpcError(req.ID, jsonrpc.CodeInternalError, err.Error()))
+		return
 	}
-	return rpcResult(req.ID, json.RawMessage(result), nil)
+	emit(rpcResult(req.ID, json.RawMessage(result), nil))
+}
+
+// progressNotification builds an MCP notifications/progress message (no ID)
+// referencing the caller's progressToken.
+func progressNotification(token interface{}, u bridge.ProgressUpdate) jsonrpc.Request {
+	return jsonrpc.Request{
+		JSONRPC: jsonrpcVersion,
+		Method:  MethodProgress,
+		Params: map[string]interface{}{
+			"progressToken": token,
+			"progress":      u.Progress,
+			"total":         u.Total,
+			"message":       u.Message,
+		},
+	}
 }

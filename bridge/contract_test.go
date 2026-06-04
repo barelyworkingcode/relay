@@ -33,11 +33,12 @@ type stubRouter struct {
 	listToolsResponse json.RawMessage
 	listToolsErr      error
 
-	callToolNames []string
-	callToolArgs  []json.RawMessage
-	callToolToks  []string
-	callToolResp  json.RawMessage
-	callToolErr   error
+	callToolNames    []string
+	callToolArgs     []json.RawMessage
+	callToolToks     []string
+	callToolResp     json.RawMessage
+	callToolErr      error
+	callToolProgress []ProgressUpdate // emitted via the ctx sink before the result
 
 	validateAdminToks []string
 	validateAdminErr  error
@@ -73,12 +74,20 @@ func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage
 	return s.listToolsResponse, s.listToolsErr
 }
 
-func (s *stubRouter) CallTool(_ context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
+	s.mu.Lock()
 	s.callToolNames = append(s.callToolNames, name)
 	s.callToolArgs = append(s.callToolArgs, args)
 	s.callToolToks = append(s.callToolToks, token)
-	return s.callToolResp, s.callToolErr
+	prog := s.callToolProgress
+	resp, err := s.callToolResp, s.callToolErr
+	s.mu.Unlock()
+	if sink := ProgressFromContext(ctx); sink != nil {
+		for _, u := range prog {
+			sink(u)
+		}
+	}
+	return resp, err
 }
 
 func (s *stubRouter) ValidateAdmin(token string) error {
@@ -212,6 +221,44 @@ func TestContract_CallTool(t *testing.T) {
 	}
 	if string(router.callToolArgs[0]) != `{"foo":"bar"}` {
 		t.Fatalf("args not forwarded: %s", router.callToolArgs[0])
+	}
+}
+
+func TestContract_CallToolStreamsProgress(t *testing.T) {
+	router := &stubRouter{
+		callToolResp: json.RawMessage(`{"ok":true}`),
+		callToolProgress: []ProgressUpdate{
+			{Message: "queued", Progress: 1, Total: 3},
+			{Message: "generating", Progress: 2, Total: 3},
+		},
+	}
+	sock := startTestBridge(t, router)
+	c := &Client{sockPath: sock, token: "proj-token"}
+
+	var got []ProgressUpdate
+	result, err := c.CallToolStreaming("generate_image", json.RawMessage(`{}`), func(u ProgressUpdate) {
+		got = append(got, u)
+	})
+	if err != nil {
+		t.Fatalf("CallToolStreaming: %v", err)
+	}
+	if string(result) != `{"ok":true}` {
+		t.Fatalf("terminal result mismatch: %s", result)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 progress frames before the result, got %d: %+v", len(got), got)
+	}
+	if got[0].Message != "queued" || got[1].Message != "generating" || got[1].Progress != 2 {
+		t.Fatalf("progress frames out of order or malformed: %+v", got)
+	}
+
+	// Plain CallTool must still work (progress frames silently discarded).
+	result2, err := c.CallTool("generate_image", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if string(result2) != `{"ok":true}` {
+		t.Fatalf("result2 mismatch: %s", result2)
 	}
 }
 
