@@ -136,6 +136,37 @@ func TestSynthesizeDescription_CapabilityKeywords(t *testing.T) {
 	}
 }
 
+// TestRenderBucketSkillMd_DescriptionIsYAMLQuoted guards the bug where the
+// synthesized description (which contains "(via the relay CLI): " — a colon +
+// space) was emitted unquoted and read by strict YAML parsers (Pi.dev) as a
+// nested mapping, breaking skill loading.
+func TestRenderBucketSkillMd_DescriptionIsYAMLQuoted(t *testing.T) {
+	bucket := SkillBucket{Key: "Weather", Slug: "weather", Tools: []mcp.Tool{
+		{Name: "weather_current", Description: "Get the current weather for a location."},
+		{Name: "weather_forecast", Description: "Get the forecast."},
+	}}
+	out := renderBucketSkillMd(Project{Name: "p", Token: "t"}, bucket)
+
+	var descLine string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "description:") {
+			descLine = l
+			break
+		}
+	}
+	if descLine == "" {
+		t.Fatalf("no description frontmatter line:\n%s", out)
+	}
+	val := strings.TrimSpace(strings.TrimPrefix(descLine, "description:"))
+	if !strings.HasPrefix(val, "\"") || !strings.HasSuffix(val, "\"") {
+		t.Fatalf("description must be double-quoted for YAML safety; got: %s", descLine)
+	}
+	// Sanity: the value really does contain the colon-space that necessitated quoting.
+	if !strings.Contains(val, "): ") {
+		t.Fatalf("expected a colon-space inside the description (the case quoting protects); got: %s", descLine)
+	}
+}
+
 func TestSynthesizeDescription_EmptyToolsIsHarmless(t *testing.T) {
 	if got := synthesizeDescription("Empty", nil); got == "" {
 		t.Fatal("expected a non-empty headline even with no tools")
