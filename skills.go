@@ -244,7 +244,8 @@ func renderBucketSkillMd(proj Project, bucket SkillBucket) string {
 	fmt.Fprintf(&b, "**Relay binary path:** `%s` (use this absolute path — relay is not on $PATH by default)\n\n", relayBin)
 
 	fmt.Fprintf(&b, "## Invocation\n\n")
-	fmt.Fprintf(&b, "```\n%s mcp call --list                          # enumerate tools\n%s mcp call --list --schema                 # enumerate with input schemas (JSON)\n%s mcp call --tool <NAME> --args '<JSON>'   # invoke a tool\n```\n\n", relayBin, relayBin, relayBin)
+	fmt.Fprintf(&b, "```\n%s mcp call --list                          # enumerate tools\n%s mcp call --list --schema                 # enumerate with input schemas (JSON)\n%s mcp call --tool <NAME> --args '<JSON>'   # invoke a tool\n%s mcp call --tool <NAME> --args-file <F>   # args JSON from a file (or '-' for stdin)\n```\n\n", relayBin, relayBin, relayBin, relayBin)
+	fmt.Fprintf(&b, "When arguments contain quotes, apostrophes (e.g. \"Van Gogh's\"), or parentheses, write the JSON to a file and pass `--args-file <file>` (or pipe it via `--args-file -`) instead of inline `--args` — this avoids shell-quoting errors.\n\n")
 
 	fmt.Fprintf(&b, "## Tools (%d)\n\n", len(sorted))
 	for _, t := range sorted {

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"relaygo/bridge"
 	"relaygo/mcp"
@@ -17,6 +19,7 @@ func runMcpExec(args []string) {
 	schema := fs.Bool("schema", false, "with --list, emit JSON including each tool's input schema")
 	tool := fs.String("tool", "", "tool name to call")
 	toolArgs := fs.String("args", "", "tool arguments as JSON")
+	argsFile := fs.String("args-file", "", "read tool arguments JSON from a file, or '-' for stdin (avoids shell-quoting issues with quotes/apostrophes/parens)")
 	fs.Parse(args)
 
 	if *token == "" {
@@ -79,14 +82,36 @@ func runMcpExec(args []string) {
 		return
 	}
 
-	// Call tool.
-	var argsJSON json.RawMessage
-	if *toolArgs != "" {
-		if !json.Valid([]byte(*toolArgs)) {
-			fmt.Fprintf(os.Stderr, "error: invalid --args JSON\n")
+	// Call tool. Arguments come from --args-file (a path, or "-" for stdin) or
+	// inline --args. The file/stdin form avoids shell-quoting pitfalls for
+	// prompts containing quotes, apostrophes ("Van Gogh's"), or parentheses.
+	var rawArgs string
+	switch {
+	case *argsFile == "-":
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading --args-file from stdin: %v\n", err)
 			os.Exit(1)
 		}
-		argsJSON = json.RawMessage(*toolArgs)
+		rawArgs = string(data)
+	case *argsFile != "":
+		data, err := os.ReadFile(*argsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading --args-file: %v\n", err)
+			os.Exit(1)
+		}
+		rawArgs = string(data)
+	default:
+		rawArgs = *toolArgs
+	}
+
+	var argsJSON json.RawMessage
+	if strings.TrimSpace(rawArgs) != "" {
+		if !json.Valid([]byte(rawArgs)) {
+			fmt.Fprintf(os.Stderr, "error: invalid args JSON\n")
+			os.Exit(1)
+		}
+		argsJSON = json.RawMessage(rawArgs)
 	}
 
 	raw, err := client.CallTool(*tool, argsJSON)
