@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"relaygo/bridge"
 	"relaygo/mcp"
@@ -26,12 +27,14 @@ func TestExternalConn_RouteProgressNotification(t *testing.T) {
 	line := []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"relay-prog-1","progress":2,"total":3,"message":"generating"}}`)
 	c.routeNotification(line)
 
+	// Delivery is async (routeNotification dispatches the sink on a goroutine so
+	// the reader loop isn't blocked on a downstream write), so wait for it.
 	select {
 	case u := <-got:
 		if u.Message != "generating" || u.Progress != 2 || u.Total != 3 {
 			t.Fatalf("progress payload mismatch: %+v", u)
 		}
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("progress handler was not invoked")
 	}
 

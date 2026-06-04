@@ -116,9 +116,15 @@ type externalMcpConn struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu       sync.Mutex // protects writes to stdin, the pending map, and progress
+	mu       sync.Mutex // protects the pending map and progress map
 	pending  map[int64]*pendingResponse
 	progress map[string]func(json.RawMessage) // progressToken → handler (per in-flight call)
+
+	// writeMu serializes stdin writes, separate from mu so a blocking
+	// stdin.Write (full child pipe) never holds mu — otherwise the reader
+	// goroutine, which needs mu to drain stdout and route progress, would
+	// deadlock against a child that's blocked emitting progress on stdout.
+	writeMu sync.Mutex
 
 	readerDone chan struct{} // closed when the reader goroutine exits
 	readerErr  error        // set before readerDone is closed
@@ -163,7 +169,13 @@ func (c *externalMcpConn) routeNotification(line []byte) {
 	fn := c.progress[progressTokenString(tok.ProgressToken)]
 	c.mu.Unlock()
 	if fn != nil {
-		fn(note.Params)
+		// Deliver on a separate goroutine: fn ultimately writes to the caller's
+		// bridge connection, and the reader goroutine must keep draining stdout
+		// (to read the tool result) rather than block on a slow progress
+		// consumer. Heartbeat ordering is best-effort; the bridge serializes the
+		// actual writes. Copy params — note.Params aliases the reader's buffer.
+		params := append(json.RawMessage(nil), note.Params...)
+		go fn(params)
 	}
 }
 
@@ -713,19 +725,6 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 
 // prepareRequest marshals, registers, and writes a JSON-RPC request under the mutex.
 func (c *externalMcpConn) prepareRequest(method string, params interface{}) (int64, *pendingResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Check if reader is already dead.
-	select {
-	case <-c.readerDone:
-		if c.readerErr != nil {
-			return 0, nil, c.readerErr
-		}
-		return 0, nil, fmt.Errorf("connection closed")
-	default:
-	}
-
 	id := c.allocID()
 	data, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
 	if err != nil {
@@ -733,12 +732,29 @@ func (c *externalMcpConn) prepareRequest(method string, params interface{}) (int
 	}
 	data = append(data, '\n')
 
+	c.mu.Lock()
+	// Check if reader is already dead.
+	select {
+	case <-c.readerDone:
+		c.mu.Unlock()
+		if c.readerErr != nil {
+			return 0, nil, c.readerErr
+		}
+		return 0, nil, fmt.Errorf("connection closed")
+	default:
+	}
 	p := &pendingResponse{ch: make(chan readerResult, 1)}
 	c.pending[id] = p
+	c.mu.Unlock()
 
-	if _, err := c.stdin.Write(data); err != nil {
-		delete(c.pending, id)
-		return 0, nil, fmt.Errorf("write request: %w", err)
+	// Write outside c.mu (under writeMu) so a full stdin pipe can't block the
+	// reader goroutine, which needs c.mu to drain stdout.
+	c.writeMu.Lock()
+	_, werr := c.stdin.Write(data)
+	c.writeMu.Unlock()
+	if werr != nil {
+		c.removePending(id)
+		return 0, nil, fmt.Errorf("write request: %w", werr)
 	}
 	return id, p, nil
 }
@@ -752,15 +768,15 @@ func (c *externalMcpConn) removePending(id int64) {
 
 // SendNotification sends a JSON-RPC notification (no ID, no response expected).
 func (c *externalMcpConn) SendNotification(method string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	data, err := json.Marshal(jsonrpc.NewNotification(method))
 	if err != nil {
 		slog.Debug("stdio MCP: failed to marshal notification", "method", method, "error", err)
 		return
 	}
 	data = append(data, '\n')
+	// Serialize stdin writes via writeMu (not c.mu — see prepareRequest).
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if _, err := c.stdin.Write(data); err != nil {
 		slog.Debug("stdio MCP: failed to write notification", "method", method, "error", err)
 	}
