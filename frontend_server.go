@@ -58,6 +58,12 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools M
 	// reverse-proxied to the matching enhanced service. WS upgrades are
 	// handled by the same dispatcher (it detects them from the request).
 	dispatcher := NewFrontendDispatcher(enhanced)
+
+	// Session creation is the one proxied route relay must inspect: the
+	// per-project model allowlist lives only in relay's settings, so it can
+	// only be enforced in front of the proxy. The more specific method+path
+	// pattern takes precedence over "/", then forwards to the dispatcher.
+	mux.Handle("POST /api/sessions", newSessionModelGuard(store, dispatcher))
 	mux.Handle("/", dispatcher)
 
 	handler := frontendBearerAuth(frontend.Token, frontendRecover(mux))

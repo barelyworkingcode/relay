@@ -108,6 +108,7 @@ graph LR
     Bridge -->|derives permissions from| MCPs
     Bridge -->|injects| Context
     Bridge -->|filters| Disabled
+    Models -->|enforced on session-create by| Frontend["Frontend Guard"]
 ```
 
 - **`allowed_mcp_ids: ["*"]`** — access all registered MCPs
@@ -115,7 +116,19 @@ graph LR
 - **`disabled_tools`** — `fs_bash` blocked by default for filesystem MCPs
 - **`context`** — `allowed_dirs` auto-set to project path for fsMCP
 
-The project token is the security boundary. Permissions are derived at auth time from `allowed_mcp_ids` — not stored separately.
+**Two allowlists, two enforcement points:**
+
+- **`allowed_mcp_ids`** is enforced at the **bridge**. The project token is the
+  security boundary — permissions are derived from `allowed_mcp_ids` at auth time
+  (`AuthenticateProjectByHash`), not stored separately, and `checkToolAccess`
+  gates every `ListTools`/`CallTool`. A project can neither see nor call tools
+  from an MCP it doesn't list, nor a tool named in `disabled_tools`.
+- **`allowed_models`** is enforced at the **frontend socket**, not at the bridge.
+  relayLLM has no project knowledge, so the model allowlist can only be applied
+  in front of it: `frontend_model_guard.go` rejects a `POST /api/sessions` that
+  names a model outside the project's list with `403` before it reaches relayLLM.
+
+For both, `["*"]` (or an empty list) means unrestricted — see `isWildcard`.
 
 ## Prerequisites
 
