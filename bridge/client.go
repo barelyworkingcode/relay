@@ -44,15 +44,22 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 	return resp.Tools, nil
 }
 
-// CallTool sends a CallTool request and returns the raw JSON result.
-// Opens a fresh connection per call, matching the Rust implementation.
+// CallTool sends a CallTool request and returns the raw JSON result,
+// discarding any progress frames. Opens a fresh connection per call.
 func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, error) {
-	resp, err := c.send(BridgeRequest{
+	return c.CallToolStreaming(name, args, nil)
+}
+
+// CallToolStreaming is CallTool with progress: onProgress is invoked for each
+// RespProgress frame received before the terminal result. A nil onProgress
+// behaves exactly like CallTool. Opens a fresh connection per call.
+func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress func(ProgressUpdate)) (json.RawMessage, error) {
+	resp, err := c.sendStreaming(BridgeRequest{
 		Type:      ReqCallTool,
 		Name:      name,
 		Arguments: args,
 		Token:     c.token,
-	})
+	}, onProgress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call tool %q: %w", name, err)
 	}
@@ -172,9 +179,17 @@ func SendReloadService(id, token string) error {
 // Tool calls can take minutes (LLM inference, long-running tools), so this is generous.
 const bridgeTimeout = 10 * time.Minute
 
-// send opens a connection, writes the request, reads one response, and closes.
-// Sets a deadline to prevent hanging indefinitely if the tray app is unresponsive.
+// send opens a connection, writes the request, reads one terminal response,
+// and closes. Equivalent to sendStreaming with no progress handler.
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
+	return c.sendStreaming(req, nil)
+}
+
+// sendStreaming opens a connection, writes the request, then reads frames
+// until a terminal (non-progress) response. Each RespProgress frame is passed
+// to onProgress (if non-nil) and reading continues. Sets a deadline so a call
+// can't hang indefinitely if the tray app is unresponsive.
+func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate)) (*BridgeResponse, error) {
 	conn, err := net.Dial("unix", c.sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to Relay bridge at %s: %w (is the Relay tray app running?)", c.sockPath, err)
@@ -196,16 +211,21 @@ func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	}
 
 	scanner := NewScanner(conn)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read failed: %w", err)
+	for scanner.Scan() {
+		var resp BridgeResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			return nil, fmt.Errorf("parse response failed: %w", err)
 		}
-		return nil, fmt.Errorf("bridge closed connection")
+		if resp.Type == RespProgress {
+			if onProgress != nil && resp.Progress != nil {
+				onProgress(*resp.Progress)
+			}
+			continue
+		}
+		return &resp, nil
 	}
-
-	var resp BridgeResponse
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		return nil, fmt.Errorf("parse response failed: %w", err)
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read failed: %w", err)
 	}
-	return &resp, nil
+	return nil, fmt.Errorf("bridge closed connection")
 }

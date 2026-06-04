@@ -34,6 +34,10 @@ const (
 	RespProjects = "Projects"
 	RespProject  = "Project"
 	RespPtyEnv   = "PtyEnv"
+	// RespProgress is an intermediate, non-terminal frame emitted zero or more
+	// times during an in-flight CallTool before the terminal Result/Error.
+	// Clients that don't understand it skip it and keep reading.
+	RespProgress = "Progress"
 )
 
 // Wire values for PtyEnvRequest.RegenSkills. Cross-repo callers should
@@ -94,12 +98,44 @@ type BridgeRequest struct {
 
 // BridgeResponse is the wire format for responses sent over the Unix socket.
 type BridgeResponse struct {
-	Type    string          `json:"type"`              // response type
-	Tools   json.RawMessage `json:"tools,omitempty"`   // JSON-encoded []mcp.Tool
-	Result  json.RawMessage `json:"result,omitempty"`  // JSON-encoded mcp.CallToolResult
-	Data    json.RawMessage `json:"data,omitempty"`    // generic JSON payload (projects, etc.)
-	Code    int             `json:"code,omitempty"`    // error code
-	Message string          `json:"message,omitempty"` // error message
+	Type     string          `json:"type"`               // response type
+	Tools    json.RawMessage `json:"tools,omitempty"`    // JSON-encoded []mcp.Tool
+	Result   json.RawMessage `json:"result,omitempty"`   // JSON-encoded mcp.CallToolResult
+	Data     json.RawMessage `json:"data,omitempty"`     // generic JSON payload (projects, etc.)
+	Progress *ProgressUpdate `json:"progress,omitempty"` // set only on RespProgress frames
+	Code     int             `json:"code,omitempty"`     // error code
+	Message  string          `json:"message,omitempty"`  // error message
+}
+
+// ProgressUpdate is a tool-progress notification forwarded up the call chain.
+// Mirrors MCP's notifications/progress payload minus the hop-specific
+// progressToken (each transport layer attaches its own token).
+type ProgressUpdate struct {
+	Message  string  `json:"message,omitempty"`
+	Progress float64 `json:"progress,omitempty"`
+	Total    float64 `json:"total,omitempty"`
+}
+
+// ProgressFunc receives tool-progress updates during an in-flight CallTool.
+type ProgressFunc func(ProgressUpdate)
+
+type progressCtxKey struct{}
+
+// WithProgress returns a context carrying a progress sink for the duration of
+// a CallTool. The external-MCP client invokes it when a downstream server
+// emits notifications/progress; the bridge server forwards each update to its
+// caller as a RespProgress frame. A nil fn returns ctx unchanged.
+func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressCtxKey{}, fn)
+}
+
+// ProgressFromContext returns the progress sink set by WithProgress, or nil.
+func ProgressFromContext(ctx context.Context) ProgressFunc {
+	fn, _ := ctx.Value(progressCtxKey{}).(ProgressFunc)
+	return fn
 }
 
 // ToolRouter handles bridge requests. Implemented by the main app.

@@ -6,8 +6,43 @@ import (
 	"fmt"
 	"testing"
 
+	"relaygo/bridge"
 	"relaygo/mcp"
 )
+
+// TestExternalConn_RouteProgressNotification proves the stdio reader dispatches
+// notifications/progress to the registered per-call handler by token, parses
+// the payload into a ProgressUpdate, and stops dispatching after unregister.
+func TestExternalConn_RouteProgressNotification(t *testing.T) {
+	c := &externalMcpConn{}
+	got := make(chan bridge.ProgressUpdate, 1)
+	c.registerProgress("relay-prog-1", func(raw json.RawMessage) {
+		var u bridge.ProgressUpdate
+		if err := json.Unmarshal(raw, &u); err == nil {
+			got <- u
+		}
+	})
+
+	line := []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"relay-prog-1","progress":2,"total":3,"message":"generating"}}`)
+	c.routeNotification(line)
+
+	select {
+	case u := <-got:
+		if u.Message != "generating" || u.Progress != 2 || u.Total != 3 {
+			t.Fatalf("progress payload mismatch: %+v", u)
+		}
+	default:
+		t.Fatal("progress handler was not invoked")
+	}
+
+	// After unregister, the same notification must be a no-op (no panic, no send).
+	c.unregisterProgress("relay-prog-1")
+	c.routeNotification(line)
+
+	// A non-progress notification must be ignored.
+	c.registerProgress("relay-prog-2", func(json.RawMessage) { t.Fatal("must not fire") })
+	c.routeNotification([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}`))
+}
 
 // ---------------------------------------------------------------------------
 // mcpHandshake tests

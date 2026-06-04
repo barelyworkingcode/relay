@@ -21,15 +21,16 @@ import (
 // stubRouter for the mcp package — mirrors bridge.stubRouter but
 // duplicated to avoid cross-package test imports.
 type stubRouter struct {
-	mu          sync.Mutex
-	tools       json.RawMessage
-	toolsErr    error
-	callResult  json.RawMessage
-	callErr     error
-	listedToken string
-	calledName  string
-	calledArgs  json.RawMessage
-	calledToken string
+	mu           sync.Mutex
+	tools        json.RawMessage
+	toolsErr     error
+	callResult   json.RawMessage
+	callErr      error
+	callProgress []bridge.ProgressUpdate // emitted via the ctx sink before the result
+	listedToken  string
+	calledName   string
+	calledArgs   json.RawMessage
+	calledToken  string
 }
 
 func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
@@ -37,12 +38,20 @@ func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage
 	s.listedToken = token
 	return s.tools, s.toolsErr
 }
-func (s *stubRouter) CallTool(_ context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
+	s.mu.Lock()
 	s.calledName = name
 	s.calledArgs = args
 	s.calledToken = token
-	return s.callResult, s.callErr
+	prog := s.callProgress
+	resp, err := s.callResult, s.callErr
+	s.mu.Unlock()
+	if sink := bridge.ProgressFromContext(ctx); sink != nil {
+		for _, u := range prog {
+			sink(u)
+		}
+	}
+	return resp, err
 }
 func (s *stubRouter) ValidateAdmin(string) error                                           { return nil }
 func (s *stubRouter) ReconcileExternalMcps(context.Context)                                {}
@@ -149,6 +158,18 @@ func TestHandleMethod_ToolsList_ProxiesToBridge(t *testing.T) {
 	}
 }
 
+// collectResponse drives handleToolsCall (which emits via a callback rather
+// than returning) and returns the single terminal *jsonrpc.Response.
+func collectResponse(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
+	var resp *jsonrpc.Response
+	handleToolsCall(client, req, func(v interface{}) {
+		if r, ok := v.(*jsonrpc.Response); ok {
+			resp = r
+		}
+	})
+	return resp
+}
+
 func TestHandleMethod_ToolsCall_ForwardsNameAndArgs(t *testing.T) {
 	router := &stubRouter{callResult: json.RawMessage(`{"content":[{"type":"text","text":"hi"}]}`)}
 	client := startBridgeForMCP(t, router, "proj-tok")
@@ -157,10 +178,9 @@ func TestHandleMethod_ToolsCall_ForwardsNameAndArgs(t *testing.T) {
 		"name":      "fs__read_file",
 		"arguments": map[string]any{"path": "/etc/hostname"},
 	})
-	id := json.RawMessage(`3`)
-	resp := handleMethod(client, &jsonrpc.ServerRequest{
+	resp := collectResponse(client, &jsonrpc.ServerRequest{
 		Method: MethodToolsCall,
-		ID:     id,
+		ID:     json.RawMessage(`3`),
 		Params: params,
 	})
 	if resp == nil || resp.Error != nil {
@@ -174,15 +194,62 @@ func TestHandleMethod_ToolsCall_ForwardsNameAndArgs(t *testing.T) {
 	}
 }
 
+func TestHandleToolsCall_StreamsProgressNotifications(t *testing.T) {
+	router := &stubRouter{
+		callResult:   json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`),
+		callProgress: []bridge.ProgressUpdate{{Message: "generating", Progress: 1, Total: 2}},
+	}
+	client := startBridgeForMCP(t, router, "tok")
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "generate_image",
+		"arguments": map[string]any{"prompt": "x"},
+		"_meta":     map[string]any{"progressToken": "tok-7"},
+	})
+	var notes []jsonrpc.Request
+	var final *jsonrpc.Response
+	handleToolsCall(client, &jsonrpc.ServerRequest{
+		Method: MethodToolsCall,
+		ID:     json.RawMessage(`9`),
+		Params: params,
+	}, func(v interface{}) {
+		switch m := v.(type) {
+		case jsonrpc.Request:
+			notes = append(notes, m)
+		case *jsonrpc.Response:
+			final = m
+		}
+	})
+
+	if final == nil || final.Error != nil {
+		t.Fatalf("expected a successful terminal response; got %+v", final)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected 1 progress notification, got %d: %+v", len(notes), notes)
+	}
+	if notes[0].Method != MethodProgress {
+		t.Fatalf("expected %s, got %s", MethodProgress, notes[0].Method)
+	}
+	pm, ok := notes[0].Params.(map[string]interface{})
+	if !ok {
+		t.Fatalf("progress params not a map: %T", notes[0].Params)
+	}
+	if pm["progressToken"] != "tok-7" {
+		t.Fatalf("inbound progressToken not echoed; got %v", pm["progressToken"])
+	}
+	if pm["message"] != "generating" {
+		t.Fatalf("progress message not forwarded; got %v", pm["message"])
+	}
+}
+
 func TestHandleMethod_ToolsCall_RejectsMissingName(t *testing.T) {
 	router := &stubRouter{}
 	client := startBridgeForMCP(t, router, "tok")
 
 	params, _ := json.Marshal(map[string]any{"arguments": map[string]any{}})
-	id := json.RawMessage(`4`)
-	resp := handleMethod(client, &jsonrpc.ServerRequest{
+	resp := collectResponse(client, &jsonrpc.ServerRequest{
 		Method: MethodToolsCall,
-		ID:     id,
+		ID:     json.RawMessage(`4`),
 		Params: params,
 	})
 	if resp == nil || resp.Error == nil {
