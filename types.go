@@ -155,9 +155,11 @@ type Project struct {
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
 
 	// GenerateSkill controls whether out-of-band hooks (project save,
-	// MCP reconcile, project delete) maintain a SKILL.md under
-	// <Path>/.claude/skills/relay/. The PTY-launch regen path is controlled
-	// per-template, not per-project, so it runs independent of this flag.
+	// MCP reconcile, project delete) maintain the relay-managed skills under
+	// <Path>/.claude/skills/ — one "relay-<category>" dir per tool bucket,
+	// reconciled to the project's current tool surface. The PTY-launch regen
+	// path is controlled per-template, not per-project, so it runs independent
+	// of this flag.
 	GenerateSkill bool `json:"generate_skill,omitempty"`
 }
 

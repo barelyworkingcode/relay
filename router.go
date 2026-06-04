@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"sync"
 
@@ -163,6 +164,65 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 	return json.Marshal(tools)
 }
 
+// ListSkillBuckets groups the token's visible tools into skill buckets for
+// skill generation. Membership matches ListTools exactly (same auth + per-MCP
+// and per-tool access filtering); the only difference is that this keeps the
+// owning MCP in scope so it can group. Bucket key = server-supplied tool
+// category if present, else the owning MCP's display name (the name-prefix
+// fallback in toolCategory is intentionally NOT used for keys — it produces
+// noise like "Generate" from generate_image; uncategorized tools route by
+// their MCP instead). Buckets are returned in a deterministic order.
+func (r *appRouter) ListSkillBuckets(_ context.Context, token string) ([]SkillBucket, error) {
+	stored, settings, err := r.resolveAuth(token)
+	if err != nil {
+		return nil, err
+	}
+
+	isServiceToken := stored.Name == serviceTokenName
+	groups := map[string][]mcp.Tool{}
+	for _, ext := range settings.ExternalMcps {
+		if !isServiceToken && checkToolAccess(stored, ext.ID, "") != nil {
+			continue
+		}
+		for _, t := range r.tools.Tools(ext.ID) {
+			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name) != nil {
+				continue
+			}
+			key := t.Category
+			if key == "" {
+				key = ext.DisplayName
+			}
+			groups[key] = append(groups[key], t)
+		}
+	}
+
+	// Iterate keys in sorted order so slug-collision merges are deterministic
+	// (the alphabetically-first key wins as the bucket's display Key).
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	bySlug := map[string]*SkillBucket{}
+	order := make([]string, 0, len(keys))
+	for _, key := range keys {
+		slug := skillSlug(key)
+		if b, ok := bySlug[slug]; ok {
+			b.Tools = append(b.Tools, groups[key]...)
+			continue
+		}
+		bySlug[slug] = &SkillBucket{Key: key, Slug: slug, Tools: append([]mcp.Tool{}, groups[key]...)}
+		order = append(order, slug)
+	}
+
+	buckets := make([]SkillBucket, 0, len(order))
+	for _, slug := range order {
+		buckets = append(buckets, *bySlug[slug])
+	}
+	return buckets, nil
+}
+
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
 	stored, _, err := r.resolveAuth(token)
 	if err != nil {
@@ -221,7 +281,7 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) 
 		if dir == "" {
 			continue
 		}
-		if _, err := EmitSkill(ctx, r, proj, dir, RegenAlways); err != nil {
+		if _, err := EmitSkills(ctx, r, proj, dir, RegenAlways); err != nil {
 			slog.Warn("post-reconcile skill regen failed", "project", proj.Name, "error", err)
 		}
 	}
@@ -296,20 +356,38 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	if mode == "" {
 		mode = RegenNever
 	}
+	// SkillPath is the skills root (.claude/skills). Tolerate an external PTY
+	// template that still points at the legacy per-bucket dir (.../skills/relay
+	// or a relay-* dir) by walking up to its parent — relay now manages a set
+	// of relay-* dirs under the root, not a single dir.
+	skillsRoot := skillsRootFromPath(req.SkillPath)
 	if mode != RegenNever {
-		if req.SkillPath == "" {
+		if skillsRoot == "" {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("skill_path required when regen_skills != never"))
 		}
-		if _, err := EmitSkill(ctx, r, *proj, req.SkillPath, mode); err != nil {
-			return bridge.PtyEnvResponse{}, fmt.Errorf("regen skill: %w", err)
+		if _, err := EmitSkills(ctx, r, *proj, skillsRoot, mode); err != nil {
+			return bridge.PtyEnvResponse{}, fmt.Errorf("regen skills: %w", err)
 		}
 	}
 
 	return bridge.PtyEnvResponse{
 		RelayToken: proj.Token,
 		WorkingDir: proj.Path,
-		SkillPath:  req.SkillPath,
+		SkillPath:  skillsRoot,
 	}, nil
+}
+
+// skillsRootFromPath normalizes an inbound skill_path to the skills root. If
+// the path's last element is a relay-managed dir name (legacy "relay" or a
+// "relay-*" bucket dir), it returns the parent; otherwise the path itself.
+func skillsRootFromPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if isRelayManagedSkillDir(filepath.Base(p)) {
+		return filepath.Dir(p)
+	}
+	return p
 }
 
 // findProjectForPty resolves the project for a PTY launch. Eve's terminal_create

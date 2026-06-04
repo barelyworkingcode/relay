@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"relaygo/mcp"
 )
 
 // schemaProviderFunc adapts a plain function to ContextSchemasProvider
@@ -47,6 +50,10 @@ type fixedTokenLister struct{}
 
 func (fixedTokenLister) ListTools(_ context.Context, _ string) (json.RawMessage, error) {
 	return json.RawMessage(`[{"name":"fs_read","description":"read a file"}]`), nil
+}
+
+func (fixedTokenLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBucket, error) {
+	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
 // newProjectRoutesServerFull wires the extra dependencies (MCPToolsProvider,
@@ -634,7 +641,8 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	skillFile := projectSkillDir(created) + "/SKILL.md"
+	// fixedTokenLister buckets its single tool under the "Files" key → relay-files.
+	skillFile := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
 	if _, err := os.Stat(skillFile); err != nil {
 		t.Fatalf("SKILL.md not created at %s: %v", skillFile, err)
 	}

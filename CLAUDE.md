@@ -104,7 +104,7 @@ Tabs: Services, MCP Servers, Projects, Service Inspector.
 
 ### Projects tab
 
-Native, co-equal with Eve's project dialog — both hit the same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via `project_routes.go`). The tri-state per-MCP picker exposes `DisabledTools`; the token panel surfaces rotate-now (via `RotateProjectToken`); the Skill section surfaces `GenerateSkill` plus a manual `EmitSkill` trigger. Cross-process changes propagate live: HTTP project mutations fire the `onProjectsChanged` callback (wired through `NewFrontendServer`) which calls `pushFullProjects()` so an open Settings window re-renders.
+Native, co-equal with Eve's project dialog — both hit the same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via `project_routes.go`). The tri-state per-MCP picker exposes `DisabledTools`; the token panel surfaces rotate-now (via `RotateProjectToken`); the Skill section surfaces `GenerateSkill` plus a manual `EmitSkills` trigger. Cross-process changes propagate live: HTTP project mutations fire the `onProjectsChanged` callback (wired through `NewFrontendServer`) which calls `pushFullProjects()` so an open Settings window re-renders.
 
 See `docs/decisions/004-project-mgmt-in-relay.md`.
 

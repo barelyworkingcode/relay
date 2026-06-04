@@ -289,12 +289,11 @@ func ipcRegenProjectSkill(ctx *IPCContext, raw json.RawMessage) {
 	}
 	projCopy := *proj
 	ctx.GoFunc(func() {
-		path, err := EmitSkill(ctx.Ctx, ctx.SkillLister, projCopy, dir, RegenAlways)
-		if err != nil {
+		if _, err := EmitSkills(ctx.Ctx, ctx.SkillLister, projCopy, dir, RegenAlways); err != nil {
 			dispatchEmit(ctx, "onProjectSkillRegen", msg.ID, false, err.Error())
 			return
 		}
-		dispatchEmit(ctx, "onProjectSkillRegen", msg.ID, true, path)
+		dispatchEmit(ctx, "onProjectSkillRegen", msg.ID, true, dir)
 	})
 }
 

@@ -26,19 +26,21 @@ type MCPToolsProvider interface {
 // tray UI can refresh. nil = no fan-out.
 type ProjectsChangedFn func()
 
-// projectSkillDir is the on-disk directory (under Project.Path) where
-// relay-managed skills live. Claude Code auto-discovers from .claude/skills/;
-// Pi.Dev gets pointed at this directory via --skill in its PTY template.
+// projectSkillDir is the skills root (under Project.Path) that relay manages.
+// relay writes one "relay-<slug>" subdir per tool bucket here; Claude Code
+// auto-discovers all of them from .claude/skills/, and Pi.Dev gets pointed at
+// this root via --skill in its PTY template. User-authored skills can live
+// alongside under the same root — relay only touches its own "relay-*" dirs.
 func projectSkillDir(proj Project) string {
 	if proj.Path == "" {
 		return ""
 	}
-	return filepath.Join(proj.Path, ".claude", "skills", "relay")
+	return filepath.Join(proj.Path, ".claude", "skills")
 }
 
 // reconcileProjectSkill brings the on-disk skill state into sync with the
 // project's GenerateSkill flag. Toggling on regenerates; deletion removes.
-// Toggling off leaves a stale file in place — the user removes it manually
+// Toggling off leaves stale files in place — the user removes them manually
 // if desired. Best-effort: errors are logged, not returned.
 func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project) {
 	if !proj.GenerateSkill {
@@ -49,7 +51,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 		slog.Warn("skill regen skipped: project has no path", "project", proj.Name)
 		return
 	}
-	if _, err := EmitSkill(ctx, lister, proj, dir, RegenAlways); err != nil {
+	if _, err := EmitSkills(ctx, lister, proj, dir, RegenAlways); err != nil {
 		slog.Warn("project skill regen failed", "project", proj.Name, "error", err)
 	}
 }
@@ -318,12 +320,11 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project has no path"})
 			return
 		}
-		path, err := EmitSkill(r.Context(), skillLister, *proj, dir, RegenAlways)
-		if err != nil {
+		if _, err := EmitSkills(r.Context(), skillLister, *proj, dir, RegenAlways); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"path": path})
+		writeJSON(w, http.StatusOK, map[string]string{"path": dir})
 	})
 
 	// GET /api/mcps/{id}/tools — live tool list for the project picker.

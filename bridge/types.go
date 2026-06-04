@@ -71,7 +71,7 @@ type PtyEnvRequest struct {
 	Project     string `json:"project,omitempty"`   // project ID or name
 	Directory   string `json:"directory,omitempty"` // fallback: match against Project.Path
 	RegenSkills string `json:"regen_skills"`        // RegenSkillsAlways | RegenSkillsSkipIfExists | RegenSkillsNever
-	SkillPath   string `json:"skill_path"`          // skill directory (containing SKILL.md)
+	SkillPath   string `json:"skill_path"`          // skills root (.claude/skills); relay writes one relay-<slug> subdir per tool bucket. A legacy value ending in relay/relay-* is accepted and normalized to its parent.
 }
 
 // PtyEnvResponse is returned as BridgeResponse.Data on a successful
