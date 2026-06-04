@@ -106,17 +106,33 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 
 	scanner := NewScanner(conn)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		resp := s.handleRequest(ctx, line)
-
+	// Serialize all writes to this connection: progress frames are written
+	// from the external-MCP reader goroutine while the main goroutine is
+	// blocked inside the in-flight call, so the final response and any
+	// progress frames can race on conn.Write without this mutex.
+	var writeMu sync.Mutex
+	writeFrame := func(resp BridgeResponse) error {
 		data, err := json.Marshal(resp)
 		if err != nil {
 			data, _ = json.Marshal(bridgeError(jsonrpc.CodeInternalError, err.Error()))
 		}
 		data = append(data, '\n')
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, werr := conn.Write(data)
+		return werr
+	}
 
-		if _, err := conn.Write(data); err != nil {
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Attach a progress sink so a long-running CallTool can stream
+		// RespProgress frames to this caller before its terminal response.
+		// Only CallTool's downstream invokes it; other handlers ignore it.
+		reqCtx := WithProgress(ctx, func(u ProgressUpdate) {
+			_ = writeFrame(BridgeResponse{Type: RespProgress, Progress: &u})
+		})
+		resp := s.handleRequest(reqCtx, line)
+		if err := writeFrame(resp); err != nil {
 			return
 		}
 	}
