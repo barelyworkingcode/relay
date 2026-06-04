@@ -370,10 +370,15 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		}
 	}
 
+	// Echo the request's SkillPath back unchanged. Consumers (relayLLM's pty
+	// spawn) derive the --skill directory as filepath.Dir(SkillPath), expecting
+	// the per-bucket path they sent (".../skills/relay"); returning the
+	// walked-up root here would make them over-walk to ".../.claude". The
+	// walked-up skillsRoot is for our own EmitSkills only.
 	return bridge.PtyEnvResponse{
 		RelayToken: proj.Token,
 		WorkingDir: proj.Path,
-		SkillPath:  skillsRoot,
+		SkillPath:  req.SkillPath,
 	}, nil
 }
 
