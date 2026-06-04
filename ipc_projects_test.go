@@ -10,9 +10,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
+
+	"relaygo/mcp"
 )
 
 // fakeTools is an in-memory MCPToolsProvider for handler tests. The handler
@@ -49,6 +52,13 @@ func (f *fakeSkillLister) ListTools(_ context.Context, _ string) (json.RawMessag
 	// EmitSkill expects a JSON array of mcp.Tool. Return one so the rendered
 	// SKILL.md is non-empty (and so the test exercises the non-trivial path).
 	return json.RawMessage(`[{"name":"fs_read","description":"read a file"}]`), nil
+}
+
+func (f *fakeSkillLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBucket, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
 // newProjectsIPC stands up an IPCContext wired to a sandboxed store with two
@@ -388,8 +398,9 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 	var created Project
 	_ = json.Unmarshal(args[0].(json.RawMessage), &created)
 
-	// SKILL.md should now exist under <path>/.claude/skills/relay/.
-	skillPath := projectSkillDir(created) + "/SKILL.md"
+	// SKILL.md should now exist under <path>/.claude/skills/relay-files/.
+	// fakeSkillLister buckets its single tool under the "Files" key.
+	skillPath := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
 	if _, err := readFileExists(skillPath); err != nil {
 		t.Fatalf("expected SKILL.md at %s after create: %v", skillPath, err)
 	}
