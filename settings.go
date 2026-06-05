@@ -457,6 +457,7 @@ func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	if isWildcard(proj.AllowedMcpIDs) {
 		return &StoredToken{
 			Name:          "project:" + proj.Name,
+			ProjectID:     proj.ID,
 			Hash:          hash,
 			DisabledTools: proj.DisabledTools,
 			Context:       proj.Context,
@@ -475,6 +476,7 @@ func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	}
 	return &StoredToken{
 		Name:          "project:" + proj.Name,
+		ProjectID:     proj.ID,
 		Hash:          hash,
 		Permissions:   perms,
 		DisabledTools: proj.DisabledTools,
