@@ -1,6 +1,6 @@
 # ADR-006: Image Generation via MCP, and a Generic MCP Progress Framework
 
-**Status:** Accepted (Phases 1–2 complete; Phase 3 native path complete, pi path pending)
+**Status:** Accepted (Phases 1–3 complete; native + pi both consolidated on the relay-comfyui MCP)
 **Date:** 2026-06-04
 
 ## Context
@@ -61,17 +61,26 @@ Claude and Pi:
 - **Done + verified live:** per-category skills (routing confirmed across
   Claude Haiku, pi, llama); the generic progress framework end-to-end (llama
   shows `Generating image… (Ns)` sourced from relayComfy through every hop);
-  native providers consolidated onto the MCP.
-- **Pending:** retiring pi's curl path (`/api/generate-image` +
-  `pi_image_skill.go`) and removing the now-unused builtin registration. Pi.dev
-  via the relay-comfyui skill currently has two gaps to resolve first: bash
-  arg-quoting on `relay mcp call` (parentheses in the prompt), and presenting
-  the result as a clickable `file://` URI rather than attempting inline render.
+  native providers consolidated onto the MCP; pi's curl path
+  (`/api/generate-image` + `pi_image_skill.go`) retired and pi reaching image
+  generation through the relay-comfyui skill. The two pi gaps were resolved:
+  `relay mcp call --args-file` removes the shell-quoting hazard (pi writes the
+  JSON to a file), and relayComfy's tool description now tells terminal agents
+  to present the `file_url` as a clickable link — Pi.dev emits a clickable URI.
+- **Dropped (needs rearchitecture):** image-to-image from a chat attachment.
+  The old in-process builtin uploaded the user's attached image and ran an
+  img2img workflow; the relay-comfyui MCP is text-to-image only and the MCP
+  boundary can't carry the chat's file attachments. Re-introducing it needs a
+  design that gets the input image to relayComfy (e.g. an image-input MCP arg
+  referencing a served/uploaded file), tracked separately.
 
 ## Consequences
 
 - One ComfyUI implementation (relayComfy); the LLM engine no longer knows about
-  ComfyUI once the pi path is retired.
+  ComfyUI (builtin, `comfyui_client.go`, `/api/generate-image`, and the pi curl
+  skill are all gone). relayLLM only retains the `/api/generated/` static
+  serving route, which requires relayComfy's `RELAY_LLM_DATA` to match
+  relayLLM's data dir.
 - The bridge wire format gains a non-terminal `Progress` frame. Clients skip
   unknown frame types, so a newer tray talking to an older `relay mcp` (or vice
   versa) degrades to "no progress" rather than breaking — but rebuild both
