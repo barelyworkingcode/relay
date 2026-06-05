@@ -240,16 +240,38 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			}
 		}
 
-		// Inject per-token context as _meta for this MCP.
-		var meta json.RawMessage
-		if stored.Context != nil {
-			meta = stored.Context[extID]
-		}
+		// Inject per-token context as _meta for this MCP, plus the authenticated
+		// project id so an MCP can attribute the call to a project without
+		// trusting LLM-supplied values. Relay is the project authority here.
+		meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
 
 		return r.tools.CallTool(ctx, extID, name, args, meta)
 	}
 
 	return nil, fmt.Errorf("unknown tool: %s", name)
+}
+
+// mergeProjectID returns base with a top-level "project_id" added when
+// projectID is non-empty. base is the per-token _meta context (may be nil). When
+// projectID is empty it returns base unchanged, preserving prior behavior for
+// service/external tokens. Falls back gracefully if base isn't a JSON object.
+func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
+	if projectID == "" {
+		return base
+	}
+	m := map[string]json.RawMessage{}
+	if len(base) > 0 && string(base) != "null" {
+		if err := json.Unmarshal(base, &m); err != nil || m == nil {
+			m = map[string]json.RawMessage{}
+		}
+	}
+	pid, _ := json.Marshal(projectID)
+	m["project_id"] = pid
+	out, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return out
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {

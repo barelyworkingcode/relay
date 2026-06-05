@@ -16,7 +16,11 @@ const (
 // StoredToken represents resolved auth credentials with per-MCP permissions.
 // Used by the router for service tokens and project token views.
 type StoredToken struct {
-	Name          string
+	Name string
+	// ProjectID is the stable id of the project this token authenticates (empty
+	// for service/external tokens). Injected into _meta so an MCP can attribute a
+	// call to its project without trusting LLM-supplied values.
+	ProjectID     string
 	Hash          string
 	Permissions   map[string]Permission
 	DisabledTools map[string][]string

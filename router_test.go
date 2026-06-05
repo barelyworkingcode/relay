@@ -389,9 +389,13 @@ func TestCallTool_InjectsMetaContext(t *testing.T) {
 	if !ok || len(dirs) != 2 {
 		t.Errorf("expected allowed_dirs with 2 entries, got %v", meta["allowed_dirs"])
 	}
+	// The authenticated project id rides alongside per-token context.
+	if meta["project_id"] != "test-project" {
+		t.Errorf("expected _meta.project_id=test-project alongside context, got %v", meta["project_id"])
+	}
 }
 
-func TestCallTool_NoMetaWhenContextNotSet(t *testing.T) {
+func TestCallTool_InjectsProjectIDWhenContextNotSet(t *testing.T) {
 	var capturedParams map[string]interface{}
 	r := setupRouter(t,
 		map[string]Permission{"mcp-a": PermOn}, nil, nil,
@@ -411,8 +415,17 @@ func TestCallTool_NoMetaWhenContextNotSet(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if capturedParams != nil && capturedParams["_meta"] != nil {
-		t.Errorf("expected no _meta when context is not set, got %v", capturedParams["_meta"])
+	// Even with no per-token context, relay injects the authenticated project id
+	// so an MCP can attribute the call without trusting LLM-supplied values.
+	meta, ok := capturedParams["_meta"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected _meta to be a map, got %T", capturedParams["_meta"])
+	}
+	if meta["project_id"] != "test-project" {
+		t.Errorf("expected _meta.project_id=test-project, got %v", meta["project_id"])
+	}
+	if len(meta) != 1 {
+		t.Errorf("expected _meta to contain only project_id when no context, got %v", meta)
 	}
 }
 
