@@ -111,8 +111,11 @@ type BridgeResponse struct {
 // Mirrors MCP's notifications/progress payload minus the hop-specific
 // progressToken (each transport layer attaches its own token).
 type ProgressUpdate struct {
-	Message  string  `json:"message,omitempty"`
-	Progress float64 `json:"progress,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Progress has no omitempty: a legitimate 0.0 (e.g. the initial "queuing"
+	// update) must survive the bridge hop. Total stays optional (omit when 0/
+	// unknown), matching the MCP spec where total is optional.
+	Progress float64 `json:"progress"`
 	Total    float64 `json:"total,omitempty"`
 }
 

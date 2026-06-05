@@ -194,14 +194,23 @@ func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest, emit fun
 // progressNotification builds an MCP notifications/progress message (no ID)
 // referencing the caller's progressToken.
 func progressNotification(token interface{}, u bridge.ProgressUpdate) jsonrpc.Request {
+	// Per the MCP spec: progressToken + progress are required; total and message
+	// are optional. Omit total when 0/unknown (sending total:0 implies a real
+	// zero total) and message when empty, so spec-conformant clients aren't
+	// misled.
+	params := map[string]interface{}{
+		"progressToken": token,
+		"progress":      u.Progress,
+	}
+	if u.Total > 0 {
+		params["total"] = u.Total
+	}
+	if u.Message != "" {
+		params["message"] = u.Message
+	}
 	return jsonrpc.Request{
 		JSONRPC: jsonrpcVersion,
 		Method:  MethodProgress,
-		Params: map[string]interface{}{
-			"progressToken": token,
-			"progress":      u.Progress,
-			"total":         u.Total,
-			"message":       u.Message,
-		},
+		Params:  params,
 	}
 }
