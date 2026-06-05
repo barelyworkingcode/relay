@@ -92,22 +92,16 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 	case RegenNever:
 		// No reads, no writes, no prunes.
 		return nil, nil
-	case RegenSkipIfExists:
-		// Whole-namespace skip: if relay has already generated anything here,
-		// leave it untouched (first-launch state is preserved). Only generate
-		// when the namespace is empty.
-		existing, err := relayManagedDirs(root)
-		if err != nil {
-			return nil, err
-		}
-		if len(existing) > 0 {
-			return skillPaths(root, existing), nil
-		}
-	case RegenAlways, "":
-		// fall through
+	case RegenAlways, RegenSkipIfExists, "":
+		// ok
 	default:
 		return nil, fmt.Errorf("unknown regen mode %q", mode)
 	}
+	// SkipIfExists is non-destructive: create missing bucket skills, never
+	// overwrite an existing one, never prune. So a project that gains an MCP
+	// after first launch still gets that new bucket's skill, and the legacy
+	// "relay" dir is migrated only by RegenAlways.
+	skipExisting := mode == RegenSkipIfExists
 
 	buckets, err := lister.ListSkillBuckets(ctx, proj.Token)
 	if err != nil {
@@ -128,13 +122,18 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 		return nil, err
 	}
 
-	// Write/refresh desired dirs (idempotent: skip the write when content is
-	// identical so file watchers don't wake on every PTY launch).
 	written := make([]string, 0, len(desired))
 	for name, body := range desired {
 		dir := filepath.Join(root, name)
 		target := filepath.Join(dir, skillFileName)
-		if cur, err := os.ReadFile(target); err == nil && bytes.Equal(cur, body) {
+		if skipExisting {
+			if _, err := os.Stat(target); err == nil {
+				written = append(written, target) // keep existing, don't overwrite
+				continue
+			}
+		} else if cur, err := os.ReadFile(target); err == nil && bytes.Equal(cur, body) {
+			// Idempotent: skip the write when content is identical so file
+			// watchers don't wake on every PTY launch.
 			written = append(written, target)
 			continue
 		}
@@ -147,14 +146,16 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 		written = append(written, target)
 	}
 
-	// Prune relay-managed dirs that are no longer desired (migrates the legacy
-	// "relay" dir away on first run, and drops dirs for removed MCPs/tools).
-	for _, name := range existing {
-		if _, ok := desired[name]; ok {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
-			return nil, fmt.Errorf("prune stale skill dir %q: %w", name, err)
+	// Prune relay-managed dirs no longer desired (migrates the legacy "relay"
+	// dir away, drops dirs for removed MCPs/tools) — only under RegenAlways.
+	if !skipExisting {
+		for _, name := range existing {
+			if _, ok := desired[name]; ok {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+				return nil, fmt.Errorf("prune stale skill dir %q: %w", name, err)
+			}
 		}
 	}
 
@@ -179,16 +180,6 @@ func relayManagedDirs(root string) ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// skillPaths maps relay-managed dir names to their SKILL.md absolute paths.
-func skillPaths(root string, names []string) []string {
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		out = append(out, filepath.Join(root, n, skillFileName))
-	}
-	sort.Strings(out)
-	return out
 }
 
 // RemoveSkill prunes every relay-managed skill dir directly under skillsRoot.
@@ -284,8 +275,16 @@ func synthesizeDescription(bucketKey string, tools []mcp.Tool) string {
 			seen[strings.ToLower(p)] = true
 			caps = append(caps, p)
 		}
-		if kw := extractTriggerKeywords(t.Description); kw != "" {
-			triggers = append(triggers, kw)
+		// Prefer a curated trigger clause the author wrote ("…use whenever the
+		// user asks for X"); otherwise fall back to the description's first
+		// clause, so every tool contributes routing keywords regardless of how
+		// its description is phrased (markers are a preference, not a gate).
+		snippet := extractTriggerKeywords(t.Description)
+		if snippet == "" {
+			snippet = firstClause(t.Description)
+		}
+		if snippet != "" {
+			triggers = append(triggers, snippet)
 		}
 	}
 
@@ -372,6 +371,27 @@ func extractTriggerKeywords(desc string) string {
 		}
 	}
 	return ""
+}
+
+// firstClause returns the leading clause of a description (up to the first
+// sentence/clause boundary), collapsed to one line and length-bounded. It is
+// the phrasing-agnostic fallback source of routing keywords when no curated
+// trigger marker is present.
+func firstClause(desc string) string {
+	flat := oneLine(strings.TrimSpace(desc))
+	if i := strings.IndexAny(flat, ".;\n"); i >= 0 {
+		flat = flat[:i]
+	}
+	flat = strings.TrimSpace(flat)
+	const maxClause = 80
+	if len(flat) > maxClause {
+		cut := maxClause
+		for cut > 0 && !utf8.RuneStart(flat[cut]) {
+			cut--
+		}
+		flat = strings.TrimSpace(flat[:cut])
+	}
+	return flat
 }
 
 // dedupeFold removes case-insensitive duplicates, preserving first-seen order.

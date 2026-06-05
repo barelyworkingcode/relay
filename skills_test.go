@@ -394,21 +394,30 @@ func TestEmitSkills_RegenNever(t *testing.T) {
 	}
 }
 
-func TestEmitSkills_SkipIfExists_SkipsWhenPresent(t *testing.T) {
+func TestEmitSkills_SkipIfExists_CreatesMissingButPreservesExisting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
+	// Pre-existing relay-mail (with hand-edited content) AND a stale relay-old
+	// that's no longer desired. SkipIfExists must preserve the existing one,
+	// create the newly-desired relay-image, and NOT prune the stale dir.
 	writeSkillDir(t, root, "relay-mail", "OLD")
+	writeSkillDir(t, root, "relay-old", "stale")
 	proj := Project{Name: "p1", Token: "tok"}
-	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
+	lister := stubLister{tools: []mcp.Tool{
+		{Name: "generate_image", Category: "Image"},
+		{Name: "mail_send", Category: "Mail"},
+	}}
 
 	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenSkipIfExists); err != nil {
 		t.Fatalf("SkipIfExists: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(root, "relay-mail", "SKILL.md"))
-	if string(data) != "OLD" {
-		t.Error("SkipIfExists must not overwrite when relay dirs already exist")
+	if data, _ := os.ReadFile(filepath.Join(root, "relay-mail", "SKILL.md")); string(data) != "OLD" {
+		t.Error("SkipIfExists must not overwrite an existing bucket skill")
 	}
-	if dirExists(t, filepath.Join(root, "relay-image")) {
-		t.Error("SkipIfExists must not create new dirs when the namespace is non-empty")
+	if !dirExists(t, filepath.Join(root, "relay-image")) {
+		t.Error("SkipIfExists must create a newly-desired bucket that doesn't exist yet")
+	}
+	if !dirExists(t, filepath.Join(root, "relay-old")) {
+		t.Error("SkipIfExists must be non-destructive (no pruning of stale dirs)")
 	}
 }
 

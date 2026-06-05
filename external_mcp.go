@@ -530,32 +530,46 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		params["arguments"] = arguments
 	}
 
+	// Build _meta as an object so we can add a progressToken. Per-token context
+	// (_meta) is conventionally an object (e.g. allowed_dirs). If a caller's
+	// context is valid JSON but not an object, forward it verbatim and skip
+	// progress injection rather than failing the call; only truly malformed
+	// JSON is rejected.
 	metaMap := map[string]interface{}{}
+	metaIsObject := true
 	if len(meta) > 0 && string(meta) != "null" {
 		if err := json.Unmarshal(meta, &metaMap); err != nil {
-			return nil, fmt.Errorf("invalid tool context metadata: %w", err)
+			if !json.Valid(meta) {
+				return nil, fmt.Errorf("invalid tool context metadata: %w", err)
+			}
+			metaIsObject = false
 		}
 	}
 
-	// If the caller wants progress and this connection can route it, allocate
-	// a progressToken, advertise it to the server via _meta, and bridge inbound
-	// notifications/progress to the caller's sink for the duration of the call.
-	if sink := bridge.ProgressFromContext(ctx); sink != nil {
-		if pc, ok := conn.(progressConn); ok {
-			token := newProgressToken()
-			metaMap["progressToken"] = token
-			pc.registerProgress(token, func(raw json.RawMessage) {
-				var u bridge.ProgressUpdate
-				if err := json.Unmarshal(raw, &u); err == nil {
-					sink(u)
-				}
-			})
-			defer pc.unregisterProgress(token)
+	if metaIsObject {
+		// If the caller wants progress and this connection can route it,
+		// allocate a progressToken, advertise it via _meta, and bridge inbound
+		// notifications/progress to the caller's sink for the call's duration.
+		if sink := bridge.ProgressFromContext(ctx); sink != nil {
+			if pc, ok := conn.(progressConn); ok {
+				token := newProgressToken()
+				metaMap["progressToken"] = token
+				pc.registerProgress(token, func(raw json.RawMessage) {
+					var u bridge.ProgressUpdate
+					if err := json.Unmarshal(raw, &u); err == nil {
+						sink(u)
+					}
+				})
+				defer pc.unregisterProgress(token)
+			}
 		}
-	}
-
-	if len(metaMap) > 0 {
-		params["_meta"] = metaMap
+		if len(metaMap) > 0 {
+			params["_meta"] = metaMap
+		}
+	} else {
+		var raw interface{}
+		_ = json.Unmarshal(meta, &raw)
+		params["_meta"] = raw
 	}
 
 	resp, err := conn.SendRequest(ctx, mcp.MethodToolsCall, params)

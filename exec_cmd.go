@@ -85,6 +85,10 @@ func runMcpExec(args []string) {
 	// Call tool. Arguments come from --args-file (a path, or "-" for stdin) or
 	// inline --args. The file/stdin form avoids shell-quoting pitfalls for
 	// prompts containing quotes, apostrophes ("Van Gogh's"), or parentheses.
+	if *argsFile != "" && *toolArgs != "" {
+		fmt.Fprintln(os.Stderr, "error: pass either --args or --args-file, not both")
+		os.Exit(1)
+	}
 	var rawArgs string
 	switch {
 	case *argsFile == "-":
