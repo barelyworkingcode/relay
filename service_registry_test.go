@@ -122,8 +122,8 @@ func TestServiceRegistry_Spawn_InjectsBridgeEnvAndPidfile(t *testing.T) {
 	}
 
 	// A service token was registered.
-	if len(router.serviceTokens.hashes) != 1 {
-		t.Fatalf("expected one service token, got %d", len(router.serviceTokens.hashes))
+	if n := router.serviceTokens.Len(); n != 1 {
+		t.Fatalf("expected one service token, got %d", n)
 	}
 }
 
@@ -188,13 +188,13 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 	// Service token was removed when the process exited.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(router.serviceTokens.hashes) == 0 {
+		if router.serviceTokens.Len() == 0 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if len(router.serviceTokens.hashes) != 0 {
-		t.Fatalf("service token not cleaned up; have %d", len(router.serviceTokens.hashes))
+	if n := router.serviceTokens.Len(); n != 0 {
+		t.Fatalf("service token not cleaned up; have %d", n)
 	}
 
 	// Pidfile was removed.

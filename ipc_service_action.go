@@ -95,7 +95,9 @@ func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 //   - Row keys with no matching placeholder are ignored (forward-compatible
 //     when a service ships a new column the UI hasn't been updated for).
 //   - Values are url.PathEscape'd so a row value with slashes can't escape
-//     its segment.
+//     its segment. url.PathEscape does NOT escape "." though, so a bare "."
+//     or ".." value is rejected outright — otherwise it would survive as a
+//     live relative-path segment ("/api/x/.." → "/api/x").
 //   - When ForEach == "" the row map must be empty — otherwise the UI is
 //     dispatching a global action with surprising context and that's a bug
 //     we want to surface, not silently dispatch.
@@ -103,7 +105,7 @@ func buildActionPath(action *bridge.ActionDecl, row map[string]json.RawMessage) 
 	if action.ForEach == "" && len(row) > 0 {
 		return "", fmt.Errorf("action %q has no forEach but row was supplied", action.ID)
 	}
-	var missing []string
+	var missing, invalid []string
 	result := pathPlaceholder.ReplaceAllStringFunc(action.PathTemplate, func(match string) string {
 		key := match[1 : len(match)-1]
 		raw, ok := row[key]
@@ -117,10 +119,20 @@ func buildActionPath(action *bridge.ActionDecl, row map[string]json.RawMessage) 
 		if err := json.Unmarshal(raw, &s); err != nil {
 			s = strings.TrimSpace(string(raw))
 		}
+		// url.PathEscape leaves "." unescaped, so "." / ".." would become a
+		// traversal segment. Reject them — a legitimate row key never resolves
+		// to a relative-path component.
+		if s == "." || s == ".." {
+			invalid = append(invalid, key)
+			return match
+		}
 		return url.PathEscape(s)
 	})
 	if len(missing) > 0 {
 		return "", fmt.Errorf("action %q: row missing keys %v", action.ID, missing)
+	}
+	if len(invalid) > 0 {
+		return "", fmt.Errorf("action %q: row keys %v have illegal path-traversal values", action.ID, invalid)
 	}
 	return result, nil
 }

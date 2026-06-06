@@ -16,7 +16,7 @@ func (a *App) openSettingsWindow() {
 	s := a.store.Get()
 	html := renderSettingsHTML(s, a.registry.RunningIDs(), a.buildToolCache(s))
 	a.platform.OpenSettings(html)
-	a.settingsOpen = true
+	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
 	// handles its own main-thread hop for the WebView emit; the HTTP polling
 	// stays off-main so it can't block the UI on a slow service.
@@ -24,11 +24,11 @@ func (a *App) openSettingsWindow() {
 }
 
 func (a *App) onSettingsClose() {
-	a.settingsOpen = false
+	a.settingsOpen.Store(false)
 }
 
 func (a *App) evalSettings(js string) {
-	if a.settingsOpen {
+	if a.settingsOpen.Load() {
 		a.platform.EvalSettingsJS(js)
 	}
 }
@@ -37,7 +37,7 @@ func (a *App) evalSettings(js string) {
 // Each arg is marshaled individually; json.RawMessage values are passed through as-is.
 // This centralizes JS escaping and marshaling.
 func (a *App) emitSettingsEvent(name string, args ...interface{}) {
-	if !a.settingsOpen {
+	if !a.settingsOpen.Load() {
 		return
 	}
 	if len(args) == 0 {

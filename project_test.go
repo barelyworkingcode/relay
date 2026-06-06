@@ -16,6 +16,25 @@ func testSchemas() map[string]json.RawMessage {
 	}
 }
 
+// TestProjectCreate_RejectsUnsafePath proves a project's path is validated:
+// it feeds fsMCP's allowed_dirs and the skill-write target, so a relative or
+// traversal path must be refused on create.
+func TestProjectCreate_RejectsUnsafePath(t *testing.T) {
+	s := &Settings{Version: 1}
+	for _, bad := range []string{"", "relative/dir", "../escape", "/ok/../../etc"} {
+		if _, err := s.CreateProjectWithToken("P", bad, nil, nil, nil, nil); err == nil {
+			t.Fatalf("expected rejection of unsafe path %q", bad)
+		}
+	}
+	if len(s.Projects) != 0 {
+		t.Fatalf("no project should have been created from invalid paths; got %d", len(s.Projects))
+	}
+	// A clean absolute path is accepted.
+	if _, err := s.CreateProjectWithToken("P", t.TempDir(), nil, nil, nil, nil); err != nil {
+		t.Fatalf("clean absolute path should be accepted: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestProjectCreate — create a project with temp dir, verify inline token
 // ---------------------------------------------------------------------------

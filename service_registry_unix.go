@@ -98,6 +98,13 @@ func reclaimOrphan(pid int, expectCommand string) bool {
 	if !processGroupAlive(pid) {
 		return false
 	}
+	// We SIGTERM the whole process group (-pid), so confirm pid is still the
+	// leader of its own group before doing so. Our services are spawned Setpgid
+	// (leader PID == PGID); a recycled PID that is NOT a group leader belongs to
+	// some other process, and group-killing it would take down unrelated work.
+	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
+		return false
+	}
 	if expectCommand != "" && !strings.Contains(processCommand(pid), expectCommand) {
 		return false
 	}
