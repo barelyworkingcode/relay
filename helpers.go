@@ -98,6 +98,25 @@ func formatBytes(b uint64) string {
 	}
 }
 
+// isSafeID reports whether id is safe to embed in a filesystem path. Service
+// IDs are joined into run/<id>.pid and logs/<id>.log, so a value with a path
+// separator or "." / ".." would escape those directories. Restricts to a
+// small filename-safe charset and rejects the relative-path names outright.
+func isSafeID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func slugify(name string) string {
 	var b strings.Builder
 	for _, c := range strings.ToLower(name) {

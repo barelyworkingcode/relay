@@ -26,6 +26,10 @@ const (
 	// DELETE to end an HTTP MCP session during shutdown.
 	HTTPSessionCloseTimeout = 5 * time.Second
 
+	// MCPNotificationTimeout bounds a best-effort outbound notification POST
+	// to an HTTP MCP — it must not block the handshake if the server stalls.
+	MCPNotificationTimeout = 15 * time.Second
+
 	// OAuthHTTPTimeout is the timeout for individual OAuth HTTP requests
 	// (metadata discovery, registration, token exchange).
 	OAuthHTTPTimeout = 15 * time.Second

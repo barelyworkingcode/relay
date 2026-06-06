@@ -32,7 +32,10 @@ type App struct {
 	bridgeServer   *bridge.BridgeServer
 	frontendServer *FrontendServer
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
-	settingsOpen   bool
+	// settingsOpen gates UI emits on whether the Settings window is up. Written
+	// on the main thread (open/close) but read from background goroutines (the
+	// status poller, HTTP-driven project refresh), so it must be atomic.
+	settingsOpen   atomic.Bool
 	cleanupOnce    sync.Once
 	svcMenuMap     map[int]string // menu item ID -> service ID
 
@@ -188,7 +191,10 @@ func runTrayApp() {
 	// tab in sync with edits made elsewhere.
 	onProjectsChanged := func() {
 		if app != nil {
-			app.pushFullProjects()
+			// Fires on an HTTP-server goroutine (Eve/scheduler/CLI). pushFullProjects
+			// calls WKWebView's evaluateJavaScript, which is main-thread-only, so hop
+			// to main rather than touching the WebView off-thread.
+			app.platform.DispatchToMain(app.pushFullProjects)
 		}
 	}
 	frontend, err := NewFrontendServer(store, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged)
