@@ -27,10 +27,19 @@ func serviceRegister(store SettingsStore, args []string) {
 	workdir := fs.String("workdir", "", "working directory")
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
+	noFrontendCreds := fs.Bool("no-frontend-creds", false, "do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells")
 	fs.Parse(args)
 
 	if *command == "" {
 		exitError("--command is required")
+	}
+
+	// nil (flag absent) leaves the setting untouched on re-register (see
+	// MergeServiceDefaults); an explicit false opts the service out.
+	var frontendConsumer *bool
+	if *noFrontendCreds {
+		f := false
+		frontendConsumer = &f
 	}
 
 	id, env := opts.resolveIDAndEnv()
@@ -45,14 +54,15 @@ func serviceRegister(store SettingsStore, args []string) {
 	}
 
 	config := ServiceConfig{
-		ID:          id,
-		DisplayName: opts.Name,
-		Command:     *command,
-		Args:        []string(opts.Args),
-		Env:         env,
-		WorkingDir:  resolvedWorkdir,
-		Autostart:   *autostart,
-		URL:         *url,
+		ID:               id,
+		DisplayName:      opts.Name,
+		Command:          *command,
+		Args:             []string(opts.Args),
+		Env:              env,
+		WorkingDir:       resolvedWorkdir,
+		Autostart:        *autostart,
+		URL:              *url,
+		FrontendConsumer: frontendConsumer,
 	}
 
 	_, secret := upsertAndPrint(store, "service", opts.Name, id, func(s *Settings) bool {

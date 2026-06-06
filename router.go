@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"relaygo/bridge"
@@ -106,6 +107,15 @@ func (s *serviceTokenStore) Lookup(hash string) *StoredToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hashes[hash]
+}
+
+// Len returns the number of registered service tokens. Provides a synchronized
+// read so callers (e.g. tests) don't touch the map directly and race the
+// reaper's Remove on process exit.
+func (s *serviceTokenStore) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.hashes)
 }
 
 // Compile-time interface assertions.
@@ -362,16 +372,33 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 // the caller requests it. Service-token authentication required.
 //
 // RelayToken in the response is the project's plaintext token; the caller
-// (relayLLM) must inject it as RELAY_TOKEN env in the spawned process and
-// never expose it in argv, files, or logs.
+// (relayLLM) must inject it as the project-token env (RELAY_PROJECT_TOKEN) in
+// the spawned process and never expose it in argv, files, or logs.
 func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
 	if err := r.requireServiceToken(token, "ResolvePtyEnv"); err != nil {
 		return bridge.PtyEnvResponse{}, err
 	}
 
-	proj := findProjectForPty(r.store.Get(), req.Project, req.Directory)
-	if proj == nil {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
+	s := r.store.Get()
+	var proj *Project
+	if req.ProjectID != "" {
+		// Authoritative path: resolve by project id, then validate the requested
+		// directory belongs to the project. Without this check a service token
+		// could bind an arbitrary cwd to another project's token (confused
+		// deputy). Relay is the project authority.
+		proj, _ = s.findProjectByID(req.ProjectID)
+		if proj == nil {
+			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
+		}
+		if !dirWithinProject(req.Directory, proj.Path) {
+			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
+		}
+	} else {
+		// Legacy path: resolve by project id/name, or directory match.
+		proj = findProjectForPty(s, req.Project, req.Directory)
+		if proj == nil {
+			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
+		}
 	}
 
 	mode := RegenMode(req.RegenSkills)
@@ -432,6 +459,65 @@ func findProjectForPty(s *Settings, project, directory string) *Project {
 		}
 	}
 	return nil
+}
+
+// dirWithinProject reports whether dir is equal to or nested under projectPath.
+// Both are cleaned before comparison. An empty dir means "no directory to
+// validate" and returns true — the LLM-provider path may send a project id with
+// no cwd. Used to stop a service token from binding an arbitrary working
+// directory to a project's token.
+func dirWithinProject(dir, projectPath string) bool {
+	if dir == "" {
+		return true
+	}
+	if projectPath == "" {
+		return false
+	}
+	// Resolve symlinks on both sides so e.g. macOS /var vs /private/var (or
+	// /tmp) don't false-reject a directory that really is inside the project.
+	dir = realpathBestEffort(dir)
+	projectPath = realpathBestEffort(projectPath)
+	if dir == projectPath {
+		return true
+	}
+	rel, err := filepath.Rel(projectPath, dir)
+	if err != nil {
+		return false
+	}
+	// rel must stay inside the project: not "..", not "../...", not absolute.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
+}
+
+// realpathBestEffort cleans p and resolves symlinks. The path may not exist yet
+// (only an ancestor might), so it EvalSymlinks the longest existing prefix and
+// re-appends the non-existent tail. This makes a directory and its project
+// parent resolve to the same symlink-canonical form regardless of which
+// segments exist, so the containment check in dirWithinProject is reliable.
+func realpathBestEffort(p string) string {
+	p = filepath.Clean(p)
+	suffix := ""
+	cur := p
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			if suffix == "" {
+				return resolved
+			}
+			return filepath.Join(resolved, suffix)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p // reached the root with nothing resolvable
+		}
+		if suffix == "" {
+			suffix = filepath.Base(cur)
+		} else {
+			suffix = filepath.Join(filepath.Base(cur), suffix)
+		}
+		cur = parent
+	}
 }
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {

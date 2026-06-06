@@ -92,7 +92,11 @@ func runMcpOrServer(args []string) {
 	fs.Parse(args)
 
 	if *token == "" {
-		*token = os.Getenv("RELAY_TOKEN")
+		*token = os.Getenv(bridge.EnvProjectToken)
+	}
+	if *token == "" {
+		// Transition: accept the legacy env name from an un-migrated spawner.
+		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
 	}
 	if err := mcp.RunMCPServer(*token); err != nil {
 		exitError("mcp server error: %v", err)
