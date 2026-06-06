@@ -30,12 +30,13 @@ type FrontendChannel struct {
 // the canonical names declared in the bridge package so existing call
 // sites keep their import paths stable.
 const (
-	EnvFrontendSocket = bridge.EnvFrontendSocket
-	EnvFrontendToken  = bridge.EnvFrontendToken
-	EnvBridgeSocket   = bridge.EnvBridgeSocket
-	EnvServiceID      = bridge.EnvServiceID
-	EnvMcpToken       = bridge.EnvMcpToken
-	EnvMcpCommand     = bridge.EnvMcpCommand
+	EnvFrontendSocket     = bridge.EnvFrontendSocket
+	EnvFrontendToken      = bridge.EnvFrontendToken
+	EnvBridgeSocket       = bridge.EnvBridgeSocket
+	EnvServiceID          = bridge.EnvServiceID
+	EnvServiceToken       = bridge.EnvServiceToken
+	EnvServiceTokenLegacy = bridge.EnvServiceTokenLegacy
+	EnvMcpCommand         = bridge.EnvMcpCommand
 )
 
 // NewFrontendChannel returns a fresh, unprovisioned channel.

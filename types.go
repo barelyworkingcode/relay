@@ -109,6 +109,15 @@ type ServiceConfig struct {
 	WorkingDir  string            `json:"working_dir,omitempty"`
 	Autostart   bool              `json:"autostart"`
 	URL         string            `json:"url,omitempty"`
+
+	// FrontendConsumer controls whether relay injects its front-door creds
+	// (RELAY_FRONTEND_SOCKET/TOKEN) into the spawned service. Only a frontend
+	// consumer (eve) dials the front door; backends never do. Three-state:
+	// nil = inject (backward-compatible default for existing registrations);
+	// false = do not inject (backends opt out so the front-door bearer never
+	// lands in their env, and thus never leaks into a spawned shell); true =
+	// inject explicitly. Set false via `service register --no-frontend-creds`.
+	FrontendConsumer *bool `json:"frontend_consumer,omitempty"`
 }
 
 // ChatTemplate defines a reusable session preset within a project.
@@ -171,6 +180,9 @@ type Project struct {
 func (c *ServiceConfig) Validate() error {
 	if c.ID == "" {
 		return fmt.Errorf("service ID is required")
+	}
+	if !isSafeID(c.ID) {
+		return fmt.Errorf("service ID %q is invalid: use only letters, digits, '.', '_', '-' (no path separators)", c.ID)
 	}
 	if c.DisplayName == "" {
 		return fmt.Errorf("service display name is required")

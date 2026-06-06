@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"slices"
 )
@@ -152,6 +153,9 @@ func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	}
 	if cfg.URL == "" {
 		cfg.URL = existing.URL
+	}
+	if cfg.FrontendConsumer == nil {
+		cfg.FrontendConsumer = existing.FrontendConsumer
 	}
 }
 
@@ -417,9 +421,13 @@ func (s *Settings) findProjectByID(id string) (*Project, int) {
 }
 
 // findProjectByTokenHash returns the project whose token matches the given hash.
+// Uses a constant-time compare for consistency with the admin/frontend token
+// checks — both sides are SHA-256 hashes, but matching the hardened path keeps
+// the auth-comparison policy uniform.
 func (s *Settings) findProjectByTokenHash(hash string) *Project {
+	want := []byte(hash)
 	for i := range s.Projects {
-		if s.Projects[i].TokenHash == hash {
+		if subtle.ConstantTimeCompare([]byte(s.Projects[i].TokenHash), want) == 1 {
 			return &s.Projects[i]
 		}
 	}

@@ -111,7 +111,9 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	if s == nil || s.server == nil {
 		return
 	}
-	_ = s.server.Shutdown(ctx)
+	if err := s.server.Shutdown(ctx); err != nil {
+		slog.Warn("frontend server did not drain cleanly", "error", err)
+	}
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
@@ -120,12 +122,18 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	}
 }
 
-// frontendBearerAuth validates the frontend bearer token. Empty token = dev
-// mode (no auth). Constant-time comparison runs before any handler so
-// unauthenticated WS upgrades never allocate a session.
+// frontendBearerAuth validates the frontend bearer token. Constant-time
+// comparison runs before any handler so unauthenticated WS upgrades never
+// allocate a session. An empty configured token fails CLOSED: the frontend
+// channel always mints a token (FrontendChannel.Ensure), so empty means
+// misconfiguration, and serving open would silently expose every proxied
+// service. Reject all requests rather than disable auth.
 func frontendBearerAuth(token string, next http.Handler) http.Handler {
 	if token == "" {
-		return next
+		slog.Error("frontend: no bearer token configured — rejecting all requests (fail closed)")
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
 	}
 	expected := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

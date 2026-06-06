@@ -41,7 +41,10 @@ func main() {
 
 	serviceID := os.Getenv(bridge.EnvServiceID)
 	bridgeSock := os.Getenv(bridge.EnvBridgeSocket)
-	mcpToken := os.Getenv(bridge.EnvMcpToken) // service-grade token, injected by service_registry
+	mcpToken := os.Getenv(bridge.EnvServiceToken) // service-grade token, injected by service_registry
+	if mcpToken == "" {
+		mcpToken = os.Getenv(bridge.EnvServiceTokenLegacy) // transition fallback
+	}
 
 	if serviceID == "" {
 		log.Fatal("testservice: RELAY_SERVICE_ID not set")
@@ -89,7 +92,7 @@ func main() {
 			log.Fatal("testservice: --register requires RELAY_BRIDGE_SOCKET")
 		}
 		if mcpToken == "" {
-			log.Fatal("testservice: --register requires RELAY_MCP_TOKEN")
+			log.Fatal("testservice: --register requires RELAY_SERVICE_TOKEN")
 		}
 		// The shared bridge.Client uses bridge.SocketPath() (derived from
 		// ConfigDir) but services receive RELAY_BRIDGE_SOCKET explicitly —

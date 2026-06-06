@@ -103,8 +103,8 @@ func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
 	if !strings.Contains(out, "mcp call *)") || !strings.Contains(out, "allowed-tools: Bash(") {
 		t.Fatalf("expected allowed-tools to scope to `mcp call *`; got:\n%s", out)
 	}
-	if !strings.Contains(out, "RELAY_TOKEN") {
-		t.Fatalf("expected guidance about RELAY_TOKEN env var; got:\n%s", out)
+	if !strings.Contains(out, "RELAY_PROJECT_TOKEN") {
+		t.Fatalf("expected guidance about RELAY_PROJECT_TOKEN env var; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Relay binary path:") {
 		t.Fatalf("expected the resolved relay binary path to be documented; got:\n%s", out)

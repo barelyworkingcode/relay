@@ -133,8 +133,14 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v (body: %s)", err, body)
 	}
-	if created.ID == "" || created.Token == "" || created.TokenHash == "" {
-		t.Fatalf("expected id/token/token_hash to be populated, got %+v", created)
+	if created.ID == "" {
+		t.Fatalf("expected id to be populated, got %+v", created)
+	}
+	// The frontend response must NOT carry the secret token: projectView strips
+	// Token/TokenHash from every eve-facing project response (rotate_token is the
+	// sole exception).
+	if created.Token != "" || created.TokenHash != "" {
+		t.Fatalf("frontend create response leaked token/token_hash: %+v", created)
 	}
 	if created.Name != "Alpha" || created.Path != tmpDir {
 		t.Errorf("unexpected name/path: %+v", created)
@@ -627,7 +633,7 @@ func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
 // TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile but through
 // the HTTP layer Eve consumes today.
 func TestProjectRoutes_FullLifecycle(t *testing.T) {
-	srv, _ := newProjectRoutesServerFull(t, nil, fixedTokenLister{}, nil)
+	srv, store := newProjectRoutesServerFull(t, nil, fixedTokenLister{}, nil)
 	defer srv.Close()
 
 	projDir := t.TempDir()
@@ -647,13 +653,19 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 		t.Fatalf("SKILL.md not created at %s: %v", skillFile, err)
 	}
 
-	// Confirm content doesn't leak the token.
+	// Confirm content doesn't leak the token. The frontend create response no
+	// longer carries the token (projectView strips it), so read the real
+	// plaintext from the store to make this a meaningful check.
+	stored, _ := store.Get().findProjectByID(created.ID)
+	if stored == nil || stored.Token == "" {
+		t.Fatalf("expected a stored project token to check against")
+	}
 	skillContent, err := os.ReadFile(skillFile)
 	if err != nil {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
-	if bytes.Contains(skillContent, []byte(created.Token)) {
-		t.Errorf("SKILL.md leaks the project token (%d bytes) — content: %s", len(created.Token), skillContent)
+	if bytes.Contains(skillContent, []byte(stored.Token)) {
+		t.Errorf("SKILL.md leaks the project token (%d bytes) — content: %s", len(stored.Token), skillContent)
 	}
 
 	// Rotate the token via HTTP.

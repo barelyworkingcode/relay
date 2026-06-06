@@ -115,8 +115,10 @@ func TestFrontendServer_BearerAuth_AcceptsCorrect_Returns404ForUnknownRoute(t *t
 	}
 }
 
-func TestFrontendServer_EmptyToken_DisablesAuth(t *testing.T) {
-	// Dev mode: no token set → no auth check.
+func TestFrontendServer_EmptyToken_FailsClosed(t *testing.T) {
+	// An empty configured token is a misconfiguration (the frontend channel
+	// always mints one). It must fail CLOSED — reject every request — rather
+	// than silently disable auth and expose all proxied services.
 	_, sock := newTestFrontendServer(t, "")
 	client := dialFrontendHTTP(sock)
 
@@ -124,9 +126,8 @@ func TestFrontendServer_EmptyToken_DisablesAuth(t *testing.T) {
 	assertNoErr(t, err, "GET")
 	defer resp.Body.Close()
 
-	// 404 is fine — proves we got past the auth layer to the dispatcher.
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Fatalf("empty token must skip auth; got 401")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("empty token must fail closed (401); got %d", resp.StatusCode)
 	}
 }
 

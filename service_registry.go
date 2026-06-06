@@ -109,16 +109,22 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		relayBin, _ = filepath.EvalSymlinks(relayBin)
 
 		mergeEnv(cmd, map[string]string{
-			EnvMcpToken:   rawToken,
-			EnvMcpCommand: relayBin,
+			EnvServiceToken: rawToken,
+			// Transition: also set the legacy name so an un-migrated service
+			// (older relayLLM) still authenticates. Drop after relayLLM ships
+			// the rename.
+			EnvServiceTokenLegacy: rawToken,
+			EnvMcpCommand:         relayBin,
 		})
 	}
 
-	// Every spawned service receives frontend creds + bridge socket + its
-	// own service ID. Services that don't need a particular var ignore it;
-	// services that implement the manifest protocol dial the bridge to
-	// register themselves.
-	if r.FrontendChannel != nil {
+	// Frontend creds go ONLY to frontend consumers (services that dial relay's
+	// front door, i.e. eve). Backends never dial it, so injecting the front-door
+	// bearer into them is a holdover from when relayLLM hosted the frontend
+	// channel — and it leaks into shells a backend spawns. frontendCredsEnabled
+	// defaults to true (backward-compatible) so only services explicitly opted
+	// out (frontend_consumer:false) are skipped.
+	if r.FrontendChannel != nil && frontendCredsEnabled(config) {
 		endpoint, err := r.FrontendChannel.Ensure()
 		if err != nil {
 			return fmt.Errorf("provision frontend channel for %s: %w", config.ID, err)
@@ -204,6 +210,16 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	r.processes[config.ID] = proc
 	return nil
+}
+
+// frontendCredsEnabled reports whether a service should receive relay's
+// front-door creds (RELAY_FRONTEND_SOCKET/TOKEN). Only frontend consumers (eve)
+// need them; backends never dial the front door, and handing them the bearer
+// just lets it leak into any process they spawn. Defaults to true when unset
+// (nil) so existing registrations keep working; a backend opts out with an
+// explicit frontend_consumer:false (`service register --no-frontend-creds`).
+func frontendCredsEnabled(cfg *ServiceConfig) bool {
+	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
 }
 
 // generateRandomHex returns a random hex string of the given byte length.
