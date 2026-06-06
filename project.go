@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +19,8 @@ func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []st
 	if name == "" {
 		return Project{}, fmt.Errorf("project name is required")
 	}
-	if path == "" {
-		return Project{}, fmt.Errorf("project path is required")
+	if err := validateProjectPath(path); err != nil {
+		return Project{}, err
 	}
 	if mcpIDs == nil {
 		mcpIDs = []string{}
@@ -51,4 +53,25 @@ func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []st
 func generateProjectToken() (string, string) {
 	plaintext := generateRandomHex(32)
 	return plaintext, hashToken(plaintext)
+}
+
+// validateProjectPath rejects project paths that aren't safe to use as a
+// filesystem scope. A project's path becomes the fsMCP allowed_dirs root and
+// the parent of its relay-managed skills dir, so a relative path (interpreted
+// against relay's CWD) or one with ".." traversal segments could escape the
+// intended location. Shared by the create and update paths (HTTP + IPC) so the
+// rule is enforced identically everywhere.
+func validateProjectPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("project path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("project path must be an absolute path: %q", path)
+	}
+	for _, seg := range strings.Split(path, string(filepath.Separator)) {
+		if seg == ".." {
+			return fmt.Errorf("project path must not contain '..': %q", path)
+		}
+	}
+	return nil
 }

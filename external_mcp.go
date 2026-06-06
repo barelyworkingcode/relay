@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -120,6 +119,13 @@ type externalMcpConn struct {
 	pending  map[int64]*pendingResponse
 	progress map[string]func(json.RawMessage) // progressToken → handler (per in-flight call)
 
+	// progressSem bounds the number of in-flight progress-delivery goroutines
+	// so a child that floods notifications/progress can't spawn unbounded
+	// goroutines (each holding a copied params buffer and blocked on a slow
+	// bridge consumer). Progress is best-effort, so deliveries are dropped
+	// when the budget is exhausted rather than queued unboundedly.
+	progressSem chan struct{}
+
 	// writeMu serializes stdin writes, separate from mu so a blocking
 	// stdin.Write (full child pipe) never holds mu — otherwise the reader
 	// goroutine, which needs mu to drain stdout and route progress, would
@@ -175,7 +181,25 @@ func (c *externalMcpConn) routeNotification(line []byte) {
 		// consumer. Heartbeat ordering is best-effort; the bridge serializes the
 		// actual writes. Copy params — note.Params aliases the reader's buffer.
 		params := append(json.RawMessage(nil), note.Params...)
-		go fn(params)
+		if c.progressSem == nil {
+			// Directly-constructed conn (tests/mocks) — no budget configured,
+			// preserve the unbounded delivery contract. Real connections are
+			// always built via spawnStdioConn, which sets progressSem.
+			go fn(params)
+			return
+		}
+		// Bound concurrent deliveries (progressSem). A child flooding progress
+		// can't spawn unbounded goroutines; once the budget is full we drop the
+		// heartbeat rather than block the reader or queue without limit.
+		select {
+		case c.progressSem <- struct{}{}:
+			go func() {
+				defer func() { <-c.progressSem }()
+				fn(params)
+			}()
+		default:
+			slog.Debug("stdio MCP: dropping progress notification, delivery backlog full")
+		}
 	}
 }
 
@@ -361,18 +385,23 @@ func spawnStdioConn(command string, args []string, env map[string]string, config
 	}
 
 	conn := &externalMcpConn{
-		cmd:        cmd,
-		stdin:      stdin,
-		pending:    make(map[int64]*pendingResponse),
-		readerDone: make(chan struct{}),
+		cmd:         cmd,
+		stdin:       stdin,
+		pending:     make(map[int64]*pendingResponse),
+		progressSem: make(chan struct{}, maxInflightProgress),
+		readerDone:  make(chan struct{}),
 	}
 	if config != nil {
 		conn.config = *config
 	}
 
-	go conn.readLoop(bufio.NewReader(stdout))
+	go conn.readLoop(stdout)
 	return conn, nil
 }
+
+// maxInflightProgress caps concurrent progress-delivery goroutines per stdio
+// connection (see externalMcpConn.progressSem).
+const maxInflightProgress = 64
 
 func (m *ExternalMcpManager) startStdio(ctx context.Context, mcpCfg *ExternalMcp) error {
 	conn, err := spawnStdioConn(mcpCfg.Command, mcpCfg.Args, mcpCfg.Env, mcpCfg)
@@ -655,22 +684,18 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 
 // readLoop reads JSON-RPC responses from stdout and dispatches them to waiting callers.
 // Runs in its own goroutine for the lifetime of the connection.
-func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
+func (c *externalMcpConn) readLoop(reader io.Reader) {
 	defer close(c.readerDone)
 
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			c.mu.Lock()
-			c.readerErr = fmt.Errorf("read response: %w", err)
-			// Signal all pending requests that the reader is dead.
-			for id, p := range c.pending {
-				p.ch <- readerResult{err: c.readerErr}
-				delete(c.pending, id)
-			}
-			c.mu.Unlock()
-			return
-		}
+	// Cap the per-line size at the bridge's MaxMessageSize. Child stdout is
+	// untrusted: a raw bufio.Reader.ReadBytes would buffer an arbitrarily long
+	// line (or a never-terminated stream) into memory and OOM the tray. The
+	// scanner returns bufio.ErrTooLong for an oversized frame, which tears the
+	// connection down — anything over MaxMessageSize couldn't traverse the
+	// bridge anyway.
+	scanner := bridge.NewScanner(reader)
+	for scanner.Scan() {
+		line := scanner.Bytes()
 
 		var resp jsonrpc.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
@@ -701,6 +726,20 @@ func (c *externalMcpConn) readLoop(reader *bufio.Reader) {
 			p.ch <- readerResult{resp: resp}
 		}
 	}
+
+	// Scanner stopped: clean EOF, a read error, or an oversized frame
+	// (bufio.ErrTooLong). Signal all pending requests that the reader is dead.
+	err := scanner.Err()
+	if err == nil {
+		err = io.EOF
+	}
+	c.mu.Lock()
+	c.readerErr = fmt.Errorf("read response: %w", err)
+	for id, p := range c.pending {
+		p.ch <- readerResult{err: c.readerErr}
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
 }
 
 // SendRequest sends a JSON-RPC request and waits for the response with a timeout.

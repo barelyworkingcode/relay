@@ -249,9 +249,11 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 		return c.parseSSEResponse(resp.Body, id)
 	}
 
-	// Direct JSON response.
+	// Direct JSON response. Cap the body at the bridge's MaxMessageSize: the
+	// remote MCP server is untrusted, and an unbounded Decode would let a
+	// multi-GB body OOM the tray (the error and SSE paths are already capped).
 	var rpcResp jsonrpc.Response
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, bridge.MaxMessageSize)).Decode(&rpcResp); err != nil {
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
 	}
 	if rpcResp.Error != nil {
@@ -344,7 +346,7 @@ func (c *httpMcpConn) SendNotification(method string) {
 
 	// Short timeout for notifications — they are best-effort and should not
 	// block the handshake sequence if the server is unresponsive.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), MCPNotificationTimeout)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))

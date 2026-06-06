@@ -123,6 +123,14 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 	}
+	// Validate path up front (before any mutation) so an invalid path can't
+	// leave a half-applied update behind — mirrors the HTTP PUT route.
+	if msg.Path != nil {
+		if err := validateProjectPath(*msg.Path); err != nil {
+			ctx.UI.EmitEvent("onProjectError", err.Error())
+			return
+		}
+	}
 
 	needsSchemas := msg.Path != nil || msg.AllowedMcpIDs != nil
 	var updated Project

@@ -85,7 +85,7 @@ func pollServiceStatuses(ctx context.Context, enhanced *EnhancedServiceRegistry)
 // FetchedAt is excluded from the change-detection digest because it ticks
 // every poll and would defeat suppression.
 func (a *App) pushServiceStatusBatch() {
-	if !a.settingsOpen || a.ipcCtx == nil || a.ipcCtx.Enhanced == nil {
+	if !a.settingsOpen.Load() || a.ipcCtx == nil || a.ipcCtx.Enhanced == nil {
 		return
 	}
 	batch := pollServiceStatuses(a.ctx, a.ipcCtx.Enhanced)

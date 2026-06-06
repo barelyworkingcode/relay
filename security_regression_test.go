@@ -178,6 +178,22 @@ func TestSec_PathTemplate_EscapesSlashesInRow(t *testing.T) {
 	}
 }
 
+func TestSec_PathTemplate_RejectsDotDotSegment(t *testing.T) {
+	// url.PathEscape does NOT escape ".", so a bare "." or ".." row value —
+	// no slashes, so the slash-escaping guard above doesn't catch it — would
+	// survive as a live relative-path segment ("/api/x/.." → parent route).
+	// buildActionPath must reject it outright.
+	action := &bridge.ActionDecl{
+		ID: "del", Method: "DELETE", PathTemplate: "/api/x/{id}", ForEach: "items",
+	}
+	for _, bad := range []string{`".."`, `"."`} {
+		row := map[string]json.RawMessage{"id": json.RawMessage(bad)}
+		if _, err := buildActionPath(action, row); err == nil {
+			t.Fatalf("expected rejection of traversal value %s", bad)
+		}
+	}
+}
+
 func TestSec_PathTemplate_NonForEachRejectsRow(t *testing.T) {
 	// A global action with row context is suspicious — surfaces a UI bug
 	// rather than silently dispatching.

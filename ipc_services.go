@@ -120,7 +120,7 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 
 func ipcUpdateServiceAutostart(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcUpdateServiceAutostartMsg](raw, "update_service_autostart")
-	if !ok {
+	if !ok || msg.ID == "" {
 		return
 	}
 	if !ctx.withSettings(func(s *Settings) {

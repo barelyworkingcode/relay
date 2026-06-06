@@ -139,13 +139,37 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 
 	p := ss.path()
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		_ = os.Remove(tmp) // clean up partial temp file
+	// Write + fsync the temp file, rename, then fsync the directory. os.Rename
+	// is atomic for visibility but NOT durable on its own: a crash after the
+	// rename returns can leave settings.json zero-length or stale, and load()
+	// treats a parse failure as "use defaults" — silently wiping every project
+	// and its token hashes. The fsyncs close that window.
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create temp settings: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write temp settings: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync temp settings: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close temp settings: %w", err)
 	}
 	if err := os.Rename(tmp, p); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename settings: %w", err)
+	}
+	// fsync the directory so the rename is durable across a crash.
+	if dir, err := os.Open(ss.dir); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
 	}
 	return nil
 }

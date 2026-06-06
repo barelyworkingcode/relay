@@ -28,6 +28,13 @@ type ServiceStatusClient struct {
 // as "offline" in the inspector.
 const statusFetchTimeout = 5 * time.Second
 
+// maxStatusBodyBytes bounds how much of a service response we buffer. The
+// timeout caps how long a read takes, not how many bytes — a buggy service
+// streaming an unbounded body would otherwise OOM the tray, and the poller
+// fans out to every service each tick. 10 MiB is far above any real status
+// or resource payload.
+const maxStatusBodyBytes = 10 << 20
+
 // NewServiceStatusClient binds to one service's internal endpoint.
 func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
 	return &ServiceStatusClient{
@@ -83,7 +90,7 @@ func (c *ServiceStatusClient) do(ctx context.Context, method, path string, body 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxStatusBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
