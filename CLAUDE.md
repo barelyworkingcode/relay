@@ -86,9 +86,11 @@ The protocol is intentionally minimal — no `version`, no capability declaratio
 
 ## Security
 
-- **Project tokens** -- inline in project (plaintext + SHA-256 hash). The token IS the security boundary.
-- **Service tokens** -- ephemeral, in-memory. Full bridge access. For administrative operations.
-- **Frontend channel** -- Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` with `RELAY_FRONTEND_TOKEN` (Unix socket, 0600 perms). Bearer-checked on every HTTP + WS request before dispatch.
+Full credential inventory: `docs/tokens.md`. Project-token brokering model: ADR-007 (`docs/decisions/007-project-token-brokering.md`).
+
+- **Project tokens** (`RELAY_PROJECT_TOKEN`) -- inline in project (plaintext + SHA-256 hash). The token IS the security boundary, scoped to the project's allowed MCPs/tools. **Relay is the sole broker:** eve references projects by id only (the frontend `projectView` DTO strips the token from every HTTP response except `rotate_token`); relayLLM resolves the token just-in-time from the bridge by `projectId` (`ResolvePtyEnv`, validated against the directory via `dirWithinProject`), injects it into spawned children, and never stores it or accepts it from eve.
+- **Service tokens** (`RELAY_SERVICE_TOKEN`) -- ephemeral, in-memory. Full bridge access. For a service to authenticate its own bridge calls (`ResolvePtyEnv`, `RegisterManifest`). **Never injected into a spawned child shell** — if a project token can't be resolved, the child gets no token (fail closed), never the service token.
+- **Frontend channel** -- Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` with `RELAY_FRONTEND_TOKEN` (Unix socket, 0600 perms). Bearer-checked on every HTTP + WS request before dispatch; an empty configured token fails closed. Relay injects these creds only into frontend consumers — backends register with `service register --no-frontend-creds` (`ServiceConfig.FrontendConsumer`) so the front-door bearer never lands in a backend's env (and thus never in a spawned shell).
 - **Enhanced internal sockets** -- each enhanced service picks its own internal socket + token and tells relay both via `RegisterManifest`. Relay strips inbound Authorization and injects the service-declared token when proxying. Distinct from frontend creds.
 - **OAuth 2.1** -- HTTP MCPs use PKCE, dynamic registration, auto-refresh. See `oauth.go`.
 - **TCC permissions** -- Relay holds the personal-information entitlements (`Relay.entitlements`) and fires the user prompts from its own process. MCPs declare what they need with `--tcc-services foo,bar` at registration and inherit Relay's grants via TCC's responsible-parent attribution at runtime. Settings UI's "Reset Permissions" button per MCP drives the flow. Full rationale + checklist for adding a new TCC service: `docs/decisions/005-tcc-permissions.md`.

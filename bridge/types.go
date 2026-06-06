@@ -58,8 +58,28 @@ const (
 	EnvFrontendToken  = "RELAY_FRONTEND_TOKEN"
 	EnvBridgeSocket   = "RELAY_BRIDGE_SOCKET"
 	EnvServiceID      = "RELAY_SERVICE_ID"
-	EnvMcpToken       = "RELAY_MCP_TOKEN"
 	EnvMcpCommand     = "RELAY_MCP_COMMAND"
+
+	// EnvServiceToken carries the ephemeral, full-access service token relay
+	// injects into every spawned service so it can authenticate its own bridge
+	// calls (ResolvePtyEnv, RegisterManifest). It is NOT a project token and
+	// must never be injected into a user shell — doing so would hand a child
+	// god-mode bridge access. Project-scoped work uses EnvProjectToken.
+	EnvServiceToken = "RELAY_SERVICE_TOKEN"
+
+	// EnvProjectToken carries a project-scoped token into a spawned child (an
+	// LLM CLI, the `relay mcp` subprocess, or a project-scoped terminal). Its
+	// privileges are limited to one project's allowed MCPs/tools — distinct
+	// from the full-access EnvServiceToken.
+	EnvProjectToken = "RELAY_PROJECT_TOKEN"
+
+	// Legacy env-var names, retained one release for cross-repo migration:
+	// relay sets EnvServiceTokenLegacy alongside EnvServiceToken, and readers
+	// (relay's `relay mcp`/`mcp call`, relayLLM's bridge client) fall back to
+	// the *Legacy names. Remove once relay + relayLLM have both shipped the
+	// rename. EnvServiceTokenLegacy was previously named EnvMcpToken.
+	EnvServiceTokenLegacy = "RELAY_MCP_TOKEN"
+	EnvProjectTokenLegacy = "RELAY_TOKEN"
 )
 
 // PtyEnvRequest is the payload for ReqResolvePtyEnv requests, carried in
@@ -68,14 +88,18 @@ const (
 // RelayLLM substitutes ${project.path} into SkillPath before sending so relay
 // does not have to know about template variables.
 //
-// Project resolution: Project is tried first (as ID then name); if empty or
-// unmatched, Directory is matched against Project.Path. PTY launches from
-// eve typically only carry the directory, so Directory is the common path.
+// Project resolution precedence: ProjectID (authoritative) → Project (as ID
+// then name) → Directory matched against Project.Path (legacy). When ProjectID
+// is set and Directory is non-empty, relay validates the directory is within
+// the project's path and rejects a mismatch — this prevents a service-token
+// holder from binding an arbitrary cwd to another project's token. The legacy
+// Project/Directory match remains so older callers keep working during migration.
 type PtyEnvRequest struct {
-	Project     string `json:"project,omitempty"`   // project ID or name
-	Directory   string `json:"directory,omitempty"` // fallback: match against Project.Path
-	RegenSkills string `json:"regen_skills"`        // RegenSkillsAlways | RegenSkillsSkipIfExists | RegenSkillsNever
-	SkillPath   string `json:"skill_path"`          // skills root (.claude/skills); relay writes one relay-<slug> subdir per tool bucket. A legacy value ending in relay/relay-* is accepted and normalized to its parent.
+	ProjectID   string `json:"project_id,omitempty"` // authoritative: resolve by project ID; Directory (if set) is validated within Project.Path
+	Project     string `json:"project,omitempty"`    // legacy: project ID or name
+	Directory   string `json:"directory,omitempty"`  // legacy fallback: match against Project.Path
+	RegenSkills string `json:"regen_skills"`         // RegenSkillsAlways | RegenSkillsSkipIfExists | RegenSkillsNever
+	SkillPath   string `json:"skill_path"`           // skills root (.claude/skills); relay writes one relay-<slug> subdir per tool bucket. A legacy value ending in relay/relay-* is accepted and normalized to its parent.
 }
 
 // PtyEnvResponse is returned as BridgeResponse.Data on a successful
