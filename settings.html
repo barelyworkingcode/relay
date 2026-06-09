@@ -46,7 +46,13 @@ label {
     font-size: 13px;
     color: #999;
 }
-input[type="text"] {
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="url"],
+input[type="email"],
+select {
     width: 100%;
     padding: 6px 8px;
     margin-top: 4px;
@@ -56,7 +62,13 @@ input[type="text"] {
     color: #e0e0e0;
     font-size: 13px;
 }
-input[type="text"]:focus { outline: none; border-color: #0078d4; }
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="url"]:focus,
+input[type="email"]:focus,
+select:focus { outline: none; border-color: #0078d4; }
 .btn {
     padding: 6px 16px;
     background: #0078d4;
@@ -205,6 +217,46 @@ textarea:focus { outline: none; border-color: #0078d4; }
 .svc-resource-form-actions { margin-top: 14px; display: flex; gap: 8px; }
 .svc-resource-error { color: #e55; font-size: 12px; margin-top: 8px; }
 
+/* ---- Service config editor (collapsible schema tree) ---- */
+.cfg-chevron { display: inline-block; width: 9px; color: #888; font-size: 9px; transition: transform 0.12s ease; transform: rotate(0deg); flex-shrink: 0; }
+.cfg-chevron.open { transform: rotate(90deg); }
+
+/* Section group (object / array / map) */
+.cfg-node { margin-top: 6px; }
+.cfg-node-head { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: #1c1c1c; border: 1px solid #303030; border-radius: 6px; cursor: pointer; user-select: none; }
+.cfg-node-head:hover { background: #232323; border-color: #3a3a3a; }
+.cfg-node-title { font-size: 12px; font-weight: 600; color: #dcdcdc; }
+.cfg-node-sub { color: #6f6f6f; font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-badge { margin-left: auto; flex-shrink: 0; background: #333; color: #bbb; font-size: 10px; font-weight: 600; min-width: 18px; text-align: center; padding: 1px 7px; border-radius: 10px; }
+.cfg-node-body { margin: 2px 0 4px 9px; padding: 2px 0 4px 14px; border-left: 1px solid #2a2a2a; }
+
+/* Collection item card */
+.cfg-item { margin-top: 6px; border: 1px solid #2a2a2a; border-radius: 6px; overflow: hidden; }
+.cfg-item-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #181818; }
+.cfg-item-head:hover { background: #1e1e1e; }
+.cfg-item-toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; flex: 1; min-width: 0; }
+.cfg-item-title { font-size: 12px; color: #cfcfcf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-item-remove { flex-shrink: 0; }
+.cfg-item-body { padding: 6px 12px 12px; }
+
+.cfg-add { margin-top: 10px; }
+
+/* Key/value repeater (e.g. llama-server flags) */
+.cfg-kv { margin-top: 10px; }
+.cfg-kv-label { font-size: 12px; color: #aaa; margin-bottom: 2px; }
+.cfg-kv-empty { color: #666; font-size: 12px; padding: 2px 0 2px; }
+.cfg-kv-row { display: flex; gap: 6px; align-items: center; margin-top: 5px; }
+.cfg-kv-row input { margin-top: 0; }
+.cfg-kv-key { flex: 0 0 36%; font-family: 'SF Mono', Monaco, monospace; }
+.cfg-kv-val { flex: 1; font-family: 'SF Mono', Monaco, monospace; }
+.cfg-kv-del { flex-shrink: 0; padding: 4px 9px; }
+
+.cfg-leaf { margin-top: 10px; }
+.cfg-leaf > label { display: block; font-size: 12px; color: #aaa; margin-bottom: 1px; }
+.cfg-leaf input.cfg-bad, .cfg-leaf textarea.cfg-bad { border-color: #e55; }
+.cfg-actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2a2a; display: flex; gap: 8px; align-items: center; }
+.cfg-apply-note { color: #888; font-size: 11px; margin-top: 8px; }
+
 /* ---- Projects tab ---- */
 .proj-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
 .proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
@@ -276,15 +328,23 @@ let state = {
     serviceActionPending: {}, // key "svc|action|rowKey" -> true while in flight
     serviceActionError: {},   // serviceId -> last error string (cleared on next ok)
 
-    // Per-service resource (manifest.resources) CRUD state. Keyed by
-    // "svcId|resId" because (service, resource) is the natural unit — a
-    // service can declare multiple resources independently.
-    serviceResources: {},        // key -> [records] (last list result). Presence = list has loaded at least once.
-    serviceResourceOpen: {},     // key -> bool (section expanded)
-    serviceResourceEditing: {},  // key -> null | 'new' | recordId
-    serviceResourceForm: {},     // key -> {field values} in-flight
-    serviceResourceError: {},    // key -> string
-    serviceResourcePending: {},  // key -> bool (any op in flight)
+    // Per-service config editor (manifest.config). The service advertises a
+    // file path + a recursive schema; relay ships the raw file text, we parse
+    // it into a tree, render forms from the schema, and serialize back on save.
+    serviceConfigTree: {},     // svcId -> parsed config object (server truth)
+    serviceConfigDraft: {},    // svcId -> edited clone (form binds to this)
+    serviceConfigOpen: {},     // svcId -> bool (panel expanded)
+    serviceConfigError: {},    // svcId -> string (load/parse/save error)
+    serviceConfigPending: {},  // svcId -> bool (op in flight)
+    serviceConfigApplyMsg: {}, // svcId -> string ("Restarting…" etc.)
+    serviceConfigLoaded: {},   // svcId -> bool (fetched at least once)
+    serviceConfigExpanded: {}, // svcId -> { JSON.stringify(path): bool } collapse state per node
+    // Rebuilt every inspector render: integer-indexed bindings from a rendered
+    // input back to its (svcId, path) into the draft tree, plus the set of
+    // json-leaf bindings currently holding unparseable text. Avoids encoding
+    // arbitrary map keys into HTML — handlers carry an index, not a path.
+    _cfgBind: [],
+    _cfgBadJson: {},
 
     // Projects tab.
     projects: PROJECTS_INIT,
@@ -321,9 +381,12 @@ function render(source) {
         if (fromPush && state.editingServiceId) return;
         el.innerHTML = renderServices();
     } else if (state.page === 'inspector') {
-        // Status poller fires render('push') every 2s — skip when ANY resource
-        // form is open so the user's keystrokes survive between ticks.
-        if (fromPush && anyResourceFormOpen()) return;
+        // Status poller fires render('push') every 2s. Skip the repaint while a
+        // config editor is open so it never wipes in-flight keystrokes (a leaf
+        // edit mutates the draft without re-rendering; a poll repaint would
+        // rebuild the DOM and drop focus + any uncommitted text). User-driven
+        // renders (expand/collapse, save/revert) pass no 'push' and proceed.
+        if (fromPush && anyConfigEditorOpen()) return;
         el.innerHTML = renderServiceInspector();
     } else if (state.page === 'projects') {
         if (fromPush && state.editingProjectId) return;
@@ -1567,6 +1630,11 @@ window.onProjectError = function(msg) {
 // (carried inside its status snapshot) plus the snapshot itself.
 
 function renderServiceInspector() {
+    // Bindings are recreated fresh each inspector render; config-editor inputs
+    // reference indices into _cfgBind, so it must be cleared before the panels
+    // append to it.
+    state._cfgBind = [];
+    state._cfgBadJson = {};
     let html = '<h2>Service Inspector</h2>';
     html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Live status and actions for every relay-enhanced service. Panels are rendered generically from each service\'s declared manifest.</p>';
 
@@ -1592,7 +1660,6 @@ function renderServicePanel(serviceId) {
     const snap = state.serviceStatuses[serviceId];
     const manifest = (snap && snap.manifest) || {};
     const actions = manifest.actions || [];
-    const resources = manifest.resources || [];
 
     let html = '<div class="svc-card">';
     html += `<div class="svc-card-header"><div><span class="svc-card-title">${esc(serviceId)}</span>${serviceBadgeHTML(snap, manifest)}</div><div></div></div>`;
@@ -1617,8 +1684,8 @@ function renderServicePanel(serviceId) {
         html += '</div>';
     }
 
-    for (const resource of resources) {
-        html += renderResourceSection(serviceId, resource);
+    if (manifest.config) {
+        html += renderConfigSection(serviceId, manifest.config);
     }
 
     const err = state.serviceActionError[serviceId];
@@ -1631,63 +1698,169 @@ function renderServicePanel(serviceId) {
 }
 
 // ---------------------------------------------------------------------------
-// Manifest-declared resources (manifest.resources[])
+// Service config editor (manifest.config)
 //
-// Generic CRUD UI: each ResourceDecl renders one collapsible section with a
-// list view + Add/Edit form. The schema drives both — fields produce table
-// columns AND form inputs. Built-in records (where ProtectedField is true)
-// suppress Edit/Delete in the UI; the service must reject them server-side
-// too.
+// The service advertises a config file path plus a recursive schema. Relay
+// ships the raw file text; we parse it into a tree, render nested forms from
+// the schema (object/array/map/leaf), and serialize the edited draft back to
+// JSON on save. Each input binds to a (svcId, path) entry in state._cfgBind so
+// arbitrary map keys never have to be encoded into HTML — handlers carry an
+// integer index, not a path. Scalar edits mutate the draft in place WITHOUT a
+// re-render (preserving the caret); structural edits re-render.
 // ---------------------------------------------------------------------------
 
-function resKey(serviceId, resourceId) { return serviceId + '|' + resourceId; }
+function cfgGetDraft(svcId) { return state.serviceConfigDraft[svcId]; }
 
-// anyResourceFormOpen reports whether any (service, resource) pair has an
-// edit/new form on screen. Drives the Inspector's form-protect guard so
-// the 2s status poll doesn't wipe in-flight keystrokes.
-function anyResourceFormOpen() {
-    for (const k of Object.keys(state.serviceResourceEditing)) {
-        if (state.serviceResourceEditing[k]) return true;
+// anyConfigEditorOpen reports whether any service's config panel is expanded,
+// so the 2s status poll skips its repaint and never disturbs the editor.
+function anyConfigEditorOpen() {
+    for (const id of Object.keys(state.serviceConfigOpen)) {
+        if (state.serviceConfigOpen[id]) return true;
     }
     return false;
 }
 
-// renderResourceSection renders one resource block. Side effect: fires the
-// list IPC on first render so the count populates before the section is
-// expanded. The status poller re-runs render every 2s — the `key in
-// serviceResources` guard prevents a refetch storm.
-function renderResourceSection(serviceId, resource) {
-    const key = resKey(serviceId, resource.id);
-    const open = !!state.serviceResourceOpen[key];
-    const records = state.serviceResources[key];
-    const loaded = records !== undefined;
+// ---- Collapse state (keyed by node path) ----
+function cfgExpandKey(path) { return JSON.stringify(path); }
+function cfgIsExpanded(svcId, path) {
+    const m = state.serviceConfigExpanded[svcId];
+    return !!(m && m[cfgExpandKey(path)]);
+}
+function cfgSetExpanded(svcId, path, val) {
+    if (!state.serviceConfigExpanded[svcId]) state.serviceConfigExpanded[svcId] = {};
+    state.serviceConfigExpanded[svcId][cfgExpandKey(path)] = val;
+}
+function cfgToggleExpand(bindIdx) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    cfgSetExpanded(b.svcId, b.path, !cfgIsExpanded(b.svcId, b.path));
+    if (state.page === 'inspector') render();
+}
 
-    if (!loaded && !state.serviceResourcePending[key]) {
-        dispatchResourceOp(serviceId, resource.id, 'list', null, null);
+function cfgChevron(expanded) {
+    return `<span class="cfg-chevron${expanded ? ' open' : ''}">▸</span>`;
+}
+
+// cfgSummary returns a one-line preview of a collection item (the first
+// non-empty scalar field) so a collapsed row is identifiable at a glance.
+function cfgSummary(itemField, value) {
+    if (value && typeof value === 'object' && itemField && itemField.fields) {
+        for (const f of itemField.fields) {
+            const v = value[f.id];
+            if (typeof v === 'string' && v.trim()) return v;
+            if (typeof v === 'number') return String(v);
+        }
+    }
+    return '';
+}
+
+function cfgDirty(svcId) {
+    const t = state.serviceConfigTree[svcId];
+    const d = state.serviceConfigDraft[svcId];
+    if (t === undefined || d === undefined) return false;
+    return JSON.stringify(t) !== JSON.stringify(d);
+}
+
+function cfgHasBadJson(svcId) {
+    for (const k of Object.keys(state._cfgBadJson)) {
+        if (state._cfgBadJson[k] === svcId) return true;
+    }
+    return false;
+}
+
+// cfgGetAt / cfgSetAt walk a path (array of string keys / numeric indices)
+// into the draft tree. cfgSetAt lazily creates intermediate containers so an
+// edit to a leaf in an absent section materializes only that chain.
+function cfgGetAt(obj, path) {
+    let cur = obj;
+    for (const k of path) {
+        if (cur === null || cur === undefined) return undefined;
+        cur = cur[k];
+    }
+    return cur;
+}
+
+function cfgSetAt(obj, path, value) {
+    let cur = obj;
+    for (let i = 0; i < path.length - 1; i++) {
+        const k = path[i];
+        if (cur[k] === null || typeof cur[k] !== 'object') {
+            cur[k] = (typeof path[i + 1] === 'number') ? [] : {};
+        }
+        cur = cur[k];
+    }
+    cur[path[path.length - 1]] = value;
+}
+
+function cfgDefaultFor(field) {
+    switch (field.type) {
+        case 'object':    return {};
+        case 'array':     return [];
+        case 'map':       return {};
+        case 'bool':      return false;
+        case 'stringMap': return {};
+        case 'string[]':  return [];
+        case 'number':    return null;
+        case 'json':      return null;
+        default:          return ''; // text/textarea/select/secret
+    }
+}
+
+// cfgBind records a binding and returns its index. The index is what handlers
+// carry, so arbitrary map keys never reach an HTML attribute. extra carries
+// optional per-binding data (e.g. a keyValue's `exclude` set).
+function cfgBind(svcId, path, type, extra) {
+    const b = { svcId: svcId, path: path.slice(), type: type };
+    if (extra) Object.assign(b, extra);
+    return state._cfgBind.push(b) - 1;
+}
+
+function renderConfigSection(serviceId, config) {
+    const open = !!state.serviceConfigOpen[serviceId];
+    const loaded = !!state.serviceConfigLoaded[serviceId];
+
+    // Fetch-on-expand: pull the file the first time the panel is opened. Not in
+    // the 2s poll — config is read on demand, not continuously.
+    if (open && !loaded && !state.serviceConfigPending[serviceId]) {
+        dispatchConfigOp(serviceId, 'get', null);
     }
 
     let html = '<div class="svc-resource">';
-    html += `<div class="svc-resource-header ${open ? 'open' : 'closed'}" onclick="toggleResourceSection('${esc(serviceId)}','${esc(resource.id)}')">`;
-    html += `<span class="svc-resource-title"><span class="chevron">▼</span>${esc(resource.label)}<span class="svc-resource-count">${loaded ? '(' + records.length + ')' : '(loading…)'}</span></span>`;
-    if (open && resource.create) {
-        // stopPropagation so clicking the button doesn't also collapse the section.
-        html += `<button class="btn btn-sm" onclick="event.stopPropagation();newResourceRecord('${esc(serviceId)}','${esc(resource.id)}')">+ New</button>`;
-    }
+    html += `<div class="svc-resource-header ${open ? 'open' : 'closed'}" onclick="toggleConfigSection('${esc(serviceId)}')">`;
+    html += `<span class="svc-resource-title"><span class="chevron">▼</span>${esc(config.label || 'Configuration')}</span>`;
     html += '</div>';
 
     if (open) {
         html += '<div class="svc-resource-body">';
-        if (resource.help) {
-            html += `<div class="svc-resource-help">${esc(resource.help)}</div>`;
-        }
-        const err = state.serviceResourceError[key];
-        if (err) html += `<div class="svc-resource-error">${esc(err)}</div>`;
+        if (config.help) html += `<div class="svc-resource-help">${esc(config.help)}</div>`;
 
-        const editing = state.serviceResourceEditing[key];
-        if (editing) {
-            html += renderResourceForm(serviceId, resource);
+        const err = state.serviceConfigError[serviceId];
+        if (err) html += `<div class="svc-resource-error">${esc(err)}</div>`;
+        const applyMsg = state.serviceConfigApplyMsg[serviceId];
+        if (applyMsg) html += `<div class="cfg-apply-note">${esc(applyMsg)}</div>`;
+
+        if (!loaded) {
+            html += '<div class="svc-resource-empty">Loading…</div>';
+        } else if (state.serviceConfigDraft[serviceId] === undefined) {
+            html += '<div class="svc-resource-empty">Config unavailable.</div>';
         } else {
-            html += renderResourceList(serviceId, resource);
+            html += '<div class="svc-resource-form">';
+            const schema = config.schema || [];
+            const draft = state.serviceConfigDraft[serviceId];
+            for (const field of schema) {
+                html += renderConfigNode(serviceId, [field.id], field, cfgGetAt(draft, [field.id]));
+            }
+            html += '</div>';
+
+            const dirty = cfgDirty(serviceId);
+            const note = (config.applyMode === 'live')
+                ? 'Saved changes apply live.'
+                : 'Saving restarts the service to apply.';
+            html += `<div class="cfg-apply-note" id="cfg-note-${esc(serviceId)}">${esc(note)}</div>`;
+            html += '<div class="cfg-actions">';
+            html += `<button class="btn" id="cfg-save-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="saveConfig('${esc(serviceId)}')">Save</button>`;
+            html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="revertConfig('${esc(serviceId)}')">Revert</button>`;
+            html += '</div>';
         }
         html += '</div>';
     }
@@ -1696,287 +1869,636 @@ function renderResourceSection(serviceId, resource) {
     return html;
 }
 
-function renderResourceList(serviceId, resource) {
-    const key = resKey(serviceId, resource.id);
-    const records = state.serviceResources[key];
-    if (records === undefined) {
-        return '<div class="svc-resource-empty">Loading…</div>';
-    }
-    if (records.length === 0) {
-        return '<div class="svc-resource-empty">No records.</div>';
-    }
-    const tableColumns = resource.fields.filter(f => !f.hideInTable);
-
-    let html = '<table class="svc-table"><thead><tr>';
-    for (const f of tableColumns) {
-        html += `<th>${esc(f.label || f.id)}</th>`;
-    }
-    if (resource.update || resource.delete) {
-        html += '<th style="width:1%">actions</th>';
-    }
-    html += '</tr></thead><tbody>';
-
-    for (const rec of records) {
-        const id = rec && rec.id;
-        const protectedFlag = resource.protectedField ? !!(rec && rec[resource.protectedField]) : false;
-        html += '<tr>';
-        for (const f of tableColumns) {
-            html += `<td>${esc(formatFieldValue(rec ? rec[f.id] : null, f.type))}</td>`;
-        }
-        if (resource.update || resource.delete) {
-            html += '<td><div class="svc-actions">';
-            if (!protectedFlag && resource.update && id) {
-                html += `<button class="btn btn-sm" onclick="editResourceRecord('${esc(serviceId)}','${esc(resource.id)}','${esc(id)}')">Edit</button>`;
-            }
-            if (!protectedFlag && resource.delete && id) {
-                const label = (rec && (rec.name || rec.id)) || id;
-                html += `<button class="btn btn-sm btn-danger" onclick="deleteResourceRecord('${esc(serviceId)}','${esc(resource.id)}','${esc(id)}','${esc(label)}')">Delete</button>`;
-            }
-            html += '</div></td>';
-        }
-        html += '</tr>';
-    }
-    html += '</tbody></table>';
-    return html;
-}
-
-// formatFieldValue converts a record value to its table display form. Picks
-// a representation per declared field type so long lists/maps don't blow out
-// table cells.
-function formatFieldValue(v, type) {
-    if (v === null || v === undefined) return '';
-    switch (type) {
-        case 'bool':
-            return v ? 'yes' : 'no';
-        case 'string[]':
-            return Array.isArray(v) ? v.join(' ') : String(v);
-        case 'stringMap':
-            if (v && typeof v === 'object') {
-                return Object.keys(v).map(k => k + '=' + v[k]).join(' ');
-            }
-            return '';
-        default:
-            return formatScalar(v);
-    }
-}
-
-function renderResourceForm(serviceId, resource) {
-    const key = resKey(serviceId, resource.id);
-    const editing = state.serviceResourceEditing[key];
-    const form = state.serviceResourceForm[key] || {};
-    const isNew = editing === 'new';
-    const title = isNew ? 'New ' + (resource.label || 'record') : 'Edit ' + (resource.label || 'record');
-
-    let html = `<h3 style="margin-top:4px">${esc(title)}</h3>`;
-    html += '<div class="svc-resource-form">';
-    for (const f of resource.fields) {
-        if (f.readOnly && isNew) continue; // don't surface read-only fields in the new form
-        const value = form[f.id];
-        html += renderFieldInput(serviceId, resource.id, f, value, !!f.readOnly);
-    }
-    html += '</div>';
-    html += '<div class="svc-resource-form-actions">';
-    html += `<button class="btn" onclick="saveResourceForm('${esc(serviceId)}','${esc(resource.id)}')">${isNew ? 'Create' : 'Save'}</button>`;
-    html += `<button class="btn btn-danger" onclick="cancelResourceEdit('${esc(serviceId)}','${esc(resource.id)}')">Cancel</button>`;
-    html += '</div>';
-    return html;
-}
-
-function renderFieldInput(serviceId, resourceId, field, value, readOnly) {
-    const inputId = 'res-' + serviceId + '-' + resourceId + '-' + field.id;
-    const ro = readOnly ? ' disabled' : '';
-    const ph = field.placeholder ? ` placeholder="${esc(field.placeholder)}"` : '';
-    // Belt-and-suspenders against macOS smart-text substitution mangling
-    // command-line args / env values (the AppDelegate disables these via
-    // NSUserDefaults too).
-    const noFix = ' autocorrect="off" autocapitalize="off" spellcheck="false"';
-    let html = `<label>${esc(field.label || field.id)}${field.required ? ' *' : ''}</label>`;
+// renderConfigNode renders one schema node bound to its current draft value.
+// path is the list of keys from the config root to this node.
+function renderConfigNode(svcId, path, field, value) {
     switch (field.type) {
-        case 'textarea':
-            html += `<textarea id="${esc(inputId)}" rows="3"${ph}${noFix}${ro}>${esc(value || '')}</textarea>`;
-            break;
+        case 'object':   return renderConfigObject(svcId, path, field, value);
+        case 'array':    return renderConfigArray(svcId, path, field, value);
+        case 'map':      return renderConfigMap(svcId, path, field, value);
+        case 'keyValue': return renderConfigKeyValue(svcId, path, field, (value && typeof value === 'object') ? value : {}, []);
+        default:         return renderConfigLeaf(svcId, path, field, value);
+    }
+}
+
+// renderObjectFields renders an object's declared child fields. A "keyValue"
+// child with rest:true is bound to the parent object itself (its rows are every
+// parent key except the other declared fields) — this is how a record with a
+// few named fields plus an open-ended bag of extras (llama model: alias + flags)
+// is edited. Shared by renderConfigObject and renderConfigItem.
+function renderObjectFields(svcId, objPath, fields, obj) {
+    const o = (obj && typeof obj === 'object') ? obj : {};
+    const realKeys = fields.filter(f => !(f.type === 'keyValue' && f.rest)).map(f => f.id);
+    let html = '';
+    for (const child of fields) {
+        if (child.type === 'keyValue' && child.rest) {
+            html += renderConfigKeyValue(svcId, objPath, child, o, realKeys);
+        } else {
+            html += renderConfigNode(svcId, objPath.concat(child.id), child, o[child.id]);
+        }
+    }
+    return html;
+}
+
+function cfgNodeLabel(field, fallback) {
+    return esc(field.label || field.id || fallback || '');
+}
+
+// renderConfigObject is a collapsible group of named child fields. Collapsed by
+// default so a deep config presents as a short, navigable list of sections.
+function renderConfigObject(svcId, path, field, value) {
+    const bindIdx = cfgBind(svcId, path, 'object');
+    const expanded = cfgIsExpanded(svcId, path);
+    const obj = (value && typeof value === 'object') ? value : {};
+    let html = '<div class="cfg-node">';
+    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += cfgChevron(expanded);
+    html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
+    if (!expanded && field.help) html += `<span class="cfg-node-sub">${esc(field.help)}</span>`;
+    html += '</div>';
+    if (expanded) {
+        html += '<div class="cfg-node-body">';
+        if (field.help) html += `<div class="svc-resource-help">${esc(field.help)}</div>`;
+        html += renderObjectFields(svcId, path, field.fields || [], obj);
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// renderConfigArray is a collapsible group with a count badge; each element is
+// itself a collapsible item row (renderConfigItem) showing a one-line summary.
+function renderConfigArray(svcId, path, field, value) {
+    const arr = Array.isArray(value) ? value : [];
+    const bindIdx = cfgBind(svcId, path, 'array');
+    const expanded = cfgIsExpanded(svcId, path);
+    let html = '<div class="cfg-node">';
+    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += cfgChevron(expanded);
+    html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
+    html += `<span class="cfg-badge">${arr.length}</span>`;
+    html += '</div>';
+    if (expanded) {
+        html += '<div class="cfg-node-body">';
+        const itemLabel = (field.item && field.item.label) || 'item';
+        for (let i = 0; i < arr.length; i++) {
+            const title = cfgSummary(field.item, arr[i]) || (itemLabel + ' ' + (i + 1));
+            html += renderConfigItem(svcId, path.concat(i), field.item, arr[i], title, bindIdx, i, false, '');
+        }
+        html += `<button class="btn btn-sm cfg-add" onclick="cfgArrayAdd(${bindIdx})">+ Add ${esc(itemLabel)}</button>`;
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// renderConfigMap is a collapsible group of user-keyed entries. Each entry is a
+// collapsible item row titled "<key> — <summary>"; the key is editable inside.
+function renderConfigMap(svcId, path, field, value) {
+    const obj = (value && typeof value === 'object') ? value : {};
+    const bindIdx = cfgBind(svcId, path, 'map');
+    const expanded = cfgIsExpanded(svcId, path);
+    const keys = Object.keys(obj);
+    const keyLabel = field.keyLabel || 'key';
+    let html = '<div class="cfg-node">';
+    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += cfgChevron(expanded);
+    html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
+    html += `<span class="cfg-badge">${keys.length}</span>`;
+    html += '</div>';
+    if (expanded) {
+        html += '<div class="cfg-node-body">';
+        for (let ki = 0; ki < keys.length; ki++) {
+            const k = keys[ki];
+            const sub = cfgSummary(field.item, obj[k]);
+            const title = k + (sub ? ' — ' + sub : '');
+            html += renderConfigItem(svcId, path.concat(k), field.item, obj[k], title, bindIdx, ki, true, keyLabel);
+        }
+        html += `<button class="btn btn-sm cfg-add" onclick="cfgMapAdd(${bindIdx})">+ Add</button>`;
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// renderConfigItem renders one collection element as a collapsible card: a
+// header (chevron + summary title + Remove) and, when expanded, its fields. For
+// map entries the editable key input is rendered first.
+function renderConfigItem(svcId, path, itemField, value, title, containerBindIdx, indexOrKey, isMap, keyLabel) {
+    const bindIdx = cfgBind(svcId, path, 'item');
+    const expanded = cfgIsExpanded(svcId, path);
+    const removeCall = isMap
+        ? `cfgMapRemove(${containerBindIdx}, ${indexOrKey})`
+        : `cfgArrayRemove(${containerBindIdx}, ${indexOrKey})`;
+    let html = '<div class="cfg-item">';
+    html += '<div class="cfg-item-head">';
+    html += `<span class="cfg-item-toggle" onclick="cfgToggleExpand(${bindIdx})">${cfgChevron(expanded)}<span class="cfg-item-title">${esc(title || 'item')}</span></span>`;
+    html += `<button class="btn btn-sm btn-danger cfg-item-remove" onclick="${removeCall}">Remove</button>`;
+    html += '</div>';
+    if (expanded) {
+        html += '<div class="cfg-item-body">';
+        if (isMap) {
+            const curKey = path[path.length - 1];
+            html += '<div class="cfg-leaf">';
+            html += `<label>${esc(keyLabel)}</label>`;
+            html += `<input type="text" value="${esc(String(curKey))}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgMapRename(${containerBindIdx}, ${indexOrKey}, this)"/>`;
+            html += '</div>';
+        }
+        if (itemField && itemField.type === 'object') {
+            html += renderObjectFields(svcId, path, itemField.fields || [], (value && typeof value === 'object') ? value : {});
+        } else {
+            html += renderConfigNode(svcId, path, itemField, value);
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// renderConfigKeyValue renders an editable bag of key/value rows. containerObj
+// is the object the rows live in; excludeKeys are keys owned by sibling fields
+// (hidden here). Values are typed on input (true/false → bool, numeric → number,
+// else string) so they round-trip to the right JSON type.
+function renderConfigKeyValue(svcId, containerPath, field, containerObj, excludeKeys) {
+    const exclude = excludeKeys || [];
+    const bindIdx = cfgBind(svcId, containerPath, 'keyValue', { exclude: exclude });
+    const keys = Object.keys(containerObj || {}).filter(k => exclude.indexOf(k) < 0);
+    const keyLabel = field.keyLabel || 'key';
+    let html = '<div class="cfg-kv">';
+    if (field.id || field.label) html += `<div class="cfg-kv-label">${cfgNodeLabel(field)}</div>`;
+    if (field.help) html += `<div class="svc-resource-help">${esc(field.help)}</div>`;
+    if (keys.length === 0) html += '<div class="cfg-kv-empty">No entries yet.</div>';
+    for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        html += '<div class="cfg-kv-row">';
+        html += `<input class="cfg-kv-key" type="text" value="${esc(k)}" placeholder="${esc(keyLabel)}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgKvRename(${bindIdx}, ${i}, this)"/>`;
+        html += `<input class="cfg-kv-val" type="text" value="${esc(cfgKvDisplay(containerObj[k]))}" placeholder="value" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="cfgKvSetVal(${bindIdx}, ${i}, this)"/>`;
+        html += `<button class="btn btn-sm btn-danger cfg-kv-del" onclick="cfgKvRemove(${bindIdx}, ${i})">×</button>`;
+        html += '</div>';
+    }
+    html += `<button class="btn btn-sm cfg-add" onclick="cfgKvAdd(${bindIdx})">+ Add ${esc(keyLabel)}</button>`;
+    html += '</div>';
+    return html;
+}
+
+function cfgKvDisplay(v) {
+    if (v === true) return 'true';
+    if (v === false) return 'false';
+    if (v === null || v === undefined) return '';
+    return String(v);
+}
+
+// cfgKvCoerce infers a typed value from text so booleans and numbers survive the
+// round-trip to JSON (a llama bool flag must stay a real bool, not "true").
+function cfgKvCoerce(text) {
+    const t = text.trim();
+    if (t === '') return '';
+    if (t === 'true') return true;
+    if (t === 'false') return false;
+    if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+    return t;
+}
+
+// cfgKvState resolves the live container object + its visible (non-excluded)
+// keys for a keyValue binding.
+function cfgKvState(b) {
+    const obj = cfgGetAt(cfgGetDraft(b.svcId), b.path) || {};
+    const exclude = b.exclude || [];
+    return { obj: obj, keys: Object.keys(obj).filter(k => exclude.indexOf(k) < 0) };
+}
+
+function cfgKvSetVal(bindIdx, i, el) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const k = cfgKvState(b).keys[i];
+    if (k === undefined) return;
+    cfgSetAt(cfgGetDraft(b.svcId), b.path.concat(k), cfgKvCoerce(el.value));
+    cfgRefreshChrome(b.svcId);
+}
+
+function cfgKvRename(bindIdx, i, el) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const st = cfgKvState(b);
+    const oldKey = st.keys[i];
+    const newKey = el.value.trim();
+    if (oldKey === undefined || newKey === oldKey) return;
+    if (newKey === '' || newKey in st.obj) { el.value = oldKey; return; }
+    // Rebuild over ALL keys (including excluded ones) to preserve order.
+    const rebuilt = {};
+    for (const kk of Object.keys(st.obj)) rebuilt[kk === oldKey ? newKey : kk] = st.obj[kk];
+    cfgSetAt(cfgGetDraft(b.svcId), b.path, rebuilt);
+    cfgRerender();
+}
+
+function cfgKvRemove(bindIdx, i) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const st = cfgKvState(b);
+    const k = st.keys[i];
+    if (k !== undefined) delete st.obj[k];
+    cfgRerender();
+}
+
+function cfgKvAdd(bindIdx) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const draft = cfgGetDraft(b.svcId);
+    let obj = cfgGetAt(draft, b.path);
+    if (!obj || typeof obj !== 'object') { obj = {}; cfgSetAt(draft, b.path, obj); }
+    let key = 'key', n = 2;
+    while (key in obj) key = 'key-' + (n++);
+    obj[key] = '';
+    cfgRerender();
+}
+
+function renderConfigLeaf(svcId, path, field, value) {
+    const bindIdx = cfgBind(svcId, path, field.type);
+    const inputId = 'cfg-in-' + bindIdx;
+    const noFix = ' autocorrect="off" autocapitalize="off" spellcheck="false"';
+    // Placeholder hints the expected/default value for empty optional fields
+    // (the editor shows what's on disk, so an unset field renders blank).
+    const ph = field.placeholder ? ` placeholder="${esc(field.placeholder)}"` : '';
+    let html = '<div class="cfg-leaf">';
+    html += `<label>${cfgNodeLabel(field)}${field.required ? ' *' : ''}</label>`;
+    switch (field.type) {
         case 'bool':
-            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:#888">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${esc(inputId)}" ${value ? 'checked' : ''}${ro}/><span class="slider"></span></label></div>`;
-            return html; // toggle row carries its own help slot
+            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:#888">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${inputId}" ${value ? 'checked' : ''} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
+            html += '</div>';
+            return html;
         case 'number':
-            html += `<input type="number" id="${esc(inputId)}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${ro}/>`;
+            html += `<input type="number" id="${inputId}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph} oninput="cfgEdit(${bindIdx}, this)"/>`;
+            break;
+        case 'select': {
+            html += `<select id="${inputId}" onchange="cfgEdit(${bindIdx}, this)">`;
+            const opts = field.options || [];
+            const cur = (value === undefined || value === null) ? '' : String(value);
+            if (cur === '' || opts.indexOf(cur) < 0) html += `<option value="" ${cur === '' ? 'selected' : ''}></option>`;
+            for (const o of opts) html += `<option value="${esc(o)}" ${o === cur ? 'selected' : ''}>${esc(o)}</option>`;
+            html += '</select>';
+            break;
+        }
+        case 'secret':
+            html += `<input type="password" id="${inputId}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${noFix} oninput="cfgEdit(${bindIdx}, this)"/>`;
+            break;
+        case 'textarea':
+            html += `<textarea id="${inputId}" rows="3"${ph}${noFix} oninput="cfgEdit(${bindIdx}, this)">${esc(value || '')}</textarea>`;
             break;
         case 'string[]':
-            html += `<textarea id="${esc(inputId)}" rows="3"${ph}${noFix}${ro}>${esc(Array.isArray(value) ? value.join('\n') : (value || ''))}</textarea>`;
+            html += `<textarea id="${inputId}" rows="3" placeholder="one per line"${noFix} oninput="cfgEdit(${bindIdx}, this)">${esc(Array.isArray(value) ? value.join('\n') : (value || ''))}</textarea>`;
             break;
         case 'stringMap':
-            html += `<textarea id="${esc(inputId)}" rows="3" placeholder="KEY=VALUE per line"${noFix}${ro}>${esc(formatStringMapForInput(value))}</textarea>`;
+            html += `<textarea id="${inputId}" rows="3" placeholder="KEY=VALUE per line"${noFix} oninput="cfgEdit(${bindIdx}, this)">${esc(cfgFormatStringMap(value))}</textarea>`;
+            break;
+        case 'json':
+            html += `<textarea id="${inputId}" rows="4" placeholder="raw JSON"${noFix} oninput="cfgEditJson(${bindIdx}, this)">${esc(cfgFormatJson(value))}</textarea>`;
             break;
         default: // text
-            html += `<input type="text" id="${esc(inputId)}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${noFix}${ro}/>`;
+            html += `<input type="text" id="${inputId}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${noFix} oninput="cfgEdit(${bindIdx}, this)"/>`;
     }
-    if (field.help) {
+    if (field.help && field.type !== 'bool') {
         html += `<div style="color:#777;font-size:11px;margin-top:2px">${esc(field.help)}</div>`;
     }
+    html += '</div>';
     return html;
 }
 
-function formatStringMapForInput(v) {
+function cfgFormatStringMap(v) {
     if (!v || typeof v !== 'object') return '';
     return Object.keys(v).map(k => k + '=' + v[k]).join('\n');
 }
 
-function toggleResourceSection(serviceId, resourceId) {
-    const key = resKey(serviceId, resourceId);
-    state.serviceResourceOpen[key] = !state.serviceResourceOpen[key];
-    if (state.page === 'inspector') render();
+function cfgFormatJson(v) {
+    if (v === undefined || v === null) return '';
+    try { return JSON.stringify(v, null, 2); } catch (e) { return ''; }
 }
 
-function newResourceRecord(serviceId, resourceId) {
-    const key = resKey(serviceId, resourceId);
-    state.serviceResourceEditing[key] = 'new';
-    state.serviceResourceForm[key] = {};
-    state.serviceResourceError[key] = null;
-    state.serviceResourceOpen[key] = true;
-    if (state.page === 'inspector') render();
-}
-
-function editResourceRecord(serviceId, resourceId, id) {
-    const key = resKey(serviceId, resourceId);
-    const records = state.serviceResources[key] || [];
-    const rec = records.find(r => r && r.id === id);
-    if (!rec) return;
-    state.serviceResourceEditing[key] = id;
-    state.serviceResourceForm[key] = JSON.parse(JSON.stringify(rec));
-    state.serviceResourceError[key] = null;
-    if (state.page === 'inspector') render();
-}
-
-function cancelResourceEdit(serviceId, resourceId) {
-    const key = resKey(serviceId, resourceId);
-    state.serviceResourceEditing[key] = null;
-    state.serviceResourceForm[key] = null;
-    state.serviceResourceError[key] = null;
-    if (state.page === 'inspector') render();
-}
-
-function deleteResourceRecord(serviceId, resourceId, id, label) {
-    if (!confirm('Delete "' + label + '"?')) return;
-    dispatchResourceOp(serviceId, resourceId, 'delete', id, null);
-}
-
-// harvestResourceForm reads each declared field's input back out of the DOM
-// into a typed object suitable for the service's create/update endpoint.
-// Returns null on validation failure (required missing) AFTER setting an
-// error message in state.
-function harvestResourceForm(serviceId, resource) {
-    const key = resKey(serviceId, resource.id);
-    const out = {};
-    const editing = state.serviceResourceEditing[key];
-    const existing = state.serviceResourceForm[key] || {};
-    for (const f of resource.fields) {
-        if (f.readOnly) {
-            // Preserve server-supplied read-only fields verbatim (e.g. builtIn)
-            // so PUT doesn't drop them. Server-side validation is still the
-            // source of truth.
-            if (f.id in existing) out[f.id] = existing[f.id];
-            continue;
+// cfgCoerce converts a leaf input's raw DOM value into the typed JS value the
+// schema expects (mirrors the old resource-form harvest logic).
+function cfgCoerce(type, el) {
+    switch (type) {
+        case 'bool':
+            return el.checked;
+        case 'number': {
+            const txt = el.value.trim();
+            return txt === '' ? null : Number(txt);
         }
-        const inputId = 'res-' + serviceId + '-' + resource.id + '-' + f.id;
-        const el = document.getElementById(inputId);
-        if (!el) continue;
-        let v;
-        switch (f.type) {
-            case 'bool':
-                v = el.checked;
-                break;
-            case 'number': {
-                const txt = el.value.trim();
-                v = txt === '' ? null : Number(txt);
-                if (txt !== '' && Number.isNaN(v)) {
-                    state.serviceResourceError[key] = (f.label || f.id) + ' must be a number';
-                    return null;
-                }
-                break;
+        case 'string[]':
+            return el.value.split('\n').map(s => s.trim()).filter(Boolean);
+        case 'stringMap': {
+            const out = {};
+            for (const line of el.value.split('\n')) {
+                const eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
             }
-            case 'string[]':
-                v = el.value.split('\n').map(s => s.trim()).filter(Boolean);
-                break;
-            case 'stringMap': {
-                v = {};
-                for (const line of el.value.split('\n')) {
-                    const eq = line.indexOf('=');
-                    if (eq <= 0) continue;
-                    v[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-                }
-                break;
-            }
-            default:
-                v = el.value.trim();
+            return out;
         }
-        if (f.required && (v === '' || v === null || v === undefined)) {
-            state.serviceResourceError[key] = (f.label || f.id) + ' is required';
-            return null;
-        }
-        out[f.id] = v;
+        default:
+            return el.value;
     }
-    // Carry forward the id on edit so the server can match (only relevant if
-    // the service echoes it; the path already carries it).
-    if (editing && editing !== 'new') out.id = editing;
-    return out;
 }
 
-function saveResourceForm(serviceId, resourceId) {
-    const key = resKey(serviceId, resourceId);
-    const snap = state.serviceStatuses[serviceId];
-    const manifest = (snap && snap.manifest) || {};
-    const resource = (manifest.resources || []).find(r => r.id === resourceId);
-    if (!resource) return;
-    const record = harvestResourceForm(serviceId, resource);
-    if (!record) {
-        if (state.page === 'inspector') render();
+// cfgEdit writes a scalar leaf edit into the draft WITHOUT re-rendering, so the
+// caret survives typing. It refreshes only the Save/Revert chrome.
+function cfgEdit(bindIdx, el) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    if (b.type === 'number') {
+        const txt = el.value.trim();
+        const bad = txt !== '' && Number.isNaN(Number(txt));
+        el.classList.toggle('cfg-bad', bad);
+        if (bad) { cfgRefreshChrome(b.svcId); return; }
+    }
+    cfgSetAt(cfgGetDraft(b.svcId), b.path, cfgCoerce(b.type, el));
+    cfgRefreshChrome(b.svcId);
+}
+
+// cfgEditJson handles the raw-JSON leaf: parse on each keystroke, write the
+// parsed value into the draft when valid, flag the field + block Save when not.
+function cfgEditJson(bindIdx, el) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const txt = el.value.trim();
+    if (txt === '') {
+        delete state._cfgBadJson[bindIdx];
+        el.classList.remove('cfg-bad');
+        cfgSetAt(cfgGetDraft(b.svcId), b.path, null);
+        cfgRefreshChrome(b.svcId);
         return;
     }
-    const editing = state.serviceResourceEditing[key];
-    if (editing === 'new') {
-        dispatchResourceOp(serviceId, resourceId, 'create', null, record);
-    } else if (editing) {
-        dispatchResourceOp(serviceId, resourceId, 'update', editing, record);
+    let parsed;
+    try {
+        parsed = JSON.parse(txt);
+    } catch (e) {
+        state._cfgBadJson[bindIdx] = b.svcId;
+        el.classList.add('cfg-bad');
+        cfgRefreshChrome(b.svcId);
+        return;
+    }
+    delete state._cfgBadJson[bindIdx];
+    el.classList.remove('cfg-bad');
+    cfgSetAt(cfgGetDraft(b.svcId), b.path, parsed);
+    cfgRefreshChrome(b.svcId);
+}
+
+// cfgRefreshChrome updates Save/Revert enabled state and the inline note
+// imperatively (no re-render) so scalar typing never loses focus.
+function cfgRefreshChrome(svcId) {
+    const dirty = cfgDirty(svcId);
+    const bad = cfgHasBadJson(svcId);
+    const save = document.getElementById('cfg-save-' + svcId);
+    const revert = document.getElementById('cfg-revert-' + svcId);
+    const note = document.getElementById('cfg-note-' + svcId);
+    if (save) save.disabled = !(dirty && !bad);
+    if (revert) revert.disabled = !dirty;
+    if (note) {
+        if (bad) {
+            note.textContent = 'Fix invalid JSON before saving.';
+        } else {
+            const snap = state.serviceStatuses[svcId];
+            const cfg = snap && snap.manifest && snap.manifest.config;
+            note.textContent = (cfg && cfg.applyMode === 'live')
+                ? 'Saved changes apply live.'
+                : 'Saving restarts the service to apply.';
+        }
     }
 }
 
-function dispatchResourceOp(serviceId, resourceId, op, id, record) {
-    const key = resKey(serviceId, resourceId);
-    state.serviceResourcePending[key] = true;
-    const msg = { type: 'service_resource', serviceId: serviceId, resourceId: resourceId, op: op };
-    if (id) msg.id = id;
-    if (record) msg.record = record;
+function cfgArrayAdd(bindIdx) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const draft = cfgGetDraft(b.svcId);
+    let arr = cfgGetAt(draft, b.path);
+    if (!Array.isArray(arr)) { arr = []; cfgSetAt(draft, b.path, arr); }
+    const field = cfgFieldAt(b.svcId, b.path);
+    arr.push(cfgDefaultFor((field && field.item) || { type: 'text' }));
+    cfgSetExpanded(b.svcId, b.path, true);                        // keep the group open
+    cfgSetExpanded(b.svcId, b.path.concat(arr.length - 1), true); // open the new item
+    cfgRerender();
+}
+
+function cfgArrayRemove(bindIdx, i) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const arr = cfgGetAt(cfgGetDraft(b.svcId), b.path);
+    if (Array.isArray(arr)) arr.splice(i, 1);
+    cfgRerender();
+}
+
+function cfgMapAdd(bindIdx) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const draft = cfgGetDraft(b.svcId);
+    let obj = cfgGetAt(draft, b.path);
+    if (!obj || typeof obj !== 'object') { obj = {}; cfgSetAt(draft, b.path, obj); }
+    let key = 'new-key', n = 2;
+    while (key in obj) key = 'new-key-' + (n++);
+    const field = cfgFieldAt(b.svcId, b.path);
+    obj[key] = cfgDefaultFor((field && field.item) || { type: 'object', fields: [] });
+    cfgSetExpanded(b.svcId, b.path, true);                  // keep the group open
+    cfgSetExpanded(b.svcId, b.path.concat(key), true);      // open the new entry
+    cfgRerender();
+}
+
+function cfgMapRemove(bindIdx, keyIndex) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const obj = cfgGetAt(cfgGetDraft(b.svcId), b.path);
+    if (!obj || typeof obj !== 'object') return;
+    const k = Object.keys(obj)[keyIndex];
+    if (k !== undefined) delete obj[k];
+    cfgRerender();
+}
+
+// cfgMapRename rekeys an entry, preserving insertion order (rebuild the object).
+// keyIndex is resolved against the live object so arbitrary key strings never
+// have to be embedded in HTML.
+function cfgMapRename(bindIdx, keyIndex, el) {
+    const b = state._cfgBind[bindIdx];
+    if (!b) return;
+    const obj = cfgGetAt(cfgGetDraft(b.svcId), b.path);
+    if (!obj || typeof obj !== 'object') return;
+    const keys = Object.keys(obj);
+    const oldKey = keys[keyIndex];
+    const newKey = el.value.trim();
+    if (oldKey === undefined || newKey === oldKey) return;
+    if (newKey === '' || newKey in obj) { el.value = oldKey; return; }
+    const rebuilt = {};
+    for (const k of keys) rebuilt[k === oldKey ? newKey : k] = obj[k];
+    cfgSetAt(cfgGetDraft(b.svcId), b.path, rebuilt);
+    cfgRerender();
+}
+
+// cfgFieldAt re-walks the SCHEMA (not the draft) to the FieldDecl at a path so
+// add/remove know the item schema for defaults. Numeric steps descend an
+// array's item; a key step under a map descends the map's item.
+function cfgFieldAt(svcId, path) {
+    const snap = state.serviceStatuses[svcId];
+    const config = snap && snap.manifest && snap.manifest.config;
+    if (!config) return null;
+    let fields = config.schema || [];
+    let field = null;
+    for (const step of path) {
+        if (typeof step === 'number') {
+            field = field ? field.item : null;
+        } else if (field && field.type === 'map') {
+            field = field.item || null;
+        } else {
+            field = (fields || []).find(f => f.id === step) || null;
+        }
+        if (!field) return null;
+        fields = (field.type === 'object') ? (field.fields || []) : [];
+    }
+    return field;
+}
+
+function cfgRerender() {
+    if (state.page === 'inspector') render();
+}
+
+function toggleConfigSection(serviceId) {
+    state.serviceConfigOpen[serviceId] = !state.serviceConfigOpen[serviceId];
+    if (state.page === 'inspector') render();
+}
+
+function dispatchConfigOp(serviceId, op, text) {
+    state.serviceConfigPending[serviceId] = true;
+    const msg = { type: 'service_config', serviceId: serviceId, op: op };
+    if (text !== null && text !== undefined) msg.text = text;
     ipc(JSON.stringify(msg));
 }
 
-window.onServiceResourceResult = function(result) {
-    if (!result) return;
-    const key = resKey(result.serviceId, result.resourceId);
-    state.serviceResourcePending[key] = false;
-    if (!result.ok) {
-        state.serviceResourceError[key] = result.error || (result.op + ' failed');
-        if (state.page === 'inspector') render('push');
+function saveConfig(serviceId) {
+    if (cfgHasBadJson(serviceId)) return;
+    const draft = state.serviceConfigDraft[serviceId];
+    if (draft === undefined) return;
+    const missing = cfgFirstMissingRequired(serviceId);
+    if (missing) {
+        state.serviceConfigError[serviceId] = 'Required field missing: ' + missing;
+        if (state.page === 'inspector') render();
         return;
     }
-    state.serviceResourceError[key] = null;
-    switch (result.op) {
-        case 'list':
-            state.serviceResources[key] = Array.isArray(result.body) ? result.body : [];
-            break;
-        case 'create':
-        case 'update':
-            // Close the form and re-list to pick up server-applied defaults
-            // (timestamps, computed fields, etc.).
-            state.serviceResourceEditing[key] = null;
-            state.serviceResourceForm[key] = null;
-            dispatchResourceOp(result.serviceId, result.resourceId, 'list', null, null);
-            return; // render will fire when the list result lands
-        case 'delete':
-            dispatchResourceOp(result.serviceId, result.resourceId, 'list', null, null);
-            return;
+    state.serviceConfigError[serviceId] = null;
+    state.serviceConfigApplyMsg[serviceId] = null;
+    dispatchConfigOp(serviceId, 'save', JSON.stringify(draft, null, 2));
+}
+
+function revertConfig(serviceId) {
+    const tree = state.serviceConfigTree[serviceId];
+    state.serviceConfigDraft[serviceId] = (tree === undefined) ? undefined : JSON.parse(JSON.stringify(tree));
+    state.serviceConfigError[serviceId] = null;
+    if (state.page === 'inspector') render();
+}
+
+// cfgFirstMissingRequired walks the schema against the draft and returns the
+// label of the first required leaf that is empty, or null. Checked at save time
+// (the server validates parse only, not schema).
+function cfgFirstMissingRequired(svcId) {
+    const snap = state.serviceStatuses[svcId];
+    const config = snap && snap.manifest && snap.manifest.config;
+    const draft = state.serviceConfigDraft[svcId];
+    if (!config || draft === undefined) return null;
+    return cfgScanRequired(config.schema || [], draft);
+}
+
+function cfgScanRequired(fields, value) {
+    const obj = (value && typeof value === 'object') ? value : {};
+    for (const f of fields) {
+        const v = obj[f.id];
+        if (f.type === 'object') {
+            const m = cfgScanRequired(f.fields || [], v);
+            if (m) return m;
+        } else if (f.type === 'array') {
+            if (Array.isArray(v)) for (const item of v) {
+                const m = cfgScanRequired((f.item && f.item.fields) || [], item);
+                if (m) return m;
+            }
+        } else if (f.type === 'map') {
+            if (v && typeof v === 'object') for (const k of Object.keys(v)) {
+                const m = cfgScanRequired((f.item && f.item.fields) || [], v[k]);
+                if (m) return m;
+            }
+        } else if (f.required) {
+            if (v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)) {
+                return f.label || f.id;
+            }
+        }
     }
-    if (state.page === 'inspector') render('push');
+    return null;
+}
+
+window.onServiceConfigResult = function(result) {
+    if (!result) return;
+    const id = result.serviceId;
+    state.serviceConfigPending[id] = false;
+    if (!result.ok) {
+        state.serviceConfigError[id] = result.error || ((result.op || 'config') + ' failed');
+        if (state.page === 'inspector') render();
+        return;
+    }
+    state.serviceConfigError[id] = null;
+    if (result.op === 'get') {
+        state.serviceConfigLoaded[id] = true;
+        const tree = cfgParseConfigText(result.text || '');
+        if (tree === undefined) {
+            state.serviceConfigError[id] = 'Could not parse config file as JSON.';
+            state.serviceConfigTree[id] = undefined;
+            state.serviceConfigDraft[id] = undefined;
+        } else {
+            state.serviceConfigTree[id] = tree;
+            state.serviceConfigDraft[id] = JSON.parse(JSON.stringify(tree));
+        }
+    } else if (result.op === 'save') {
+        if (state.serviceConfigDraft[id] !== undefined) {
+            state.serviceConfigTree[id] = JSON.parse(JSON.stringify(state.serviceConfigDraft[id]));
+        }
+    }
+    if (state.page === 'inspector') render();
 };
+
+window.onServiceConfigApplied = function(p) {
+    if (!p) return;
+    let msg = 'Saved.';
+    if (p.mode === 'restarting') msg = 'Restarting service to apply…';
+    else if (p.mode === 'error') msg = p.error || 'Restart failed.';
+    state.serviceConfigApplyMsg[p.serviceId] = msg;
+    if (state.page === 'inspector') render();
+};
+
+// cfgParseConfigText parses raw (possibly JSONC) file text: strip // and /* */
+// comments outside strings, then JSON.parse. Returns undefined on failure (the
+// server is the authority on validity; this is best-effort for rendering).
+// Comments do not survive a save — the draft is re-serialized as plain JSON.
+function cfgParseConfigText(text) {
+    try {
+        return JSON.parse(cfgStripJsonComments(text));
+    } catch (e) {
+        return undefined;
+    }
+}
+
+function cfgStripJsonComments(s) {
+    let out = '';
+    let i = 0;
+    const n = s.length;
+    let inStr = false, q = '', esc = false;
+    while (i < n) {
+        const c = s[i], c2 = s[i + 1];
+        if (inStr) {
+            out += c;
+            if (esc) esc = false;
+            else if (c === '\\') esc = true;
+            else if (c === q) inStr = false;
+            i++; continue;
+        }
+        if (c === '"' || c === "'") { inStr = true; q = c; out += c; i++; continue; }
+        if (c === '/' && c2 === '/') { i += 2; while (i < n && s[i] !== '\n') i++; continue; }
+        if (c === '/' && c2 === '*') { i += 2; while (i < n && !(s[i] === '*' && s[i + 1] === '/')) i++; i += 2; continue; }
+        out += c; i++;
+    }
+    return out;
+}
 
 // renderStatusPayload walks a free-form JSON object and emits a key/value
 // list for scalars + a table for any top-level array. forEach actions

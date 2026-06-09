@@ -51,6 +51,16 @@ ipc_service_action.go      Generic action dispatcher. UI sends {serviceId, actio
                            (whitelist), substitutes row keys into pathTemplate with
                            URL-escaping, and dispatches via the status client. Refuses
                            anything not declared in the manifest.
+ipc_service_config.go      Service config editor. A service's manifest declares a
+                           Config{path, schema, applyMode}; relay reads/writes that
+                           file directly (opaque text — never a service endpoint),
+                           validates it parses, and restarts the service to apply.
+                           Path goes through resolveConfigPath (service_config_file.go)
+                           — the symlink-escape / regular-file / size gate. The
+                           recursive schema renders a nested form in the Service
+                           Inspector (settings.html). Replaced the old resources[] CRUD.
+service_config_file.go     resolveConfigPath security gate + opaque-text read/write
+                           (atomic, size-capped, perm-preserving) for the config editor.
 ipc_projects.go            Projects-tab IPC handlers: create/update/remove project,
                            rotate_project_token, regen_project_skill, update_project_
                            disabled_tools, list_mcp_tools. Shares all Settings mutators
