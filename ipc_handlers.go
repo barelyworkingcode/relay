@@ -271,9 +271,9 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgStartService:           ipcStartService,
 	MsgStopService:            ipcStopService,
 
-	// Service Inspector (ipc_service_action.go, ipc_service_resource.go)
-	MsgServiceAction:   ipcServiceAction,
-	MsgServiceResource: ipcServiceResource,
+	// Service Inspector (ipc_service_action.go, ipc_service_config.go)
+	MsgServiceAction: ipcServiceAction,
+	MsgServiceConfig: ipcServiceConfig,
 
 	// Projects (ipc_projects.go)
 	MsgCreateProject:              ipcCreateProject,

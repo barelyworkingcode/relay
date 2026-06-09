@@ -125,6 +125,45 @@ func (s *Settings) normalize() {
 	}
 }
 
+// atomicWriteFile writes data to path durably: write + fsync a temp file in the
+// same directory, rename it over the target, then fsync the directory so the
+// rename survives a crash. os.Rename is atomic for visibility but NOT durable
+// on its own. perm sets the file mode (preserved through the rename).
+//
+// Shared by settings persistence and the service-config editor
+// (service_config_file.go) so both go through one tested durability path.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	// fsync the directory so the rename is durable across a crash.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
+}
+
 // save writes settings to disk atomically via temp file + rename.
 // Caller must hold the mutex.
 func (ss *FileSettingsStore) save(s *Settings) error {
@@ -137,39 +176,12 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 		return fmt.Errorf("serialize settings: %w", err)
 	}
 
-	p := ss.path()
-	tmp := p + ".tmp"
-	// Write + fsync the temp file, rename, then fsync the directory. os.Rename
-	// is atomic for visibility but NOT durable on its own: a crash after the
-	// rename returns can leave settings.json zero-length or stale, and load()
-	// treats a parse failure as "use defaults" — silently wiping every project
-	// and its token hashes. The fsyncs close that window.
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("create temp settings: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write temp settings: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("sync temp settings: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close temp settings: %w", err)
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename settings: %w", err)
-	}
-	// fsync the directory so the rename is durable across a crash.
-	if dir, err := os.Open(ss.dir); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
+	// A crash after a bare rename can leave settings.json zero-length or stale,
+	// and load() treats a parse failure as "use defaults" — silently wiping
+	// every project and its token hashes. atomicWriteFile's fsyncs close that
+	// window.
+	if err := atomicWriteFile(ss.path(), data, 0600); err != nil {
+		return fmt.Errorf("write settings: %w", err)
 	}
 	return nil
 }

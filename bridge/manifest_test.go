@@ -97,74 +97,137 @@ func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 	}
 }
 
-func TestManifestValidate_ResourcesHappyPath(t *testing.T) {
+// A manifest with no Config still validates — Config is optional and most
+// services won't declare one. Guards the json:",omitempty" backward-compat.
+func TestManifestValidate_NoConfigStillValidates(t *testing.T) {
+	m := Manifest{Routes: []string{"/api/"}}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate with no config: %v", err)
+	}
+}
+
+// Exercises every recursive node type the renderer supports: object → array of
+// object, object → map of object, plus select/secret/json/string[]/stringMap
+// leaves. Mirrors the shape relayLLM declares (openai/llama/pi/pty).
+func TestManifestValidate_ConfigSchema_HappyPath(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},
-		Resources: []ResourceDecl{{
-			ID:    "pty_templates",
-			Label: "Terminal Templates",
-			List:  EndpointDecl{Method: "GET", PathTemplate: "/api/terminal/templates"},
-			Create: &EndpointDecl{Method: "POST", PathTemplate: "/api/terminal/templates"},
-			Update: &EndpointDecl{Method: "PUT", PathTemplate: "/api/terminal/templates/{id}"},
-			Delete: &EndpointDecl{Method: "DELETE", PathTemplate: "/api/terminal/templates/{id}"},
-			Fields: []FieldDecl{
-				{ID: "name", Label: "Name", Type: FieldTypeText, Required: true},
-				{ID: "command", Label: "Command", Type: FieldTypeText, Required: true},
-				{ID: "args", Label: "Arguments", Type: FieldTypeStringArr},
-				{ID: "env", Label: "Environment", Type: FieldTypeStringMap},
-				{ID: "builtIn", Label: "Built-in", Type: FieldTypeBool, ReadOnly: true},
+		Config: &ConfigDecl{
+			Path: "/Users/x/.config/relayLLM/settings.json", Format: ConfigFormatJSONC,
+			Label: "settings.json", ApplyMode: ConfigApplyRestart,
+			Schema: []FieldDecl{
+				{ID: "openai", Type: FieldTypeObject, Fields: []FieldDecl{
+					{ID: "endpoints", Type: FieldTypeArray, Item: &FieldDecl{
+						Type: FieldTypeObject, Fields: []FieldDecl{
+							{ID: "name", Type: FieldTypeText, Required: true},
+							{ID: "apiKey", Type: FieldTypeSecret},
+							{ID: "strict", Type: FieldTypeBool},
+						}}},
+				}},
+				{ID: "llama-server", Type: FieldTypeObject, Fields: []FieldDecl{
+					{ID: "basePort", Type: FieldTypeNumber},
+					{ID: "models", Type: FieldTypeArray, Item: &FieldDecl{
+						Type: FieldTypeObject, Fields: []FieldDecl{
+							{ID: "alias", Type: FieldTypeText, Required: true},
+							{ID: "flags", Type: FieldTypeKeyValue, Rest: true, KeyLabel: "flag"},
+						}}},
+				}},
+				{ID: "pi", Type: FieldTypeObject, Fields: []FieldDecl{
+					{ID: "autoRegenSkills", Type: FieldTypeSelect, Options: []string{"always", "never"}},
+					{ID: "extraArgs", Type: FieldTypeStringArr},
+				}},
+				{ID: "pty", Type: FieldTypeMap, KeyLabel: "template id", Item: &FieldDecl{
+					Type: FieldTypeObject, Fields: []FieldDecl{
+						{ID: "name", Type: FieldTypeText, Required: true},
+						{ID: "env", Type: FieldTypeStringMap},
+					}}},
 			},
-			ProtectedField: "builtIn",
-		}},
+		},
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 }
 
-func TestManifestValidate_ResourceUpdateRequiresIDPlaceholder(t *testing.T) {
+func TestManifestValidate_ConfigRejectsRelativePath(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},
-		Resources: []ResourceDecl{{
-			ID:    "x", Label: "X",
-			List:   EndpointDecl{Method: "GET", PathTemplate: "/x"},
-			Update: &EndpointDecl{Method: "PUT", PathTemplate: "/x"}, // no {id}
-			Fields: []FieldDecl{{ID: "name", Label: "Name", Type: FieldTypeText}},
-		}},
+		Config: &ConfigDecl{Path: "settings.json", Schema: []FieldDecl{{ID: "x", Type: FieldTypeText}}},
 	}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), "{id}") {
-		t.Errorf("want {id} placeholder error, got %v", err)
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("want absolute-path error, got %v", err)
 	}
 }
 
-func TestManifestValidate_ResourceRejectsUnknownFieldType(t *testing.T) {
+func TestManifestValidate_ConfigRejectsDotDotPath(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},
-		Resources: []ResourceDecl{{
-			ID: "x", Label: "X",
-			List:   EndpointDecl{Method: "GET", PathTemplate: "/x"},
-			Fields: []FieldDecl{{ID: "name", Label: "Name", Type: "magic-string"}},
-		}},
+		Config: &ConfigDecl{Path: "/etc/../etc/passwd", Schema: []FieldDecl{{ID: "x", Type: FieldTypeText}}},
 	}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), "not supported") {
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "..") {
+		t.Errorf("want '..'-segment error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ConfigRejectsEmptySchema(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Config: &ConfigDecl{Path: "/tmp/c.json"},
+	}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "schema is empty") {
+		t.Errorf("want empty-schema error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ConfigRejectsUnknownFieldType(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Config: &ConfigDecl{Path: "/tmp/c.json", Schema: []FieldDecl{{ID: "x", Type: "magic-string"}}},
+	}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("want unsupported-type error, got %v", err)
 	}
 }
 
-func TestManifestValidate_ResourceProtectedFieldMustBeDeclared(t *testing.T) {
+func TestManifestValidate_ConfigObjectRequiresFields(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},
-		Resources: []ResourceDecl{{
-			ID: "x", Label: "X",
-			List:           EndpointDecl{Method: "GET", PathTemplate: "/x"},
-			Fields:         []FieldDecl{{ID: "name", Label: "Name", Type: FieldTypeText}},
-			ProtectedField: "builtIn", // not in fields
+		Config: &ConfigDecl{Path: "/tmp/c.json", Schema: []FieldDecl{{ID: "o", Type: FieldTypeObject}}},
+	}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "requires fields") {
+		t.Errorf("want object-requires-fields error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ConfigArrayRequiresItem(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Config: &ConfigDecl{Path: "/tmp/c.json", Schema: []FieldDecl{{ID: "a", Type: FieldTypeArray}}},
+	}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "requires item") {
+		t.Errorf("want array-requires-item error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ConfigSelectRequiresOptions(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Config: &ConfigDecl{Path: "/tmp/c.json", Schema: []FieldDecl{{ID: "s", Type: FieldTypeSelect}}},
+	}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "requires options") {
+		t.Errorf("want select-requires-options error, got %v", err)
+	}
+}
+
+func TestManifestValidate_ConfigRejectsDuplicateSiblingIDs(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Config: &ConfigDecl{Path: "/tmp/c.json", Schema: []FieldDecl{
+			{ID: "dup", Type: FieldTypeText},
+			{ID: "dup", Type: FieldTypeText},
 		}},
 	}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), "protectedField") {
-		t.Errorf("want protectedField-not-declared error, got %v", err)
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "duplicat") {
+		t.Errorf("want duplicate-id error, got %v", err)
 	}
 }
