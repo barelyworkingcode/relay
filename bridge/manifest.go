@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,11 +28,11 @@ type Manifest struct {
 	// settings UI. Optional.
 	Actions []ActionDecl `json:"actions,omitempty"`
 
-	// Resources are typed record collections the service exposes for CRUD
-	// management in the Service Inspector. Each ResourceDecl declares the
-	// REST endpoints (list/create/update/delete) and a field schema; the
-	// Inspector renders a generic table + form. Optional.
-	Resources []ResourceDecl `json:"resources,omitempty"`
+	// Config declares a single config file the service wants relay to expose
+	// for editing in the settings UI, plus the schema relay renders an editor
+	// from. Relay reads and writes the file directly from the tray process —
+	// the service hosts no endpoint for this. Optional.
+	Config *ConfigDecl `json:"config,omitempty"`
 }
 
 // StatusDecl is the read-only status endpoint relay polls for the service.
@@ -55,66 +56,82 @@ type ActionDecl struct {
 	ForEach string `json:"forEach,omitempty"`
 }
 
-// ResourceDecl declares a typed collection the service manages. The Service
-// Inspector renders one collapsible section per resource: a table of List()
-// results plus optional Add/Edit forms generated from Fields. The Update and
-// Delete endpoints' PathTemplate is substituted with the row's {id} (always
-// the literal "id" field of each record).
+// ConfigDecl declares one editable config file plus the schema relay uses to
+// render an editor for it. Carried in the Manifest at RegisterManifest time.
+// Relay reads and writes the file directly (the service hosts no endpoint),
+// treating the bytes as opaque text on the wire; Schema drives the settings-UI
+// form. The service is restarted to apply unless ApplyMode is "live".
 //
-// V1 deliberately omits search/pagination, server-defined options/enums, and
-// nested objects. The minimal contract a service must satisfy:
-//   - List returns a JSON array of objects.
-//   - Create accepts an object body, returns the created object.
-//   - Update accepts a partial object body, returns the updated object.
-//   - Delete returns any 2xx on success.
-type ResourceDecl struct {
-	ID    string `json:"id"`              // stable identifier (e.g. "pty_templates")
-	Label string `json:"label"`           // UI header (e.g. "Terminal Templates")
-	Help  string `json:"help,omitempty"`  // optional one-line description shown under the header
-
-	List   EndpointDecl  `json:"list"`
-	Create *EndpointDecl `json:"create,omitempty"`
-	Update *EndpointDecl `json:"update,omitempty"` // pathTemplate must contain {id}
-	Delete *EndpointDecl `json:"delete,omitempty"` // pathTemplate must contain {id}
-
-	// Fields drives both the table columns and the form layout. Each field's
-	// ID is the JSON key inside a record. The order here is the display order.
-	Fields []FieldDecl `json:"fields"`
-
-	// ProtectedField, if set, names a boolean field on each record. Rows where
-	// that field is true have Edit/Delete buttons suppressed in the UI. The
-	// service is responsible for rejecting protected mutations server-side
-	// too; this is only a UI affordance.
-	ProtectedField string `json:"protectedField,omitempty"`
+// Path is validated here as absolute + no ".." segment (schema-level only).
+// Relay re-validates it against an allowed root and a regular-file check at use
+// time — a service-declared path is never trusted blindly, even though
+// RegisterManifest is service-token authenticated.
+type ConfigDecl struct {
+	Path      string      `json:"path"`                // absolute path to the config file (required)
+	Format    string      `json:"format,omitempty"`    // "jsonc" (default) | "json"
+	Label     string      `json:"label,omitempty"`     // UI header, e.g. "settings.json"
+	Help      string      `json:"help,omitempty"`      // one-line description under the header
+	ApplyMode string      `json:"applyMode,omitempty"` // "restart" (default) | "live"
+	Schema    []FieldDecl `json:"schema"`              // top-level fields of the config object
 }
 
-// EndpointDecl is one HTTP endpoint for a resource operation.
-type EndpointDecl struct {
-	Method       string `json:"method"`       // GET|POST|PUT|DELETE|PATCH
-	PathTemplate string `json:"pathTemplate"` // may contain {id} for update/delete
-}
-
-// FieldDecl describes one field on a resource record. Used both for table
-// display and for generating Add/Edit form inputs.
+// FieldDecl describes one node in a config schema. Leaf types render a single
+// input; the recursive types (object/array/map) nest. The same declaration
+// drives both the form layout and the harvest/serialize back to JSON in the UI.
 type FieldDecl struct {
-	ID          string `json:"id"`                    // JSON key in the record
-	Label       string `json:"label"`                 // human-readable label
-	Type        string `json:"type"`                  // see field types below
-	Placeholder string `json:"placeholder,omitempty"` // input placeholder
-	Help        string `json:"help,omitempty"`        // help text under the input
-	Required    bool   `json:"required,omitempty"`    // required on Create
-	ReadOnly    bool   `json:"readOnly,omitempty"`    // shown in table, hidden in form
-	HideInTable bool   `json:"hideInTable,omitempty"` // shown in form, hidden in table
+	ID          string   `json:"id"`                    // JSON key in the enclosing object
+	Label       string   `json:"label,omitempty"`       // human-readable label
+	Type        string   `json:"type"`                  // see field types below
+	Help        string   `json:"help,omitempty"`        // help text under the input (replaces JSONC comments)
+	Placeholder string   `json:"placeholder,omitempty"` // input placeholder
+	Required    bool     `json:"required,omitempty"`    // required (non-empty) leaf
+	ReadOnly    bool     `json:"readOnly,omitempty"`    // rendered disabled
+	Secret      bool     `json:"secret,omitempty"`      // mask the input (e.g. apiKey)
+	Options     []string `json:"options,omitempty"`     // allowed values for type "select"
+
+	// Recursive shapes — exactly one applies, selected by Type:
+	Fields   []FieldDecl `json:"fields,omitempty"`   // type "object": named child fields
+	Item     *FieldDecl  `json:"item,omitempty"`     // type "array"/"map": schema of each element/value
+	KeyLabel string      `json:"keyLabel,omitempty"` // type "map"/"keyValue": label for the user-chosen key
+
+	// Rest applies only to a "keyValue" field declared inside an "object". When
+	// true the editor binds it to ALL of the parent object's keys except the
+	// other declared sibling fields (an "everything else" key/value editor —
+	// e.g. llama-server model flags, which sit as siblings of "alias"). Without
+	// Rest, a "keyValue" field owns its own nested object at its own key.
+	Rest bool `json:"rest,omitempty"`
 }
 
-// Field types recognized by the V1 Inspector renderer.
+// Field types recognized by the config-schema renderer.
 const (
+	// Leaves.
 	FieldTypeText      = "text"      // single-line string
 	FieldTypeTextarea  = "textarea"  // multi-line string
 	FieldTypeBool      = "bool"      // checkbox / toggle
 	FieldTypeNumber    = "number"    // numeric input
+	FieldTypeSelect    = "select"    // dropdown over Options
+	FieldTypeSecret    = "secret"    // masked single-line string
 	FieldTypeStringArr = "string[]"  // textarea, one entry per line, stored as []string
 	FieldTypeStringMap = "stringMap" // textarea, KEY=VALUE per line, stored as map[string]string
+	FieldTypeKeyValue  = "keyValue"  // repeater of key/value rows; values typed (bool/number/string)
+	FieldTypeJSON      = "json"      // raw-JSON textarea — escape hatch for irregular sub-trees
+
+	// Recursive.
+	FieldTypeObject = "object" // fixed set of named child Fields
+	FieldTypeArray  = "array"  // repeatable list, each element typed by Item
+	FieldTypeMap    = "map"    // user-keyed collection, each value typed by Item
+)
+
+// ConfigDecl.Format values.
+const (
+	ConfigFormatJSONC = "jsonc"
+	ConfigFormatJSON  = "json"
+)
+
+// ConfigDecl.ApplyMode values.
+const (
+	ConfigApplyRestart = "restart"
+	ConfigApplyLive    = "live"
 )
 
 // RegisterManifestRequest is the Arguments payload for a ReqRegisterManifest
@@ -195,74 +212,87 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("manifest: actions[%d] (%q): pathTemplate %q must start with %q", i, a.ID, a.PathTemplate, "/")
 		}
 	}
-	resourceIDs := make(map[string]bool, len(m.Resources))
-	for i, res := range m.Resources {
-		if res.ID == "" {
-			return fmt.Errorf("manifest: resources[%d].id is empty", i)
-		}
-		if resourceIDs[res.ID] {
-			return fmt.Errorf("manifest: resources[%d].id %q is duplicated", i, res.ID)
-		}
-		resourceIDs[res.ID] = true
-		if res.Label == "" {
-			return fmt.Errorf("manifest: resources[%d] (%q): label is empty", i, res.ID)
-		}
-		if err := validateEndpoint("resources["+res.ID+"].list", res.List, false); err != nil {
+	if m.Config != nil {
+		if err := m.Config.validate(); err != nil {
 			return err
-		}
-		if res.Create != nil {
-			if err := validateEndpoint("resources["+res.ID+"].create", *res.Create, false); err != nil {
-				return err
-			}
-		}
-		if res.Update != nil {
-			if err := validateEndpoint("resources["+res.ID+"].update", *res.Update, true); err != nil {
-				return err
-			}
-		}
-		if res.Delete != nil {
-			if err := validateEndpoint("resources["+res.ID+"].delete", *res.Delete, true); err != nil {
-				return err
-			}
-		}
-		if len(res.Fields) == 0 {
-			return fmt.Errorf("manifest: resources[%d] (%q): fields is empty", i, res.ID)
-		}
-		fieldIDs := make(map[string]bool, len(res.Fields))
-		for j, f := range res.Fields {
-			if f.ID == "" {
-				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d].id is empty", i, res.ID, j)
-			}
-			if fieldIDs[f.ID] {
-				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d].id %q is duplicated", i, res.ID, j, f.ID)
-			}
-			fieldIDs[f.ID] = true
-			switch f.Type {
-			case FieldTypeText, FieldTypeTextarea, FieldTypeBool, FieldTypeNumber, FieldTypeStringArr, FieldTypeStringMap:
-			default:
-				return fmt.Errorf("manifest: resources[%d] (%q): fields[%d] (%q): type %q is not supported", i, res.ID, j, f.ID, f.Type)
-			}
-		}
-		if res.ProtectedField != "" && !fieldIDs[res.ProtectedField] {
-			return fmt.Errorf("manifest: resources[%d] (%q): protectedField %q is not declared in fields", i, res.ID, res.ProtectedField)
 		}
 	}
 	return nil
 }
 
-// validateEndpoint checks one EndpointDecl. requireIDPlaceholder is true for
-// update/delete, which need a {id} substitution in their pathTemplate.
-func validateEndpoint(label string, ep EndpointDecl, requireIDPlaceholder bool) error {
-	switch strings.ToUpper(ep.Method) {
-	case "GET", "POST", "PUT", "DELETE", "PATCH":
+// validate checks a ConfigDecl's schema-level invariants. Filesystem checks
+// (regular file, allowed root, size) happen in relay at use time — a manifest
+// is validated in isolation.
+func (c *ConfigDecl) validate() error {
+	if c.Path == "" {
+		return fmt.Errorf("manifest: config.path is empty")
+	}
+	if !filepath.IsAbs(c.Path) {
+		return fmt.Errorf("manifest: config.path %q must be absolute", c.Path)
+	}
+	for _, seg := range strings.Split(c.Path, string(filepath.Separator)) {
+		if seg == ".." {
+			return fmt.Errorf("manifest: config.path %q must not contain a %q segment", c.Path, "..")
+		}
+	}
+	switch c.Format {
+	case "", ConfigFormatJSONC, ConfigFormatJSON:
 	default:
-		return fmt.Errorf("manifest: %s.method %q is not a supported HTTP verb", label, ep.Method)
+		return fmt.Errorf("manifest: config.format %q is not supported", c.Format)
 	}
-	if !strings.HasPrefix(ep.PathTemplate, "/") {
-		return fmt.Errorf("manifest: %s.pathTemplate %q must start with %q", label, ep.PathTemplate, "/")
+	switch c.ApplyMode {
+	case "", ConfigApplyRestart, ConfigApplyLive:
+	default:
+		return fmt.Errorf("manifest: config.applyMode %q is not supported", c.ApplyMode)
 	}
-	if requireIDPlaceholder && !strings.Contains(ep.PathTemplate, "{id}") {
-		return fmt.Errorf("manifest: %s.pathTemplate %q must contain {id}", label, ep.PathTemplate)
+	if len(c.Schema) == 0 {
+		return fmt.Errorf("manifest: config.schema is empty")
+	}
+	return validateFields("config.schema", c.Schema)
+}
+
+// validateFields recursively validates a list of sibling field declarations.
+// label is a dotted path used only in error messages.
+func validateFields(label string, fields []FieldDecl) error {
+	seen := make(map[string]bool, len(fields))
+	for i := range fields {
+		f := &fields[i]
+		if f.ID == "" {
+			return fmt.Errorf("manifest: %s[%d].id is empty", label, i)
+		}
+		if seen[f.ID] {
+			return fmt.Errorf("manifest: %s: field id %q is duplicated", label, f.ID)
+		}
+		seen[f.ID] = true
+		if err := f.validate(label + "." + f.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validate checks one FieldDecl and recurses into object/array/map shapes.
+func (f *FieldDecl) validate(label string) error {
+	switch f.Type {
+	case FieldTypeText, FieldTypeTextarea, FieldTypeBool, FieldTypeNumber,
+		FieldTypeSecret, FieldTypeStringArr, FieldTypeStringMap, FieldTypeKeyValue, FieldTypeJSON:
+		// scalar / dynamic-map leaves — nothing further to validate
+	case FieldTypeSelect:
+		if len(f.Options) == 0 {
+			return fmt.Errorf("manifest: %s: select field requires options", label)
+		}
+	case FieldTypeObject:
+		if len(f.Fields) == 0 {
+			return fmt.Errorf("manifest: %s: object field requires fields", label)
+		}
+		return validateFields(label, f.Fields)
+	case FieldTypeArray, FieldTypeMap:
+		if f.Item == nil {
+			return fmt.Errorf("manifest: %s: %s field requires item", label, f.Type)
+		}
+		return f.Item.validate(label + "[]")
+	default:
+		return fmt.Errorf("manifest: %s: type %q is not supported", label, f.Type)
 	}
 	return nil
 }

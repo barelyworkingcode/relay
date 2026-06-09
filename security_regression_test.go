@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,6 +57,50 @@ func TestSec_FrontendTokenDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
 	}
 	if strings.Contains(got.Headers.Get("Authorization"), secret) {
 		t.Fatalf("frontend token leaked to upstream: %q", got.Headers.Get("Authorization"))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config-editor path containment
+// ---------------------------------------------------------------------------
+
+// A service-declared config path that symlinks outside its allowed root must be
+// rejected at save time, and the symlink target must be left untouched. Guards
+// resolveConfigPath's EvalSymlinks + containment check (added with the
+// service-config editor; see plans/yes-i-think-we-proud-lightning.md).
+func TestSec_ConfigPath_SymlinkEscapeRejectedAtSave_RegressionGuard(t *testing.T) {
+	mkSandboxRelayHome(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "victim.json")
+	const sentinel = `{"do-not":"overwrite"}`
+	if err := os.WriteFile(target, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	// settings.json inside root is actually a symlink pointing outside it.
+	link := filepath.Join(root, "settings.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	reg := NewEnhancedServiceRegistry(nil)
+	_ = reg.RegisterManifest("relayllm", "/sock", "tok", configManifest(link))
+	mgr := &recordingServiceManager{running: true}
+	ipc, ui := newConfigIPC(t, reg, mgr, "relayllm", root)
+
+	dispatchConfig(ipc, "relayllm", "save", `{"pwned":true}`)
+
+	got := ui.lastEventNamed(t, "onServiceConfigResult")
+	if got["ok"] != false || !strings.Contains(got["error"].(string), "escapes allowed root") {
+		t.Errorf("symlink-escape save should be rejected, got %+v", got)
+	}
+	// The victim file outside the root must be unchanged.
+	after, _ := os.ReadFile(target)
+	if string(after) != sentinel {
+		t.Fatalf("victim file was overwritten through symlink: %q", string(after))
+	}
+	if len(mgr.reloadIDs) != 0 {
+		t.Errorf("no restart on a rejected save; got %v", mgr.reloadIDs)
 	}
 }
 
