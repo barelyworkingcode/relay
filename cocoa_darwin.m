@@ -514,6 +514,16 @@ void cocoa_open_settings(const char* html) {
     webView.UIDelegate = settingsCtrl;
     settingsCtrl.webView = webView;
 
+    // The settings page follows the system light/dark appearance via CSS
+    // (color-scheme + prefers-color-scheme). We deliberately do NOT pin
+    // webView.appearance — leaving it nil lets the view inherit the window's
+    // effectiveAppearance, which tracks the system. underPageBackgroundColor is
+    // the adaptive backdrop painted before/around the HTML, so opening settings
+    // on a dark system no longer flashes the default white WKWebView background.
+    if (@available(macOS 12.0, *)) {
+        webView.underPageBackgroundColor = [NSColor windowBackgroundColor];
+    }
+
     [window.contentView addSubview:webView];
 
     NSString *htmlStr = [NSString stringWithUTF8String:html];

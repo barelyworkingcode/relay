@@ -1,313 +1,23 @@
-<!DOCTYPE html>
-<html>
-<head><style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    background: #1e1e1e;
-    color: #e0e0e0;
-    display: flex;
-    height: 100vh;
-    overflow: hidden;
-}
-.sidebar {
-    width: 200px;
-    background: #181818;
-    border-right: 1px solid #333;
-    padding: 16px 0;
-    flex-shrink: 0;
-}
-.sidebar-item {
-    padding: 10px 20px;
-    cursor: pointer;
-    font-size: 13px;
-    color: #aaa;
-    border-left: 3px solid transparent;
-}
-.sidebar-item:hover { background: #252525; color: #e0e0e0; }
-.sidebar-item.active {
-    background: #252525;
-    color: #fff;
-    border-left-color: #0078d4;
-}
-.content {
-    flex: 1;
-    padding: 24px 32px;
-    overflow-y: auto;
-}
-h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
-h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #ccc; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.page-header h2 { margin: 0; }
-.page-intro { color: #888; font-size: 12px; margin-bottom: 16px; }
-label {
-    display: block;
-    margin-top: 12px;
-    font-size: 13px;
-    color: #999;
-}
-input[type="text"],
-input[type="password"],
-input[type="number"],
-input[type="search"],
-input[type="url"],
-input[type="email"],
-select {
-    width: 100%;
-    padding: 6px 8px;
-    margin-top: 4px;
-    background: #2d2d2d;
-    border: 1px solid #444;
-    border-radius: 4px;
-    color: #e0e0e0;
-    font-size: 13px;
-}
-input[type="text"]:focus,
-input[type="password"]:focus,
-input[type="number"]:focus,
-input[type="search"]:focus,
-input[type="url"]:focus,
-input[type="email"]:focus,
-select:focus { outline: none; border-color: #0078d4; }
-.btn {
-    padding: 6px 16px;
-    background: #0078d4;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    font-size: 13px;
-    cursor: pointer;
-}
-.btn:hover { background: #006cbd; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-danger { background: transparent; color: #e55; border: 1px solid #e55; }
-.btn-danger:hover { background: #e55; color: #fff; }
-.perm-btns { display: flex; gap: 4px; }
-.perm-btn {
-    padding: 3px 10px;
-    font-size: 11px;
-    border: 1px solid #444;
-    border-radius: 3px;
-    background: #2d2d2d;
-    color: #aaa;
-    cursor: pointer;
-}
-.perm-btn:hover { border-color: #666; color: #e0e0e0; }
-.perm-btn.active { background: #0078d4; border-color: #0078d4; color: #fff; }
-textarea {
-    width: 100%;
-    padding: 6px 8px;
-    margin-top: 4px;
-    background: #2d2d2d;
-    border: 1px solid #444;
-    border-radius: 4px;
-    color: #e0e0e0;
-    font-size: 13px;
-    font-family: 'SF Mono', Monaco, monospace;
-    resize: vertical;
-    min-height: 60px;
-}
-textarea:focus { outline: none; border-color: #0078d4; }
-.mcp-card {
-    border: 1px solid #333;
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin-bottom: 8px;
-}
-.mcp-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 4px;
-}
-.mcp-card-name { font-weight: 500; font-size: 13px; }
-.mcp-card-cmd { color: #888; font-size: 11px; font-family: 'SF Mono', Monaco, monospace; }
-.mcp-card-tools { color: #666; font-size: 11px; margin-top: 2px; }
-.error-msg { color: #e55; font-size: 12px; margin-top: 8px; }
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #444; border-top-color: #0078d4; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: -2px; margin-right: 6px; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.empty-state {
-    color: #666;
-    font-size: 13px;
-    padding: 24px 0;
-    text-align: center;
-}
-.toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 0;
-    margin-bottom: 8px;
-    font-size: 13px;
-}
-.switch {
-    position: relative;
-    width: 36px;
-    height: 20px;
-    flex-shrink: 0;
-}
-.switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-.switch .slider {
-    position: absolute;
-    inset: 0;
-    background: #444;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-.switch .slider::before {
-    content: '';
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    left: 3px;
-    bottom: 3px;
-    background: #fff;
-    border-radius: 50%;
-    transition: transform 0.2s;
-}
-.switch input:checked + .slider {
-    background: #0078d4;
-}
-.switch-running input:checked + .slider {
-    background: #22c55e;
-}
-.switch input:checked + .slider::before {
-    transform: translateX(16px);
-}
-.switch input:disabled + .slider {
-    opacity: 0.4;
-    cursor: default;
-}
-.svc-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
-.svc-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.svc-card-title { font-weight: 500; font-size: 13px; color: #e0e0e0; }
-.svc-badge { display: inline-block; padding: 1px 6px; font-size: 10px; border-radius: 3px; margin-left: 6px; }
-.svc-badge.ok { color: #22c55e; border: 1px solid #22c55e; }
-.svc-badge.offline { color: #888; border: 1px solid #555; }
-.svc-badge.err { color: #e55; border: 1px solid #e55; }
-.svc-stats { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 12px; color: #ccc; font-size: 13px; }
-.svc-stat-label { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-.svc-stat-value { font-size: 16px; font-weight: 500; color: #fff; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.svc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.svc-table th { text-align: left; padding: 6px 8px; color: #888; font-weight: 500; border-bottom: 1px solid #2a2a2a; }
-.svc-table td { padding: 6px 8px; border-bottom: 1px solid #232323; color: #ccc; font-variant-numeric: tabular-nums; }
-.svc-table tr.pending td { opacity: 0.4; }
-.svc-actions { display: flex; gap: 4px; }
-.svc-err { color: #e55; font-size: 12px; margin-top: 8px; }
-.svc-empty { color: #666; font-size: 12px; padding: 8px 0; }
+// Settings UI application module: state, the render dispatcher, every tab
+// renderer, IPC bridge, and all event handlers. Pure helpers live in
+// ./lib/pure.js. Bundled (esbuild) and inlined into web/dist/settings.html.
+import {
+    esc, formatScalar, cfgParseConfigText, cfgGetAt, cfgSetAt, cfgDefaultFor, cfgCoerce, cfgKvCoerce, cfgKvDisplay, cfgScanRequired, cfgSummary, cfgFormatStringMap, cfgFormatJson, oneLineProj
+} from './lib/pure.js';
 
-/* ---- Service Inspector: manifest-declared resources ---- */
-.svc-resource { border: 1px solid #2a2a2a; border-radius: 6px; margin-top: 12px; }
-.svc-resource-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; cursor: pointer; background: #181818; border-radius: 6px 6px 0 0; user-select: none; }
-.svc-resource-header:hover { background: #1f1f1f; }
-.svc-resource-header.closed { border-radius: 6px; }
-.svc-resource-title { font-size: 12px; font-weight: 600; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
-.svc-resource-title .chevron { display: inline-block; width: 10px; margin-right: 6px; transition: transform 0.15s; transform: rotate(-90deg); }
-.svc-resource-header.open .svc-resource-title .chevron { transform: rotate(0deg); }
-.svc-resource-count { color: #666; font-size: 11px; font-weight: 400; margin-left: 6px; }
-.svc-resource-body { padding: 10px 12px 12px; }
-.svc-resource-help { color: #777; font-size: 11px; margin-bottom: 8px; }
-.svc-resource-empty { color: #666; font-size: 12px; padding: 6px 0; }
-.svc-resource-form label { margin-top: 8px; }
-.svc-resource-form-actions { margin-top: 14px; display: flex; gap: 8px; }
-.svc-resource-error { color: #e55; font-size: 12px; margin-top: 8px; }
+// Initial data injected by relay's renderSettingsHTML via the shell template.
+const EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
+const SERVICES_INIT = window.__RELAY_INIT__.services;
+const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
+const PROJECTS_INIT = window.__RELAY_INIT__.projects;
+const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
 
-/* ---- Service config editor (collapsible schema tree) ---- */
-.cfg-chevron { display: inline-block; width: 9px; color: #888; font-size: 9px; transition: transform 0.12s ease; transform: rotate(0deg); flex-shrink: 0; }
-.cfg-chevron.open { transform: rotate(90deg); }
-
-/* Section group (object / array / map) */
-.cfg-node { margin-top: 6px; }
-.cfg-node-head { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: #1c1c1c; border: 1px solid #303030; border-radius: 6px; cursor: pointer; user-select: none; }
-.cfg-node-head:hover { background: #232323; border-color: #3a3a3a; }
-.cfg-node-title { font-size: 12px; font-weight: 600; color: #dcdcdc; }
-.cfg-node-sub { color: #6f6f6f; font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cfg-badge { margin-left: auto; flex-shrink: 0; background: #333; color: #bbb; font-size: 10px; font-weight: 600; min-width: 18px; text-align: center; padding: 1px 7px; border-radius: 10px; }
-.cfg-node-body { margin: 2px 0 4px 9px; padding: 2px 0 4px 14px; border-left: 1px solid #2a2a2a; }
-
-/* Collection item card */
-.cfg-item { margin-top: 6px; border: 1px solid #2a2a2a; border-radius: 6px; overflow: hidden; }
-.cfg-item-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #181818; }
-.cfg-item-head:hover { background: #1e1e1e; }
-.cfg-item-toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; flex: 1; min-width: 0; }
-.cfg-item-title { font-size: 12px; color: #cfcfcf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cfg-item-remove { flex-shrink: 0; }
-.cfg-item-body { padding: 6px 12px 12px; }
-
-.cfg-add { margin-top: 10px; }
-
-/* Key/value repeater (e.g. llama-server flags) */
-.cfg-kv { margin-top: 10px; }
-.cfg-kv-label { font-size: 12px; color: #aaa; margin-bottom: 2px; }
-.cfg-kv-empty { color: #666; font-size: 12px; padding: 2px 0 2px; }
-.cfg-kv-row { display: flex; gap: 6px; align-items: center; margin-top: 5px; }
-.cfg-kv-row input { margin-top: 0; }
-.cfg-kv-key { flex: 0 0 36%; font-family: 'SF Mono', Monaco, monospace; }
-.cfg-kv-val { flex: 1; font-family: 'SF Mono', Monaco, monospace; }
-.cfg-kv-del { flex-shrink: 0; padding: 4px 9px; }
-
-.cfg-leaf { margin-top: 10px; }
-.cfg-leaf > label { display: block; font-size: 12px; color: #aaa; margin-bottom: 1px; }
-.cfg-leaf input.cfg-bad, .cfg-leaf textarea.cfg-bad { border-color: #e55; }
-.cfg-actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2a2a; display: flex; gap: 8px; align-items: center; }
-.cfg-apply-note { color: #888; font-size: 11px; margin-top: 8px; }
-
-/* ---- Projects tab ---- */
-.proj-card { border: 1px solid #333; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
-.proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-.proj-card-name { font-weight: 500; font-size: 13px; color: #e0e0e0; }
-.proj-card-path { color: #888; font-size: 11px; font-family: 'SF Mono', Monaco, monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-card-meta { color: #666; font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
-.proj-card-meta span { white-space: nowrap; }
-.proj-section { border: 1px solid #2a2a2a; border-radius: 6px; padding: 12px 14px; margin-top: 12px; }
-.proj-section-title { font-size: 12px; font-weight: 600; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-.proj-section-help { color: #777; font-size: 11px; margin-bottom: 8px; }
-.proj-mcp-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #232323; }
-.proj-mcp-row:last-child { border-bottom: none; }
-.proj-mcp-name { font-size: 12px; color: #ccc; }
-.proj-mcp-name.dangling { color: #888; text-decoration: line-through; }
-.proj-tool-picker { padding: 8px 0 8px 16px; border-left: 2px solid #333; margin: 4px 0 8px 8px; }
-.proj-tool-row { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; font-size: 12px; color: #aaa; }
-.proj-tool-row.stale { color: #f59e0b; }
-.proj-tool-row input[type=checkbox] { margin-top: 2px; }
-.proj-tool-row .desc { font-size: 11px; color: #777; margin-top: 1px; }
-.proj-tool-empty { color: #666; font-size: 11px; padding: 4px 0; font-style: italic; }
-.proj-token-field { display: flex; gap: 6px; align-items: center; }
-.proj-token-field input { flex: 1; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; }
-.proj-token-banner { background: #1a3a52; border: 1px solid #0078d4; border-radius: 4px; padding: 8px 12px; margin-top: 8px; font-size: 12px; color: #cde; }
-.proj-token-banner code { color: #fff; background: rgba(0,0,0,0.4); padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; word-break: break-all; }
-.proj-template-card { border: 1px solid #2a2a2a; border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
-.proj-template-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.proj-form-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid #333; display: flex; gap: 8px; }
-.proj-error { color: #e55; font-size: 12px; margin-top: 8px; }
-.proj-ok { color: #22c55e; font-size: 12px; margin-top: 8px; }
-</style></head>
-<body>
-<div class="sidebar">
-    <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
-    <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
-    <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
-    <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
-</div>
-<div class="content" id="content"></div>
-
-<script>
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
         window.webkit.messageHandlers.ipc.postMessage(msg);
     else if (window.chrome && window.chrome.webview)
         window.chrome.webview.postMessage(msg);
 }
-const EXTERNAL_MCPS_INIT = __EXTERNAL_MCPS_JSON__;
-const SERVICES_INIT = __SERVICES_JSON__;
-const RUNNING_IDS_INIT = __RUNNING_IDS_JSON__;
-const PROJECTS_INIT = __PROJECTS_JSON__;
-const MCP_TOOL_CACHE_INIT = __MCP_TOOL_CACHE_JSON__;
 
 let state = {
     page: 'services',
@@ -381,11 +91,11 @@ function render(source) {
         if (fromPush && state.editingServiceId) return;
         el.innerHTML = renderServices();
     } else if (state.page === 'inspector') {
-        // Status poller fires render('push') every 2s. Skip the repaint while a
-        // config editor is open so it never wipes in-flight keystrokes (a leaf
-        // edit mutates the draft without re-rendering; a poll repaint would
-        // rebuild the DOM and drop focus + any uncommitted text). User-driven
-        // renders (expand/collapse, save/revert) pass no 'push' and proceed.
+        // The 2s status poll updates status regions surgically
+        // (updateServiceStatusDOM) and never routes here. But other push sources
+        // (e.g. onSettingsReloaded after an external service/MCP change) still
+        // call render('push'); skip the full inspector rebuild while a config
+        // editor is open so it can't wipe in-flight keystrokes there.
         if (fromPush && anyConfigEditorOpen()) return;
         el.innerHTML = renderServiceInspector();
     } else if (state.page === 'projects') {
@@ -404,7 +114,7 @@ function renderMcpServers() {
 
     let html = '<div class="page-header">';
     html += '<h2>MCP Servers</h2>';
-    html += '<button class="btn" onclick="newMcp()">+ New MCP Server</button>';
+    html += '<button class="btn btn-primary" onclick="newMcp()">+ New MCP Server</button>';
     html += '</div>';
     html += '<p class="page-intro">Add external MCP servers so clients only need to connect to Relay.</p>';
 
@@ -497,7 +207,7 @@ function renderMcpForm() {
         } else {
             html += '<label>Paste a Claude Desktop-style JSON config snippet</label>';
             html += '<textarea id="mcpJson" rows="8"></textarea>';
-            html += '<p style="color:#666;font-size:11px;margin-top:4px">Accepts <code style="color:#aaa">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
+            html += '<p style="color:var(--text-3);font-size:11px;margin-top:4px">Accepts <code style="color:var(--text-2)">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
         }
     }
 
@@ -506,10 +216,10 @@ function renderMcpForm() {
         html += '<button class="btn" disabled><span class="spinner"></span>Discovering...</button>';
     } else {
         if (!isStdio) {
-            html += '<button class="btn" onclick="addExternalMcpHttp()">Add MCP Server</button>';
+            html += '<button class="btn btn-primary" onclick="addExternalMcpHttp()">Add MCP Server</button>';
         } else {
             const formActive = state.mcpAddMode === 'form';
-            html += `<button class="btn" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add MCP Server</button>`;
+            html += `<button class="btn btn-primary" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add MCP Server</button>`;
         }
         html += '<button class="btn btn-danger" onclick="cancelMcpEdit()">Cancel</button>';
     }
@@ -522,9 +232,6 @@ function renderMcpForm() {
     return html;
 }
 
-function esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
 
 
 function addExternalMcp() {
@@ -749,7 +456,7 @@ function renderServices() {
 
     let html = '<div class="page-header">';
     html += '<h2>Services</h2>';
-    html += '<button class="btn" onclick="newService()">+ New Service</button>';
+    html += '<button class="btn btn-primary" onclick="newService()">+ New Service</button>';
     html += '</div>';
     html += '<p class="page-intro">Manage background processes. These appear in the tray menu for quick start/stop.</p>';
 
@@ -773,14 +480,14 @@ function renderServices() {
             ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ''}
             ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ''}
             <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:#888">Running</span>
+                <span style="font-size:12px;color:var(--text-2)">Running</span>
                 <label class="switch switch-running">
                     <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
                     <span class="slider"></span>
                 </label>
             </div>
             <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:#888">Autostart on launch</span>
+                <span style="font-size:12px;color:var(--text-2)">Autostart on launch</span>
                 <label class="switch">
                     <input type="checkbox" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
                     <span class="slider"></span>
@@ -811,7 +518,7 @@ function renderServiceForm() {
     const ur = editing ? esc(editing.url || '') : '';
 
     let html = '<div class="page-header">';
-    html += `<h2>${title}${editing ? ' <span style="color:#666;font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : ''}</h2>`;
+    html += `<h2>${title}${editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : ''}</h2>`;
     html += '<button class="btn btn-danger btn-sm" onclick="cancelServiceEdit()">Cancel</button>';
     html += '</div>';
 
@@ -836,12 +543,12 @@ function renderServiceForm() {
     </div>`;
     if (editing) {
         html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn" onclick="saveServiceEdit()">Save</button>
+            <button class="btn btn-primary" onclick="saveServiceEdit()">Save</button>
             <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
         </div>`;
     } else {
         html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn" onclick="addService()">Add Service</button>
+            <button class="btn btn-primary" onclick="addService()">Add Service</button>
             <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
         </div>`;
     }
@@ -1032,7 +739,7 @@ function renderProjects() {
 
     let html = '<div class="page-header">';
     html += '<h2>Projects</h2>';
-    html += '<button class="btn" onclick="newProject()">+ New Project</button>';
+    html += '<button class="btn btn-primary" onclick="newProject()">+ New Project</button>';
     html += '</div>';
     html += '<p class="page-intro">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
 
@@ -1299,7 +1006,7 @@ function renderProjectForm() {
         for (const mcp of registered) {
             const st = projMcpState(f, mcp.id);
             html += '<div class="proj-mcp-row">';
-            html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:#666;font-size:11px">(' + esc(mcp.id) + ')</span></span>';
+            html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ')</span></span>';
             html += '<div class="perm-btns">';
             html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'all\')">All tools</button>';
             html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'selected\')">Selected</button>';
@@ -1371,7 +1078,7 @@ function renderProjectForm() {
     html += '<div class="proj-section-title">Permission Policy</div>';
     html += '<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).</p>';
     html += '<label>Default mode</label>';
-    html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value" style="width:100%;padding:6px 8px;background:#2d2d2d;border:1px solid #444;border-radius:4px;color:#e0e0e0;margin-top:4px">';
+    html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
     for (const m of ['', 'default', 'acceptEdits', 'plan', 'bypassPermissions']) {
         const sel = pol.default_mode === m ? 'selected' : '';
         html += '<option value="' + esc(m) + '" ' + sel + '>' + (m || '(inherit)') + '</option>';
@@ -1425,7 +1132,7 @@ function renderProjectForm() {
 
     // ---- Actions ----
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn" onclick="saveProjectForm()">' + (isNew ? 'Create' : 'Save') + '</button>';
+    html += '<button class="btn btn-primary" onclick="saveProjectForm()">' + (isNew ? 'Create' : 'Save') + '</button>';
     html += '<button class="btn btn-danger" onclick="cancelProjectEdit()">Cancel</button>';
     html += '</div>';
 
@@ -1467,9 +1174,6 @@ function renderProjToolPicker(mcpID, f) {
     return html;
 }
 
-function oneLineProj(s) {
-    return String(s).replace(/\s+/g, ' ').slice(0, 140);
-}
 
 function pruneStaleDisabledTool(mcpID, name, kept) {
     if (kept) return; // user wants to keep it; no-op
@@ -1636,7 +1340,7 @@ function renderServiceInspector() {
     state._cfgBind = [];
     state._cfgBadJson = {};
     let html = '<h2>Service Inspector</h2>';
-    html += '<p style="color:#888;font-size:12px;margin-bottom:16px">Live status and actions for every relay-enhanced service. Panels are rendered generically from each service\'s declared manifest.</p>';
+    html += '<p style="color:var(--text-2);font-size:12px;margin-bottom:16px">Live status and actions for every relay-enhanced service. Panels are rendered generically from each service\'s declared manifest.</p>';
 
     const ids = Object.keys(state.serviceStatuses).sort();
     if (ids.length === 0) {
@@ -1656,13 +1360,33 @@ function serviceBadgeHTML(snap, manifest) {
     return '<span class="svc-badge offline">offline</span>';
 }
 
+// A service panel is two sibling regions inside one card:
+//   #svc-status-<id> — read-only live status; replaced wholesale on every 2s
+//                      status poll via updateServiceStatusDOM.
+//   #svc-config-<id> — the schema config editor; owns its own render lifecycle
+//                      (expand / save / revert / structural edits) and is NEVER
+//                      touched by a status push, so focus and in-flight
+//                      keystrokes in it survive the poll. This split is the fix
+//                      for the 2s-poll focus-clobber bug.
 function renderServicePanel(serviceId) {
     const snap = state.serviceStatuses[serviceId];
     const manifest = (snap && snap.manifest) || {};
-    const actions = manifest.actions || [];
-
     let html = '<div class="svc-card">';
-    html += `<div class="svc-card-header"><div><span class="svc-card-title">${esc(serviceId)}</span>${serviceBadgeHTML(snap, manifest)}</div><div></div></div>`;
+    html += `<div id="svc-status-${esc(serviceId)}">${renderServiceStatus(serviceId, snap, manifest)}</div>`;
+    const configHTML = manifest.config ? renderConfigSection(serviceId, manifest.config) : '';
+    html += `<div id="svc-config-${esc(serviceId)}">${configHTML}</div>`;
+    html += '</div>';
+    return html;
+}
+
+// renderServiceStatus builds the read-only status portion of a panel: header +
+// badge, the status payload (scalars + tables), global action buttons, and the
+// last action error. It deliberately touches NOTHING in state._cfgBind — only
+// the config editor uses those bindings — so it can be re-rendered on its own
+// without disturbing an open editor.
+function renderServiceStatus(serviceId, snap, manifest) {
+    const actions = manifest.actions || [];
+    let html = `<div class="svc-card-header"><div><span class="svc-card-title">${esc(serviceId)}</span>${serviceBadgeHTML(snap, manifest)}</div><div></div></div>`;
 
     if (snap && !snap.ok) {
         html += `<div class="svc-err">${esc(snap.error || 'fetch failed')}</div>`;
@@ -1684,17 +1408,22 @@ function renderServicePanel(serviceId) {
         html += '</div>';
     }
 
-    if (manifest.config) {
-        html += renderConfigSection(serviceId, manifest.config);
-    }
-
     const err = state.serviceActionError[serviceId];
     if (err) {
         html += `<div class="svc-err">${esc(err)}</div>`;
     }
-
-    html += '</div>';
     return html;
+}
+
+// updateServiceStatusDOM replaces only a service's status region in place. This
+// is the surgical path used by the 2s poll (and action dispatch/result), so a
+// tick never rebuilds — and never wipes — an open config editor below it. No-op
+// when the panel isn't currently in the DOM (e.g. a different tab is showing).
+function updateServiceStatusDOM(serviceId, snap) {
+    const el = document.getElementById('svc-status-' + serviceId);
+    if (!el) return;
+    const manifest = (snap && snap.manifest) || {};
+    el.innerHTML = renderServiceStatus(serviceId, snap, manifest);
 }
 
 // ---------------------------------------------------------------------------
@@ -1711,8 +1440,9 @@ function renderServicePanel(serviceId) {
 
 function cfgGetDraft(svcId) { return state.serviceConfigDraft[svcId]; }
 
-// anyConfigEditorOpen reports whether any service's config panel is expanded,
-// so the 2s status poll skips its repaint and never disturbs the editor.
+// anyConfigEditorOpen reports whether any service's config panel is expanded, so
+// a push-driven full inspector re-render (onSettingsReloaded, etc.) can skip the
+// rebuild and not disturb an open editor's focus / in-flight text.
 function anyConfigEditorOpen() {
     for (const id of Object.keys(state.serviceConfigOpen)) {
         if (state.serviceConfigOpen[id]) return true;
@@ -1741,18 +1471,6 @@ function cfgChevron(expanded) {
     return `<span class="cfg-chevron${expanded ? ' open' : ''}">▸</span>`;
 }
 
-// cfgSummary returns a one-line preview of a collection item (the first
-// non-empty scalar field) so a collapsed row is identifiable at a glance.
-function cfgSummary(itemField, value) {
-    if (value && typeof value === 'object' && itemField && itemField.fields) {
-        for (const f of itemField.fields) {
-            const v = value[f.id];
-            if (typeof v === 'string' && v.trim()) return v;
-            if (typeof v === 'number') return String(v);
-        }
-    }
-    return '';
-}
 
 function cfgDirty(svcId) {
     const t = state.serviceConfigTree[svcId];
@@ -1768,43 +1486,8 @@ function cfgHasBadJson(svcId) {
     return false;
 }
 
-// cfgGetAt / cfgSetAt walk a path (array of string keys / numeric indices)
-// into the draft tree. cfgSetAt lazily creates intermediate containers so an
-// edit to a leaf in an absent section materializes only that chain.
-function cfgGetAt(obj, path) {
-    let cur = obj;
-    for (const k of path) {
-        if (cur === null || cur === undefined) return undefined;
-        cur = cur[k];
-    }
-    return cur;
-}
 
-function cfgSetAt(obj, path, value) {
-    let cur = obj;
-    for (let i = 0; i < path.length - 1; i++) {
-        const k = path[i];
-        if (cur[k] === null || typeof cur[k] !== 'object') {
-            cur[k] = (typeof path[i + 1] === 'number') ? [] : {};
-        }
-        cur = cur[k];
-    }
-    cur[path[path.length - 1]] = value;
-}
 
-function cfgDefaultFor(field) {
-    switch (field.type) {
-        case 'object':    return {};
-        case 'array':     return [];
-        case 'map':       return {};
-        case 'bool':      return false;
-        case 'stringMap': return {};
-        case 'string[]':  return [];
-        case 'number':    return null;
-        case 'json':      return null;
-        default:          return ''; // text/textarea/select/secret
-    }
-}
 
 // cfgBind records a binding and returns its index. The index is what handlers
 // carry, so arbitrary map keys never reach an HTML attribute. extra carries
@@ -1858,7 +1541,7 @@ function renderConfigSection(serviceId, config) {
                 : 'Saving restarts the service to apply.';
             html += `<div class="cfg-apply-note" id="cfg-note-${esc(serviceId)}">${esc(note)}</div>`;
             html += '<div class="cfg-actions">';
-            html += `<button class="btn" id="cfg-save-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="saveConfig('${esc(serviceId)}')">Save</button>`;
+            html += `<button class="btn btn-primary" id="cfg-save-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="saveConfig('${esc(serviceId)}')">Save</button>`;
             html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="revertConfig('${esc(serviceId)}')">Revert</button>`;
             html += '</div>';
         }
@@ -2041,23 +1724,7 @@ function renderConfigKeyValue(svcId, containerPath, field, containerObj, exclude
     return html;
 }
 
-function cfgKvDisplay(v) {
-    if (v === true) return 'true';
-    if (v === false) return 'false';
-    if (v === null || v === undefined) return '';
-    return String(v);
-}
 
-// cfgKvCoerce infers a typed value from text so booleans and numbers survive the
-// round-trip to JSON (a llama bool flag must stay a real bool, not "true").
-function cfgKvCoerce(text) {
-    const t = text.trim();
-    if (t === '') return '';
-    if (t === 'true') return true;
-    if (t === 'false') return false;
-    if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-    return t;
-}
 
 // cfgKvState resolves the live container object + its visible (non-excluded)
 // keys for a keyValue binding.
@@ -2123,7 +1790,7 @@ function renderConfigLeaf(svcId, path, field, value) {
     html += `<label>${cfgNodeLabel(field)}${field.required ? ' *' : ''}</label>`;
     switch (field.type) {
         case 'bool':
-            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:#888">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${inputId}" ${value ? 'checked' : ''} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
+            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:var(--text-2)">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${inputId}" ${value ? 'checked' : ''} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
             html += '</div>';
             return html;
         case 'number':
@@ -2157,47 +1824,14 @@ function renderConfigLeaf(svcId, path, field, value) {
             html += `<input type="text" id="${inputId}" value="${esc(value === undefined || value === null ? '' : String(value))}"${ph}${noFix} oninput="cfgEdit(${bindIdx}, this)"/>`;
     }
     if (field.help && field.type !== 'bool') {
-        html += `<div style="color:#777;font-size:11px;margin-top:2px">${esc(field.help)}</div>`;
+        html += `<div style="color:var(--text-3);font-size:11px;margin-top:2px">${esc(field.help)}</div>`;
     }
     html += '</div>';
     return html;
 }
 
-function cfgFormatStringMap(v) {
-    if (!v || typeof v !== 'object') return '';
-    return Object.keys(v).map(k => k + '=' + v[k]).join('\n');
-}
 
-function cfgFormatJson(v) {
-    if (v === undefined || v === null) return '';
-    try { return JSON.stringify(v, null, 2); } catch (e) { return ''; }
-}
 
-// cfgCoerce converts a leaf input's raw DOM value into the typed JS value the
-// schema expects (mirrors the old resource-form harvest logic).
-function cfgCoerce(type, el) {
-    switch (type) {
-        case 'bool':
-            return el.checked;
-        case 'number': {
-            const txt = el.value.trim();
-            return txt === '' ? null : Number(txt);
-        }
-        case 'string[]':
-            return el.value.split('\n').map(s => s.trim()).filter(Boolean);
-        case 'stringMap': {
-            const out = {};
-            for (const line of el.value.split('\n')) {
-                const eq = line.indexOf('=');
-                if (eq <= 0) continue;
-                out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-            }
-            return out;
-        }
-        default:
-            return el.value;
-    }
-}
 
 // cfgEdit writes a scalar leaf edit into the draft WITHOUT re-rendering, so the
 // caret survives typing. It refreshes only the Save/Revert chrome.
@@ -2402,36 +2036,14 @@ function cfgFirstMissingRequired(svcId) {
     return cfgScanRequired(config.schema || [], draft);
 }
 
-function cfgScanRequired(fields, value) {
-    const obj = (value && typeof value === 'object') ? value : {};
-    for (const f of fields) {
-        const v = obj[f.id];
-        if (f.type === 'object') {
-            const m = cfgScanRequired(f.fields || [], v);
-            if (m) return m;
-        } else if (f.type === 'array') {
-            if (Array.isArray(v)) for (const item of v) {
-                const m = cfgScanRequired((f.item && f.item.fields) || [], item);
-                if (m) return m;
-            }
-        } else if (f.type === 'map') {
-            if (v && typeof v === 'object') for (const k of Object.keys(v)) {
-                const m = cfgScanRequired((f.item && f.item.fields) || [], v[k]);
-                if (m) return m;
-            }
-        } else if (f.required) {
-            if (v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)) {
-                return f.label || f.id;
-            }
-        }
-    }
-    return null;
-}
 
 window.onServiceConfigResult = function(result) {
     if (!result) return;
     const id = result.serviceId;
     state.serviceConfigPending[id] = false;
+    // Clear any stale apply note ("Restarting…" / error) from a prior save now
+    // that a fresh config op has completed; it is otherwise never reset.
+    state.serviceConfigApplyMsg[id] = null;
     if (!result.ok) {
         state.serviceConfigError[id] = result.error || ((result.op || 'config') + ' failed');
         if (state.page === 'inspector') render();
@@ -2466,39 +2078,7 @@ window.onServiceConfigApplied = function(p) {
     if (state.page === 'inspector') render();
 };
 
-// cfgParseConfigText parses raw (possibly JSONC) file text: strip // and /* */
-// comments outside strings, then JSON.parse. Returns undefined on failure (the
-// server is the authority on validity; this is best-effort for rendering).
-// Comments do not survive a save — the draft is re-serialized as plain JSON.
-function cfgParseConfigText(text) {
-    try {
-        return JSON.parse(cfgStripJsonComments(text));
-    } catch (e) {
-        return undefined;
-    }
-}
 
-function cfgStripJsonComments(s) {
-    let out = '';
-    let i = 0;
-    const n = s.length;
-    let inStr = false, q = '', esc = false;
-    while (i < n) {
-        const c = s[i], c2 = s[i + 1];
-        if (inStr) {
-            out += c;
-            if (esc) esc = false;
-            else if (c === '\\') esc = true;
-            else if (c === q) inStr = false;
-            i++; continue;
-        }
-        if (c === '"' || c === "'") { inStr = true; q = c; out += c; i++; continue; }
-        if (c === '/' && c2 === '/') { i += 2; while (i < n && s[i] !== '\n') i++; continue; }
-        if (c === '/' && c2 === '*') { i += 2; while (i < n && !(s[i] === '*' && s[i + 1] === '/')) i++; i += 2; continue; }
-        out += c; i++;
-    }
-    return out;
-}
 
 // renderStatusPayload walks a free-form JSON object and emits a key/value
 // list for scalars + a table for any top-level array. forEach actions
@@ -2563,7 +2143,7 @@ function renderArrayBlock(serviceId, arrayKey, rows, actions) {
 
     for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || {};
-        const rowKey = JSON.stringify(row);
+        const rowKey = canonRowKey(row);
         const pendingClass = isAnyActionPending(serviceId, rowActions, rowKey) ? ' class="pending"' : '';
         html += `<tr${pendingClass}>`;
         for (const col of columns) {
@@ -2585,9 +2165,20 @@ function renderArrayBlock(serviceId, arrayKey, rows, actions) {
 // Buttons carry their dispatch payload as data-* attributes; a single
 // delegated click listener (installed once on document) reads them. This
 // keeps re-renders free of per-button handler wiring.
+// canonRowKey builds the per-row pending key with sorted object keys so it
+// matches whether the row came from the service's status JSON (insertion order)
+// or was echoed back by Go (which marshals map keys alphabetically). A mismatch
+// would leave the action button stuck disabled after its result arrives.
+function canonRowKey(row) {
+    if (!row || typeof row !== 'object') return '';
+    const out = {};
+    for (const k of Object.keys(row).sort()) out[k] = row[k];
+    return JSON.stringify(out);
+}
+
 function renderActionButton(serviceId, action, row) {
     const rowJson = row ? JSON.stringify(row) : '';
-    const pending = !!state.serviceActionPending[serviceId + '|' + action.id + '|' + rowJson];
+    const pending = !!state.serviceActionPending[serviceId + '|' + action.id + '|' + canonRowKey(row)];
     const danger = String(action.method || '').toUpperCase() === 'DELETE';
     const cls = 'btn btn-sm' + (danger ? ' btn-danger' : '');
     const label = pending ? '<span class="spinner"></span>' + esc(action.label) : esc(action.label);
@@ -2630,11 +2221,11 @@ function isAnyActionPending(serviceId, actions, rowKey) {
 }
 
 function dispatchServiceAction(serviceId, actionId, row) {
-    const rowKey = row ? JSON.stringify(row) : '';
+    const rowKey = canonRowKey(row);
     state.serviceActionPending[serviceId + '|' + actionId + '|' + rowKey] = true;
-    // 'push'-tagged so an action click in the status table doesn't wipe a
-    // resource form the user happens to have open further down the panel.
-    if (state.page === 'inspector') render('push');
+    // Show the pending spinner immediately by re-rendering only this service's
+    // status region — an open config editor below it is left intact.
+    if (state.page === 'inspector') updateServiceStatusDOM(serviceId, state.serviceStatuses[serviceId]);
     ipc(JSON.stringify({
         type: 'service_action',
         serviceId: serviceId,
@@ -2643,34 +2234,14 @@ function dispatchServiceAction(serviceId, actionId, row) {
     }));
 }
 
-// Loose ISO 8601 detector — matches what Go's time.Format(time.RFC3339)
-// emits ("2026-05-24T03:14:01Z" or with offset). Restrictive enough that
-// an alias like "foo-bar" or a port like "8090" won't accidentally match.
-const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
 
-function formatScalar(v) {
-    if (v === null || v === undefined) return '';
-    if (typeof v === 'boolean') return v ? 'true' : 'false';
-    if (typeof v === 'string' && ISO_8601_RE.test(v)) return formatRelativeTime(v);
-    return String(v);
-}
 
-// Render an RFC3339 timestamp as "5m ago" / "2h 14m ago" / "3d ago" so
-// humans can read it. Falls back to the raw string on parse failure.
-function formatRelativeTime(iso) {
-    const t = Date.parse(iso);
-    if (isNaN(t)) return iso;
-    let delta = Math.max(0, Math.floor((Date.now() - t) / 1000));
-    if (delta < 5) return 'just now';
-    if (delta < 60) return delta + 's ago';
-    const m = Math.floor(delta / 60);
-    if (m < 60) return m + 'm ago';
-    const h = Math.floor(m / 60);
-    const remM = m % 60;
-    if (h < 24) return remM > 0 ? h + 'h ' + remM + 'm ago' : h + 'h ago';
-    const d = Math.floor(h / 24);
-    const remH = h % 24;
-    return remH > 0 ? d + 'd ' + remH + 'h ago' : d + 'd ago';
+
+// setsEqual reports whether two Sets hold the same members.
+function setsEqual(a, b) {
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
 }
 
 window.onServiceStatusBatch = function(batch) {
@@ -2678,23 +2249,58 @@ window.onServiceStatusBatch = function(batch) {
     for (const snap of (batch || [])) {
         next[snap.serviceId] = snap;
     }
+    const prevIds = new Set(Object.keys(state.serviceStatuses));
+    const nextIds = new Set(Object.keys(next));
+    const changed = !setsEqual(prevIds, nextIds);
     state.serviceStatuses = next;
-    if (state.page === 'inspector') render('push');
+    if (changed) {
+        // Drop cached config state for any service that deregistered, so when it
+        // re-registers (e.g. after a save-triggered restart) its panel re-fetches
+        // the file from disk instead of showing the pre-restart draft.
+        // serviceConfigLoaded is otherwise never cleared.
+        for (const id of prevIds) {
+            if (nextIds.has(id)) continue;
+            delete state.serviceConfigLoaded[id];
+            delete state.serviceConfigTree[id];
+            delete state.serviceConfigDraft[id];
+        }
+    }
+    if (state.page !== 'inspector') return;
+    if (changed) {
+        // A service registered or deregistered: panels appear/disappear, so the
+        // whole inspector must re-render. This rebuilds _cfgBind and drops any
+        // open config editor — acceptable, since the changed panel is being
+        // rebuilt anyway and any surviving service's edited draft is preserved.
+        render();
+        return;
+    }
+    // Steady state — same set of services. Update only each read-only status
+    // region so an open config editor (and any focused input / uncommitted text
+    // in it) is left completely untouched. This is the 2s-poll clobber fix.
+    for (const id of nextIds) updateServiceStatusDOM(id, next[id]);
 };
 
 window.onServiceActionResult = function(result) {
     if (!result) return;
-    const rowKey = result.row ? JSON.stringify(result.row) : '';
+    const rowKey = canonRowKey(result.row);
     delete state.serviceActionPending[result.serviceId + '|' + result.actionId + '|' + rowKey];
     if (result.ok) {
         delete state.serviceActionError[result.serviceId];
     } else {
         state.serviceActionError[result.serviceId] = result.error || 'action failed';
     }
-    if (state.page === 'inspector') render('push');
+    // Refresh only this service's status region (clears the spinner / shows the
+    // error), leaving an open config editor below it intact.
+    if (state.page === 'inspector') updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
 };
 
 render();
-</script>
-</body>
-</html>
+
+// Inline on* handlers in rendered HTML resolve against window. Bundling scopes
+// these declarations to the module, so re-expose every top-level function (and
+// the shared state object) on window — exactly the global surface the original
+// classic <script> had.
+Object.assign(window, {
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addProjTemplate, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProjTemplate, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
+});
+window.state = state;

@@ -33,6 +33,12 @@ for arg in "$@"; do
     esac
 done
 
+# Regenerate the settings UI bundle (web/src/* -> web/dist/settings.html) FIRST,
+# so BOTH the test suite and the build below embed the current source rather than
+# a stale committed artifact. esbuild runs in-process via web/gen; no Node.
+echo "Bundling settings UI..."
+go run ./web/gen
+
 # Run the hermetic test suite up front. Mirrors what .githooks/pre-commit
 # runs — keeps the install path consistent with the commit gate.
 if $RUN_TESTS; then

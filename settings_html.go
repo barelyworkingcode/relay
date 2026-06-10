@@ -7,7 +7,14 @@ import (
 	"strings"
 )
 
-//go:embed settings.html
+// The settings document is bundled from web/src/* into web/dist/settings.html by
+// web/gen (esbuild). web/dist/settings.html is committed so a plain `go build`
+// embeds a working artifact; build.sh re-runs the generator first so installs
+// always carry a fresh bundle. Regenerate after editing web/src or web/shell.html
+// with: go generate ./...   (or: go run ./web/gen)
+//
+//go:generate go run ./web/gen
+//go:embed web/dist/settings.html
 var settingsHTML string
 
 // mustMarshalJSON marshals v to JSON, returning "null" on error and logging.
