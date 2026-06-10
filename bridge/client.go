@@ -100,9 +100,9 @@ func (c *Client) GetProject(id string) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
-// ResolvePtyEnv asks relay for the env bundle (token, working dir, skill path)
-// needed to spawn a project-scoped PTY. Service-token authentication required.
-// As a side effect, regenerates the project's SKILL.md if req.RegenSkills says so.
+// ResolvePtyEnv asks relay for the env bundle (project-scoped token + working
+// dir) needed to spawn a project-scoped PTY. Service-token authentication
+// required. Skill generation is owned by relay and is not driven by this call.
 func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	args, err := json.Marshal(req)
 	if err != nil {

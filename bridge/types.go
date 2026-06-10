@@ -40,8 +40,9 @@ const (
 	RespProgress = "Progress"
 )
 
-// Wire values for PtyEnvRequest.RegenSkills. Cross-repo callers should
-// reference these constants instead of hand-typing strings.
+// Skill-regen mode values used internally by relay's EmitSkills (RegenMode).
+// Skill generation is owned by relay; these are no longer a PtyEnvRequest wire
+// field. Reference the constants instead of hand-typing strings.
 const (
 	RegenSkillsAlways       = "always"
 	RegenSkillsSkipIfExists = "skipIfExists"
@@ -83,10 +84,9 @@ const (
 )
 
 // PtyEnvRequest is the payload for ReqResolvePtyEnv requests, carried in
-// BridgeRequest.Arguments as JSON. Service-token caller required.
-//
-// RelayLLM substitutes ${project.path} into SkillPath before sending so relay
-// does not have to know about template variables.
+// BridgeRequest.Arguments as JSON. Service-token caller required. The call
+// resolves a project-scoped token + working dir; skill generation is owned by
+// relay and is not driven from here.
 //
 // Project resolution precedence: ProjectID (authoritative) → Project (as ID
 // then name) → Directory matched against Project.Path (legacy). When ProjectID
@@ -95,11 +95,9 @@ const (
 // holder from binding an arbitrary cwd to another project's token. The legacy
 // Project/Directory match remains so older callers keep working during migration.
 type PtyEnvRequest struct {
-	ProjectID   string `json:"project_id,omitempty"` // authoritative: resolve by project ID; Directory (if set) is validated within Project.Path
-	Project     string `json:"project,omitempty"`    // legacy: project ID or name
-	Directory   string `json:"directory,omitempty"`  // legacy fallback: match against Project.Path
-	RegenSkills string `json:"regen_skills"`         // RegenSkillsAlways | RegenSkillsSkipIfExists | RegenSkillsNever
-	SkillPath   string `json:"skill_path"`           // skills root (.claude/skills); relay writes one relay-<slug> subdir per tool bucket. A legacy value ending in relay/relay-* is accepted and normalized to its parent.
+	ProjectID string `json:"project_id,omitempty"` // authoritative: resolve by project ID; Directory (if set) is validated within Project.Path
+	Project   string `json:"project,omitempty"`    // legacy: project ID or name
+	Directory string `json:"directory,omitempty"`  // legacy fallback: match against Project.Path
 }
 
 // PtyEnvResponse is returned as BridgeResponse.Data on a successful
@@ -108,16 +106,15 @@ type PtyEnvRequest struct {
 type PtyEnvResponse struct {
 	RelayToken string `json:"relay_token"`
 	WorkingDir string `json:"working_dir"`
-	SkillPath  string `json:"skill_path"`
 }
 
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
-	Type      string          `json:"type"`                  // request type
-	Name      string          `json:"name,omitempty"`        // tool name for CallTool, MCP ID for ReloadExternalMcp
-	Arguments json.RawMessage `json:"arguments,omitempty"`   // tool arguments for CallTool
-	Token     string          `json:"token,omitempty"`       // auth token
-	ProjectID string          `json:"project_id,omitempty"`  // for GetProject
+	Type      string          `json:"type"`                 // request type
+	Name      string          `json:"name,omitempty"`       // tool name for CallTool, MCP ID for ReloadExternalMcp
+	Arguments json.RawMessage `json:"arguments,omitempty"`  // tool arguments for CallTool
+	Token     string          `json:"token,omitempty"`      // auth token
+	ProjectID string          `json:"project_id,omitempty"` // for GetProject
 }
 
 // BridgeResponse is the wire format for responses sent over the Unix socket.
