@@ -35,9 +35,9 @@ type App struct {
 	// settingsOpen gates UI emits on whether the Settings window is up. Written
 	// on the main thread (open/close) but read from background goroutines (the
 	// status poller, HTTP-driven project refresh), so it must be atomic.
-	settingsOpen   atomic.Bool
-	cleanupOnce    sync.Once
-	svcMenuMap     map[int]string // menu item ID -> service ID
+	settingsOpen atomic.Bool
+	cleanupOnce  sync.Once
+	svcMenuMap   map[int]string // menu item ID -> service ID
 
 	// rssByID is the most recent per-service subtree memory sample, refreshed
 	// by statusPoller. Treated as immutable once published — the writer always
@@ -75,7 +75,6 @@ const (
 	menuIDExit     = 3
 	menuIDSvcBase  = 100 // service items start here
 )
-
 
 func runTrayApp() {
 	slog.Info("starting tray app")
@@ -213,6 +212,11 @@ func runTrayApp() {
 	// connections, so tool lists and service status are populated when the
 	// first client connects.
 	extMgr.StartAll(ctx, settings.ExternalMcps)
+	// Regenerate SKILL.md on startup for every project with GenerateSkill: true,
+	// so generated skills reflect the current tool surface after a relay restart.
+	// Runs after StartAll (MCP handshakes have completed) so tool lists are
+	// populated; best-effort — errors are logged inside regenProjectSkills.
+	router.regenProjectSkills(ctx, settings)
 	// Reclaim orphans from a previous tray session that was killed before
 	// the reaper could SIGTERM its children. Without this, autostart of any
 	// port-binding service (scheduler, kokoro, whisper, comfy) fails with
@@ -222,7 +226,6 @@ func runTrayApp() {
 
 	app.goFunc(func() { bs.Serve() })
 	slog.Info("bridge server started")
-
 
 	// Set up tray icon.
 	slog.Info("setting up tray icon")

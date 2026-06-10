@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"relaygo/bridge"
@@ -18,7 +20,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "warning: invalid RELAY_LOG_LEVEL %q, using info\n", env)
 		}
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
 	// --config-dir is a global flag that may precede any subcommand. It
 	// reroutes settings, pidfiles, logs, and the bridge socket to the given
@@ -27,6 +28,19 @@ func main() {
 	// override the test suite uses. See bridge.SetConfigDir.
 	args := os.Args[1:]
 	args = applyConfigDirFlag(args)
+
+	// Tee logs to <config-dir>/logs/relay.log so the tray process's logs survive
+	// a GUI launch: LaunchServices sends an app's stderr to /dev/null, which
+	// otherwise loses every slog line. Managed services already log to the same
+	// dir as <id>.log (see serviceLogDir). Set up after applyConfigDirFlag so it
+	// honors --config-dir; falls back to stderr-only if the file can't be opened.
+	logOut := io.Writer(os.Stderr)
+	if logDir, err := serviceLogDir(); err == nil {
+		if rw, err := openRotatingLog(filepath.Join(logDir, "relay.log")); err == nil {
+			logOut = io.MultiWriter(os.Stderr, rw)
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: logLevel})))
 
 	if len(args) == 0 {
 		runTrayApp()

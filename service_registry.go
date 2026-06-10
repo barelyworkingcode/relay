@@ -34,9 +34,9 @@ var _ ServiceManager = (*ServiceRegistry)(nil)
 // serviceProcess bundles a running process with its log file for cleanup.
 type serviceProcess struct {
 	cmd       *exec.Cmd
-	logFile   *os.File
+	logFile   *rotatingWriter
 	done      chan struct{} // closed when cmd.Wait() returns
-	tokenHash string       // in-memory service token hash (empty if none)
+	tokenHash string        // in-memory service token hash (empty if none)
 }
 
 // ServiceRegistry manages background service child processes.
@@ -149,7 +149,10 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		return err
 	}
 	logPath := filepath.Join(logDir, config.ID+".log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	// Size-capped rotating log: assigning an io.Writer (not *os.File) makes Go
+	// pump the child's merged stdout+stderr through one copy goroutine, which
+	// cmd.Wait awaits before the reaper closes the writer below.
+	logFile, err := openRotatingLog(logPath)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}

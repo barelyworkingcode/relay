@@ -69,7 +69,8 @@ type stubRouter struct {
 }
 
 func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.listToolsTokens = append(s.listToolsTokens, token)
 	return s.listToolsResponse, s.listToolsErr
 }
@@ -91,48 +92,56 @@ func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMes
 }
 
 func (s *stubRouter) ValidateAdmin(token string) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.validateAdminToks = append(s.validateAdminToks, token)
 	return s.validateAdminErr
 }
 
 func (s *stubRouter) ReconcileExternalMcps(_ context.Context) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.reconcileCalls++
 }
 
 func (s *stubRouter) ReloadExternalMcp(_ context.Context, id string) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.reloadMcpIDs = append(s.reloadMcpIDs, id)
 }
 
 func (s *stubRouter) ReloadService(id string) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.reloadServiceIDs = append(s.reloadServiceIDs, id)
 }
 
 func (s *stubRouter) ListProjects(token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.listProjectsToks = append(s.listProjectsToks, token)
 	return s.listProjectsResp, s.listProjectsErr
 }
 
 func (s *stubRouter) GetProject(id, token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.getProjectIDs = append(s.getProjectIDs, id)
 	s.getProjectToks = append(s.getProjectToks, token)
 	return s.getProjectResp, s.getProjectErr
 }
 
 func (s *stubRouter) ResolvePtyEnv(_ context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.resolvePtyReqs = append(s.resolvePtyReqs, req)
 	s.resolvePtyToks = append(s.resolvePtyToks, token)
 	return s.resolvePtyResp, s.resolvePtyErr
 }
 
 func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestRequest, token string) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.registerReqs = append(s.registerReqs, req)
 	s.registerToks = append(s.registerToks, token)
 	return s.registerErr
@@ -343,17 +352,14 @@ func TestContract_ResolvePtyEnv(t *testing.T) {
 		resolvePtyResp: PtyEnvResponse{
 			RelayToken: "scoped-tok",
 			WorkingDir: "/tmp/proj",
-			SkillPath:  "/tmp/proj/.claude/skills/relay",
 		},
 	}
 	sock := startTestBridge(t, router)
 	c := &Client{sockPath: sock, token: "svc"}
 
 	resp, err := c.ResolvePtyEnv(PtyEnvRequest{
-		Project:     "acme",
-		Directory:   "/tmp/proj",
-		RegenSkills: RegenSkillsAlways,
-		SkillPath:   "/tmp/proj/.claude/skills/relay",
+		Project:   "acme",
+		Directory: "/tmp/proj",
 	})
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)

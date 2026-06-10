@@ -120,9 +120,9 @@ func (s *serviceTokenStore) Len() int {
 
 // Compile-time interface assertions.
 var (
-	_ bridge.ToolRouter  = (*appRouter)(nil)
-	_ ToolManager        = (*ExternalMcpManager)(nil)
-	_ ServiceReloader    = (*ServiceRegistry)(nil)
+	_ bridge.ToolRouter = (*appRouter)(nil)
+	_ ToolManager       = (*ExternalMcpManager)(nil)
+	_ ServiceReloader   = (*ServiceRegistry)(nil)
 )
 
 // resolveAuth loads settings and authenticates the given token.
@@ -300,11 +300,15 @@ func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
 }
 
 // regenProjectSkills updates SKILL.md for every project with GenerateSkill: true.
-// Best-effort: errors are logged, not returned. Called after MCP reconcile so
-// generated skills reflect the new tool surface. If the underlying MCP processes
-// have not yet fully initialized, the skill picks up the new tools on the
-// next regen trigger (next PTY launch, next project save, next reconcile).
+// Best-effort: errors are logged, not returned. Called on relay startup and
+// after MCP reconcile so generated skills reflect the current tool surface.
+// EmitSkills is idempotent — it skips the write when on-disk content already
+// matches — so a pass that touches no files is normal, not a no-op failure.
+// If the underlying MCP processes have not yet fully initialized, the skill
+// picks up the new tools on the next regen trigger (next project save, next
+// reconcile, next startup).
 func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) {
+	processed := 0
 	for _, proj := range settings.Projects {
 		if !proj.GenerateSkill {
 			continue
@@ -314,9 +318,12 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) 
 			continue
 		}
 		if _, err := EmitSkills(ctx, r, proj, dir, RegenAlways); err != nil {
-			slog.Warn("post-reconcile skill regen failed", "project", proj.Name, "error", err)
+			slog.Warn("project skill regen failed", "project", proj.Name, "error", err)
+			continue
 		}
+		processed++
 	}
+	slog.Info("project skill regen pass", "generate_skill_projects", processed)
 }
 
 func (r *appRouter) ReloadService(id string) {
@@ -367,9 +374,10 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 	return json.Marshal(proj)
 }
 
-// ResolvePtyEnv returns the env bundle (token, working dir, skill path) for
-// spawning a project-scoped PTY. As a side effect, regenerates SKILL.md if
-// the caller requests it. Service-token authentication required.
+// ResolvePtyEnv returns the env bundle (project-scoped token + working dir) for
+// spawning a project-scoped PTY. Service-token authentication required. Skill
+// generation is owned by relay (startup, project save, MCP reconcile, manual
+// regen) and is not driven by this call.
 //
 // RelayToken in the response is the project's plaintext token; the caller
 // (relayLLM) must inject it as the project-token env (RELAY_PROJECT_TOKEN) in
@@ -401,47 +409,10 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		}
 	}
 
-	mode := RegenMode(req.RegenSkills)
-	if mode == "" {
-		mode = RegenNever
-	}
-	// SkillPath is the skills root (.claude/skills). Tolerate an external PTY
-	// template that still points at the legacy per-bucket dir (.../skills/relay
-	// or a relay-* dir) by walking up to its parent — relay now manages a set
-	// of relay-* dirs under the root, not a single dir.
-	skillsRoot := skillsRootFromPath(req.SkillPath)
-	if mode != RegenNever {
-		if skillsRoot == "" {
-			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("skill_path required when regen_skills != never"))
-		}
-		if _, err := EmitSkills(ctx, r, *proj, skillsRoot, mode); err != nil {
-			return bridge.PtyEnvResponse{}, fmt.Errorf("regen skills: %w", err)
-		}
-	}
-
-	// Echo the request's SkillPath back unchanged. Consumers (relayLLM's pty
-	// spawn) derive the --skill directory as filepath.Dir(SkillPath), expecting
-	// the per-bucket path they sent (".../skills/relay"); returning the
-	// walked-up root here would make them over-walk to ".../.claude". The
-	// walked-up skillsRoot is for our own EmitSkills only.
 	return bridge.PtyEnvResponse{
 		RelayToken: proj.Token,
 		WorkingDir: proj.Path,
-		SkillPath:  req.SkillPath,
 	}, nil
-}
-
-// skillsRootFromPath normalizes an inbound skill_path to the skills root. If
-// the path's last element is a relay-managed dir name (legacy "relay" or a
-// "relay-*" bucket dir), it returns the parent; otherwise the path itself.
-func skillsRootFromPath(p string) string {
-	if p == "" {
-		return ""
-	}
-	if isRelayManagedSkillDir(filepath.Base(p)) {
-		return filepath.Dir(p)
-	}
-	return p
 }
 
 // findProjectForPty resolves the project for a PTY launch. Eve's terminal_create

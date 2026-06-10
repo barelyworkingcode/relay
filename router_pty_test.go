@@ -56,9 +56,8 @@ func TestResolvePtyEnv_ByProjectID(t *testing.T) {
 	router, proj, svcToken := newPtyTestRouter(t)
 
 	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		ProjectID:   proj.ID,
-		Directory:   proj.Path,
-		RegenSkills: bridge.RegenSkillsNever,
+		ProjectID: proj.ID,
+		Directory: proj.Path,
 	}, svcToken)
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)
@@ -76,9 +75,8 @@ func TestResolvePtyEnv_ByProjectID_AcceptsSubdir(t *testing.T) {
 
 	sub := filepath.Join(proj.Path, "nested", "pkg")
 	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		ProjectID:   proj.ID,
-		Directory:   sub,
-		RegenSkills: bridge.RegenSkillsNever,
+		ProjectID: proj.ID,
+		Directory: sub,
 	}, svcToken)
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv (subdir): %v", err)
@@ -92,9 +90,8 @@ func TestResolvePtyEnv_DirectoryMismatch_Rejected(t *testing.T) {
 	router, proj, svcToken := newPtyTestRouter(t)
 
 	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		ProjectID:   proj.ID,
-		Directory:   t.TempDir(), // a different tree, not within proj.Path
-		RegenSkills: bridge.RegenSkillsNever,
+		ProjectID: proj.ID,
+		Directory: t.TempDir(), // a different tree, not within proj.Path
 	}, svcToken)
 	if err == nil {
 		t.Fatal("expected rejection for directory outside the project")
@@ -112,8 +109,7 @@ func TestResolvePtyEnv_UnknownProjectID(t *testing.T) {
 	router, _, svcToken := newPtyTestRouter(t)
 
 	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		ProjectID:   "does-not-exist",
-		RegenSkills: bridge.RegenSkillsNever,
+		ProjectID: "does-not-exist",
 	}, svcToken)
 	if code := codeOf(err); code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("error code = %d, want CodeMethodNotFound (%d)", code, jsonrpc.CodeMethodNotFound)
@@ -125,9 +121,8 @@ func TestResolvePtyEnv_RequiresServiceToken(t *testing.T) {
 
 	// A project token (not a service token) must be rejected.
 	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		ProjectID:   proj.ID,
-		Directory:   proj.Path,
-		RegenSkills: bridge.RegenSkillsNever,
+		ProjectID: proj.ID,
+		Directory: proj.Path,
 	}, proj.Token)
 	if code := codeOf(err); code != jsonrpc.CodeUnauthorized {
 		t.Errorf("error code = %d, want CodeUnauthorized (%d)", code, jsonrpc.CodeUnauthorized)
@@ -139,8 +134,7 @@ func TestResolvePtyEnv_LegacyDirectoryMatchStillWorks(t *testing.T) {
 
 	// No ProjectID: relay falls back to matching Directory against Project.Path.
 	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
-		Directory:   proj.Path,
-		RegenSkills: bridge.RegenSkillsNever,
+		Directory: proj.Path,
 	}, svcToken)
 	if err != nil {
 		t.Fatalf("legacy directory-match resolve: %v", err)
