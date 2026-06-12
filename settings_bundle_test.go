@@ -231,6 +231,42 @@ func TestSettingsBundleSmoke(t *testing.T) {
 	}
 }
 
+// TestProjectFormTemplatesReadOnly pins the ownership split for chat templates:
+// relay stores them on the project record, Eve edits them. The settings form
+// must render templates as a read-only summary (no add/remove/edit controls)
+// and must omit chat_templates from the save payload entirely — update_project
+// treats an absent field as "leave unchanged", so any value sent here would
+// overwrite edits made in Eve.
+func TestProjectFormTemplatesReadOnly(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.projects = [{id:'p1', name:'Proj', path:'/tmp/p',
+			allowed_mcp_ids:['*'], allowed_models:['*'], disabled_tools:{},
+			chat_templates:[{id:'t1', name:'Default', model:'claude-sonnet', mode:'voice'}]}];
+		window.editProject('p1');
+		var html = window.renderProjectForm();
+		var payload = window.harvestProjectForm();
+		return JSON.stringify({
+			showsName: html.indexOf('Default') >= 0,
+			showsModel: html.indexOf('claude-sonnet') >= 0,
+			showsVoice: html.indexOf('voice') >= 0,
+			noEditor: html.indexOf('addProjTemplate') < 0 && html.indexOf('removeProjTemplate') < 0,
+			payloadOmits: !('chat_templates' in payload)
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"showsName":true`, `"showsModel":true`, `"showsVoice":true`,
+		`"noEditor":true`, `"payloadOmits":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("project form templates: missing %s in %s", want, got)
+		}
+	}
+}
+
 // TestStatusPollPreservesConfigRegion is the regression test for the focus-clobber
 // bug: a steady-state status poll (same set of services) must update ONLY a
 // service's #svc-status-<id> region and leave #svc-config-<id> — where an open

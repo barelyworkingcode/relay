@@ -1041,35 +1041,21 @@ function renderProjectForm() {
     }
     html += '</div>';
 
-    // ---- Chat templates ----
+    // ---- Chat templates (read-only; relay stores them, Eve edits them) ----
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Chat Templates</div>';
-    html += '<p class="proj-section-help">Per-project chat starting points used by Eve. Each template gets a Run-time model, mode, and optional system prompt.</p>';
+    html += '<p class="proj-section-help">Project-scoped chat presets stored with the project. Create and edit them in Eve\'s project dialog, which offers live model selection.</p>';
     if (f.chat_templates.length === 0) {
-        html += '<div class="proj-tool-empty">No templates.</div>';
+        html += '<div class="proj-tool-empty">No templates yet.</div>';
     }
-    for (let i = 0; i < f.chat_templates.length; i++) {
-        const t = f.chat_templates[i];
+    for (const t of f.chat_templates) {
         html += '<div class="proj-template-card">';
         html += '<div class="proj-template-header">';
-        html += '<input type="text" placeholder="Template name" value="' + esc(t.name || '') + '" onchange="state.projectForm.chat_templates[' + i + '].name = this.value" style="flex:1;margin-right:8px" />';
-        html += '<button class="btn btn-sm btn-danger" onclick="removeProjTemplate(' + i + ')">Remove</button>';
-        html += '</div>';
-        html += '<label>Model</label>';
-        html += '<input type="text" value="' + esc(t.model || '') + '" placeholder="claude-sonnet" onchange="state.projectForm.chat_templates[' + i + '].model = this.value" />';
-        html += '<label>System prompt</label>';
-        html += '<textarea rows="3" onchange="state.projectForm.chat_templates[' + i + '].system_prompt = this.value">' + esc(t.system_prompt || '') + '</textarea>';
-        html += '<div class="toggle-row" style="margin:6px 0 0;padding:4px 0">';
-        html += '<span style="font-size:12px">Append CLAUDE.md</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (t.append_claude_md ? 'checked' : '') + ' onchange="state.projectForm.chat_templates[' + i + '].append_claude_md = this.checked" /><span class="slider"></span></label>';
-        html += '</div>';
-        html += '<div class="toggle-row" style="margin:0;padding:4px 0">';
-        html += '<span style="font-size:12px">Use relay tools</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (t.use_relay_tools ? 'checked' : '') + ' onchange="state.projectForm.chat_templates[' + i + '].use_relay_tools = this.checked" /><span class="slider"></span></label>';
+        html += '<span>' + esc(t.name || '(unnamed)') + '</span>';
+        html += '<span class="desc">' + esc(t.model || '') + (t.mode === 'voice' ? ' · voice' : '') + '</span>';
         html += '</div>';
         html += '</div>';
     }
-    html += '<button class="btn btn-sm" onclick="addProjTemplate()">+ Template</button>';
     html += '</div>';
 
     // ---- Permission policy ----
@@ -1183,29 +1169,6 @@ function pruneStaleDisabledTool(mcpID, name, kept) {
     render();
 }
 
-function addProjTemplate() {
-    const f = state.projectForm;
-    if (!f) return;
-    f.chat_templates.push({
-        id: 'tpl-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-        name: '',
-        model: '',
-        mode: 'text',
-        voice: '',
-        system_prompt: '',
-        append_claude_md: false,
-        use_relay_tools: true,
-    });
-    render();
-}
-
-function removeProjTemplate(idx) {
-    const f = state.projectForm;
-    if (!f) return;
-    f.chat_templates.splice(idx, 1);
-    render();
-}
-
 function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
@@ -1223,14 +1186,14 @@ function harvestProjectForm() {
         allowed_tools: allowedToolsTA ? allowedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
         denied_tools: deniedToolsTA ? deniedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.denied_tools,
     };
-    // Merge live DOM values for chat templates (system prompts/names typed in
-    // textareas already pushed into f via inline onchange handlers).
+    // chat_templates is intentionally absent: the form is read-only for
+    // templates (Eve owns editing), and omitting the field makes
+    // update_project leave the stored list untouched.
     return {
         name: name.trim(),
         path: path.trim(),
         allowed_mcp_ids: f.allowed_mcp_ids,
         allowed_models: allowedModels,
-        chat_templates: f.chat_templates,
         permission_policy: policy,
         generate_skill: f.generate_skill,
         disabled_tools: f.disabled_tools,
@@ -2301,6 +2264,6 @@ render();
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addProjTemplate, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProjTemplate, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
 });
 window.state = state;
