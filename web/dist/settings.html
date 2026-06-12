@@ -1463,32 +1463,18 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Chat Templates</div>';
-    html += '<p class="proj-section-help">Per-project chat starting points used by Eve. Each template gets a Run-time model, mode, and optional system prompt.</p>';
+    html += `<p class="proj-section-help">Project-scoped chat presets stored with the project. Create and edit them in Eve's project dialog, which offers live model selection.</p>`;
     if (f.chat_templates.length === 0) {
-      html += '<div class="proj-tool-empty">No templates.</div>';
+      html += '<div class="proj-tool-empty">No templates yet.</div>';
     }
-    for (let i = 0; i < f.chat_templates.length; i++) {
-      const t = f.chat_templates[i];
+    for (const t of f.chat_templates) {
       html += '<div class="proj-template-card">';
       html += '<div class="proj-template-header">';
-      html += '<input type="text" placeholder="Template name" value="' + esc(t.name || "") + '" onchange="state.projectForm.chat_templates[' + i + '].name = this.value" style="flex:1;margin-right:8px" />';
-      html += '<button class="btn btn-sm btn-danger" onclick="removeProjTemplate(' + i + ')">Remove</button>';
-      html += "</div>";
-      html += "<label>Model</label>";
-      html += '<input type="text" value="' + esc(t.model || "") + '" placeholder="claude-sonnet" onchange="state.projectForm.chat_templates[' + i + '].model = this.value" />';
-      html += "<label>System prompt</label>";
-      html += '<textarea rows="3" onchange="state.projectForm.chat_templates[' + i + '].system_prompt = this.value">' + esc(t.system_prompt || "") + "</textarea>";
-      html += '<div class="toggle-row" style="margin:6px 0 0;padding:4px 0">';
-      html += '<span style="font-size:12px">Append CLAUDE.md</span>';
-      html += '<label class="switch"><input type="checkbox" ' + (t.append_claude_md ? "checked" : "") + ' onchange="state.projectForm.chat_templates[' + i + '].append_claude_md = this.checked" /><span class="slider"></span></label>';
-      html += "</div>";
-      html += '<div class="toggle-row" style="margin:0;padding:4px 0">';
-      html += '<span style="font-size:12px">Use relay tools</span>';
-      html += '<label class="switch"><input type="checkbox" ' + (t.use_relay_tools ? "checked" : "") + ' onchange="state.projectForm.chat_templates[' + i + '].use_relay_tools = this.checked" /><span class="slider"></span></label>';
+      html += "<span>" + esc(t.name || "(unnamed)") + "</span>";
+      html += '<span class="desc">' + esc(t.model || "") + (t.mode === "voice" ? " \xB7 voice" : "") + "</span>";
       html += "</div>";
       html += "</div>";
     }
-    html += '<button class="btn btn-sm" onclick="addProjTemplate()">+ Template</button>';
     html += "</div>";
     const pol = f.permission_policy;
     html += '<div class="proj-section">';
@@ -1588,27 +1574,6 @@ window.__RELAY_INIT__ = {
     f.disabled_tools[mcpID] = (f.disabled_tools[mcpID] || []).filter((n) => n !== name);
     render();
   }
-  function addProjTemplate() {
-    const f = state.projectForm;
-    if (!f) return;
-    f.chat_templates.push({
-      id: "tpl-" + Date.now() + "-" + Math.floor(Math.random() * 1e3),
-      name: "",
-      model: "",
-      mode: "text",
-      voice: "",
-      system_prompt: "",
-      append_claude_md: false,
-      use_relay_tools: true
-    });
-    render();
-  }
-  function removeProjTemplate(idx) {
-    const f = state.projectForm;
-    if (!f) return;
-    f.chat_templates.splice(idx, 1);
-    render();
-  }
   function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
@@ -1631,7 +1596,6 @@ window.__RELAY_INIT__ = {
       path: path.trim(),
       allowed_mcp_ids: f.allowed_mcp_ids,
       allowed_models: allowedModels,
-      chat_templates: f.chat_templates,
       permission_policy: policy,
       generate_skill: f.generate_skill,
       disabled_tools: f.disabled_tools
@@ -2496,7 +2460,6 @@ window.__RELAY_INIT__ = {
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,
-    addProjTemplate,
     addService,
     authenticateMcp,
     blankProjectForm,
@@ -2547,7 +2510,6 @@ window.__RELAY_INIT__ = {
     pruneStaleDisabledTool,
     regenProjectSkill,
     removeExternalMcp,
-    removeProjTemplate,
     removeProject,
     removeService,
     render,
