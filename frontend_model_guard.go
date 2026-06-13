@@ -48,12 +48,26 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxSessionBodyBytes))
+		// Read one byte past the cap so we can distinguish a body that just fits
+		// from one that's oversized. We must NOT truncate-and-forward: this is the
+		// authoritative allowlist boundary, and truncating would leave the guard
+		// unable to see the model field (fail-open) while forwarding a mangled
+		// body — relying on relayLLM to also reject the remainder. An oversized
+		// create body can't be fully validated, so fail closed instead.
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxSessionBodyBytes+1))
 		if err != nil {
 			http.Error(w, "could not read request body", http.StatusBadRequest)
 			return
 		}
 		_ = r.Body.Close()
+		if len(body) > maxSessionBodyBytes {
+			slog.Warn("frontend: session create body exceeds inspection cap; rejecting",
+				"limit", maxSessionBodyBytes)
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+				"error": "session create body too large",
+			})
+			return
+		}
 		// Restore the body for the downstream proxy regardless of outcome.
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))

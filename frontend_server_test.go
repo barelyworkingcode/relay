@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +143,3 @@ func TestFrontendServer_BearerAuth_RejectsWrongScheme(t *testing.T) {
 		t.Fatalf("expected 401 on Basic scheme; got %d", resp.StatusCode)
 	}
 }
-
-// Sanity: helper strings stay grep-able under refactor.
-var _ = strings.TrimSpace
