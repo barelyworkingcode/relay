@@ -167,6 +167,12 @@ type Project struct {
 	// Per-project Claude permission policy.
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
 
+	// SessionFolders is the ordered list of folder names a project's sessions
+	// can be grouped under in Eve's UI (including empty folders awaiting their
+	// first session). Pure organizational metadata — relay never reads it; the
+	// session→folder membership lives on the session in relayLLM.
+	SessionFolders []string `json:"session_folders,omitempty"`
+
 	// GenerateSkill controls whether out-of-band hooks (project save,
 	// MCP reconcile, project delete) maintain the relay-managed skills under
 	// <Path>/.claude/skills/ — one "relay-<category>" dir per tool bucket,
