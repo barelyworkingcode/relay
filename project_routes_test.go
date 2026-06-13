@@ -278,6 +278,75 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 	}
 }
 
+func TestProjectRoutes_SessionFolders(t *testing.T) {
+	srv, _ := newProjectRoutesServer(t)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	// Create with an initial folder list (with a blank + a duplicate to prove
+	// the mutator trims and de-dupes).
+	_, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name":            "Folders",
+		"path":            tmpDir,
+		"session_folders": []string{"Bugs", " ", "Bugs", "Experiments"},
+	})
+	var created Project
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	if got := created.SessionFolders; len(got) != 2 || got[0] != "Bugs" || got[1] != "Experiments" {
+		t.Fatalf("session_folders not cleaned/round-tripped on create: %+v", got)
+	}
+
+	// Patch the folder list; other fields must be preserved.
+	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"session_folders": []string{"Archive"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("folder update: status %d body %s", resp.StatusCode, body)
+	}
+	var updated Project
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatalf("decode updated: %v", err)
+	}
+	if len(updated.SessionFolders) != 1 || updated.SessionFolders[0] != "Archive" {
+		t.Errorf("session_folders not replaced on update: %+v", updated.SessionFolders)
+	}
+	if updated.Path != tmpDir {
+		t.Errorf("path dropped on folder update: %q", updated.Path)
+	}
+
+	// An absent session_folders field must leave the list unchanged (patch semantics).
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"name": "Folders-Renamed",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
+	}
+	var renamed Project
+	if err := json.Unmarshal(body, &renamed); err != nil {
+		t.Fatalf("decode renamed: %v", err)
+	}
+	if len(renamed.SessionFolders) != 1 || renamed.SessionFolders[0] != "Archive" {
+		t.Errorf("session_folders should persist when omitted from patch: %+v", renamed.SessionFolders)
+	}
+
+	// An explicit empty list clears the folders (distinct from omitting the field).
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"session_folders": []string{},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear: status %d body %s", resp.StatusCode, body)
+	}
+	var cleared Project
+	if err := json.Unmarshal(body, &cleared); err != nil {
+		t.Fatalf("decode cleared: %v", err)
+	}
+	if len(cleared.SessionFolders) != 0 {
+		t.Errorf("session_folders should be cleared by an empty list: %+v", cleared.SessionFolders)
+	}
+}
+
 func TestProjectRoutes_UpdateUnknown(t *testing.T) {
 	srv, _ := newProjectRoutesServer(t)
 	defer srv.Close()
