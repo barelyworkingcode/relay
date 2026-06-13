@@ -61,11 +61,16 @@ var dispatcherWSUpgrader = websocket.Upgrader{
 // deadline trips and both conns are torn down. Without this, a peer that dies
 // without sending a close frame (network partition, hung process) would never
 // unblock the read pump, leaking both conns and their goroutines.
-const (
+//
+// wsPongWait and wsPingPeriod are vars (not consts) so tests can shorten them
+// to exercise the half-open-reaping path deterministically. Invariant:
+// wsPingPeriod < wsPongWait so a pong can arrive before the read deadline.
+var (
 	wsPongWait   = 60 * time.Second
-	wsPingPeriod = 50 * time.Second // < wsPongWait so a pong can arrive before the deadline
-	wsWriteWait  = 10 * time.Second
+	wsPingPeriod = 50 * time.Second
 )
+
+const wsWriteWait = 10 * time.Second
 
 // proxyWS upgrades the client connection and bidirectionally forwards
 // messages to the resolved service's WebSocket endpoint over its internal
