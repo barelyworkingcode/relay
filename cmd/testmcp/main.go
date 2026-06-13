@@ -6,6 +6,8 @@
 // on stdout. Behavior is selected by the request method so one binary covers
 // every transport test:
 //
+//	initialize           respond with a minimal MCP initialize result
+//	tools/list           respond with one stub tool (so mcpHandshake succeeds)
 //	echo                 respond with result == the request params (honors an
 //	                     optional {"delayMs":N} to force out-of-order replies)
 //	garbage_then_echo    write one malformed line, then a valid echo response
@@ -13,6 +15,10 @@
 //	hang                 never respond (exercises ctx-cancel / request-timeout)
 //	exit                 os.Exit(0) immediately (exercises reader-death/EOF)
 //	<anything else>      treated as echo
+//
+// Requests with no id (notifications, e.g. notifications/initialized) get no
+// response. Implementing initialize + tools/list makes testmcp a real minimal
+// MCP, so it doubles as the upstream for manager Reconcile/Reload tests.
 //
 // Built on demand by buildTestMcpBinary in external_mcp_stdio_test.go.
 package main
@@ -56,8 +62,15 @@ func main() {
 		if err := json.Unmarshal(in.Bytes(), &req); err != nil {
 			continue
 		}
+		if req.ID == nil {
+			continue // notification (e.g. notifications/initialized) — no response
+		}
 
 		switch req.Method {
+		case "initialize":
+			writeResp(req.ID, json.RawMessage(`{"protocolVersion":"2024-11-05","serverInfo":{"name":"testmcp"},"capabilities":{}}`))
+		case "tools/list":
+			writeResp(req.ID, json.RawMessage(`{"tools":[{"name":"testmcp_ping","description":"ping","inputSchema":{"type":"object"}}]}`))
 		case "hang":
 			// Never respond — the caller's ctx or request timeout must fire.
 		case "exit":
