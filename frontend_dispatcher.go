@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -62,13 +63,23 @@ var dispatcherWSUpgrader = websocket.Upgrader{
 // without sending a close frame (network partition, hung process) would never
 // unblock the read pump, leaking both conns and their goroutines.
 //
-// wsPongWait and wsPingPeriod are vars (not consts) so tests can shorten them
-// to exercise the half-open-reaping path deterministically. Invariant:
-// wsPingPeriod < wsPongWait so a pong can arrive before the read deadline.
+// The keepalive windows are held as atomics (not plain vars) so a test can
+// shorten them to exercise the half-open-reaping path without racing the live
+// proxy goroutines that read them on every pong/tick. Production sets them once
+// at init. Invariant: wsPingPeriod < wsPongWait so a pong can arrive before the
+// read deadline.
 var (
-	wsPongWait   = 60 * time.Second
-	wsPingPeriod = 50 * time.Second
+	wsPongWaitNanos   atomic.Int64
+	wsPingPeriodNanos atomic.Int64
 )
+
+func init() {
+	wsPongWaitNanos.Store(int64(60 * time.Second))
+	wsPingPeriodNanos.Store(int64(50 * time.Second))
+}
+
+func wsPongWait() time.Duration   { return time.Duration(wsPongWaitNanos.Load()) }
+func wsPingPeriod() time.Duration { return time.Duration(wsPingPeriodNanos.Load()) }
 
 const wsWriteWait = 10 * time.Second
 
@@ -142,9 +153,9 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 	defer wg.Done()
 	defer closeBoth()
 
-	_ = src.SetReadDeadline(time.Now().Add(wsPongWait))
+	_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
 	src.SetPongHandler(func(string) error {
-		return src.SetReadDeadline(time.Now().Add(wsPongWait))
+		return src.SetReadDeadline(time.Now().Add(wsPongWait()))
 	})
 
 	buf := make([]byte, 32*1024)
@@ -154,7 +165,7 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 			return
 		}
 		// Inbound traffic also proves liveness — extend the deadline.
-		_ = src.SetReadDeadline(time.Now().Add(wsPongWait))
+		_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
 		writer, err := dst.NextWriter(msgType)
 		if err != nil {
 			return
@@ -174,7 +185,7 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 // write fails. WriteControl is safe to call concurrently with the single data
 // writer (gorilla guarantees this), so no write lock is needed.
 func pingDispatchedWS(conn *websocket.Conn, done <-chan struct{}, closeBoth func()) {
-	ticker := time.NewTicker(wsPingPeriod)
+	ticker := time.NewTicker(wsPingPeriod())
 	defer ticker.Stop()
 	for {
 		select {
