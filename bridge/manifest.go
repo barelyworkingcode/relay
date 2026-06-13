@@ -203,8 +203,14 @@ func (m *Manifest) Validate() error {
 		if a.Label == "" {
 			return fmt.Errorf("manifest: actions[%d] (%q): label is empty", i, a.ID)
 		}
-		switch strings.ToUpper(a.Method) {
+		// Normalize the verb in place so downstream HTTP dispatch (which uses
+		// action.Method verbatim) issues a canonical upper-case verb. A manifest
+		// declaring "get" must not reach the wire as a literal "get" that servers
+		// won't match.
+		method := strings.ToUpper(a.Method)
+		switch method {
 		case "GET", "POST", "PUT", "DELETE", "PATCH":
+			m.Actions[i].Method = method
 		default:
 			return fmt.Errorf("manifest: actions[%d] (%q): method %q is not a supported HTTP verb", i, a.ID, a.Method)
 		}

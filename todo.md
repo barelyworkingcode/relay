@@ -148,3 +148,73 @@ against SSRF (validate discovery URLs, disable open redirects — CR-2); and **(
 close the external-I/O resource/timeout gaps as one pass (HTTP MCP runtime timeout
 CR-3, refresh-storm CR-4, status-poller transport leak CR-5, WS deadlines CR-6,
 plus `ResponseHeaderTimeout`/`IdleConnTimeout` on the shared Unix transport).
+
+---
+
+## Resolution — 2026-06-13 (branch claude/sharp-mendel-cebs5x)
+
+All 20 confirmed issues (CR-1 … CR-20) fixed, plus several Possible-Risk and
+Nice-to-Have items. Build + `go vet` + the hermetic suite (`go test ./...`) pass;
+concurrency-sensitive fixes (CR-1, CR-6, CR-15) also pass under `-race`. New or
+extended regression tests accompany every fix except where noted.
+
+Fixed (with tests):
+- CR-1  bridge shutdown hang — `handleConn` now closes its conn on ctx cancel
+        (`TestServer_CloseDoesNotHangOnIdleConnection`). NOTE: kept the existing
+        `cleanup()` ordering (registry.StopAll runs after bridgeServer.Close) —
+        its orphan-prevention rationale is documented and the socket-close fix
+        resolves the hang regardless of order, so the review's reorder was not
+        applied.
+- CR-2  OAuth SSRF — `validateOAuthDiscoveryURL` gate on every discovery/token
+        fetch + redirect re-validation (`CheckRedirect`); callback channel sends
+        made non-blocking. (`TestValidateOAuthDiscoveryURL`, `TestFetch*SSRF*`,
+        `TestOAuthClient_RejectsRedirectToBlockedTarget`).
+- CR-3  HTTP MCP runtime timeout — `SendRequest` wraps ctx with MCPRequestTimeout
+        (`TestHTTPMcpConn_SendRequest_TimesOutHungServer`).
+- CR-4  refresh storm — clear stale expiry when `expires_in` absent
+        (`TestHTTPMcpConn_RefreshWithoutExpiresIn_DisablesProactiveRefresh`).
+- CR-5  status-poller transport leak — `CloseIdleConnections` after each fetch +
+        `IdleConnTimeout` on the shared Unix transport.
+- CR-6  WS half-open leak — read deadline + pong handler + periodic pinger
+        (existing `TestFrontendDispatcher_WSNoGoroutineLeak` covers teardown).
+- CR-7  model-allowlist bypass — guard is now the catch-all wrapper, gating the
+        create path + trailing-slash variant only (`*_TrailingSlash`,
+        `*_IgnoresSubResourcePath`, `*_IgnoresNonPost`).
+- CR-8  project create/update orchestration deduped into `applyProjectCreate` /
+        `applyProjectUpdate` over shared field structs (project_apply.go).
+- CR-9  deleted dead `DoResource`.
+- CR-10 simplified `progressTokenString`.
+- CR-11 `CallTool` decodes `_meta` once.
+- CR-12 `generateRandomHex` returns an error instead of panicking; propagated
+        through generateProjectToken / CreateProjectWithToken / RotateProjectToken
+        / service + frontend token mint.
+- CR-13 manifest action `Method` normalized to upper-case in `Validate`
+        (`TestManifestValidate_NormalizesActionMethodCase`).
+- CR-14 oversized bridge line emits an InvalidParams error frame
+        (`TestServer_OversizedLineGetsErrorFrame`).
+- CR-15 streaming bridge deadline is now idle-based
+        (`TestContract_StreamingResetsIdleDeadline`).
+- CR-16 ReloadService / ReloadExternalMcp surface errors over the bridge
+        (`TestContract_Reload*_SurfacesError`).
+- CR-17 IPC create validates the policy before the write closure (rollback gone).
+- CR-18 config-path TOCTOU: `resolveConfigPath` returns FileInfo, `readConfigFile`
+        re-verifies via `os.SameFile` (`TestReadConfigFile_RejectsSwappedFile`).
+        NOTE: did NOT make `WorkingDir` mandatory (point 1) — that fail-closed
+        change could break the editor for services without a workdir; left as
+        documented defense-in-depth.
+- CR-19 oversized `Mcp-Session-Id` rejected (`*_RejectsOversizedSessionID`).
+- CR-20 SSE event-count cap added (request timeout from CR-3 is the primary bound).
+
+Also done: refresh-failure-while-token-still-valid now proceeds (possible risk);
+`sendAdmin` uses `c.token`; `external_mcp.go` double blank line removed; gofmt on
+touched files.
+
+Deferred (deliberately not changed this pass):
+- mcp/server.go unbounded tools/call goroutines — low real-world risk (single
+  local LLM client); semaphore not added.
+- `EnvServiceTokenLegacy` duplicate — still needed for un-migrated relayLLM;
+  dropping is a migration-timing call.
+- reaper eager-delete; ipc_services autostart-refresh / start-no-op — minor,
+  not line-verified.
+- `gofmt -l` in the pre-commit hook and reformatting pre-existing drift in
+  untouched files — out of scope to keep this diff focused.

@@ -90,6 +90,28 @@ func TestManifestValidate_RejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
+// CR-13: Validate must normalize a lower/mixed-case method to its canonical
+// upper-case form in place, so downstream HTTP dispatch (which uses
+// action.Method verbatim) issues a verb servers actually match.
+func TestManifestValidate_NormalizesActionMethodCase(t *testing.T) {
+	m := Manifest{
+		Routes: []string{"/api/"},
+		Actions: []ActionDecl{
+			{ID: "a", Label: "A", Method: "get", PathTemplate: "/a"},
+			{ID: "b", Label: "B", Method: "Post", PathTemplate: "/b"},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if m.Actions[0].Method != "GET" {
+		t.Errorf("method[0] not normalized: got %q want GET", m.Actions[0].Method)
+	}
+	if m.Actions[1].Method != "POST" {
+		t.Errorf("method[1] not normalized: got %q want POST", m.Actions[1].Method)
+	}
+}
+
 func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 	m := Manifest{Routes: nil}
 	if err := m.Validate(); err == nil {

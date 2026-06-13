@@ -278,6 +278,86 @@ func TestHTTPMcpConn_SSEInterleavedNotification(t *testing.T) {
 	}
 }
 
+// CR-3: a runtime SendRequest (no deadline on the caller's context) must still
+// be bounded so a hung HTTP MCP can't block the call (and its bridge handler)
+// indefinitely. The server never responds; the wrap's timeout must fire.
+func TestHTTPMcpConn_SendRequest_TimesOutHungServer(t *testing.T) {
+	old := MCPRequestTimeout
+	MCPRequestTimeout = 150 * time.Millisecond
+	defer func() { MCPRequestTimeout = old }()
+
+	// The handler blocks until released. It does not rely on r.Context() (Go's
+	// HTTP/1 server won't cancel it while the request body sits unread), so the
+	// release channel is the only thing that unblocks it. Ordering matters:
+	// close(release) is deferred after srv.Close() so it runs first (LIFO),
+	// letting srv.Close() drain instead of hanging on the parked handler.
+	release := make(chan struct{})
+	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	})
+	defer srv.Close()
+	defer close(release)
+
+	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
+	start := time.Now()
+	if _, err := conn.SendRequest(context.Background(), "slow", nil); err == nil {
+		t.Fatal("expected a timeout error from a hung server")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("SendRequest did not honor MCPRequestTimeout; took %s", elapsed)
+	}
+}
+
+// CR-19: an oversized Mcp-Session-Id from an untrusted server must be rejected,
+// not stored and echoed on every subsequent request.
+func TestHTTPMcpConn_SendRequest_RejectsOversizedSessionID(t *testing.T) {
+	huge := strings.Repeat("x", maxSessionIDLen+1)
+	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
+		id := readJSONRPCID(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", huge)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{}}`, id)
+	})
+	defer srv.Close()
+
+	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
+	_, err := conn.SendRequest(context.Background(), "test", nil)
+	if err == nil || !strings.Contains(err.Error(), "oversized") {
+		t.Fatalf("expected oversized-session-id error, got: %v", err)
+	}
+	conn.mu.Lock()
+	sid := conn.sessionID
+	conn.mu.Unlock()
+	if sid != "" {
+		t.Fatalf("oversized session ID must not be stored (got %d bytes)", len(sid))
+	}
+}
+
+// CR-4: a refresh response without expires_in must clear (zero) the token
+// expiry, otherwise the stale past timestamp makes every subsequent request
+// believe a refresh is due — a refresh storm.
+func TestHTTPMcpConn_RefreshWithoutExpiresIn_DisablesProactiveRefresh(t *testing.T) {
+	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: "https://example.test/mcp"})
+	conn.oauth.refreshToken = "rt"
+	conn.oauth.tokenExpiry = time.Now().Add(-time.Hour) // stale/past expiry
+
+	conn.applyRefreshedToken(&oauthMetadata{}, &oauthTokenResponse{AccessToken: "new-at"})
+
+	conn.mu.Lock()
+	exp := conn.oauth.tokenExpiry
+	at := conn.oauth.accessToken
+	conn.mu.Unlock()
+	if at != "new-at" {
+		t.Fatalf("access token not applied, got %q", at)
+	}
+	if !exp.IsZero() {
+		t.Fatalf("expiry should be zeroed when expires_in is absent, got %v", exp)
+	}
+	if _, needs := conn.tokenRefreshSnapshot(); needs {
+		t.Fatal("a token with no expiry must not be eligible for proactive refresh (CR-4 storm)")
+	}
+}
+
 func TestHTTPMcpConn_SendNotification(t *testing.T) {
 	received := make(chan string, 1)
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
