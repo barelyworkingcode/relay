@@ -69,6 +69,7 @@ func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 	client := NewServiceStatusClient(rec.InternalSocket, rec.InternalToken)
 	method := action.Method
 	ipc.GoFunc(func() {
+		defer client.CloseIdleConnections()
 		callCtx, cancel := context.WithTimeout(ipc.Ctx, 10*time.Second)
 		defer cancel()
 		_, err := client.DoAction(callCtx, method, path)

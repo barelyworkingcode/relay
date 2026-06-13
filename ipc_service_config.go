@@ -65,12 +65,12 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 	switch msg.Op {
 	case configOpGet:
 		ipc.GoFunc(func() {
-			realPath, err := resolveConfigPath(decl, allowedRoot)
+			realPath, info, err := resolveConfigPath(decl, allowedRoot)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}
-			data, err := readConfigFile(realPath)
+			data, err := readConfigFile(realPath, info)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
@@ -86,14 +86,15 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 				emitConfigResult(ipc, msg, false, "", "config does not parse: "+err.Error())
 				return
 			}
-			realPath, err := resolveConfigPath(decl, allowedRoot)
+			realPath, info, err := resolveConfigPath(decl, allowedRoot)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}
 			// Write the ORIGINAL edited bytes (not a re-marshal) so comments and
-			// key order survive on disk; preserve the file's existing mode.
-			if err := writeConfigFile(realPath, []byte(msg.Text), configFilePerm(realPath)); err != nil {
+			// key order survive on disk; preserve the file's existing mode (taken
+			// from the same FileInfo we validated, avoiding a re-stat race).
+			if err := writeConfigFile(realPath, []byte(msg.Text), info.Mode().Perm()); err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}

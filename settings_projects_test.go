@@ -59,9 +59,13 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 
 	var newPlain string
 	var ok bool
+	var rotErr error
 	store.With(func(s *Settings) {
-		newPlain, ok = s.RotateProjectToken(proj.ID)
+		newPlain, ok, rotErr = s.RotateProjectToken(proj.ID)
 	})
+	if rotErr != nil {
+		t.Fatalf("RotateProjectToken: %v", rotErr)
+	}
 	if !ok {
 		t.Fatalf("RotateProjectToken: project not found")
 	}
@@ -87,7 +91,7 @@ func TestRotateProjectToken_OldTokenRejectedOnNextAuth(t *testing.T) {
 	oldPlain := proj.Token
 
 	store.With(func(s *Settings) {
-		_, _ = s.RotateProjectToken(proj.ID)
+		_, _, _ = s.RotateProjectToken(proj.ID)
 	})
 
 	stored, err := store.Get().AuthenticateProject(oldPlain)
@@ -101,7 +105,7 @@ func TestRotateProjectToken_UnknownIDReturnsFalse(t *testing.T) {
 	var plain string
 	var ok bool
 	store.With(func(s *Settings) {
-		plain, ok = s.RotateProjectToken("nope")
+		plain, ok, _ = s.RotateProjectToken("nope")
 	})
 	if ok || plain != "" {
 		t.Fatalf("rotated unknown project: ok=%v plain=%q", ok, plain)

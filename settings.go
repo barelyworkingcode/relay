@@ -268,15 +268,18 @@ func (s *Settings) UpdateProjectPermissionPolicy(id string, policy *PermissionPo
 // get an auth failure on its next request and must re-auth.
 //
 // Does not save; use within store.With.
-func (s *Settings) RotateProjectToken(id string) (string, bool) {
+func (s *Settings) RotateProjectToken(id string) (plaintext string, found bool, err error) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
-		return "", false
+		return "", false, nil
 	}
-	plaintext, hash := generateProjectToken()
+	plaintext, hash, err := generateProjectToken()
+	if err != nil {
+		return "", true, err
+	}
 	proj.Token = plaintext
 	proj.TokenHash = hash
-	return plaintext, true
+	return plaintext, true, nil
 }
 
 // UpdateProjectDisabledTools replaces the per-MCP disabled-tools slice for a

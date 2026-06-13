@@ -25,16 +25,29 @@ const maxSessionBodyBytes = 1 << 20
 // this is the authoritative boundary.
 //
 // Enforcement is deliberately narrow:
-//   - only POST /api/sessions (Eve's single session-create chokepoint),
+//   - only the POST session-create endpoint (Eve's single chokepoint),
 //   - only when the project declares a non-empty, non-wildcard allowlist,
 //   - only when the request names a concrete model (an empty model lets
 //     relayLLM pick its configured default; the allowlist governs explicit
 //     user choices, not server defaults).
 //
+// The guard is the catch-all wrapper around the dispatcher, so it must
+// classify the request itself rather than relying on a single exact mux
+// pattern: Go's ServeMux routes "POST /api/sessions/" (trailing slash) to the
+// "/" catch-all, which would otherwise skip a guard mounted on the exact
+// "POST /api/sessions" pattern. It gates the create path and its trailing-slash
+// variant only — NOT sub-resources like /api/sessions/{id}/messages, whose
+// larger bodies must not be buffered/truncated and which never name a model.
+//
 // Anything we can't confidently classify as disallowed is forwarded so
 // relayLLM remains the source of truth for every other failure mode.
 func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !isSessionCreatePath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxSessionBodyBytes))
 		if err != nil {
 			http.Error(w, "could not read request body", http.StatusBadRequest)
@@ -67,6 +80,14 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 		}
 		next.ServeHTTP(w, r)
 	}
+}
+
+// isSessionCreatePath reports whether p targets the session-create endpoint.
+// Both the canonical path and its trailing-slash variant are gated so the
+// allowlist can't be bypassed by appending a slash; deeper sub-resource paths
+// are intentionally excluded (see newSessionModelGuard).
+func isSessionCreatePath(p string) bool {
+	return p == "/api/sessions" || p == "/api/sessions/"
 }
 
 // modelAllowedForProject reports whether a session-create request naming
