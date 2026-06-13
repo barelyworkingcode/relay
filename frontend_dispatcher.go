@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -56,6 +57,32 @@ var dispatcherWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// WebSocket keepalive parameters. The proxy pings each peer every wsPingPeriod
+// and requires a pong (or any frame) within wsPongWait, otherwise the read
+// deadline trips and both conns are torn down. Without this, a peer that dies
+// without sending a close frame (network partition, hung process) would never
+// unblock the read pump, leaking both conns and their goroutines.
+//
+// The keepalive windows are held as atomics (not plain vars) so a test can
+// shorten them to exercise the half-open-reaping path without racing the live
+// proxy goroutines that read them on every pong/tick. Production sets them once
+// at init. Invariant: wsPingPeriod < wsPongWait so a pong can arrive before the
+// read deadline.
+var (
+	wsPongWaitNanos   atomic.Int64
+	wsPingPeriodNanos atomic.Int64
+)
+
+func init() {
+	wsPongWaitNanos.Store(int64(60 * time.Second))
+	wsPingPeriodNanos.Store(int64(50 * time.Second))
+}
+
+func wsPongWait() time.Duration   { return time.Duration(wsPongWaitNanos.Load()) }
+func wsPingPeriod() time.Duration { return time.Duration(wsPingPeriodNanos.Load()) }
+
+const wsWriteWait = 10 * time.Second
+
 // proxyWS upgrades the client connection and bidirectionally forwards
 // messages to the resolved service's WebSocket endpoint over its internal
 // socket.
@@ -92,33 +119,53 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 	}
 	defer upstreamConn.Close()
 
+	done := make(chan struct{})
 	var once sync.Once
 	closeBoth := func() {
 		once.Do(func() {
+			close(done)
 			_ = clientConn.Close()
 			_ = upstreamConn.Close()
 		})
 	}
+
+	// Pingers keep each half-connection observably alive; they exit when done
+	// closes. Not part of the WaitGroup — the data pumps own teardown.
+	go pingDispatchedWS(clientConn, done, closeBoth)
+	go pingDispatchedWS(upstreamConn, done, closeBoth)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go forwardDispatchedWS(clientConn, upstreamConn, &wg, closeBoth)
 	go forwardDispatchedWS(upstreamConn, clientConn, &wg, closeBoth)
 	wg.Wait()
+	closeBoth() // ensure done is closed so the pingers exit even on a clean close
 }
 
 // forwardDispatchedWS pumps messages from src to dst until either side
 // closes. The 32KB buffer is reused across messages to avoid per-message
 // allocation on streaming token traffic.
+//
+// An idle read deadline on src, extended by every pong and every data frame,
+// turns a half-open peer (no close frame, no traffic) into a read error so the
+// pump can tear down instead of blocking forever in NextReader.
 func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth func()) {
 	defer wg.Done()
 	defer closeBoth()
+
+	_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
+	src.SetPongHandler(func(string) error {
+		return src.SetReadDeadline(time.Now().Add(wsPongWait()))
+	})
+
 	buf := make([]byte, 32*1024)
 	for {
 		msgType, reader, err := src.NextReader()
 		if err != nil {
 			return
 		}
+		// Inbound traffic also proves liveness — extend the deadline.
+		_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
 		writer, err := dst.NextWriter(msgType)
 		if err != nil {
 			return
@@ -129,6 +176,26 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 		}
 		if err := writer.Close(); err != nil {
 			return
+		}
+	}
+}
+
+// pingDispatchedWS sends a periodic ping so a silent-but-alive peer keeps the
+// read deadline fresh, and so a dead peer is detected promptly when the ping
+// write fails. WriteControl is safe to call concurrently with the single data
+// writer (gorilla guarantees this), so no write lock is needed.
+func pingDispatchedWS(conn *websocket.Conn, done <-chan struct{}, closeBoth func()) {
+	ticker := time.NewTicker(wsPingPeriod())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait)); err != nil {
+				closeBoth()
+				return
+			}
 		}
 	}
 }

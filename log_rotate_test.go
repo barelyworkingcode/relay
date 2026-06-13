@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -52,5 +53,48 @@ func TestRotatingWriter_OversizedSingleWrite(t *testing.T) {
 	n, err := w.Write(big)
 	if err != nil || n != len(big) {
 		t.Fatalf("write oversized: n=%d err=%v", n, err)
+	}
+}
+
+// TestRotatingWriter_ConcurrentWritesAreSafe backs the "safe for concurrent
+// use" claim in the doc comment: slog writes relay.log from many goroutines.
+// A small cap forces frequent rotation under contention so the rotate path
+// (close → rename → reopen) is exercised concurrently. Run under -race to catch
+// a dropped or mis-scoped lock; every Write must also report its full length.
+func TestRotatingWriter_ConcurrentWritesAreSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.log")
+	w, err := openRotatingLogSized(path, 4096) // small cap → many rotations under load
+	if err != nil {
+		t.Fatalf("openRotatingLogSized: %v", err)
+	}
+	defer w.Close()
+
+	const goroutines = 16
+	const perGoroutine = 200
+	rec := []byte("a representative structured-log line of some length\n")
+
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines*perGoroutine)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				n, err := w.Write(rec)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if n != len(rec) {
+					errs <- os.ErrInvalid
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatalf("concurrent write failed: %v", e)
 	}
 }

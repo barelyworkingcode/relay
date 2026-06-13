@@ -26,7 +26,7 @@ func TestResolveConfigPath_HappyPath(t *testing.T) {
 	cfg := filepath.Join(root, "settings.json")
 	writeFile(t, cfg, "{}")
 
-	got, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	got, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
 	if err != nil {
 		t.Fatalf("resolveConfigPath: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestResolveConfigPath_HappyPath(t *testing.T) {
 }
 
 func TestResolveConfigPath_RejectsRelative(t *testing.T) {
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: "settings.json"}, t.TempDir())
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: "settings.json"}, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Errorf("want absolute-path error, got %v", err)
 	}
@@ -50,7 +50,7 @@ func TestResolveConfigPath_RejectsOutsideRoot(t *testing.T) {
 	cfg := filepath.Join(other, "settings.json")
 	writeFile(t, cfg, "{}")
 
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
 	if err == nil || !strings.Contains(err.Error(), "escapes allowed root") {
 		t.Errorf("want escape error, got %v", err)
 	}
@@ -68,7 +68,7 @@ func TestResolveConfigPath_RejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: link}, root)
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: link}, root)
 	if err == nil || !strings.Contains(err.Error(), "escapes allowed root") {
 		t.Errorf("symlink escape should be rejected, got %v", err)
 	}
@@ -80,7 +80,7 @@ func TestResolveConfigPath_RejectsDirectory(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: dir}, root)
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: dir}, root)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("want not-a-regular-file error, got %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolveConfigPath_RejectsOversize(t *testing.T) {
 	if err := os.WriteFile(cfg, big, 0o600); err != nil {
 		t.Fatalf("write big: %v", err)
 	}
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Errorf("want size-cap error, got %v", err)
 	}
@@ -109,7 +109,7 @@ func TestResolveConfigPath_DefaultsToDeclaredDir(t *testing.T) {
 	cfg := filepath.Join(dir, "settings.json")
 	writeFile(t, cfg, "{}")
 
-	got, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, "")
+	got, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, "")
 	if err != nil {
 		t.Fatalf("resolveConfigPath with default root: %v", err)
 	}
@@ -130,9 +130,49 @@ func TestResolveConfigPath_DefaultRootStillRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	_, err := resolveConfigPath(&bridge.ConfigDecl{Path: link}, "")
+	_, _, err := resolveConfigPath(&bridge.ConfigDecl{Path: link}, "")
 	if err == nil || !strings.Contains(err.Error(), "escapes allowed root") {
 		t.Errorf("default-root symlink escape should be rejected, got %v", err)
+	}
+}
+
+func TestReadConfigFile_HappyPath(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "settings.json")
+	writeFile(t, cfg, `{"ok":true}`)
+
+	real, info, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	data, err := readConfigFile(real, info)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != `{"ok":true}` {
+		t.Errorf("got %q, want %q", string(data), `{"ok":true}`)
+	}
+}
+
+// CR-18: if the resolved path is swapped for a different file between
+// resolveConfigPath and the open, the os.SameFile check must reject the read.
+func TestReadConfigFile_RejectsSwappedFile(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "settings.json")
+	writeFile(t, cfg, `{"v":1}`)
+
+	real, info, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	// Replace the file with a new inode (the TOCTOU swap).
+	if err := os.Remove(real); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	writeFile(t, real, `{"v":2,"swapped":true}`)
+
+	if _, err := readConfigFile(real, info); err == nil || !strings.Contains(err.Error(), "changed between validation and open") {
+		t.Fatalf("expected SameFile-mismatch error, got %v", err)
 	}
 }
 
@@ -163,12 +203,12 @@ func TestWriteConfigFile_RoundTripPreservesBytes(t *testing.T) {
 	original := "{\n  // keep me\n  \"z\": 1,\n  \"a\": 2\n}\n"
 	writeFile(t, cfg, original)
 
-	real, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
+	real, info, err := resolveConfigPath(&bridge.ConfigDecl{Path: cfg}, root)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	edited := "{\n  // keep me\n  \"z\": 9,\n  \"a\": 2\n}\n"
-	if err := writeConfigFile(real, []byte(edited), configFilePerm(real)); err != nil {
+	if err := writeConfigFile(real, []byte(edited), info.Mode().Perm()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -184,9 +224,9 @@ func TestWriteConfigFile_RoundTripPreservesBytes(t *testing.T) {
 		t.Errorf("temp file should not remain: %v", err)
 	}
 	// Mode preserved (0600).
-	info, _ := os.Stat(cfg)
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("perm widened: got %v, want 0600", info.Mode().Perm())
+	gotInfo, _ := os.Stat(cfg)
+	if gotInfo.Mode().Perm() != 0o600 {
+		t.Errorf("perm widened: got %v, want 0600", gotInfo.Mode().Perm())
 	}
 }
 

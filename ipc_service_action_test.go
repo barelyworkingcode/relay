@@ -55,14 +55,14 @@ func (r *recordingUI) lastResult(t *testing.T) map[string]interface{} {
 // assertions can observe results synchronously.
 type stubPlatform struct{}
 
-func (stubPlatform) Init()                                     {}
-func (stubPlatform) Run()                                      {}
-func (stubPlatform) SetupTray(rgba []byte, w, h int)           {}
-func (stubPlatform) UpdateMenu(menuJSON string)                {}
-func (stubPlatform) OpenSettings(html string)                  {}
-func (stubPlatform) EvalSettingsJS(js string)                  {}
-func (stubPlatform) DispatchToMain(fn func())                  { fn() }
-func (stubPlatform) OpenURL(url string)                        {}
+func (stubPlatform) Init()                           {}
+func (stubPlatform) Run()                            {}
+func (stubPlatform) SetupTray(rgba []byte, w, h int) {}
+func (stubPlatform) UpdateMenu(menuJSON string)      {}
+func (stubPlatform) OpenSettings(html string)        {}
+func (stubPlatform) EvalSettingsJS(js string)        {}
+func (stubPlatform) DispatchToMain(fn func())        { fn() }
+func (stubPlatform) OpenURL(url string)              {}
 
 func newDispatcherIPC(t *testing.T, enhanced *EnhancedServiceRegistry) (*IPCContext, *recordingUI) {
 	t.Helper()
@@ -191,6 +191,26 @@ func TestBuildActionPath_URLEscapesValue(t *testing.T) {
 	}
 	if !strings.Contains(got, "foo%2Fbar") {
 		t.Errorf("slash should be percent-escaped, got %q", got)
+	}
+}
+
+func TestBuildActionPath_AllowsDottedNonTraversalValue(t *testing.T) {
+	// Only the exact "." and ".." segments are illegal (that rejection is
+	// covered by TestSec_PathTemplate_RejectsDotDotSegment) — a value that
+	// merely contains dots (a version, a filename) must pass through unescaped.
+	// This guards against an over-broad anti-traversal fix.
+	action := &bridge.ActionDecl{
+		ID:           "stop-llama",
+		PathTemplate: "/api/llama/instances/{alias}",
+		ForEach:      "instances",
+	}
+	row := map[string]json.RawMessage{"alias": json.RawMessage(`"qwen3.8b"`)}
+	got, err := buildActionPath(action, row)
+	if err != nil {
+		t.Fatalf("buildActionPath: %v", err)
+	}
+	if got != "/api/llama/instances/qwen3.8b" {
+		t.Errorf("got %q, want /api/llama/instances/qwen3.8b", got)
 	}
 }
 

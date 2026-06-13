@@ -29,7 +29,10 @@ func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []st
 		models = []string{}
 	}
 
-	plaintext, hash := generateProjectToken()
+	plaintext, hash, err := generateProjectToken()
+	if err != nil {
+		return Project{}, err
+	}
 
 	proj := Project{
 		ID:            uuid.New().String(),
@@ -49,10 +52,14 @@ func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []st
 	return proj, nil
 }
 
-// generateProjectToken creates a random token and returns plaintext + hash.
-func generateProjectToken() (string, string) {
-	plaintext := generateRandomHex(32)
-	return plaintext, hashToken(plaintext)
+// generateProjectToken creates a random token and returns plaintext + hash,
+// or an error if the system CSPRNG fails (never returns a weak token).
+func generateProjectToken() (string, string, error) {
+	plaintext, err := generateRandomHex(32)
+	if err != nil {
+		return "", "", err
+	}
+	return plaintext, hashToken(plaintext), nil
 }
 
 // validateProjectPath rejects project paths that aren't safe to use as a

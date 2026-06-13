@@ -36,12 +36,16 @@ const maxConfigFileBytes = 1 << 20
 // could write its own config file directly anyway; this gate is defense in
 // depth (no symlink escape, regular file, bounded size), and is the single
 // boundary everything downstream trusts.
-func resolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, error) {
+//
+// Returns the validated os.FileInfo alongside the resolved path so callers can
+// re-verify (via os.SameFile) that the descriptor they open is the very file
+// validated here — closing the stat→open TOCTOU window against a path swap.
+func resolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, os.FileInfo, error) {
 	if decl == nil {
-		return "", fmt.Errorf("service declares no config file")
+		return "", nil, fmt.Errorf("service declares no config file")
 	}
 	if !filepath.IsAbs(decl.Path) {
-		return "", fmt.Errorf("config path %q is not absolute", decl.Path)
+		return "", nil, fmt.Errorf("config path %q is not absolute", decl.Path)
 	}
 	if allowedRoot == "" {
 		allowedRoot = filepath.Dir(decl.Path)
@@ -52,38 +56,47 @@ func resolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, err
 	// startup); a missing file is an error the UI surfaces, not a silent create.
 	rootReal, err := filepath.EvalSymlinks(allowedRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve config root %q: %w", allowedRoot, err)
+		return "", nil, fmt.Errorf("resolve config root %q: %w", allowedRoot, err)
 	}
 	real, err := filepath.EvalSymlinks(decl.Path)
 	if err != nil {
-		return "", fmt.Errorf("resolve config path %q: %w", decl.Path, err)
+		return "", nil, fmt.Errorf("resolve config path %q: %w", decl.Path, err)
 	}
 	rel, err := filepath.Rel(rootReal, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("config path %q escapes allowed root %q", decl.Path, rootReal)
+		return "", nil, fmt.Errorf("config path %q escapes allowed root %q", decl.Path, rootReal)
 	}
 	info, err := os.Stat(real)
 	if err != nil {
-		return "", fmt.Errorf("stat config path: %w", err)
+		return "", nil, fmt.Errorf("stat config path: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("config path %q is not a regular file", decl.Path)
+		return "", nil, fmt.Errorf("config path %q is not a regular file", decl.Path)
 	}
 	if info.Size() > maxConfigFileBytes {
-		return "", fmt.Errorf("config file %q exceeds %d byte cap", decl.Path, maxConfigFileBytes)
+		return "", nil, fmt.Errorf("config file %q exceeds %d byte cap", decl.Path, maxConfigFileBytes)
 	}
-	return real, nil
+	return real, info, nil
 }
 
 // readConfigFile returns the file's raw bytes as opaque text — comments and key
 // order are preserved because relay never round-trips through a struct. Capped
 // at maxConfigFileBytes (re-checked here to close the stat→read TOCTOU window).
-func readConfigFile(realPath string) ([]byte, error) {
+//
+// want is the FileInfo resolveConfigPath validated; the opened descriptor is
+// checked against it with os.SameFile so a path swapped to a different file
+// (e.g. a symlink) between resolve and open is rejected rather than read.
+func readConfigFile(realPath string, want os.FileInfo) ([]byte, error) {
 	f, err := os.Open(realPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if got, serr := f.Stat(); serr != nil {
+		return nil, fmt.Errorf("stat opened config file: %w", serr)
+	} else if want != nil && !os.SameFile(want, got) {
+		return nil, fmt.Errorf("config file at %q changed between validation and open", realPath)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
@@ -118,14 +131,4 @@ func writeConfigFile(realPath string, text []byte, perm os.FileMode) error {
 		return fmt.Errorf("refusing to write %d bytes (cap %d)", len(text), maxConfigFileBytes)
 	}
 	return atomicWriteFile(realPath, text, perm)
-}
-
-// configFilePerm returns the file's current permission bits so a rewrite never
-// widens them (service config files such as settings.json are 0600). Defaults
-// to 0600 if the file can't be stat'd.
-func configFilePerm(realPath string) os.FileMode {
-	if info, err := os.Stat(realPath); err == nil {
-		return info.Mode().Perm()
-	}
-	return 0600
 }

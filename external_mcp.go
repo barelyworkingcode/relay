@@ -38,16 +38,11 @@ func newProgressToken() string {
 // progressTokenString normalizes a JSON progressToken (string or number) to
 // the string form relay uses as its map key.
 func progressTokenString(v interface{}) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	case float64:
-		return fmt.Sprintf("%v", t)
-	default:
-		return fmt.Sprintf("%v", t)
+	if s, ok := v.(string); ok {
+		return s
 	}
+	return fmt.Sprintf("%v", v)
 }
-
 
 // McpConnection abstracts a connection to an external MCP server (stdio or HTTP).
 type McpConnection interface {
@@ -133,8 +128,8 @@ type externalMcpConn struct {
 	writeMu sync.Mutex
 
 	readerDone chan struct{} // closed when the reader goroutine exits
-	readerErr  error        // set before readerDone is closed
-	closeOnce  sync.Once    // ensures Close is idempotent
+	readerErr  error         // set before readerDone is closed
+	closeOnce  sync.Once     // ensures Close is idempotent
 }
 
 // registerProgress installs a per-call handler keyed by progressToken; the
@@ -559,23 +554,21 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		params["arguments"] = arguments
 	}
 
-	// Build _meta as an object so we can add a progressToken. Per-token context
-	// (_meta) is conventionally an object (e.g. allowed_dirs). If a caller's
-	// context is valid JSON but not an object, forward it verbatim and skip
-	// progress injection rather than failing the call; only truly malformed
-	// JSON is rejected.
-	metaMap := map[string]interface{}{}
-	metaIsObject := true
+	// Decode the caller's _meta once. Per-token context is conventionally a JSON
+	// object (e.g. allowed_dirs); when it is, we may add a progressToken. If it's
+	// valid JSON but not an object, forward it verbatim and skip progress
+	// injection rather than failing the call; only malformed JSON is rejected.
+	var metaVal interface{}
 	if len(meta) > 0 && string(meta) != "null" {
-		if err := json.Unmarshal(meta, &metaMap); err != nil {
-			if !json.Valid(meta) {
-				return nil, fmt.Errorf("invalid tool context metadata: %w", err)
-			}
-			metaIsObject = false
+		if err := json.Unmarshal(meta, &metaVal); err != nil {
+			return nil, fmt.Errorf("invalid tool context metadata: %w", err)
 		}
 	}
 
-	if metaIsObject {
+	if metaMap, ok := metaVal.(map[string]interface{}); ok || metaVal == nil {
+		if metaMap == nil {
+			metaMap = map[string]interface{}{}
+		}
 		// If the caller wants progress and this connection can route it,
 		// allocate a progressToken, advertise it via _meta, and bridge inbound
 		// notifications/progress to the caller's sink for the call's duration.
@@ -596,9 +589,7 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 			params["_meta"] = metaMap
 		}
 	} else {
-		var raw interface{}
-		_ = json.Unmarshal(meta, &raw)
-		params["_meta"] = raw
+		params["_meta"] = metaVal
 	}
 
 	resp, err := conn.SendRequest(ctx, mcp.MethodToolsCall, params)

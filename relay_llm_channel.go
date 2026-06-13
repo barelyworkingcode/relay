@@ -57,10 +57,14 @@ func (c *FrontendChannel) Ensure() (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("create relay config dir: %w", err)
 	}
 
+	token, err := generateRandomHex(32)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("generate frontend token: %w", err)
+	}
 	pid := os.Getpid()
 	c.endpoint = Endpoint{
 		Socket: filepath.Join(dir, fmt.Sprintf("relay-frontend-%d.sock", pid)),
-		Token:  generateRandomHex(32),
+		Token:  token,
 	}
 	// Best-effort cleanup of a stale socket from a previous orchestrator
 	// instance whose PID happened to be reused.

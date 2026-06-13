@@ -326,18 +326,19 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) 
 	slog.Info("project skill regen pass", "generate_skill_projects", processed)
 }
 
-func (r *appRouter) ReloadService(id string) {
+func (r *appRouter) ReloadService(id string) error {
 	settings := r.store.Reload()
 	svc, _ := settings.findServiceByID(id)
 	if svc == nil {
 		slog.Warn("reload: no service found", "id", id)
-		return
+		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("no service registered with id %q", id))
 	}
 	if err := r.services.Reload(id, svc); err != nil {
 		slog.Error("failed to reload service", "id", id, "error", err)
-		return
+		return jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("reload service %q: %w", id, err))
 	}
 	r.onChange()
+	return nil
 }
 
 // requireServiceToken authenticates a token and rejects anything that isn't
@@ -491,18 +492,19 @@ func realpathBestEffort(p string) string {
 	}
 }
 
-func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) {
+func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 	settings := r.store.Reload()
 	mcpCfg, _ := settings.findMcpByID(id)
 	if mcpCfg == nil {
 		slog.Warn("reload: no external MCP found", "id", id)
-		return
+		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("no external MCP registered with id %q", id))
 	}
 	if err := r.tools.Reload(ctx, id, mcpCfg); err != nil {
 		slog.Error("failed to reload external MCP", "id", id, "error", err)
-		return
+		return jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("reload external MCP %q: %w", id, err))
 	}
 	r.onChange()
+	return nil
 }
 
 // RegisterManifest authenticates the service token then forwards the full

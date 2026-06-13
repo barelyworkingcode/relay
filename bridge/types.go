@@ -168,8 +168,8 @@ type ToolRouter interface {
 	CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error)
 	ValidateAdmin(token string) error
 	ReconcileExternalMcps(ctx context.Context)
-	ReloadExternalMcp(ctx context.Context, id string)
-	ReloadService(id string)
+	ReloadExternalMcp(ctx context.Context, id string) error
+	ReloadService(id string) error
 	ListProjects(token string) (json.RawMessage, error)
 	GetProject(id string, token string) (json.RawMessage, error)
 	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
