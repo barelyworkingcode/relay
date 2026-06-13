@@ -101,7 +101,10 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	// Generate an ephemeral service token and inject Relay MCP env vars.
 	var tokenHash string
 	if r.TokenStore != nil {
-		rawToken := generateRandomHex(32)
+		rawToken, err := generateRandomHex(32)
+		if err != nil {
+			return fmt.Errorf("generate service token for %q: %w", config.ID, err)
+		}
 		tokenHash = hashToken(rawToken)
 		r.TokenStore.Register(tokenHash)
 
@@ -225,13 +228,17 @@ func frontendCredsEnabled(cfg *ServiceConfig) bool {
 	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
 }
 
-// generateRandomHex returns a random hex string of the given byte length.
-func generateRandomHex(n int) string {
+// generateRandomHex returns a random hex string of n random bytes, or an error
+// if the system CSPRNG fails. Returning the error (rather than panicking) keeps
+// a one-in-a-billion rand failure from taking down the whole tray — the caller
+// fails only the operation that needed the token. Never returns a partial/zero
+// token: a token derived from a failed read would be predictable.
+func generateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // Stop kills a service process and waits for it to exit.

@@ -57,6 +57,9 @@ func pollServiceStatuses(ctx context.Context, enhanced *EnhancedServiceRegistry)
 				return
 			}
 			client := NewServiceStatusClient(rec.InternalSocket, rec.InternalToken)
+			// One client per service per tick: release its pooled Unix-socket
+			// connection when the fetch returns so it doesn't leak until GC.
+			defer client.CloseIdleConnections()
 			body, err := client.GetStatus(ctx, rec.Manifest.Status.Path)
 			if err != nil {
 				snap.OK = false

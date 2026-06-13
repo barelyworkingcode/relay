@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -150,5 +152,74 @@ func TestGenerateState_IsBase64URL(t *testing.T) {
 	}
 	if strings.Contains(state, "=") {
 		t.Error("state contains '=' padding which should be absent in raw base64url")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CR-2: OAuth discovery SSRF guard
+// ---------------------------------------------------------------------------
+
+func TestValidateOAuthDiscoveryURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"https public", "https://auth.example.com/.well-known/x", false},
+		{"http loopback ipv4", "http://127.0.0.1:8080/meta", false},
+		{"http localhost", "http://localhost:9000/meta", false},
+		{"http loopback ipv6", "http://[::1]:9000/meta", false},
+		{"http public host rejected", "http://auth.example.com/meta", true},
+		{"http private host rejected", "http://10.0.0.5/meta", true},
+		{"file scheme rejected", "file:///etc/passwd", true},
+		{"gopher scheme rejected", "gopher://internal:70/", true},
+		{"missing host rejected", "https:///path", true},
+		{"garbage rejected", "://nonsense", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOAuthDiscoveryURL(tc.url)
+			if tc.wantErr && err == nil {
+				t.Errorf("validateOAuthDiscoveryURL(%q) = nil, want error", tc.url)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("validateOAuthDiscoveryURL(%q) = %v, want nil", tc.url, err)
+			}
+		})
+	}
+}
+
+// The fetch helpers must reject an SSRF target before issuing any request.
+func TestFetchProtectedResourceMetadata_RejectsSSRFTarget(t *testing.T) {
+	if _, err := fetchProtectedResourceMetadata("file:///etc/passwd"); err == nil {
+		t.Error("expected PRM fetch to reject a file:// URL")
+	}
+	if _, err := fetchProtectedResourceMetadata("http://169.254.169.254/latest/meta-data"); err == nil {
+		t.Error("expected PRM fetch to reject plaintext http to a link-local host")
+	}
+}
+
+func TestTryFetchOAuthMetadata_RejectsSSRFTarget(t *testing.T) {
+	if meta := tryFetchOAuthMetadata("http://10.0.0.1/.well-known/oauth-authorization-server"); meta != nil {
+		t.Error("expected metadata fetch to skip plaintext http to a private host")
+	}
+}
+
+// CheckRedirect must re-validate the redirect target: a discovered endpoint that
+// 302s relay to a blocked scheme/host must not be followed.
+func TestOAuthClient_RejectsRedirectToBlockedTarget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	// srv.URL is http on 127.0.0.1 (loopback) so the initial GET is allowed; the
+	// redirect to a non-loopback plaintext-http host must be refused.
+	_, err := fetchProtectedResourceMetadata(srv.URL + "/.well-known/oauth-protected-resource")
+	if err == nil {
+		t.Fatal("expected the redirect to a blocked target to fail the fetch")
+	}
+	if !strings.Contains(err.Error(), "non-loopback") && !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("error should reflect the blocked redirect, got: %v", err)
 	}
 }

@@ -34,7 +34,8 @@ type stubRouter struct {
 }
 
 func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.listedToken = token
 	return s.tools, s.toolsErr
 }
@@ -53,12 +54,12 @@ func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMes
 	}
 	return resp, err
 }
-func (s *stubRouter) ValidateAdmin(string) error                                           { return nil }
-func (s *stubRouter) ReconcileExternalMcps(context.Context)                                {}
-func (s *stubRouter) ReloadExternalMcp(context.Context, string)                            {}
-func (s *stubRouter) ReloadService(string)                                                 {}
-func (s *stubRouter) ListProjects(string) (json.RawMessage, error)                         { return nil, nil }
-func (s *stubRouter) GetProject(string, string) (json.RawMessage, error)                   { return nil, nil }
+func (s *stubRouter) ValidateAdmin(string) error                         { return nil }
+func (s *stubRouter) ReconcileExternalMcps(context.Context)              {}
+func (s *stubRouter) ReloadExternalMcp(context.Context, string) error    { return nil }
+func (s *stubRouter) ReloadService(string) error                         { return nil }
+func (s *stubRouter) ListProjects(string) (json.RawMessage, error)       { return nil, nil }
+func (s *stubRouter) GetProject(string, string) (json.RawMessage, error) { return nil, nil }
 func (s *stubRouter) ResolvePtyEnv(context.Context, bridge.PtyEnvRequest, string) (bridge.PtyEnvResponse, error) {
 	return bridge.PtyEnvResponse{}, nil
 }

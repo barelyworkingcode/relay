@@ -61,10 +61,11 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools M
 
 	// Session creation is the one proxied route relay must inspect: the
 	// per-project model allowlist lives only in relay's settings, so it can
-	// only be enforced in front of the proxy. The more specific method+path
-	// pattern takes precedence over "/", then forwards to the dispatcher.
-	mux.Handle("POST /api/sessions", newSessionModelGuard(store, dispatcher))
-	mux.Handle("/", dispatcher)
+	// only be enforced in front of the proxy. The guard wraps the catch-all
+	// dispatcher (rather than a single exact pattern) so trailing-slash and
+	// sibling create paths can't route around it; it self-classifies the
+	// request and forwards everything that isn't a session-create POST.
+	mux.Handle("/", newSessionModelGuard(store, dispatcher))
 
 	handler := frontendBearerAuth(frontend.Token, frontendRecover(mux))
 
