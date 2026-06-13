@@ -15,6 +15,7 @@
 //	testservice                    # block on SIGTERM, no manifest registration
 //	testservice --register         # register a stub manifest first
 //	testservice --status-after Ns  # exit after N seconds (life-cycle tests)
+//	testservice --dump-env PATH    # write os.Environ() to PATH, then continue
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,7 +39,18 @@ import (
 func main() {
 	register := flag.Bool("register", false, "send RegisterManifest before serving")
 	statusAfter := flag.Duration("status-after", 0, "exit after this duration (0 = block on signal)")
+	dumpEnv := flag.String("dump-env", "", "write os.Environ() (one VAR=value per line) to this file, then continue")
 	flag.Parse()
+
+	// Dump the inherited environment so a test can assert exactly which
+	// credentials relay injected at spawn time (e.g. that the front-door
+	// bearer is absent from a backend's env). Written before any work so the
+	// test can poll for the file regardless of --register/--status-after.
+	if *dumpEnv != "" {
+		if err := os.WriteFile(*dumpEnv, []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
+			log.Fatalf("dump-env: %v", err)
+		}
+	}
 
 	serviceID := os.Getenv(bridge.EnvServiceID)
 	bridgeSock := os.Getenv(bridge.EnvBridgeSocket)
