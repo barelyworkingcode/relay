@@ -141,10 +141,15 @@ func TestFrontendServer_WSUpgrade_AllowsAuthenticated(t *testing.T) {
 // keepalive logic regresses (deadline not set, or wsPingPeriod >= wsPongWait),
 // the client read never returns and this test times out.
 func TestFrontendServer_WSHalfOpenUpstreamIsReaped(t *testing.T) {
-	// Shorten the keepalive window so the reap happens in test time.
-	oldWait, oldPing := wsPongWait, wsPingPeriod
-	wsPongWait, wsPingPeriod = 300*time.Millisecond, 150*time.Millisecond
-	t.Cleanup(func() { wsPongWait, wsPingPeriod = oldWait, oldPing })
+	// Shorten the keepalive window so the reap happens in test time. The knobs
+	// are atomics, so this doesn't race the live proxy goroutines that read them.
+	oldWait, oldPing := wsPongWaitNanos.Load(), wsPingPeriodNanos.Load()
+	wsPongWaitNanos.Store(int64(300 * time.Millisecond))
+	wsPingPeriodNanos.Store(int64(150 * time.Millisecond))
+	t.Cleanup(func() {
+		wsPongWaitNanos.Store(oldWait)
+		wsPingPeriodNanos.Store(oldPing)
+	})
 
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
