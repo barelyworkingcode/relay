@@ -149,6 +149,25 @@ func TestServiceStatusClient_GetStatus_ErrorBodyPropagates(t *testing.T) {
 	}
 }
 
+func TestServiceStatusClient_GetStatus_BodyCapped(t *testing.T) {
+	// A buggy or hostile service streaming an unbounded body must not OOM the
+	// tray — the poller fans out to every service each tick. The client caps
+	// each read at maxStatusBodyBytes via io.LimitReader. Drop that reader and
+	// this test fails (got would exceed the cap).
+	srv := newFakeServiceServer(t)
+	big := strings.Repeat("a", maxStatusBodyBytes+1024)
+	srv.script("GET", "/api/status", 200, big)
+
+	client := NewServiceStatusClient(srv.socket, "tok")
+	got, err := client.GetStatus(context.Background(), "/api/status")
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if len(got) != maxStatusBodyBytes {
+		t.Errorf("body not capped: got %d bytes, want %d", len(got), maxStatusBodyBytes)
+	}
+}
+
 func TestServiceStatusClient_GetStatus_DialFailureIsError(t *testing.T) {
 	client := NewServiceStatusClient("/tmp/relay-test-nonexistent-socket.sock", "tok")
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

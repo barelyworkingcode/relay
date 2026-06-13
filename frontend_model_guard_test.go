@@ -173,6 +173,62 @@ func TestSessionModelGuard_IgnoresSubResourcePath(t *testing.T) {
 	}
 }
 
+// An oversized create body can't be fully inspected for its model field, so
+// the guard must fail closed (413) rather than truncate-and-forward. Without
+// this, padding a disallowed-model body past the 1 MiB cap could slip the
+// model past relay's authoritative allowlist boundary.
+func TestSessionModelGuard_OversizedBodyFailsClosed(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"haiku"})
+
+	spy := &nextSpy{}
+	guard := newSessionModelGuard(store, spy)
+	rec := httptest.NewRecorder()
+
+	pad := strings.Repeat("A", maxSessionBodyBytes) // pushes total past the cap
+	body := `{"projectId":"` + proj.ID + `","model":"opus","pad":"` + pad + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	guard(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413 for oversized create body", rec.Code)
+	}
+	if spy.called {
+		t.Error("oversized create body must not reach the dispatcher")
+	}
+}
+
+// A create body exactly at the cap must still be inspected normally (the +1
+// read is only to detect overflow, not to reject at the boundary).
+func TestSessionModelGuard_BodyAtCapIsInspected(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"haiku"})
+
+	spy := &nextSpy{}
+	guard := newSessionModelGuard(store, spy)
+	rec := httptest.NewRecorder()
+
+	// Disallowed model in a body padded to exactly the cap → still blocked.
+	prefix := `{"projectId":"` + proj.ID + `","model":"opus","pad":"`
+	suffix := `"}`
+	pad := strings.Repeat("A", maxSessionBodyBytes-len(prefix)-len(suffix))
+	body := prefix + pad + suffix
+	if len(body) != maxSessionBodyBytes {
+		t.Fatalf("test setup: body is %d bytes, want exactly %d", len(body), maxSessionBodyBytes)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	guard(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (disallowed model in a body at the cap)", rec.Code)
+	}
+	if spy.called {
+		t.Error("disallowed model must not reach the dispatcher")
+	}
+}
+
 // Non-POST requests to the sessions path (e.g. listing) must pass through
 // without the guard buffering the body.
 func TestSessionModelGuard_IgnoresNonPost(t *testing.T) {
