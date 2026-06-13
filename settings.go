@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"slices"
+	"strings"
 )
 
 // Settings holds all persistent Relay configuration.
@@ -247,6 +248,37 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 		return
 	}
 	proj.ChatTemplates = templates
+}
+
+// UpdateProjectSessionFolders replaces a project's ordered session-folder
+// name list (Eve UI grouping metadata; relay never reads it). A nil/empty list
+// clears it so the serialized form stays minimal. Trims and de-duplicates
+// names case-sensitively, preserving first-seen order. Does not save; use
+// within store.With.
+func (s *Settings) UpdateProjectSessionFolders(id string, folders []string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(folders) == 0 {
+		proj.SessionFolders = nil
+		return
+	}
+	cleaned := make([]string, 0, len(folders))
+	seen := make(map[string]bool, len(folders))
+	for _, f := range folders {
+		f = strings.TrimSpace(f)
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		cleaned = append(cleaned, f)
+	}
+	if len(cleaned) == 0 {
+		proj.SessionFolders = nil
+		return
+	}
+	proj.SessionFolders = cleaned
 }
 
 // UpdateProjectPermissionPolicy replaces a project's permission policy.

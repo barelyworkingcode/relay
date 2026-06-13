@@ -14,6 +14,7 @@ type projectCreateFields struct {
 	PermissionPolicy *PermissionPolicy   `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                `json:"generate_skill,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
+	SessionFolders   []string            `json:"session_folders,omitempty"`
 }
 
 // projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -28,6 +29,7 @@ type projectUpdateFields struct {
 	PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
 	GenerateSkill    *bool                `json:"generate_skill,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
+	SessionFolders   *[]string            `json:"session_folders,omitempty"`
 }
 
 // applyProjectCreate creates a project and applies its optional policy, skill
@@ -51,6 +53,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 	}
 	if f.GenerateSkill {
 		s.SetProjectGenerateSkill(created.ID, true)
+	}
+	if len(f.SessionFolders) > 0 {
+		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
 	}
 	for mcpID, disabled := range f.DisabledTools {
 		s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
@@ -100,6 +105,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 	if f.GenerateSkill != nil {
 		s.SetProjectGenerateSkill(id, *f.GenerateSkill)
+	}
+	if f.SessionFolders != nil {
+		s.UpdateProjectSessionFolders(id, *f.SessionFolders)
 	}
 	if f.DisabledTools != nil {
 		// Replace the entire disabled-tools map: any MCP key omitted from the
