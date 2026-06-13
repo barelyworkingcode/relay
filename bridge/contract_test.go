@@ -39,6 +39,7 @@ type stubRouter struct {
 	callToolResp     json.RawMessage
 	callToolErr      error
 	callToolProgress []ProgressUpdate // emitted via the ctx sink before the result
+	callToolProgDly  time.Duration    // sleep before each progress frame (idle-deadline tests)
 
 	validateAdminToks []string
 	validateAdminErr  error
@@ -46,8 +47,10 @@ type stubRouter struct {
 	reconcileCalls int
 
 	reloadMcpIDs []string
+	reloadMcpErr error
 
 	reloadServiceIDs []string
+	reloadServiceErr error
 
 	listProjectsToks []string
 	listProjectsResp json.RawMessage
@@ -81,10 +84,14 @@ func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMes
 	s.callToolArgs = append(s.callToolArgs, args)
 	s.callToolToks = append(s.callToolToks, token)
 	prog := s.callToolProgress
+	delay := s.callToolProgDly
 	resp, err := s.callToolResp, s.callToolErr
 	s.mu.Unlock()
 	if sink := ProgressFromContext(ctx); sink != nil {
 		for _, u := range prog {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
 			sink(u)
 		}
 	}
@@ -104,16 +111,18 @@ func (s *stubRouter) ReconcileExternalMcps(_ context.Context) {
 	s.reconcileCalls++
 }
 
-func (s *stubRouter) ReloadExternalMcp(_ context.Context, id string) {
+func (s *stubRouter) ReloadExternalMcp(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloadMcpIDs = append(s.reloadMcpIDs, id)
+	return s.reloadMcpErr
 }
 
-func (s *stubRouter) ReloadService(id string) {
+func (s *stubRouter) ReloadService(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloadServiceIDs = append(s.reloadServiceIDs, id)
+	return s.reloadServiceErr
 }
 
 func (s *stubRouter) ListProjects(token string) (json.RawMessage, error) {
@@ -482,6 +491,83 @@ func TestContract_RejectsMalformedJSON(t *testing.T) {
 	}
 	if resp.Type != RespError {
 		t.Fatalf("expected parse error response, got %+v", resp)
+	}
+}
+
+// CR-15: the bridge round-trip deadline must reset on every received frame so
+// it behaves as an inactivity timeout, not a hard cap. Five progress frames
+// arrive 80ms apart (~400ms total) — longer than bridgeTimeout — but each lands
+// within the idle window. With a fixed deadline the call would die after the
+// third frame; with the per-frame reset it completes.
+func TestContract_StreamingResetsIdleDeadline(t *testing.T) {
+	old := bridgeTimeout
+	bridgeTimeout = 200 * time.Millisecond
+	defer func() { bridgeTimeout = old }()
+
+	router := &stubRouter{
+		callToolResp:    json.RawMessage(`{"ok":true}`),
+		callToolProgDly: 80 * time.Millisecond,
+		callToolProgress: []ProgressUpdate{
+			{Message: "1", Progress: 1}, {Message: "2", Progress: 2},
+			{Message: "3", Progress: 3}, {Message: "4", Progress: 4},
+			{Message: "5", Progress: 5},
+		},
+	}
+	sock := startTestBridge(t, router)
+	c := &Client{sockPath: sock, token: "t"}
+
+	got := 0
+	result, err := c.CallToolStreaming("slow", json.RawMessage(`{}`), func(ProgressUpdate) { got++ })
+	if err != nil {
+		t.Fatalf("streaming call died mid-stream (idle deadline not reset?): %v", err)
+	}
+	if got != 5 {
+		t.Fatalf("expected 5 progress frames, got %d", got)
+	}
+	if string(result) != `{"ok":true}` {
+		t.Fatalf("result mismatch: %s", result)
+	}
+}
+
+// CR-16: a failed ReloadService must surface as an error response, not a bogus
+// RespOK. A CLI `relay service restart` of a broken/missing service should fail.
+func TestContract_ReloadService_SurfacesError(t *testing.T) {
+	router := &stubRouter{reloadServiceErr: errString("service crashed on reload")}
+	sock := startTestBridge(t, router)
+
+	resp := sendRaw(t, sock, BridgeRequest{Type: ReqReloadService, Name: "svc-x", Token: "admin"})
+	if resp.Type != RespError {
+		t.Fatalf("expected error response when ReloadService fails; got %+v", resp)
+	}
+	if !strings.Contains(resp.Message, "service crashed on reload") {
+		t.Fatalf("reload error not surfaced to caller: %q", resp.Message)
+	}
+}
+
+func TestContract_ReloadService_OKOnSuccess(t *testing.T) {
+	router := &stubRouter{}
+	sock := startTestBridge(t, router)
+
+	resp := sendRaw(t, sock, BridgeRequest{Type: ReqReloadService, Name: "svc-x", Token: "admin"})
+	if resp.Type != RespOK {
+		t.Fatalf("expected OK on successful reload; got %+v", resp)
+	}
+	if len(router.reloadServiceIDs) != 1 || router.reloadServiceIDs[0] != "svc-x" {
+		t.Fatalf("reload not forwarded: %v", router.reloadServiceIDs)
+	}
+}
+
+// CR-16: same contract for ReloadExternalMcp.
+func TestContract_ReloadExternalMcp_SurfacesError(t *testing.T) {
+	router := &stubRouter{reloadMcpErr: errString("mcp failed to start")}
+	sock := startTestBridge(t, router)
+
+	resp := sendRaw(t, sock, BridgeRequest{Type: ReqReloadExternalMcp, Name: "fs", Token: "admin"})
+	if resp.Type != RespError {
+		t.Fatalf("expected error response when ReloadExternalMcp fails; got %+v", resp)
+	}
+	if !strings.Contains(resp.Message, "mcp failed to start") {
+		t.Fatalf("reload error not surfaced to caller: %q", resp.Message)
 	}
 }
 

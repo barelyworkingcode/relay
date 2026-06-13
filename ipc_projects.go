@@ -13,31 +13,13 @@ import (
 // created over HTTP and vice versa.
 // ---------------------------------------------------------------------------
 
-// ipcCreateProjectMsg mirrors the POST /api/projects body. Pointer-free —
-// the create form always sends every field.
-type ipcCreateProjectMsg struct {
-	Name             string            `json:"name"`
-	Path             string            `json:"path"`
-	AllowedMcpIDs    []string          `json:"allowed_mcp_ids"`
-	AllowedModels    []string          `json:"allowed_models"`
-	ChatTemplates    []ChatTemplate    `json:"chat_templates"`
-	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
-	GenerateSkill    bool              `json:"generate_skill,omitempty"`
-	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
-}
-
-// ipcUpdateProjectMsg mirrors the PUT /api/projects/{id} body. Pointer fields
-// distinguish "not in body" (no change) from explicit empty values.
+// ipcUpdateProjectMsg mirrors the PUT /api/projects/{id} body for the IPC
+// transport, which (unlike the HTTP route) carries the project id inline. The
+// patch fields themselves are the shared projectUpdateFields so the update
+// orchestration stays in one place (applyProjectUpdate).
 type ipcUpdateProjectMsg struct {
-	ID               string               `json:"id"`
-	Name             *string              `json:"name,omitempty"`
-	Path             *string              `json:"path,omitempty"`
-	AllowedMcpIDs    *[]string            `json:"allowed_mcp_ids,omitempty"`
-	AllowedModels    *[]string            `json:"allowed_models,omitempty"`
-	ChatTemplates    *[]ChatTemplate      `json:"chat_templates,omitempty"`
-	PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
-	GenerateSkill    *bool                `json:"generate_skill,omitempty"`
-	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
+	ID string `json:"id"`
+	projectUpdateFields
 }
 
 type ipcProjectDisabledToolsMsg struct {
@@ -54,43 +36,23 @@ type ipcListMcpToolsMsg struct {
 // emits onProjectAdded with the full row (including the freshly-generated
 // plaintext token — the user copies it from the form's Token field).
 func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[ipcCreateProjectMsg](raw, "create_project")
+	msg, ok := unmarshalIPC[projectCreateFields](raw, "create_project")
 	if !ok {
 		return
+	}
+	// Validate the policy BEFORE any mutation so a bad policy can't create a
+	// project that then has to be rolled back — mirrors the HTTP POST route.
+	if msg.PermissionPolicy != nil {
+		if err := validatePermissionPolicy(msg.PermissionPolicy); err != nil {
+			ctx.UI.EmitEvent("onProjectError", err.Error())
+			return
+		}
 	}
 
 	var created Project
 	var createErr error
 	okSettings := ctx.withSettings(func(s *Settings) {
-		schemas := mcpContextSchemasFrom(ctx)
-		created, createErr = s.CreateProjectWithToken(
-			msg.Name, msg.Path,
-			msg.AllowedMcpIDs, msg.AllowedModels,
-			msg.ChatTemplates,
-			schemas,
-		)
-		if createErr != nil {
-			return
-		}
-		if msg.PermissionPolicy != nil {
-			if err := validatePermissionPolicy(msg.PermissionPolicy); err != nil {
-				createErr = err
-				// Roll back the partially-created project so the failed
-				// creation doesn't leave a malformed entry behind.
-				s.RemoveProject(created.ID)
-				return
-			}
-			s.UpdateProjectPermissionPolicy(created.ID, msg.PermissionPolicy)
-		}
-		if msg.GenerateSkill {
-			s.SetProjectGenerateSkill(created.ID, true)
-		}
-		for mcpID, disabled := range msg.DisabledTools {
-			s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
-		}
-		if proj, _ := s.findProjectByID(created.ID); proj != nil {
-			created = *proj
-		}
+		created, createErr = applyProjectCreate(s, *msg, mcpContextSchemasFrom(ctx))
 	})
 	if !okSettings {
 		return
@@ -132,66 +94,12 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 		}
 	}
 
-	needsSchemas := msg.Path != nil || msg.AllowedMcpIDs != nil
 	var updated Project
 	var found bool
 	okSettings := ctx.withSettings(func(s *Settings) {
-		if proj, _ := s.findProjectByID(msg.ID); proj == nil {
-			return
-		}
-		var schemas map[string]json.RawMessage
-		if needsSchemas {
-			schemas = mcpContextSchemasFrom(ctx)
-		}
-		if msg.Name != nil {
-			s.UpdateProjectName(msg.ID, *msg.Name)
-		}
-		if msg.Path != nil {
-			s.UpdateProjectPath(msg.ID, *msg.Path, schemas)
-		}
-		if msg.AllowedMcpIDs != nil {
-			s.UpdateProjectMcps(msg.ID, *msg.AllowedMcpIDs, schemas)
-		}
-		if msg.AllowedModels != nil {
-			s.UpdateProjectModels(msg.ID, *msg.AllowedModels)
-		}
-		if msg.ChatTemplates != nil {
-			s.UpdateProjectChatTemplates(msg.ID, *msg.ChatTemplates)
-		}
-		if msg.PermissionPolicy != nil {
-			policy := msg.PermissionPolicy
-			// Empty struct (no fields set) clears the policy — same rule as the HTTP route.
-			if policy.DefaultMode == "" && len(policy.AllowedTools) == 0 && len(policy.DeniedTools) == 0 {
-				policy = nil
-			}
-			s.UpdateProjectPermissionPolicy(msg.ID, policy)
-		}
-		if msg.GenerateSkill != nil {
-			s.SetProjectGenerateSkill(msg.ID, *msg.GenerateSkill)
-		}
-		if msg.DisabledTools != nil {
-			// Replace the entire disabled-tools map: any MCP key omitted is
-			// reset to "all tools allowed". Walk both the new and existing
-			// keys so removals propagate.
-			existing := map[string]bool{}
-			if proj, _ := s.findProjectByID(msg.ID); proj != nil {
-				for k := range proj.DisabledTools {
-					existing[k] = true
-				}
-			}
-			for mcpID := range existing {
-				if _, kept := (*msg.DisabledTools)[mcpID]; !kept {
-					s.UpdateProjectDisabledTools(msg.ID, mcpID, nil)
-				}
-			}
-			for mcpID, disabled := range *msg.DisabledTools {
-				s.UpdateProjectDisabledTools(msg.ID, mcpID, disabled)
-			}
-		}
-		if proj, _ := s.findProjectByID(msg.ID); proj != nil {
-			updated = *proj
-			found = true
-		}
+		updated, found = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() map[string]json.RawMessage {
+			return mcpContextSchemasFrom(ctx)
+		})
 	})
 	if !okSettings {
 		return
@@ -256,10 +164,16 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 
 	var newPlaintext string
 	var found bool
+	var genErr error
 	okSettings := ctx.withSettings(func(s *Settings) {
-		newPlaintext, found = s.RotateProjectToken(msg.ID)
+		newPlaintext, found, genErr = s.RotateProjectToken(msg.ID)
 	})
 	if !okSettings {
+		return
+	}
+	if genErr != nil {
+		slog.Error("rotate project token: token generation failed", "error", genErr)
+		ctx.UI.EmitEvent("onProjectError", "failed to generate token")
 		return
 	}
 	if !found {

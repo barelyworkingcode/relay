@@ -152,7 +152,7 @@ func sendAdmin(reqType, name, token string) error {
 	resp, err := c.send(BridgeRequest{
 		Type:  reqType,
 		Name:  name,
-		Token: token,
+		Token: c.token,
 	})
 	if err != nil {
 		return fmt.Errorf("%s request failed: %w", reqType, err)
@@ -175,9 +175,13 @@ func SendReloadService(id, token string) error {
 	return sendAdmin(ReqReloadService, id, token)
 }
 
-// bridgeTimeout is the maximum time for a complete bridge round-trip (connect + write + read).
-// Tool calls can take minutes (LLM inference, long-running tools), so this is generous.
-const bridgeTimeout = 10 * time.Minute
+// bridgeTimeout bounds inactivity on a bridge round-trip: it caps connect +
+// write + time-to-first-frame, and is reset on every frame received during a
+// streaming call (see sendStreaming) so it acts as an idle timeout rather than
+// a hard cap. Tool calls can take minutes (LLM inference, long-running tools)
+// and stream progress throughout, so this is generous. A var (not const) so
+// tests can shorten it to exercise the idle-reset behavior deterministically.
+var bridgeTimeout = 10 * time.Minute
 
 // send opens a connection, writes the request, reads one terminal response,
 // and closes. Equivalent to sendStreaming with no progress handler.
@@ -212,6 +216,14 @@ func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate
 
 	scanner := NewScanner(conn)
 	for scanner.Scan() {
+		// Reset the deadline on every received frame so bridgeTimeout acts as an
+		// inactivity timeout rather than a hard cap. A tool that legitimately
+		// streams progress for longer than bridgeTimeout stays alive as long as
+		// it keeps producing frames; a silent or hung peer is still cut off after
+		// bridgeTimeout of no output.
+		if err := conn.SetDeadline(time.Now().Add(bridgeTimeout)); err != nil {
+			return nil, fmt.Errorf("reset deadline: %w", err)
+		}
 		var resp BridgeResponse
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
 			return nil, fmt.Errorf("parse response failed: %w", err)

@@ -59,7 +59,59 @@ type pkceParams struct {
 	Challenge string
 }
 
-var oauthHTTPClient = &http.Client{Timeout: OAuthHTTPTimeout}
+// oauthMaxRedirects caps redirect-following on the OAuth client. Each hop is
+// re-validated (see CheckRedirect) so a discovered endpoint can't bounce relay
+// to an arbitrary scheme/host.
+const oauthMaxRedirects = 5
+
+var oauthHTTPClient = &http.Client{
+	Timeout: OAuthHTTPTimeout,
+	// Re-validate every redirect target: a malicious AS could otherwise 302 the
+	// discovery/token requests to file://, to an internal service, or to plaintext
+	// http on a public host. Also caps the hop count (Go's default is 10).
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= oauthMaxRedirects {
+			return fmt.Errorf("stopped after %d OAuth redirects", oauthMaxRedirects)
+		}
+		return validateOAuthDiscoveryURL(req.URL.String())
+	},
+}
+
+// validateOAuthDiscoveryURL guards the OAuth discovery/token chain against SSRF.
+// The MCP server (admin-registered, but possibly malicious or compromised)
+// controls the resource_metadata URL, the PRM's authorization_servers, and the
+// discovered token/registration endpoints — all of which relay would otherwise
+// fetch blindly. Require an http(s) URL with a host, and forbid plaintext http
+// to anything but loopback (a local dev MCP): a public http target is almost
+// certainly an attacker pointing relay at an internal service.
+func validateOAuthDiscoveryURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid discovery URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported discovery URL scheme %q: only http and https are allowed", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("discovery URL is missing a host")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("refusing plaintext http for non-loopback host %q in OAuth discovery", u.Hostname())
+	}
+	return nil
+}
+
+// isLoopbackHost reports whether host names the local machine (localhost or a
+// loopback IP literal). Plaintext http is permitted only for these.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
 
 // probeForResourceMetadata sends a request to the MCP URL and extracts the
 // resource_metadata URL from the 401 WWW-Authenticate header.
@@ -109,6 +161,9 @@ func parseResourceMetadataURL(wwwAuth string) string {
 
 // fetchProtectedResourceMetadata fetches a PRM document (RFC 9728).
 func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, error) {
+	if err := validateOAuthDiscoveryURL(prmURL); err != nil {
+		return nil, err
+	}
 	resp, err := oauthHTTPClient.Get(prmURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch PRM: %w", err)
@@ -128,6 +183,10 @@ func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, 
 
 // tryFetchOAuthMetadata tries to GET and parse an OAuth AS metadata document.
 func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
+	if err := validateOAuthDiscoveryURL(metadataURL); err != nil {
+		slog.Debug("oauth: skipping invalid metadata URL", "url", metadataURL, "error", err)
+		return nil
+	}
 	resp, err := oauthHTTPClient.Get(metadataURL)
 	if err != nil {
 		return nil
@@ -172,8 +231,13 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		prm, err := fetchProtectedResourceMetadata(resourceMetaURL)
 		if err == nil {
 			if len(prm.AuthorizationServers) > 0 {
-				authServerBase = prm.AuthorizationServers[0]
-				slog.Info("oauth: authorization server", "url", authServerBase)
+				cand := prm.AuthorizationServers[0]
+				if verr := validateOAuthDiscoveryURL(cand); verr != nil {
+					slog.Warn("oauth: rejecting authorization server URL from PRM", "url", cand, "error", verr)
+				} else {
+					authServerBase = cand
+					slog.Info("oauth: authorization server", "url", authServerBase)
+				}
 			}
 			if len(prm.ScopesSupported) > 0 {
 				scope = strings.Join(prm.ScopesSupported, " ")
@@ -231,6 +295,9 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oauthRegistrationResponse, error) {
 	if meta.RegistrationEndpoint == "" {
 		return nil, fmt.Errorf("server has no registration endpoint; manual client registration required")
+	}
+	if err := validateOAuthDiscoveryURL(meta.RegistrationEndpoint); err != nil {
+		return nil, err
 	}
 
 	regBody := map[string]interface{}{
@@ -319,27 +386,46 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 2) // capacity 2: handler + Serve goroutine can both send without blocking
 
+	// The callback can fire more than once (browser retry, double-submit). Send
+	// results non-blocking so a second delivery can't park the handler goroutine
+	// on a full channel until process exit — the first result is the one that
+	// matters; later duplicates are dropped.
+	sendErr := func(err error) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+	sendCode := func(code string) bool {
+		select {
+		case codeCh <- code:
+			return true
+		default:
+			return false
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != expectedState {
-			errCh <- fmt.Errorf("OAuth state mismatch")
+			sendErr(fmt.Errorf("OAuth state mismatch"))
 			http.Error(w, "State mismatch", http.StatusBadRequest)
 			return
 		}
 		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 			desc := r.URL.Query().Get("error_description")
-			errCh <- fmt.Errorf("OAuth error: %s: %s", errMsg, desc)
+			sendErr(fmt.Errorf("OAuth error: %s: %s", errMsg, desc))
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p><p>You can close this window.</p></body></html>", html.EscapeString(desc))
 			return
 		}
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			errCh <- fmt.Errorf("no authorization code in callback")
+			sendErr(fmt.Errorf("no authorization code in callback"))
 			http.Error(w, "Missing code", http.StatusBadRequest)
 			return
 		}
-		codeCh <- code
+		sendCode(code)
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html><body><h2>Authorization Successful</h2><p>You can close this window and return to Relay.</p></body></html>")
 	})
@@ -351,9 +437,9 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 			ReadTimeout:       10 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		codeCh:   codeCh,
-		errCh:    errCh,
-		done:     make(chan struct{}),
+		codeCh: codeCh,
+		errCh:  errCh,
+		done:   make(chan struct{}),
 	}
 	go func() {
 		defer close(srv.done)
@@ -472,6 +558,9 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 // postTokenEndpoint POSTs form data to the token endpoint and decodes the response.
 // Shared by exchangeCode and refreshAccessToken.
 func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oauthTokenResponse, error) {
+	if err := validateOAuthDiscoveryURL(meta.TokenEndpoint); err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
 	resp, err := oauthHTTPClient.PostForm(meta.TokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("%s request failed: %w", action, err)

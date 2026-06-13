@@ -45,11 +45,19 @@ var dispatcherTargetURL, _ = url.Parse(internalUnixHostURL)
 // newUnixHTTPTransport returns an http.Transport whose DialContext is
 // pinned to one Unix socket. Used by both the reverse proxy (one per
 // enhanced service) and the status client (one per service-status call).
+//
+// IdleConnTimeout bounds how long a keep-alive connection lingers after a
+// request completes. The status poller builds a transport per service per
+// tick, so without this the idle conn (plus its read-loop goroutine + FD)
+// would survive until GC. We deliberately do NOT set ResponseHeaderTimeout
+// here: the reverse proxy forwards long-poll routes (e.g. permission prompts)
+// that legitimately withhold response headers for minutes.
 func newUnixHTTPTransport(socket string) *http.Transport {
 	return &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		},
+		IdleConnTimeout: 90 * time.Second,
 	}
 }
 

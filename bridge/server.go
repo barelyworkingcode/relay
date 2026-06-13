@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,18 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
+	// Close the connection when the server (or this handler) is cancelled so a
+	// handler blocked in scanner.Scan() unblocks promptly at shutdown. Without
+	// this, StopAccepting() only cancels the context and closes the *listener* —
+	// an in-flight Scan() keeps waiting for the peer to disconnect, so Close()'s
+	// wg.Wait() can deadlock against a managed service that holds a persistent
+	// bridge connection and isn't killed until later in the teardown. The
+	// goroutine always exits because `defer cancel()` fires on return.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
 	scanner := NewScanner(conn)
 
 	// Serialize all writes to this connection: progress frames are written
@@ -136,8 +149,21 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 			return
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		slog.Debug("bridge connection read error", "error", err)
+	switch err := scanner.Err(); {
+	case err == nil:
+		// Clean EOF: peer closed the connection. Nothing to report.
+	case errors.Is(err, bufio.ErrTooLong):
+		// A single line exceeded MaxMessageSize. The scanner can't resync, so
+		// tell the caller why before dropping the connection — otherwise the
+		// client only sees a generic "read failed" when its own read errors out.
+		_ = writeFrame(bridgeError(jsonrpc.CodeInvalidParams, fmt.Sprintf("message exceeds maximum size of %d bytes", MaxMessageSize)))
+		slog.Warn("bridge: dropping connection, message exceeds size limit", "max_bytes", MaxMessageSize)
+	case ctx.Err() != nil:
+		// Connection was closed by shutdown (the socket-close-on-cancel above);
+		// the resulting read error is expected, not a fault.
+		slog.Debug("bridge connection closed during shutdown", "error", err)
+	default:
+		slog.Warn("bridge connection read error", "error", err)
 	}
 }
 
@@ -214,12 +240,16 @@ func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) B
 }
 
 func handleReloadMcp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	router.ReloadExternalMcp(ctx, req.Name)
+	if err := router.ReloadExternalMcp(ctx, req.Name); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
 	return BridgeResponse{Type: RespOK}
 }
 
 func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	router.ReloadService(req.Name)
+	if err := router.ReloadService(req.Name); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
 	return BridgeResponse{Type: RespOK}
 }
 

@@ -47,6 +47,11 @@ func (o *httpOAuth) toOAuthState() *OAuthState {
 // mcpSessionIDHeader is the header name for MCP session identification.
 const mcpSessionIDHeader = "Mcp-Session-Id"
 
+// maxSessionIDLen caps the Mcp-Session-Id value relay will store and echo back.
+// The header comes from an untrusted server; 1 KB is far beyond any legitimate
+// session token while bounding memory held per connection.
+const maxSessionIDLen = 1024
+
 // httpMcpConn implements McpConnection for Streamable HTTP transport.
 type httpMcpConn struct {
 	baseMcpConn
@@ -82,7 +87,7 @@ func (c *httpMcpConn) snapshot() sessionSnapshot {
 
 func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
-		url: cfg.URL,
+		url:        cfg.URL,
 		httpClient: &http.Client{
 			// No client-level Timeout: it covers the entire transaction including
 			// body reads, which would kill long-running SSE streams. Per-request
@@ -115,6 +120,7 @@ type tokenRefreshSnap struct {
 	clientID     string
 	clientSecret string
 	oauthURL     string
+	tokenExpiry  time.Time
 }
 
 // tokenRefreshSnapshot reads OAuth state under mu and returns whether a refresh
@@ -134,6 +140,7 @@ func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
 		clientID:     c.oauth.clientID,
 		clientSecret: c.oauth.clientSecret,
 		oauthURL:     c.oauth.url,
+		tokenExpiry:  c.oauth.tokenExpiry,
 	}, true
 }
 
@@ -148,6 +155,12 @@ func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthT
 	}
 	if tokenResp.ExpiresIn > 0 {
 		c.oauth.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	} else {
+		// No expires_in in the refresh response: clear the (now-stale) expiry so
+		// tokenRefreshSnapshot's IsZero() guard disables proactive refresh.
+		// Leaving the old past timestamp would make every subsequent request see
+		// now.After(expiry-window) and refresh on each call — a refresh storm.
+		c.oauth.tokenExpiry = time.Time{}
 	}
 	oauthState := c.oauth.toOAuthState()
 	c.mu.Unlock()
@@ -170,11 +183,26 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 		return nil
 	}
 
+	// stillValid reports whether the current access token has not yet expired.
+	// Refresh fires OAuthTokenRefreshWindow *before* expiry, so a transient
+	// refresh failure inside that window shouldn't fail the call — the existing
+	// token still works. Only hard-fail once the token is actually expired.
+	stillValid := func(err error) bool {
+		if !snap.tokenExpiry.IsZero() && time.Now().Before(snap.tokenExpiry) {
+			slog.Warn("OAuth proactive refresh failed; proceeding with still-valid token", "url", snap.oauthURL, "error", err)
+			return true
+		}
+		return false
+	}
+
 	// Discover metadata if needed (network I/O, no locks held).
 	meta := snap.meta
 	if meta == nil {
 		discovery, err := discoverOAuth(snap.oauthURL)
 		if err != nil {
+			if stillValid(err) {
+				return nil
+			}
 			return fmt.Errorf("discover OAuth metadata for refresh: %w", err)
 		}
 		meta = discovery.Metadata
@@ -183,6 +211,9 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	// Refresh token (network I/O, no locks held).
 	tokenResp, err := refreshAccessToken(meta, snap.refreshToken, snap.clientID, snap.clientSecret)
 	if err != nil {
+		if stillValid(err) {
+			return nil
+		}
 		return fmt.Errorf("token refresh: %w", err)
 	}
 
@@ -203,6 +234,15 @@ func (c *httpMcpConn) setHeaders(req *http.Request, snap sessionSnapshot) {
 }
 
 func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	// Bound the whole transaction so a hung or malicious HTTP MCP can't block a
+	// tool call (and its bridge handler goroutine) indefinitely. At runtime the
+	// caller's ctx carries no deadline; only startup wraps a tighter one, and
+	// context.WithTimeout keeps the earlier deadline, so this never loosens an
+	// existing bound. Mirrors stdio's MCPRequestTimeout hard cap. net/http
+	// cancels in-flight body reads on ctx expiry, so this bounds SSE bodies too.
+	ctx, cancel := context.WithTimeout(ctx, MCPRequestTimeout)
+	defer cancel()
+
 	// Refresh token outside the request lock to avoid blocking other requests.
 	if err := c.refreshTokenIfNeeded(); err != nil {
 		return nil, err
@@ -237,8 +277,13 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 		return nil, fmt.Errorf("HTTP MCP %s: HTTP %d: %s", method, resp.StatusCode, string(respBody))
 	}
 
-	// Update session ID from response under lock.
+	// Update session ID from response under lock. The value is echoed verbatim
+	// on every subsequent request, so cap its length: the remote server is
+	// untrusted and net/http only rejects CR/LF, not an unbounded header.
 	if sid := resp.Header.Get(mcpSessionIDHeader); sid != "" {
+		if len(sid) > maxSessionIDLen {
+			return nil, fmt.Errorf("HTTP MCP %s: server returned an oversized %s header (%d bytes)", method, mcpSessionIDHeader, len(sid))
+		}
 		c.mu.Lock()
 		c.sessionID = sid
 		c.mu.Unlock()
@@ -266,9 +311,11 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 // Per the SSE spec, an event's data can span multiple consecutive "data:" lines
 // (concatenated with newlines) and is terminated by a blank line.
 func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json.RawMessage, error) {
-	const maxDataSize = 1 << 20 // 1 MB cap on buffered SSE event data
+	const maxDataSize = 1 << 20  // 1 MB cap on buffered SSE event data
+	const maxSSEEvents = 1 << 20 // defense-in-depth event cap; the request timeout (SendRequest) is the primary bound
 	scanner := bridge.NewScanner(reader)
 	var dataBuf strings.Builder
+	events := 0
 
 	// flush parses the buffered data as a JSON-RPC response. Returns
 	// (result, err, matched) where matched indicates the response ID matched.
@@ -320,6 +367,10 @@ func (c *httpMcpConn) parseSSEResponse(reader io.Reader, expectedID int64) (json
 		if line == "" {
 			if result, err, matched := flush(); matched {
 				return result, err
+			}
+			events++
+			if events > maxSSEEvents {
+				return nil, fmt.Errorf("SSE stream exceeded %d events without a matching response for ID %d", maxSSEEvents, expectedID)
 			}
 		}
 	}

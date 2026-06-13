@@ -210,8 +210,8 @@ func TestIPCUpdateProject_PatchesNamedFieldsOnly(t *testing.T) {
 
 	newName := "Bravo"
 	raw := mustRaw(t, ipcUpdateProjectMsg{
-		ID:   proj.ID,
-		Name: &newName,
+		ID:                  proj.ID,
+		projectUpdateFields: projectUpdateFields{Name: &newName},
 	})
 	ipcUpdateProject(ipc, raw)
 
