@@ -89,40 +89,10 @@ func runMcpExec(args []string) {
 		return
 	}
 
-	// Call tool. Arguments come from --args-file (a path, or "-" for stdin) or
-	// inline --args. The file/stdin form avoids shell-quoting pitfalls for
-	// prompts containing quotes, apostrophes ("Van Gogh's"), or parentheses.
-	if *argsFile != "" && *toolArgs != "" {
-		fmt.Fprintln(os.Stderr, "error: pass either --args or --args-file, not both")
+	argsJSON, err := resolveToolArgs(*argsFile, *toolArgs, os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
-	}
-	var rawArgs string
-	switch {
-	case *argsFile == "-":
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading --args-file from stdin: %v\n", err)
-			os.Exit(1)
-		}
-		rawArgs = string(data)
-	case *argsFile != "":
-		data, err := os.ReadFile(*argsFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading --args-file: %v\n", err)
-			os.Exit(1)
-		}
-		rawArgs = string(data)
-	default:
-		rawArgs = *toolArgs
-	}
-
-	var argsJSON json.RawMessage
-	if strings.TrimSpace(rawArgs) != "" {
-		if !json.Valid([]byte(rawArgs)) {
-			fmt.Fprintf(os.Stderr, "error: invalid args JSON\n")
-			os.Exit(1)
-		}
-		argsJSON = json.RawMessage(rawArgs)
 	}
 
 	raw, err := client.CallTool(*tool, argsJSON)
@@ -146,4 +116,41 @@ func runMcpExec(args []string) {
 	if result.IsError {
 		os.Exit(1)
 	}
+}
+
+// resolveToolArgs determines the tool-arguments JSON from the mutually-exclusive
+// --args-file (a path, or "-" for stdin) and inline --args flags. The file/stdin
+// form is the shell-quoting-safe path that generated SKILL.md files rely on for
+// prompts containing quotes, apostrophes ("Van Gogh's"), or parentheses.
+// Returns (nil, nil) when no arguments are supplied; an error on conflicting
+// flags, an unreadable source, or invalid JSON.
+func resolveToolArgs(argsFile, toolArgs string, stdin io.Reader) (json.RawMessage, error) {
+	if argsFile != "" && toolArgs != "" {
+		return nil, fmt.Errorf("pass either --args or --args-file, not both")
+	}
+	var rawArgs string
+	switch {
+	case argsFile == "-":
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading --args-file from stdin: %w", err)
+		}
+		rawArgs = string(data)
+	case argsFile != "":
+		data, err := os.ReadFile(argsFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading --args-file: %w", err)
+		}
+		rawArgs = string(data)
+	default:
+		rawArgs = toolArgs
+	}
+
+	if strings.TrimSpace(rawArgs) == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(rawArgs)) {
+		return nil, fmt.Errorf("invalid args JSON")
+	}
+	return json.RawMessage(rawArgs), nil
 }

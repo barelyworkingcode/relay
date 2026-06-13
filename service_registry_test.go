@@ -14,12 +14,47 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"relaygo/bridge"
 )
+
+// waitFor polls cond until it returns true or timeout elapses, failing the
+// test with msg on timeout. Keeps the spawn-lifecycle tests free of repeated
+// deadline loops.
+func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", msg)
+}
+
+// readDumpedEnv parses a `VAR=value` per-line file written by
+// `testservice --dump-env` into a map.
+func readDumpedEnv(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dumped env %s: %v", path, err)
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(line, "=")
+		out[k] = v
+	}
+	return out
+}
 
 var (
 	testserviceBinOnce sync.Once
@@ -204,6 +239,187 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 	}
 }
 
+// TestServiceRegistry_Reload_RestartsInPlace exercises the real restart path
+// (Stop → Start) that `relay service restart`, the tray toggle, and config-save
+// all drive through Reload. Every other test substitutes a no-op reloader, so
+// this is the only coverage that the in-place restart actually tears down the
+// old process/token/manifest and stands up a fresh one. A regression in Stop's
+// "delete only if same proc" guard, the token rollover, or the manifest
+// re-registration would otherwise pass the suite silently.
+func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
+	binPath := buildTestServiceBinary(t)
+	enhanced := NewEnhancedServiceRegistry(nil)
+	router, reg := startSandboxBridge(t, enhanced)
+
+	cfg := &ServiceConfig{
+		ID:          "svc-reload",
+		DisplayName: "Test Reload",
+		Command:     binPath,
+		Args:        []string{"--register"},
+	}
+	if err := reg.Start(cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { reg.Stop(cfg.ID) })
+
+	// Capture the first generation's identity: pid + internal socket. The
+	// child binds a fresh per-pid socket on every spawn, so the socket path
+	// is a reliable discriminator between generations.
+	waitFor(t, 5*time.Second, "first manifest registration", func() bool {
+		return enhanced.Get(cfg.ID) != nil
+	})
+	firstPID := reg.PIDsByServiceID()[cfg.ID]
+	firstSocket := enhanced.Get(cfg.ID).InternalSocket
+	if firstPID == 0 || firstSocket == "" {
+		t.Fatalf("first generation not fully up: pid=%d socket=%q", firstPID, firstSocket)
+	}
+	if n := router.serviceTokens.Len(); n != 1 {
+		t.Fatalf("before reload want exactly 1 service token, got %d", n)
+	}
+
+	// Restart in place.
+	if err := reg.Reload(cfg.ID, cfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// New process is running under a different pid.
+	if !reg.IsRunning(cfg.ID) {
+		t.Fatal("service not running after Reload")
+	}
+	secondPID := reg.PIDsByServiceID()[cfg.ID]
+	if secondPID == 0 {
+		t.Fatal("no pid recorded after Reload")
+	}
+	if secondPID == firstPID {
+		t.Fatalf("Reload reused pid %d; expected a freshly spawned process", firstPID)
+	}
+
+	// Stop tears down the old token before Start registers the new one, so the
+	// count must stay at exactly 1 — never 0 (old leaked away) or 2 (old not
+	// cleaned up).
+	if n := router.serviceTokens.Len(); n != 1 {
+		t.Fatalf("after reload want exactly 1 service token, got %d", n)
+	}
+
+	// The new generation re-registers its manifest on a fresh internal socket.
+	waitFor(t, 5*time.Second, "manifest re-registration after reload", func() bool {
+		rec := enhanced.Get(cfg.ID)
+		return rec != nil && rec.InternalSocket != firstSocket
+	})
+}
+
+// TestServiceRegistry_Spawn_FrontendCredsIsolation pins the security boundary
+// documented in CLAUDE.md: relay's front-door bearer (RELAY_FRONTEND_*) must
+// reach frontend consumers (eve) but NEVER a backend — otherwise it leaks into
+// any shell the backend spawns. Previously this was only covered at the
+// frontendCredsEnabled predicate level; here we assert it at the actual spawn
+// line by reading the child's real injected environment.
+func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
+	binPath := buildTestServiceBinary(t)
+	enhanced := NewEnhancedServiceRegistry(nil)
+	_, reg := startSandboxBridge(t, enhanced)
+
+	// Wire a real frontend channel so creds *could* be injected.
+	reg.FrontendChannel = NewFrontendChannel()
+	t.Cleanup(reg.CloseFrontendChannel)
+	endpoint, err := reg.FrontendChannel.Ensure()
+	if err != nil {
+		t.Fatalf("Ensure frontend channel: %v", err)
+	}
+
+	dumpDir := mkShortTempDir(t, "envdump-")
+	backendEnvFile := filepath.Join(dumpDir, "backend.env")
+	frontendEnvFile := filepath.Join(dumpDir, "frontend.env")
+
+	falseVal := false
+	backend := &ServiceConfig{
+		ID:               "svc-backend",
+		DisplayName:      "Backend",
+		Command:          binPath,
+		Args:             []string{"--dump-env", backendEnvFile},
+		FrontendConsumer: &falseVal, // opt out
+	}
+	if err := reg.Start(backend); err != nil {
+		t.Fatalf("Start backend: %v", err)
+	}
+	t.Cleanup(func() { reg.Stop(backend.ID) })
+
+	frontend := &ServiceConfig{
+		ID:          "svc-frontend",
+		DisplayName: "Frontend",
+		Command:     binPath,
+		Args:        []string{"--dump-env", frontendEnvFile},
+		// FrontendConsumer nil → default (inject).
+	}
+	if err := reg.Start(frontend); err != nil {
+		t.Fatalf("Start frontend: %v", err)
+	}
+	t.Cleanup(func() { reg.Stop(frontend.ID) })
+
+	waitFor(t, 5*time.Second, "backend env dump", func() bool {
+		_, err := os.Stat(backendEnvFile)
+		return err == nil
+	})
+	waitFor(t, 5*time.Second, "frontend env dump", func() bool {
+		_, err := os.Stat(frontendEnvFile)
+		return err == nil
+	})
+
+	backendEnv := readDumpedEnv(t, backendEnvFile)
+	frontendEnv := readDumpedEnv(t, frontendEnvFile)
+
+	// Backend: front-door bearer absent; backend creds present.
+	if _, ok := backendEnv[EnvFrontendToken]; ok {
+		t.Errorf("backend leaked %s into its environment", EnvFrontendToken)
+	}
+	if _, ok := backendEnv[EnvFrontendSocket]; ok {
+		t.Errorf("backend leaked %s into its environment", EnvFrontendSocket)
+	}
+	if backendEnv[EnvServiceToken] == "" {
+		t.Errorf("backend missing %s", EnvServiceToken)
+	}
+	if backendEnv[EnvBridgeSocket] == "" {
+		t.Errorf("backend missing %s", EnvBridgeSocket)
+	}
+	if got := backendEnv[EnvServiceID]; got != backend.ID {
+		t.Errorf("backend %s = %q, want %q", EnvServiceID, got, backend.ID)
+	}
+
+	// Frontend consumer: receives the exact injected bearer + socket.
+	if got := frontendEnv[EnvFrontendToken]; got != endpoint.Token {
+		t.Errorf("frontend %s = %q, want injected token", EnvFrontendToken, got)
+	}
+	if got := frontendEnv[EnvFrontendSocket]; got != endpoint.Socket {
+		t.Errorf("frontend %s = %q, want injected socket", EnvFrontendSocket, got)
+	}
+}
+
+// TestServiceRegistry_StartAllAutostart_OnlyStartsEnabled verifies the boot-time
+// filter: services flagged autostart start, the rest don't. A regression that
+// inverts the predicate or starts everything would otherwise go unnoticed.
+func TestServiceRegistry_StartAllAutostart_OnlyStartsEnabled(t *testing.T) {
+	binPath := buildTestServiceBinary(t)
+	enhanced := NewEnhancedServiceRegistry(nil)
+	_, reg := startSandboxBridge(t, enhanced)
+
+	configs := []ServiceConfig{
+		{ID: "svc-auto", DisplayName: "Auto", Command: binPath, Autostart: true},
+		{ID: "svc-manual", DisplayName: "Manual", Command: binPath, Autostart: false},
+	}
+	reg.StartAllAutostart(configs)
+	t.Cleanup(reg.StopAll)
+
+	if !reg.IsRunning("svc-auto") {
+		t.Error("autostart service should be running")
+	}
+	if reg.IsRunning("svc-manual") {
+		t.Error("non-autostart service should NOT be running")
+	}
+	if ids := reg.RunningIDs(); len(ids) != 1 || ids[0] != "svc-auto" {
+		t.Errorf("RunningIDs = %v, want [svc-auto]", ids)
+	}
+}
+
 func TestServiceRegistry_OnProcessExit_FiresAfterExit(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	enhanced := NewEnhancedServiceRegistry(nil)
@@ -234,4 +450,3 @@ func TestServiceRegistry_OnProcessExit_FiresAfterExit(t *testing.T) {
 		t.Fatal("OnProcessExit never fired after service self-exit")
 	}
 }
-

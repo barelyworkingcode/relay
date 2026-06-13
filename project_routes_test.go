@@ -683,7 +683,3 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 		t.Fatalf("SKILL.md still present at %s after delete", skillFile)
 	}
 }
-
-// Suppress unused-import warning if a test that uses context is conditionally
-// excluded by a build tag later.
-var _ = context.Background

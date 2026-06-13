@@ -98,16 +98,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 	})
 
 	mux.HandleFunc("POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Name             string              `json:"name"`
-			Path             string              `json:"path"`
-			AllowedMcpIDs    []string            `json:"allowed_mcp_ids"`
-			AllowedModels    []string            `json:"allowed_models"`
-			ChatTemplates    []ChatTemplate      `json:"chat_templates"`
-			PermissionPolicy *PermissionPolicy   `json:"permission_policy,omitempty"`
-			GenerateSkill    bool                `json:"generate_skill,omitempty"`
-			DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
-		}
+		var body projectCreateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
@@ -120,27 +111,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		var created Project
 		var createErr error
 		if err := store.With(func(s *Settings) {
-			created, createErr = s.CreateProjectWithToken(
-				body.Name, body.Path,
-				body.AllowedMcpIDs, body.AllowedModels,
-				body.ChatTemplates,
-				mcps.AllContextSchemas(),
-			)
-			if createErr != nil {
-				return
-			}
-			if body.PermissionPolicy != nil {
-				s.UpdateProjectPermissionPolicy(created.ID, body.PermissionPolicy)
-			}
-			if body.GenerateSkill {
-				s.SetProjectGenerateSkill(created.ID, true)
-			}
-			for mcpID, disabled := range body.DisabledTools {
-				s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
-			}
-			if proj, _ := s.findProjectByID(created.ID); proj != nil {
-				created = *proj
-			}
+			created, createErr = applyProjectCreate(s, body, mcps.AllContextSchemas())
 		}); err != nil {
 			slog.Error("create project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
@@ -161,16 +132,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		id := r.PathValue("id")
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
-		var body struct {
-			Name             *string              `json:"name,omitempty"`
-			Path             *string              `json:"path,omitempty"`
-			AllowedMcpIDs    *[]string            `json:"allowed_mcp_ids,omitempty"`
-			AllowedModels    *[]string            `json:"allowed_models,omitempty"`
-			ChatTemplates    *[]ChatTemplate      `json:"chat_templates,omitempty"`
-			PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
-			GenerateSkill    *bool                `json:"generate_skill,omitempty"`
-			DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
-		}
+		var body projectUpdateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
@@ -190,67 +152,10 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 			}
 		}
 
-		// Schemas are only needed when path or MCPs change; defer the fetch
-		// (and its map allocation) so the common rename-only edit stays cheap.
-		needsSchemas := body.Path != nil || body.AllowedMcpIDs != nil
 		var updated Project
 		var found bool
 		if err := store.With(func(s *Settings) {
-			if proj, _ := s.findProjectByID(id); proj == nil {
-				return
-			}
-			var schemas map[string]json.RawMessage
-			if needsSchemas {
-				schemas = mcps.AllContextSchemas()
-			}
-			if body.Name != nil {
-				s.UpdateProjectName(id, *body.Name)
-			}
-			if body.Path != nil {
-				s.UpdateProjectPath(id, *body.Path, schemas)
-			}
-			if body.AllowedMcpIDs != nil {
-				s.UpdateProjectMcps(id, *body.AllowedMcpIDs, schemas)
-			}
-			if body.AllowedModels != nil {
-				s.UpdateProjectModels(id, *body.AllowedModels)
-			}
-			if body.ChatTemplates != nil {
-				s.UpdateProjectChatTemplates(id, *body.ChatTemplates)
-			}
-			if body.PermissionPolicy != nil {
-				policy := body.PermissionPolicy
-				// Empty struct (no fields set) is treated as "clear policy".
-				if policy.DefaultMode == "" && len(policy.AllowedTools) == 0 && len(policy.DeniedTools) == 0 {
-					policy = nil
-				}
-				s.UpdateProjectPermissionPolicy(id, policy)
-			}
-			if body.GenerateSkill != nil {
-				s.SetProjectGenerateSkill(id, *body.GenerateSkill)
-			}
-			if body.DisabledTools != nil {
-				// Replace the entire disabled-tools map: any MCP key omitted is
-				// reset to "all tools allowed". Mirrors the IPC update path.
-				existing := map[string]bool{}
-				if proj, _ := s.findProjectByID(id); proj != nil {
-					for k := range proj.DisabledTools {
-						existing[k] = true
-					}
-				}
-				for mcpID := range existing {
-					if _, kept := (*body.DisabledTools)[mcpID]; !kept {
-						s.UpdateProjectDisabledTools(id, mcpID, nil)
-					}
-				}
-				for mcpID, disabled := range *body.DisabledTools {
-					s.UpdateProjectDisabledTools(id, mcpID, disabled)
-				}
-			}
-			if proj, _ := s.findProjectByID(id); proj != nil {
-				updated = *proj
-				found = true
-			}
+			updated, found = applyProjectUpdate(s, id, body, mcps.AllContextSchemas)
 		}); err != nil {
 			slog.Error("update project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
@@ -318,11 +223,17 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		id := r.PathValue("id")
 		var newPlaintext string
 		var ok bool
+		var genErr error
 		if err := store.With(func(s *Settings) {
-			newPlaintext, ok = s.RotateProjectToken(id)
+			newPlaintext, ok, genErr = s.RotateProjectToken(id)
 		}); err != nil {
 			slog.Error("rotate project token: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
+			return
+		}
+		if genErr != nil {
+			slog.Error("rotate project token: token generation failed", "error", genErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
 			return
 		}
 		if !ok {

@@ -6,12 +6,13 @@ import "time"
 // Centralized timeout constants
 // ---------------------------------------------------------------------------
 
-const (
-	// MCPRequestTimeout is the maximum time to wait for a JSON-RPC response
-	// from any external MCP (stdio or HTTP). Tool calls can involve LLM
-	// inference or long-running operations, so this is generous.
-	MCPRequestTimeout = 5 * time.Minute
+// MCPRequestTimeout is the maximum time to wait for a JSON-RPC response from any
+// external MCP (stdio or HTTP). Tool calls can involve LLM inference or
+// long-running operations, so this is generous. A var (not const) so tests can
+// shorten it to exercise the request-timeout path deterministically.
+var MCPRequestTimeout = 5 * time.Minute
 
+const (
 	// MCPDiscoveryTimeout is the maximum time for a one-shot MCP discovery
 	// handshake (spawn, initialize, tools/list, kill).
 	MCPDiscoveryTimeout = 30 * time.Second

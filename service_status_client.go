@@ -62,11 +62,12 @@ func (c *ServiceStatusClient) DoAction(ctx context.Context, method, path string)
 	return c.do(ctx, method, path, nil)
 }
 
-// DoResource is the resource-CRUD entrypoint. Takes an optional JSON body
-// (nil for GET/DELETE, marshaled object for POST/PUT/PATCH) and returns
-// the response body verbatim for the UI to deserialize.
-func (c *ServiceStatusClient) DoResource(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
-	return c.do(ctx, method, path, body)
+// CloseIdleConnections releases this client's pooled connections. Callers that
+// build a client per use (the status poller fans out one per service per tick,
+// the action dispatcher one per action) must call this when done, or each
+// keep-alive Unix-socket conn (plus its reader goroutine + FD) lingers until GC.
+func (c *ServiceStatusClient) CloseIdleConnections() {
+	c.http.CloseIdleConnections()
 }
 
 func (c *ServiceStatusClient) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
