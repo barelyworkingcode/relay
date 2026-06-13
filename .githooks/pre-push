@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Pre-push hook: gate every push on the race detector.
+#
+# Install once per clone (same setting enables the pre-commit hook):
+#   git config core.hooksPath .githooks
+#
+# Skip on emergency:
+#   git push --no-verify
+#
+# What runs:
+#   go test -race ./...   — hermetic suite under the race detector
+#
+# The pre-commit hook already runs build + vet + test on every commit; this is
+# the slower race pass, kept at push time so commits stay fast. The -tags=live
+# tier still runs manually (it needs the ../relayLLM binary and spawns it).
+
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Only run if the repo has Go sources — keeps the hook a no-op in a docs-only
+# checkout.
+if ! ls ./*.go >/dev/null 2>&1; then
+    exit 0
+fi
+
+start=$(date +%s)
+
+echo "→ go test -race ./..."
+if ! go test -race ./...; then
+    echo "✗ race tests failed; push aborted"
+    echo "  (rerun with: go test -race -v ./...)"
+    exit 1
+fi
+
+elapsed=$(($(date +%s) - start))
+echo "✓ pre-push race checks passed in ${elapsed}s"
