@@ -12,7 +12,7 @@ hardened runtime, every protected service has two gates:
 1. **A static entitlement** in the requesting bundle's signed
    `*.entitlements` (e.g. `com.apple.security.personal-information.calendars`).
    Without it, `tccd` silently denies any request to that service for that
-   bundle — no prompt is ever shown to the user. Discovered in tccd's log as
+   bundle — no prompt is ever shown. Discovered in tccd's log as
    `Prompting policy for hardened runtime; service: kTCCServiceCalendar
    requires entitlement ... but it is missing`.
 2. **A runtime grant** in TCC's database, established by an interactive
@@ -49,20 +49,19 @@ The flow:
    TCC-using MCP. Clicking it runs the orchestrator in
    `mcp_permissions.go`:
    - `tccutil reset <Service> <bundleID>` per declared service to clear
-     stale entries on the MCP's own bundle (those can override the
-     inherited grant if left as `denied`).
+     stale entries on the MCP's own bundle (a `denied` row there can
+     override the inherited grant).
    - `primeRelayTccPermissions` bumps Relay from `.accessory` to
-     `.regular`, then calls `EKEventStore.requestFullAccess*` /
-     `CNContactStore.requestAccess` from Relay's own process via the
-     Cocoa primer functions in `cocoa_darwin.m`. Prompts surface labeled
-     "Relay wants to access X", attributed to `com.barelyworkingcode.relay`.
-   - Spawns the MCP with `--check-permissions` (using the same
-     `exec.Command` shape as `external_mcp.go`'s normal stdio spawn) so
-     the post-state status report comes from the runtime attribution
-     context. The output is shown in the UI summary.
-3. When the MCP actually serves a tool call at runtime, the
-   responsible-parent chain `MCP → relay tray → ...` lets `tccd` use
-   Relay's grant.
+     `.regular`, then fires the Cocoa primers in `cocoa_darwin.m`
+     (`EKEventStore.requestFullAccess*` / `CNContactStore.requestAccess`)
+     from Relay's own process. Prompts surface labeled "Relay wants to
+     access X", attributed to `com.barelyworkingcode.relay`.
+   - Spawns the MCP with `--check-permissions` (via `exec.Command`, the
+     same shape as `external_mcp.go`'s stdio spawn — never `open`, which
+     reparents to launchd and breaks the chain) so the post-state status
+     report comes from the runtime attribution context. Shown in the UI.
+3. At runtime, when the MCP serves a tool call, the responsible-parent
+   chain `MCP → relay tray → ...` lets `tccd` use Relay's grant.
 
 MCPs that don't need any TCC services (e.g. fsMCP) register without
 `--tcc-services` and never see the button.
@@ -86,19 +85,19 @@ MCPs that don't need any TCC services (e.g. fsMCP) register without
   Relay's grants for free.
 - Users grant access once (to Relay) and every MCP that declares the
   service works. No per-MCP TCC inventory in System Settings.
-- MCP authors don't need to write any TCC code — `PermissionsService`
-  in macMCP is purely status-reporting (`--check-permissions`).
+- MCP authors don't write any TCC code — `PermissionsService` in macMCP
+  is purely status-reporting (`--check-permissions`).
 
 **Negative:**
 
 - Adding a new TCC service is a 6-file change in Relay (entitlement,
   Info.plist, Cocoa primer, Go wrapper, primer dispatch, canonical
-  name table). Tracked in the checklist below.
+  name table). See the checklist below.
 - TCC grants the user sees in System Settings say "Relay", not the
   individual MCP. Worth noting in user-facing docs.
-- Bundles spawned by Relay must keep their own bundle's TCC entries
-  clear of `denied` rows for the inherited grant to win — that's what
-  the per-MCP `tccutil reset` step handles.
+- Bundles spawned by Relay must keep their own TCC entries clear of
+  `denied` rows for the inherited grant to win — that's the per-MCP
+  `tccutil reset` step.
 
 ## Checklist: adding a new TCC service
 
@@ -124,16 +123,15 @@ Example — Photos (`com.apple.security.personal-information.photos-library`):
   with the right entitlements. Also forces every MCP author to ship a
   TCC subsystem.
 - **Have the user grant access via System Settings manually.** Modern
-  System Settings doesn't have a "+" button for Calendars/Contacts/
-  Reminders — apps only appear after a successful prompt has been
-  shown. No manual fallback exists.
+  System Settings has no "+" button for Calendars/Contacts/Reminders —
+  apps only appear after a successful prompt. No manual fallback exists.
 - **Use `open ~/.local/bin/macmcp.app --args --request-permissions`.**
   Tried during development. TCC walks the responsible-process chain
   back to the calling terminal (Terminal/iTerm), creating a grant for
   the wrong bundle.
-- **Notarize and skip the entitlement story.** Notarization is
-  orthogonal — we verified via spctl that an unnotarized Developer ID
-  bundle with the right entitlements does get prompts.
+- **Notarize and skip the entitlement story.** Orthogonal — verified
+  via spctl that an unnotarized Developer ID bundle with the right
+  entitlements does get prompts.
 
 ## Reference
 
@@ -143,6 +141,7 @@ Example — Photos (`com.apple.security.personal-information.photos-library`):
 - `cocoa_darwin.m` — `cocoa_request_tcc_*` functions, activation-policy
   helpers, `WKUIDelegate` for the confirm dialog.
 - `Relay.entitlements` — the canonical entitlement set.
-- `ipc_mcp_permissions.go` + `settings.html` — IPC handler and UI button.
+- `ipc_mcp_permissions.go` (IPC handler) + `web/src/app.js` (UI button,
+  built into `web/dist/settings.html`).
 - `../macMCP/Sources/macMCP/Services/PermissionsService.swift` — the
-  read-only status surface from the MCP side.
+  read-only status surface on the MCP side.
