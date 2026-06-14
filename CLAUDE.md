@@ -1,196 +1,175 @@
 # Relay (Go)
 
-macOS MCP orchestrator and project manager. Tray app with project-scoped auth, Unix socket bridge, external MCP proxy (stdio and HTTP transports), and background service management.
+macOS MCP orchestrator and project manager. Tray app with project-scoped auth, a
+Unix-socket bridge, an external-MCP proxy (stdio + HTTP/OAuth), and background
+service management.
 
 ## Modes
 
-- `relay` -- tray app (default). Hosts bridge socket, manages services and projects, shows settings UI.
-- `relay mcp --token TOKEN` -- stdio MCP server. Connects to bridge socket, proxies tool calls. Token determines visible MCPs/tools.
-- `relay mcp register|unregister|list` -- CLI for external MCP server management.
-- `relay service register|unregister|restart|list` -- CLI for service self-registration. `restart` sends a `ReloadService` bridge message; the tray does Stop → Start in place.
+- `relay` — tray app (default). Hosts the bridge socket, manages services and projects, shows the settings UI.
+- `relay mcp --token TOKEN` — stdio MCP server. Connects to the bridge; the token determines visible MCPs/tools.
+- `relay mcp call --token TOKEN --list | --tool NAME [--args '<json>']` — one-shot list/invoke over the bridge (also spelled `relay mcpExec`). No long-lived session; handy for agents.
+- `relay mcp register|unregister|list` — external MCP management.
+- `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
 
 ## Architecture
 
-Relay is the container: it owns projects, MCPs, services, and the user-facing front door. Specific service knowledge lives in services, not in relay. Each enhanced service (relayLLM, relayScheduler, etc.) declares a manifest describing the routes it serves; relay's front-door dispatcher routes inbound traffic accordingly. See `plans/service-manifest-spec.md` for the protocol.
+Relay is the container: it owns projects, MCPs, services, and the user-facing
+front door. Service-specific knowledge lives in services, not in relay. Each
+enhanced service (relayLLM, relayScheduler, …) declares a manifest describing the
+routes it serves; relay's front-door dispatcher routes inbound traffic
+accordingly. Protocol: [`docs/service-manifest.md`](docs/service-manifest.md).
 
-Request flow: Browser → Eve → relay frontend socket → dispatcher → matching enhanced service. When an LLM in that service calls a tool: service's MCP client → `relay mcp` subprocess (project token) → bridge socket → router (auth, filter, _meta inject) → actual MCP server (fsMCP, macMCP, etc.) → result back up the chain.
+Request flow: Browser → Eve → relay frontend socket → dispatcher → matching
+enhanced service. When an LLM in that service calls a tool: service's MCP client
+→ `relay mcp` subprocess (project token) → bridge socket → router (auth, filter,
+`_meta` inject) → actual MCP server (fsMCP, macMCP, …) → result back up the chain.
 
 ### Key files
 
 ```
-trayapp.go             App lifecycle, menu, settings IPC, ToolRouter wiring
-settings.go            Config, project CRUD, permission derivation, SyncProjectToken
-project.go             CreateProjectWithToken, token generation
-tokens.go              hashToken, auth sentinel errors
-types.go               StoredToken, Project, ChatTemplate, ExternalMcp, ServiceConfig
-router.go              Auth (service → project tokens), tool filtering, _meta injection,
-                       appRouter.RegisterManifest bridges to the enhanced-services registry
-external_mcp.go        mcpConnection interface + stdio/HTTP MCP clients, runtime schema storage
-settings_html.go       Settings WKWebView HTML/JS
-mcp_cmd.go             CLI: relay mcp register/unregister/list
-service_cmd.go         CLI: relay service register/unregister/restart/list
-service_registry.go    Background process management, ephemeral service tokens.
-                       Injects RELAY_BRIDGE_SOCKET + RELAY_SERVICE_ID into every spawn.
-service_pidfile.go     Pidfile read/write under run/. Enables orphan reclaim on
-                       next launch when the tray is SIGKILLed.
-relay_llm_channel.go   Frontend channel: provisions the front-door Unix socket + bearer
-                       token that Eve and other frontend consumers dial. (Name retained
-                       for branch hygiene; rename to frontend_channel.go pending.)
-enhanced_services.go   In-memory registry of relay-enhanced services. Bridge handler
-                       writes on RegisterManifest; service_registry.Forget on exit;
-                       front-door dispatcher reads via LookupByPath. Caches a per-
-                       service *httputil.ReverseProxy with a pooling Transport.
-service_status_client.go   Generic per-service HTTP-over-Unix-socket client. Used by
-                           the Service Inspector for status polling + action dispatch.
-                           Holds zero service-specific knowledge.
-service_status_poller.go   Per-tick fan-out: polls every registered service's manifest-
-                           declared status endpoint, emits the batch (one snapshot per
-                           service) to the settings WebView via onServiceStatusBatch.
-ipc_service_action.go      Generic action dispatcher. UI sends {serviceId, actionId,
-                           row}; relay looks the action up in that service's manifest
-                           (whitelist), substitutes row keys into pathTemplate with
-                           URL-escaping, and dispatches via the status client. Refuses
-                           anything not declared in the manifest.
-ipc_service_config.go      Service config editor. A service's manifest declares a
-                           Config{path, schema, applyMode}; relay reads/writes that
-                           file directly (opaque text — never a service endpoint),
-                           validates it parses, and restarts the service to apply.
-                           Path goes through resolveConfigPath (service_config_file.go)
-                           — the symlink-escape / regular-file / size gate. The
-                           recursive schema renders a nested form in the Service
-                           Inspector (settings.html). Replaced the old resources[] CRUD.
-service_config_file.go     resolveConfigPath security gate + opaque-text read/write
-                           (atomic, size-capped, perm-preserving) for the config editor.
-ipc_projects.go            Projects-tab IPC handlers: create/update/remove project,
-                           rotate_project_token, regen_project_skill, update_project_
-                           disabled_tools, list_mcp_tools. Shares all Settings mutators
-                           with project_routes.go so HTTP (Eve) and IPC (tray UI) paths
-                           are interchangeable.
-frontend_server.go     Frontend HTTP server on the Unix socket. Project routes are
-                       wired locally; everything else falls through to the dispatcher.
-frontend_dispatcher.go Manifest-driven HTTP + WS dispatcher (one handler for both).
-bridge/                Unix socket IPC. Newline-delimited JSON. Includes the
-                       RegisterManifest request type and Manifest/Status/Action types.
-mcp/                   MCP types + stdio server (proxies to bridge)
-plans/service-manifest-spec.md  Service manifest protocol design.
+main.go                  Entry + command dispatch (relay / mcp / mcpExec / service)
+trayapp.go               App lifecycle, menu, settings IPC, ToolRouter wiring
+settings.go              Config, project CRUD, permission derivation
+settings_store.go        Atomic settings.json read/write
+types.go                 Project, StoredToken, ExternalMcp, ServiceConfig (Settings lives in settings.go)
+tokens.go                hashToken, auth sentinel errors
+project.go               Project + token creation
+project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
+project_dto.go           projectView DTO — strips the token from every response except rotate
+router.go                Bridge auth (service vs project tokens), tool filtering, _meta injection
+external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
+http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
+mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
+frontend_server.go       Front-door HTTP server; project routes local, rest falls through
+frontend_dispatcher.go   Manifest-driven HTTP + WS dispatcher (longest-prefix match)
+frontend_model_guard.go  Enforces a project's allowed_models before relayLLM sees the request
+relay_llm_channel.go     Provisions the frontend socket + bearer token (filename legacy; contents are the generic FrontendChannel)
+enhanced_services.go     In-memory registry of enhanced services; per-service reverse proxy
+service_registry.go      Background process management + ephemeral service tokens
+service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
+service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config)
+service_config_file.go   resolveConfigPath security gate for the manifest config editor
+settings_html.go         Settings WKWebView HTML/JS
+bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl
+mcp/                     MCP types + stdio server (proxies to the bridge)
 ```
 
 ## Projects
 
-Projects are the primary infrastructure boundary in `settings.json`. Each binds: path, allowed MCPs, allowed models, chat templates, scoped token, disabled tools, and context.
+Projects are the primary infrastructure boundary in `settings.json`. Each binds:
+path, allowed MCPs, allowed models, chat templates, scoped token, disabled tools,
+and context.
 
-- `allowed_mcp_ids: ["*"]` = all registered MCPs. Explicit IDs to restrict.
-- `allowed_models: ["*"]` = all models. Explicit IDs to restrict.
-- Permissions derived at auth time from `allowed_mcp_ids` — not stored separately.
-- `fs_bash` auto-disabled for filesystem MCPs. `allowed_dirs` auto-set to project path.
+- `allowed_mcp_ids: ["*"]` = all registered MCPs; explicit IDs to restrict.
+- `allowed_models: ["*"]` = all models; explicit IDs to restrict.
+- Permissions are derived at auth time from `allowed_mcp_ids` — not stored separately.
+- `fs_bash` auto-disabled for filesystem MCPs; `allowed_dirs` auto-set to the project path.
 
-Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → derive permissions from `allowed_mcp_ids` + registered MCPs → return `StoredToken` view with permissions + disabled_tools + context.
+Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → derive
+permissions from `allowed_mcp_ids` + registered MCPs → return a `StoredToken`
+view with permissions + disabled_tools + context.
 
-## Service Manifest (Enhanced Services)
+## Service manifest (enhanced services)
 
-Every spawned service receives `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID` env vars. Services that implement the manifest protocol dial the bridge with a `RegisterManifest` payload declaring (a) the routes they serve, (b) their internal Unix socket + bearer token, and (c) optional status endpoint / actions. Generic services ignore the env vars; relay never dispatches to them.
+Every spawned service gets `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID`. Services
+that implement the protocol dial the bridge with a `RegisterManifest` payload
+declaring (a) the routes they serve, (b) their internal Unix socket + bearer
+token, and (c) optional status endpoint, actions, and config editor. Generic
+services ignore the env vars; relay never dispatches to them.
 
-The dispatcher (`frontend_dispatcher.go`) does longest-prefix-match on registered routes; matches forward to the service's internal socket using its declared bearer token. WS upgrades are handled by the same dispatcher.
-
-The protocol is intentionally minimal — no `version`, no capability declarations, no service-ID hardcoding anywhere in relay. The full design and migration plan live in `plans/service-manifest-spec.md`.
+The dispatcher does longest-prefix match on registered routes and proxies to the
+service's internal socket using its declared token; WS upgrades share the same
+handler. The protocol is intentionally minimal — no version, no capability
+declarations, no service-ID hardcoding anywhere in relay. Full spec:
+[`docs/service-manifest.md`](docs/service-manifest.md).
 
 ## Security
 
-Full credential inventory: `docs/tokens.md`. Project-token brokering model: ADR-007 (`docs/decisions/007-project-token-brokering.md`).
+The four-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
+brokering rationale: ADR-007):
 
-- **Project tokens** (`RELAY_PROJECT_TOKEN`) -- inline in project (plaintext + SHA-256 hash). The token IS the security boundary, scoped to the project's allowed MCPs/tools. **Relay is the sole broker:** eve references projects by id only (the frontend `projectView` DTO strips the token from every HTTP response except `rotate_token`); relayLLM resolves the token just-in-time from the bridge by `projectId` (`ResolvePtyEnv`, validated against the directory via `dirWithinProject`), injects it into spawned children, and never stores it or accepts it from eve.
-- **Service tokens** (`RELAY_SERVICE_TOKEN`) -- ephemeral, in-memory. Full bridge access. For a service to authenticate its own bridge calls (`ResolvePtyEnv`, `RegisterManifest`). **Never injected into a spawned child shell** — if a project token can't be resolved, the child gets no token (fail closed), never the service token.
-- **Frontend channel** -- Eve and other frontend consumers dial `RELAY_FRONTEND_SOCKET` with `RELAY_FRONTEND_TOKEN` (Unix socket, 0600 perms). Bearer-checked on every HTTP + WS request before dispatch; an empty configured token fails closed. Relay injects these creds only into frontend consumers — backends register with `service register --no-frontend-creds` (`ServiceConfig.FrontendConsumer`) so the front-door bearer never lands in a backend's env (and thus never in a spawned shell).
-- **Enhanced internal sockets** -- each enhanced service picks its own internal socket + token and tells relay both via `RegisterManifest`. Relay strips inbound Authorization and injects the service-declared token when proxying. Distinct from frontend creds.
-- **OAuth 2.1** -- HTTP MCPs use PKCE, dynamic registration, auto-refresh. See `oauth.go`.
-- **TCC permissions** -- Relay holds the personal-information entitlements (`Relay.entitlements`) and fires the user prompts from its own process. MCPs declare what they need with `--tcc-services foo,bar` at registration and inherit Relay's grants via TCC's responsible-parent attribution at runtime. Settings UI's "Reset Permissions" button per MCP drives the flow. Full rationale + checklist for adding a new TCC service: `docs/decisions/005-tcc-permissions.md`.
+- **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Plaintext + SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
+- **Service token** (`RELAY_SERVICE_TOKEN`) — ephemeral, in-memory, full bridge access; lets a service authenticate its own bridge calls. **Never injected into a spawned child** — if a project token can't be resolved, the child gets no token (fail closed).
+- **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch; an empty configured token fails closed. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
+- **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
 
-## MCP Runtime Data
-
-`discovered_tools` and `context_schema` are `json:"-"` — runtime-only, held in `ExternalMcpManager`, never persisted. Settings UI queries the live manager.
+**TCC permissions** — relay holds the personal-information entitlements
+(`Relay.entitlements`) and fires the prompts from its own process; MCPs declare
+what they need with `--tcc-services foo,bar` and inherit relay's grants via TCC's
+responsible-parent attribution at runtime. Rationale + checklist for adding a TCC
+service: ADR-005.
 
 ## Settings UI
 
-IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage` (macOS).
-Tabs: Services, MCP Servers, Projects, Service Inspector.
+IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
+Services, MCP Servers, Projects, Service Inspector.
 
-### Projects tab
-
-Native, co-equal with Eve's project dialog — both hit the same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via `project_routes.go`). The tri-state per-MCP picker exposes `DisabledTools`; the token panel surfaces rotate-now (via `RotateProjectToken`); the Skill section surfaces `GenerateSkill` plus a manual `EmitSkills` trigger. Cross-process changes propagate live: HTTP project mutations fire the `onProjectsChanged` callback (wired through `NewFrontendServer`) which calls `pushFullProjects()` so an open Settings window re-renders.
-
-See `docs/decisions/004-project-mgmt-in-relay.md`.
+The Projects tab is native and co-equal with Eve's project dialog — both hit the
+same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via
+`project_routes.go`), so HTTP and IPC paths are interchangeable. Cross-process
+changes propagate live: an HTTP project mutation fires `onProjectsChanged`, which
+re-renders an open Settings window. See ADR-004.
 
 ## Ecosystem
 
-Services (managed via `relay service register`). First-party services are reference implementations of the manifest protocol — no privileged path in relay:
+First-party services are reference implementations of the manifest protocol — no
+privileged path in relay.
 
-- `../relayLLM/` -- LLM execution engine. Registers manifest covering `/api/sessions/*`, `/api/terminals/*`, `/api/models`, `/api/permission`, `/api/llama/*`, `/api/status`, `/api/generated/*`, `/ws`.
-- `../eve/` -- Browser-based frontend. Dials relay's frontend socket; relay dispatches to whatever backend serves each path.
-- `../relayScheduler/` -- Task scheduler. Registers its own manifest covering `/api/tasks/*`; dispatched directly (no longer proxied through relayLLM).
-- `../relayTelegram/` -- Telegram bot bridge.
-
-MCP Servers (managed via `relay mcp register`):
-
-- `../macMCP/` -- Swift, 41 macOS-native tools.
-- `../fsMCP/` -- TypeScript, 6 file system tools. Uses `_meta.allowed_dirs` for directory scoping.
+- `../relayLLM/` — LLM execution engine. Its manifest (see relayLLM's `manifest.go`) covers sessions, terminals, models, permission, status, generated assets, local-model (llama/mlx) management, and `/ws`.
+- `../eve/` — browser frontend; dials relay's frontend socket.
+- `../relayScheduler/` — task scheduler; registers `/api/tasks/*`, dispatched directly.
+- `../relayTelegram/` — Telegram bot bridge.
+- `../macMCP/` — Swift, macOS-native tools.
+- `../fsMCP/` — TypeScript file system tools; uses `_meta.allowed_dirs` for scoping.
 
 ## Build
 
 ```bash
-./build.sh              # default: builds + installs to /Applications/Relay.app and launches it
-./build.sh --test       # runs the hermetic test suite first; aborts install if anything fails
-./build.sh --release    # signs + notarizes + emits /tmp/Relay.dmg (Developer ID required)
+./build.sh              # build + install /Applications/Relay.app and launch it
+./build.sh --test       # run the hermetic suite first; abort install on failure
+./build.sh --release    # sign + notarize + emit /tmp/Relay.dmg (Developer ID required)
 ```
 
-`--test` and `--release` may be combined; `--release` implies `--test`.
-
-Requires: Go 1.22+, macOS.
+`--test` and `--release` may be combined; `--release` implies `--test`. Requires
+a recent Go toolchain (see `go.mod`) and macOS.
 
 ## Testing
 
-**Headline rule:** No test may read or mutate the real user config directory (`~/Library/Application Support/relay/`). Tests must always route through `mkSandboxRelayHome(t)` (defined in `support_test.go`), which redirects `bridge.ConfigDir()` to a per-test `t.TempDir()` populated from `test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite if anything in the real ConfigDir is modified during a test run.
+**Headline rule:** no test may read or mutate the real user config directory
+(`~/Library/Application Support/relay/`). Tests route through
+`mkSandboxRelayHome(t)` (in `support_test.go`), which redirects
+`bridge.ConfigDir()` to a per-test temp dir under `/tmp` (via `mkShortTempDir`,
+which sidesteps the 104-char Unix-socket path limit) populated from
+`test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite
+if anything in the real ConfigDir changes during a run.
 
 ### Three tiers
 
 | Command | What runs | When |
 |---|---|---|
 | `go test ./...` | Hermetic suite — pure Go, no spawned binaries, no user files | Every commit (pre-commit hook) |
-| `go test -tags=live ./...` | Spawns the real `../relayLLM` binary and exercises end-to-end | Manually after relay↔relayLLM boundary changes |
-| `go test -race ./...` | Hermetic suite + race detector | Weekly, or before merging concurrency changes |
+| `go test -tags=live ./...` | Spawns the real `../relayLLM` binary end-to-end | After relay↔relayLLM boundary changes |
+| `go test -race ./...` | Hermetic suite + race detector | Pre-push hook; before merging concurrency changes |
 
-### Install the pre-commit hook (one-time per clone)
-
-```bash
-git config core.hooksPath .githooks
-```
-
-The hook runs `go build ./... && go vet ./... && go test ./...` on any commit that touches `*.go`, `go.mod`, or `go.sum`. Skip with `git commit --no-verify` in emergencies only.
+Install the hooks once per clone: `git config core.hooksPath .githooks`.
 
 ### Adding a test
 
-1. Decide the tier (see ADR-001 — `docs/decisions/001-testing-strategy.md`). 95% of tests belong in the default hermetic tier.
-2. If your test reads or writes settings, pidfiles, logs, or the bridge socket: call `mkSandboxRelayHome(t)` first.
-3. If your test needs a working router + bridge + frontend: call `newTestRouter(t)`.
-4. If your test exercises a service that registers a manifest: use `FakeService(t, manifest)` (or `FakeRelayLLMService(t)` for the relayLLM contract).
-5. If your test needs a real spawned subprocess: use the `cmd/testservice` binary (built automatically by `TestMain`), never an `exec.Command` mock.
-6. Live-tier tests get `//go:build live` and `t.Skip` gracefully if `../relayLLM` isn't built.
+1. Pick the tier (ADR-001). ~95% belong in the default hermetic tier.
+2. Reading/writing settings, pidfiles, logs, or the bridge socket → call `mkSandboxRelayHome(t)` first.
+3. Need a working router → `newTestRouter(t, settings, mgr)`.
+4. Exercising a manifest-registering service → `NewFakeService(t, FakeServiceOptions{...})`. The relayLLM contract is covered by `integration_fake_relayllm_test.go`.
+5. Need a real spawned subprocess → the `cmd/testservice` / `cmd/testmcp` binaries, built on demand via `buildTestServiceBinary(t)` / `buildTestMcpBinary(t)`, never an `exec.Command` mock.
+6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully if `../relayLLM` isn't built.
 
-### Demo & screenshot harness
+### Not covered by the suite
 
-`scripts/demo.sh` launches relay against a writable copy of `test/fixtures/relay-home/` in `/tmp`, so screenshots and screencasts are reproducible and never expose real data. See the script's `--help` for `--reset` and `--scenario <name>` options. The same fixture tree backs both the test suite and the demo harness — see ADR-003 for content rules (no PII, no real tokens, no machine paths).
+- Cocoa tray UI (menu, dock) — exercise via `scripts/demo.sh`.
+- Real `launchd` integration — `service_registry` is tested against `cmd/testservice`.
+- Live OAuth round-trips — `oauth_test.go` covers PKCE/dynamic registration in isolation.
+- Notarization / code-signing — exercised by `./build.sh --release`.
 
-### What's NOT tested
-
-- Cocoa tray UI (`platform_darwin.go`, menu rendering, dock interactions) — exercise via `scripts/demo.sh`.
-- Real `launchd` integration — services spawned by `service_registry` are tested with the in-tree `cmd/testservice` binary instead.
-- OAuth 2.1 callbacks against real providers — the `oauth_test.go` suite covers PKCE/dynamic registration in isolation; live OAuth round-trips are manual.
-- Notarization / code-signing — exercised by `./build.sh --release`, not in the test suite.
-
-### Reference docs
-
-- `docs/decisions/001-testing-strategy.md` — three-tier model, sandbox rule
-- `docs/decisions/002-test-seams.md` — which production seams exist and why
-- `docs/decisions/003-fixture-layout.md` — fixture tree, content rules
-- `docs/decisions/004-project-mgmt-in-relay.md` — native project tab, mutator-sharing
-- `docs/decisions/005-tcc-permissions.md` — Relay holds TCC entitlements, MCPs inherit via responsible-parent attribution
-- `docs/testing-roadmap.md` — next services to bring up to this standard (eve, fsMCP, macMCP)
+ADRs: see [`docs/decisions/`](docs/decisions/). Cross-repo test status:
+[`docs/testing-roadmap.md`](docs/testing-roadmap.md).
