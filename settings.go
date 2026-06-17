@@ -250,6 +250,18 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 	proj.ChatTemplates = templates
 }
 
+// UpdateProjectShellTemplates replaces a project's shell_templates list.
+// Project-scoped terminal launch templates have no token/context impact, so no
+// SyncProjectToken call is needed (same as chat templates).
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectShellTemplates(id string, templates []ShellTemplate) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.ShellTemplates = templates
+}
+
 // UpdateProjectSessionFolders replaces a project's ordered session-folder
 // name list (Eve UI grouping metadata; relay never reads it). A nil/empty list
 // clears it so the serialized form stays minimal. Trims and de-duplicates

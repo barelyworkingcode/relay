@@ -66,6 +66,11 @@ type stubRouter struct {
 	resolvePtyResp PtyEnvResponse
 	resolvePtyErr  error
 
+	resolveTemplateReqs []ShellTemplateRequest
+	resolveTemplateToks []string
+	resolveTemplateResp ShellTemplateResponse
+	resolveTemplateErr  error
+
 	registerReqs []RegisterManifestRequest
 	registerToks []string
 	registerErr  error
@@ -146,6 +151,14 @@ func (s *stubRouter) ResolvePtyEnv(_ context.Context, req PtyEnvRequest, token s
 	s.resolvePtyReqs = append(s.resolvePtyReqs, req)
 	s.resolvePtyToks = append(s.resolvePtyToks, token)
 	return s.resolvePtyResp, s.resolvePtyErr
+}
+
+func (s *stubRouter) ResolveProjectTemplate(_ context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolveTemplateReqs = append(s.resolveTemplateReqs, req)
+	s.resolveTemplateToks = append(s.resolveTemplateToks, token)
+	return s.resolveTemplateResp, s.resolveTemplateErr
 }
 
 func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestRequest, token string) error {
@@ -378,6 +391,60 @@ func TestContract_ResolvePtyEnv(t *testing.T) {
 	}
 	if router.resolvePtyReqs[0].Project != "acme" {
 		t.Fatalf("request not forwarded: %+v", router.resolvePtyReqs[0])
+	}
+}
+
+func TestContract_ResolveProjectTemplate(t *testing.T) {
+	router := &stubRouter{
+		resolveTemplateResp: ShellTemplateResponse{
+			ID:      "ssh-box",
+			Name:    "Box SSH",
+			Command: "ssh",
+			Args:    []string{"me@box"},
+			Env:     map[string]string{"TERM": "xterm"},
+		},
+	}
+	sock := startTestBridge(t, router)
+	c := &Client{sockPath: sock, token: "svc"}
+
+	resp, err := c.ResolveProjectTemplate(ShellTemplateRequest{
+		ProjectID:  "proj-1",
+		TemplateID: "ssh-box",
+	})
+	if err != nil {
+		t.Fatalf("ResolveProjectTemplate: %v", err)
+	}
+	if resp.Command != "ssh" || resp.Name != "Box SSH" || len(resp.Args) != 1 || resp.Args[0] != "me@box" {
+		t.Fatalf("response mangled over the wire: %+v", resp)
+	}
+	if resp.Env["TERM"] != "xterm" {
+		t.Fatalf("env not carried over the wire: %+v", resp.Env)
+	}
+	if len(router.resolveTemplateReqs) != 1 ||
+		router.resolveTemplateReqs[0].ProjectID != "proj-1" ||
+		router.resolveTemplateReqs[0].TemplateID != "ssh-box" {
+		t.Fatalf("request ids not forwarded: %+v", router.resolveTemplateReqs)
+	}
+	if router.resolveTemplateToks[0] != "svc" {
+		t.Fatalf("token not forwarded: %v", router.resolveTemplateToks)
+	}
+}
+
+func TestContract_ResolveProjectTemplate_MissingArguments(t *testing.T) {
+	// The handler must reject a request with no Arguments before invoking the
+	// router — guards the empty-payload branch in handleResolveProjectTemplate.
+	router := &stubRouter{}
+	sock := startTestBridge(t, router)
+
+	resp := sendRaw(t, sock, BridgeRequest{
+		Type:  ReqResolveProjectTemplate,
+		Token: "svc",
+	})
+	if resp.Type != RespError {
+		t.Fatalf("expected error response for missing arguments; got %+v", resp)
+	}
+	if len(router.resolveTemplateReqs) != 0 {
+		t.Fatalf("router must not be invoked when arguments are missing; got %+v", router.resolveTemplateReqs)
 	}
 }
 

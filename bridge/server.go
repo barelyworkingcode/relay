@@ -175,15 +175,16 @@ type bridgeHandler struct {
 
 // bridgeHandlers maps request types to their handlers.
 var bridgeHandlers = map[string]bridgeHandler{
-	ReqListTools:             {handle: handleListTools},
-	ReqCallTool:              {handle: handleCallTool},
-	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
-	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
-	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
-	ReqListProjects:          {handle: handleListProjects},
-	ReqGetProject:            {handle: handleGetProject},
-	ReqResolvePtyEnv:         {handle: handleResolvePtyEnv},
-	ReqRegisterManifest:      {handle: handleRegisterManifest},
+	ReqListTools:              {handle: handleListTools},
+	ReqCallTool:               {handle: handleCallTool},
+	ReqReconcileExternalMcps:  {requireAdmin: true, handle: handleReconcile},
+	ReqReloadExternalMcp:      {requireAdmin: true, handle: handleReloadMcp},
+	ReqReloadService:          {requireAdmin: true, handle: handleReloadService},
+	ReqListProjects:           {handle: handleListProjects},
+	ReqGetProject:             {handle: handleGetProject},
+	ReqResolvePtyEnv:          {handle: handleResolvePtyEnv},
+	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
+	ReqRegisterManifest:       {handle: handleRegisterManifest},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -286,6 +287,25 @@ func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRou
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespPtyEnv, Data: data}
+}
+
+func handleResolveProjectTemplate(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_project_template: missing arguments")
+	}
+	var p ShellTemplateRequest
+	if err := json.Unmarshal(req.Arguments, &p); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "resolve_project_template: "+err.Error())
+	}
+	resp, err := router.ResolveProjectTemplate(ctx, p, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return bridgeError(jsonrpc.CodeInternalError, err.Error())
+	}
+	return BridgeResponse{Type: RespProjectTemplate, Data: data}
 }
 
 func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {

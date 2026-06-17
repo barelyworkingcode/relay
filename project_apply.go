@@ -11,6 +11,7 @@ type projectCreateFields struct {
 	AllowedMcpIDs    []string            `json:"allowed_mcp_ids"`
 	AllowedModels    []string            `json:"allowed_models"`
 	ChatTemplates    []ChatTemplate      `json:"chat_templates"`
+	ShellTemplates   []ShellTemplate     `json:"shell_templates"`
 	PermissionPolicy *PermissionPolicy   `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                `json:"generate_skill,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
@@ -26,6 +27,7 @@ type projectUpdateFields struct {
 	AllowedMcpIDs    *[]string            `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string            `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]ChatTemplate      `json:"chat_templates,omitempty"`
+	ShellTemplates   *[]ShellTemplate     `json:"shell_templates,omitempty"`
 	PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
 	GenerateSkill    *bool                `json:"generate_skill,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
@@ -56,6 +58,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 	}
 	if len(f.SessionFolders) > 0 {
 		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
+	}
+	if len(f.ShellTemplates) > 0 {
+		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
 	}
 	for mcpID, disabled := range f.DisabledTools {
 		s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
@@ -94,6 +99,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 	if f.ChatTemplates != nil {
 		s.UpdateProjectChatTemplates(id, *f.ChatTemplates)
+	}
+	if f.ShellTemplates != nil {
+		s.UpdateProjectShellTemplates(id, *f.ShellTemplates)
 	}
 	if f.PermissionPolicy != nil {
 		policy := f.PermissionPolicy
