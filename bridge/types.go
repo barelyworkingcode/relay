@@ -14,26 +14,28 @@ const MaxMessageSize = 10 * 1024 * 1024
 
 // Request type constants for the bridge wire protocol.
 const (
-	ReqListTools             = "ListTools"
-	ReqCallTool              = "CallTool"
-	ReqReconcileExternalMcps = "ReconcileExternalMcps"
-	ReqReloadExternalMcp     = "ReloadExternalMcp"
-	ReqReloadService         = "ReloadService"
-	ReqListProjects          = "ListProjects"
-	ReqGetProject            = "GetProject"
-	ReqResolvePtyEnv         = "ResolvePtyEnv"
-	ReqRegisterManifest      = "RegisterManifest"
+	ReqListTools              = "ListTools"
+	ReqCallTool               = "CallTool"
+	ReqReconcileExternalMcps  = "ReconcileExternalMcps"
+	ReqReloadExternalMcp      = "ReloadExternalMcp"
+	ReqReloadService          = "ReloadService"
+	ReqListProjects           = "ListProjects"
+	ReqGetProject             = "GetProject"
+	ReqResolvePtyEnv          = "ResolvePtyEnv"
+	ReqResolveProjectTemplate = "ResolveProjectTemplate"
+	ReqRegisterManifest       = "RegisterManifest"
 )
 
 // Response type constants for the bridge wire protocol.
 const (
-	RespTools    = "Tools"
-	RespResult   = "Result"
-	RespError    = "Error"
-	RespOK       = "OK"
-	RespProjects = "Projects"
-	RespProject  = "Project"
-	RespPtyEnv   = "PtyEnv"
+	RespTools           = "Tools"
+	RespResult          = "Result"
+	RespError           = "Error"
+	RespOK              = "OK"
+	RespProjects        = "Projects"
+	RespProject         = "Project"
+	RespPtyEnv          = "PtyEnv"
+	RespProjectTemplate = "ProjectTemplate"
 	// RespProgress is an intermediate, non-terminal frame emitted zero or more
 	// times during an in-flight CallTool before the terminal Result/Error.
 	// Clients that don't understand it skip it and keep reading.
@@ -108,6 +110,31 @@ type PtyEnvResponse struct {
 	WorkingDir string `json:"working_dir"`
 }
 
+// ShellTemplateRequest is the payload for ReqResolveProjectTemplate, carried in
+// BridgeRequest.Arguments as JSON. Service-token caller required. It resolves a
+// project-scoped shell (terminal) launch template definition by (ProjectID,
+// TemplateID) so relayLLM can spawn a private, project-only shell whose command
+// lives in relay's project record rather than relayLLM's global pty map.
+type ShellTemplateRequest struct {
+	ProjectID  string `json:"project_id"`
+	TemplateID string `json:"template_id"`
+}
+
+// ShellTemplateResponse is returned as BridgeResponse.Data on a successful
+// ReqResolveProjectTemplate. It mirrors the launch-relevant fields of a
+// project's ShellTemplate and carries NO credential — unlike ResolvePtyEnv,
+// this call must never return the project token, keeping ResolvePtyEnv the
+// single plaintext-token egress over the bridge (ADR-007).
+type ShellTemplateResponse struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Icon        string            `json:"icon,omitempty"`
+}
+
 // BridgeRequest is the wire format for requests sent over the Unix socket.
 type BridgeRequest struct {
 	Type      string          `json:"type"`                 // request type
@@ -173,6 +200,11 @@ type ToolRouter interface {
 	ListProjects(token string) (json.RawMessage, error)
 	GetProject(id string, token string) (json.RawMessage, error)
 	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
+
+	// ResolveProjectTemplate resolves a project-scoped shell (terminal) launch
+	// template by (ProjectID, TemplateID). Service-token authentication; returns
+	// only the template definition, never the project token.
+	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
 
 	// RegisterManifest stores an enhanced service's registration after the
 	// bridge has done schema-level validation. The router authenticates
