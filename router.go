@@ -416,6 +416,44 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	}, nil
 }
 
+// ResolveProjectTemplate returns a project-scoped shell (terminal) launch
+// template by (ProjectID, TemplateID). Service-token authentication required.
+//
+// It returns ONLY the template definition fields (command/args/env/…), never
+// the project token: ResolvePtyEnv is the sole plaintext-token egress over the
+// bridge and this call must not widen that surface. Do not be tempted to reuse
+// GetProject here — that marshals the raw Project including its plaintext token.
+//
+// relayLLM calls this to spawn a private, project-only shell whose command lives
+// in relay's project record rather than relayLLM's global pty map. The launch's
+// project token + working dir are still resolved separately via ResolvePtyEnv,
+// where the directory-within-project confused-deputy check lives; this call is
+// keyed purely on ids and binds no cwd.
+func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.ShellTemplateRequest, token string) (bridge.ShellTemplateResponse, error) {
+	if err := r.requireServiceToken(token, "ResolveProjectTemplate"); err != nil {
+		return bridge.ShellTemplateResponse{}, err
+	}
+
+	proj, _ := r.store.Get().findProjectByID(req.ProjectID)
+	if proj == nil {
+		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
+	}
+	for _, t := range proj.ShellTemplates {
+		if t.ID == req.TemplateID {
+			return bridge.ShellTemplateResponse{
+				ID:          t.ID,
+				Name:        t.Name,
+				Command:     t.Command,
+				Args:        t.Args,
+				Env:         t.Env,
+				Description: t.Description,
+				Icon:        t.Icon,
+			}, nil
+		}
+	}
+	return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("shell template not found: project_id=%q template_id=%q", req.ProjectID, req.TemplateID))
+}
+
 // findProjectForPty resolves the project for a PTY launch. Eve's terminal_create
 // only carries the working directory, so we accept either an explicit project
 // identifier (ID or name) or a directory match against Project.Path, in a

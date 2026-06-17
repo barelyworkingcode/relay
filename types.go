@@ -50,10 +50,10 @@ type ExternalMcp struct {
 	Command         string            `json:"command,omitempty"`
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
-	DiscoveredTools []ToolInfo        `json:"-"` // runtime-only; populated from live MCP connection
-	ContextSchema   json.RawMessage   `json:"-"` // runtime-only; discovered during MCP handshake
-	Transport       string            `json:"transport,omitempty"`    // "stdio" (default) or "http"
-	URL             string            `json:"url,omitempty"`          // MCP endpoint for HTTP transport
+	DiscoveredTools []ToolInfo        `json:"-"`                   // runtime-only; populated from live MCP connection
+	ContextSchema   json.RawMessage   `json:"-"`                   // runtime-only; discovered during MCP handshake
+	Transport       string            `json:"transport,omitempty"` // "stdio" (default) or "http"
+	URL             string            `json:"url,omitempty"`       // MCP endpoint for HTTP transport
 	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
 
 	// TccServices lists the macOS TCC services this MCP needs (e.g.
@@ -125,11 +125,34 @@ type ChatTemplate struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Model          string `json:"model"`
-	Mode           string `json:"mode,omitempty"`            // "text" | "voice"
+	Mode           string `json:"mode,omitempty"` // "text" | "voice"
 	Voice          string `json:"voice,omitempty"`
 	SystemPrompt   string `json:"system_prompt,omitempty"`
 	AppendClaudeMd bool   `json:"append_claude_md,omitempty"`
 	UseRelayTools  bool   `json:"use_relay_tools,omitempty"`
+}
+
+// ShellTemplate defines a project-scoped terminal launch template. Unlike the
+// global shell templates in relayLLM's settings.json `pty` map, these live on
+// the project record so a project can carry private shells (e.g. an ssh into a
+// specific host) that are not shared with other projects. relayLLM resolves one
+// by (projectID, templateID) over the bridge at launch time when its global
+// store misses, then spawns it through the same path as a global template.
+//
+// Fields mirror the launch-relevant subset of relayLLM's TerminalTemplate. The
+// relay-managed/global-only notions (BuiltIn, UseRelayToken, EnvPassthrough,
+// IdleTimeout) are deliberately omitted: a project-scoped template always gets
+// RELAY_PROJECT_TOKEN via its projectID launch path, and relayLLM stamps any
+// remaining defaults server-side when it hydrates the bridge response. Env is a
+// plain map persisted in settings.json (0600) — do not store secrets here.
+type ShellTemplate struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Icon        string            `json:"icon,omitempty"`
 }
 
 // PermissionPolicy is a per-project Claude permission policy. Forwarded to
@@ -156,9 +179,13 @@ type Project struct {
 	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
 	AllowedModels []string       `json:"allowed_models"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
-	Token         string         `json:"token"` // plaintext (settings.json is 0600)
-	TokenHash     string         `json:"token_hash"`
-	CreatedAt     string         `json:"created_at"`
+	// ShellTemplates are project-scoped terminal launch templates (private
+	// shells like ssh that aren't shared globally). Eve is the editor; relay
+	// serves them to relayLLM JIT over the bridge at launch.
+	ShellTemplates []ShellTemplate `json:"shell_templates,omitempty"`
+	Token          string          `json:"token"` // plaintext (settings.json is 0600)
+	TokenHash      string          `json:"token_hash"`
+	CreatedAt      string          `json:"created_at"`
 
 	// Per-project tool/context scoping (derived from allowed_mcp_ids at auth time).
 	DisabledTools map[string][]string        `json:"disabled_tools,omitempty"`
