@@ -63,6 +63,9 @@ func (s *stubRouter) GetProject(string, string) (json.RawMessage, error) { retur
 func (s *stubRouter) ResolvePtyEnv(context.Context, bridge.PtyEnvRequest, string) (bridge.PtyEnvResponse, error) {
 	return bridge.PtyEnvResponse{}, nil
 }
+func (s *stubRouter) ResolveProjectTemplate(context.Context, bridge.ShellTemplateRequest, string) (bridge.ShellTemplateResponse, error) {
+	return bridge.ShellTemplateResponse{}, nil
+}
 func (s *stubRouter) RegisterManifest(context.Context, bridge.RegisterManifestRequest, string) error {
 	return nil
 }

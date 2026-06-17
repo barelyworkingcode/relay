@@ -126,6 +126,32 @@ func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	return out, nil
 }
 
+// ResolveProjectTemplate asks relay for a project-scoped shell (terminal) launch
+// template definition by (ProjectID, TemplateID). Service-token authentication
+// required. The response carries only the template definition — never a token.
+func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplateResponse, error) {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return ShellTemplateResponse{}, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqResolveProjectTemplate,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return ShellTemplateResponse{}, fmt.Errorf("resolve project template: %w", err)
+	}
+	if err := checkError(resp); err != nil {
+		return ShellTemplateResponse{}, err
+	}
+	var out ShellTemplateResponse
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return ShellTemplateResponse{}, fmt.Errorf("parse response: %w", err)
+	}
+	return out, nil
+}
+
 // RegisterManifest tells relay where to reach this service and what it
 // exposes. Called on startup after the service has picked + bound its
 // own internal socket. Service-token authentication required.

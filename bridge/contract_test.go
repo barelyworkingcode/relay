@@ -66,6 +66,11 @@ type stubRouter struct {
 	resolvePtyResp PtyEnvResponse
 	resolvePtyErr  error
 
+	resolveTemplateReqs []ShellTemplateRequest
+	resolveTemplateToks []string
+	resolveTemplateResp ShellTemplateResponse
+	resolveTemplateErr  error
+
 	registerReqs []RegisterManifestRequest
 	registerToks []string
 	registerErr  error
@@ -146,6 +151,14 @@ func (s *stubRouter) ResolvePtyEnv(_ context.Context, req PtyEnvRequest, token s
 	s.resolvePtyReqs = append(s.resolvePtyReqs, req)
 	s.resolvePtyToks = append(s.resolvePtyToks, token)
 	return s.resolvePtyResp, s.resolvePtyErr
+}
+
+func (s *stubRouter) ResolveProjectTemplate(_ context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolveTemplateReqs = append(s.resolveTemplateReqs, req)
+	s.resolveTemplateToks = append(s.resolveTemplateToks, token)
+	return s.resolveTemplateResp, s.resolveTemplateErr
 }
 
 func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestRequest, token string) error {
