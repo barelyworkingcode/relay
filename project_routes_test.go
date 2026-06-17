@@ -179,6 +179,76 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	}
 }
 
+func TestProjectRoutes_ShellTemplates(t *testing.T) {
+	srv, _ := newProjectRoutesServer(t)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	// Create with a project-scoped shell template.
+	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
+		"name":           "Shells",
+		"path":           tmpDir,
+		"allowed_models": []string{"claude-opus"},
+		"shell_templates": []map[string]interface{}{
+			{
+				"id":          "ssh-box",
+				"name":        "Box SSH",
+				"command":     "ssh",
+				"args":        []string{"me@box"},
+				"description": "private shell",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d body %s", resp.StatusCode, body)
+	}
+	var created Project
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	// projectView must expose shell_templates (and still strip the token).
+	if created.Token != "" || created.TokenHash != "" {
+		t.Fatalf("create response leaked token: %+v", created)
+	}
+	if len(created.ShellTemplates) != 1 || created.ShellTemplates[0].Command != "ssh" {
+		t.Fatalf("shell_templates not round-tripped on create/view: %+v", created.ShellTemplates)
+	}
+	if len(created.ShellTemplates[0].Args) != 1 || created.ShellTemplates[0].Args[0] != "me@box" {
+		t.Errorf("shell template args not round-tripped: %+v", created.ShellTemplates[0])
+	}
+
+	// A rename (no shell_templates field) must LEAVE the list unchanged — the
+	// absent-vs-empty contract: nil pointer in projectUpdateFields = no change.
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"name": "Shells-Renamed",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
+	}
+	var renamed Project
+	if err := json.Unmarshal(body, &renamed); err != nil {
+		t.Fatalf("decode renamed: %v", err)
+	}
+	if len(renamed.ShellTemplates) != 1 {
+		t.Errorf("rename wiped shell templates (absent != clear): %+v", renamed.ShellTemplates)
+	}
+
+	// An explicit empty array CLEARS the list (set pointer to empty slice).
+	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
+		"shell_templates": []map[string]interface{}{},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear: status %d body %s", resp.StatusCode, body)
+	}
+	var cleared Project
+	if err := json.Unmarshal(body, &cleared); err != nil {
+		t.Fatalf("decode cleared: %v", err)
+	}
+	if len(cleared.ShellTemplates) != 0 {
+		t.Errorf("explicit empty array did not clear shell templates: %+v", cleared.ShellTemplates)
+	}
+}
+
 func TestProjectRoutes_CreateValidation(t *testing.T) {
 	srv, _ := newProjectRoutesServer(t)
 	defer srv.Close()
@@ -423,7 +493,7 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 	// Update policy via PUT.
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"permission_policy": map[string]interface{}{
-			"default_mode": "default",
+			"default_mode":  "default",
 			"allowed_tools": []string{"Read"},
 		},
 	})
