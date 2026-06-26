@@ -93,12 +93,12 @@ const fixtureExternalMcps = `[
 
 const fixtureServices = `[
   {"id":"relay-llm","display_name":"Relay LLM","command":"/Users/you/source/relayLLM/relayllm","args":["--router-port","8180"],"env":{},"autostart":true},
-  {"id":"kokoro-daemon","display_name":"kokoro-daemon","command":"/Users/you/source/kokoro/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true},
+  {"id":"relaytts-daemon","display_name":"relaytts-daemon","command":"/Users/you/source/relayTTS/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true},
   {"id":"stt-daemon","display_name":"STT Daemon","command":"/Users/you/source/whisper/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true},
   {"id":"relaycomfy","display_name":"relaycomfy","command":"/Users/you/source/relayComfy/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":false,"url":"http://localhost:8188"}
 ]`
 
-const fixtureRunningIDs = `["relay-llm","kokoro-daemon","stt-daemon"]`
+const fixtureRunningIDs = `["relay-llm","relaytts-daemon","stt-daemon"]`
 
 const fixtureProjects = `[
   {"id":"proj-acme","name":"Acme Website","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
