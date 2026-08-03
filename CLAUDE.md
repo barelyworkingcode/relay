@@ -71,6 +71,12 @@ Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → d
 permissions from `allowed_mcp_ids` + registered MCPs → return a `StoredToken`
 view with permissions + disabled_tools + context.
 
+`allow_cwd_auth` (default false, per project) opts into a token-less fallback:
+a caller with no token whose working directory is inside the project path
+authenticates as that project via `AuthenticateProjectByPath`, with identical
+scope. A present-but-invalid token never falls back. See
+[`docs/tokens.md`](docs/tokens.md#directory-auth-allow_cwd_auth).
+
 ## Service manifest (enhanced services)
 
 Every spawned service gets `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID`. Services
