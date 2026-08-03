@@ -374,6 +374,16 @@ func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
 	proj.GenerateSkill = gen
 }
 
+// SetProjectAllowCwdAuth toggles the AllowCwdAuth flag. Does not save; use
+// within store.With.
+func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.AllowCwdAuth = allow
+}
+
 // SyncProjectToken updates the project's disabled tools and context to match
 // its current allowedMcpIDs and path. Permissions are derived at auth time
 // from AllowedMcpIDs, so they're not stored.
@@ -508,6 +518,52 @@ func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	if proj == nil {
 		return nil
 	}
+	return s.storedTokenForProject(proj, hash)
+}
+
+// AuthenticateProjectByPath resolves a caller's working directory to a project
+// that has opted into directory auth (AllowCwdAuth) and returns the same
+// synthetic StoredToken the token path would produce. Returns nil when dir is
+// empty, matches nothing, or matches only projects that have NOT opted in —
+// every failure mode is "no access", never "all access".
+//
+// The scope granted is identical to the project's token: opting in changes how
+// a caller is *identified*, never what the project is allowed to reach.
+//
+// Nested projects resolve to the most specific match (longest project path
+// containing dir), so a project nested inside another wins for its own subtree.
+func (s *Settings) AuthenticateProjectByPath(dir string) *StoredToken {
+	if dir == "" {
+		return nil
+	}
+	var best *Project
+	bestLen := -1
+	for i := range s.Projects {
+		p := &s.Projects[i]
+		// Check the opt-in first: a project that hasn't enabled directory auth
+		// must not even participate in the longest-match race, or it could
+		// shadow an opted-in parent and turn a valid grant into a denial.
+		if !p.AllowCwdAuth || p.Path == "" {
+			continue
+		}
+		if !dirWithinProject(dir, p.Path) {
+			continue
+		}
+		if n := len(realpathBestEffort(p.Path)); n > bestLen {
+			best, bestLen = p, n
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return s.storedTokenForProject(best, best.TokenHash)
+}
+
+// storedTokenForProject builds the synthetic StoredToken view of a project:
+// permissions derived from AllowedMcpIDs, plus the project's disabled tools and
+// per-MCP context. Shared by every authentication path so a project's scope
+// cannot drift depending on how the caller was identified.
+func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToken {
 	// Wildcard: nil permissions map — checkToolAccess treats missing keys as allowed.
 	if isWildcard(proj.AllowedMcpIDs) {
 		return &StoredToken{

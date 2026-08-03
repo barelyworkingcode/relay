@@ -102,7 +102,7 @@ const fixtureRunningIDs = `["relay-llm","relaytts-daemon","stt-daemon"]`
 
 const fixtureProjects = `[
   {"id":"proj-acme","name":"Acme Website","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
-  {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}}
+  {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"allow_cwd_auth":true,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}}
 ]`
 
 const fixtureMcpToolCache = `{

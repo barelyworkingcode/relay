@@ -207,6 +207,19 @@ type Project struct {
 	// path is controlled per-template, not per-project, so it runs independent
 	// of this flag.
 	GenerateSkill bool `json:"generate_skill,omitempty"`
+
+	// AllowCwdAuth opts this project into token-less bridge auth for callers
+	// whose working directory is inside Path (see AuthenticateProjectByPath).
+	// Default false: without it, a tokenless caller gets nothing.
+	//
+	// This trades an explicit grant for convenience. With a token, a process
+	// holds this project's tool surface because something deliberately handed
+	// it the credential; with this flag, ANY process running as the user gets
+	// that surface by standing in the directory — a stray agent in a
+	// subdirectory included. It is not a privilege escalation across users
+	// (settings.json is 0600 and already holds every token in plaintext), but
+	// it does erase the deliberate hand-off, so it stays opt-in per project.
+	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
 }
 
 // Validate checks that required fields are present.

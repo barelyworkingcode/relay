@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"time"
 )
 
@@ -11,14 +12,25 @@ import (
 type Client struct {
 	sockPath string
 	token    string
+	cwd      string // sent only when token is empty; see BridgeRequest.Cwd
 }
 
 // NewClient creates a Client that will authenticate with the given token.
+//
+// With no token, the client falls back to directory auth: it sends its working
+// directory, which relay resolves against projects that opted in via
+// AllowCwdAuth. The cwd is captured once at construction (the process doesn't
+// chdir between calls) and is never sent alongside a token, so an authenticated
+// call can't be re-scoped by the directory it happens to run from.
 func NewClient(token string) *Client {
-	return &Client{
+	c := &Client{
 		sockPath: SocketPath(),
 		token:    token,
 	}
+	if token == "" {
+		c.cwd, _ = os.Getwd()
+	}
+	return c
 }
 
 // checkError returns an error if the bridge response is an error response.
@@ -34,6 +46,7 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
 		Type:  ReqListTools,
 		Token: c.token,
+		Cwd:   c.cwd,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
@@ -59,6 +72,7 @@ func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress
 		Name:      name,
 		Arguments: args,
 		Token:     c.token,
+		Cwd:       c.cwd,
 	}, onProgress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call tool %q: %w", name, err)

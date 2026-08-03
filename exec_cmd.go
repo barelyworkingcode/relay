@@ -29,23 +29,23 @@ func runMcpExec(args []string) {
 		// Transition: accept the legacy env name from an un-migrated spawner.
 		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
 	}
-	if *token == "" {
-		fmt.Fprintln(os.Stderr, "error: RELAY_PROJECT_TOKEN not set (and --token not provided)")
-		fmt.Fprintln(os.Stderr, "  export RELAY_PROJECT_TOKEN=<project-token>  # find it in Settings UI → Projects")
-		fmt.Fprintln(os.Stderr, "Usage: relay mcp call [--list [--schema] | --tool <name> [--args '<json>']]")
-		os.Exit(1)
-	}
+	// No token is no longer fatal: the bridge falls back to directory auth,
+	// which succeeds when the cwd is inside a project that enabled it. Relay
+	// decides — the CLI can't know which projects opted in, so it asks and
+	// reports whatever the bridge says (tokenlessHint expands the denial).
 	if !*list && *tool == "" {
 		fmt.Fprintln(os.Stderr, "error: must specify --list or --tool")
 		os.Exit(1)
 	}
 
 	client := bridge.NewClient(*token)
+	tokenless := *token == ""
 
 	if *list {
 		raw, err := client.ListTools()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			tokenlessHint(tokenless)
 			os.Exit(1)
 		}
 
@@ -98,6 +98,7 @@ func runMcpExec(args []string) {
 	raw, err := client.CallTool(*tool, argsJSON)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		tokenlessHint(tokenless)
 		os.Exit(1)
 	}
 
@@ -116,6 +117,18 @@ func runMcpExec(args []string) {
 	if result.IsError {
 		os.Exit(1)
 	}
+}
+
+// tokenlessHint prints the two ways to get authenticated, but only after a
+// failure on a run that supplied no token at all — a bad-token failure is a
+// different problem and shouldn't be answered with directory-auth advice.
+func tokenlessHint(tokenless bool) {
+	if !tokenless {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "\nNo token was supplied. Either:")
+	fmt.Fprintln(os.Stderr, "  export RELAY_PROJECT_TOKEN=<project-token>   # Settings UI → Projects → Bearer Token")
+	fmt.Fprintln(os.Stderr, "  or enable Settings UI → Projects → Directory Auth for the project containing this directory")
 }
 
 // resolveToolArgs determines the tool-arguments JSON from the mutually-exclusive

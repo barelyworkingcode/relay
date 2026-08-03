@@ -142,6 +142,15 @@ type BridgeRequest struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`  // tool arguments for CallTool
 	Token     string          `json:"token,omitempty"`      // auth token
 	ProjectID string          `json:"project_id,omitempty"` // for GetProject
+
+	// Cwd is the caller's working directory, sent ONLY when no token is set. It
+	// selects a project that has opted into directory auth (Project.AllowCwdAuth);
+	// relay ignores it whenever a token is present, so it can never widen the
+	// scope of an authenticated call. Advisory, not attested: the client asserts
+	// its own cwd. That is deliberate — anything able to lie here can already
+	// read every token out of the 0600 settings.json, so requiring kernel
+	// attestation would buy nothing.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 // BridgeResponse is the wire format for responses sent over the Unix socket.
@@ -187,6 +196,26 @@ func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
 func ProgressFromContext(ctx context.Context) ProgressFunc {
 	fn, _ := ctx.Value(progressCtxKey{}).(ProgressFunc)
 	return fn
+}
+
+type callerCwdCtxKey struct{}
+
+// WithCallerCwd returns ctx carrying the working directory a tokenless caller
+// asserted (BridgeRequest.Cwd). Carried in the context rather than added to
+// every ToolRouter method so the router interface — which cross-repo services
+// implement — stays unchanged. An empty dir returns ctx unchanged.
+func WithCallerCwd(ctx context.Context, dir string) context.Context {
+	if dir == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callerCwdCtxKey{}, dir)
+}
+
+// CallerCwdFromContext returns the caller-asserted working directory set by
+// WithCallerCwd, or "".
+func CallerCwdFromContext(ctx context.Context) string {
+	dir, _ := ctx.Value(callerCwdCtxKey{}).(string)
+	return dir
 }
 
 // ToolRouter handles bridge requests. Implemented by the main app.

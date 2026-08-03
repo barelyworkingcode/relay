@@ -30,6 +30,7 @@ type stubRouter struct {
 	mu sync.Mutex
 
 	listToolsTokens   []string
+	listToolsCwds     []string // caller-asserted cwd, as seen through the request context
 	listToolsResponse json.RawMessage
 	listToolsErr      error
 
@@ -76,10 +77,11 @@ type stubRouter struct {
 	registerErr  error
 }
 
-func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
+func (s *stubRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listToolsTokens = append(s.listToolsTokens, token)
+	s.listToolsCwds = append(s.listToolsCwds, CallerCwdFromContext(ctx))
 	return s.listToolsResponse, s.listToolsErr
 }
 
@@ -231,6 +233,51 @@ func TestContract_ListTools(t *testing.T) {
 	}
 	if len(router.listToolsTokens) != 1 || router.listToolsTokens[0] != "proj-token" {
 		t.Fatalf("token not forwarded; got %v", router.listToolsTokens)
+	}
+}
+
+// A tokenless client asserts its working directory so relay can fall back to
+// directory auth; the server hands it to the router through the request context.
+func TestContract_TokenlessSendsCwd(t *testing.T) {
+	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
+	sock := startTestBridge(t, router)
+	c := &Client{sockPath: sock, cwd: "/Users/you/projects/acme/sub"}
+
+	if _, err := c.ListTools(); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := router.listToolsCwds[0]; got != "/Users/you/projects/acme/sub" {
+		t.Fatalf("cwd not delivered to router; got %q", got)
+	}
+	if got := router.listToolsTokens[0]; got != "" {
+		t.Fatalf("expected an empty token, got %q", got)
+	}
+}
+
+// With a token, no cwd reaches the router even if the wire carries one — the
+// directory must never be able to re-scope an authenticated call.
+func TestContract_TokenSuppressesCwd(t *testing.T) {
+	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
+	sock := startTestBridge(t, router)
+
+	// NewClient wouldn't populate cwd alongside a token; set both by hand so
+	// this asserts the SERVER-side rule, not just the client's restraint.
+	c := &Client{sockPath: sock, token: "proj-token", cwd: "/Users/you/projects/acme"}
+	if _, err := c.ListTools(); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := router.listToolsCwds[0]; got != "" {
+		t.Fatalf("cwd leaked into an authenticated call: %q", got)
+	}
+}
+
+// NewClient captures a cwd only when it has no token to present.
+func TestNewClient_CwdOnlyWhenTokenless(t *testing.T) {
+	if c := NewClient(""); c.cwd == "" {
+		t.Error("tokenless client should capture its working directory")
+	}
+	if c := NewClient("some-token"); c.cwd != "" {
+		t.Errorf("tokened client should not capture a working directory, got %q", c.cwd)
 	}
 }
 

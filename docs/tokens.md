@@ -25,3 +25,37 @@ Notes:
 - Legacy env names `RELAY_TOKEN` / `RELAY_MCP_TOKEN` are accepted as transition
   fallbacks for one release, to be removed once relay + relayLLM have both shipped
   the rename.
+
+## Directory auth (`allow_cwd_auth`)
+
+A project may opt into token-less bridge auth: with `allow_cwd_auth: true`, a
+caller that presents **no** token but whose working directory is inside the
+project's path is authenticated as that project. Default is off, per project.
+
+- **Scope is unchanged.** The caller gets exactly the project's token scope —
+  same derived permissions, same `disabled_tools`, same `_meta` context, same
+  `project_id`. Directory auth changes how a caller is *identified*, never what
+  the project may reach.
+- **Only the absence of a token triggers it.** A token that is present but
+  invalid is still a hard failure; the fallback never rescues a bad credential.
+  Relay ignores an inbound `cwd` whenever a token is set, so a directory can't
+  re-scope an authenticated call.
+- **Service ops stay out of reach.** Directory auth yields a project-scoped
+  token, and `requireServiceToken` resolves against a bare context, so
+  `ResolvePtyEnv` / `RegisterManifest` / project reads can never be satisfied
+  this way.
+- **Nested projects** resolve to the most specific opted-in project containing
+  the directory. A nested project that has *not* opted in does not shadow an
+  opted-in parent.
+- **The cwd is asserted, not attested** — the client sends its own
+  `os.Getwd()`. That is deliberate: `settings.json` is 0600 and already holds
+  every project token in plaintext, so anything that could lie about its cwd can
+  already read the token it would be forging. This is not a boundary against
+  another user; it is a convenience for the local user.
+- **What it costs.** The deliberate hand-off. With a token, a process holds a
+  project's tools because something gave it the credential; with this flag, any
+  process running as the user gets them by standing in the directory. Grants are
+  logged (`cwd auth granted`) because that log is the only audit trail left.
+
+Enable per project in Settings → Projects → **Directory Auth**, or via
+`allow_cwd_auth` on the create/update project APIs (HTTP and IPC).
