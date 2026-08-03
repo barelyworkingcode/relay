@@ -14,6 +14,7 @@ type projectCreateFields struct {
 	ShellTemplates   []ShellTemplate     `json:"shell_templates"`
 	PermissionPolicy *PermissionPolicy   `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                `json:"generate_skill,omitempty"`
+	AllowCwdAuth     bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   []string            `json:"session_folders,omitempty"`
 }
@@ -30,6 +31,7 @@ type projectUpdateFields struct {
 	ShellTemplates   *[]ShellTemplate     `json:"shell_templates,omitempty"`
 	PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
 	GenerateSkill    *bool                `json:"generate_skill,omitempty"`
+	AllowCwdAuth     *bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   *[]string            `json:"session_folders,omitempty"`
 }
@@ -55,6 +57,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 	}
 	if f.GenerateSkill {
 		s.SetProjectGenerateSkill(created.ID, true)
+	}
+	if f.AllowCwdAuth {
+		s.SetProjectAllowCwdAuth(created.ID, true)
 	}
 	if len(f.SessionFolders) > 0 {
 		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
@@ -113,6 +118,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 	if f.GenerateSkill != nil {
 		s.SetProjectGenerateSkill(id, *f.GenerateSkill)
+	}
+	if f.AllowCwdAuth != nil {
+		s.SetProjectAllowCwdAuth(id, *f.AllowCwdAuth)
 	}
 	if f.SessionFolders != nil {
 		s.UpdateProjectSessionFolders(id, *f.SessionFolders)

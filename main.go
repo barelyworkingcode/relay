@@ -112,6 +112,9 @@ func runMcpOrServer(args []string) {
 		// Transition: accept the legacy env name from an un-migrated spawner.
 		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
 	}
+	// An empty token is not fatal: the bridge client falls back to directory
+	// auth, which relay honors only for projects that opted in (AllowCwdAuth).
+	// Failing here instead would deny that path before relay can decide.
 	if err := mcp.RunMCPServer(*token); err != nil {
 		exitError("mcp server error: %v", err)
 	}

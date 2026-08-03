@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -128,9 +129,13 @@ var (
 // resolveAuth loads settings and authenticates the given token.
 // Checks in-memory service tokens first (full access, no per-MCP permissions),
 // then project tokens (inline permissions), then external tokens in settings.
-func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
+//
+// With no token, falls back to directory auth (resolveCwdAuth) — opt-in per
+// project. A token that is present but wrong is always a hard failure: the
+// fallback must never rescue a bad credential, only the absence of one.
+func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken, *Settings, error) {
 	if token == "" {
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+		return r.resolveCwdAuth(ctx)
 	}
 
 	s := r.store.Get()
@@ -149,8 +154,30 @@ func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
 	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrInvalidToken)
 }
 
-func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
-	stored, settings, err := r.resolveAuth(token)
+// resolveCwdAuth authenticates a tokenless caller by the working directory it
+// asserted over the bridge. Only projects with AllowCwdAuth participate, and the
+// resulting scope is exactly the project's token scope — this identifies a
+// caller, it does not widen one. Grants are logged: directory auth has no
+// deliberate hand-off to point at afterwards, so the log is the audit trail.
+func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings, error) {
+	cwd := bridge.CallerCwdFromContext(ctx)
+	if cwd == "" {
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+	}
+
+	s := r.store.Get()
+	stored := s.AuthenticateProjectByPath(cwd)
+	if stored == nil {
+		slog.Debug("cwd auth rejected", "cwd", cwd)
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			fmt.Errorf("no token supplied and working directory %q is not inside a project with directory auth enabled", cwd))
+	}
+	slog.Info("cwd auth granted", "cwd", cwd, "project", stored.ProjectID, "name", stored.Name)
+	return stored, s, nil
+}
+
+func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
+	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -182,8 +209,8 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 // fallback in toolCategory is intentionally NOT used for keys — it produces
 // noise like "Generate" from generate_image; uncategorized tools route by
 // their MCP instead). Buckets are returned in a deterministic order.
-func (r *appRouter) ListSkillBuckets(_ context.Context, token string) ([]SkillBucket, error) {
-	stored, settings, err := r.resolveAuth(token)
+func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
+	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +261,7 @@ func (r *appRouter) ListSkillBuckets(_ context.Context, token string) ([]SkillBu
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	stored, _, err := r.resolveAuth(token)
+	stored, _, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -344,8 +371,12 @@ func (r *appRouter) ReloadService(id string) error {
 // requireServiceToken authenticates a token and rejects anything that isn't
 // a service token. Returns CodeUnauthorized on failure with op named in the
 // error for caller-friendly logging.
+//
+// Deliberately resolves against a bare context: service-token operations
+// (ResolvePtyEnv, RegisterManifest, project reads) must never be reachable by
+// directory auth, which only ever yields a project-scoped token.
 func (r *appRouter) requireServiceToken(token, op string) error {
-	stored, _, err := r.resolveAuth(token)
+	stored, _, err := r.resolveAuth(context.Background(), token)
 	if err != nil {
 		return err
 	}
@@ -483,6 +514,16 @@ func dirWithinProject(dir, projectPath string) bool {
 	if projectPath == "" {
 		return false
 	}
+	// Prefer filesystem identity when both paths exist: os.SameFile compares
+	// device + inode, so it sees through case-insensitive volumes (a stored
+	// "/users/Jonathan/x" really is the on-disk "/Users/jonathan/x") and any
+	// aliasing that string comparison would reject. Only ever adds matches for
+	// directories that genuinely ARE the project directory. Falls through to the
+	// textual check when either side can't be stat'd — paths that don't exist
+	// yet are legitimate here.
+	if within, decided := dirWithinProjectByIdentity(dir, projectPath); decided {
+		return within
+	}
 	// Resolve symlinks on both sides so e.g. macOS /var vs /private/var (or
 	// /tmp) don't false-reject a directory that really is inside the project.
 	dir = realpathBestEffort(dir)
@@ -499,6 +540,37 @@ func dirWithinProject(dir, projectPath string) bool {
 		return false
 	}
 	return true
+}
+
+// dirWithinProjectByIdentity walks from dir up to the filesystem root looking
+// for the directory that IS projectPath, comparing by device+inode. Returns
+// (result, true) once it can answer from the filesystem, or (false, false) when
+// the project path can't be stat'd and the caller should fall back to comparing
+// text. The walk is bounded by path depth and each step is a single stat.
+func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) {
+	projInfo, err := os.Stat(projectPath)
+	if err != nil || !projInfo.IsDir() {
+		return false, false
+	}
+	cur := filepath.Clean(dir)
+	for {
+		info, err := os.Stat(cur)
+		if err == nil {
+			if os.SameFile(info, projInfo) {
+				return true, true
+			}
+		} else if !os.IsNotExist(err) {
+			// Permission trouble or worse: don't claim an answer we can't back up.
+			return false, false
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root without meeting the project directory. The project
+			// exists and dir's whole chain was walkable, so this is a real "no".
+			return false, true
+		}
+		cur = parent
+	}
 }
 
 // realpathBestEffort cleans p and resolves symlinks. The path may not exist yet

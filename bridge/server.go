@@ -205,6 +205,13 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 		}
 	}
 
+	// Carry the caller-asserted cwd so the router can fall back to directory
+	// auth when no token was supplied. Ignored by every handler that doesn't
+	// authenticate a project.
+	if req.Token == "" {
+		ctx = WithCallerCwd(ctx, req.Cwd)
+	}
+
 	return h.handle(ctx, &req, s.router)
 }
 
