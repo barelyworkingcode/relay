@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -513,6 +514,16 @@ func dirWithinProject(dir, projectPath string) bool {
 	if projectPath == "" {
 		return false
 	}
+	// Prefer filesystem identity when both paths exist: os.SameFile compares
+	// device + inode, so it sees through case-insensitive volumes (a stored
+	// "/users/Jonathan/x" really is the on-disk "/Users/jonathan/x") and any
+	// aliasing that string comparison would reject. Only ever adds matches for
+	// directories that genuinely ARE the project directory. Falls through to the
+	// textual check when either side can't be stat'd — paths that don't exist
+	// yet are legitimate here.
+	if within, decided := dirWithinProjectByIdentity(dir, projectPath); decided {
+		return within
+	}
 	// Resolve symlinks on both sides so e.g. macOS /var vs /private/var (or
 	// /tmp) don't false-reject a directory that really is inside the project.
 	dir = realpathBestEffort(dir)
@@ -529,6 +540,37 @@ func dirWithinProject(dir, projectPath string) bool {
 		return false
 	}
 	return true
+}
+
+// dirWithinProjectByIdentity walks from dir up to the filesystem root looking
+// for the directory that IS projectPath, comparing by device+inode. Returns
+// (result, true) once it can answer from the filesystem, or (false, false) when
+// the project path can't be stat'd and the caller should fall back to comparing
+// text. The walk is bounded by path depth and each step is a single stat.
+func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) {
+	projInfo, err := os.Stat(projectPath)
+	if err != nil || !projInfo.IsDir() {
+		return false, false
+	}
+	cur := filepath.Clean(dir)
+	for {
+		info, err := os.Stat(cur)
+		if err == nil {
+			if os.SameFile(info, projInfo) {
+				return true, true
+			}
+		} else if !os.IsNotExist(err) {
+			// Permission trouble or worse: don't claim an answer we can't back up.
+			return false, false
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root without meeting the project directory. The project
+			// exists and dir's whole chain was walkable, so this is a real "no".
+			return false, true
+		}
+		cur = parent
+	}
 }
 
 // realpathBestEffort cleans p and resolves symlinks. The path may not exist yet

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"relaygo/bridge"
@@ -241,4 +242,68 @@ func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "read_file" {
 		t.Errorf("expected only read_file, got %+v", tools)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// dirWithinProject: filesystem identity
+// ---------------------------------------------------------------------------
+
+// A stored project path that differs only in case from the real directory must
+// still match on a case-insensitive volume — this is the common shape of a
+// hand-typed path ("/users/Jonathan/Eve/TBO" vs "/Users/jonathan/Eve/TBO").
+// Skipped on case-sensitive volumes, where the two really are different dirs.
+func TestDirWithinProject_CaseInsensitiveVolume(t *testing.T) {
+	// A named element, not t.TempDir()'s numeric leaf — digits have no case.
+	dir := filepath.Join(t.TempDir(), "ProjectDir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	variant := caseVariant(dir)
+	if variant == "" {
+		t.Skip("case-sensitive volume: no case variant resolves to the same directory")
+	}
+
+	if !dirWithinProject(dir, variant) {
+		t.Errorf("dir %q not matched against case-variant project path %q", dir, variant)
+	}
+	if !dirWithinProject(filepath.Join(dir, "sub"), variant) {
+		t.Errorf("subdirectory of %q not matched against %q", dir, variant)
+	}
+}
+
+// The identity walk must not turn unrelated directories into matches.
+func TestDirWithinProject_IdentityRejectsOutsiders(t *testing.T) {
+	proj := t.TempDir()
+	other := t.TempDir()
+
+	if dirWithinProject(other, proj) {
+		t.Errorf("unrelated dir %q matched project %q", other, proj)
+	}
+	if dirWithinProject(filepath.Dir(proj), proj) {
+		t.Errorf("parent of %q matched the project itself", proj)
+	}
+	// A path that doesn't exist yet still resolves textually.
+	if !dirWithinProject(filepath.Join(proj, "not", "created", "yet"), proj) {
+		t.Errorf("non-existent nested path should still match textually")
+	}
+}
+
+// caseVariant returns a case-flipped form of dir's last element that stats to
+// the same directory, or "" when the volume is case-sensitive.
+func caseVariant(dir string) string {
+	base := filepath.Base(dir)
+	flipped := strings.ToUpper(base)
+	if flipped == base {
+		flipped = strings.ToLower(base)
+	}
+	if flipped == base {
+		return ""
+	}
+	candidate := filepath.Join(filepath.Dir(dir), flipped)
+	a, err1 := os.Stat(dir)
+	b, err2 := os.Stat(candidate)
+	if err1 != nil || err2 != nil || !os.SameFile(a, b) {
+		return ""
+	}
+	return candidate
 }
