@@ -423,3 +423,52 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 func readFileExists(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
+
+// The allow_cwd_auth flag must survive create and be togglable both ways over
+// the shared apply path. Off is the security-relevant direction: a patch that
+// silently dropped `false` would leave directory auth impossible to revoke from
+// the UI.
+func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
+	ipc, store, ui, _ := newProjectsIPC(t)
+	raw := mustRaw(t, map[string]interface{}{
+		"name":            "Alpha",
+		"path":            t.TempDir(),
+		"allowed_mcp_ids": []string{"fsmcp"},
+		"allow_cwd_auth":  true,
+	})
+
+	ipcCreateProject(ipc, raw)
+	args, ok := findEvent(ui, "onProjectAdded")
+	if !ok {
+		t.Fatalf("expected onProjectAdded; got events=%+v", ui.events)
+	}
+	var added Project
+	_ = json.Unmarshal(args[0].(json.RawMessage), &added)
+	if persisted, _ := store.Get().findProjectByID(added.ID); !persisted.AllowCwdAuth {
+		t.Fatalf("allow_cwd_auth not persisted on create")
+	}
+
+	off := false
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:                  added.ID,
+		projectUpdateFields: projectUpdateFields{AllowCwdAuth: &off},
+	}))
+	if persisted, _ := store.Get().findProjectByID(added.ID); persisted.AllowCwdAuth {
+		t.Errorf("allow_cwd_auth still set after patching it off")
+	}
+
+	// An unrelated patch leaves the flag alone (pointer semantics).
+	on := true
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:                  added.ID,
+		projectUpdateFields: projectUpdateFields{AllowCwdAuth: &on},
+	}))
+	newName := "Bravo"
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:                  added.ID,
+		projectUpdateFields: projectUpdateFields{Name: &newName},
+	}))
+	if persisted, _ := store.Get().findProjectByID(added.ID); !persisted.AllowCwdAuth {
+		t.Errorf("allow_cwd_auth cleared by an unrelated patch")
+	}
+}

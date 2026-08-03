@@ -267,6 +267,64 @@ func TestProjectFormTemplatesReadOnly(t *testing.T) {
 	}
 }
 
+// TestProjectFormDirectoryAuth covers the allow_cwd_auth toggle end to end in
+// the form: it reflects the stored value, defaults to off for a new project,
+// and — the part that matters — always rides along in the save payload, since
+// update_project reads an absent field as "leave unchanged" and the toggle
+// would then be impossible to turn back OFF from the UI.
+func TestProjectFormDirectoryAuth(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.projects = [
+			{id:'p1', name:'On', path:'/tmp/on', allowed_mcp_ids:['*'], allowed_models:['*'],
+			 disabled_tools:{}, allow_cwd_auth:true},
+			{id:'p2', name:'Off', path:'/tmp/off', allowed_mcp_ids:['*'], allowed_models:['*'],
+			 disabled_tools:{}}
+		];
+		window.editProject('p1');
+		var onHtml = window.renderProjectForm();
+		var onPayload = window.harvestProjectForm();
+
+		window.editProject('p2');
+		var offHtml = window.renderProjectForm();
+		var offPayload = window.harvestProjectForm();
+
+		// Toggling off must survive into the payload as an explicit false.
+		window.editProject('p1');
+		window.state.projectForm.allow_cwd_auth = false;
+		var toggledOff = window.harvestProjectForm();
+
+		window.newProject();
+		var blank = window.state.projectForm;
+
+		var listHtml = (window.state.editingProjectId = null, window.renderProjects());
+
+		return JSON.stringify({
+			section: onHtml.indexOf('Directory Auth') >= 0,
+			warns: onHtml.indexOf('Any process running as you') >= 0,
+			onChecked: onHtml.indexOf('allow_cwd_auth = this.checked') >= 0 && /checked[^>]*onchange="state\.projectForm\.allow_cwd_auth/.test(onHtml),
+			offUnchecked: !/checked[^>]*onchange="state\.projectForm\.allow_cwd_auth/.test(offHtml),
+			onPayload: onPayload.allow_cwd_auth === true,
+			offPayload: offPayload.allow_cwd_auth === false,
+			toggledOff: toggledOff.allow_cwd_auth === false,
+			newDefaultsOff: blank.allow_cwd_auth === false,
+			listBadge: listHtml.indexOf('Dir auth') >= 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"section":true`, `"warns":true`, `"onChecked":true`, `"offUnchecked":true`,
+		`"onPayload":true`, `"offPayload":true`, `"toggledOff":true`,
+		`"newDefaultsOff":true`, `"listBadge":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("directory auth toggle: missing %s in %s", want, got)
+		}
+	}
+}
+
 // TestStatusPollPreservesConfigRegion is the regression test for the focus-clobber
 // bug: a steady-state status poll (same set of services) must update ONLY a
 // service's #svc-status-<id> region and leave #svc-config-<id> — where an open

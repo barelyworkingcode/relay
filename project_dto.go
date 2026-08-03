@@ -32,6 +32,7 @@ type projectView struct {
 	Context          map[string]json.RawMessage `json:"context,omitempty"`
 	PermissionPolicy *PermissionPolicy          `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
+	AllowCwdAuth     bool                       `json:"allow_cwd_auth,omitempty"`
 	SessionFolders   []string                   `json:"session_folders,omitempty"`
 }
 
@@ -49,6 +50,7 @@ func projectToView(p Project) projectView {
 		Context:          p.Context,
 		PermissionPolicy: p.PermissionPolicy,
 		GenerateSkill:    p.GenerateSkill,
+		AllowCwdAuth:     p.AllowCwdAuth,
 		SessionFolders:   p.SessionFolders,
 	}
 }

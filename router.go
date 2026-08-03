@@ -128,9 +128,13 @@ var (
 // resolveAuth loads settings and authenticates the given token.
 // Checks in-memory service tokens first (full access, no per-MCP permissions),
 // then project tokens (inline permissions), then external tokens in settings.
-func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
+//
+// With no token, falls back to directory auth (resolveCwdAuth) — opt-in per
+// project. A token that is present but wrong is always a hard failure: the
+// fallback must never rescue a bad credential, only the absence of one.
+func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken, *Settings, error) {
 	if token == "" {
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+		return r.resolveCwdAuth(ctx)
 	}
 
 	s := r.store.Get()
@@ -149,8 +153,30 @@ func (r *appRouter) resolveAuth(token string) (*StoredToken, *Settings, error) {
 	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrInvalidToken)
 }
 
-func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
-	stored, settings, err := r.resolveAuth(token)
+// resolveCwdAuth authenticates a tokenless caller by the working directory it
+// asserted over the bridge. Only projects with AllowCwdAuth participate, and the
+// resulting scope is exactly the project's token scope — this identifies a
+// caller, it does not widen one. Grants are logged: directory auth has no
+// deliberate hand-off to point at afterwards, so the log is the audit trail.
+func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings, error) {
+	cwd := bridge.CallerCwdFromContext(ctx)
+	if cwd == "" {
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+	}
+
+	s := r.store.Get()
+	stored := s.AuthenticateProjectByPath(cwd)
+	if stored == nil {
+		slog.Debug("cwd auth rejected", "cwd", cwd)
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			fmt.Errorf("no token supplied and working directory %q is not inside a project with directory auth enabled", cwd))
+	}
+	slog.Info("cwd auth granted", "cwd", cwd, "project", stored.ProjectID, "name", stored.Name)
+	return stored, s, nil
+}
+
+func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
+	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -182,8 +208,8 @@ func (r *appRouter) ListTools(_ context.Context, token string) (json.RawMessage,
 // fallback in toolCategory is intentionally NOT used for keys — it produces
 // noise like "Generate" from generate_image; uncategorized tools route by
 // their MCP instead). Buckets are returned in a deterministic order.
-func (r *appRouter) ListSkillBuckets(_ context.Context, token string) ([]SkillBucket, error) {
-	stored, settings, err := r.resolveAuth(token)
+func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
+	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +260,7 @@ func (r *appRouter) ListSkillBuckets(_ context.Context, token string) ([]SkillBu
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	stored, _, err := r.resolveAuth(token)
+	stored, _, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -344,8 +370,12 @@ func (r *appRouter) ReloadService(id string) error {
 // requireServiceToken authenticates a token and rejects anything that isn't
 // a service token. Returns CodeUnauthorized on failure with op named in the
 // error for caller-friendly logging.
+//
+// Deliberately resolves against a bare context: service-token operations
+// (ResolvePtyEnv, RegisterManifest, project reads) must never be reachable by
+// directory auth, which only ever yields a project-scoped token.
 func (r *appRouter) requireServiceToken(token, op string) error {
-	stored, _, err := r.resolveAuth(token)
+	stored, _, err := r.resolveAuth(context.Background(), token)
 	if err != nil {
 		return err
 	}

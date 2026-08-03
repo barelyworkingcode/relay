@@ -113,7 +113,7 @@ func TestResolveAuth_ValidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
-	stored, settings, err := r.resolveAuth(testToken)
+	stored, settings, err := r.resolveAuth(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -132,7 +132,7 @@ func TestResolveAuth_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
-	_, _, err := r.resolveAuth("completely-wrong-token")
+	_, _, err := r.resolveAuth(context.Background(), "completely-wrong-token")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
@@ -142,7 +142,7 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
-	_, _, err := r.resolveAuth("")
+	_, _, err := r.resolveAuth(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty token")
 	}
@@ -513,7 +513,7 @@ func TestResolveAuth_ServiceToken(t *testing.T) {
 	svcHash := hashToken(svcToken)
 	r.serviceTokens.Register(svcHash)
 
-	stored, _, err := r.resolveAuth(svcToken)
+	stored, _, err := r.resolveAuth(context.Background(), svcToken)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -523,7 +523,7 @@ func TestResolveAuth_ServiceToken(t *testing.T) {
 
 	// Cleanup.
 	r.serviceTokens.Remove(svcHash)
-	_, _, err = r.resolveAuth(svcToken)
+	_, _, err = r.resolveAuth(context.Background(), svcToken)
 	if err == nil {
 		t.Fatal("expected error after service token removal")
 	}
