@@ -11,6 +11,7 @@ service management.
 - `relay mcp call --token TOKEN --list | --tool NAME [--args '<json>']` — one-shot list/invoke over the bridge (also spelled `relay mcpExec`). No long-lived session; handy for agents.
 - `relay mcp register|unregister|list` — external MCP management.
 - `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
+- `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 
 ## Architecture
 
@@ -38,6 +39,9 @@ project.go               Project + token creation
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
 router.go                Bridge auth (service vs project tokens), tool filtering, _meta injection
+audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
+audit_call.go            Nil-safe per-call event builder used by the router instrumentation
+audit_cmd.go             `relay audit` CLI
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
@@ -49,7 +53,7 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 service_registry.go      Background process management + ephemeral service tokens
 service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
 service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
-ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config)
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl
@@ -101,6 +105,15 @@ brokering rationale: ADR-007):
 - **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch; an empty configured token fails closed. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
 - **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
 
+**Tool-call audit log** — every call, denial, and auth failure is recorded at
+`appRouter.CallTool`, the single chokepoint every transport funnels through.
+Attribution comes from relay's own auth resolution (project id) and the kernel
+(peer pid off the bridge socket), never from the caller. Arguments are redacted
+and capped; results are metadata-only unless explicitly opted in. The sink fails
+open and shows its drop count rather than stalling a tool call. Viewer:
+Settings → Tool Calls, or `relay audit`. Full reference:
+[`docs/audit-log.md`](docs/audit-log.md); rationale: ADR-008.
+
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare
 what they need with `--tcc-services foo,bar` and inherit relay's grants via TCC's
@@ -110,7 +123,7 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Service Inspector.
+Services, MCP Servers, Projects, Service Inspector, Tool Calls.
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via

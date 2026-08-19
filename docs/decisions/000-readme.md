@@ -32,6 +32,10 @@ ADR that references the old one. Do not edit accepted ADRs in place.
 - [007 — Relay is the sole broker of project tokens](007-project-token-brokering.md):
   Eve references projects by id only; relay resolves and injects the scoped
   project token just-in-time and never hands it to the frontend.
+- [008 — Tool-call audit log at the router chokepoint](008-tool-call-audit-log.md):
+  every call, denial, and auth failure is logged at `appRouter.CallTool`;
+  attribution from relay + the kernel, redacted args, metadata-only results,
+  fail-open but visibly so.
 
 ## Format
 

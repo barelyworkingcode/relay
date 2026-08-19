@@ -120,6 +120,8 @@ var mockBridgeScript = `<script>
 (function () {
   var FIXTURE_CONFIG_TEXT = ` + jsString(fixtureConfigText) + `;
   var FIXTURE_TOOLS = ` + inlineJSON(fixtureMcpToolCacheTools) + `;
+  var FIXTURE_AUDIT = ` + inlineJSON(fixtureAuditEvents) + `;
+  var FIXTURE_AUDIT_STATUS = ` + inlineJSON(fixtureAuditStatus) + `;
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
@@ -133,6 +135,9 @@ var mockBridgeScript = `<script>
         break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
       case 'service_action': window.onServiceActionResult({ serviceId: msg.serviceId, actionId: msg.actionId, row: msg.row, ok: true }); break;
+      case 'query_audit': window.onAuditEvents(FIXTURE_AUDIT, FIXTURE_AUDIT_STATUS); break;
+      case 'export_audit': window.onAuditExported('/Users/you/Library/Application Support/relay/logs/audit/toolcalls-export-20260819-150000.jsonl'); break;
+      case 'reveal_audit_log': console.log('[devui] would reveal the audit log'); break;
       // add/update/remove/start/stop etc. — no-op in the harness, just logged above
     }
   }
@@ -154,6 +159,43 @@ var pollSimScript = `<script>
   setInterval(fire, 2000); // mirrors StatusPollInterval
 })();
 </script>`
+
+// fixtureAuditEvents covers every outcome the Tool Calls tab renders
+// differently: a plain success, a protocol-level tool error, a permission
+// denial, an unauthenticated attempt, a directory-auth grant, and a record
+// whose arguments were truncated.
+const fixtureAuditEvents = `[
+  {"id":"ev-1","ts":"2026-08-19T10:24:02.117Z","dur_ms":412,"event":"call_tool",
+   "actor":{"kind":"project","project_id":"proj-acme","project_name":"Acme Website","auth":"token","pid":41221,"proc":"relay","parent":"claude"},
+   "mcp_id":"fsmcp","tool":"read_file","args":{"path":"/Users/you/projects/acme/README.md"},"args_bytes":48,
+   "outcome":"ok","result_bytes":20431},
+
+  {"id":"ev-2","ts":"2026-08-19T10:23:58.004Z","dur_ms":1,"event":"call_tool",
+   "actor":{"kind":"project","project_id":"proj-internal","project_name":"Internal Tools","auth":"token","pid":41219,"proc":"relay","parent":"node"},
+   "mcp_id":"fsmcp","tool":"write_file","args":{"path":"/etc/hosts","content":"…"},"args_bytes":96,
+   "outcome":"denied","error":"access denied: tool 'write_file' is disabled for this token"},
+
+  {"id":"ev-3","ts":"2026-08-19T10:23:44.882Z","dur_ms":88,"event":"call_tool",
+   "actor":{"kind":"project","project_id":"proj-internal","project_name":"Internal Tools","auth":"cwd","cwd":"/Users/you/projects/internal/pkg","pid":41210,"proc":"relay","parent":"zsh"},
+   "mcp_id":"fsmcp","tool":"list_dir","args":{"path":"/Users/you/projects/internal/pkg"},"args_bytes":52,
+   "outcome":"ok","result_bytes":812},
+
+  {"id":"ev-4","ts":"2026-08-19T10:22:31.412Z","dur_ms":1503,"event":"call_tool",
+   "actor":{"kind":"project","project_id":"proj-acme","project_name":"Acme Website","auth":"token","pid":41180,"proc":"relay","parent":"claude"},
+   "mcp_id":"macmcp","tool":"calendar_events","args":{"range":"today","api_key":"[redacted]"},"args_bytes":64,
+   "outcome":"ok","result_bytes":4096,"result_is_error":true},
+
+  {"id":"ev-5","ts":"2026-08-19T10:21:09.230Z","dur_ms":0,"event":"call_tool",
+   "actor":{"kind":"unknown","auth":"token","pid":40997,"proc":"curl","parent":"zsh"},
+   "tool":"read_file","outcome":"unauthorized","error":"invalid token"},
+
+  {"id":"ev-6","ts":"2026-08-19T10:20:55.100Z","dur_ms":233,"event":"call_tool",
+   "actor":{"kind":"project","project_id":"proj-acme","project_name":"Acme Website","auth":"token","pid":40940,"proc":"relay","parent":"claude"},
+   "mcp_id":"fsmcp","tool":"write_file","args":"{\"path\":\"/Users/you/projects/acme/bundle.js\",\"content\":\"(function(){var a=1;","args_bytes":184320,"args_truncated":true,
+   "outcome":"ok","result_bytes":32}
+]`
+
+const fixtureAuditStatus = `{"enabled":true,"path":"/Users/you/Library/Application Support/relay/logs/audit/toolcalls.jsonl","dropped":0,"recorded":6,"log_args":true,"log_lists":false}`
 
 // fixtureMcpToolCacheTools is the tool list keyed by MCP id, served to
 // list_mcp_tools requests (the project tri-state picker).
