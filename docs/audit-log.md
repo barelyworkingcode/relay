@@ -8,15 +8,22 @@ Read it in the tray under **Settings → Tool Calls**, or from a terminal with
 
 ## What is recorded
 
-All three of these produce a record, because a refusal is usually the more
+Every one of these produces a record, because a refusal is usually the more
 interesting event:
 
 | Outcome | Meaning |
 |---|---|
 | `ok` | The call reached the MCP and returned |
 | `error` | The call failed (transport error, unknown tool, or the MCP errored) |
+| `tool_error` | The call completed and the MCP answered `isError` |
 | `denied` | A resolved credential was refused a tool it may not use |
 | `unauthorized` | The credential itself did not resolve |
+| `throttled` | A remote enrolment's rate or volume budget was exceeded |
+| `pending` | An intent record, written before the call ran and awaiting its completion |
+
+`throttled` is deliberately distinct from `denied` and `tool_error`: it is the
+only one of the three that says the grant was legitimate and the *pattern of
+use* was not, which is what exfiltration looks like from the host's side.
 
 One JSONL line per event:
 
@@ -53,12 +60,29 @@ from anything the caller asserted:
   the same value relay injects into `_meta.project_id`.
 - `auth` is how the caller was identified: `token` (a project token was
   presented), `cwd` ([directory auth](tokens.md#directory-auth-allow_cwd_auth)),
-  or `service` (a full-access service token).
+  `service` (a full-access service token), or `mtls` (a client certificate on
+  the remote listener).
 - `cwd` appears only for directory auth. That grant has no deliberate credential
   hand-off to point at afterwards, so the log is its audit trail.
 - `pid` is read off the bridge socket with `getsockopt(LOCAL_PEERPID)`, so it
   cannot be forged by the caller. `proc` and `parent` are resolved from it via
   `proc_pidinfo`.
+
+For a caller on the remote listener the actor looks different, because a pid
+means nothing across a network:
+
+- `kind` is `remote` and `auth` is `mtls`.
+- `client_id` names the enrolment the client certificate resolved to,
+  `fingerprint` is that certificate's fingerprint **in full**, and
+  `remote_addr` is the peer address. All three come from the connection and
+  none of them can be asserted by the caller.
+- `pid` / `proc` / `parent` are **absent**, not zero — an omitted field reads
+  as "not applicable" rather than "unknown".
+- `project_id` / `project_name` are still populated: the caller is remote *and*
+  is acting as a project grant, and both facts matter.
+
+Filter on it with `relay audit --kind remote`, or the caller dropdown in the
+Tool Calls tab.
 
 `parent` is usually the field you want. `relay mcp` opens a fresh connection —
 and often a fresh process — per call, so `proc` names a throwaway subprocess
@@ -130,6 +154,23 @@ A bounded in-memory ring of the most recent `ring_size` events backs the Tool
 Calls tab's first paint and its live tail, so opening the tab never re-reads the
 file.
 
+## Two records for a remote call
+
+A local call is one record, written after the call completes. A call from the
+remote listener is two, sharing one event `id`:
+
+| `phase` | When | Holds |
+|---|---|---|
+| `intent` | before the MCP is invoked | actor, tool, redacted arguments, `outcome: "pending"` |
+| `completion` | when the call returns | the same, plus outcome, duration and result metadata |
+
+A record with no `phase` at all is a single-record (local) event, which is
+every line written before this existed.
+
+**An intent with no matching completion is a signal, not noise.** It means relay
+invoked an MCP and never learned the outcome — a crash, a kill, or a hang. It is
+worth alerting on rather than reconciling away.
+
 ## Fail-open, visibly
 
 Events are handed to a single writer goroutine over a bounded channel. If that
@@ -140,8 +181,19 @@ complete is worse than no log.
 
 This is a deliberate choice for local use: logging must not be able to break
 your tooling. It is the wrong choice for a remote caller, where the trust
-boundary justifies refusing a call that cannot be recorded; a fail-closed mode
-is planned alongside remote access.
+boundary justifies refusing a call that cannot be recorded.
+
+**Remote callers are therefore fail-closed.** The intent record is written and
+flushed to disk before the MCP is invoked, and if that write fails the call is
+refused and the MCP never runs. Writing *after* the call, as the local path
+does, would make the refusal meaningless: by the time the write fails the
+mailbox has already been read. The cost is that a remote tool call can fail
+because auditing failed — the one place this design knowingly trades
+availability for evidence (ADR-010 decision 5).
+
+The guarantee ends where auditing does: with `audit.enabled` set to false there
+is no sink to fail, and remote calls proceed unrecorded. The Tool Calls tab says
+so outright rather than showing an empty table.
 
 If the log file itself can't be opened at startup, relay logs the error and runs
 with auditing off. The Tool Calls tab says so rather than showing an empty table.
@@ -151,6 +203,7 @@ with auditing off. The Tool Calls tab says so rather than showing an empty table
 ```
 relay audit                          # 50 most recent, as a table
 relay audit --tail 200 --outcome denied
+relay audit --kind remote                 # everything any VM did
 relay audit --project proj_7f2a --mcp fsmcp
 relay audit --grep read_file --json  # JSONL, oldest first, for piping
 relay audit --path                   # print the log path and exit

@@ -16,6 +16,14 @@ type Settings struct {
 	Projects     []Project       `json:"projects"`
 	AdminSecret  string          `json:"admin_secret,omitempty"`
 
+	// Enrolments bind client certificates to the remote grants they may use
+	// (ADR-010 decision 2). omitempty, like Audit: an install that never
+	// enrols a remote client keeps a settings.json byte-identical to the one
+	// it had before this field existed, and no empty "enrolments": [] appears
+	// on every unrelated project edit. Note what is NOT here — there is no
+	// bearer token anywhere in this feature; the certificate is the identity.
+	Enrolments []Enrolment `json:"enrolments,omitempty"`
+
 	// Audit configures the tool-call log. Absent means defaults (enabled),
 	// so an install that predates this feature starts logging without any
 	// settings.json migration.
@@ -256,17 +264,29 @@ func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]
 }
 
 // UpdateProjectKind changes a project's kind. Does not save; use within
-// store.With. Like the other single-field Update* mutators this applies the
-// change unconditionally — the caller (applyProjectCreate / applyProjectUpdate)
-// is responsible for validating the resulting shape with validateProjectShape
-// before this runs.
+// store.With. Like the other single-field Update* mutators it leaves shape
+// validation to the caller (applyProjectCreate / applyProjectUpdate, via
+// validateProjectShape) — with one exception, below.
 func (s *Settings) UpdateProjectKind(id string, kind ProjectKind) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
 	// See normalizeProjectKind: local always persists as "", never "local".
-	proj.Kind = normalizeProjectKind(kind)
+	kind = normalizeProjectKind(kind)
+	// Belt-and-braces, exactly as UpdateProjectPath does it: the real refusal
+	// is ValidateProjectEnrolments at the call site, but this mutator is
+	// exported on Settings and nothing stops a future caller from invoking it
+	// directly. A remote→local conversion under a live enrolment strands that
+	// enrolment on a project whose whole shape it was never validated
+	// against, and the failure mode is a silent widening of what a remote
+	// client reaches — a host directory, its allowed_dirs context, cwd auth —
+	// rather than a loud error. Refuse silently here so a bypass of the
+	// validated path cannot produce it (ADR-010 decision 3).
+	if kind != ProjectKindRemote && proj.IsRemote() && len(s.EnrolmentsGrantingProject(id)) > 0 {
+		return
+	}
+	proj.Kind = kind
 }
 
 // UpdateProjectChatTemplates replaces a project's chat_templates list.

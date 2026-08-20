@@ -143,6 +143,19 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, true, err
 	}
+	// A project that stops being remote strands every enrolment granting it,
+	// so the conversion is refused while any exists (ADR-010 decision 3) —
+	// the mirror of the local→remote conversion ADR-009 constrains just
+	// below. Checked only when the result is local AND the project either was
+	// remote or had its kind named in the request: an ordinary edit to a
+	// long-standing local project has no conversion to refuse, and running
+	// the check there would turn a pre-existing bad grant into a wall in
+	// front of the very edit that might fix it.
+	if !candidate.IsRemote() && (proj.IsRemote() || f.Kind != nil) {
+		if err := s.ValidateProjectEnrolments(&candidate); err != nil {
+			return Project{}, true, err
+		}
+	}
 
 	// schemas() is a lazy fetch (real callers wire it to a live MCP-manager
 	// call); fetch it once and reuse for both the grants check and the
