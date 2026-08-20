@@ -319,6 +319,21 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// trusting LLM-supplied values. Relay is the project authority here.
 	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
 
+	// Fail-closed auditing for a remote caller (ADR-010 decision 5). This sits
+	// after auth resolution, so the actor is known and the record is
+	// attributable, and immediately before the MCP is invoked, so a call that
+	// cannot be recorded is refused rather than merely regretted. Local callers
+	// are untouched: intent() is a no-op for them and the single fail-open
+	// record below is exactly what ADR-008 specified.
+	if err := au.intent(); err != nil {
+		err = fmt.Errorf("audit: refusing tool call that cannot be recorded: %w", err)
+		// Best-effort, over the ordinary fail-open queue: if the sink is broken
+		// this will be dropped too, but a transient failure should still leave
+		// the refusal visible rather than silent.
+		au.done(AuditOutcomeError, err)
+		return nil, err
+	}
+
 	result, err := r.tools.CallTool(ctx, extID, name, args, meta)
 	au.doneResult(result, err)
 	return result, err

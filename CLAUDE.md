@@ -136,10 +136,14 @@ brokering rationale: ADR-007):
 `appRouter.CallTool`, the single chokepoint every transport funnels through.
 Attribution comes from relay's own auth resolution (project id) and the kernel
 (peer pid off the bridge socket), never from the caller. Arguments are redacted
-and capped; results are metadata-only unless explicitly opted in. The sink fails
-open and shows its drop count rather than stalling a tool call. Viewer:
-Settings → Tool Calls, or `relay audit`. Full reference:
-[`docs/audit-log.md`](docs/audit-log.md); rationale: ADR-008.
+and capped; results are metadata-only unless explicitly opted in. For a local
+caller the sink fails open and shows its drop count rather than stalling a tool
+call; for a remote one it is fail-closed — an `intent` record is written and
+flushed before the MCP runs, a `completion` record with the same `id` follows,
+and a call whose intent cannot be recorded is refused (ADR-010 decision 5).
+Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
+VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
+ADR-008, narrowed for remote callers by ADR-010.
 
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare
