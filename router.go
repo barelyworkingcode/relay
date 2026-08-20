@@ -450,6 +450,8 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 // RelayToken in the response is the project's plaintext token; the caller
 // (relayLLM) must inject it as the project-token env (RELAY_PROJECT_TOKEN) in
 // the spawned process and never expose it in argv, files, or logs.
+//
+// Remote projects are refused outright — see refuseRemotePty.
 func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
 	if err := r.requireServiceToken(token, "ResolvePtyEnv"); err != nil {
 		return bridge.PtyEnvResponse{}, err
@@ -466,6 +468,9 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		if proj == nil {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
 		}
+		if err := refuseRemotePty(proj); err != nil {
+			return bridge.PtyEnvResponse{}, err
+		}
 		if !dirWithinProject(req.Directory, proj.Path) {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
 		}
@@ -474,6 +479,9 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		proj = findProjectForPty(s, req.Project, req.Directory)
 		if proj == nil {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
+		}
+		if err := refuseRemotePty(proj); err != nil {
+			return bridge.PtyEnvResponse{}, err
 		}
 	}
 
@@ -505,6 +513,16 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 	if proj == nil {
 		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
 	}
+	// Validation already keeps ShellTemplates empty on a remote project, so the
+	// loop below would fall through to "not found" anyway. Refuse explicitly
+	// regardless: a Project constructed directly (a migration, a hand-edited
+	// settings.json) could carry templates from a former life as a local
+	// project, and resolving one would hand a host launch command to a caller
+	// acting for another machine.
+	if proj.IsRemote() {
+		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
+			fmt.Errorf("project %q is a remote project: shell templates launch a host terminal", proj.ID))
+	}
 	for _, t := range proj.ShellTemplates {
 		if t.ID == req.TemplateID {
 			return bridge.ShellTemplateResponse{
@@ -519,6 +537,29 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 		}
 	}
 	return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("shell template not found: project_id=%q template_id=%q", req.ProjectID, req.TemplateID))
+}
+
+// refuseRemotePty rejects a PTY launch bound to a remote project.
+//
+// This is not merely "a remote project has nothing sensible to run in". Without
+// it the request succeeds: dirWithinProject("", "") returns true, because the
+// empty-dir branch ("no directory to validate") is checked before the empty-
+// project-path branch and short-circuits it. The caller would then receive the
+// project's plaintext token with WorkingDir: "", and Go's exec.Cmd treats an
+// empty Dir as the PARENT process's working directory — so a host shell would
+// come up holding a remote project's credential, rooted wherever relay happens
+// to be running. That is exactly the confused-deputy binding the directory
+// check exists to prevent, arrived at by a different route.
+//
+// Refusing here rather than teaching dirWithinProject about kinds keeps that
+// helper a pure containment predicate, and keeps the reason visible at the
+// place where the token is about to be handed out.
+func refuseRemotePty(proj *Project) error {
+	if !proj.IsRemote() {
+		return nil
+	}
+	return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
+		fmt.Errorf("project %q is a remote project: it has no host directory to launch a terminal in", proj.ID))
 }
 
 // findProjectForPty resolves the project for a PTY launch. Eve's terminal_create

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -84,6 +85,11 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 			return
 		}
 
+		if err := refuseRemoteSession(store, payload.ProjectID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
 		if !modelAllowedForProject(store, payload.ProjectID, payload.Model) {
 			slog.Warn("frontend: blocked session create with disallowed model",
 				"project", payload.ProjectID, "model", payload.Model)
@@ -102,6 +108,31 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 // are intentionally excluded (see newSessionModelGuard).
 func isSessionCreatePath(p string) bool {
 	return p == "/api/sessions" || p == "/api/sessions/"
+}
+
+// refuseRemoteSession rejects a session-create request scoped to a remote
+// project. A remote project is a capability grant to a client on another
+// machine, not a context anything runs a session in.
+//
+// This has to be its own check rather than a case inside the model allowlist,
+// because the allowlist cannot express it: modelAllowedForProject treats an
+// EMPTY AllowedModels as "unrestricted", and validateProjectShape requires a
+// remote project's AllowedModels to be empty. Left to the allowlist alone, a
+// remote project would therefore permit every model — the most permissive
+// outcome reached through the most restrictive configuration.
+//
+// Fails open on an unknown project, matching the allowlist's posture: relay
+// only refuses what it can positively identify as remote, and lets relayLLM
+// produce the authoritative error otherwise.
+func refuseRemoteSession(store SettingsStore, projectID string) error {
+	if projectID == "" {
+		return nil
+	}
+	proj, _ := store.Get().findProjectByID(projectID)
+	if proj == nil || !proj.IsRemote() {
+		return nil
+	}
+	return fmt.Errorf("project %s is a remote project and cannot host a session", projectID)
 }
 
 // modelAllowedForProject reports whether a session-create request naming

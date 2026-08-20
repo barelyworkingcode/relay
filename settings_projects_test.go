@@ -240,3 +240,57 @@ func TestSyncProjectToken_WildcardPreservesPriorDisabledTools(t *testing.T) {
 		t.Errorf("expected macmcp disabled tools preserved across wildcard switch, got %v", after.DisabledTools)
 	}
 }
+
+// TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled pins the
+// pre-remote behavior for LOCAL projects: this is one of the two existing
+// behaviors (see settings.go SyncProjectToken) that the remote defense-in-
+// depth guard must not disturb.
+func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.T) {
+	store := newProjectsTestStore(t)
+	dir := t.TempDir()
+	proj := createTestProject(t, store, "Alpha", dir, []string{"fsmcp"})
+
+	after, _ := store.Get().findProjectByID(proj.ID)
+	var ctxMap map[string]interface{}
+	if err := json.Unmarshal(after.Context["fsmcp"], &ctxMap); err != nil {
+		t.Fatalf("expected fsmcp context to be set for a local project: %v", err)
+	}
+	dirs, _ := ctxMap["allowed_dirs"].([]interface{})
+	if len(dirs) != 1 || dirs[0] != dir {
+		t.Errorf("expected allowed_dirs=[%q], got %v", dir, ctxMap["allowed_dirs"])
+	}
+	if !slices.Contains(after.DisabledTools["fsmcp"], "fs_bash") {
+		t.Errorf("expected fs_bash auto-disabled for a local project, got %v", after.DisabledTools["fsmcp"])
+	}
+}
+
+// TestSyncProjectToken_RemoteNeverWritesAllowedDirs proves defence (b): even
+// if validation is somehow bypassed, SyncProjectToken itself refuses to
+// derive allowed_dirs for a remote project. The Project is constructed
+// directly (not through CreateProjectWithTokenKind/ValidateProjectGrants) so
+// this test exercises SyncProjectToken's own guard in isolation, independent
+// of whether validation would have caught the same grant.
+func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
+	store := newProjectsTestStore(t)
+	var proj Project
+	store.With(func(s *Settings) {
+		proj = Project{
+			ID:            "remote-1",
+			Name:          "Bypassed",
+			Kind:          ProjectKindRemote,
+			Path:          "", // remote projects have no path
+			AllowedMcpIDs: []string{"fsmcp"},
+			CreatedAt:     "now",
+		}
+		s.AddProject(proj)
+		p, _ := s.findProjectByID(proj.ID)
+		s.SyncProjectToken(p, fsSchemas())
+	})
+	after, _ := store.Get().findProjectByID(proj.ID)
+	if after == nil {
+		t.Fatal("project not found after SyncProjectToken")
+	}
+	if _, present := after.Context["fsmcp"]; present {
+		t.Errorf("remote project must never get an allowed_dirs context entry, got %v", after.Context["fsmcp"])
+	}
+}

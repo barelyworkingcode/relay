@@ -36,6 +36,11 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   every call, denial, and auth failure is logged at `appRouter.CallTool`;
   attribution from relay + the kernel, redacted args, metadata-only results,
   fail-open but visibly so.
+- [009 — Remote projects are capability grants, not directories](009-remote-projects.md):
+  a `remote` project kind for agents running on a separate VM, with no
+  filesystem path; validation refuses incoherent local-only features, and
+  filesystem scope, sessions, and PTY launches are each refused twice —
+  once by validation, once at the point of use.
 
 ## Format
 

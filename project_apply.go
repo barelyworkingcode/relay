@@ -8,6 +8,7 @@ import "encoding/json"
 type projectCreateFields struct {
 	Name             string              `json:"name"`
 	Path             string              `json:"path"`
+	Kind             ProjectKind         `json:"kind,omitempty"`
 	AllowedMcpIDs    []string            `json:"allowed_mcp_ids"`
 	AllowedModels    []string            `json:"allowed_models"`
 	ChatTemplates    []ChatTemplate      `json:"chat_templates"`
@@ -25,6 +26,7 @@ type projectCreateFields struct {
 type projectUpdateFields struct {
 	Name             *string              `json:"name,omitempty"`
 	Path             *string              `json:"path,omitempty"`
+	Kind             *ProjectKind         `json:"kind,omitempty"`
 	AllowedMcpIDs    *[]string            `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string            `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]ChatTemplate      `json:"chat_templates,omitempty"`
@@ -43,8 +45,30 @@ type projectUpdateFields struct {
 // that has to be rolled back) and for fetching schemas the same way it always
 // has. Returns the fully-resolved project (re-read after the sub-mutations).
 func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]json.RawMessage) (Project, error) {
-	created, err := s.CreateProjectWithToken(
-		f.Name, f.Path,
+	// GenerateSkill, AllowCwdAuth, and ShellTemplates aren't parameters of
+	// CreateProjectWithTokenKind — they're applied by the sub-mutations below,
+	// after the project already exists. Validate the FULL requested shape
+	// (and its grant list) here, before anything is created, so a request
+	// that fails on e.g. remote+generate_skill never leaves a half-built
+	// project behind that then has to be rolled back.
+	candidate := Project{
+		Kind:           f.Kind,
+		Path:           f.Path,
+		AllowedMcpIDs:  f.AllowedMcpIDs,
+		AllowedModels:  f.AllowedModels,
+		ShellTemplates: f.ShellTemplates,
+		GenerateSkill:  f.GenerateSkill,
+		AllowCwdAuth:   f.AllowCwdAuth,
+	}
+	if err := validateProjectShape(&candidate); err != nil {
+		return Project{}, err
+	}
+	if err := s.ValidateProjectGrants(&candidate, schemas); err != nil {
+		return Project{}, err
+	}
+
+	created, err := s.CreateProjectWithTokenKind(
+		f.Kind, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
 		schemas,
@@ -78,20 +102,71 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 
 // applyProjectUpdate patches the project with id from the set fields of f inside
 // a single settings mutation. Call within store.With / withSettings. Returns
-// (updated, false) if no project has that id. The caller validates the path and
-// permission policy up front; schemas is a lazy fetch invoked only when a path
-// or MCP change actually needs it (the common rename stays allocation-free).
-func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas func() map[string]json.RawMessage) (Project, bool) {
-	if proj, _ := s.findProjectByID(id); proj == nil {
-		return Project{}, false
+// (_, false, nil) if no project has that id, and (_, true, err) if the patch
+// would produce an invalid shape or grant list — in that case NOTHING is
+// mutated. The caller validates the permission policy up front; schemas is a
+// lazy fetch invoked only when a path/MCP change or a remote-shaped result
+// actually needs it (the common rename stays allocation-free).
+func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas func() map[string]json.RawMessage) (Project, bool, error) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return Project{}, false, nil
 	}
 
+	// Validate the FINAL shape the patch would produce, not the touched
+	// fields in isolation: a request that only flips AllowCwdAuth on an
+	// already-remote project must still be refused, and one that only clears
+	// Path on an already-remote project (a legal no-op) must still succeed.
+	// Build the candidate and check it before mutating anything.
+	candidate := *proj
+	if f.Kind != nil {
+		candidate.Kind = *f.Kind
+	}
+	if f.Path != nil {
+		candidate.Path = *f.Path
+	}
+	if f.AllowedMcpIDs != nil {
+		candidate.AllowedMcpIDs = *f.AllowedMcpIDs
+	}
+	if f.AllowedModels != nil {
+		candidate.AllowedModels = *f.AllowedModels
+	}
+	if f.ShellTemplates != nil {
+		candidate.ShellTemplates = *f.ShellTemplates
+	}
+	if f.GenerateSkill != nil {
+		candidate.GenerateSkill = *f.GenerateSkill
+	}
+	if f.AllowCwdAuth != nil {
+		candidate.AllowCwdAuth = *f.AllowCwdAuth
+	}
+	if err := validateProjectShape(&candidate); err != nil {
+		return Project{}, true, err
+	}
+
+	// schemas() is a lazy fetch (real callers wire it to a live MCP-manager
+	// call); fetch it once and reuse for both the grants check and the
+	// existing path/MCP resync below rather than fetching it twice. Grants
+	// only need re-checking when something that could have changed the
+	// grant-validity picture actually changed: Kind flipping to remote, or
+	// the MCP set changing on an already/still-remote project. A bare rename
+	// of an already-valid remote project doesn't need to pay for it.
+	needGrantsCheck := candidate.IsRemote() && (f.AllowedMcpIDs != nil || f.Kind != nil)
 	var sc map[string]json.RawMessage
-	if f.Path != nil || f.AllowedMcpIDs != nil {
+	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck {
 		sc = schemas()
 	}
+	if needGrantsCheck {
+		if err := s.ValidateProjectGrants(&candidate, sc); err != nil {
+			return Project{}, true, err
+		}
+	}
+
 	if f.Name != nil {
 		s.UpdateProjectName(id, *f.Name)
+	}
+	if f.Kind != nil {
+		s.UpdateProjectKind(id, *f.Kind)
 	}
 	if f.Path != nil {
 		s.UpdateProjectPath(id, *f.Path, sc)
@@ -146,7 +221,7 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 
 	if proj, _ := s.findProjectByID(id); proj != nil {
-		return *proj, true
+		return *proj, true, nil
 	}
-	return Project{}, false
+	return Project{}, false, nil
 }
