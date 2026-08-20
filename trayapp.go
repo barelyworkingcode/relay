@@ -22,14 +22,18 @@ var appInstance *App
 
 // App is the main tray application state.
 type App struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	store          SettingsStore
-	platform       Platform
-	extMgr         *ExternalMcpManager
-	registry       ServiceManager
-	bridgeServer   *bridge.BridgeServer
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	store        SettingsStore
+	platform     Platform
+	extMgr       *ExternalMcpManager
+	registry     ServiceManager
+	bridgeServer *bridge.BridgeServer
+	// remoteServer is the mTLS listener remote clients reach relay through.
+	// Nil whenever no remote block is configured, which is the overwhelmingly
+	// common case; every method on it is nil-safe so nothing branches here.
+	remoteServer   *RemoteServer
 	frontendServer *FrontendServer
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
 	// audit is the tool-call recorder. Nil when auditing is disabled or failed
@@ -246,6 +250,21 @@ func runTrayApp() {
 
 	app.goFunc(func() { bs.Serve() })
 	slog.Info("bridge server started")
+
+	// The remote listener sits BESIDE the bridge, never in front of it: the
+	// Unix socket keeps its ten request types, and this one has two. A
+	// configuration error here is fatal to the listener and to nothing else —
+	// relay without a remote listener is relay as it has always been, whereas
+	// a remote listener that started anyway despite (say) disabled auditing is
+	// exactly the system ADR-010 exists to prevent.
+	rs, err := NewRemoteServer(ctx, store, router, audit)
+	if err != nil {
+		slog.Error("remote listener not started", "error", err)
+	}
+	app.remoteServer = rs
+	if rs != nil {
+		app.goFunc(func() { rs.Serve() })
+	}
 
 	// Set up tray icon.
 	slog.Info("setting up tray icon")
@@ -490,10 +509,16 @@ func (a *App) cleanup() {
 		if a.bridgeServer != nil {
 			a.bridgeServer.StopAccepting()
 		}
+		a.remoteServer.StopAccepting()
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
 		}
+		// Drained after the MCPs die, like the bridge: an in-flight remote
+		// CallTool fails fast rather than holding the drain open, and its
+		// completion record is still written because the audit log is closed
+		// last of all.
+		a.remoteServer.Close()
 		// Stop the frontend server before the children that proxy to relayLLM
 		// — once relayLLM dies, in-flight proxied requests fail with 502
 		// rather than hanging.
