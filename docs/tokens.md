@@ -32,6 +32,14 @@ A project may opt into token-less bridge auth: with `allow_cwd_auth: true`, a
 caller that presents **no** token but whose working directory is inside the
 project's path is authenticated as that project. Default is off, per project.
 
+- **Remote projects can't enable it.** `allow_cwd_auth` compares a caller's
+  cwd against the project's `Path`, and a remote project — a capability
+  grant to a client on another machine, see ADR-009 — has no `Path`: a
+  remote caller's cwd is a path on a *different* machine, with nothing on
+  the host to compare it against. `validateProjectShape` (`project.go`)
+  refuses the combination outright rather than let it silently mean
+  nothing.
+
 - **Scope is unchanged.** The caller gets exactly the project's token scope —
   same derived permissions, same `disabled_tools`, same `_meta` context, same
   `project_id`. Directory auth changes how a caller is *identified*, never what

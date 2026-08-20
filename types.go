@@ -170,12 +170,34 @@ type PermissionPolicy struct {
 	DeniedTools  []string `json:"denied_tools,omitempty"`  // patterns
 }
 
+// ProjectKind distinguishes a project bound to a host directory from one that
+// is purely a capability grant to a remote client.
+type ProjectKind string
+
+const (
+	ProjectKindLocal  ProjectKind = "local"
+	ProjectKindRemote ProjectKind = "remote"
+)
+
 // Project defines an infrastructure boundary: a directory, a set of MCPs,
 // allowed models, chat templates, and a scoped auth token.
 type Project struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Path          string         `json:"path"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Kind distinguishes a host-directory project (default) from a remote
+	// capability grant. omitempty so every project already on disk — which
+	// predates this field — round-trips byte-identical, and the zero value
+	// ("") deserializes into ProjectKindLocal territory. That zero value must
+	// NEVER be readable as remote: an old settings.json, a hand-edited entry
+	// missing the key, or a struct literal in a test all produce "", and
+	// every one of those must behave exactly as a local project always has.
+	// Enforce this by testing IsRemote() everywhere, never
+	// `Kind == ProjectKindLocal` — the latter is false for "" too, but an
+	// equality check invites someone to later write `Kind != ProjectKindRemote`
+	// wrongly, or to compare against the wrong constant. IsRemote() is the one
+	// place that decision is made.
+	Kind          ProjectKind    `json:"kind,omitempty"`
 	AllowedMcpIDs []string       `json:"allowed_mcp_ids"`
 	AllowedModels []string       `json:"allowed_models"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
@@ -220,6 +242,31 @@ type Project struct {
 	// (settings.json is 0600 and already holds every token in plaintext), but
 	// it does erase the deliberate hand-off, so it stays opt-in per project.
 	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
+}
+
+// IsRemote reports whether this project is a remote capability grant rather
+// than a host-directory project. This is the ONLY place that decision should
+// be made — see the comment on Kind for why the zero value must always read
+// as local.
+func (p *Project) IsRemote() bool {
+	return p.Kind == ProjectKindRemote
+}
+
+// normalizeProjectKind collapses anything that isn't ProjectKindRemote to the
+// zero value, so a local project's stored Kind is always "" — never the
+// literal "local" string — regardless of whether a caller passed
+// ProjectKindLocal explicitly or left it unset. Without this, a freshly
+// created local project would carry "kind":"local" while an old one (or one
+// loaded from a pre-remote settings.json) carries no key at all: two
+// spellings of the same state. Collapsing to one keeps every local project,
+// old or new, serializing identically, and keeps settings.json minimal for
+// the overwhelmingly common case. Mirrors IsRemote()'s pattern of testing
+// for remote rather than for local.
+func normalizeProjectKind(kind ProjectKind) ProjectKind {
+	if kind == ProjectKindRemote {
+		return ProjectKindRemote
+	}
+	return ""
 }
 
 // Validate checks that required fields are present.

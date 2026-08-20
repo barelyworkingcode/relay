@@ -85,23 +85,23 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 	}
-	// Validate path up front (before any mutation) so an invalid path can't
-	// leave a half-applied update behind — mirrors the HTTP PUT route.
-	if msg.Path != nil {
-		if err := validateProjectPath(*msg.Path); err != nil {
-			ctx.UI.EmitEvent("onProjectError", err.Error())
-			return
-		}
-	}
-
+	// Shape/grant validation (including path) now happens inside
+	// applyProjectUpdate against the fully-merged candidate — mirrors the HTTP
+	// PUT route. See project_routes.go for why a standalone path-only
+	// pre-check can no longer judge this correctly.
 	var updated Project
 	var found bool
+	var updateErr error
 	okSettings := ctx.withSettings(func(s *Settings) {
-		updated, found = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() map[string]json.RawMessage {
+		updated, found, updateErr = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() map[string]json.RawMessage {
 			return mcpContextSchemasFrom(ctx)
 		})
 	})
 	if !okSettings {
+		return
+	}
+	if updateErr != nil {
+		ctx.UI.EmitEvent("onProjectError", updateErr.Error())
 		return
 	}
 	if !found {

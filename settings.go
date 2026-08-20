@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -239,8 +240,33 @@ func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]
 	if proj == nil {
 		return
 	}
+	// Belt-and-braces: the real refusal is validateProjectShape at the call
+	// site (applyProjectUpdate validates the full candidate before any
+	// mutation runs), but this mutator is exported on Settings and nothing
+	// stops a future caller from invoking it directly without going through
+	// that guard. A remote project has no filesystem scope, so silently
+	// refuse rather than let one acquire a path no validation pass approved.
+	// Clearing an already-remote project's path back to "" is a no-op and
+	// stays allowed.
+	if proj.IsRemote() && path != "" {
+		return
+	}
 	proj.Path = path
 	s.SyncProjectToken(proj, schemas)
+}
+
+// UpdateProjectKind changes a project's kind. Does not save; use within
+// store.With. Like the other single-field Update* mutators this applies the
+// change unconditionally — the caller (applyProjectCreate / applyProjectUpdate)
+// is responsible for validating the resulting shape with validateProjectShape
+// before this runs.
+func (s *Settings) UpdateProjectKind(id string, kind ProjectKind) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	// See normalizeProjectKind: local always persists as "", never "local".
+	proj.Kind = normalizeProjectKind(kind)
 }
 
 // UpdateProjectChatTemplates replaces a project's chat_templates list.
@@ -421,6 +447,20 @@ func (s *Settings) SyncProjectToken(proj *Project, schemas map[string]json.RawMe
 			delete(proj.DisabledTools, id)
 		}
 	}
+	// Defence in depth: a remote project has no Path, and BOTH ways to handle
+	// that are unsafe — writing allowed_dirs: [""] hands a downstream MCP an
+	// empty root to interpret (a Node MCP's path.resolve("") resolves to ITS
+	// OWN cwd, which can be far more permissive than intended), and omitting
+	// the field lets the MCP fall back to its own default, which may be
+	// unrestricted. Relay can't see how a given MCP interprets either, so
+	// remote projects skip this derivation entirely — never just when
+	// validation happens to catch it. ValidateProjectGrants is supposed to
+	// refuse granting a path-scoped MCP to a remote project before this ever
+	// runs; this guard is what keeps a bypass of that check from turning into
+	// a silent filesystem-scope widening instead of a loud one.
+	if proj.IsRemote() {
+		return
+	}
 	for _, mcpID := range mcpIDs {
 		if schemaHasField(schemas[mcpID], "allowed_dirs") {
 			ctx, _ := json.Marshal(map[string]interface{}{
@@ -433,6 +473,34 @@ func (s *Settings) SyncProjectToken(proj *Project, schemas map[string]json.RawMe
 			}
 		}
 	}
+}
+
+// ValidateProjectGrants rejects a remote project's MCP grant list if it
+// includes any MCP whose runtime context schema declares allowed_dirs — i.e.
+// an MCP that expects to be scoped to a filesystem path. A remote project has
+// no Path (validateProjectShape enforces that), so granting it a path-scoped
+// MCP would leave SyncProjectToken with no safe way to derive allowed_dirs
+// (see the comment there). The grant itself is refused up front instead,
+// naming the offending MCP so the caller knows what to remove.
+//
+// Local projects are exempt: a path-scoped MCP granted to a local project is
+// exactly the expected case, and SyncProjectToken fills in its real Path.
+//
+// schemas is the same runtime context-schema map SyncProjectToken consumes.
+// A nil/missing entry can't declare allowed_dirs, so passing nil schemas
+// (e.g. a test with no MCP manager wired) is a no-op here, matching
+// SyncProjectToken's "schemas nil => skip filesystem auto-detection" contract
+// rather than failing closed on missing information.
+func (s *Settings) ValidateProjectGrants(proj *Project, schemas map[string]json.RawMessage) error {
+	if !proj.IsRemote() {
+		return nil
+	}
+	for _, mcpID := range proj.AllowedMcpIDs {
+		if schemaHasField(schemas[mcpID], "allowed_dirs") {
+			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares allowed_dirs) and a remote project has no path to scope it to", mcpID)
+		}
+	}
+	return nil
 }
 
 // schemaHasField checks if a context schema declares a given field.

@@ -143,22 +143,23 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 				return
 			}
 		}
-		// Validate path up front (before any mutation) so an invalid path can't
-		// leave a half-applied update behind.
-		if body.Path != nil {
-			if err := validateProjectPath(*body.Path); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-		}
-
+		// Shape/grant validation (including path) now happens inside
+		// applyProjectUpdate against the fully-merged candidate. Whether an
+		// empty path is valid depends on Kind (required for local, mandatory
+		// for remote), so a standalone path-only pre-check can no longer judge
+		// it correctly — the merged candidate is the only place that knows.
 		var updated Project
 		var found bool
+		var updateErr error
 		if err := store.With(func(s *Settings) {
-			updated, found = applyProjectUpdate(s, id, body, mcps.AllContextSchemas)
+			updated, found, updateErr = applyProjectUpdate(s, id, body, mcps.AllContextSchemas)
 		}); err != nil {
 			slog.Error("update project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
+			return
+		}
+		if updateErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": updateErr.Error()})
 			return
 		}
 		if !found {

@@ -81,6 +81,33 @@ authenticates as that project via `AuthenticateProjectByPath`, with identical
 scope. A present-but-invalid token never falls back. See
 [`docs/tokens.md`](docs/tokens.md#directory-auth-allow_cwd_auth).
 
+### Project kind: local vs. remote
+
+`Project.Kind` (`ProjectKindLocal` / `ProjectKindRemote`) distinguishes a
+host-directory project from a pure capability grant to a client on another
+machine — e.g. an LLM agent running on a separate VM that reaches relay for
+tool access instead of running on the host. Always test `proj.IsRemote()`,
+never compare `Kind` against `ProjectKindLocal`: the zero value is local, so
+every project written before this field existed round-trips unaffected, and
+an equality check invites a future bug where an unset field reads as remote.
+
+A remote project has no `Path` and cannot have anything that presumes a host
+directory — `AllowCwdAuth`, `GenerateSkill`, `ShellTemplates`, and the
+`allowed_mcp_ids: ["*"]` wildcard are all refused by `validateProjectShape`
+(`project.go`), as is a non-empty `allowed_models` (an empty allowlist is the
+only value `modelAllowedForProject` won't misread as "unrestricted"). A
+filesystem-scoped MCP (schema declares `allowed_dirs`) can't be granted to a
+remote project either (`ValidateProjectGrants`) — and `SyncProjectToken`
+independently refuses to derive `allowed_dirs` for one regardless, since an
+MCP's schema is discovered at runtime and could gain that field after a
+grant was already validated. Sessions (`refuseRemoteSession`) and PTY
+launches (`refuseRemotePty`) are refused at the point of use too, not just
+at validation — see ADR-009 for why each of these is defended twice rather
+than once. As of this writing a remote project cannot yet be *reached* by
+anything; only the model and its invariants exist so far.
+
+See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
+
 ## Service manifest (enhanced services)
 
 Every spawned service gets `RELAY_BRIDGE_SOCKET` + `RELAY_SERVICE_ID`. Services
