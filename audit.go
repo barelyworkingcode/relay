@@ -31,9 +31,17 @@ const (
 // Audit outcomes. Denied and Unauthorized are deliberately distinct: the first
 // means a known credential was refused a tool it may not use, the second means
 // the credential itself did not resolve. They call for different responses.
+//
+// Error and ToolError are distinct for the same reason. Error means the call
+// did not complete — the transport failed, or the bridge could not reach the
+// MCP. ToolError means the call completed and the MCP answered "no": it
+// returned a normal result carrying isError, which is how a server reports an
+// application-level refusal such as a path outside allowed_dirs. Both are
+// failures, but only the second tells you a boundary was probed and held.
 const (
 	AuditOutcomeOK           = "ok"
 	AuditOutcomeError        = "error"
+	AuditOutcomeToolError    = "tool_error"
 	AuditOutcomeDenied       = "denied"
 	AuditOutcomeUnauthorized = "unauthorized"
 )
