@@ -73,7 +73,7 @@ let state = {
     // on the Go side so it can be sent verbatim.
     auditEvents: [],
     auditStatus: null,                      // {enabled, path, dropped, recorded, ...}
-    auditFilter: { project_id: '', mcp_id: '', outcome: '', event: '', text: '', deep: false },
+    auditFilter: { project_id: '', mcp_id: '', outcome: '', event: '', kind: '', text: '', deep: false },
     auditExpanded: {},                      // event id -> bool
     auditFollow: true,                      // append live events as they arrive
     auditLoaded: false,
@@ -2343,11 +2343,22 @@ function dispatchServiceAction(serviceId, actionId, row) {
 // older than the ring holds.
 // ---------------------------------------------------------------------------
 
-const AUDIT_OUTCOMES = ['ok', 'error', 'tool_error', 'denied', 'unauthorized'];
+// 'throttled' is a budget refusal on a remote enrolment: the grant was
+// legitimate and the pattern of use was not. 'pending' is the intent half of a
+// remote call, written before the MCP runs and still awaiting its completion.
+const AUDIT_OUTCOMES = ['ok', 'error', 'tool_error', 'denied', 'unauthorized', 'throttled', 'pending'];
 const AUDIT_EVENT_KINDS = [
     ['call_tool', 'Tool calls'],
     ['list_tools', 'Tool lists'],
     ['list_skills', 'Skill lists'],
+];
+// Actor kinds. 'remote' is its own filter so "everything any VM did" is one
+// question rather than an inference from which actor fields are populated.
+const AUDIT_ACTOR_KINDS = [
+    ['project', 'Project'],
+    ['service', 'Service'],
+    ['remote', 'Remote'],
+    ['unknown', 'Unauthenticated'],
 ];
 
 function queryAudit(deep) {
@@ -2362,6 +2373,7 @@ function queryAudit(deep) {
         mcp_id: f.mcp_id || undefined,
         outcome: f.outcome || undefined,
         event: f.event || undefined,
+        kind: f.kind || undefined,
         text: deep ? (f.text || undefined) : undefined,
         limit: deep ? 2000 : 0,
         deep: !!deep,
@@ -2376,6 +2388,7 @@ function exportAudit() {
         mcp_id: f.mcp_id || undefined,
         outcome: f.outcome || undefined,
         event: f.event || undefined,
+        kind: f.kind || undefined,
         text: f.text || undefined,
     }));
 }
@@ -2411,9 +2424,11 @@ function auditMatches(ev) {
     if (f.mcp_id && ev.mcp_id !== f.mcp_id) return false;
     if (f.outcome && ev.outcome !== f.outcome) return false;
     if (f.event && ev.event !== f.event) return false;
+    if (f.kind && (ev.actor || {}).kind !== f.kind) return false;
     if (f.text) {
         const a = ev.actor || {};
         const hay = [ev.tool, ev.mcp_id, ev.error, a.project_name, a.proc, a.parent,
+                     a.client_id, a.remote_addr,
                      typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args || '')]
             .join('\u0000').toLowerCase();
         if (hay.indexOf(f.text.toLowerCase()) === -1) return false;
@@ -2438,6 +2453,9 @@ function auditFmtTime(ts) {
 // throwaway and the parent is the agent that actually asked.
 function auditCaller(a) {
     a = a || {};
+    // A remote caller has no process to name — pid attribution is meaningless
+    // across a network — so the enrolled client stands in for it.
+    if (a.client_id) return a.client_id;
     if (a.parent && a.proc) return a.parent + ' \u2192 ' + a.proc;
     return a.proc || a.parent || (a.pid ? 'pid ' + a.pid : '');
 }
@@ -2494,6 +2512,7 @@ function renderAudit() {
     html += auditSelect('project_id', 'All projects', (state.projects || []).map(p => [p.id, p.name]), f.project_id);
     html += auditSelect('mcp_id', 'All MCPs', (state.externalMcps || []).map(m => [m.id, m.display_name || m.id]), f.mcp_id);
     html += auditSelect('outcome', 'Any outcome', AUDIT_OUTCOMES.map(o => [o, o]), f.outcome);
+    html += auditSelect('kind', 'Any caller', AUDIT_ACTOR_KINDS, f.kind);
     html += auditSelect('event', 'All events', AUDIT_EVENT_KINDS, f.event);
     html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
     html += '<input type="checkbox"' + (state.auditFollow ? ' checked' : '') + ' onchange="toggleAuditFollow(this.checked)">Follow</label>';
@@ -2551,9 +2570,17 @@ function renderAuditDetail(ev) {
     add('Caller pid', a.pid);
     add('Process', a.proc);
     add('Parent', a.parent);
+    add('Client', a.client_id);
+    // The fingerprint is shown in full: after an enrolment is deleted it is the
+    // only thing left that says which key made the call.
+    add('Fingerprint', a.fingerprint);
+    add('Remote address', a.remote_addr);
     add('MCP', ev.mcp_id);
     add('Tool', ev.tool);
     add('Outcome', ev.outcome);
+    // An intent with no completion sharing this id means relay invoked an MCP
+    // and never learned the outcome. Worth surfacing, not worth hiding.
+    add('Phase', ev.phase);
     add('Error', ev.error);
     if (ev.result_bytes) add('Result', ev.result_bytes + ' bytes' + (ev.result_is_error ? ' (isError)' : ''));
     if (ev.tool_count) add('Tools visible', ev.tool_count);
