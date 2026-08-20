@@ -105,6 +105,11 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
+	// Resolve the peer pid once per connection rather than per request: it can't
+	// change for the life of the socket, and the getsockopt is pure overhead on
+	// every subsequent frame. Audit attribution only.
+	ctx = WithCallerPID(ctx, PeerPID(conn))
+
 	// Close the connection when the server (or this handler) is cancelled so a
 	// handler blocked in scanner.Scan() unblocks promptly at shutdown. Without
 	// this, StopAccepting() only cancels the context and closes the *listener* —

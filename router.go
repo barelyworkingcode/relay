@@ -64,11 +64,15 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string) error {
 // ---------------------------------------------------------------------------
 
 type appRouter struct {
-	store         SettingsStore
-	tools         ToolManager
-	services      ServiceReloader
-	enhanced      *EnhancedServiceRegistry
-	onChange      func()
+	store    SettingsStore
+	tools    ToolManager
+	services ServiceReloader
+	enhanced *EnhancedServiceRegistry
+	onChange func()
+	// audit records every tool call, denial, and auth failure that passes
+	// through this router. Nil disables auditing entirely — every call site
+	// goes through nil-safe helpers, so nothing branches on it.
+	audit         *AuditRecorder
 	serviceTokens serviceTokenStore
 }
 
@@ -177,10 +181,15 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings
 }
 
 func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
+	au := r.beginAudit(ctx, AuditEventListTools)
+
 	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
+		au.setUnauthenticated(ctx, token)
+		au.done(AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
+	au.setActor(ctx, stored, settings, token)
 
 	isServiceToken := stored.Name == serviceTokenName
 	tools := make([]mcp.Tool, 0)
@@ -198,6 +207,8 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 		}
 	}
 
+	au.setToolCount(len(tools))
+	au.done(AuditOutcomeOK, nil)
 	return json.Marshal(tools)
 }
 
@@ -210,10 +221,15 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 // noise like "Generate" from generate_image; uncategorized tools route by
 // their MCP instead). Buckets are returned in a deterministic order.
 func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
+	au := r.beginAudit(ctx, AuditEventListSkills)
+
 	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
+		au.setUnauthenticated(ctx, token)
+		au.done(AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
+	au.setActor(ctx, stored, settings, token)
 
 	isServiceToken := stored.Name == serviceTokenName
 	groups := map[string][]mcp.Tool{}
@@ -254,38 +270,58 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	}
 
 	buckets := make([]SkillBucket, 0, len(order))
+	total := 0
 	for _, slug := range order {
 		buckets = append(buckets, *bySlug[slug])
+		total += len(bySlug[slug].Tools)
 	}
+	au.setToolCount(total)
+	au.done(AuditOutcomeOK, nil)
 	return buckets, nil
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	stored, _, err := r.resolveAuth(ctx, token)
+	// Every tool call in the ecosystem funnels through here, which makes this
+	// the one place auditing has to be correct. Note that the refusals are
+	// audited too: a denied or unauthenticated call is precisely what a
+	// security review is looking for.
+	au := r.beginAudit(ctx, AuditEventCallTool)
+	au.setTool(name, args)
+
+	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
+		au.setUnauthenticated(ctx, token)
+		au.done(AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
+	au.setActor(ctx, stored, settings, token)
 
 	isServiceToken := stored.Name == serviceTokenName
 
 	// Check external MCPs.
 	extID, extMcp := r.tools.FindToolOwner(name)
-	if extMcp != nil {
-		if !isServiceToken {
-			if err := checkToolAccess(stored, extID, name); err != nil {
-				return nil, err
-			}
+	if extMcp == nil {
+		err := fmt.Errorf("unknown tool: %s", name)
+		au.done(AuditOutcomeError, err)
+		return nil, err
+	}
+	au.setMcp(extID)
+
+	if !isServiceToken {
+		if err := checkToolAccess(stored, extID, name); err != nil {
+			au.done(AuditOutcomeDenied, err)
+			return nil, err
 		}
-
-		// Inject per-token context as _meta for this MCP, plus the authenticated
-		// project id so an MCP can attribute the call to a project without
-		// trusting LLM-supplied values. Relay is the project authority here.
-		meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
-
-		return r.tools.CallTool(ctx, extID, name, args, meta)
 	}
 
-	return nil, fmt.Errorf("unknown tool: %s", name)
+	// Inject per-token context as _meta for this MCP, plus the authenticated
+	// project id so an MCP can attribute the call to a project without
+	// trusting LLM-supplied values. Relay is the project authority here.
+	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
+
+	result, err := r.tools.CallTool(ctx, extID, name, args, meta)
+	au.doneResult(result, err)
+	return result, err
 }
 
 // mergeProjectID returns base with a top-level "project_id" added when

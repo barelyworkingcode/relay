@@ -98,3 +98,74 @@ func TestRotatingWriter_ConcurrentWritesAreSafe(t *testing.T) {
 		t.Fatalf("concurrent write failed: %v", e)
 	}
 }
+
+// Audit retention keeps several generations, unlike relay's own log which keeps
+// one. Each rotation must age the backups down rather than clobber ".1".
+func TestRotatingWriter_KeepsMultipleGenerations(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	w, err := openRotatingLogGenerations(path, 8, 3)
+	if err != nil {
+		t.Fatalf("openRotatingLogGenerations: %v", err)
+	}
+	defer w.Close()
+
+	// Each write exceeds the cap, so every write after the first rotates.
+	for _, line := range []string{"aaaaaaaaaa\n", "bbbbbbbbbb\n", "cccccccccc\n", "dddddddddd\n"} {
+		if _, err := w.Write([]byte(line)); err != nil {
+			t.Fatalf("write %q: %v", line, err)
+		}
+	}
+
+	// Newest content in the live file, older content aging down .1 → .3.
+	want := map[string]string{
+		path:        "dddddddddd\n",
+		path + ".1": "cccccccccc\n",
+		path + ".2": "bbbbbbbbbb\n",
+		path + ".3": "aaaaaaaaaa\n",
+	}
+	for p, contents := range want {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		if string(got) != contents {
+			t.Errorf("%s = %q, want %q", p, got, contents)
+		}
+	}
+
+	// The 4th generation is beyond the retention bound and must not exist.
+	if _, err := os.Stat(path + ".4"); !os.IsNotExist(err) {
+		t.Errorf("generation .4 exists despite a retention of 3")
+	}
+}
+
+// The default rotator keeps exactly one backup, unchanged by the generations
+// support.
+func TestRotatingWriter_DefaultKeepsOneGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "relay.log")
+
+	w, err := openRotatingLogSized(path, 8)
+	if err != nil {
+		t.Fatalf("openRotatingLogSized: %v", err)
+	}
+	defer w.Close()
+
+	for _, line := range []string{"aaaaaaaaaa\n", "bbbbbbbbbb\n", "cccccccccc\n"} {
+		if _, err := w.Write([]byte(line)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if _, err := os.Stat(path + ".2"); !os.IsNotExist(err) {
+		t.Error("single-generation writer created a .2 backup")
+	}
+	got, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(got) != "bbbbbbbbbb\n" {
+		t.Errorf(".1 = %q, want the previous generation", got)
+	}
+}
