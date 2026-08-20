@@ -246,3 +246,89 @@ func TestAuditTab_ShowPageTriggersInitialLoad(t *testing.T) {
 		t.Errorf("showPage('audit') sent %q query_audit messages, want 1", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Remote callers (ADR-010)
+// ---------------------------------------------------------------------------
+
+// A remote call is two records sharing one id, and its actor has no process to
+// name. Both facts have to survive to the screen: an operator looking at the
+// tab is the person who decides whether a VM is behaving.
+const auditRemoteFixture = `[{
+	id: 'rv1', ts: '2026-08-20T09:00:00.000Z', dur_ms: 0, event: 'call_tool', phase: 'intent',
+	actor: { kind:'remote', project_id:'proj_mail', project_name:'Mail', auth:'mtls',
+	         client_id:'hermes-mail',
+	         fingerprint:'sha256:9f2a41c78b0355ee1d6a4c2f8e0b7a93d5c14e6f8a2b0d9c3e7f15a8b46c2d90',
+	         remote_addr:'127.0.0.1:52233' },
+	mcp_id: 'macmcp', tool: 'mail_search', args: {q:'invoice'}, outcome: 'pending'
+}, {
+	id: 'rv2', ts: '2026-08-20T09:00:04.000Z', dur_ms: 12, event: 'call_tool',
+	actor: { kind:'remote', project_id:'proj_mail', project_name:'Mail', auth:'mtls',
+	         client_id:'hermes-mail', fingerprint:'sha256:9f2a41c7', remote_addr:'127.0.0.1:52233' },
+	mcp_id: 'macmcp', tool: 'mail_get_emails', outcome: 'throttled',
+	error: 'volume budget exceeded for enrolment hermes-mail'
+}]`
+
+func TestAuditTab_RemoteCallerIsLabelledByItsEnrolledClient(t *testing.T) {
+	vm := seedAuditVM(t, auditRemoteFixture, auditStatusOn)
+	html := evalString(t, vm, `window.renderAudit()`)
+
+	// The caller column would otherwise be a dash for every remote row: pid
+	// attribution means nothing across a network.
+	if !strings.Contains(html, "hermes-mail") {
+		t.Errorf("remote rows do not name the enrolled client:\n%s", html)
+	}
+	if !strings.Contains(html, "Any caller") {
+		t.Error("the actor-kind filter is missing from the filter bar")
+	}
+}
+
+// throttled says the grant was legitimate and the pattern of use was not, which
+// is what exfiltration looks like from the host's side. It must not read as an
+// ordinary error at a glance.
+func TestAuditTab_ThrottledAndPendingHaveTheirOwnPills(t *testing.T) {
+	vm := seedAuditVM(t, auditRemoteFixture, auditStatusOn)
+	html := evalString(t, vm, `window.renderAudit()`)
+
+	if !strings.Contains(html, "audit-throttled") {
+		t.Error("a throttled call did not get its own pill class")
+	}
+	if !strings.Contains(html, "audit-pending") {
+		t.Error("an intent record did not get its own pill class")
+	}
+}
+
+func TestAuditTab_KindFilterSelectsRemoteCallers(t *testing.T) {
+	vm := seedAuditVM(t, auditEventFixture+`.concat(`+auditRemoteFixture+`)`, auditStatusOn)
+	got := evalString(t, vm, `(function(){
+		window.state.auditFilter.kind = 'remote';
+		var rows = window.auditVisible();
+		return rows.length + ':' + rows.map(function(r){ return r.id; }).join(',');
+	})()`)
+	if got != "2:rv1,rv2" {
+		t.Errorf("kind=remote returned %q, want 2:rv1,rv2", got)
+	}
+}
+
+// The fingerprint is the only thing that still says which key made a call once
+// the enrolment naming it has been deleted, so the expanded record shows it in
+// full rather than truncated.
+func TestAuditTab_ExpandedRemoteRecordShowsFullFingerprint(t *testing.T) {
+	vm := seedAuditVM(t, auditRemoteFixture, auditStatusOn)
+	html := evalString(t, vm, `(function(){
+		window.state.auditExpanded['rv1'] = true;
+		return window.renderAudit();
+	})()`)
+
+	for _, want := range []string{
+		"Fingerprint",
+		"sha256:9f2a41c78b0355ee1d6a4c2f8e0b7a93d5c14e6f8a2b0d9c3e7f15a8b46c2d90",
+		"Remote address",
+		"127.0.0.1:52233",
+		"intent", // the phase, so an unpaired intent is legible as one
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("expanded remote record is missing %q", want)
+		}
+	}
+}

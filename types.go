@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Permission levels for token-based access control.
@@ -242,6 +243,67 @@ type Project struct {
 	// (settings.json is 0600 and already holds every token in plaintext), but
 	// it does erase the deliberate hand-off, so it stays opt-in per project.
 	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
+}
+
+// EnrolmentBudget bounds what one enrolled client may draw per rolling
+// window. The enrolment is the unit of compromise, so it is the unit that
+// carries the cap (ADR-010 decision 7): if one agent's key is stolen, the
+// attacker holds that key and nothing else, and this is what bounds the
+// damage.
+//
+// Rate and volume are budgeted together because they fail differently — a
+// call cap alone does not stop a slow drain, and a mailbox exfiltrated over
+// six hours is exfiltrated. Enforcement lives in appRouter.CallTool; this
+// type only carries the numbers.
+//
+// There is deliberately no representation of "unlimited": a zero field means
+// "unset", which normalizeEnrolmentBudget fills with the conservative default
+// rather than reading as no limit. A budget that can be switched off by
+// omitting a key from a hand-edited settings.json is a budget that will be off
+// on the one host where it mattered.
+type EnrolmentBudget struct {
+	WindowSeconds  int   `json:"window_seconds"`
+	MaxCalls       int   `json:"max_calls"`
+	MaxResultBytes int64 `json:"max_result_bytes"`
+}
+
+// Enrolment binds one client certificate to the grants it may use. It is the
+// whole of a remote caller's authority: there is no bearer token on the
+// remote path at all (ADR-010 decision 2), so a copy of settings.json — which
+// holds every project token in plaintext — grants no remote access whatsoever.
+//
+// An enrolment is keyed by CERTIFICATE, NOT BY MACHINE. One host may hold many
+// enrolments, and that is the expected shape: several agents on one VM, each
+// with its own certificate and its own grants, audited and revoked
+// independently. Nothing may assume one enrolment per machine — relay cannot
+// even tell that two enrolments are co-located, and the separation between
+// them is exactly as strong as the filesystem isolation on the client side.
+//
+// Device and capability revocation stay independent: editing ProjectIDs
+// changes what a client may reach without touching its certificate; deleting
+// the enrolment cuts the client without disturbing any project.
+type Enrolment struct {
+	// ClientID is the human-readable, unique name for this enrolment. It is
+	// also the certificate's Common Name and the bundle's directory name, so
+	// it is restricted to the filesystem-safe charset (isSafeID).
+	ClientID string `json:"client_id"`
+	// Fingerprint is the FULL SHA-256 of the client certificate's DER,
+	// "sha256:" + 64 hex chars. Never truncated — see FingerprintDER.
+	Fingerprint string `json:"fingerprint"`
+	// ProjectIDs are the grants this certificate may select among by sending
+	// a project id on the wire. A project id is not a secret; relay honours it
+	// only if this enrolment actually holds the grant. Every id here must name
+	// a project with IsRemote() true (ValidateEnrolmentGrants).
+	ProjectIDs []string        `json:"project_ids"`
+	Budget     EnrolmentBudget `json:"budget"`
+	CreatedAt  string          `json:"created_at"`
+}
+
+// GrantsProject reports whether this enrolment holds a grant for projectID.
+// The remote listener calls this before resolving a request's project id —
+// holding a certificate says who is calling, never what they may reach.
+func (e *Enrolment) GrantsProject(projectID string) bool {
+	return slices.Contains(e.ProjectIDs, projectID)
 }
 
 // IsRemote reports whether this project is a remote capability grant rather

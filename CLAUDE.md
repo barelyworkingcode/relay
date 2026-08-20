@@ -12,6 +12,7 @@ service management.
 - `relay mcp register|unregister|list` — external MCP management.
 - `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
+- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
 
 ## Architecture
 
@@ -42,6 +43,9 @@ router.go                Bridge auth (service vs project tokens), tool filtering
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
 audit_cmd.go             `relay audit` CLI
+enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
+enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
+enrol_cmd.go             `relay enrol` CLI
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
@@ -103,10 +107,34 @@ MCP's schema is discovered at runtime and could gain that field after a
 grant was already validated. Sessions (`refuseRemoteSession`) and PTY
 launches (`refuseRemotePty`) are refused at the point of use too, not just
 at validation — see ADR-009 for why each of these is defended twice rather
-than once. As of this writing a remote project cannot yet be *reached* by
-anything; only the model and its invariants exist so far.
+than once.
 
 See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
+
+### Remote client enrolment
+
+An **enrolment** (`enrolment.go`, `settings.json` → `enrolments`) binds one
+client certificate to the remote projects it may use. It is keyed by
+*certificate, not by machine* — several agents on one VM each hold their own
+enrolment, granted, audited, and revoked independently, and nothing may assume
+one per machine. There is **no bearer token anywhere on this path**: a stolen
+`settings.json` grants no remote access at all.
+
+Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
+persisted as `ca.key` / `ca.crt` (0600) in the config dir — not in
+`settings.json`, which is rewritten in full on every mutation. Client certs are
+long-lived because *revocation, not expiry, is the control*; revoking deletes
+the record and fires `SetEnrolmentRevocationHook` so the listener can close
+live connections.
+
+Grants are validated at enrolment (`ValidateEnrolmentGrants` — every grant must
+name a project with `IsRemote()` true) and at conversion
+(`ValidateProjectEnrolments` — remote→local is refused while any enrolment
+grants the project, naming the offenders). Call-time re-checking belongs to the
+listener. As of this writing there is still no listener, so a remote project
+cannot yet be *reached*; the model, the CA, and the enrolment flow exist.
+
+See [ADR-010](docs/decisions/010-remote-client-transport-and-identity.md).
 
 ## Service manifest (enhanced services)
 
@@ -136,10 +164,14 @@ brokering rationale: ADR-007):
 `appRouter.CallTool`, the single chokepoint every transport funnels through.
 Attribution comes from relay's own auth resolution (project id) and the kernel
 (peer pid off the bridge socket), never from the caller. Arguments are redacted
-and capped; results are metadata-only unless explicitly opted in. The sink fails
-open and shows its drop count rather than stalling a tool call. Viewer:
-Settings → Tool Calls, or `relay audit`. Full reference:
-[`docs/audit-log.md`](docs/audit-log.md); rationale: ADR-008.
+and capped; results are metadata-only unless explicitly opted in. For a local
+caller the sink fails open and shows its drop count rather than stalling a tool
+call; for a remote one it is fail-closed — an `intent` record is written and
+flushed before the MCP runs, a `completion` record with the same `id` follows,
+and a call whose intent cannot be recorded is refused (ADR-010 decision 5).
+Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
+VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
+ADR-008, narrowed for remote callers by ADR-010.
 
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare
