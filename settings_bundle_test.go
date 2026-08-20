@@ -182,6 +182,11 @@ function __mkEl(id){
     classList:{ toggle:function(){}, add:function(){}, remove:function(){} },
     querySelector:function(){ return null; }, closest:function(){ return null; },
     appendChild:function(){}, remove:function(){},
+    focus:function(){}, setSelectionRange:function(){},
+    children:[], lastChild:null, removeChild:function(){},
+    insertAdjacentHTML:function(pos, html){
+      this._html = (pos === 'afterbegin') ? String(html) + this._html : this._html + String(html);
+    },
     get innerHTML(){ return this._html; }, set innerHTML(v){ this._html = String(v); }
   };
 }
