@@ -21,7 +21,8 @@ func runAuditCommand(args []string) {
 	tail := fs.Int("tail", 50, "show the most recent N events")
 	project := fs.String("project", "", "filter by project id")
 	mcpID := fs.String("mcp", "", "filter by MCP id")
-	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized")
+	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending")
+	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, unknown")
 	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
@@ -44,6 +45,7 @@ func runAuditCommand(args []string) {
 		ProjectID: *project,
 		McpID:     *mcpID,
 		Outcome:   *outcome,
+		Kind:      *kind,
 		Event:     *event,
 		Text:      *text,
 		Limit:     *tail,
@@ -97,7 +99,14 @@ func runAuditCommand(args []string) {
 // auditCallerLabel renders the actor as "parent→proc", falling back to whatever
 // half is known. The parent is listed first because it's the agent that asked;
 // the process is often just a short-lived `relay mcp` child.
+//
+// A remote caller has no process to name, so it is labelled by the enrolled
+// client instead — otherwise every row of `relay audit --kind remote` would
+// show a dash in the column that is supposed to say who called.
 func auditCallerLabel(a AuditActor) string {
+	if a.ClientID != "" {
+		return a.ClientID
+	}
 	switch {
 	case a.Parent != "" && a.Proc != "":
 		return a.Parent + "→" + a.Proc

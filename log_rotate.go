@@ -108,6 +108,20 @@ func (w *rotatingWriter) shiftGenerations() {
 	_ = os.Rename(w.path, w.path+".1")
 }
 
+// Sync flushes the current file to stable storage. The audit log's fail-closed
+// path for a remote caller writes and syncs its intent record before the MCP
+// runs, so "written" there has to mean on disk rather than in the page cache:
+// the failure this guards against is relay dying with the mailbox already read
+// and the record still buffered.
+func (w *rotatingWriter) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return os.ErrInvalid
+	}
+	return w.f.Sync()
+}
+
 func (w *rotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

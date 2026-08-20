@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,18 +39,51 @@ const (
 // returned a normal result carrying isError, which is how a server reports an
 // application-level refusal such as a path outside allowed_dirs. Both are
 // failures, but only the second tells you a boundary was probed and held.
+//
+// Throttled is distinct from both, and from ToolError. It means the grant was
+// legitimate and the tool was allowed, and the *pattern of use* was refused — a
+// rate or volume budget on the enrolment was exceeded (ADR-010 decision 7).
+// That is precisely what exfiltration looks like from the host's side, which is
+// why it must not be flattened into denied.
+//
+// Pending is the outcome-so-far of an intent record, whose result is by
+// definition not known yet (see AuditPhaseIntent). It is a real value rather
+// than an empty string because "outcome" is a non-omitempty on-disk field that
+// every consumer already reads: the CLI table, the UI pill, and the --outcome
+// filter would each render or match "" as nothing at all, whereas "pending"
+// names the state truthfully and is what an alert on orphaned intents selects
+// on.
 const (
 	AuditOutcomeOK           = "ok"
 	AuditOutcomeError        = "error"
 	AuditOutcomeToolError    = "tool_error"
 	AuditOutcomeDenied       = "denied"
 	AuditOutcomeUnauthorized = "unauthorized"
+	AuditOutcomeThrottled    = "throttled"
+	AuditOutcomePending      = "pending"
 )
 
-// Actor kinds.
+// Record phases. A local call is one record and carries no phase at all, which
+// keeps every line written before ADR-010 — and every line written for a local
+// caller after it — exactly the shape ADR-008 specified.
+//
+// A remote call is two records sharing one event id: an intent written and
+// flushed before the MCP is invoked, and a completion written when the call
+// returns. Correlate them by id.
+const (
+	AuditPhaseIntent     = "intent"
+	AuditPhaseCompletion = "completion"
+)
+
+// Actor kinds. Remote is a distinct value rather than a reuse of Project so
+// that "show me everything any VM did" is a first-class filter rather than an
+// inference from which fields happen to be populated — a remote caller is
+// remote *and* acting as a project grant, and both facts are recorded
+// (ADR-010 decision 6).
 const (
 	AuditActorProject = "project"
 	AuditActorService = "service"
+	AuditActorRemote  = "remote"
 	AuditActorUnknown = "unknown"
 )
 
@@ -58,6 +92,7 @@ const (
 	AuditAuthToken   = "token"
 	AuditAuthCwd     = "cwd"
 	AuditAuthService = "service"
+	AuditAuthMTLS    = "mtls"
 	AuditAuthNone    = "none"
 )
 
@@ -71,9 +106,23 @@ type AuditActor struct {
 	ProjectName string `json:"project_name,omitempty"`
 	Auth        string `json:"auth"`
 	Cwd         string `json:"cwd,omitempty"`
-	PID         int    `json:"pid,omitempty"`
-	Proc        string `json:"proc,omitempty"`
-	Parent      string `json:"parent,omitempty"`
+
+	// PID / Proc / Parent describe a local caller and are omitted entirely for
+	// a remote one rather than zero-filled: they are omitempty, so an absent
+	// field reads as "not applicable" instead of "unknown".
+	PID    int    `json:"pid,omitempty"`
+	Proc   string `json:"proc,omitempty"`
+	Parent string `json:"parent,omitempty"`
+
+	// ClientID, Fingerprint and RemoteAddr are the remote equivalent, all three
+	// derived from the TLS connection and never asserted by the caller. The
+	// fingerprint is recorded in full and alongside the resolved client id
+	// rather than instead of it: that is what keeps a revoked device's history
+	// legible, by answering which *key* made a call after the enrolment naming
+	// that key has been deleted (ADR-010 decision 6).
+	ClientID    string `json:"client_id,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	RemoteAddr  string `json:"remote_addr,omitempty"`
 }
 
 // AuditEvent is one record in the tool-call log, serialized as a single JSONL
@@ -84,6 +133,12 @@ type AuditEvent struct {
 	DurMs int64      `json:"dur_ms"`
 	Event string     `json:"event"`
 	Actor AuditActor `json:"actor"`
+
+	// Phase is empty for the single record a local call produces, and is
+	// "intent" or "completion" for the two records a remote call produces,
+	// which share this event's ID. Absent-means-single is what keeps the local
+	// on-disk shape unchanged.
+	Phase string `json:"phase,omitempty"`
 
 	McpID string `json:"mcp_id,omitempty"`
 	Tool  string `json:"tool,omitempty"`
@@ -374,6 +429,7 @@ type AuditRecorder struct {
 
 	ch      chan AuditEvent
 	flushCh chan chan struct{}
+	syncCh  chan auditDurableWrite
 	ring    *auditRing
 	w       io.WriteCloser
 
@@ -416,6 +472,7 @@ func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 		path:    path,
 		ch:      make(chan AuditEvent, auditQueueSize),
 		flushCh: make(chan chan struct{}),
+		syncCh:  make(chan auditDurableWrite),
 		ring:    newAuditRing(resolved.RingSize),
 		w:       w,
 		done:    make(chan struct{}),
@@ -459,6 +516,47 @@ func (r *AuditRecorder) SetSink(fn func(AuditEvent)) {
 	r.sinkMu.Unlock()
 }
 
+// auditDurableWrite is a synchronous write request handed to the writer
+// goroutine. The reply channel is buffered so the writer never blocks on a
+// caller that has given up waiting.
+type auditDurableWrite struct {
+	ev    AuditEvent
+	reply chan error
+}
+
+// errAuditUnavailable is returned by RecordDurable when there is no live sink
+// to write to. It is an error rather than a silent success because the only
+// caller is the fail-closed path: "I could not record this" and "I recorded
+// this" must never be indistinguishable there.
+var errAuditUnavailable = errors.New("audit recorder unavailable")
+
+// RecordDurable writes an event and blocks until it is on disk, returning any
+// error rather than swallowing it. This is the fail-closed half of the sink,
+// used for a remote caller's intent record (ADR-010 decision 5): the call is
+// refused when this fails, so the caller has to be able to tell.
+//
+// It does not use the bounded queue. The queue exists so that a slow sink can
+// never delay a *local* tool call, and delaying the call is exactly the point
+// here — but the file still belongs to the writer goroutine, so the event is
+// handed over rather than written from the caller's goroutine.
+func (r *AuditRecorder) RecordDurable(ev AuditEvent) error {
+	if r == nil || !r.cfg.Enabled {
+		return errAuditUnavailable
+	}
+	req := auditDurableWrite{ev: ev, reply: make(chan error, 1)}
+	select {
+	case r.syncCh <- req:
+	case <-r.done:
+		return errAuditUnavailable
+	}
+	select {
+	case err := <-req.reply:
+		return err
+	case <-r.done:
+		return errAuditUnavailable
+	}
+}
+
 // Record enqueues an event. Never blocks: a full queue drops the event and
 // increments the drop counter.
 func (r *AuditRecorder) Record(ev AuditEvent) {
@@ -487,6 +585,8 @@ func (r *AuditRecorder) run() {
 				return // Close() closed the queue; buffered events already drained
 			}
 			r.write(enc, ev)
+		case req := <-r.syncCh:
+			req.reply <- r.writeDurable(enc, req.ev)
 		case ack := <-r.flushCh:
 			// select gives no ordering guarantee between the two channels, so
 			// drain everything already queued before acknowledging. By the time
@@ -520,6 +620,49 @@ func (r *AuditRecorder) write(enc *json.Encoder, ev AuditEvent) {
 	if sink != nil {
 		sink(ev)
 	}
+}
+
+// writeDurable persists one event synchronously and reports whether it made it
+// to stable storage.
+//
+// Unlike write, the ring and the live UI sink are updated only *after* the
+// bytes are down. A record relay refused to stand behind must not show up in
+// the Tool Calls tab as though it had been logged — that would recreate, in the
+// one place that is supposed to be fail-closed, exactly the "incomplete log
+// that looks complete" ADR-008 called worse than no log at all.
+func (r *AuditRecorder) writeDurable(enc *json.Encoder, ev AuditEvent) error {
+	if err := enc.Encode(ev); err != nil {
+		slog.Warn("audit durable write failed", "path", r.path, "error", err)
+		return fmt.Errorf("audit write: %w", err)
+	}
+	if err := syncAuditWriter(r.w); err != nil {
+		slog.Warn("audit durable sync failed", "path", r.path, "error", err)
+		return fmt.Errorf("audit sync: %w", err)
+	}
+	r.ring.add(ev)
+	r.wrote.Add(1)
+
+	r.sinkMu.RLock()
+	sink := r.sink
+	r.sinkMu.RUnlock()
+	if sink != nil {
+		sink(ev)
+	}
+	return nil
+}
+
+// auditSyncer is the durable half of the log sink. rotatingWriter implements
+// it; an in-memory writer used by a test may not, and a sink with no notion of
+// stable storage is not something to refuse a tool call over — the bytes still
+// reached it.
+type auditSyncer interface{ Sync() error }
+
+func syncAuditWriter(w io.Writer) error {
+	s, ok := w.(auditSyncer)
+	if !ok {
+		return nil
+	}
+	return s.Sync()
 }
 
 // Close drains the queue and closes the file. Safe to call more than once.
@@ -572,8 +715,12 @@ type AuditQuery struct {
 	McpID     string `json:"mcp_id,omitempty"`
 	Outcome   string `json:"outcome,omitempty"`
 	Event     string `json:"event,omitempty"`
-	Text      string `json:"text,omitempty"` // substring over tool, args, error, project name
-	Limit     int    `json:"limit,omitempty"`
+	// Kind filters on the actor kind, which is how "everything any VM did"
+	// (kind=remote) is asked as one question rather than reconstructed from
+	// which actor fields happen to be set.
+	Kind  string `json:"kind,omitempty"`
+	Text  string `json:"text,omitempty"` // substring over tool, args, error, project name
+	Limit int    `json:"limit,omitempty"`
 	// Deep searches the log file rather than the in-memory ring, for history
 	// older than the ring holds. Bounded by auditTailBudget.
 	Deep bool `json:"deep,omitempty"`
@@ -590,6 +737,9 @@ func (q AuditQuery) matches(ev *AuditEvent) bool {
 		return false
 	}
 	if q.Event != "" && ev.Event != q.Event {
+		return false
+	}
+	if q.Kind != "" && ev.Actor.Kind != q.Kind {
 		return false
 	}
 	if q.Text != "" {

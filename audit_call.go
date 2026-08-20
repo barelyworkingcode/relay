@@ -19,6 +19,18 @@ type auditCall struct {
 	rec   *AuditRecorder
 	start time.Time
 	ev    AuditEvent
+
+	// remote marks a caller that arrived over the remote listener, which is the
+	// only thing that switches this event from ADR-008's one fail-open record
+	// to ADR-010's fail-closed intent + completion pair. It is set from the
+	// connection-attested identity in the context and from nothing else.
+	remote bool
+
+	// intentWritten records that the pre-call half is already on disk, so the
+	// final record is labelled as its completion rather than as a standalone
+	// event. A refusal that happens before the intent is written (an unknown
+	// tool, a denied grant) never reaches an MCP, so it stays a single record.
+	intentWritten bool
 }
 
 // beginAudit starts an event, capturing the caller's kernel-attested pid.
@@ -39,6 +51,22 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 			Event: event,
 			Actor: AuditActor{Kind: AuditActorUnknown, Auth: AuditAuthNone},
 		},
+	}
+	// A remote caller's identity is attested by its certificate, which is the
+	// network equivalent of the peer pid and strictly stronger: a pid is
+	// reusable and racy, a fingerprint is neither. The two are mutually
+	// exclusive by construction — pid attribution means nothing across a
+	// network — so this is an either/or rather than two independent lookups,
+	// which is also what guarantees PID/Proc/Parent stay *absent* for a remote
+	// call instead of being filled with a locally-meaningless number.
+	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok {
+		a.remote = true
+		a.ev.Actor.Kind = AuditActorRemote
+		a.ev.Actor.Auth = AuditAuthMTLS
+		a.ev.Actor.ClientID = rc.ClientID
+		a.ev.Actor.Fingerprint = rc.Fingerprint
+		a.ev.Actor.RemoteAddr = rc.RemoteAddr
+		return a
 	}
 	// Resolve the caller's process now, while it is certainly still alive: a
 	// `relay mcp call` child exits as soon as it has its answer, so resolving
@@ -80,6 +108,15 @@ func (a *auditCall) setActor(ctx context.Context, stored *StoredToken, settings 
 	if a == nil || stored == nil {
 		return
 	}
+	// A remote caller's kind and auth come from the connection, not from what
+	// auth resolution found, so they are left alone here — but the project
+	// fields below are still filled in. The caller is remote *and* acting as a
+	// project grant, and a record that dropped either half would answer only
+	// one of the two questions worth asking of it.
+	if a.remote {
+		a.setProject(stored, settings)
+		return
+	}
 	switch {
 	case stored.Name == serviceTokenName:
 		a.ev.Actor.Kind = AuditActorService
@@ -92,6 +129,13 @@ func (a *auditCall) setActor(ctx context.Context, stored *StoredToken, settings 
 		a.ev.Actor.Kind = AuditActorProject
 		a.ev.Actor.Auth = AuditAuthToken
 	}
+	a.setProject(stored, settings)
+}
+
+// setProject records the resolved grant. Shared by every actor kind: whichever
+// way a caller was identified, the project it is acting as comes from relay's
+// own auth resolution.
+func (a *auditCall) setProject(stored *StoredToken, settings *Settings) {
 	a.ev.Actor.ProjectID = stored.ProjectID
 	a.ev.Actor.ProjectName = projectNameFor(stored, settings)
 }
@@ -101,6 +145,13 @@ func (a *auditCall) setActor(ctx context.Context, stored *StoredToken, settings 
 // what directory — is exactly what a review of failed calls needs.
 func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
 	if a == nil {
+		return
+	}
+	// A remote caller that failed to resolve a grant is still a known
+	// certificate on a known connection: downgrading it to "unknown" would
+	// discard the only attribution the record has, and a refused remote call is
+	// exactly the record worth keeping attributable.
+	if a.remote {
 		return
 	}
 	a.ev.Actor.Kind = AuditActorUnknown
@@ -120,11 +171,53 @@ func (a *auditCall) setToolCount(n int) {
 	a.ev.ToolCount = n
 }
 
+// intent writes the pre-call record for a remote caller and blocks until it is
+// on disk, returning an error when it could not be written. The router turns
+// that error into a refusal, and the MCP is never invoked.
+//
+// The ordering is the whole point (ADR-010 decision 5). An event written after
+// the call — which is what every local call still does, because doneResult
+// needs the result bytes — makes "refuse a call that cannot be logged" mean
+// nothing: by the time the write fails the mailbox has been read and the data
+// has left the MCP. Refusing afterwards is theatre.
+//
+// An intent with no matching completion is a signal worth alerting on, not
+// noise to reconcile away: it means relay invoked an MCP and never learned the
+// outcome — a crash, a kill, or a hang. Deleting or pairing those away would
+// discard the only evidence that a call went in and nothing came back.
+//
+// A local caller returns nil immediately, and so does a nil *auditCall — which
+// is the case when auditing is switched off entirely. That is a deliberate
+// limit on this guarantee: an operator who turns the audit log off has turned
+// off the thing the refusal was protecting, and the Tool Calls tab says so
+// rather than pretending otherwise.
+func (a *auditCall) intent() error {
+	if a == nil || !a.remote {
+		return nil
+	}
+	ev := a.ev
+	ev.Phase = AuditPhaseIntent
+	ev.TS = a.start.UTC()
+	// The result is not knowable yet; "pending" says so in the field every
+	// reader of this log already looks at.
+	ev.Outcome = AuditOutcomePending
+	if err := a.rec.RecordDurable(ev); err != nil {
+		return err
+	}
+	a.intentWritten = true
+	return nil
+}
+
 // done finalizes the event with an outcome and optional error, then hands it to
 // the recorder.
 func (a *auditCall) done(outcome string, err error) {
 	if a == nil {
 		return
+	}
+	if a.intentWritten {
+		// Same id as the intent: that pairing is what makes the two lines one
+		// call rather than two events that happen to look alike.
+		a.ev.Phase = AuditPhaseCompletion
 	}
 	a.ev.DurMs = time.Since(a.start).Milliseconds()
 	a.ev.TS = a.start.UTC()
