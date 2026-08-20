@@ -15,6 +15,11 @@ type Settings struct {
 	Services     []ServiceConfig `json:"services"`
 	Projects     []Project       `json:"projects"`
 	AdminSecret  string          `json:"admin_secret,omitempty"`
+
+	// Audit configures the tool-call log. Absent means defaults (enabled),
+	// so an install that predates this feature starts logging without any
+	// settings.json migration.
+	Audit *AuditConfig `json:"audit,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

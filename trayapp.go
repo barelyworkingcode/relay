@@ -32,6 +32,9 @@ type App struct {
 	bridgeServer   *bridge.BridgeServer
 	frontendServer *FrontendServer
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
+	// audit is the tool-call recorder. Nil when auditing is disabled or failed
+	// to start; every method on it is nil-safe.
+	audit *AuditRecorder
 	// settingsOpen gates UI emits on whether the Settings window is up. Written
 	// on the main thread (open/close) but read from background goroutines (the
 	// status poller, HTTP-driven project refresh), so it must be atomic.
@@ -152,6 +155,13 @@ func runTrayApp() {
 		Tools:                  extMgr,
 	}
 
+	// Tool-call audit log. A failure here is logged and auditing stays off
+	// rather than taking the tray down with it: the recorder is observability,
+	// not an authorization control, and relay is more useful running blind than
+	// not running at all. The Tool Calls tab surfaces the disabled state.
+	audit := startAuditRecorder(store.Get())
+	app.audit = audit
+
 	// Create and start bridge server.
 	router := &appRouter{
 		store:    store,
@@ -159,10 +169,20 @@ func runTrayApp() {
 		services: app.registry,
 		enhanced: enhancedRegistry,
 		onChange: app.onExternalChange,
+		audit:    audit,
 	}
 	// router implements SkillLister (ListTools); set it on the IPC context
 	// now that it exists so the Projects-tab "Regen Now" button can run.
 	app.ipcCtx.SkillLister = router
+	app.ipcCtx.Audit = audit
+	// Live-tail the Tool Calls tab. Fires on the audit writer goroutine, so
+	// hop to main before touching the WebView.
+	audit.SetSink(func(ev AuditEvent) {
+		if !app.settingsOpen.Load() {
+			return
+		}
+		app.platform.DispatchToMain(func() { app.emitSettingsEvent("onAuditEvent", ev) })
+	})
 	// Share the in-memory service token store between the router (auth) and
 	// the registry (token lifecycle). Tokens live only in memory — no cleanup
 	// needed on crash.
@@ -488,5 +508,9 @@ func (a *App) cleanup() {
 		// exits.
 		a.registry.CloseFrontendChannel()
 		a.wg.Wait()
+		// Last: nothing can produce a tool call any more, so drain the audit
+		// queue and close the log. Closing earlier would drop the shutdown-time
+		// events that a post-incident review is most likely to want.
+		a.audit.Close()
 	})
 }
