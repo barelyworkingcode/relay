@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -230,6 +231,56 @@ func TestAudit_RecordsProtocolLevelToolError(t *testing.T) {
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
 	if !ev.ResultIsError {
 		t.Error("result_is_error = false, want true for an isError result")
+	}
+	// The flag alone is not enough: the outcome is what `relay audit --outcome`
+	// and the Tool Calls filter select on, so a refusal recorded as "ok" is
+	// invisible to every query an operator would actually run.
+	if ev.Outcome != AuditOutcomeToolError {
+		t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeToolError)
+	}
+}
+
+// An in-protocol refusal must be reachable by the query an operator runs, not
+// merely recoverable by post-processing raw JSONL for result_is_error.
+func TestAudit_ToolErrorIsFilterable(t *testing.T) {
+	// Branch on the tool named in the request params: read_file refuses
+	// in-protocol, list_dir succeeds, so one call of each lands in the log.
+	mock := newMockConn("fsmcp", simpleTools("read_file", "list_dir"),
+		func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
+			raw, err := json.Marshal(params)
+			if err != nil {
+				return nil, err
+			}
+			if bytes.Contains(raw, []byte(`"read_file"`)) {
+				return json.RawMessage(`{"isError":true,"content":[{"type":"text","text":"path /etc/shadow is outside allowed directories"}]}`), nil
+			}
+			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
+		})
+	r, rec := auditedRouter(t,
+		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]*mockMcpConn{"fsmcp": mock}, nil)
+
+	if _, err := r.CallTool(context.Background(), "list_dir", json.RawMessage(`{}`), testToken); err != nil {
+		t.Fatalf("CallTool(list_dir): %v", err)
+	}
+	if _, err := r.CallTool(context.Background(), "read_file", json.RawMessage(`{}`), testToken); err != nil {
+		t.Fatalf("CallTool(read_file): %v", err)
+	}
+
+	// Record is asynchronous; drain the queue before querying the ring.
+	rec.Flush()
+
+	got := rec.Query(AuditQuery{Outcome: AuditOutcomeToolError})
+	if len(got) != 1 {
+		t.Fatalf("outcome=tool_error matched %d events, want 1", len(got))
+	}
+	if got[0].Tool != "read_file" {
+		t.Errorf("matched tool = %q, want read_file", got[0].Tool)
+	}
+
+	// The successful call must not be swept up by the new outcome.
+	if ok := rec.Query(AuditQuery{Outcome: AuditOutcomeOK}); len(ok) != 1 || ok[0].Tool != "list_dir" {
+		t.Errorf("outcome=ok matched %v, want exactly list_dir", ok)
 	}
 }
 

@@ -150,6 +150,15 @@ func (a *auditCall) doneResult(result json.RawMessage, err error) {
 	if n := a.rec.cfg.MaxResultPreviewBytes; n > 0 && len(result) > 0 {
 		a.ev.ResultPreview = truncateRunes(string(result), n)
 	}
+	// A tool that refuses in-protocol returns a normal result with isError set.
+	// The call completed, so this is not AuditOutcomeError, but it is not a
+	// success either — recording it as "ok" would hide every application-level
+	// refusal (an fsMCP read outside allowed_dirs, say) from `relay audit
+	// --outcome ...` and from the Tool Calls filter.
+	if a.ev.ResultIsError {
+		a.done(AuditOutcomeToolError, nil)
+		return
+	}
 	a.done(AuditOutcomeOK, nil)
 }
 
