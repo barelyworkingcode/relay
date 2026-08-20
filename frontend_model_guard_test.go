@@ -242,3 +242,77 @@ func TestSessionModelGuard_IgnoresNonPost(t *testing.T) {
 		t.Error("GET /api/sessions must be forwarded to the dispatcher")
 	}
 }
+
+// remoteProject stores a remote project directly. Built by hand rather than
+// through the create path so the guard is proven on its own: a session must be
+// refused because the project IS remote, not because validation happened to
+// run somewhere upstream.
+func remoteProject(t *testing.T, store SettingsStore) Project {
+	t.Helper()
+	var out Project
+	if err := store.With(func(s *Settings) {
+		out = Project{
+			ID:            "remote-session-proj",
+			Name:          "remote",
+			Kind:          ProjectKindRemote,
+			AllowedMcpIDs: []string{},
+			Token:         "tok-remote-session",
+			TokenHash:     hashToken("tok-remote-session"),
+		}
+		s.Projects = append(s.Projects, out)
+	}); err != nil {
+		t.Fatalf("seed remote project: %v", err)
+	}
+	return out
+}
+
+// A remote project is a grant to another machine, not a place a session runs.
+//
+// This cannot be left to the model allowlist: validateProjectShape requires a
+// remote project's AllowedModels to be EMPTY, and modelAllowedForProject reads
+// an empty allowlist as "unrestricted". So without an explicit refusal the most
+// restrictive configuration produces the most permissive outcome — every model
+// allowed, on a project that should host no session at all.
+func TestSessionModelGuard_RefusesRemoteProject(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := remoteProject(t, store)
+
+	spy := &nextSpy{}
+	guard := newSessionModelGuard(store, spy)
+	rec := httptest.NewRecorder()
+	guard(rec, postSessions(`{"projectId":"`+proj.ID+`","model":"opus"}`))
+
+	if spy.called {
+		t.Fatal("a session on a remote project reached the dispatcher")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// Belt and braces on the above: prove the allowlist alone would have let this
+// through, so the test above is testing the guard and not an accident.
+func TestModelAllowedForProject_WouldPermitRemoteProject(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := remoteProject(t, store)
+
+	if !modelAllowedForProject(store, proj.ID, "opus") {
+		t.Fatal("expected the model allowlist to permit a remote project's empty allowlist; " +
+			"if this now fails, refuseRemoteSession may be redundant and this pair should be revisited")
+	}
+}
+
+// A local project must still create sessions exactly as before.
+func TestSessionModelGuard_LocalProjectStillCreatesSessions(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"opus"})
+
+	spy := &nextSpy{}
+	guard := newSessionModelGuard(store, spy)
+	rec := httptest.NewRecorder()
+	guard(rec, postSessions(`{"projectId":"`+proj.ID+`","model":"opus"}`))
+
+	if !spy.called {
+		t.Fatalf("local project session was blocked, status = %d", rec.Code)
+	}
+}

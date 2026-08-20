@@ -36,6 +36,134 @@ func TestProjectCreate_RejectsUnsafePath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Remote projects — capability grants to a client on another machine, with
+// no host directory. See validateProjectShape (project.go) and
+// ValidateProjectGrants (settings.go).
+// ---------------------------------------------------------------------------
+
+// TestProjectCreateRemote_NoPathSucceeds proves the whole point of the
+// feature: a remote project needs no filesystem path at all.
+func TestProjectCreateRemote_NoPathSucceeds(t *testing.T) {
+	s := &Settings{Version: 1}
+	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected pathless remote project to be created, got: %v", err)
+	}
+	if proj.Path != "" {
+		t.Errorf("expected empty path, got %q", proj.Path)
+	}
+	if !proj.IsRemote() {
+		t.Errorf("expected IsRemote() true, got Kind=%q", proj.Kind)
+	}
+	if len(s.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(s.Projects))
+	}
+}
+
+// TestProjectCreateRemote_ZeroAllowedMcpsValid proves an empty grant list is
+// a valid resting state for a remote project (enroll now, grant tools
+// later), not an error — unlike the wildcard, which is always rejected.
+func TestProjectCreateRemote_ZeroAllowedMcpsValid(t *testing.T) {
+	s := &Settings{Version: 1}
+	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected zero-MCP remote project to be created, got: %v", err)
+	}
+	if len(proj.AllowedMcpIDs) != 0 {
+		t.Errorf("expected zero allowed MCPs, got %v", proj.AllowedMcpIDs)
+	}
+}
+
+// TestProjectCreateRemote_RejectsPath proves a remote project cannot carry a
+// filesystem path: it has no host directory for the path to mean anything.
+func TestProjectCreateRemote_RejectsPath(t *testing.T) {
+	s := &Settings{Version: 1}
+	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "/some/host/dir", nil, nil, nil, nil); err == nil {
+		t.Fatal("expected rejection of remote project with a path")
+	}
+	if len(s.Projects) != 0 {
+		t.Fatalf("rejected create must not persist a project; got %d", len(s.Projects))
+	}
+}
+
+// TestProjectCreateRemote_RejectsWildcardMcps proves a remote grant can't use
+// "*": on a local project the wildcard is a convenience, but on a remote
+// grant it means a future MCP registration silently widens what the remote
+// machine can reach, with nothing to review.
+func TestProjectCreateRemote_RejectsWildcardMcps(t *testing.T) {
+	s := &Settings{Version: 1}
+	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", []string{"*"}, nil, nil, nil); err == nil {
+		t.Fatal("expected rejection of remote project with wildcard allowed_mcp_ids")
+	}
+}
+
+// TestProjectCreateRemote_RejectsNonEmptyModels proves a remote project can't
+// set allowed_models at all: modelAllowedForProject treats both an empty
+// list and ["*"] as unrestricted, so an explicit but non-empty list is the
+// only way to know it means something, and remote projects don't have a
+// model-scoping story yet.
+func TestProjectCreateRemote_RejectsNonEmptyModels(t *testing.T) {
+	s := &Settings{Version: 1}
+	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, []string{"claude-opus"}, nil, nil); err == nil {
+		t.Fatal("expected rejection of remote project with non-empty allowed_models")
+	}
+}
+
+// TestProjectCreateRemote_RejectsPathScopedMcpGrant proves granting a
+// filesystem-scoped MCP (one whose schema declares allowed_dirs) to a remote
+// project is refused, and that the error names the offending MCP so the
+// caller knows what to remove.
+func TestProjectCreateRemote_RejectsPathScopedMcpGrant(t *testing.T) {
+	s := &Settings{Version: 1}
+	_, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", []string{"fsmcp"}, nil, nil, testSchemas())
+	if err == nil {
+		t.Fatal("expected rejection of remote project granted a path-scoped MCP")
+	}
+	if !strings.Contains(err.Error(), "fsmcp") {
+		t.Errorf("expected error to name the offending MCP (fsmcp), got: %v", err)
+	}
+	if len(s.Projects) != 0 {
+		t.Fatalf("rejected create must not persist a project; got %d", len(s.Projects))
+	}
+}
+
+// TestProjectKind_ZeroValueRoundTripsAsLocal proves an old (or hand-edited)
+// project record with no "kind" key at all deserializes to the zero value
+// and is never mistaken for remote.
+func TestProjectKind_ZeroValueRoundTripsAsLocal(t *testing.T) {
+	raw := []byte(`{"id":"p1","name":"NoKindKey","path":"/tmp/x","allowed_mcp_ids":["*"],"allowed_models":["*"]}`)
+	var proj Project
+	if err := json.Unmarshal(raw, &proj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if proj.Kind != "" {
+		t.Fatalf("expected zero-value Kind, got %q", proj.Kind)
+	}
+	if proj.IsRemote() {
+		t.Fatal("a project loaded from JSON with no kind key must not read as remote")
+	}
+}
+
+// TestProjectKind_LocalSerializesWithNoKindKey proves a local project never
+// writes "kind":"local" — local always persists as the absent key, the same
+// wire shape as a project created before this field existed (see
+// normalizeProjectKind).
+func TestProjectKind_LocalSerializesWithNoKindKey(t *testing.T) {
+	s := &Settings{Version: 1}
+	proj, err := s.CreateProjectWithToken("Local", t.TempDir(), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithToken: %v", err)
+	}
+	b, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), `"kind"`) {
+		t.Errorf("expected no kind key in serialized local project, got %s", b)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestProjectCreate — create a project with temp dir, verify inline token
 // ---------------------------------------------------------------------------
 
@@ -43,7 +171,7 @@ func TestProjectCreate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s := &Settings{
-		Version:      1,
+		Version: 1,
 		ExternalMcps: []ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
@@ -134,7 +262,7 @@ func TestProjectUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s := &Settings{
-		Version:      1,
+		Version: 1,
 		ExternalMcps: []ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
@@ -181,7 +309,7 @@ func TestProjectDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s := &Settings{
-		Version:      1,
+		Version: 1,
 		ExternalMcps: []ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 		},
@@ -219,7 +347,7 @@ func TestProjectTokenScoping(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s := &Settings{
-		Version:      1,
+		Version: 1,
 		ExternalMcps: []ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
