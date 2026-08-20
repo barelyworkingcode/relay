@@ -2509,7 +2509,7 @@ function renderAudit() {
     }
 
     html += '<table class="audit-table"><colgroup>';
-    html += '<col style="width:70px"><col style="width:100px"><col style="width:14%"><col style="width:12%">';
+    html += '<col style="width:70px"><col style="width:118px"><col style="width:14%"><col style="width:12%">';
     html += '<col style="width:18%"><col style="width:60px"><col style="width:16%"><col>';
     html += '</colgroup><thead><tr>';
     html += '<th>Time</th><th>Outcome</th><th>Project</th><th>MCP</th><th>Tool</th><th>ms</th><th>Caller</th><th>Detail</th>';
@@ -2524,7 +2524,7 @@ function renderAuditRow(ev) {
     const expanded = !!state.auditExpanded[ev.id];
     let html = '<tr class="row" onclick="toggleAuditRow(\'' + esc(ev.id) + '\')">';
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</td>';
-    html += '<td><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span></td>';
+    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span></td>';
     html += '<td title="' + esc(a.project_name || '') + '">' + esc(a.project_name || '\u2014') + '</td>';
     html += '<td>' + esc(ev.mcp_id || '\u2014') + '</td>';
     html += '<td class="audit-tool" title="' + esc(ev.tool || '') + '">' + esc(ev.tool || ev.event) + '</td>';
