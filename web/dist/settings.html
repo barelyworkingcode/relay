@@ -379,12 +379,15 @@ textarea:focus {
 .audit-time, .audit-ms { font-variant-numeric: tabular-nums; color: var(--text-2); }
 .audit-tool { font-family: var(--mono); }
 .audit-detail { color: var(--text-2); font-family: var(--mono); }
-.audit-pill { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 500; }
+.audit-pill { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+/* The outcome cell must never ellipsize: a clipped pill reads as a rendering
+   fault, and "unauthorized" is exactly the row a reader is looking for. */
+.audit-table td.audit-outcome-cell { overflow: visible; text-overflow: clip; }
 .audit-ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .audit-error { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
 .audit-denied { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .audit-unauthorized { background: color-mix(in srgb, var(--danger) 26%, transparent); color: var(--danger); }
-.audit-expand td { background: var(--bg-card); white-space: normal; }
+.audit-expand td { background: color-mix(in srgb, CanvasText 5%, transparent); white-space: normal; box-shadow: inset 2px 0 0 var(--accent); }
 .audit-kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 12px; }
 .audit-kv dt { color: var(--text-2); }
 .audit-kv dd { margin: 0; font-family: var(--mono); word-break: break-all; }
@@ -2684,7 +2687,7 @@ window.__RELAY_INIT__ = {
       return html;
     }
     html += '<table class="audit-table"><colgroup>';
-    html += '<col style="width:70px"><col style="width:100px"><col style="width:14%"><col style="width:12%">';
+    html += '<col style="width:70px"><col style="width:118px"><col style="width:14%"><col style="width:12%">';
     html += '<col style="width:18%"><col style="width:60px"><col style="width:16%"><col>';
     html += "</colgroup><thead><tr>";
     html += "<th>Time</th><th>Outcome</th><th>Project</th><th>MCP</th><th>Tool</th><th>ms</th><th>Caller</th><th>Detail</th>";
@@ -2698,7 +2701,7 @@ window.__RELAY_INIT__ = {
     const expanded = !!state.auditExpanded[ev.id];
     let html = `<tr class="row" onclick="toggleAuditRow('` + esc(ev.id) + `')">`;
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + "</td>";
-    html += '<td><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span></td>";
+    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span></td>";
     html += '<td title="' + esc(a.project_name || "") + '">' + esc(a.project_name || "\u2014") + "</td>";
     html += "<td>" + esc(ev.mcp_id || "\u2014") + "</td>";
     html += '<td class="audit-tool" title="' + esc(ev.tool || "") + '">' + esc(ev.tool || ev.event) + "</td>";
