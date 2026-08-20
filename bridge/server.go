@@ -1,10 +1,8 @@
 package bridge
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -89,7 +87,7 @@ func (s *BridgeServer) Close() {
 
 // bridgeError creates an error BridgeResponse with the given code and message.
 func bridgeError(code int, msg string) BridgeResponse {
-	return BridgeResponse{Type: RespError, Code: code, Message: msg}
+	return ErrorResponse(code, msg)
 }
 
 func (s *BridgeServer) handleConn(conn net.Conn) {
@@ -122,54 +120,10 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 		_ = conn.Close()
 	}()
 
-	scanner := NewScanner(conn)
-
-	// Serialize all writes to this connection: progress frames are written
-	// from the external-MCP reader goroutine while the main goroutine is
-	// blocked inside the in-flight call, so the final response and any
-	// progress frames can race on conn.Write without this mutex.
-	var writeMu sync.Mutex
-	writeFrame := func(resp BridgeResponse) error {
-		data, err := json.Marshal(resp)
-		if err != nil {
-			data, _ = json.Marshal(bridgeError(jsonrpc.CodeInternalError, err.Error()))
-		}
-		data = append(data, '\n')
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		_, werr := conn.Write(data)
-		return werr
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Attach a progress sink so a long-running CallTool can stream
-		// RespProgress frames to this caller before its terminal response.
-		// Only CallTool's downstream invokes it; other handlers ignore it.
-		reqCtx := WithProgress(ctx, func(u ProgressUpdate) {
-			_ = writeFrame(BridgeResponse{Type: RespProgress, Progress: &u})
-		})
-		resp := s.handleRequest(reqCtx, line)
-		if err := writeFrame(resp); err != nil {
-			return
-		}
-	}
-	switch err := scanner.Err(); {
-	case err == nil:
-		// Clean EOF: peer closed the connection. Nothing to report.
-	case errors.Is(err, bufio.ErrTooLong):
-		// A single line exceeded MaxMessageSize. The scanner can't resync, so
-		// tell the caller why before dropping the connection — otherwise the
-		// client only sees a generic "read failed" when its own read errors out.
-		_ = writeFrame(bridgeError(jsonrpc.CodeInvalidParams, fmt.Sprintf("message exceeds maximum size of %d bytes", MaxMessageSize)))
-		slog.Warn("bridge: dropping connection, message exceeds size limit", "max_bytes", MaxMessageSize)
-	case ctx.Err() != nil:
-		// Connection was closed by shutdown (the socket-close-on-cancel above);
-		// the resulting read error is expected, not a fault.
-		slog.Debug("bridge connection closed during shutdown", "error", err)
-	default:
-		slog.Warn("bridge connection read error", "error", err)
-	}
+	// No deadlines: this is a 0600 Unix socket, so the peer is same-user and a
+	// stalled client is a bug rather than an attack. RemoteServer, whose peer
+	// is across a network, passes a non-zero idle timeout instead.
+	NewFrameConn(conn, "bridge", 0).Serve(ctx, s.handleRequest)
 }
 
 // bridgeHandler defines a handler for a bridge request type.
@@ -240,11 +194,7 @@ func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) 
 // Router methods wrap auth/permission errors with jsonrpc.CodedError so the
 // bridge can classify them without fragile string matching.
 func classifyErrorCode(err error) int {
-	var coded *jsonrpc.CodedError
-	if errors.As(err, &coded) {
-		return coded.RPCCode
-	}
-	return jsonrpc.CodeInternalError
+	return ErrorCode(err)
 }
 
 func handleReconcile(ctx context.Context, _ *BridgeRequest, router ToolRouter) BridgeResponse {
