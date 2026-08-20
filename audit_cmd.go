@@ -21,7 +21,7 @@ func runAuditCommand(args []string) {
 	tail := fs.Int("tail", 50, "show the most recent N events")
 	project := fs.String("project", "", "filter by project id")
 	mcpID := fs.String("mcp", "", "filter by MCP id")
-	outcome := fs.String("outcome", "", "filter by outcome: ok, error, denied, unauthorized")
+	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized")
 	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")

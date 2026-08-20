@@ -2343,7 +2343,7 @@ function dispatchServiceAction(serviceId, actionId, row) {
 // older than the ring holds.
 // ---------------------------------------------------------------------------
 
-const AUDIT_OUTCOMES = ['ok', 'error', 'denied', 'unauthorized'];
+const AUDIT_OUTCOMES = ['ok', 'error', 'tool_error', 'denied', 'unauthorized'];
 const AUDIT_EVENT_KINDS = [
     ['call_tool', 'Tool calls'],
     ['list_tools', 'Tool lists'],
