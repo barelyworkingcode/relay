@@ -218,6 +218,28 @@ func CallerCwdFromContext(ctx context.Context) string {
 	return dir
 }
 
+type callerPIDCtxKey struct{}
+
+// WithCallerPID returns ctx carrying the process id at the far end of the
+// bridge connection (see PeerPID). Carried in the context for the same reason
+// as the cwd: the ToolRouter interface is implemented across repos and must not
+// grow a parameter for every piece of caller metadata. A zero pid means
+// "unknown" and returns ctx unchanged.
+//
+// Audit attribution only. Never consult this for an authorization decision.
+func WithCallerPID(ctx context.Context, pid int) context.Context {
+	if pid <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, callerPIDCtxKey{}, pid)
+}
+
+// CallerPIDFromContext returns the peer pid set by WithCallerPID, or 0.
+func CallerPIDFromContext(ctx context.Context) int {
+	pid, _ := ctx.Value(callerPIDCtxKey{}).(int)
+	return pid
+}
+
 // ToolRouter handles bridge requests. Implemented by the main app.
 type ToolRouter interface {
 	ListTools(ctx context.Context, token string) (json.RawMessage, error)

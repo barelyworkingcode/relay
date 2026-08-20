@@ -122,24 +122,27 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
-	Ctx                     context.Context
-	Store                   SettingsStore
-	UI                      SettingsUI
-	Platform                Platform
-	Registry                ServiceManager
-	Enhanced                *EnhancedServiceRegistry
-	UpdateMenu              func()
-	PushServiceStatusBatch  func() // re-poll and emit after an action lands
-	GoFunc                  func(fn func()) // tracked goroutine launcher
-	NotifyReconcile         func(string) error
-	NotifyReloadMcp         func(id, secret string) error
+	Ctx                    context.Context
+	Store                  SettingsStore
+	UI                     SettingsUI
+	Platform               Platform
+	Registry               ServiceManager
+	Enhanced               *EnhancedServiceRegistry
+	UpdateMenu             func()
+	PushServiceStatusBatch func()          // re-poll and emit after an action lands
+	GoFunc                 func(fn func()) // tracked goroutine launcher
+	NotifyReconcile        func(string) error
+	NotifyReloadMcp        func(id, secret string) error
 	// Tools is the live tool registry used by the Projects tab tri-state
 	// picker. nil means "no tool data available" — handlers degrade by
 	// emitting empty lists rather than panicking.
-	Tools                   MCPToolsProvider
+	Tools MCPToolsProvider
 	// SkillLister is the same interface skills.go uses; threaded here so the
 	// Regen Now button can run without re-importing *appRouter.
-	SkillLister             SkillLister
+	SkillLister SkillLister
+	// Audit backs the Tool Calls tab. Nil when auditing is off; every method
+	// on the recorder is nil-safe, so handlers don't guard on it.
+	Audit *AuditRecorder
 }
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends
@@ -229,10 +232,10 @@ type ipcUpdateServiceAutostartMsg struct {
 // ---------------------------------------------------------------------------
 
 const (
-	MsgAddExternalMcp        = "add_external_mcp"
-	MsgAuthenticateMcp       = "authenticate_mcp"
-	MsgRemoveExternalMcp     = "remove_external_mcp"
-	MsgResetMcpPermissions   = "reset_mcp_permissions"
+	MsgAddExternalMcp      = "add_external_mcp"
+	MsgAuthenticateMcp     = "authenticate_mcp"
+	MsgRemoveExternalMcp   = "remove_external_mcp"
+	MsgResetMcpPermissions = "reset_mcp_permissions"
 
 	MsgAddService             = "add_service"
 	MsgRemoveService          = "remove_service"
@@ -249,6 +252,11 @@ const (
 	MsgRegenProjectSkill          = "regen_project_skill"
 	MsgUpdateProjectDisabledTools = "update_project_disabled_tools"
 	MsgListMcpTools               = "list_mcp_tools"
+
+	// Tool Calls / audit log (ipc_audit.go)
+	MsgQueryAudit     = "query_audit"
+	MsgExportAudit    = "export_audit"
+	MsgRevealAuditLog = "reveal_audit_log"
 )
 
 // ---------------------------------------------------------------------------
@@ -283,6 +291,11 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRegenProjectSkill:          ipcRegenProjectSkill,
 	MsgUpdateProjectDisabledTools: ipcUpdateProjectDisabledTools,
 	MsgListMcpTools:               ipcListMcpTools,
+
+	// Tool Calls (ipc_audit.go)
+	MsgQueryAudit:     ipcQueryAudit,
+	MsgExportAudit:    ipcExportAudit,
+	MsgRevealAuditLog: ipcRevealAuditLog,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
@@ -302,4 +315,3 @@ func (a *App) onSettingsIpc(body string) {
 	}
 	handler(a.ipcCtx, raw)
 }
-

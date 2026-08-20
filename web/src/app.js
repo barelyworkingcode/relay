@@ -67,14 +67,33 @@ let state = {
     projectSkillRegen: {},                  // id -> { ok, message, t } (last regen result)
     projectError: null,
     rotatingProjectId: null,
+
+    // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
+    // from a deep query over the log file); `auditFilter` mirrors AuditQuery
+    // on the Go side so it can be sent verbatim.
+    auditEvents: [],
+    auditStatus: null,                      // {enabled, path, dropped, recorded, ...}
+    auditFilter: { project_id: '', mcp_id: '', outcome: '', event: '', text: '', deep: false },
+    auditExpanded: {},                      // event id -> bool
+    auditFollow: true,                      // append live events as they arrive
+    auditLoaded: false,
+    auditError: null,
+    auditExportPath: null,
 };
+
+// How many live events the Tool Calls tab keeps in the DOM. The Go-side ring
+// is the real buffer; this only bounds what one open window renders.
+const AUDIT_MAX_ROWS = 500;
 
 function showPage(page) {
     state.page = page;
-    const pages = ['services', 'mcps', 'projects', 'inspector'];
+    const pages = ['services', 'mcps', 'projects', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
+    // The Tool Calls tab is the only one not seeded by the initial payload:
+    // the log can be large, so it's fetched the first time it's shown.
+    if (page === 'audit' && !state.auditLoaded) queryAudit();
     render();
 }
 
@@ -101,6 +120,9 @@ function render(source) {
     } else if (state.page === 'projects') {
         if (fromPush && state.editingProjectId) return;
         el.innerHTML = renderProjects();
+    } else if (state.page === 'audit') {
+        el.innerHTML = renderAudit();
+        restoreAuditFocus();
     } else {
         if (fromPush && state.editingMcpId) return;
         el.innerHTML = renderMcpServers();
@@ -2311,6 +2333,306 @@ function dispatchServiceAction(serviceId, actionId, row) {
 
 
 
+// ---------------------------------------------------------------------------
+// Tool Calls tab — the audit log viewer.
+//
+// Filtering is two-tier. The recorder holds a bounded in-memory ring of recent
+// events; that is what loads by default and what live events append to, and
+// filtering it happens here in the page so typing stays instant. "Search
+// history" re-runs the same filter server-side against the log file, for events
+// older than the ring holds.
+// ---------------------------------------------------------------------------
+
+const AUDIT_OUTCOMES = ['ok', 'error', 'denied', 'unauthorized'];
+const AUDIT_EVENT_KINDS = [
+    ['call_tool', 'Tool calls'],
+    ['list_tools', 'Tool lists'],
+    ['list_skills', 'Skill lists'],
+];
+
+function queryAudit(deep) {
+    const f = state.auditFilter;
+    state.auditError = null;
+    // Remember the mode so a subsequent dropdown change re-runs the same kind
+    // of query rather than silently dropping the user back to the ring.
+    f.deep = !!deep;
+    ipc(JSON.stringify({
+        type: 'query_audit',
+        project_id: f.project_id || undefined,
+        mcp_id: f.mcp_id || undefined,
+        outcome: f.outcome || undefined,
+        event: f.event || undefined,
+        text: deep ? (f.text || undefined) : undefined,
+        limit: deep ? 2000 : 0,
+        deep: !!deep,
+    }));
+}
+
+function exportAudit() {
+    const f = state.auditFilter;
+    ipc(JSON.stringify({
+        type: 'export_audit',
+        project_id: f.project_id || undefined,
+        mcp_id: f.mcp_id || undefined,
+        outcome: f.outcome || undefined,
+        event: f.event || undefined,
+        text: f.text || undefined,
+    }));
+}
+
+function revealAuditLog() {
+    ipc(JSON.stringify({ type: 'reveal_audit_log' }));
+}
+
+function setAuditFilter(key, value) {
+    state.auditFilter[key] = value;
+    // Server-side fields need a refetch; text is applied locally so each
+    // keystroke doesn't cross the IPC boundary.
+    if (key !== 'text') queryAudit(state.auditFilter.deep);
+    render();
+}
+
+function toggleAuditFollow(on) {
+    state.auditFollow = !!on;
+    render();
+}
+
+function toggleAuditRow(id) {
+    state.auditExpanded[id] = !state.auditExpanded[id];
+    render();
+}
+
+// auditMatches applies the locally-evaluated part of the filter. The
+// server-side fields are already applied by the query; text is not, so a
+// keystroke re-filters what is loaded without a round trip.
+function auditMatches(ev) {
+    const f = state.auditFilter;
+    if (f.project_id && (ev.actor || {}).project_id !== f.project_id) return false;
+    if (f.mcp_id && ev.mcp_id !== f.mcp_id) return false;
+    if (f.outcome && ev.outcome !== f.outcome) return false;
+    if (f.event && ev.event !== f.event) return false;
+    if (f.text) {
+        const a = ev.actor || {};
+        const hay = [ev.tool, ev.mcp_id, ev.error, a.project_name, a.proc, a.parent,
+                     typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args || '')]
+            .join('\u0000').toLowerCase();
+        if (hay.indexOf(f.text.toLowerCase()) === -1) return false;
+    }
+    return true;
+}
+
+function auditVisible() {
+    return state.auditEvents.filter(auditMatches);
+}
+
+function auditFmtTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+// auditCaller renders the actor as "parent \u2192 proc". The parent leads because
+// `relay mcp` spawns a fresh child per call, so the process itself is usually a
+// throwaway and the parent is the agent that actually asked.
+function auditCaller(a) {
+    a = a || {};
+    if (a.parent && a.proc) return a.parent + ' \u2192 ' + a.proc;
+    return a.proc || a.parent || (a.pid ? 'pid ' + a.pid : '');
+}
+
+function auditDetail(ev) {
+    if (ev.error) return ev.error;
+    if (ev.args) return typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args);
+    if (ev.tool_count) return ev.tool_count + ' tools visible';
+    return '';
+}
+
+function auditPretty(args) {
+    if (args === undefined || args === null) return '';
+    if (typeof args === 'string') return args;
+    try { return JSON.stringify(args, null, 2); } catch (e) { return String(args); }
+}
+
+function auditSelect(key, label, options, current) {
+    let html = '<select onchange="setAuditFilter(\'' + key + '\', this.value)">';
+    html += '<option value="">' + esc(label) + '</option>';
+    for (const [val, text] of options) {
+        html += '<option value="' + esc(val) + '"' + (current === val ? ' selected' : '') + '>' + esc(text) + '</option>';
+    }
+    return html + '</select>';
+}
+
+function renderAudit() {
+    const st = state.auditStatus;
+    let html = '<div class="page-header"><h2>Tool Calls</h2><div style="display:flex;gap:8px">';
+    html += '<button class="btn btn-sm" onclick="queryAudit(false)">Refresh</button>';
+    html += '<button class="btn btn-sm" onclick="queryAudit(true)">Search History</button>';
+    html += '<button class="btn btn-sm" onclick="exportAudit()">Export</button>';
+    html += '<button class="btn btn-sm" onclick="revealAuditLog()">Reveal Log</button>';
+    html += '</div></div>';
+
+    if (st && !st.enabled) {
+        html += '<div class="audit-note warn">Auditing is disabled. Set <code>audit.enabled</code> to true in settings.json and restart Relay.</div>';
+        return html;
+    }
+    if (state.auditError) {
+        html += '<div class="audit-note warn">' + esc(state.auditError) + '</div>';
+    }
+    if (st && st.dropped > 0) {
+        html += '<div class="audit-note warn">' + st.dropped + ' event(s) were dropped because the audit queue was full \u2014 this log is incomplete.</div>';
+    }
+    if (state.auditExportPath) {
+        html += '<div class="audit-note">Exported to <code>' + esc(state.auditExportPath) + '</code></div>';
+    }
+
+    // Filter bar.
+    const f = state.auditFilter;
+    html += '<div class="audit-bar">';
+    html += '<input type="search" class="grow" placeholder="Filter by tool, project, caller, arguments\u2026" value="' + esc(f.text) + '" id="auditText" oninput="setAuditFilter(\'text\', this.value)">';
+    html += auditSelect('project_id', 'All projects', (state.projects || []).map(p => [p.id, p.name]), f.project_id);
+    html += auditSelect('mcp_id', 'All MCPs', (state.externalMcps || []).map(m => [m.id, m.display_name || m.id]), f.mcp_id);
+    html += auditSelect('outcome', 'Any outcome', AUDIT_OUTCOMES.map(o => [o, o]), f.outcome);
+    html += auditSelect('event', 'All events', AUDIT_EVENT_KINDS, f.event);
+    html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
+    html += '<input type="checkbox"' + (state.auditFollow ? ' checked' : '') + ' onchange="toggleAuditFollow(this.checked)">Follow</label>';
+    html += '</div>';
+
+    const rows = auditVisible();
+    if (!rows.length) {
+        html += '<div class="audit-empty">' + (state.auditLoaded ? 'No tool calls match this filter.' : 'Loading\u2026') + '</div>';
+        if (st && !st.log_lists) {
+            html += '<div class="audit-note">Tool-list events are not being recorded. Set <code>audit.log_lists</code> to true to include them.</div>';
+        }
+        return html;
+    }
+
+    html += '<table class="audit-table"><colgroup>';
+    html += '<col style="width:70px"><col style="width:100px"><col style="width:14%"><col style="width:12%">';
+    html += '<col style="width:18%"><col style="width:60px"><col style="width:16%"><col>';
+    html += '</colgroup><thead><tr>';
+    html += '<th>Time</th><th>Outcome</th><th>Project</th><th>MCP</th><th>Tool</th><th>ms</th><th>Caller</th><th>Detail</th>';
+    html += '</tr></thead><tbody id="auditRows">';
+    for (const ev of rows) html += renderAuditRow(ev);
+    html += '</tbody></table>';
+    return html;
+}
+
+function renderAuditRow(ev) {
+    const a = ev.actor || {};
+    const expanded = !!state.auditExpanded[ev.id];
+    let html = '<tr class="row" onclick="toggleAuditRow(\'' + esc(ev.id) + '\')">';
+    html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</td>';
+    html += '<td><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span></td>';
+    html += '<td title="' + esc(a.project_name || '') + '">' + esc(a.project_name || '\u2014') + '</td>';
+    html += '<td>' + esc(ev.mcp_id || '\u2014') + '</td>';
+    html += '<td class="audit-tool" title="' + esc(ev.tool || '') + '">' + esc(ev.tool || ev.event) + '</td>';
+    html += '<td class="audit-ms">' + (ev.dur_ms || 0) + '</td>';
+    html += '<td title="' + esc(auditCaller(a)) + '">' + esc(auditCaller(a) || '\u2014') + '</td>';
+    const detail = auditDetail(ev);
+    html += '<td class="audit-detail" title="' + esc(detail) + '">' + esc(detail) + '</td>';
+    html += '</tr>';
+    if (expanded) html += renderAuditDetail(ev);
+    return html;
+}
+
+function renderAuditDetail(ev) {
+    const a = ev.actor || {};
+    const kv = [];
+    const add = (k, v) => { if (v !== undefined && v !== null && v !== '') kv.push([k, String(v)]); };
+    add('Event', ev.event);
+    add('When', ev.ts);
+    add('Duration', (ev.dur_ms || 0) + ' ms');
+    add('Project', a.project_name ? a.project_name + ' (' + (a.project_id || '') + ')' : '');
+    add('Actor', a.kind);
+    add('Auth', a.auth);
+    add('Working dir', a.cwd);
+    add('Caller pid', a.pid);
+    add('Process', a.proc);
+    add('Parent', a.parent);
+    add('MCP', ev.mcp_id);
+    add('Tool', ev.tool);
+    add('Outcome', ev.outcome);
+    add('Error', ev.error);
+    if (ev.result_bytes) add('Result', ev.result_bytes + ' bytes' + (ev.result_is_error ? ' (isError)' : ''));
+    if (ev.tool_count) add('Tools visible', ev.tool_count);
+    add('Event id', ev.id);
+
+    let html = '<tr class="audit-expand"><td colspan="8">';
+    html += '<dl class="audit-kv">';
+    for (const [k, v] of kv) html += '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>';
+    html += '</dl>';
+    if (ev.args !== undefined && ev.args !== null && ev.args !== '') {
+        const label = ev.args_truncated
+            ? 'Arguments (truncated from ' + (ev.args_bytes || 0) + ' bytes)'
+            : 'Arguments';
+        html += '<div style="margin-top:10px;font-size:11px;color:var(--text-2)">' + esc(label) + '</div>';
+        html += '<div class="audit-args">' + esc(auditPretty(ev.args)) + '</div>';
+    }
+    if (ev.result_preview) {
+        html += '<div style="margin-top:10px;font-size:11px;color:var(--text-2)">Result preview</div>';
+        html += '<div class="audit-args">' + esc(ev.result_preview) + '</div>';
+    }
+    html += '</td></tr>';
+    return html;
+}
+
+// restoreAuditFocus puts the caret back in the filter box after a re-render.
+// Every keystroke rebuilds the table (filtering is local), which would
+// otherwise blur the input on the first character typed.
+function restoreAuditFocus() {
+    const el = document.getElementById('auditText');
+    if (!el || !state._auditTextFocused) return;
+    el.focus();
+    const n = el.value.length;
+    try { el.setSelectionRange(n, n); } catch (e) { /* search inputs may refuse */ }
+}
+
+window.onAuditEvents = function(events, status) {
+    state.auditEvents = events || [];
+    state.auditStatus = status || null;
+    state.auditLoaded = true;
+    if (state.page === 'audit') render();
+};
+
+window.onAuditEvent = function(ev) {
+    if (!ev) return;
+    if (state.auditStatus) {
+        state.auditStatus.recorded = (state.auditStatus.recorded || 0) + 1;
+    }
+    if (!state.auditFollow) return;
+    state.auditEvents.unshift(ev);
+    if (state.auditEvents.length > AUDIT_MAX_ROWS) state.auditEvents.length = AUDIT_MAX_ROWS;
+    if (state.page !== 'audit') return;
+    // Prepend surgically rather than re-rendering: a full repaint on every
+    // inbound call would fight whatever the user is typing in the filter box.
+    const tbody = document.getElementById('auditRows');
+    if (!tbody || !auditMatches(ev)) { render(); return; }
+    tbody.insertAdjacentHTML('afterbegin', renderAuditRow(ev));
+    while (tbody.children.length > AUDIT_MAX_ROWS) tbody.removeChild(tbody.lastChild);
+};
+
+window.onAuditError = function(msg) {
+    state.auditError = msg || 'audit error';
+    if (state.page === 'audit') render();
+};
+
+window.onAuditExported = function(path) {
+    state.auditExportPath = path;
+    if (state.page === 'audit') render();
+};
+
+// Track focus on the filter input so restoreAuditFocus knows whether to
+// reclaim it. Delegated at the document level because the input is destroyed
+// and recreated on every render.
+document.addEventListener('focusin', (e) => {
+    if (e.target && e.target.id === 'auditText') state._auditTextFocused = true;
+});
+document.addEventListener('focusout', (e) => {
+    if (e.target && e.target.id === 'auditText') state._auditTextFocused = false;
+});
+
 // setsEqual reports whether two Sets hold the same members.
 function setsEqual(a, b) {
     if (a.size !== b.size) return false;
@@ -2375,6 +2697,6 @@ render();
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
-});
+    auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;
