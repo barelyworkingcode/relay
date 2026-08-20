@@ -41,6 +41,12 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   filesystem path; validation refuses incoherent local-only features, and
   filesystem scope, sessions, and PTY launches are each refused twice —
   once by validation, once at the point of use.
+- [010 — A remote caller is a certificate on a narrow listener](010-remote-client-transport-and-identity.md)
+  *(Proposed)*: the 2b half ADR-009 deferred — a separate remote listener whose
+  dispatch table holds only `ListTools`/`CallTool`, mTLS where the certificate
+  is the identity and the project token names the grant, directory auth made
+  structurally impossible, fail-closed audit for remote callers, and per-grant
+  rate/volume budgets against exfiltration.
 
 ## Format
 
