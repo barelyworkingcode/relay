@@ -751,9 +751,10 @@ function renderProjects() {
         html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> to create one.</div>';
     } else {
         for (const p of state.projects) {
+            const remote = isRemoteProject(p);
             const allowedCount = p.allowed_mcp_ids && p.allowed_mcp_ids.length > 0
                 ? (p.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_mcp_ids.length))
-                : '0';
+                : (remote ? 'no tools granted' : '0');
             const modelsCount = p.allowed_models && p.allowed_models.length > 0
                 ? (p.allowed_models[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_models.length))
                 : '0';
@@ -762,7 +763,10 @@ function renderProjects() {
             const regen = state.projectSkillRegen[p.id];
             html += '<div class="proj-card">';
             html += '<div class="proj-card-header">';
+            html += '<div style="display:flex;align-items:center;gap:6px">';
             html += '<span class="proj-card-name">' + esc(p.name) + '</span>';
+            if (remote) html += '<span class="proj-badge-remote">Remote</span>';
+            html += '</div>';
             html += '<div style="display:flex;gap:4px">';
             html += '<button class="btn btn-sm" onclick="editProject(\'' + esc(p.id) + '\')">Edit</button>';
             html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
@@ -792,6 +796,7 @@ function renderProjects() {
 function blankProjectForm() {
     return {
         id: null,
+        kind: 'local',                            // 'local' | 'remote' — see setProjKind
         name: '',
         path: '',
         allowed_mcp_ids: [PROJ_MCP_WILDCARD],   // wildcard by default
@@ -809,6 +814,7 @@ function projectFormFromExisting(p) {
     const policy = p.permission_policy || {};
     return {
         id: p.id,
+        kind: isRemoteProject(p) ? 'remote' : 'local',
         name: p.name || '',
         path: p.path || '',
         allowed_mcp_ids: (p.allowed_mcp_ids || []).slice(),
@@ -873,6 +879,43 @@ function copyProjectToken(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text);
     }
+}
+
+// ---- Kind helpers ----
+//
+// A remote project (types.go ProjectKind) is a capability grant to an agent
+// on another machine, not a host directory: it carries no path, can't use
+// allow_cwd_auth or generate_skill (both are directory-flavored), can't use
+// the "*" MCP wildcard (a remote grant must be an explicit enumeration —
+// see validateProjectShape in project_apply.go), and always sends an empty
+// allowed_models. Kind is chosen at create time only; the edit form shows it
+// read-only (see renderProjectForm) because converting an existing project
+// has real consequences and isn't something to expose as a casual dropdown.
+
+function isRemoteProject(p) {
+    return !!p && p.kind === 'remote';
+}
+
+function isRemoteForm(f) {
+    return !!f && f.kind === 'remote';
+}
+
+function setProjKind(kind) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.kind = kind;
+    if (kind === 'remote') {
+        // The wildcard means "every MCP relay currently knows about" — on a
+        // remote grant that would let a future MCP registration silently
+        // widen what the remote client can reach, so it's not offered (see
+        // the MCP section below). If the user had it set (the new-project
+        // default), drop to an empty explicit list rather than letting Save
+        // send something the server will reject.
+        if (isProjMcpWildcard(f)) f.allowed_mcp_ids = [];
+        // Remote projects always carry an empty model allowlist.
+        f.allowed_models = [];
+    }
+    render();
 }
 
 // ---- Tri-state helpers ----
@@ -974,6 +1017,7 @@ function renderProjectForm() {
     const f = state.projectForm;
     if (!f) return '<div class="empty-state">No form state.</div>';
     const isNew = !f.id;
+    const isRemote = isRemoteForm(f);
     const title = isNew ? 'New Project' : 'Edit Project';
 
     let html = '<h2>' + esc(title) + '</h2>';
@@ -981,24 +1025,50 @@ function renderProjectForm() {
         html += '<div class="proj-error">' + esc(state.projectFormError) + '</div>';
     }
 
+    // ---- Kind ----
+    // Chosen at create time only. The edit form shows it read-only: converting
+    // an existing project is possible server-side but has real consequences
+    // (see project_convert_test.go / project_apply.go), so it isn't offered
+    // here as a casual dropdown.
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Kind</div>';
+    if (isNew) {
+        html += '<div class="perm-btns">';
+        html += '<button class="perm-btn ' + (!isRemote ? 'active' : '') + '" onclick="setProjKind(\'local\')">Local</button>';
+        html += '<button class="perm-btn ' + (isRemote ? 'active' : '') + '" onclick="setProjKind(\'remote\')">Remote</button>';
+        html += '</div>';
+    } else {
+        html += '<div class="proj-kind-label">' + (isRemote ? 'Remote — capability grant to another machine' : 'Local — bound to a host directory') + '</div>';
+        html += '<p class="proj-section-help">Kind can\'t be changed here after creation.</p>';
+    }
+    html += '</div>';
+
     // ---- Identity ----
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += '<label>Project name</label>';
     html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="e.g. Acme Website" />';
-    html += '<label>Project path</label>';
-    html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
-    html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
+    if (!isRemote) {
+        html += '<label>Project path</label>';
+        html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+        html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
+    } else {
+        html += '<p class="proj-section-help">Remote projects are capability grants to an agent on another machine — they have no host directory, so path, directory auth, and skill generation don\'t apply.</p>';
+    }
     html += '</div>';
 
     // ---- Allowed MCPs + tri-state picker ----
-    const wild = isProjMcpWildcard(f);
+    const wild = !isRemote && isProjMcpWildcard(f);
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed MCPs &amp; Tools</div>';
-    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-    html += '<span>Allow all registered MCPs (wildcard <code>*</code>)</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
-    html += '</div>';
+    if (!isRemote) {
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += '<span>Allow all registered MCPs (wildcard <code>*</code>)</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '</div>';
+    } else {
+        html += '<p class="proj-section-help">Remote projects can\'t use the wildcard — list MCPs explicitly. Zero granted is a valid starting point; widen it deliberately later.</p>';
+    }
 
     if (!wild) {
         const registered = state.externalMcps.slice();
@@ -1032,17 +1102,21 @@ function renderProjectForm() {
     html += '</div>';
 
     // ---- Allowed models ----
-    const modelsWild = isProjModelsWildcard(f);
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
-    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-    html += '<span>Allow all models (wildcard <code>*</code>)</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
-    html += '</div>';
-    if (!modelsWild) {
-        const csv = f.allowed_models.filter(m => m !== PROJ_MCP_WILDCARD).join(', ');
-        html += '<label>Model IDs (comma-separated)</label>';
-        html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
+    if (isRemote) {
+        html += '<p class="proj-section-help">Not applicable to remote projects — the model allowlist stays empty.</p>';
+    } else {
+        const modelsWild = isProjModelsWildcard(f);
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += '<span>Allow all models (wildcard <code>*</code>)</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '</div>';
+        if (!modelsWild) {
+            const csv = f.allowed_models.filter(m => m !== PROJ_MCP_WILDCARD).join(', ');
+            html += '<label>Model IDs (comma-separated)</label>';
+            html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
+        }
     }
     html += '</div>';
 
@@ -1082,32 +1156,41 @@ function renderProjectForm() {
     html += '</div>';
 
     // ---- Skill ----
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
-    html += '<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project\'s tools.</p>';
-    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-    html += '<span>Auto-generate SKILL.md</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (f.generate_skill ? 'checked' : '') + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
-    html += '</div>';
-    if (!isNew) {
-        html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(f.id) + '\')">Regenerate now</button></div>';
-        const regen = state.projectSkillRegen[f.id];
-        if (regen) {
-            const cls = regen.ok ? 'proj-ok' : 'proj-error';
-            html += '<div class="' + cls + '">' + (regen.ok ? '✓ Regenerated: ' : '✗ Regen failed: ') + esc(regen.message) + '</div>';
+    // Skills are written under <path>/.claude/skills — no path, no skill, so
+    // the whole section is absent (not disabled) for a remote project rather
+    // than showing a toggle that would lie about what it does.
+    if (!isRemote) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
+        html += '<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project\'s tools.</p>';
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += '<span>Auto-generate SKILL.md</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (f.generate_skill ? 'checked' : '') + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
+        html += '</div>';
+        if (!isNew) {
+            html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(f.id) + '\')">Regenerate now</button></div>';
+            const regen = state.projectSkillRegen[f.id];
+            if (regen) {
+                const cls = regen.ok ? 'proj-ok' : 'proj-error';
+                html += '<div class="' + cls + '">' + (regen.ok ? '✓ Regenerated: ' : '✗ Regen failed: ') + esc(regen.message) + '</div>';
+            }
         }
+        html += '</div>';
     }
-    html += '</div>';
 
     // ---- Directory auth ----
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Directory Auth</div>';
-    html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
-    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-    html += '<span>Allow token-less access from this project\'s directory</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
-    html += '</div>';
-    html += '</div>';
+    // Compares a caller's cwd against Path; a remote project has no Path, so
+    // the toggle is absent rather than disabled (see validateProjectShape).
+    if (!isRemote) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Directory Auth</div>';
+        html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += '<span>Allow token-less access from this project\'s directory</span>';
+        html += '<label class="switch"><input type="checkbox" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
+        html += '</div>';
+        html += '</div>';
+    }
 
     // ---- Token (edit only) ----
     if (!isNew) {
@@ -1187,10 +1270,15 @@ function pruneStaleDisabledTool(mcpID, name, kept) {
 function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
+    const isRemote = isRemoteForm(f);
     const name = (document.getElementById('projName') || {}).value || f.name;
-    const path = (document.getElementById('projPath') || {}).value || f.path;
+    // A remote project has no path control in the form (see renderProjectForm)
+    // and must not send one — validateProjectShape rejects any non-empty path
+    // on a remote project.
     let allowedModels = f.allowed_models;
-    if (!isProjModelsWildcard(f)) {
+    if (isRemote) {
+        allowedModels = [];
+    } else if (!isProjModelsWildcard(f)) {
         const csv = (document.getElementById('projModels') || {}).value || '';
         allowedModels = csv.split(',').map(s => s.trim()).filter(Boolean);
     }
@@ -1204,16 +1292,23 @@ function harvestProjectForm() {
     // chat_templates is intentionally absent: the form is read-only for
     // templates (Eve owns editing), and omitting the field makes
     // update_project leave the stored list untouched.
-    return {
+    const payload = {
         name: name.trim(),
-        path: path.trim(),
+        kind: isRemote ? 'remote' : 'local',
         allowed_mcp_ids: f.allowed_mcp_ids,
         allowed_models: allowedModels,
         permission_policy: policy,
-        generate_skill: f.generate_skill,
-        allow_cwd_auth: f.allow_cwd_auth,
+        // Both are directory-flavored and meaningless without a path;
+        // force them off for remote regardless of stale form state.
+        generate_skill: isRemote ? false : f.generate_skill,
+        allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
     };
+    if (!isRemote) {
+        const path = (document.getElementById('projPath') || {}).value || f.path;
+        payload.path = path.trim();
+    }
+    return payload;
 }
 
 function saveProjectForm() {
@@ -1226,7 +1321,7 @@ function saveProjectForm() {
         render();
         return;
     }
-    if (!payload.path) {
+    if (payload.kind !== 'remote' && !payload.path) {
         state.projectFormError = 'Project path is required';
         render();
         return;
@@ -2280,6 +2375,6 @@ render();
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM
 });
 window.state = state;

@@ -32,6 +32,11 @@ ADR that references the old one. Do not edit accepted ADRs in place.
 - [007 — Relay is the sole broker of project tokens](007-project-token-brokering.md):
   Eve references projects by id only; relay resolves and injects the scoped
   project token just-in-time and never hands it to the frontend.
+- [009 — Remote projects are capability grants, not directories](009-remote-projects.md):
+  a `remote` project kind for agents running on a separate VM, with no
+  filesystem path; validation refuses incoherent local-only features, and
+  filesystem scope, sessions, and PTY launches are each refused twice —
+  once by validation, once at the point of use.
 
 ## Format
 
