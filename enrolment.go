@@ -246,17 +246,66 @@ type EnrolmentRevocationHook func(clientID, fingerprint string)
 var (
 	revocationMu   sync.Mutex
 	revocationHook EnrolmentRevocationHook
+	// revocationOwner is whoever installed the hook currently in place. There
+	// is exactly one hook for the process, and the listener that owns it is
+	// rebuilt whenever `remote.listen` changes — so teardown has to be able to
+	// ask "is this still MINE?" before clearing. Without that, the ordinary
+	// rebind order (bind the new listener, THEN close the old one) has the old
+	// server's Close() silently uninstall the LIVE server's hook, and
+	// revocation stops severing connections while every test that only looks
+	// at the record still passes. Compared by interface identity, so the
+	// caller passes the pointer it registered with.
+	revocationOwner any
 )
 
-// SetEnrolmentRevocationHook installs the callback invoked by
-// CloseRevokedEnrolment. RemoteServer calls this once at startup with a
-// closure that closes every live connection presenting the given fingerprint.
-// Passing nil clears it (which is also the state in the CLI process, where
-// there is no listener to notify — see revokeEnrolment).
-func SetEnrolmentRevocationHook(fn EnrolmentRevocationHook) {
+// SetEnrolmentRevocationHookFor installs the callback invoked by
+// CloseRevokedEnrolment, on behalf of owner. RemoteServer calls this once per
+// listener with a closure that closes every live connection presenting the
+// given fingerprint; installing replaces whatever was there, because the newest
+// listener is by definition the one holding the live connections.
+func SetEnrolmentRevocationHookFor(owner any, fn EnrolmentRevocationHook) {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
 	revocationHook = fn
+	revocationOwner = owner
+}
+
+// ClearEnrolmentRevocationHookFor uninstalls the hook ONLY if owner still owns
+// it, and reports whether it did. This is the compare-and-clear a torn-down
+// listener must use: during a rebind the replacement has already installed its
+// own hook, and clearing unconditionally there would leave revocation unable to
+// sever a live connection — a security regression invisible to any test that
+// checks only that the enrolment record is gone.
+func ClearEnrolmentRevocationHookFor(owner any) bool {
+	revocationMu.Lock()
+	defer revocationMu.Unlock()
+	if revocationOwner != owner {
+		return false
+	}
+	revocationHook = nil
+	revocationOwner = nil
+	return true
+}
+
+// SetEnrolmentRevocationHook is the unowned form: it installs (or with nil,
+// clears) the hook without claiming ownership. Kept for callers that have no
+// rebind story — a CLI process has no listener to notify at all, which is why
+// the no-hook case is a supported state rather than an error.
+func SetEnrolmentRevocationHook(fn EnrolmentRevocationHook) {
+	SetEnrolmentRevocationHookFor(nil, fn)
+}
+
+// enrolmentRevocationHookOwner reports which object owns the installed hook, or
+// nil when none does. A test seam: "the hook is installed exactly once and
+// points at the live listener" is otherwise unobservable, and it is precisely
+// the property a reconcile can break quietly.
+func enrolmentRevocationHookOwner() any {
+	revocationMu.Lock()
+	defer revocationMu.Unlock()
+	if revocationHook == nil {
+		return nil
+	}
+	return revocationOwner
 }
 
 // CloseRevokedEnrolment notifies the installed hook that an enrolment is gone.
@@ -414,12 +463,13 @@ func revokeEnrolment(store SettingsStore, clientID string) (Enrolment, error) {
 	// do: taking effect on the next connection is not enough, because the
 	// wire protocol holds persistent connections in a scanner loop and a
 	// compromised agent that never reconnects would keep working. In a CLI
-	// process no hook is installed and this is a no-op — a CLI revocation
-	// reaches a running tray only through its settings poll
-	// (App.ReloadIfChanged), which changes what the NEXT connection resolves
-	// to but does not by itself close an established one. Closing that gap
-	// belongs to RemoteServer, which owns both the connection table and the
-	// reload path; it is said plainly here rather than left to be discovered.
+	// process no hook is installed and this is a no-op, so what a CLI
+	// revocation buys is narrower and worth stating exactly: the running tray's
+	// listener re-resolves the enrolment from the FILE on every request
+	// (RemoteServer.resolveGrant via freshSettings), so the very next call on
+	// an already-open socket is refused — but the socket itself stays open
+	// until that client tries something. Closing it outright still needs the
+	// process that owns the connection table, which is why the hook exists.
 	CloseRevokedEnrolment(removed.ClientID, removed.Fingerprint)
 	removeEnrolmentBundle(removed.ClientID)
 	return removed, nil

@@ -47,6 +47,7 @@ enrolment.go             Enrolment CRUD, grant validation, revocation + its live
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
+remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
@@ -58,7 +59,7 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 service_registry.go      Background process management + ephemeral service tokens
 service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
 service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
-ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit)
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
@@ -188,6 +189,30 @@ a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
 connections.
 
+**The listener follows settings; it is not frozen at startup.**
+`RemoteSupervisor` (`remote_reconcile.go`) converges on every settings poll and
+on every bridge-driven reconcile: it binds when the block is enabled, moves when
+`listen` changes, and closes when the block is disabled *or auditing stops being
+live* — so `audit.enabled: false` is a refusal at runtime and not only at
+launch. Convergence can never open a listener the configuration does not
+explicitly ask for (absent block and omitted `enabled` both resolve to
+disabled). A rebind binds the new address **before** closing the old listener,
+so a failed bind leaves the old one serving and says so loudly rather than
+leaving nothing behind and no error; live connections on the old address are
+then closed deliberately, because `listen` is the reachability control and a
+narrowed bind that left old sessions running would not have narrowed anything.
+The revocation hook is *owned* (`SetEnrolmentRevocationHookFor` /
+`ClearEnrolmentRevocationHookFor`) so a replaced listener's teardown cannot
+uninstall the live listener's hook.
+
+**Every authorization read on this path goes through `freshSettings`, never
+`store.Get()`.** `relay enrol create|revoke` runs in a CLI *process*, so a
+cached settings view made a newly created enrolment look unenrolled until the
+tray's next poll — indistinguishable from a genuine misconfiguration (issue
+#21). `RemoteServer.currentSettings` stats `settings.json` and re-reads only
+when it moved, which is what makes creation as immediate as revocation already
+was, per request and per connection.
+
 See [ADR-010](docs/decisions/010-remote-client-transport-and-identity.md).
 
 ## Service manifest (enhanced services)
@@ -236,7 +261,13 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Service Inspector, Tool Calls.
+Services, MCP Servers, Projects, Remote Clients, Service Inspector, Tool Calls.
+
+The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
+grants it reaches — by project *name*, with the certificate fingerprint in full
+— and reads/writes the `remote` block. Creating an enrolment returns the bundle
+**directory** only: the client private key inside it never crosses the IPC
+boundary.
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via

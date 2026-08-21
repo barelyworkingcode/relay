@@ -242,6 +242,30 @@ func (ss *FileSettingsStore) EnsureInitialized() error {
 // FileSettingsStore methods
 // ---------------------------------------------------------------------------
 
+// freshSettings returns settings that reflect the FILE, not whatever snapshot
+// this process happened to load earlier.
+//
+// Get() answers from an in-memory cache that only two things refresh: a
+// mutation made by this process (With, which writes the cache through), and the
+// tray's 2s settings poll (ReloadIfChanged). That is fine for a menu and wrong
+// for an authorization decision, because relay is not one process: `relay enrol
+// create` runs in a CLI process and writes settings.json, and until the tray's
+// next poll its listener resolves certificates against a settings view that
+// predates the record — so a brand-new enrolment is refused as "not enrolled"
+// for up to a poll interval, which is indistinguishable from a genuine
+// misconfiguration (issue #21).
+//
+// The cost of closing that window is one stat() per decision: ReloadIfChanged
+// re-reads only when the modtime moved, so the steady state is a stat and a
+// deep copy of a small struct. Anything on the remote path that decides whether
+// a caller may act MUST go through here rather than Get().
+func freshSettings(store SettingsStore) *Settings {
+	if s := store.ReloadIfChanged(); s != nil {
+		return s
+	}
+	return store.Get()
+}
+
 // Get returns a deep copy of the cached settings (or reads from disk on first
 // call). The returned *Settings is safe for concurrent read and mutation.
 func (ss *FileSettingsStore) Get() *Settings {

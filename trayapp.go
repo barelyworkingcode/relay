@@ -30,10 +30,12 @@ type App struct {
 	extMgr       *ExternalMcpManager
 	registry     ServiceManager
 	bridgeServer *bridge.BridgeServer
-	// remoteServer is the mTLS listener remote clients reach relay through.
-	// Nil whenever no remote block is configured, which is the overwhelmingly
+	// remote supervises the mTLS listener remote clients reach relay through:
+	// it binds, rebinds and stops as `remote.enabled` / `remote.listen` change,
+	// so neither needs a restart to take effect. Holds no listener at all
+	// whenever no remote block is configured, which is the overwhelmingly
 	// common case; every method on it is nil-safe so nothing branches here.
-	remoteServer   *RemoteServer
+	remote         *RemoteSupervisor
 	frontendServer *FrontendServer
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
 	// audit is the tool-call recorder. Nil when auditing is disabled or failed
@@ -257,14 +259,15 @@ func runTrayApp() {
 	// relay without a remote listener is relay as it has always been, whereas
 	// a remote listener that started anyway despite (say) disabled auditing is
 	// exactly the system ADR-010 exists to prevent.
-	rs, err := NewRemoteServer(ctx, store, router, audit)
-	if err != nil {
-		slog.Error("remote listener not started", "error", err)
-	}
-	app.remoteServer = rs
-	if rs != nil {
-		app.goFunc(func() { rs.Serve() })
-	}
+	//
+	// Started through the supervisor rather than bound directly, so the same
+	// code path that opens it at launch is the one that moves or closes it when
+	// settings change — a listener whose configuration only applied at startup
+	// made `remote.listen` the one setting in relay that needed a quit, and
+	// made `audit.enabled: false` a refusal that only held until the next
+	// launch. statusPoller drives the convergence from here on.
+	app.remote = NewRemoteSupervisor(ctx, store, router, audit, app.goFunc)
+	app.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
 
 	// Set up tray icon.
 	slog.Info("setting up tray icon")
@@ -312,6 +315,13 @@ func runTrayApp() {
 // changes (bridge reconcile, reload). Centralizes the "push settings + update
 // menu" pattern so the router doesn't reach into platform dispatch directly.
 func (a *App) onExternalChange() {
+	// A bridge-driven reconcile means "settings changed underneath you", which
+	// is true of the remote block as much as of the MCP list. Waiting for the
+	// next poll would work, but this is the one path where relay has already
+	// been TOLD, so acting on it costs nothing. In a tracked goroutine because
+	// a bind must not run on the main thread, and because the caller is a
+	// bridge handler that should not wait on a socket.
+	a.goFunc(func() { a.remote.Reconcile() })
 	a.platform.DispatchToMain(func() {
 		a.pushFullSettings()
 		a.updateMenu()
@@ -355,6 +365,15 @@ func (a *App) statusPoller() {
 		a.rssByID.Store(&rssByID)
 
 		s := a.store.ReloadIfChanged()
+
+		// Converge the remote listener on the same tick that picks up settings
+		// changes, and off the main thread because it may bind a socket. This
+		// is the trigger for every out-of-process edit — `relay enrol`, a
+		// hand-edited settings.json, the Settings UI — for the same reason the
+		// poll exists at all: relay is not one process, and the tray is not the
+		// only writer. Cheap and silent when nothing changed; see
+		// RemoteSupervisor.Reconcile for what "nothing changed" means.
+		a.remote.Reconcile()
 
 		a.platform.DispatchToMain(func() {
 			// store.Get() deep-copies, so prefer the already-loaded snapshot
@@ -509,7 +528,7 @@ func (a *App) cleanup() {
 		if a.bridgeServer != nil {
 			a.bridgeServer.StopAccepting()
 		}
-		a.remoteServer.StopAccepting()
+		a.remote.StopAccepting()
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
@@ -518,7 +537,7 @@ func (a *App) cleanup() {
 		// CallTool fails fast rather than holding the drain open, and its
 		// completion record is still written because the audit log is closed
 		// last of all.
-		a.remoteServer.Close()
+		a.remote.Close()
 		// Stop the frontend server before the children that proxy to relayLLM
 		// — once relayLLM dies, in-flight proxied requests fail with 502
 		// rather than hanging.
