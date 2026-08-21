@@ -435,11 +435,17 @@ func TestRemoteTab_DisabledAuditingReadsAsRemoteOff(t *testing.T) {
 // exists so that removing it (when the listener picks address changes up live)
 // is a deliberate act with a failing test attached, not a silent drift into
 // telling the operator something untrue.
-func TestRemoteTab_RestartCaveatIsStated(t *testing.T) {
+func TestRemoteTab_StatesWhatIsLiveAndWhatIsNot(t *testing.T) {
 	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)
 	html := evalString(t, vm, `window.renderRemoteListener()`)
-	if !strings.Contains(html, "takes effect when Relay restarts") {
-		t.Errorf("the listener section does not say a change needs a restart\n%s", html)
+	// The listener reconciles, so a blanket "restart required" would be false
+	// for everything a user is likely to change. The one genuine exception is
+	// re-enabling auditing, and that must still be stated.
+	if !strings.Contains(html, "no restart needed") {
+		t.Errorf("the listener section does not say reconfiguration is live\n%s", html)
+	}
+	if !strings.Contains(html, "Re-enabling auditing") {
+		t.Errorf("the listener section does not state the one case that still needs a relaunch\n%s", html)
 	}
 }
 

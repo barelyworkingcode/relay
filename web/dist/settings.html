@@ -1871,7 +1871,7 @@ window.__RELAY_INIT__ = {
     state.projectFormError = msg;
     if (state.page === "projects") render("push");
   };
-  var REMOTE_RESTART_NOTE = "Enabling, disabling, or moving the listener takes effect when Relay restarts \u2014 it binds its address at startup.";
+  var REMOTE_NOTE = "Enabling, disabling and moving the listener take effect within a few seconds \u2014 no restart needed. Re-enabling auditing after turning it off is the exception: that still needs Relay to relaunch.";
   function remoteGrantableProjects() {
     return (state.projects || []).filter(isRemoteProject);
   }
@@ -2106,7 +2106,7 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     html += "<label>Listen address</label>";
     html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || "") + `" oninput="remoteDraftSet('listen', this.value)" />`;
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || "") + "</code>. " + esc(REMOTE_RESTART_NOTE) + "</p>";
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || "") + "</code>. " + esc(REMOTE_NOTE) + "</p>";
     const effective = (d.listen || "").trim() || r.effective || "";
     if (effective && !remoteListenIsLoopback(effective)) {
       html += '<div class="remote-note warn">' + esc(effective) + " binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read \u2014 but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>";
