@@ -1487,12 +1487,15 @@ window.onProjectError = function(msg) {
 // empty log.
 // ---------------------------------------------------------------------------
 
-// The listener binds its address once, at startup. SINGLE SOURCE FOR THAT
-// CLAIM: this constant has exactly one use site (renderRemoteListener, under
-// the listen field). When the listener picks up address changes live, narrow
-// this string to the enable/disable case — or delete the constant and its one
-// use if that goes live too.
-const REMOTE_RESTART_NOTE = 'Enabling, disabling, or moving the listener takes effect when Relay restarts — it binds its address at startup.';
+// The listener now reconciles: RemoteSupervisor converges on the configured
+// state from the settings poll, so enabling, disabling and moving the address
+// all take effect without a relaunch. One thing still does not — turning
+// auditing back ON — because AuditRecorder is built once at startup and nothing
+// reconciles it. Auditing OFF does take effect, and stops the listener, so the
+// asymmetry only bites in the recovering direction. Say that rather than a
+// blanket "restart required", which would be false for everything a user is
+// actually likely to change here.
+const REMOTE_NOTE = 'Enabling, disabling and moving the listener take effect within a few seconds — no restart needed. Re-enabling auditing after turning it off is the exception: that still needs Relay to relaunch.';
 
 // remoteGrantableProjects is the only set the create form offers.
 // ValidateEnrolmentGrants refuses a grant naming a local project outright, so
@@ -1814,7 +1817,7 @@ function renderRemoteListener() {
 
     html += '<label>Listen address</label>';
     html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || '') + '" oninput="remoteDraftSet(\'listen\', this.value)" />';
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || '') + '</code>. ' + esc(REMOTE_RESTART_NOTE) + '</p>';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || '') + '</code>. ' + esc(REMOTE_NOTE) + '</p>';
 
     const effective = (d.listen || '').trim() || r.effective || '';
     if (effective && !remoteListenIsLoopback(effective)) {
