@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -982,4 +983,65 @@ func TestResolveServiceID(t *testing.T) {
 			t.Fatal("should return empty for unknown name")
 		}
 	})
+}
+
+// schemaHasField decides whether an MCP is filesystem-scoped, and a false
+// negative fails OPEN: the grant is permitted, the second defence then declines
+// to derive allowed_dirs for a remote project, the MCP receives nothing, and an
+// MCP that reads an absent allowlist as "unrestricted" hands a client on another
+// machine the whole host filesystem. So the answer must not depend on which of
+// two equivalent spellings an MCP chose.
+func TestSchemaHasField_DetectsBothSchemaShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		field  string
+		want   bool
+	}{
+		{"flat, as fsMCP declares it", `{"allowed_dirs":{"type":"array"}}`, "allowed_dirs", true},
+		{"nested under properties, the ordinary JSON-Schema shape",
+			`{"type":"object","properties":{"allowed_dirs":{"type":"array"}}}`, "allowed_dirs", true},
+		{"nested, field genuinely absent",
+			`{"type":"object","properties":{"allowed_mailboxes":{"type":"array"}}}`, "allowed_dirs", false},
+		{"flat, field genuinely absent", `{"allowed_mailboxes":{"type":"array"}}`, "allowed_dirs", false},
+		{"a field literally named properties still matches flat first",
+			`{"properties":{"type":"array"}}`, "properties", true},
+		{"properties present but not an object", `{"properties":"nonsense"}`, "allowed_dirs", false},
+		{"empty schema", ``, "allowed_dirs", false},
+		{"malformed json", `{not valid`, "allowed_dirs", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := schemaHasField(json.RawMessage(tc.schema), tc.field); got != tc.want {
+				t.Errorf("schemaHasField(%s, %q) = %v, want %v", tc.schema, tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+// The regression that matters: the same filesystem-scoped MCP must be refused a
+// remote grant regardless of how it spelled its schema. Before the fix the
+// nested form was granted, which is the exact outcome ADR-009 decision 3 exists
+// to prevent.
+func TestValidateProjectGrants_RefusesFilesystemMcpInEitherSchemaShape(t *testing.T) {
+	shapes := map[string]string{
+		"flat":   `{"allowed_dirs":{"type":"array"}}`,
+		"nested": `{"type":"object","properties":{"allowed_dirs":{"type":"array"}}}`,
+	}
+	for name, schema := range shapes {
+		t.Run(name, func(t *testing.T) {
+			s := &Settings{Projects: []Project{{
+				ID: "p1", Name: "Remote", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"fsmcp"},
+			}}}
+			err := s.ValidateProjectGrants(&s.Projects[0], map[string]json.RawMessage{
+				"fsmcp": json.RawMessage(schema),
+			})
+			if err == nil {
+				t.Fatalf("%s schema: remote project was granted a filesystem-scoped MCP", name)
+			}
+			if !strings.Contains(err.Error(), "fsmcp") {
+				t.Errorf("refusal should name the offending MCP, got: %v", err)
+			}
+		})
+	}
 }
