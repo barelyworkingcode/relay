@@ -371,13 +371,37 @@ func extractTriggerKeywords(desc string) string {
 	flat := oneLine(strings.TrimSpace(desc))
 	low := strings.ToLower(flat)
 	for _, m := range triggerMarkers {
-		if i := strings.Index(low, m); i >= 0 {
-			rest := flat[i+len(m):]
-			if end := strings.IndexByte(rest, '.'); end >= 0 {
-				rest = rest[:end]
-			}
-			return strings.TrimSpace(rest)
+		i := strings.Index(low, m)
+		if i < 0 {
+			continue
 		}
+		// The offset was found in the lowercased copy and cannot be applied to
+		// the original: strings.ToLower is not length-preserving in UTF-8. Most
+		// affected runes shrink (U+212A KELVIN SIGN, U+1E9E, U+2126, …) and two
+		// grow (U+023A, U+023E), so a byte offset from `low` either lands
+		// mid-clause in `flat` — silently harvesting the wrong routing keywords
+		// — or runs off the end and panics.
+		//
+		// ToLower maps one rune to exactly one rune, so RUNE indices survive
+		// even when byte lengths do not. Translate through the rune count.
+		rest := sliceAfterRunes(flat, utf8.RuneCountInString(low[:i+len(m)]))
+		if end := strings.IndexByte(rest, '.'); end >= 0 {
+			rest = rest[:end]
+		}
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
+// sliceAfterRunes returns s with its first n runes removed. Used to carry an
+// offset discovered in a case-folded copy back onto the original text, where
+// only the rune index is trustworthy.
+func sliceAfterRunes(s string, n int) string {
+	for i := range s {
+		if n == 0 {
+			return s[i:]
+		}
+		n--
 	}
 	return ""
 }
