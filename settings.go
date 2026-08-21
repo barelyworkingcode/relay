@@ -28,6 +28,14 @@ type Settings struct {
 	// so an install that predates this feature starts logging without any
 	// settings.json migration.
 	Audit *AuditConfig `json:"audit,omitempty"`
+
+	// Remote configures the mTLS listener remote clients reach relay through
+	// (ADR-010 decision 9). Absent means NO LISTENER AT ALL — the opposite
+	// default to Audit above, and deliberately so: a missing audit block should
+	// keep an old install recording, while a missing remote block must never
+	// open a network socket. omitempty keeps every install that has not enabled
+	// one byte-identical to the one it had before this field existed.
+	Remote *RemoteConfig `json:"remote,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

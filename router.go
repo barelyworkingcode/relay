@@ -72,7 +72,12 @@ type appRouter struct {
 	// audit records every tool call, denial, and auth failure that passes
 	// through this router. Nil disables auditing entirely — every call site
 	// goes through nil-safe helpers, so nothing branches on it.
-	audit         *AuditRecorder
+	audit *AuditRecorder
+	// budgets enforces each enrolment's rolling call-rate and result-volume
+	// caps for remote callers (ADR-010 decision 7). The zero value enforces —
+	// see enrolmentBudgets — so there is nothing to wire up and no way to end
+	// up with an unbudgeted router by omission.
+	budgets       enrolmentBudgets
 	serviceTokens serviceTokenStore
 }
 
@@ -314,6 +319,34 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		}
 	}
 
+	// Per-enrolment budgets (ADR-010 decision 7). One context lookup decides
+	// whether any of this applies: a local caller carries no remote identity,
+	// so it takes no lock, keeps no ledger, and is not accounted at all.
+	//
+	// The rate check sits here — after the grant check, before the intent
+	// record and before the MCP — because a throttled call must not invoke the
+	// tool. Refusing after the mailbox has been read would interdict nothing.
+	// It stays a single audit record rather than an intent/completion pair for
+	// the same reason a denial does: no MCP was reached, so there is no
+	// side effect for a pre-call record to bracket.
+	//
+	// `throttled` is distinct from `denied` (a tool the grant never included)
+	// and `tool_error` (a boundary inside the MCP) because it is the only one
+	// of the three that says the grant was legitimate and the pattern of use
+	// was not — which is what exfiltration looks like from the host's side.
+	rc, isRemote := bridge.RemoteCallerFromContext(ctx)
+	var budget EnrolmentBudget
+	if isRemote {
+		// Resolved once and reused below, so admission and accounting for one
+		// call are always governed by the same numbers even if an operator
+		// edits the enrolment mid-call.
+		budget = settings.enrolmentBudget(rc)
+		if err := r.budgets.admit(rc, budget); err != nil {
+			au.done(AuditOutcomeThrottled, err)
+			return nil, err
+		}
+	}
+
 	// Inject per-token context as _meta for this MCP, plus the authenticated
 	// project id so an MCP can attribute the call to a project without
 	// trusting LLM-supplied values. Relay is the project authority here.
@@ -335,6 +368,14 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	}
 
 	result, err := r.tools.CallTool(ctx, extID, name, args, meta)
+	if isRemote {
+		// Volume is charged after the fact because a result's size is not
+		// knowable before the MCP answers: this call completes and its bytes
+		// count, and the NEXT one is refused once the window is spent. Charged
+		// even on error, because bytes that came back left the host whether or
+		// not the tool called them a success.
+		r.budgets.charge(rc, budget, len(result))
+	}
 	au.doneResult(result, err)
 	return result, err
 }
