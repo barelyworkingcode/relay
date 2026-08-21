@@ -47,6 +47,7 @@ enrolment.go             Enrolment CRUD, grant validation, revocation + its live
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
+remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
@@ -187,6 +188,30 @@ a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 (inactivity, not a cap on work) and keeps a connection table keyed by
 fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
 connections.
+
+**The listener follows settings; it is not frozen at startup.**
+`RemoteSupervisor` (`remote_reconcile.go`) converges on every settings poll and
+on every bridge-driven reconcile: it binds when the block is enabled, moves when
+`listen` changes, and closes when the block is disabled *or auditing stops being
+live* — so `audit.enabled: false` is a refusal at runtime and not only at
+launch. Convergence can never open a listener the configuration does not
+explicitly ask for (absent block and omitted `enabled` both resolve to
+disabled). A rebind binds the new address **before** closing the old listener,
+so a failed bind leaves the old one serving and says so loudly rather than
+leaving nothing behind and no error; live connections on the old address are
+then closed deliberately, because `listen` is the reachability control and a
+narrowed bind that left old sessions running would not have narrowed anything.
+The revocation hook is *owned* (`SetEnrolmentRevocationHookFor` /
+`ClearEnrolmentRevocationHookFor`) so a replaced listener's teardown cannot
+uninstall the live listener's hook.
+
+**Every authorization read on this path goes through `freshSettings`, never
+`store.Get()`.** `relay enrol create|revoke` runs in a CLI *process*, so a
+cached settings view made a newly created enrolment look unenrolled until the
+tray's next poll — indistinguishable from a genuine misconfiguration (issue
+#21). `RemoteServer.currentSettings` stats `settings.json` and re-reads only
+when it moved, which is what makes creation as immediate as revocation already
+was, per request and per connection.
 
 See [ADR-010](docs/decisions/010-remote-client-transport-and-identity.md).
 
