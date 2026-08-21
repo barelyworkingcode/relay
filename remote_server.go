@@ -173,6 +173,12 @@ func handleRemoteCallTool(ctx context.Context, req *bridge.RemoteRequest, router
 type RemoteServer struct {
 	router RemoteToolRouter
 	store  SettingsStore
+	// cfg is the resolved configuration this listener was BUILT from, kept so
+	// RemoteSupervisor can answer "does the live listener still match what
+	// settings ask for?" without re-deriving it. Written once at construction
+	// and never mutated: a listener does not change its address, it is replaced
+	// by one that has the new address.
+	cfg resolvedRemoteConfig
 	// audit is held only to re-assert that recording is live. RemoteServer
 	// never writes an event itself — that happens at appRouter.CallTool, the
 	// chokepoint every transport funnels through.
@@ -189,6 +195,29 @@ type RemoteServer struct {
 	// on a record that has, by the time the hook fires, already been deleted.
 	mu    sync.Mutex
 	conns map[string]map[*remoteConn]struct{}
+}
+
+// currentSettings is the ONLY way this listener may read settings. Every
+// decision here — is this certificate enrolled, does the enrolment still hold
+// this grant, is auditing still on — is an authorization decision, and relay is
+// not one process: `relay enrol create`, `relay enrol revoke` and a hand-edited
+// settings.json all happen outside the tray. See freshSettings for the cost.
+func (s *RemoteServer) currentSettings() *Settings {
+	return freshSettings(s.store)
+}
+
+// remoteAuditingLive reports whether a remote call may run at all: the recorder
+// must be recording AND settings must still ask for it.
+//
+// Both halves are load-bearing and neither implies the other. The recorder can
+// die under a listener that started cleanly (a closed writer, a rotation
+// failure), and settings can be edited to `audit.enabled: false` in another
+// process while a recorder from before the edit is still happily writing. The
+// first is the fail-closed case ADR-010 decision 5 is about; the second is the
+// operator saying remote access is no longer justified, and honouring it only
+// at the next process start would make the setting look decorative.
+func remoteAuditingLive(s *Settings, audit *AuditRecorder) bool {
+	return audit.Enabled() && s.Audit.resolve().Enabled
 }
 
 // remoteConn is one live, authenticated connection.
@@ -216,13 +245,18 @@ type remoteConn struct {
 //   - No CA, or no server certificate → refused, since there is no meaningful
 //     degraded mode for mutual TLS.
 func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder) (*RemoteServer, error) {
-	cfg := store.Get().Remote.resolve()
+	// freshSettings, not Get(): the operator who just edited settings.json in a
+	// CLI process is the same operator watching for the listener to come up, and
+	// deciding whether to open a network socket off a snapshot that predates
+	// their edit is the same class of bug as issue #21, one level out.
+	settings := freshSettings(store)
+	cfg := settings.Remote.resolve()
 	if !cfg.Enabled {
 		slog.Debug("remote listener not enabled; no socket opened")
 		return nil, nil
 	}
 
-	if !audit.Enabled() {
+	if !remoteAuditingLive(settings, audit) {
 		return nil, fmt.Errorf("remote listener refuses to start while the tool-call audit log is disabled: " +
 			"a remote grant is justified by the calls it records, so serving remote traffic unrecorded is not a degraded mode — " +
 			"set audit.enabled to true, or remove the remote block from settings.json")
@@ -262,6 +296,7 @@ func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteTool
 	s := &RemoteServer{
 		router:   router,
 		store:    store,
+		cfg:      cfg,
 		audit:    audit,
 		listener: ln,
 		ctx:      sctx,
@@ -275,7 +310,13 @@ func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteTool
 	// indefinitely (decision 8). The enrolment code deletes the record and
 	// fires this hook; closing the socket is ours because the connection table
 	// is ours.
-	SetEnrolmentRevocationHook(s.closeEnrolment)
+	//
+	// Installed WITH AN OWNER because this listener can be replaced without the
+	// process restarting (RemoteSupervisor, remote_reconcile.go): a rebind binds
+	// the new address before closing the old listener, so the old one's teardown
+	// has to be able to tell that the hook is no longer its own and leave the
+	// live server's hook alone.
+	SetEnrolmentRevocationHookFor(s, s.closeEnrolment)
 
 	slog.Info("remote listener started", "addr", ln.Addr().String())
 	return s, nil
@@ -348,8 +389,12 @@ func (s *RemoteServer) Close() {
 	s.StopAccepting()
 	// Drop the hook before draining: a revocation arriving mid-shutdown has
 	// nothing left to close, and leaving a closure over a dead server installed
-	// in a process-global would keep it reachable after teardown.
-	SetEnrolmentRevocationHook(nil)
+	// in a process-global would keep it reachable after teardown. Compare-and-
+	// clear, never an unconditional clear: on a rebind the REPLACEMENT listener
+	// already owns the hook by the time this runs, and uninstalling it here
+	// would leave revocation unable to sever a live connection — a security
+	// regression no test that checks only the deleted record would catch.
+	ClearEnrolmentRevocationHookFor(s)
 	s.wg.Wait()
 }
 
@@ -412,7 +457,15 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	}
 
 	fingerprint := FingerprintCert(state.PeerCertificates[0])
-	enrolment := s.store.Get().FindEnrolmentByFingerprint(fingerprint)
+	// currentSettings, not Get(): `relay enrol create` runs in a CLI PROCESS
+	// and writes settings.json, so a cached view here refuses a brand-new
+	// enrolment as "not enrolled" until the tray's next settings poll — a
+	// refusal indistinguishable from a genuine misconfiguration, and one whose
+	// diagnostic sends the operator to `relay enrol list`, which shows the
+	// record present (issue #21). Reading the file is what makes creation as
+	// immediate as revocation already was.
+	settings := s.currentSettings()
+	enrolment := settings.FindEnrolmentByFingerprint(fingerprint)
 	if enrolment == nil {
 		// A CA-signed certificate that no enrolment claims. This is the state a
 		// revoked client is in, and it gets no request read and no error frame
@@ -423,9 +476,12 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	}
 
 	// Belt and braces against a window the start-up refusal cannot cover: the
-	// recorder could have been closed under us. There must be no path on which
-	// a remote call runs unrecorded.
-	if !s.audit.Enabled() {
+	// recorder could have been closed under us, or auditing could have been
+	// turned off in settings since this listener bound. RemoteSupervisor stops
+	// the listener when that happens, but "on the next reconcile" is not soon
+	// enough for a connection arriving in between — there must be no path on
+	// which a remote call runs unrecorded.
+	if !remoteAuditingLive(settings, s.audit) {
 		slog.Error("remote: closing connection, auditing is not active",
 			"client_id", enrolment.ClientID, "remote_addr", conn.RemoteAddr().String())
 		return
@@ -487,10 +543,17 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 // resolve cleanly. This is the chain the whole design rests on, so each link
 // is spelled out:
 //
-//  1. Re-resolve the ENROLMENT from current settings on every request, not
-//     once per connection. A revocation that raced the connection table, or a
-//     grant edited while the socket stayed open, must take effect on the next
-//     call rather than at the next reconnect.
+//  0. Re-check that auditing is live, because the answer can change under an
+//     open connection and a remote call that cannot be recorded is refused
+//     rather than served (decision 5). Per REQUEST, not per connection, for the
+//     same reason step 1 is.
+//  1. Re-resolve the ENROLMENT from CURRENT ON-DISK settings on every request,
+//     not once per connection and not from a cached snapshot. A revocation that
+//     raced the connection table, a grant edited while the socket stayed open,
+//     or a record written by a CLI process in another PID must take effect on
+//     the next call rather than at the next reconnect or the next settings
+//     poll. This is the step that already made revocation immediate; reading
+//     through to the file is what extends the same immediacy to creation.
 //  2. Select the project id. An enrolment holding exactly one grant may leave
 //     it off — sending it would be ceremony. An enrolment holding several must
 //     say which, because guessing would make the choice relay's rather than
@@ -510,7 +573,12 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 //     decision 2 could delete the token from the remote path without changing
 //     anything below the transport.
 func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, error) {
-	settings := s.store.Get()
+	settings := s.currentSettings()
+
+	if !remoteAuditingLive(settings, s.audit) {
+		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			fmt.Errorf("remote calls are refused while the tool-call audit log is disabled"))
+	}
 
 	enrolment := settings.FindEnrolmentByFingerprint(fingerprint)
 	if enrolment == nil {
