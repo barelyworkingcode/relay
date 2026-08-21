@@ -46,6 +46,7 @@ audit_cmd.go             `relay audit` CLI
 enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
+remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
@@ -60,7 +61,9 @@ service_status_client.go, service_status_poller.go   Generic per-service status 
 ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
-bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl
+bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
+                         frameconn.go is the framing/scanner/deadline plumbing BOTH listeners share;
+                         remote_request.go + remote_caller.go are the remote wire type and attested identity
 mcp/                     MCP types + stdio server (proxies to the bridge)
 ```
 
@@ -130,9 +133,60 @@ live connections.
 Grants are validated at enrolment (`ValidateEnrolmentGrants` — every grant must
 name a project with `IsRemote()` true) and at conversion
 (`ValidateProjectEnrolments` — remote→local is refused while any enrolment
-grants the project, naming the offenders). Call-time re-checking belongs to the
-listener. As of this writing there is still no listener, so a remote project
-cannot yet be *reached*; the model, the CA, and the enrolment flow exist.
+grants the project, naming the offenders), and a third time at call time by the
+listener (`RemoteServer.resolveGrant` re-checks `IsRemote()` immediately before
+dispatch, so a grant that went stale by any route relay did not anticipate
+fails closed).
+
+### The remote listener
+
+`RemoteServer` (`remote_server.go`) is a **second listener beside**
+`BridgeServer` — never a mode of it. Its dispatch table (`remoteHandlers`) has
+exactly two entries, `ListTools` and `CallTool`: the other eight bridge request
+types have no code path from a remote connection at all, so a new admin op is
+unreachable from a VM until someone deliberately adds it to a list that is
+visibly a security boundary.
+
+Mutual TLS against relay's own CA (`tls.RequireAndVerifyClientCert`). The peer
+certificate is fingerprinted and resolved to an enrolment **before any request
+is read** — an unenrolled certificate is closed without processing, so it
+cannot probe. The resolved identity goes into the context via
+`bridge.WithRemoteCaller`, which is what puts every call on the fail-closed
+audit path. The wire type (`bridge.RemoteRequest`) carries only
+`type` / `name` / `arguments` / `project_id`; there is no token and no cwd, and
+decoding is strict (`DisallowUnknownFields`) so a client sending `cwd` gets a
+loud error rather than silent divergence. The project token is resolved
+host-side from the granted project and never appears on the wire.
+
+Every remote call is budgeted (`enrolment_budget.go`). Each enrolment carries a
+rolling-window call-rate and result-volume cap, enforced in `appRouter.CallTool`
+and refused with the `throttled` outcome — distinct from `denied` (a tool the
+grant never included) and `tool_error` (a boundary inside the MCP) because it is
+the only one of the three that says the grant was legitimate and the *pattern of
+use* was not. Budgets live on the **enrolment, not the project**: the enrolment
+is the unit of compromise, so it is the unit that bounds one. Rate is checked
+before the MCP runs; volume is necessarily charged after a call returns, so the
+guarantee is "at most one call's worth over the cap", not a hard ceiling. Local
+callers are not budgeted at all — one context lookup and nothing else.
+
+Auditing is a hard dependency of remote access: with `audit.enabled: false` the
+listener refuses to start rather than serving unrecorded calls. The case for
+letting a VM reach host mail rests on detection, so there is deliberately no
+window in which a remote call runs without a record.
+
+Config — absent block means **no listener at all**, and the default binds
+loopback so misconfiguration cannot expose the control plane to a LAN:
+
+```json
+"remote": { "enabled": true, "listen": "127.0.0.1:9910" }
+```
+
+The listener **refuses to start when auditing is disabled**: a remote grant is
+justified by the calls it records, so serving remote traffic unrecorded is not
+a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
+(inactivity, not a cap on work) and keeps a connection table keyed by
+fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
+connections.
 
 See [ADR-010](docs/decisions/010-remote-client-transport-and-identity.md).
 
