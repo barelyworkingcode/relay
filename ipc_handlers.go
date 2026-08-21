@@ -79,6 +79,13 @@ func (a *App) pushFullSettings() {
 		"running_ids":    a.registry.RunningIDs(),
 		"projects":       s.Projects,
 		"mcp_tool_cache": a.buildToolCache(s),
+		// Enrolments and the remote block ride along so the Remote Clients tab
+		// reflects an enrolment created or revoked by `relay enrol` while the
+		// window is open. The audit state comes from the live recorder rather
+		// than from settings, because a recorder that failed to start is the
+		// same "remote is off" for the operator as one switched off on purpose.
+		"enrolments": s.Enrolments,
+		"remote":     remoteConfigViewOf(s, a.audit.Enabled()),
 	})
 }
 
@@ -296,6 +303,11 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgQueryAudit:     ipcQueryAudit,
 	MsgExportAudit:    ipcExportAudit,
 	MsgRevealAuditLog: ipcRevealAuditLog,
+
+	// Remote Clients (ipc_enrolments.go)
+	MsgCreateEnrolment:    ipcCreateEnrolment,
+	MsgRevokeEnrolment:    ipcRevokeEnrolment,
+	MsgUpdateRemoteConfig: ipcUpdateRemoteConfig,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

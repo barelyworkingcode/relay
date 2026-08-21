@@ -58,7 +58,7 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 service_registry.go      Background process management + ephemeral service tokens
 service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
 service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
-ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit)
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
@@ -236,7 +236,13 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Service Inspector, Tool Calls.
+Services, MCP Servers, Projects, Remote Clients, Service Inspector, Tool Calls.
+
+The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
+grants it reaches — by project *name*, with the certificate fingerprint in full
+— and reads/writes the `remote` block. Creating an enrolment returns the bundle
+**directory** only: the client private key inside it never crosses the IPC
+boundary.
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via

@@ -43,11 +43,28 @@ func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[s
 	if projects == nil {
 		projects = []Project{}
 	}
+	// Enrolments are seeded like projects rather than fetched on tab switch:
+	// the list is small (one row per enrolled certificate), and a credential
+	// you cannot see is one you will not revoke — it should be on screen the
+	// moment the tab is, with no loading state to fail into.
+	enrolments := settings.Enrolments
+	if enrolments == nil {
+		enrolments = []Enrolment{}
+	}
+	// The first paint has no *AuditRecorder to consult, so the remote view's
+	// audit state comes from the configuration. That is what the operator
+	// edits and what NewRemoteServer's refusal is phrased in terms of; the IPC
+	// handlers, which do hold the recorder, pass its live answer instead (see
+	// remoteConfigViewOf).
+	remote := remoteConfigViewOf(settings, settings.Audit.resolve().Enabled)
 	return strings.NewReplacer(
 		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", settings.ExternalMcps),
 		"__SERVICES_JSON__", mustMarshalJSON("services", settings.Services),
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
 		"__PROJECTS_JSON__", mustMarshalJSON("projects", projects),
 		"__MCP_TOOL_CACHE_JSON__", mustMarshalJSON("mcp_tool_cache", toolCache),
+		"__ENROLMENTS_JSON__", mustMarshalJSON("enrolments", enrolments),
+		"__REMOTE_JSON__", mustMarshalJSON("remote", remote),
+		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", mustMarshalJSON("enrolment_budget_defaults", enrolmentBudgetDefaults()),
 	).Replace(settingsHTML)
 }
