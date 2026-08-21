@@ -396,12 +396,44 @@ textarea:focus {
 .audit-kv dd { margin: 0; font-family: var(--mono); word-break: break-all; }
 .audit-args { margin-top: 8px; padding: 8px; background: var(--bg-field); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
 .audit-empty { color: var(--text-2); font-size: 13px; padding: 24px 0; text-align: center; }
+
+/* ---- Remote Clients (enrolments + the mTLS listener) ---- */
+.enrol-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }
+.enrol-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.enrol-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.enrol-grants { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+.enrol-grant { display: inline-block; padding: 1px 7px; font-size: 11px; border-radius: 9px; background: var(--bg-control); color: var(--text); }
+/* A grant whose project no longer exists. Shown, never hidden: an operator
+   deciding whether to revoke needs to see that a grant points at nothing. */
+.enrol-grant.dangling { color: var(--warn); border: 1px solid var(--warn); }
+.enrol-grant.none { color: var(--text-3); background: transparent; border: 1px dashed var(--border); }
+.enrol-meta { color: var(--text-3); font-size: 11px; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+/* The fingerprint prints in FULL — never ellipsized, never width-clipped.
+   After an enrolment is deleted it is the only thing that identifies that
+   client's calls in the audit log (ADR-010 decision 6), and a UI that
+   shortened it would be the obvious place for someone to copy a short form
+   from. break-all wraps it instead of truncating it. */
+.enrol-fp { font-family: var(--mono); font-size: 11px; color: var(--text-2); margin-top: 6px; word-break: break-all; overflow-wrap: anywhere; white-space: normal; }
+.enrol-fp-label { color: var(--text-3); }
+.enrol-bundle { background: var(--bg-control); background: color-mix(in srgb, var(--accent) 14%, var(--bg-card)); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
+.enrol-bundle code { background: var(--bg-control); padding: 2px 6px; border-radius: 3px; font-family: var(--mono); word-break: break-all; }
+.enrol-bundle ul { margin: 6px 0 6px 18px; }
+.enrol-bundle li { font-size: 11px; color: var(--text-2); }
+.enrol-bundle strong { color: var(--text); }
+.remote-state { display: inline-block; padding: 1px 7px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; border-radius: 4px; }
+.remote-state.on { color: var(--ok); border: 1px solid var(--ok); }
+.remote-state.off { color: var(--text-2); border: 1px solid var(--border); }
+.remote-state.absent { color: var(--text-3); border: 1px dashed var(--border); }
+.remote-note { font-size: 11px; color: var(--text-2); margin-top: 8px; }
+.remote-note.warn { color: var(--warn); }
+.remote-note.danger { color: var(--danger); }
 </style></head>
 <body>
 <div class="sidebar">
     <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
     <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
+    <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
     <div class="sidebar-item" onclick="showPage('audit')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tool Calls</div>
 </div>
@@ -413,7 +445,10 @@ window.__RELAY_INIT__ = {
   services: __SERVICES_JSON__,
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
-  mcpToolCache: __MCP_TOOL_CACHE_JSON__
+  mcpToolCache: __MCP_TOOL_CACHE_JSON__,
+  enrolments: __ENROLMENTS_JSON__,
+  remote: __REMOTE_JSON__,
+  enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__
 };
 </script>
 <script>
@@ -624,6 +659,9 @@ window.__RELAY_INIT__ = {
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
+  var ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
+  var REMOTE_INIT = window.__RELAY_INIT__.remote || null;
+  var ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
   function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
       window.webkit.messageHandlers.ipc.postMessage(msg);
@@ -698,6 +736,25 @@ window.__RELAY_INIT__ = {
     // id -> { ok, message, t } (last regen result)
     projectError: null,
     rotatingProjectId: null,
+    // Remote Clients tab. Enrolments and the remote block are seeded by the
+    // initial payload like projects are — the list is one row per enrolled
+    // certificate, and a credential you cannot see is one you will not revoke,
+    // so it should be on screen the moment the tab is.
+    enrolments: ENROLMENTS_INIT,
+    remote: REMOTE_INIT,
+    // remoteConfigView from Go, or null
+    enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
+    enrolForm: null,
+    // null = list, object = create form
+    enrolmentError: null,
+    enrolBundle: null,
+    // {client_id, dir} — DIRECTORY only, never key material
+    enrolRevoked: null,
+    // {client_id, fingerprint} shown after a revoke
+    remoteDraft: null,
+    // uncommitted edit of the remote block
+    remoteDirty: false,
+    remoteError: null,
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
     // on the Go side so it can be sent verbatim.
@@ -716,7 +773,7 @@ window.__RELAY_INIT__ = {
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
     state.page = page;
-    const pages = ["services", "mcps", "projects", "inspector", "audit"];
+    const pages = ["services", "mcps", "projects", "remote", "inspector", "audit"];
     document.querySelectorAll(".sidebar-item").forEach((el, i) => {
       el.classList.toggle("active", pages[i] === page);
     });
@@ -736,6 +793,9 @@ window.__RELAY_INIT__ = {
     } else if (state.page === "projects") {
       if (fromPush && state.editingProjectId) return;
       el.innerHTML = renderProjects();
+    } else if (state.page === "remote") {
+      if (fromPush && (state.enrolForm || state.remoteDirty)) return;
+      el.innerHTML = renderEnrolments();
     } else if (state.page === "audit") {
       el.innerHTML = renderAudit();
       restoreAuditFocus();
@@ -1247,6 +1307,11 @@ window.__RELAY_INIT__ = {
     }, {});
     if (data.projects) state.projects = data.projects;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
+    if (data.enrolments) state.enrolments = data.enrolments;
+    if (data.remote) {
+      state.remote = data.remote;
+      if (!state.remoteDirty) state.remoteDraft = null;
+    }
     render("push");
   };
   window.onProjectsReloaded = function(projects) {
@@ -1805,6 +1870,301 @@ window.__RELAY_INIT__ = {
     state.projectError = msg;
     state.projectFormError = msg;
     if (state.page === "projects") render("push");
+  };
+  var REMOTE_RESTART_NOTE = "Enabling, disabling, or moving the listener takes effect when Relay restarts \u2014 it binds its address at startup.";
+  function remoteGrantableProjects() {
+    return (state.projects || []).filter(isRemoteProject);
+  }
+  function enrolGrantNames(e) {
+    return (e && e.project_ids || []).map(function(id) {
+      const p = (state.projects || []).find((x) => x.id === id);
+      return { id, name: p ? p.name : null };
+    });
+  }
+  function enrolGrantSummary(e) {
+    const names = enrolGrantNames(e).map((g) => g.name || g.id + " (unknown project)");
+    if (!names.length) return "no projects \u2014 this enrolment grants nothing today";
+    return names.join(", ");
+  }
+  function enrolBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576 && n % 1048576 === 0) return n / 1048576 + " MiB";
+    if (n >= 1024 && n % 1024 === 0) return n / 1024 + " KiB";
+    return n + " bytes";
+  }
+  function enrolBudgetText(b) {
+    b = b || {};
+    return (b.max_calls || 0) + " calls / " + enrolBytes(b.max_result_bytes) + " per " + (b.window_seconds || 0) + "s";
+  }
+  function renderEnrolments() {
+    if (state.enrolForm) return renderEnrolmentForm();
+    let html = '<div class="page-header"><h2>Remote Clients</h2>';
+    html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the remote projects it may use. The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
+    if (state.enrolRevoked) {
+      html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + "</strong>. Its calls remain in the Tool Calls log under fingerprint <code>" + esc(state.enrolRevoked.fingerprint) + "</code> \u2014 now the only thing that names them.</div>";
+    }
+    if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + "</div>";
+    const list = state.enrolments || [];
+    if (!list.length) {
+      html += '<div class="empty-state">No enrolled clients. Click <strong>+ New Enrolment</strong>, or run <code>relay enrol create</code>.</div>';
+    }
+    for (const e of list) {
+      html += '<div class="enrol-card">';
+      html += '<div class="enrol-card-header">';
+      html += '<span class="enrol-card-name">' + esc(e.client_id) + "</span>";
+      html += `<button class="btn btn-sm btn-danger" onclick="revokeEnrolment('` + esc(e.client_id) + `')">Revoke</button>`;
+      html += "</div>";
+      html += '<div class="enrol-grants">';
+      const grants = enrolGrantNames(e);
+      if (!grants.length) {
+        html += '<span class="enrol-grant none">no projects granted</span>';
+      }
+      for (const g of grants) {
+        if (g.name) {
+          html += '<span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + "</span>";
+        } else {
+          html += '<span class="enrol-grant dangling" title="No project carries this id">' + esc(g.id) + " \u2014 unknown project</span>";
+        }
+      }
+      html += "</div>";
+      html += '<div class="enrol-meta">';
+      html += "<span>Budget: <strong>" + esc(enrolBudgetText(e.budget)) + "</strong></span>";
+      html += "<span>Enrolled: <strong>" + esc(e.created_at || "\u2014") + "</strong></span>";
+      html += "</div>";
+      html += '<div class="enrol-fp"><span class="enrol-fp-label">Certificate: </span>' + esc(e.fingerprint || "(none)") + "</div>";
+      html += "</div>";
+    }
+    html += renderRemoteListener();
+    return html;
+  }
+  function renderEnrolBundleBanner(b) {
+    let html = '<div class="enrol-bundle">';
+    html += "Enrolled <strong>" + esc(b.client_id) + "</strong>. Bundle written to <code>" + esc(b.dir) + "</code>";
+    html += "<ul>";
+    html += "<li><code>client.key</code> \u2014 client private key (0600)</li>";
+    html += "<li><code>client.crt</code> \u2014 client certificate</li>";
+    html += "<li><code>ca.crt</code> \u2014 relay's CA certificate, for verifying the server</li>";
+    html += "</ul>";
+    html += "<strong>Move (don't copy) this directory to the client machine.</strong> The private key travels exactly once; every copy left behind is a credential nobody is tracking.";
+    html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissEnrolBundle()">Done</button></div>';
+    html += "</div>";
+    return html;
+  }
+  function renderEnrolmentForm() {
+    const f = state.enrolForm;
+    const d = state.enrolmentBudgetDefaults || {};
+    let html = "<h2>New Enrolment</h2>";
+    if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += `<p class="proj-section-help">The client id is the certificate's Common Name and the bundle's directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>`;
+    html += "<label>Client id</label>";
+    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="hermes-mail" />';
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Granted Projects</div>';
+    html += `<p class="proj-section-help">Only <strong>remote</strong> projects can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
+    const grantable = remoteGrantableProjects();
+    if (!grantable.length) {
+      html += '<div class="proj-tool-empty">No remote projects exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Remote) first.</div>';
+    }
+    for (const p of grantable) {
+      const checked = f.project_ids.indexOf(p.id) >= 0;
+      html += '<label class="proj-tool-row">';
+      html += '<input type="checkbox" ' + (checked ? "checked" : "") + ` onchange="toggleEnrolGrant('` + esc(p.id) + `', this.checked)" />`;
+      html += "<div><div>" + esc(p.name) + '</div><div class="desc">' + esc(p.id) + "</div></div>";
+      html += "</label>";
+    }
+    if (grantable.length && f.project_ids.length === 0) {
+      html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no project until one is added.</p>';
+    }
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Budget</div>';
+    html += '<p class="proj-section-help">The enrolment is the unit of compromise, so it is the unit that carries the cap. Rate and volume are capped together because they fail differently \u2014 a call limit alone does not stop a slow drain. Leave a field blank for the conservative default; <strong>zero is never unlimited</strong>, there is no way to switch a budget off.</p>';
+    html += "<label>Window (seconds)</label>";
+    html += '<input type="number" id="enrolWindow" value="' + esc(f.window_seconds) + '" placeholder="' + esc(d.window_seconds || "") + '" />';
+    html += "<label>Max tool calls per window</label>";
+    html += '<input type="number" id="enrolMaxCalls" value="' + esc(f.max_calls) + '" placeholder="' + esc(d.max_calls || "") + '" />';
+    html += "<label>Max cumulative result bytes per window</label>";
+    html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || "") + '" />';
+    html += "</div>";
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveEnrolment()">Create &amp; issue certificate</button>';
+    html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
+    html += "</div>";
+    return html;
+  }
+  function newEnrolment() {
+    state.enrolForm = { client_id: "", project_ids: [], window_seconds: "", max_calls: "", max_result_bytes: "" };
+    state.enrolmentError = null;
+    state.enrolBundle = null;
+    state.enrolRevoked = null;
+    render();
+  }
+  function cancelEnrolment() {
+    state.enrolForm = null;
+    state.enrolmentError = null;
+    render();
+  }
+  function toggleEnrolGrant(projectID, checked) {
+    const f = state.enrolForm;
+    if (!f) return;
+    const i = f.project_ids.indexOf(projectID);
+    if (checked && i < 0) f.project_ids.push(projectID);
+    if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    render();
+  }
+  function saveEnrolment() {
+    const f = state.enrolForm;
+    if (!f) return;
+    const clientID = ((document.getElementById("enrolClientId") || {}).value || "").trim();
+    if (!clientID) {
+      state.enrolmentError = "client id is required";
+      render();
+      return;
+    }
+    f.client_id = clientID;
+    const num = function(id) {
+      const raw = ((document.getElementById(id) || {}).value || "").trim();
+      const n = parseInt(raw, 10);
+      return raw === "" || isNaN(n) || n < 0 ? 0 : n;
+    };
+    state.enrolmentError = null;
+    ipc(JSON.stringify({
+      type: "create_enrolment",
+      client_id: clientID,
+      project_ids: f.project_ids,
+      budget: {
+        window_seconds: num("enrolWindow"),
+        max_calls: num("enrolMaxCalls"),
+        max_result_bytes: num("enrolMaxBytes")
+      }
+    }));
+  }
+  function revokeEnrolment(clientID) {
+    const e = (state.enrolments || []).find((x) => x.client_id === clientID);
+    if (!e) return;
+    const msg = 'Revoke enrolment "' + clientID + '"?\n\nThis cuts its access to: ' + enrolGrantSummary(e) + "\n\nLive connections holding its certificate are closed immediately. The certificate itself is unchanged and no project is touched \u2014 the record is what granted it access.";
+    if (!confirm(msg)) return;
+    ipc(JSON.stringify({ type: "revoke_enrolment", client_id: clientID }));
+  }
+  function dismissEnrolBundle() {
+    state.enrolBundle = null;
+    render();
+  }
+  function remoteDraft() {
+    if (!state.remoteDraft) {
+      const r = state.remote || {};
+      state.remoteDraft = { enabled: !!r.enabled, listen: r.listen || "" };
+    }
+    return state.remoteDraft;
+  }
+  function remoteDraftSet(key, value) {
+    const d = remoteDraft();
+    d[key] = value;
+    state.remoteDirty = true;
+    if (key === "enabled") render();
+  }
+  function remoteListenIsLoopback(addr) {
+    addr = String(addr || "");
+    const i = addr.lastIndexOf(":");
+    if (i < 0) return false;
+    const host = addr.slice(0, i).replace(/^\[/, "").replace(/\]$/, "");
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  }
+  function renderRemoteListener() {
+    const r = state.remote || { configured: false, enabled: false, listen: "", effective: "", audit_enabled: true };
+    const d = remoteDraft();
+    const live = r.enabled && r.audit_enabled;
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Remote Listener';
+    if (!r.configured) {
+      html += ' <span class="remote-state absent">No block</span>';
+    } else if (live) {
+      html += ' <span class="remote-state on">On</span>';
+    } else if (r.enabled) {
+      html += ' <span class="remote-state off">Off \u2014 auditing disabled</span>';
+    } else {
+      html += ' <span class="remote-state off">Off</span>';
+    }
+    html += "</div>";
+    if (state.remoteError) html += '<div class="proj-error">' + esc(state.remoteError) + "</div>";
+    if (!r.configured) {
+      html += '<p class="proj-section-help">There is no <code>remote</code> block in <code>settings.json</code>, which means <strong>no listener is opened at all</strong> \u2014 not a listener bound to nothing, not one that refuses every call. This is the default, and it is not the same state as a listener that is switched off.</p>';
+    } else if (!r.enabled) {
+      html += '<p class="proj-section-help">The <code>remote</code> block exists but the listener is <strong>off</strong>. A block that omits <code>enabled</code> resolves to disabled \u2014 the opposite default to auditing, deliberately, so a network listener is never opened by omission.</p>';
+    }
+    if (r.enabled && !r.audit_enabled) {
+      html += '<div class="remote-note danger"><strong>Remote access is off because the tool-call audit log is disabled.</strong> The listener refuses to start while auditing is off: a remote grant is justified by the calls it records, so serving remote traffic unrecorded is not a degraded mode. Re-enable <code>audit.enabled</code> to restore remote access \u2014 this block is configured but dead until then.</div>';
+    }
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += "<span>Accept remote clients on an mTLS listener</span>";
+    html += '<label class="switch"><input type="checkbox" ' + (d.enabled ? "checked" : "") + ` onchange="remoteDraftSet('enabled', this.checked)" /><span class="slider"></span></label>`;
+    html += "</div>";
+    html += "<label>Listen address</label>";
+    html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || "") + `" oninput="remoteDraftSet('listen', this.value)" />`;
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || "") + "</code>. " + esc(REMOTE_RESTART_NOTE) + "</p>";
+    const effective = (d.listen || "").trim() || r.effective || "";
+    if (effective && !remoteListenIsLoopback(effective)) {
+      html += '<div class="remote-note warn">' + esc(effective) + " binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read \u2014 but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>";
+    }
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
+    if (r.configured) {
+      html += '<button class="btn btn-danger" onclick="removeRemoteConfig()">Remove block</button>';
+    }
+    html += "</div>";
+    html += "</div>";
+    return html;
+  }
+  function saveRemoteConfig() {
+    const d = remoteDraft();
+    state.remoteError = null;
+    ipc(JSON.stringify({
+      type: "update_remote_config",
+      enabled: !!d.enabled,
+      listen: String(d.listen || "").trim()
+    }));
+  }
+  function removeRemoteConfig() {
+    const msg = "Remove the remote block from settings.json?\n\nNo listener will be opened at all. Enrolments are not touched \u2014 they stay listed here and can still be revoked, but nothing can connect until a listener is configured again.";
+    if (!confirm(msg)) return;
+    state.remoteError = null;
+    ipc(JSON.stringify({ type: "update_remote_config", remove: true }));
+  }
+  window.onEnrolmentCreated = function(e, bundle) {
+    if (!e || !e.client_id) return;
+    state.enrolments = (state.enrolments || []).filter((x) => x.client_id !== e.client_id).concat(e);
+    state.enrolForm = null;
+    state.enrolmentError = null;
+    state.enrolRevoked = null;
+    state.enrolBundle = { client_id: e.client_id, dir: bundle && bundle.dir || "" };
+    if (state.page === "remote") render("push");
+  };
+  window.onEnrolmentRevoked = function(clientID, fingerprint) {
+    state.enrolments = (state.enrolments || []).filter((x) => x.client_id !== clientID);
+    state.enrolmentError = null;
+    if (state.enrolBundle && state.enrolBundle.client_id === clientID) state.enrolBundle = null;
+    state.enrolRevoked = { client_id: clientID, fingerprint: fingerprint || "" };
+    if (state.page === "remote") render("push");
+  };
+  window.onEnrolmentError = function(msg) {
+    state.enrolmentError = msg || "enrolment failed";
+    if (state.page === "remote") render("push");
+  };
+  window.onRemoteConfigUpdated = function(view) {
+    state.remote = view || state.remote;
+    state.remoteDraft = null;
+    state.remoteDirty = false;
+    state.remoteError = null;
+    if (state.page === "remote") render("push");
+  };
+  window.onRemoteConfigError = function(msg) {
+    state.remoteError = msg || "could not save the remote block";
+    if (state.page === "remote") render("push");
   };
   function renderServiceInspector() {
     state._cfgBind = [];
@@ -2878,6 +3238,26 @@ window.__RELAY_INIT__ = {
     setAuditFilter,
     toggleAuditFollow,
     toggleAuditRow,
+    cancelEnrolment,
+    dismissEnrolBundle,
+    enrolBudgetText,
+    enrolBytes,
+    enrolGrantNames,
+    enrolGrantSummary,
+    newEnrolment,
+    remoteDraft,
+    remoteDraftSet,
+    remoteGrantableProjects,
+    remoteListenIsLoopback,
+    removeRemoteConfig,
+    renderEnrolBundleBanner,
+    renderEnrolmentForm,
+    renderEnrolments,
+    renderRemoteListener,
+    revokeEnrolment,
+    saveEnrolment,
+    saveRemoteConfig,
+    toggleEnrolGrant,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,

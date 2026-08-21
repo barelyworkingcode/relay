@@ -11,6 +11,12 @@ const SERVICES_INIT = window.__RELAY_INIT__.services;
 const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
 const PROJECTS_INIT = window.__RELAY_INIT__.projects;
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
+const ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
+const REMOTE_INIT = window.__RELAY_INIT__.remote || null;
+// The conservative per-enrolment budget defaults, shipped from Go so the
+// create form's placeholders name the real numbers instead of a second copy
+// of them that can rot apart from normalizeEnrolmentBudget.
+const ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
 
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
@@ -68,6 +74,21 @@ let state = {
     projectError: null,
     rotatingProjectId: null,
 
+    // Remote Clients tab. Enrolments and the remote block are seeded by the
+    // initial payload like projects are — the list is one row per enrolled
+    // certificate, and a credential you cannot see is one you will not revoke,
+    // so it should be on screen the moment the tab is.
+    enrolments: ENROLMENTS_INIT,
+    remote: REMOTE_INIT,                    // remoteConfigView from Go, or null
+    enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
+    enrolForm: null,                        // null = list, object = create form
+    enrolmentError: null,
+    enrolBundle: null,                      // {client_id, dir} — DIRECTORY only, never key material
+    enrolRevoked: null,                     // {client_id, fingerprint} shown after a revoke
+    remoteDraft: null,                      // uncommitted edit of the remote block
+    remoteDirty: false,
+    remoteError: null,
+
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
     // on the Go side so it can be sent verbatim.
@@ -87,7 +108,7 @@ const AUDIT_MAX_ROWS = 500;
 
 function showPage(page) {
     state.page = page;
-    const pages = ['services', 'mcps', 'projects', 'inspector', 'audit'];
+    const pages = ['services', 'mcps', 'projects', 'remote', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
@@ -120,6 +141,12 @@ function render(source) {
     } else if (state.page === 'projects') {
         if (fromPush && state.editingProjectId) return;
         el.innerHTML = renderProjects();
+    } else if (state.page === 'remote') {
+        // Skip a push-sourced repaint while the create form is open or the
+        // listener block has uncommitted edits, for the same reason the
+        // Projects tab does: an external change must not eat keystrokes.
+        if (fromPush && (state.enrolForm || state.remoteDirty)) return;
+        el.innerHTML = renderEnrolments();
     } else if (state.page === 'audit') {
         el.innerHTML = renderAudit();
         restoreAuditFocus();
@@ -724,6 +751,14 @@ window.onSettingsReloaded = function(data) {
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
+    if (data.enrolments) state.enrolments = data.enrolments;
+    if (data.remote) {
+        state.remote = data.remote;
+        // Re-seed the listener draft from the server's answer unless the user
+        // is mid-edit; clobbering a half-typed address would be the same bug
+        // render('push') avoids for the project form.
+        if (!state.remoteDirty) state.remoteDraft = null;
+    }
     // Push-sourced repaint of the currently visible tab; render() itself
     // skips if a form is mid-edit. Other tabs pick up the fresh state on
     // next switch — no need to repaint them now.
@@ -1424,6 +1459,440 @@ window.onProjectError = function(msg) {
     state.projectError = msg;
     state.projectFormError = msg;
     if (state.page === 'projects') render('push');
+};
+
+// ---------------------------------------------------------------------------
+// Remote Clients tab — the enrolments, then the listener they arrive on.
+//
+// ADR-010 decision 8 ends "enrolments are listed in the Settings UI beside the
+// grants they reach — a credential you cannot see is one you will not revoke",
+// and that sentence is this tab's whole specification. Two consequences shape
+// everything below:
+//
+//   * Grants render as project NAMES. An operator deciding whether to revoke
+//     needs to know what they are cutting, not which opaque id it was stored
+//     under. A grant naming a project that no longer exists still renders — as
+//     the raw id, marked — because hiding it would hide the fact that the
+//     enrolment is holding something relay cannot resolve.
+//   * The certificate fingerprint renders IN FULL. After an enrolment is
+//     deleted the fingerprint is the only thing that identifies that client's
+//     calls in the audit log, which is why the Tool Calls tab prints it
+//     untruncated too (see renderAuditDetail). A UI that shortened it would be
+//     the obvious place for someone to copy a short form from.
+//
+// The listener section below the list is the other half: an enrolment reaches
+// nothing if no listener is running, and the reasons a listener is not running
+// are surprising enough (an absent block, an omitted `enabled`, auditing
+// switched off) that each is stated rather than left to be inferred from an
+// empty log.
+// ---------------------------------------------------------------------------
+
+// The listener binds its address once, at startup. SINGLE SOURCE FOR THAT
+// CLAIM: this constant has exactly one use site (renderRemoteListener, under
+// the listen field). When the listener picks up address changes live, narrow
+// this string to the enable/disable case — or delete the constant and its one
+// use if that goes live too.
+const REMOTE_RESTART_NOTE = 'Enabling, disabling, or moving the listener takes effect when Relay restarts — it binds its address at startup.';
+
+// remoteGrantableProjects is the only set the create form offers.
+// ValidateEnrolmentGrants refuses a grant naming a local project outright, so
+// presenting one would be offering a choice relay is about to reject. This is
+// a courtesy, not the enforcement — the server validates regardless, inside
+// the same store.With that claims the client id.
+function remoteGrantableProjects() {
+    return (state.projects || []).filter(isRemoteProject);
+}
+
+// enrolGrantNames resolves an enrolment's grant ids to {id, name} pairs. name
+// is null when no project carries that id — a dangling grant, which the card
+// shows rather than silently drops.
+function enrolGrantNames(e) {
+    return ((e && e.project_ids) || []).map(function(id) {
+        const p = (state.projects || []).find(x => x.id === id);
+        return { id: id, name: p ? p.name : null };
+    });
+}
+
+// enrolGrantSummary is the plain-text form used in the revoke confirmation.
+// The confirmation names what is being cut; "are you sure?" over an opaque id
+// is not a decision anyone can make.
+function enrolGrantSummary(e) {
+    const names = enrolGrantNames(e).map(g => g.name || (g.id + ' (unknown project)'));
+    if (!names.length) return 'no projects — this enrolment grants nothing today';
+    return names.join(', ');
+}
+
+// enrolBytes renders a byte budget. Only exact multiples get a friendly unit,
+// so a number the operator typed always reads back as the number they typed
+// rather than as a rounded approximation of it.
+function enrolBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576 && n % 1048576 === 0) return (n / 1048576) + ' MiB';
+    if (n >= 1024 && n % 1024 === 0) return (n / 1024) + ' KiB';
+    return n + ' bytes';
+}
+
+function enrolBudgetText(b) {
+    b = b || {};
+    return (b.max_calls || 0) + ' calls / ' + enrolBytes(b.max_result_bytes) + ' per ' + (b.window_seconds || 0) + 's';
+}
+
+function renderEnrolments() {
+    if (state.enrolForm) return renderEnrolmentForm();
+
+    let html = '<div class="page-header"><h2>Remote Clients</h2>';
+    html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the remote projects it may use. The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+
+    if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
+    if (state.enrolRevoked) {
+        html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + '</strong>. Its calls remain in the Tool Calls log under fingerprint <code>' + esc(state.enrolRevoked.fingerprint) + '</code> — now the only thing that names them.</div>';
+    }
+    if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + '</div>';
+
+    const list = state.enrolments || [];
+    if (!list.length) {
+        html += '<div class="empty-state">No enrolled clients. Click <strong>+ New Enrolment</strong>, or run <code>relay enrol create</code>.</div>';
+    }
+    for (const e of list) {
+        html += '<div class="enrol-card">';
+        html += '<div class="enrol-card-header">';
+        html += '<span class="enrol-card-name">' + esc(e.client_id) + '</span>';
+        html += '<button class="btn btn-sm btn-danger" onclick="revokeEnrolment(\'' + esc(e.client_id) + '\')">Revoke</button>';
+        html += '</div>';
+
+        // Grants, by name. A card that showed ids would make the revoke
+        // decision unanswerable without a second tab open beside it.
+        html += '<div class="enrol-grants">';
+        const grants = enrolGrantNames(e);
+        if (!grants.length) {
+            html += '<span class="enrol-grant none">no projects granted</span>';
+        }
+        for (const g of grants) {
+            if (g.name) {
+                html += '<span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + '</span>';
+            } else {
+                html += '<span class="enrol-grant dangling" title="No project carries this id">' + esc(g.id) + ' — unknown project</span>';
+            }
+        }
+        html += '</div>';
+
+        html += '<div class="enrol-meta">';
+        html += '<span>Budget: <strong>' + esc(enrolBudgetText(e.budget)) + '</strong></span>';
+        html += '<span>Enrolled: <strong>' + esc(e.created_at || '—') + '</strong></span>';
+        html += '</div>';
+        // Full fingerprint, never truncated — see the file header.
+        html += '<div class="enrol-fp"><span class="enrol-fp-label">Certificate: </span>' + esc(e.fingerprint || '(none)') + '</div>';
+        html += '</div>';
+    }
+
+    html += renderRemoteListener();
+    return html;
+}
+
+// renderEnrolBundleBanner names the emitted directory and tells the operator to
+// MOVE it. The private key is inside that directory and is never rendered,
+// previewed, or fetched over IPC — the settings WebView is a rendering surface,
+// and key material that reaches it has been copied somewhere nobody will think
+// to wipe. The filenames below are static copy, matching `relay enrol create`.
+function renderEnrolBundleBanner(b) {
+    let html = '<div class="enrol-bundle">';
+    html += 'Enrolled <strong>' + esc(b.client_id) + '</strong>. Bundle written to <code>' + esc(b.dir) + '</code>';
+    html += '<ul>';
+    html += '<li><code>client.key</code> — client private key (0600)</li>';
+    html += '<li><code>client.crt</code> — client certificate</li>';
+    html += '<li><code>ca.crt</code> — relay\'s CA certificate, for verifying the server</li>';
+    html += '</ul>';
+    html += '<strong>Move (don\'t copy) this directory to the client machine.</strong> The private key travels exactly once; every copy left behind is a credential nobody is tracking.';
+    html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissEnrolBundle()">Done</button></div>';
+    html += '</div>';
+    return html;
+}
+
+function renderEnrolmentForm() {
+    const f = state.enrolForm;
+    const d = state.enrolmentBudgetDefaults || {};
+    let html = '<h2>New Enrolment</h2>';
+    if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + '</div>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += '<p class="proj-section-help">The client id is the certificate\'s Common Name and the bundle\'s directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>';
+    html += '<label>Client id</label>';
+    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="hermes-mail" />';
+    html += '</div>';
+
+    // ---- Grants ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Granted Projects</div>';
+    html += '<p class="proj-section-help">Only <strong>remote</strong> projects can be granted. A remote client granted a local project would inherit that project\'s host-directory scope, so the grant is refused outright — this list offers nothing that would be refused.</p>';
+    const grantable = remoteGrantableProjects();
+    if (!grantable.length) {
+        html += '<div class="proj-tool-empty">No remote projects exist yet. Create one in the <strong>Projects</strong> tab (Kind → Remote) first.</div>';
+    }
+    for (const p of grantable) {
+        const checked = f.project_ids.indexOf(p.id) >= 0;
+        html += '<label class="proj-tool-row">';
+        html += '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleEnrolGrant(\'' + esc(p.id) + '\', this.checked)" />';
+        html += '<div><div>' + esc(p.name) + '</div><div class="desc">' + esc(p.id) + '</div></div>';
+        html += '</label>';
+    }
+    if (grantable.length && f.project_ids.length === 0) {
+        // Same note `relay enrol create` prints: enrolling with nothing is
+        // legal and is the expected "enrol now, widen deliberately later"
+        // resting state. Say so rather than emitting a certificate that
+        // silently reaches nothing.
+        html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no project until one is added.</p>';
+    }
+    html += '</div>';
+
+    // ---- Budget ----
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Budget</div>';
+    html += '<p class="proj-section-help">The enrolment is the unit of compromise, so it is the unit that carries the cap. Rate and volume are capped together because they fail differently — a call limit alone does not stop a slow drain. Leave a field blank for the conservative default; <strong>zero is never unlimited</strong>, there is no way to switch a budget off.</p>';
+    html += '<label>Window (seconds)</label>';
+    html += '<input type="number" id="enrolWindow" value="' + esc(f.window_seconds) + '" placeholder="' + esc(d.window_seconds || '') + '" />';
+    html += '<label>Max tool calls per window</label>';
+    html += '<input type="number" id="enrolMaxCalls" value="' + esc(f.max_calls) + '" placeholder="' + esc(d.max_calls || '') + '" />';
+    html += '<label>Max cumulative result bytes per window</label>';
+    html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || '') + '" />';
+    html += '</div>';
+
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveEnrolment()">Create &amp; issue certificate</button>';
+    html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
+    html += '</div>';
+    return html;
+}
+
+function newEnrolment() {
+    state.enrolForm = { client_id: '', project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '' };
+    state.enrolmentError = null;
+    state.enrolBundle = null;
+    state.enrolRevoked = null;
+    render();
+}
+
+function cancelEnrolment() {
+    state.enrolForm = null;
+    state.enrolmentError = null;
+    render();
+}
+
+function toggleEnrolGrant(projectID, checked) {
+    const f = state.enrolForm;
+    if (!f) return;
+    const i = f.project_ids.indexOf(projectID);
+    if (checked && i < 0) f.project_ids.push(projectID);
+    if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    render();
+}
+
+function saveEnrolment() {
+    const f = state.enrolForm;
+    if (!f) return;
+    const clientID = (((document.getElementById('enrolClientId') || {}).value) || '').trim();
+    if (!clientID) {
+        state.enrolmentError = 'client id is required';
+        render();
+        return;
+    }
+    f.client_id = clientID;
+    // A blank or unparseable field sends 0, which normalizeEnrolmentBudget
+    // reads as "unset" and fills with the conservative default. Zero never
+    // means unlimited anywhere on this path.
+    const num = function(id) {
+        const raw = (((document.getElementById(id) || {}).value) || '').trim();
+        const n = parseInt(raw, 10);
+        return (raw === '' || isNaN(n) || n < 0) ? 0 : n;
+    };
+    state.enrolmentError = null;
+    ipc(JSON.stringify({
+        type: 'create_enrolment',
+        client_id: clientID,
+        project_ids: f.project_ids,
+        budget: {
+            window_seconds: num('enrolWindow'),
+            max_calls: num('enrolMaxCalls'),
+            max_result_bytes: num('enrolMaxBytes'),
+        },
+    }));
+}
+
+// revokeEnrolment names what is being cut before it cuts it. The wording
+// matches `relay enrol revoke`: the certificate is unchanged and no project is
+// touched — the record is what granted access, and deleting it also severs the
+// client's live connections rather than waiting for it to reconnect.
+function revokeEnrolment(clientID) {
+    const e = (state.enrolments || []).find(x => x.client_id === clientID);
+    if (!e) return;
+    const msg = 'Revoke enrolment "' + clientID + '"?\n\n'
+        + 'This cuts its access to: ' + enrolGrantSummary(e) + '\n\n'
+        + 'Live connections holding its certificate are closed immediately. The certificate itself is unchanged and no project is touched — the record is what granted it access.';
+    if (!confirm(msg)) return;
+    ipc(JSON.stringify({ type: 'revoke_enrolment', client_id: clientID }));
+}
+
+function dismissEnrolBundle() {
+    state.enrolBundle = null;
+    render();
+}
+
+// ---- The listener ----
+
+// remoteDraft is the uncommitted edit of the `remote` block, lazily seeded
+// from the server's view. Kept out of state.remote so a push-sourced reload
+// can't half-apply someone's typing.
+function remoteDraft() {
+    if (!state.remoteDraft) {
+        const r = state.remote || {};
+        state.remoteDraft = { enabled: !!r.enabled, listen: r.listen || '' };
+    }
+    return state.remoteDraft;
+}
+
+function remoteDraftSet(key, value) {
+    const d = remoteDraft();
+    d[key] = value;
+    state.remoteDirty = true;
+    // The address field re-renders nothing (a repaint on every keystroke would
+    // fight the caret); the toggle does, because the consequence text below it
+    // changes with it.
+    if (key === 'enabled') render();
+}
+
+// remoteListenIsLoopback reports whether an address binds only this machine.
+// The default binds loopback so that misconfiguration cannot expose the
+// control plane to a LAN — widening it is a legitimate act, and this is what
+// lets the UI say so out loud instead of refusing it.
+function remoteListenIsLoopback(addr) {
+    addr = String(addr || '');
+    const i = addr.lastIndexOf(':');
+    if (i < 0) return false;
+    const host = addr.slice(0, i).replace(/^\[/, '').replace(/\]$/, '');
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+function renderRemoteListener() {
+    const r = state.remote || { configured: false, enabled: false, listen: '', effective: '', audit_enabled: true };
+    const d = remoteDraft();
+    // Auditing is a hard dependency, not a preference: NewRemoteServer refuses
+    // to start while it is off, so an enabled block in that state is
+    // configured and dead. The badge reports the truth, not the setting.
+    const live = r.enabled && r.audit_enabled;
+
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Remote Listener';
+    if (!r.configured) {
+        html += ' <span class="remote-state absent">No block</span>';
+    } else if (live) {
+        html += ' <span class="remote-state on">On</span>';
+    } else if (r.enabled) {
+        html += ' <span class="remote-state off">Off — auditing disabled</span>';
+    } else {
+        html += ' <span class="remote-state off">Off</span>';
+    }
+    html += '</div>';
+
+    if (state.remoteError) html += '<div class="proj-error">' + esc(state.remoteError) + '</div>';
+
+    // The three states are spelled out because two of them are surprising.
+    if (!r.configured) {
+        html += '<p class="proj-section-help">There is no <code>remote</code> block in <code>settings.json</code>, which means <strong>no listener is opened at all</strong> — not a listener bound to nothing, not one that refuses every call. This is the default, and it is not the same state as a listener that is switched off.</p>';
+    } else if (!r.enabled) {
+        html += '<p class="proj-section-help">The <code>remote</code> block exists but the listener is <strong>off</strong>. A block that omits <code>enabled</code> resolves to disabled — the opposite default to auditing, deliberately, so a network listener is never opened by omission.</p>';
+    }
+
+    if (r.enabled && !r.audit_enabled) {
+        html += '<div class="remote-note danger"><strong>Remote access is off because the tool-call audit log is disabled.</strong> The listener refuses to start while auditing is off: a remote grant is justified by the calls it records, so serving remote traffic unrecorded is not a degraded mode. Re-enable <code>audit.enabled</code> to restore remote access — this block is configured but dead until then.</div>';
+    }
+
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += '<span>Accept remote clients on an mTLS listener</span>';
+    html += '<label class="switch"><input type="checkbox" ' + (d.enabled ? 'checked' : '') + ' onchange="remoteDraftSet(\'enabled\', this.checked)" /><span class="slider"></span></label>';
+    html += '</div>';
+
+    html += '<label>Listen address</label>';
+    html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || '') + '" oninput="remoteDraftSet(\'listen\', this.value)" />';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || '') + '</code>. ' + esc(REMOTE_RESTART_NOTE) + '</p>';
+
+    const effective = (d.listen || '').trim() || r.effective || '';
+    if (effective && !remoteListenIsLoopback(effective)) {
+        html += '<div class="remote-note warn">' + esc(effective) + ' binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read — but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>';
+    }
+
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
+    if (r.configured) {
+        html += '<button class="btn btn-danger" onclick="removeRemoteConfig()">Remove block</button>';
+    }
+    html += '</div>';
+    html += '</div>';
+    return html;
+}
+
+function saveRemoteConfig() {
+    const d = remoteDraft();
+    state.remoteError = null;
+    ipc(JSON.stringify({
+        type: 'update_remote_config',
+        enabled: !!d.enabled,
+        listen: String(d.listen || '').trim(),
+    }));
+}
+
+// removeRemoteConfig returns the install to "no block at all" — the one state
+// an operator could otherwise never get back to once they had touched this
+// form, and the one that means no socket is opened.
+function removeRemoteConfig() {
+    const msg = 'Remove the remote block from settings.json?\n\n'
+        + 'No listener will be opened at all. Enrolments are not touched — they stay listed here and can still be revoked, but nothing can connect until a listener is configured again.';
+    if (!confirm(msg)) return;
+    state.remoteError = null;
+    ipc(JSON.stringify({ type: 'update_remote_config', remove: true }));
+}
+
+// ---- Remote Clients IPC event handlers ----
+
+window.onEnrolmentCreated = function(e, bundle) {
+    if (!e || !e.client_id) return;
+    state.enrolments = (state.enrolments || []).filter(x => x.client_id !== e.client_id).concat(e);
+    state.enrolForm = null;
+    state.enrolmentError = null;
+    state.enrolRevoked = null;
+    // Only the bundle DIRECTORY is ever held here. The private key inside it
+    // does not cross the IPC boundary and has no representation in this state.
+    state.enrolBundle = { client_id: e.client_id, dir: (bundle && bundle.dir) || '' };
+    if (state.page === 'remote') render('push');
+};
+
+window.onEnrolmentRevoked = function(clientID, fingerprint) {
+    state.enrolments = (state.enrolments || []).filter(x => x.client_id !== clientID);
+    state.enrolmentError = null;
+    if (state.enrolBundle && state.enrolBundle.client_id === clientID) state.enrolBundle = null;
+    // The fingerprint outlives the record on purpose: it is what identifies
+    // this client's past calls in the Tool Calls tab now that nothing else
+    // names it.
+    state.enrolRevoked = { client_id: clientID, fingerprint: fingerprint || '' };
+    if (state.page === 'remote') render('push');
+};
+
+window.onEnrolmentError = function(msg) {
+    state.enrolmentError = msg || 'enrolment failed';
+    if (state.page === 'remote') render('push');
+};
+
+window.onRemoteConfigUpdated = function(view) {
+    state.remote = view || state.remote;
+    state.remoteDraft = null;
+    state.remoteDirty = false;
+    state.remoteError = null;
+    if (state.page === 'remote') render('push');
+};
+
+window.onRemoteConfigError = function(msg) {
+    state.remoteError = msg || 'could not save the remote block';
+    if (state.page === 'remote') render('push');
 };
 
 // Service Inspector — generic renderer driven by each service's manifest
@@ -2725,5 +3194,6 @@ render();
 // classic <script> had.
 Object.assign(window, {
     auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
+    cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

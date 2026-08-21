@@ -58,9 +58,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-// buildPage substitutes the five init-data tokens with fixtures and injects the
+// buildPage substitutes the init-data tokens with fixtures and injects the
 // mock-IPC bridge (before the page script) plus the status-poll simulator
-// (after it).
+// (after it). Every token renderSettingsHTML substitutes must appear here too:
+// an unreplaced __X_JSON__ leaves the page's init object syntactically invalid
+// and takes the whole bundle down on load.
 func buildPage(html string) string {
 	html = strings.NewReplacer(
 		"__EXTERNAL_MCPS_JSON__", fixtureExternalMcps,
@@ -68,6 +70,9 @@ func buildPage(html string) string {
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
+		"__ENROLMENTS_JSON__", fixtureEnrolments,
+		"__REMOTE_JSON__", fixtureRemote,
+		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
 	).Replace(html)
 
 	// The mock must define window.webkit BEFORE the page's ipc() runs, so it
@@ -102,8 +107,26 @@ const fixtureRunningIDs = `["relay-llm","relaytts-daemon","stt-daemon"]`
 
 const fixtureProjects = `[
   {"id":"proj-acme","name":"Acme Website","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
-  {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"allow_cwd_auth":true,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}}
+  {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"allow_cwd_auth":true,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}},
+  {"id":"proj-mail","name":"Mail (remote)","kind":"remote","allowed_mcp_ids":["macmcp"],"allowed_models":[],"chat_templates":[],"generate_skill":false,"token":"relay_proj_0f1e2d3c4b5a6978","disabled_tools":{}}
 ]`
+
+// fixtureEnrolments exercises the Remote Clients list: a resolvable grant, and
+// a full-length fingerprint (never truncated — after an enrolment is deleted it
+// is the only thing that names that client's calls in the audit log). No key
+// material appears here, and none ever crosses this boundary in production
+// either: the create response carries a bundle DIRECTORY and nothing else.
+const fixtureEnrolments = `[
+  {"client_id":"hermes-mail","fingerprint":"sha256:9f2a4c1d6b8e0f37a5c9d2e4b6081f3a7c5e9d1b3f5a7c9e1d3b5f7a9c1e3d5b","project_ids":["proj-mail"],"budget":{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608},"created_at":"2026-08-20T09:14:00Z"}
+]`
+
+// fixtureRemote is the enabled-and-auditing state. Flip enabled/configured/
+// audit_enabled here to eyeball the other three renderings: an absent block, a
+// present-but-off one, and one that is configured but dead because auditing is
+// disabled.
+const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true}`
+
+const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
 
 const fixtureMcpToolCache = `{
   "fsmcp":[
@@ -138,6 +161,23 @@ var mockBridgeScript = `<script>
       case 'query_audit': window.onAuditEvents(FIXTURE_AUDIT, FIXTURE_AUDIT_STATUS); break;
       case 'export_audit': window.onAuditExported('/Users/you/Library/Application Support/relay/logs/audit/toolcalls-export-20260819-150000.jsonl'); break;
       case 'reveal_audit_log': console.log('[devui] would reveal the audit log'); break;
+      case 'create_enrolment':
+        // The real handler emits the persisted record plus a bundle DIRECTORY.
+        // The mock does the same, key material included nowhere — mirroring it
+        // any other way here would model a boundary that does not exist.
+        window.onEnrolmentCreated(
+          { client_id: msg.client_id, fingerprint: 'sha256:' + '0123456789abcdef'.repeat(4),
+            project_ids: msg.project_ids || [], budget: msg.budget, created_at: new Date().toISOString() },
+          { dir: '/Users/you/Library/Application Support/relay/enrolments/' + msg.client_id });
+        break;
+      case 'revoke_enrolment':
+        window.onEnrolmentRevoked(msg.client_id, 'sha256:' + '0123456789abcdef'.repeat(4));
+        break;
+      case 'update_remote_config':
+        if (msg.remove) { window.onRemoteConfigUpdated({ configured: false, enabled: false, listen: '', effective: '127.0.0.1:9910', audit_enabled: true }); break; }
+        window.onRemoteConfigUpdated({ configured: true, enabled: !!msg.enabled, listen: msg.listen || '',
+                                       effective: msg.listen || '127.0.0.1:9910', audit_enabled: true });
+        break;
       // add/update/remove/start/stop etc. — no-op in the harness, just logged above
     }
   }
