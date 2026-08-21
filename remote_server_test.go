@@ -67,6 +67,10 @@ type remoteFixtureOpts struct {
 	// skipServe leaves the server unstarted so a test can assert on
 	// construction alone.
 	skipServe bool
+	// budget, when non-nil, is stored on the enrolment instead of the
+	// conservative defaults, so a test can drive throttling deterministically
+	// without making hundreds of calls.
+	budget *EnrolmentBudget
 }
 
 // newRemoteFixture builds a sandboxed relay install with one remote project,
@@ -124,7 +128,11 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	}
 
 	grants := []string{f.project.ID}
-	bundle, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: grants})
+	req := enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: grants}
+	if opts.budget != nil {
+		req.Budget = *opts.budget
+	}
+	bundle, err := createEnrolment(store, req)
 	assertNoErr(t, err, "createEnrolment")
 	f.bundle = bundle
 
@@ -748,5 +756,65 @@ func TestRemoteServer_TypelessFrameIsRefused(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 	if resp := f.dial().roundTrip(`{}`); resp.Type != bridge.RespError {
 		t.Fatalf("a frame with no type returned %s", resp.Type)
+	}
+}
+
+// Budgets and the listener were built independently: the budget tests inject a
+// remote identity into the context directly, and the listener tests never set a
+// budget. Neither proves the seam between them. This drives a real mTLS client
+// through the real listener into the real enforcement, because a rate limit that
+// only binds a synthetic context protects nothing.
+func TestRemoteServer_BudgetIsEnforcedThroughTheListener(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{
+		budget: &EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 2, MaxResultBytes: 1 << 20},
+	})
+	c := f.dial()
+	if c == nil {
+		t.Fatal("enrolled client could not complete the handshake")
+	}
+
+	call := `{"type":"CallTool","name":"mail_search","arguments":{"q":"invoice"}}`
+	for i := 1; i <= 2; i++ {
+		if resp := c.roundTrip(call); resp.Type != bridge.RespResult {
+			t.Fatalf("call %d within budget returned %s: %s", i, resp.Type, resp.Message)
+		}
+	}
+
+	resp := c.roundTrip(call)
+	if resp.Type != bridge.RespError {
+		t.Fatalf("third call over a 2-call budget returned %s, want an error", resp.Type)
+	}
+	if !strings.Contains(resp.Message, "throttled") {
+		t.Errorf("refusal message = %q, want it to say it was throttled", resp.Message)
+	}
+
+	// The refusal has to happen before the tool runs. A throttle that fires
+	// after the mailbox has been read interdicts nothing.
+	if got := f.mcpCalls.Load(); got != 2 {
+		t.Errorf("MCP was invoked %d times, want 2 — the throttled call must not reach it", got)
+	}
+
+	// And it must be greppable as a throttle specifically: "the grant was
+	// legitimate and the pattern of use was not" is a different signal from
+	// denied (never granted) or tool_error (refused inside the MCP).
+	events := readLoggedEvents(t, f.audit)
+	var throttled *AuditEvent
+	for i := range events {
+		if events[i].Outcome == AuditOutcomeThrottled {
+			throttled = &events[i]
+			break
+		}
+	}
+	if throttled == nil {
+		t.Fatal("the throttled call produced no audit record with outcome throttled")
+	}
+	if throttled.Actor.Kind != AuditActorRemote || throttled.Actor.ClientID != "hermes-mail" {
+		t.Errorf("throttled actor = %+v, want the attested remote client", throttled.Actor)
+	}
+	if throttled.Actor.Fingerprint != f.bundle.Enrolment.Fingerprint {
+		t.Errorf("throttled fingerprint = %q, want the full enrolled fingerprint", throttled.Actor.Fingerprint)
+	}
+	if throttled.Tool != "mail_search" {
+		t.Errorf("throttled record names tool %q, want mail_search", throttled.Tool)
 	}
 }
