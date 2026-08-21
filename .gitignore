@@ -27,3 +27,6 @@ __pycache__/
 # Scratch
 prompt.md
 /plans/
+
+# Agent worktrees
+.claude/
