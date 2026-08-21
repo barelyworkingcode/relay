@@ -158,6 +158,22 @@ decoding is strict (`DisallowUnknownFields`) so a client sending `cwd` gets a
 loud error rather than silent divergence. The project token is resolved
 host-side from the granted project and never appears on the wire.
 
+Every remote call is budgeted (`enrolment_budget.go`). Each enrolment carries a
+rolling-window call-rate and result-volume cap, enforced in `appRouter.CallTool`
+and refused with the `throttled` outcome — distinct from `denied` (a tool the
+grant never included) and `tool_error` (a boundary inside the MCP) because it is
+the only one of the three that says the grant was legitimate and the *pattern of
+use* was not. Budgets live on the **enrolment, not the project**: the enrolment
+is the unit of compromise, so it is the unit that bounds one. Rate is checked
+before the MCP runs; volume is necessarily charged after a call returns, so the
+guarantee is "at most one call's worth over the cap", not a hard ceiling. Local
+callers are not budgeted at all — one context lookup and nothing else.
+
+Auditing is a hard dependency of remote access: with `audit.enabled: false` the
+listener refuses to start rather than serving unrecorded calls. The case for
+letting a VM reach host mail rests on detection, so there is deliberately no
+window in which a remote call runs without a record.
+
 Config — absent block means **no listener at all**, and the default binds
 loopback so misconfiguration cannot expose the control plane to a LAN:
 
