@@ -531,7 +531,23 @@ func (s *Settings) ValidateProjectGrants(proj *Project, schemas map[string]json.
 	return nil
 }
 
-// schemaHasField checks if a context schema declares a given field.
+// schemaHasField reports whether a context schema declares a given field, in
+// either shape an MCP might reasonably use.
+//
+// fsMCP declares its context flat — {"allowed_dirs": {...}} — but the ordinary
+// JSON-Schema shape nests the same declaration under "properties", and relay's
+// own test fixtures use that form. Checking only the flat shape made the answer
+// depend on how an MCP happened to spell an identical declaration.
+//
+// Getting that wrong fails OPEN, which is why both shapes are checked here
+// rather than a shape being mandated elsewhere. This function is the first of
+// ADR-009 decision 3's two defences: it is what stops a filesystem-scoped MCP
+// being granted to a pathless remote project. A false negative does not merely
+// skip a warning — the grant is allowed, the second defence then correctly
+// declines to derive allowed_dirs for a remote project, the MCP receives no
+// value at all, and an MCP that reads an absent allowlist as "unrestricted"
+// (fsMCP does) hands a client on another machine the whole host filesystem.
+// ADR-009 names that exact sequence as the thing this check exists to prevent.
 func schemaHasField(schema json.RawMessage, field string) bool {
 	if len(schema) == 0 {
 		return false
@@ -540,7 +556,21 @@ func schemaHasField(schema json.RawMessage, field string) bool {
 	if err := json.Unmarshal(schema, &fields); err != nil {
 		return false
 	}
-	_, ok := fields[field]
+	if _, ok := fields[field]; ok {
+		return true
+	}
+	// JSON-Schema form: the declarations live under "properties". Checked after
+	// the flat lookup so a schema that genuinely declares a field called
+	// "properties" is still matched by the flat rule first.
+	props, ok := fields["properties"]
+	if !ok {
+		return false
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(props, &nested); err != nil {
+		return false
+	}
+	_, ok = nested[field]
 	return ok
 }
 
