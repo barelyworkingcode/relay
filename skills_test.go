@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"relaygo/mcp"
 )
@@ -534,4 +535,77 @@ func keysOf(m map[string]SkillBucket) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// extractTriggerKeywords locates a marker in a lowercased copy and must carry
+// that position back onto the original. strings.ToLower is not length-preserving
+// in UTF-8 — 23 runes shrink, 2 grow — so a byte offset either lands mid-clause
+// (silently harvesting the wrong routing keywords, which is the worse failure
+// because it degrades routing without erroring) or runs off the end and panics.
+func TestExtractTriggerKeywords_SurvivesNonASCII(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{"plain ascii", "Use this whenever the user asks about invoices.", "the user asks about invoices"},
+		// Non-ASCII is written with explicit escapes: these runes are the whole
+		// point of the test and must not depend on how a file was transcribed.
+		// U+023A and U+023E GROW when lowercased (2 bytes -> 3) and panicked.
+		{"growing rune U+023A", "\u023Ause whenever x.", "x"},
+		{"growing rune U+023E", "\u023Euse whenever x.", "x"},
+		{"several growing runes", "\u023A\u023A\u023Ause whenever x.", "x"},
+		// U+212A KELVIN SIGN SHRINKS (3 bytes -> 1). Three of them dragged the
+		// offset 6 bytes left, so this returned "s for an invoice" — the tail of
+		// the marker itself, silently wrong rather than loud.
+		{"shrinking rune U+212A", "\u212A\u212A\u212Ause whenever the user asks for an invoice.", "an invoice"},
+		{"shrinking rune U+1E9E", "\u1E9Euse whenever mail arrives.", "mail arrives"},
+		{"emoji before the marker", "\U0001F4E7use whenever mail arrives.", "mail arrives"},
+		{"cjk before the marker", "\u90F5\u4FBFuse whenever mail arrives.", "mail arrives"},
+		{"no marker at all", "Just a description with no trigger.", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panicked on %q: %v", tc.desc, r)
+				}
+			}()
+			if got := extractTriggerKeywords(tc.desc); got != tc.want {
+				t.Errorf("extractTriggerKeywords(%q) = %q, want %q", tc.desc, got, tc.want)
+			}
+		})
+	}
+}
+
+// Every rune whose lowercase form differs in byte length must be survivable —
+// a hostile or merely multilingual tool description must not be able to crash
+// skill generation for a whole project.
+func TestExtractTriggerKeywords_NoRuneCrashesGeneration(t *testing.T) {
+	var checked int
+	for r := rune(0); r < 0x10000; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		orig := string(r)
+		if len(orig) == len(strings.ToLower(orig)) {
+			continue
+		}
+		checked++
+		desc := orig + "use whenever x."
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					t.Fatalf("panicked on U+%04X: %v", r, rec)
+				}
+			}()
+			if got := extractTriggerKeywords(desc); got != "x" {
+				t.Errorf("U+%04X: got %q, want %q", r, got, "x")
+			}
+		}()
+	}
+	if checked == 0 {
+		t.Fatal("found no length-changing runes; the test is not exercising anything")
+	}
+	t.Logf("verified %d runes whose lowercase form changes byte length", checked)
 }
