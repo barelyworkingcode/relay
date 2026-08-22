@@ -104,6 +104,55 @@ func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
 	}
 }
 
+// TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta pins the migration
+// hazard an MCP renaming a context field leaves behind: a stored blob outlives
+// the schema that wrote it (macMCP's write_dirs -> file_dirs is the concrete
+// case), relay never rewrites settings.json to match, and _meta is a general
+// channel a caller cannot audit from the outside. The one guarantee that has
+// to hold regardless is that a key the LIVE schema no longer declares is never
+// put on the wire under its old name.
+func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
+	var capturedMeta json.RawMessage
+	capture := func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
+		if m, ok := params.(map[string]interface{}); ok {
+			if raw, err := json.Marshal(m["_meta"]); err == nil {
+				capturedMeta = raw
+			}
+		}
+		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
+	}
+
+	proj := Project{
+		ID: "test-project", Name: "test", Kind: ProjectKindRemote,
+		AllowedMcpIDs: []string{"macmcp"}, Token: testToken, TokenHash: hashToken(testToken),
+		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
+		Access:       map[string]string{"macmcp": AccessWrite},
+		// The stored blob still carries a field the live schema below no
+		// longer declares — exactly what is left behind by a rename.
+		Context: map[string]json.RawMessage{
+			"macmcp": json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`),
+		},
+	}
+	s := &Settings{
+		Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
+		Projects: []Project{proj}, AdminSecret: "supersecretadmin",
+	}
+	mgr := NewExternalMcpManager(nil)
+	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
+	addMockSchema(mgr, "macmcp", scopedSchema, 2)
+	r := newTestRouter(t, s, mgr)
+
+	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
+		t.Fatalf("call refused: %v", err)
+	}
+	if strings.Contains(string(capturedMeta), "write_dirs") {
+		t.Errorf("a context key the live schema no longer declares reached _meta: %s", capturedMeta)
+	}
+	if !strings.Contains(string(capturedMeta), "mail_accounts") {
+		t.Errorf("a field the live schema DOES declare was dropped too: %s", capturedMeta)
+	}
+}
+
 func TestCallTool_AV1SchemaImposesNoPresenceRequirement(t *testing.T) {
 	// A declaration that never opted into the vocabulary declared no scope
 	// keywords, so there is nothing here to be present.

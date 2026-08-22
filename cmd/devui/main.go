@@ -140,7 +140,7 @@ const fixtureMcpScopeFields = `{
   "macmcp":[
     {"name":"mail_accounts","type":"array","item_type":"string","description":"Mail accounts this client may read from or send as","source":"operator","applies_to":["mail_*"],"enumerable":true},
     {"name":"mail_mailboxes","type":"array","item_type":"string","description":"Mailbox paths within those accounts this client may reach","source":"operator","applies_to":["mail_*"],"enumerable":true,"depends_on":["mail_accounts"]},
-    {"name":"write_dirs","type":"array","item_type":"string","description":"Directories this client may write files into","source":"project_path","applies_to":["mail_save_attachment","mail_get_source"]}
+    {"name":"file_dirs","type":"array","item_type":"string","description":"Directories this client may write files into","source":"project_path","applies_to":["mail_save_attachment","mail_get_source"]}
   ],
   "krisp":[]
 }`

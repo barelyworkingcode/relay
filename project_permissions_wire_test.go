@@ -137,7 +137,7 @@ func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) 
 	}{
 		{"undeclared field", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_folders": []string{"INBOX"}}}}, "mail_folders"},
 		{"empty scope", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": []string{}}}}, "mail_accounts"},
-		{"derived field", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"write_dirs": []string{"/etc"}}}}, "write_dirs"},
+		{"derived field", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"file_dirs": []string{"/etc"}}}}, "file_dirs"},
 		{"bad mode", map[string]interface{}{"access": map[string]string{"macmcp": "admin"}}, "admin"},
 		{"bad pattern", map[string]interface{}{"allowed_tools": map[string][]string{"macmcp": {"mail_["}}}, "mail_["},
 	} {
@@ -183,8 +183,8 @@ func TestProjectRoutes_ScopeFields(t *testing.T) {
 	if got := byName["mail_accounts"]; got.Source != ContextSourceOperator || !got.Enumerable || got.Description == "" {
 		t.Errorf("mail_accounts projected wrong: %#v", got)
 	}
-	if got := byName["write_dirs"]; got.Source != ContextSourceProjectPath {
-		t.Errorf("write_dirs must be marked derived, got %q", got.Source)
+	if got := byName["file_dirs"]; got.Source != ContextSourceProjectPath {
+		t.Errorf("file_dirs must be marked derived, got %q", got.Source)
 	}
 	if got := byName["mail_mailboxes"]; len(got.DependsOn) != 1 || got.DependsOn[0] != "mail_accounts" {
 		t.Errorf("depends_on lost: %#v", got)

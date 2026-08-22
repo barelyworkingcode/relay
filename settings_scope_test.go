@@ -55,7 +55,7 @@ func TestValidateProjectGrants_RefusesAnMcpWhoseEveryToolNeedsTheProjectPath(t *
 }
 
 func TestValidateProjectGrants_PermitsAnMcpThatKeepsUsableTools(t *testing.T) {
-	// macMCP's write_dirs governs mail_save_attachment and mail_get_source
+	// macMCP's file_dirs governs mail_save_attachment and mail_get_source
 	// only, so the MCP stays grantable and precisely those two lose their
 	// filesystem write. This is ADR-011 finding 1's fix arriving as a
 	// consequence of the model rather than as a special case.
@@ -97,15 +97,15 @@ func TestValidateProjectGrants_LocalProjectsAreExempt(t *testing.T) {
 
 func TestSyncProjectToken_DerivesEveryProjectPathFieldTheSchemaDeclares(t *testing.T) {
 	// Relay writes the path because the SCHEMA asked for it, not because relay
-	// recognised the name. The field here is called write_dirs and relay has
+	// recognised the name. The field here is called file_dirs and relay has
 	// never heard of it.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "macmcp"}}}
 	proj := &Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"}}
 	s.SyncProjectToken(proj, McpSurfaces{"macmcp": macmcpSurface()})
 
 	values := contextValues(proj.Context["macmcp"])
-	if string(values["write_dirs"]) != `["/tmp/project"]` {
-		t.Fatalf("write_dirs = %s, want the project path", values["write_dirs"])
+	if string(values["file_dirs"]) != `["/tmp/project"]` {
+		t.Fatalf("file_dirs = %s, want the project path", values["file_dirs"])
 	}
 	// The operator-supplied fields are NOT invented. Relay has no answer to
 	// "which mailbox" and must not guess one.
@@ -131,7 +131,7 @@ func TestSyncProjectToken_DerivationDoesNotClobberOperatorSetFields(t *testing.T
 	if string(values["mail_accounts"]) != `["Bob"]` {
 		t.Errorf("an operator-set scope was lost on resync: %v", values)
 	}
-	if string(values["write_dirs"]) != `["/tmp/project"]` {
+	if string(values["file_dirs"]) != `["/tmp/project"]` {
 		t.Errorf("the derived field was not written beside it: %v", values)
 	}
 }

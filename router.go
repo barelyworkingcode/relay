@@ -434,11 +434,24 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	surface := r.tools.McpSurfaceFor(extID)
 	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
-	// The _meta this call would run with: the per-token context for this MCP
-	// plus the authenticated project id, so an MCP can attribute the call to a
-	// project without trusting LLM-supplied values. Relay is the project
-	// authority here.
-	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
+	// The _meta this call would run with: the per-token context for this MCP,
+	// filtered down to fields the LIVE schema still declares, plus the
+	// authenticated project id so an MCP can attribute the call to a project
+	// without trusting LLM-supplied values. Relay is the project authority
+	// here.
+	//
+	// The filter matters because a stored blob outlives the schema that wrote
+	// it: an MCP can rename or drop a field (macMCP's write_dirs -> file_dirs
+	// is exactly this) between when a grant was written and when a call runs,
+	// and relay never rewrites settings.json to match — see the stale-key note
+	// on SyncProjectToken. Without it, a value stored under a name the MCP no
+	// longer recognises still went out on the wire under that name: dead
+	// weight ordinarily, but on an MCP that gives a NEW field the OLD name a
+	// stale value would be handed to logic that never validated it.
+	// filterKnownContextFields is only reached once extID has already resolved
+	// to a live connection (FindToolOwner above), so this can never be the
+	// "MCP is merely down" case that makes pruning stored data unsafe.
+	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
 
 	// Audit the authority actually in force (ADR-011 decision 7), BEFORE the
 	// first thing that can refuse.

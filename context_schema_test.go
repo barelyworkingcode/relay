@@ -35,7 +35,7 @@ const macmcpSchema = `{
     "applies_to": ["mail_*"], "enumerable": true,
     "depends_on": ["mail_accounts"]
   },
-  "write_dirs": {
+  "file_dirs": {
     "type": "array", "items": {"type": "string"},
     "description": "Directories this client may write files into",
     "scope": "restrict", "source": "project_path",
@@ -84,7 +84,7 @@ func TestParseContextSchema_V2FlatFormIsTheContract(t *testing.T) {
 	for _, f := range cs.RestrictFields() {
 		names = append(names, f.Name)
 	}
-	if strings.Join(names, ",") != "mail_accounts,mail_mailboxes,write_dirs" {
+	if strings.Join(names, ",") != "file_dirs,mail_accounts,mail_mailboxes" {
 		t.Fatalf("restrict fields out of name order: %v", names)
 	}
 
@@ -98,7 +98,7 @@ func TestParseContextSchema_V2FlatFormIsTheContract(t *testing.T) {
 	if !f.Enumerable || len(f.DependsOn) != 1 || f.DependsOn[0] != "mail_accounts" {
 		t.Fatalf("enumerable/depends_on misread: %+v", f)
 	}
-	if len(cs.ProjectPathFields()) != 1 || cs.ProjectPathFields()[0].Name != "write_dirs" {
+	if len(cs.ProjectPathFields()) != 1 || cs.ProjectPathFields()[0].Name != "file_dirs" {
 		t.Fatalf("project_path fields = %v", cs.ProjectPathFields())
 	}
 	if len(cs.OperatorFields()) != 2 {
@@ -138,7 +138,7 @@ func TestParseContextSchema_SurvivesRubbish(t *testing.T) {
 func TestContextField_GovernsReadsAppliesTo(t *testing.T) {
 	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
 	mail, _ := cs.Field("mail_accounts")
-	dirs, _ := cs.Field("write_dirs")
+	dirs, _ := cs.Field("file_dirs")
 
 	if !mail.Governs("mail_search") || !mail.Governs("mail_send") {
 		t.Fatal("mail_* did not match a mail tool")
@@ -305,7 +305,7 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 			t.Errorf("note %q missing %q", note, want)
 		}
 	}
-	// write_dirs governs neither of those tools and has no value here, so it
+	// file_dirs governs neither of those tools and has no value here, so it
 	// must not appear.
 	if strings.Contains(note, "Directories") {
 		t.Errorf("note mentioned an ungoverned field: %q", note)
@@ -318,6 +318,36 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 	}
 	if n := scopeNoteFor(ParseContextSchema(json.RawMessage(macmcpSchema), 0), values, "mail_search"); n != "" {
 		t.Errorf("a v1 schema got a note: %q", n)
+	}
+}
+
+func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *testing.T) {
+	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
+	base := json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`)
+
+	out := filterKnownContextFields(base, cs)
+	values := contextValues(out)
+	if _, present := values["write_dirs"]; present {
+		t.Errorf("a field the live schema no longer declares survived filtering: %s", out)
+	}
+	if string(values["mail_accounts"]) != `["Bob"]` {
+		t.Errorf("a field the live schema DOES declare was dropped: %s", out)
+	}
+
+	// A v1 schema is passed through untouched: it has no Fields to check
+	// against, and its context blob is always fully replaced by
+	// SyncProjectToken, so there is nothing to filter.
+	v1 := ParseContextSchema(json.RawMessage(macmcpSchema), 0)
+	if got := filterKnownContextFields(base, v1); string(got) != string(base) {
+		t.Errorf("a v1 schema was filtered: got %s, want unchanged %s", got, base)
+	}
+
+	// Absent/empty/malformed input all pass through as-is rather than
+	// manufacturing an error on a path CallTool cannot recover from.
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(``), json.RawMessage(`null`)} {
+		if got := filterKnownContextFields(raw, cs); string(got) != string(raw) {
+			t.Errorf("filterKnownContextFields(%q) = %q, want unchanged", raw, got)
+		}
 	}
 }
 

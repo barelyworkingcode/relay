@@ -413,7 +413,7 @@ func TestScopePicker_ProjectPathFieldStillReadOnly(t *testing.T) {
 	if !strings.Contains(html, `readonly value="/Users/x/work"`) {
 		t.Errorf("the derived field stopped rendering read-only\n%s", html)
 	}
-	if strings.Contains(html, `toggleScopeFieldPicker('macmcp', 'write_dirs')`) {
+	if strings.Contains(html, `toggleScopeFieldPicker('macmcp', 'file_dirs')`) {
 		t.Error("a picker was offered for a value relay derives")
 	}
 }

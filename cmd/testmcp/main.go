@@ -58,7 +58,7 @@ const enumSchema = `{
     "description":"Mailbox paths within those accounts this client may reach",
     "scope":"restrict","source":"operator","applies_to":["mail_*"],"enumerable":true,
     "depends_on":["mail_accounts"]},
-  "write_dirs": {"type":"array","items":{"type":"string"},
+  "file_dirs": {"type":"array","items":{"type":"string"},
     "description":"Directories this client may write files into",
     "scope":"restrict","source":"project_path","applies_to":["mail_save_attachment"]}
 }`
