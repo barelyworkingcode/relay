@@ -273,6 +273,26 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps McpSurf
 		writeJSON(w, http.StatusOK, map[string]string{"path": dir})
 	})
 
+	// GET /api/mcps/{id}/scope_fields — the scope: "restrict" fields an MCP
+	// declares, so an editor can render one input per field with the MCP's own
+	// description as help text (ADR-011 decision 6). It is the same projection
+	// the tray's Settings UI is seeded with; ADR-004's two co-equal editors
+	// cannot stay co-equal if only one of them can see what may be narrowed.
+	//
+	// An MCP relay has never connected to has no entry, and that is a 404
+	// rather than an empty list: "this MCP scopes nothing" and "relay cannot
+	// tell you what this MCP scopes" are different answers, and only one of
+	// them means an editor may safely offer no fields.
+	mux.HandleFunc("GET /api/mcps/{id}/scope_fields", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		surfaces := mcps.AllMcpSurfaces()
+		if _, ok := surfaces[id]; !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP not registered or not connected"})
+			return
+		}
+		writeJSON(w, http.StatusOK, surfaces.Schema(id).ScopeFieldViews())
+	})
+
 	// GET /api/mcps/{id}/tools — live tool list for the project picker.
 	// 503 when no provider is wired (test contexts) or 404 when MCP is unknown
 	// / not connected yet.

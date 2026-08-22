@@ -555,3 +555,72 @@ func appendScopeNote(desc, note string) string {
 	}
 	return desc + " " + note
 }
+
+// ---------------------------------------------------------------------------
+// The operator's view of a schema (ADR-011 decision 6)
+// ---------------------------------------------------------------------------
+
+// ScopeFieldView is one declared scope: "restrict" field, projected for an
+// operator surface: the Settings UI's per-MCP permission panel, and the same
+// panel eve renders over the HTTP routes.
+//
+// It carries ONLY restrict fields. The panel is a permission editor, and an
+// ordinary context value (a field with no `scope`) is something relay injects
+// and otherwise ignores — showing it beside the values that decide what a
+// client may reach would put two different things under one heading.
+//
+// Source is NORMALISED here rather than passed through: ContextField.FromOperator
+// reads an absent source as operator-supplied, and that rule must be applied in
+// exactly one place. A surface that re-derived it from a raw "" would be a
+// second copy of the rule, free to disagree the day it changes.
+type ScopeFieldView struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type,omitempty"`
+	ItemType    string   `json:"item_type,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Source      string   `json:"source"`
+	AppliesTo   []string `json:"applies_to,omitempty"`
+	Enumerable  bool     `json:"enumerable,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
+}
+
+// ScopeFieldViews projects a schema's restrict fields for an operator surface,
+// in the same name order RestrictFields uses.
+func (cs ContextSchema) ScopeFieldViews() []ScopeFieldView {
+	fields := cs.RestrictFields()
+	out := make([]ScopeFieldView, 0, len(fields))
+	for _, f := range fields {
+		source := ContextSourceOperator
+		if f.FromProjectPath() {
+			source = ContextSourceProjectPath
+		}
+		out = append(out, ScopeFieldView{
+			Name:        f.Name,
+			Type:        f.Type,
+			ItemType:    f.itemType(),
+			Description: f.Description,
+			Source:      source,
+			AppliesTo:   f.AppliesTo,
+			Enumerable:  f.Enumerable,
+			DependsOn:   f.DependsOn,
+		})
+	}
+	return out
+}
+
+// ScopeFields returns the operator-facing scope fields for every MCP relay
+// knows about, keyed by MCP id. An MCP that declares none gets an empty slice
+// rather than a missing key, so a UI can tell "this MCP scopes nothing" from
+// "relay has never heard of this MCP" — the second is the case where a panel
+// must say it cannot show the fields rather than that there are none.
+func (m McpSurfaces) ScopeFields() map[string][]ScopeFieldView {
+	out := make(map[string][]ScopeFieldView, len(m))
+	for id := range m {
+		views := m.Schema(id).ScopeFieldViews()
+		if views == nil {
+			views = []ScopeFieldView{}
+		}
+		out[id] = views
+	}
+	return out
+}

@@ -461,6 +461,81 @@ func (s *Settings) UpdateProjectAllowedTools(id string, allowed map[string][]str
 	proj.AllowedTools = cleaned
 }
 
+// UpdateProjectAccess replaces a project's per-MCP operation mode (ADR-011
+// decision 2). Entries naming an MCP the project is not granted are dropped
+// rather than stored, exactly as UpdateProjectAllowedTools drops them: a mode
+// for an MCP this record cannot reach reads as an authority it does not have,
+// and SyncProjectToken prunes them on every resync anyway.
+//
+// An unrecognised mode is stored as given rather than dropped or corrected.
+// Dropping it would fall back to the DEFAULT, which for a local project is
+// write — a mutator silently widening a grant on the strength of a typo. What
+// StoredToken.AccessMode does with a value it does not recognise is read it as
+// read-only, so keeping it is the fail-closed direction; the loud refusal is
+// validateProjectPermissions, at the surfaces an operator actually types into.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(access) == 0 {
+		proj.Access = nil
+		return
+	}
+	cleaned := make(map[string]string, len(access))
+	for mcpID, mode := range access {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		cleaned[mcpID] = mode
+	}
+	if len(cleaned) == 0 {
+		proj.Access = nil
+		return
+	}
+	proj.Access = cleaned
+}
+
+// UpdateProjectContext replaces a project's per-MCP context values — the
+// resource scope an operator sets (ADR-011 decisions 4 and 6). Until this
+// existed, Context was only ever DERIVED, by SyncProjectToken, and there was no
+// operator path to it at all (ADR-011 finding 6).
+//
+// The map an operator supplies replaces what was there, and then
+// SyncProjectToken runs so every source: "project_path" field is re-derived on
+// top of it. That ordering is what makes a wholesale replace safe: the operator
+// cannot set a derived field (validateProjectPermissions refuses it), so a
+// replace would otherwise DELETE one — and a project whose write_dirs silently
+// disappeared when its mail scope was edited would lose the two tools that
+// field governs, fail-closed and unexplained. mergeContextField, which
+// SyncProjectToken uses, puts each derived field back without touching the
+// operator's.
+//
+// surfaces is what that re-derivation needs; passing nil means no derivation,
+// which is the pre-ADR-011 contract for a caller with no live MCP manager.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectContext(id string, values map[string]json.RawMessage, surfaces McpSurfaces) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	cleaned := make(map[string]json.RawMessage, len(values))
+	for mcpID, blob := range values {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		if len(contextValues(blob)) == 0 {
+			continue
+		}
+		cleaned[mcpID] = blob
+	}
+	proj.Context = cleaned
+	s.SyncProjectToken(proj, surfaces)
+}
+
 // SetProjectGenerateSkill toggles the GenerateSkill flag. Extracted from the
 // HTTP route so the IPC path can reuse the same mutation without duplicating
 // the lookup. Does not save; use within store.With.

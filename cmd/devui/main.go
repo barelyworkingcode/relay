@@ -70,6 +70,7 @@ func buildPage(html string) string {
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
+		"__MCP_SCOPE_FIELDS_JSON__", fixtureMcpScopeFields,
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
 		"__REMOTE_JSON__", fixtureRemote,
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
@@ -127,6 +128,22 @@ const fixtureEnrolments = `[
 const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true}`
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
+
+// fixtureMcpScopeFields mirrors what a v2 contextSchema projects to
+// (ScopeFieldView): macMCP's worked example from ADR-011, so the per-MCP
+// permission panel has an operator-set field, a dependent one, and a
+// project_path-derived one to render read-only.
+const fixtureMcpScopeFields = `{
+  "fsmcp":[
+    {"name":"allowed_dirs","type":"array","item_type":"string","description":"Directories this client may reach","source":"project_path"}
+  ],
+  "macmcp":[
+    {"name":"mail_accounts","type":"array","item_type":"string","description":"Mail accounts this client may read from or send as","source":"operator","applies_to":["mail_*"],"enumerable":true},
+    {"name":"mail_mailboxes","type":"array","item_type":"string","description":"Mailbox paths within those accounts this client may reach","source":"operator","applies_to":["mail_*"],"enumerable":true,"depends_on":["mail_accounts"]},
+    {"name":"write_dirs","type":"array","item_type":"string","description":"Directories this client may write files into","source":"project_path","applies_to":["mail_save_attachment","mail_get_source"]}
+  ],
+  "krisp":[]
+}`
 
 const fixtureMcpToolCache = `{
   "fsmcp":[
