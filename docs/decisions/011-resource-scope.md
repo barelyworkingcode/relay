@@ -689,6 +689,28 @@ carry this message's subject, so it can surface nothing but the client's own
 message. Scoping it would break the sweep and protect nothing. The account it
 runs in is already scope-checked by the sender guard.
 
+### 12. Two controls a profile can hold and cannot use are refused
+
+`permission_policy` and `chat_templates` were the last two fields a remote-kind
+record could carry that do nothing on one. A permission policy is a set of
+Claude CLI gates on a session; a chat template is a preset for starting one. An
+access profile launches no session — it has no path to launch in, and
+`resolvePtyEnv` and `resolveProjectTemplate` both refuse a remote record
+outright — so both are inert, and ADR-009 decision 2's rule applies: refusing an
+inert control at the door is more honest than shipping one that quietly no-ops.
+It is the same argument that already removes the path, the skill toggle, the
+shell templates, the model allowlist and directory auth. A `default_mode` of
+`bypassPermissions` sitting on a profile is the worst of it: it reads as a
+widening that never happens and cannot be reasoned about from the record alone.
+
+Two details make the refusal usable rather than a wall. An **empty** policy is
+not a policy — the update path already reads one as "clear it", so refusing on
+it would refuse the very request that clears one. And an existing local project
+carrying either can still be **converted**, by clearing them in the same
+request, exactly as `disabled_tools` is handled
+(`TestProjectConvertLocalToRemote_CannotInheritFilesystemScope`). The editor
+stops calling them "inert" and says what saving will do instead.
+
 ## The reconciliation rule the MCP implements
 
 Stated once, here, so every scoping MCP implements it identically:

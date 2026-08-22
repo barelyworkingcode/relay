@@ -86,6 +86,13 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 		// changed is one that can be created wrong and never rechecked.
 		Access:  f.Access,
 		Context: f.Context,
+		// Both of these are applied by sub-mutations AFTER the project
+		// exists, exactly like GenerateSkill and ShellTemplates, so they have
+		// to be on the candidate or their remote refusals would be reachable
+		// only from an edit — i.e. a profile could be CREATED carrying a
+		// permission policy or a chat template and never rechecked.
+		PermissionPolicy: f.PermissionPolicy,
+		ChatTemplates:    f.ChatTemplates,
 	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
@@ -106,7 +113,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	if err != nil {
 		return Project{}, err
 	}
-	if f.PermissionPolicy != nil {
+	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
 	}
 	if f.GenerateSkill {
@@ -184,6 +191,19 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	if f.DisabledTools != nil {
 		candidate.DisabledTools = *f.DisabledTools
 	}
+	if f.ChatTemplates != nil {
+		candidate.ChatTemplates = *f.ChatTemplates
+	}
+	if f.PermissionPolicy != nil {
+		// Normalised the same way the mutation below normalises it, so the
+		// shape that is VALIDATED is the shape that would be STORED. Without
+		// this, emptying a policy to convert a project to a profile would be
+		// refused on the strength of a value the same request was clearing.
+		candidate.PermissionPolicy = f.PermissionPolicy
+		if permissionPolicyIsEmpty(f.PermissionPolicy) {
+			candidate.PermissionPolicy = nil
+		}
+	}
 	if f.AllowedTools != nil {
 		candidate.AllowedTools = *f.AllowedTools
 	}
@@ -260,9 +280,10 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 		s.UpdateProjectShellTemplates(id, *f.ShellTemplates)
 	}
 	if f.PermissionPolicy != nil {
+		// An empty struct (no fields set) clears the policy — the same
+		// reading the candidate above was validated under.
 		policy := f.PermissionPolicy
-		// An empty struct (no fields set) clears the policy.
-		if policy.DefaultMode == "" && len(policy.AllowedTools) == 0 && len(policy.DeniedTools) == 0 {
+		if permissionPolicyIsEmpty(policy) {
 			policy = nil
 		}
 		s.UpdateProjectPermissionPolicy(id, policy)
