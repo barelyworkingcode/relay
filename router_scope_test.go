@@ -27,9 +27,13 @@ const scopedSchema = `{
 func scopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage) *appRouter {
 	t.Helper()
 	return newProfileRouter(t, profileOpts{
-		kind:          kind,
-		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		kind:         kind,
+		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
+		access:       map[string]string{"macmcp": AccessWrite},
+		// The outbound grant, because this file measures the SCOPE layer and
+		// web_fetch is its ungoverned control tool — one that decision 2c
+		// would otherwise refuse before the scope check was ever reached.
+		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: values,
 		schema:        scopedSchema,
 		schemaVersion: 2,

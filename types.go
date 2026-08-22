@@ -38,6 +38,11 @@ type StoredToken struct {
 	// authentication path yields the same scope.
 	Access       map[string]string
 	AllowedTools map[string][]string
+
+	// AllowExternal is the per-MCP outbound grant (ADR-011 decision 2c),
+	// carried the same way and for the same reason. It is a SEPARATE axis from
+	// Access, not a third mode — see ExternalAllowed.
+	AllowExternal map[string]bool
 }
 
 // Access modes (ADR-011 decision 2). Relay applies this rule at its own
@@ -129,6 +134,32 @@ func (t *StoredToken) AccessMode(mcpID string) string {
 		return AccessRead
 	}
 	return AccessWrite
+}
+
+// ExternalAllowed reports whether this grant may call a tool of one MCP that
+// reaches outside the host (ADR-011 decision 2c). It is the second axis of
+// authority relay can decide by itself, and it is ORTHOGONAL to the mode
+// rather than a value of it: web_fetch is honestly readOnlyHint: true and
+// reaches the network, mail_create_draft mutates and touches nothing outside
+// this Mac, so the two questions cross and neither answers the other.
+//
+// THERE IS NO LOCAL/REMOTE ASYMMETRY HERE, and that is deliberate — a reader
+// arriving from AccessMode directly above will expect one. The asymmetry there
+// rests on a local project being "the operator's own machine acting as
+// itself", which is an argument about who the caller IS. This axis is not
+// about the caller: an outbound channel is an outbound channel, and a local
+// agent mailing a file to an arbitrary address exfiltrates it exactly as a
+// remote one does. So the default is false for every project kind, and the
+// grant is something an operator types either way.
+//
+// Anything other than an explicit true is false, for the same reason
+// AccessMode reads an unrecognised mode as "read": a hand-edited settings.json
+// must narrow rather than widen.
+func (t *StoredToken) ExternalAllowed(mcpID string) bool {
+	if t == nil {
+		return false
+	}
+	return t.AllowExternal[mcpID]
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -355,6 +386,24 @@ type Project struct {
 	// readOnlyHint works on tools that did not exist when the profile was
 	// written.
 	Access map[string]string `json:"access,omitempty"`
+
+	// AllowExternal is the per-MCP outbound grant: MCP id -> may this record
+	// call tools that reach outside this host (ADR-011 decision 2c).
+	//
+	// It exists because the mode reads ONE axis — does this tool change
+	// anything — and there is a second one it cannot see. MCP defines the
+	// field for it: annotations.openWorldHint. web_fetch is readOnlyHint: true
+	// AND open-world, so a read-only profile held an outbound HTTP channel
+	// unless allowed_tools happened to exclude it; mail_create_draft mutates
+	// and is local, so "draft but never send" was not expressible at all. Both
+	// are answered by crossing the two axes rather than by inventing a third
+	// mode, which would have to be mail-specific to mean anything (ADR-006).
+	//
+	// A missing entry means false FOR EVERY KIND — see
+	// StoredToken.ExternalAllowed for why this axis has none of the asymmetry
+	// Access has. omitempty so every project already on disk round-trips
+	// byte-identical.
+	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 
 	// Per-project Claude permission policy.
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`

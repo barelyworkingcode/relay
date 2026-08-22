@@ -163,16 +163,21 @@ func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
 	}
 }
 
-// setAuthority records the access mode in force and the scope actually
-// injected. Called at the point CallTool assembles _meta, which is before
-// intent() writes the pre-call record, so a remote call's intent line carries
-// the authority it is about to run with rather than only the completion doing
-// so.
-func (a *auditCall) setAuthority(access string, scope map[string]json.RawMessage) {
+// setAuthority records the access mode in force, whether this grant may reach
+// outside the host, and the scope actually injected. Called at the point
+// CallTool assembles _meta, which is before intent() writes the pre-call
+// record, so a remote call's intent line carries the authority it is about to
+// run with rather than only the completion doing so.
+//
+// allowExternal is taken by value and stored by pointer: every caller of this
+// function knows the answer, so the nil the field can hold means "nobody
+// recorded an authority for this event" and can never be produced here.
+func (a *auditCall) setAuthority(access string, allowExternal bool, scope map[string]json.RawMessage) {
 	if a == nil {
 		return
 	}
 	a.ev.Access = access
+	a.ev.AllowExternal = &allowExternal
 	a.ev.Scope = scope
 }
 

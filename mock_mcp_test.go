@@ -75,10 +75,46 @@ func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, strin
 	}
 }
 
-// simpleTools creates a []mcp.Tool from a list of tool names, with NO
-// annotations — which under ADR-011 decision 2 means "mutating", because an
-// absent readOnlyHint is not a claim that a tool is safe.
+// simpleTools creates a []mcp.Tool from a list of tool names carrying NO
+// readOnlyHint — which under ADR-011 decision 2 means "mutating", because an
+// absent hint is not a claim that a tool is safe — and an explicit
+// openWorldHint: false, which under decision 2c is the claim that it stays on
+// this host.
+//
+// The two are spelled differently on purpose, and the asymmetry is the
+// design's rather than this helper's. Silence on readOnlyHint is a usable
+// fixture: it is the ordinary tool a local project (default write) calls all
+// day, and it is what the mode tests need to be silent about. Silence on
+// openWorldHint is NOT usable, because that hint defaults to true in the MCP
+// specification, so an unannotated fixture is refused to every grant that has
+// not been given allow_external — which would turn every test of auditing,
+// budgets, scope injection and skill buckets into a test of decision 2c.
+//
+// The absent-hint case therefore has its own fixtures rather than being the
+// ambient default here: see openWorldTools below and
+// TestOpenWorldHint_AbsentMeansOpenWorld.
 func simpleTools(names ...string) []mcp.Tool {
+	tools := make([]mcp.Tool, len(names))
+	for i, name := range names {
+		tools[i] = mcp.Tool{Name: name, Annotations: json.RawMessage(`{"openWorldHint":false}`)}
+	}
+	return tools
+}
+
+// openWorldTools is simpleTools with the outbound claim reversed: tools that
+// declare openWorldHint: true, which is web_fetch's shape and mail_send's.
+func openWorldTools(names ...string) []mcp.Tool {
+	tools := make([]mcp.Tool, len(names))
+	for i, name := range names {
+		tools[i] = mcp.Tool{Name: name, Annotations: json.RawMessage(`{"openWorldHint":true}`)}
+	}
+	return tools
+}
+
+// unannotatedTools carry no annotations at all: mutating by decision 2 and
+// open-world by decision 2c, which is what every tool of every MCP that has
+// not yet annotated itself looks like.
+func unannotatedTools(names ...string) []mcp.Tool {
 	tools := make([]mcp.Tool, len(names))
 	for i, name := range names {
 		tools[i] = mcp.Tool{Name: name}
@@ -94,7 +130,7 @@ func simpleTools(names ...string) []mcp.Tool {
 func readOnlyTools(names ...string) []mcp.Tool {
 	tools := simpleTools(names...)
 	for i := range tools {
-		tools[i].Annotations = json.RawMessage(`{"readOnlyHint":true}`)
+		tools[i].Annotations = json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)
 	}
 	return tools
 }
