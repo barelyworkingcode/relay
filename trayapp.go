@@ -159,6 +159,7 @@ func runTrayApp() {
 		NotifyReconcile:        bridge.SendReconcile,
 		NotifyReloadMcp:        bridge.SendReloadMcp,
 		Tools:                  extMgr,
+		Enumerate:              extMgr,
 	}
 
 	// Tool-call audit log. A failure here is logged and auditing stays off
@@ -222,7 +223,7 @@ func runTrayApp() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		}
 	}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

@@ -490,6 +490,32 @@ generated `SKILL.md`. It is unreachable from a remote client by construction —
 that dispatch table is `ListTools` and `CallTool` and nothing else — and it
 sits behind the same admin authentication as the other project routes.
 
+**Three failures, not one.** An MCP can fail to enumerate in ways whose right
+answers differ, and collapsing them produces a UI that lies. `-32601` means the
+server does not implement the method: degrade to text entry, silently and
+permanently for that MCP, because a retry button in front of a method that does
+not exist is noise. `-32602` means relay asked for a field the MCP will not
+enumerate — relay is meant to ask only for fields declaring `enumerable: true`,
+so that is a **relay** bug and is surfaced rather than degraded away. Everything
+else — another code (macMCP answers in the `-32000..-32099` implementation-defined
+range when Mail will not answer), a transport failure, a timeout, a malformed
+result — is "could not answer right now": retryable, with text entry still there
+so an operator is never blocked.
+
+**And an empty list is an answer.** `values: []` means there are none;
+`values: null` means nobody could look. Rendering the second as the first tells
+an operator there are no mailboxes on a machine full of them, and the profile
+they save on the strength of it confines nothing they intended. That is the
+single sharpest edge in this decision and both the wire format and the picker
+are shaped around it.
+
+**A value already stored that is no longer offered stays visible and stays
+selected**, flagged as unrecognised. An account renamed on the host must not
+quietly widen or narrow a profile by disappearing from a form — a value that
+vanishes from the editor is a value the next save deletes. This falls out of
+the picker being a control over the same stored value the text box edits,
+rather than a separate representation that has to be reconciled with it.
+
 **A raw JSON editor is the fallback, not the plan.** The owner offered one as a
 first draft. It is retained for MCPs that do not implement `context/enumerate`,
 and for those it is the honest surface. Where the MCP *can* enumerate, a

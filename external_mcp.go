@@ -64,7 +64,14 @@ type ExternalMcpManager struct {
 	conns          map[string]McpConnection
 	schemas        map[string]json.RawMessage // id → context schema (runtime-only)
 	schemaVersions map[string]int             // id → contextSchemaVersion (runtime-only)
-	onTokenRefresh OnTokenRefreshFunc
+	// enumUnsupported latches the MCPs that answered -32601 to
+	// context/enumerate, so the operator UI degrades to text entry once
+	// rather than re-asking on every panel open (context_enumerate.go).
+	// Scoped to the CONNECTION, not to the settings entry: it is cleared on
+	// Stop and on a fresh handshake, because a reconnect can be a new build
+	// that now implements the method.
+	enumUnsupported map[string]bool
+	onTokenRefresh  OnTokenRefreshFunc
 }
 
 // pendingResponse holds a channel for delivering a JSON-RPC response to a waiting caller.
@@ -288,10 +295,11 @@ func extractContextSchema(initResp json.RawMessage) (json.RawMessage, int) {
 // token refresh persistence. This keeps the manager decoupled from Settings.
 func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManager {
 	return &ExternalMcpManager{
-		conns:          make(map[string]McpConnection),
-		schemas:        make(map[string]json.RawMessage),
-		schemaVersions: make(map[string]int),
-		onTokenRefresh: onTokenRefresh,
+		conns:           make(map[string]McpConnection),
+		schemas:         make(map[string]json.RawMessage),
+		schemaVersions:  make(map[string]int),
+		enumUnsupported: make(map[string]bool),
+		onTokenRefresh:  onTokenRefresh,
 	}
 }
 
@@ -316,6 +324,11 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
 	m.setConnection(id, conn)
 	conn.SetTools(result.Tools)
+	// A new process gets asked about context/enumerate again: the previous
+	// one's -32601 was a fact about a build, not about the MCP's id.
+	m.mu.Lock()
+	delete(m.enumUnsupported, id)
+	m.mu.Unlock()
 	if len(result.ContextSchema) > 0 {
 		m.mu.Lock()
 		m.schemas[id] = result.ContextSchema
@@ -692,6 +705,7 @@ func (m *ExternalMcpManager) Stop(id string) {
 		delete(m.conns, id)
 	}
 	delete(m.schemas, id)
+	delete(m.enumUnsupported, id)
 	m.mu.Unlock()
 
 	if ok {
@@ -707,6 +721,7 @@ func (m *ExternalMcpManager) StopAll() {
 	m.conns = make(map[string]McpConnection)
 	m.schemas = make(map[string]json.RawMessage)
 	m.schemaVersions = make(map[string]int)
+	m.enumUnsupported = make(map[string]bool)
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
