@@ -169,9 +169,24 @@ func matchToolPattern(pattern, toolName string) (bool, error) {
 // tool. An unparseable pattern selects nothing — the fail-closed direction for
 // an allowlist, and the opposite of ContextField.Governs, which is the
 // fail-closed direction for a restriction.
+//
+// An OVER-BROAD pattern selects nothing either, and that is enforcement
+// agreeing with validation rather than trusting it. validateToolPattern
+// refuses one on save, but a record that acquired one by a route validation
+// did not cover — a hand-edited settings.json, a restored backup, a migration
+// that predates the rule — must not thereby hold every tool its MCPs expose.
+// A grant is only as good as the weakest way into the file that holds it.
+//
+// Note the deliberate asymmetry with the denylist in checkToolAccess, which is
+// honoured wherever it came from: ignoring a denylist is the direction that
+// widens, and ignoring an over-broad allowlist entry is the direction that
+// narrows. Both rules are "prefer the smaller grant"; they only look opposite.
 func toolAllowedByPatterns(patterns []string, toolName string) bool {
 	for _, pattern := range patterns {
 		if pattern == "" {
+			continue
+		}
+		if _, over := overBroadToolPattern(pattern); over {
 			continue
 		}
 		if ok, err := matchToolPattern(pattern, toolName); err == nil && ok {
@@ -179,6 +194,122 @@ func toolAllowedByPatterns(patterns []string, toolName string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// What makes a tool pattern too broad to be an allowlist entry
+// ---------------------------------------------------------------------------
+//
+// ADR-011 decision 2b refuses a bare "*" in allowed_tools, because registering
+// a tool tomorrow would silently widen a grant made today. That refusal used
+// to be a literal string compare against "*" while the matcher underneath was
+// path.Match — and a tool name contains no "/", so "**", "?*", "*_*", "[a-z]*"
+// and "*e*" all match EVERY tool of an MCP and none of them is the string "*".
+// Measured: a read-only "mail" profile written with allowed_tools ["**"] held
+// 26 tools across 11 of macMCP's domains, web_fetch among them, which restores
+// the whole outbound channel decision 2b exists to remove.
+//
+// So the refusal cannot be a list of spellings — the next spelling slips
+// through the same way. It has to be a property of the MATCHER, asked as: does
+// this pattern select tools by NAME, or by SHAPE? Two questions answer that,
+// and a pattern is refused if either does:
+//
+//  1. Does it require any literal character at all? A pattern built only from
+//     "*", "?" and character classes constrains nothing about a name — it is a
+//     statement about length and alphabet, and every tool name satisfies it.
+//     "*", "**", "?*" and "[a-z]*" all fail here.
+//
+//  2. Does it match a name that is not a tool? A pattern whose literal content
+//     is one or two ordinary characters ("*_*", "*e*") is naming a substring
+//     every plausible identifier carries, which is selection by shape wearing
+//     a letter as a disguise. Probing it against names no MCP exposes is what
+//     tells the two apart, and it needs no knowledge of the MCP's tool list —
+//     which relay does not have at validation time and must not depend on
+//     anyway, since the whole point is the tool that does not exist yet.
+//
+// What survives is what an operator actually means: "mail_*", "mail_search",
+// "capture_screen*". What does not is anything that would still match after
+// the MCP grows a domain.
+
+// toolPatternProbes are names no MCP exposes. They are deliberately not
+// plausible tool names and deliberately wide — every letter of both cases,
+// every digit, and the separators identifiers use — so that a pattern whose
+// only literal content is an ordinary character or two matches one of them.
+//
+// The alphabet runs in order on purpose: no real tool-name fragment ("mail",
+// "list", "get", "send") appears as a substring of it, so a pattern naming a
+// real fragment is not caught by accident. They contain no "/" because a tool
+// name contains none and path.Match's separator rule must stay out of this.
+var toolPatternProbes = []string{
+	"zqx_abcdefghijklmnopqrstuvwxyz_0123456789",
+	"ZQX-ABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789",
+	// One character, so "?" and "?*" are answered too.
+	"z",
+}
+
+// overBroadToolPattern reports whether a pattern selects tools by shape rather
+// than by name, and returns the reason in the voice a refusal can use.
+//
+// It is only ever asked about an ALLOWLIST entry. A context field's applies_to
+// runs through the same matcher and is deliberately NOT filtered by this: a
+// field that governs everything is a restriction that applies to everything,
+// which is the fail-closed reading there (see ContextField.Governs). The same
+// pattern is over-broad in one list and exactly right in the other.
+func overBroadToolPattern(pattern string) (string, bool) {
+	if toolPatternLiteral(pattern) == "" {
+		return "it requires no literal character at all, so it selects every tool the MCP has by shape rather than naming any", true
+	}
+	for _, probe := range toolPatternProbes {
+		if ok, err := matchToolPattern(pattern, probe); err == nil && ok {
+			return fmt.Sprintf("it matches %q, which is no tool of any MCP — a pattern that matches a name like that is matching by structure, so it would take in whatever an MCP is given tomorrow", probe), true
+		}
+	}
+	return "", false
+}
+
+// toolPatternLiteral returns the characters a pattern requires literally, with
+// the wildcards, the character classes and path.Match's backslash escapes
+// removed. A character class contributes nothing: it constrains which
+// characters may appear at a position, never that any particular one does.
+//
+// The class scanner mirrors path.Match's own — "^" negates, and a "]" in the
+// first position is a member rather than the terminator — so that what this
+// reads as a class is what the matcher reads as a class. An unterminated class
+// runs to the end of the pattern here; such a pattern does not compile and is
+// refused before this answer is used for anything.
+func toolPatternLiteral(pattern string) string {
+	var lit strings.Builder
+	for i := 0; i < len(pattern); {
+		switch c := pattern[i]; c {
+		case '*', '?':
+			i++
+		case '\\':
+			i++
+			if i < len(pattern) {
+				lit.WriteByte(pattern[i])
+				i++
+			}
+		case '[':
+			i++
+			if i < len(pattern) && pattern[i] == '^' {
+				i++
+			}
+			for first := true; i < len(pattern); first = false {
+				if pattern[i] == ']' && !first {
+					i++
+					break
+				}
+				if pattern[i] == '\\' {
+					i++
+				}
+				i++
+			}
+		default:
+			lit.WriteByte(c)
+			i++
+		}
+	}
+	return lit.String()
 }
 
 // GovernsAll reports whether this field governs every tool in the given list.

@@ -118,12 +118,22 @@ func validateProjectPath(path string) error {
 // in a self-contradictory shape.
 //
 // A LOCAL project (the zero value — see the Kind field comment) keeps
-// today's rules exactly: validateProjectPath's absolute-path, no-".."
-// checks, nothing else.
+// today's rules: validateProjectPath's absolute-path, no-".." checks, plus
+// the one rule below that is about the allowlist itself rather than about a
+// host directory and therefore belongs to both kinds.
 //
 // A REMOTE project is a capability grant to a client on another machine, not
 // a host directory, so every host-directory-flavored feature must be absent:
 func validateProjectShape(proj *Project) error {
+	// Kind-independent, and first. An over-broad allowed_tools entry is not a
+	// remote-only hazard: for a profile it is a grant of every tool the MCP
+	// has, and for a local project it is an entry the call-time matcher
+	// ignores, i.e. an allowlist that reads as a grant and holds nothing.
+	// Refusing both is how validation and enforcement stay the same rule —
+	// see validateToolPattern.
+	if err := validateAllowedToolPatterns(proj); err != nil {
+		return err
+	}
 	if !proj.IsRemote() {
 		return validateProjectPath(proj.Path)
 	}
@@ -158,20 +168,6 @@ func validateProjectShape(proj *Project) error {
 	// widening it deliberately later is the expected resting state.)
 	if isWildcard(proj.AllowedMcpIDs) {
 		return fmt.Errorf(`remote project must not use the "*" wildcard for allowed_mcp_ids: it would let a future MCP registration silently widen what the remote client can reach; list MCP IDs explicitly`)
-	}
-	// The same argument one level down (ADR-011 decision 2b). Registering a new
-	// TOOL is the same event as registering a new MCP at finer grain, and it
-	// happens far more often — macmcp went from 46 tools to 47 during ADR-010's
-	// own testing. A pattern is fine ("mail_*"), because the layers compose: a
-	// future mail_delete_everything is still refused by a read mode and still
-	// confined by mail_accounts, whose applies_to is the same "mail_*". A bare
-	// "*" composes with nothing; it is the wildcard again.
-	for mcpID, patterns := range proj.AllowedTools {
-		for _, pattern := range patterns {
-			if pattern == "*" {
-				return fmt.Errorf(`remote project must not use the "*" wildcard in allowed_tools for %q: it would let a future tool registration silently widen what the remote client can reach; list tool names or patterns explicitly`, mcpID)
-			}
-		}
 	}
 	// A denylist cannot bound a client, and an inert control is worse than no
 	// control: it reads on the screen as a boundary and enforces nothing that
@@ -230,6 +226,59 @@ func validateProjectShape(proj *Project) error {
 	return nil
 }
 
+// validateAllowedToolPatterns refuses every allowed_tools entry that cannot
+// serve as an allowlist entry, in MCP-name order so a record with two bad
+// patterns names the same one every time.
+func validateAllowedToolPatterns(proj *Project) error {
+	for _, mcpID := range sortedKeys(proj.AllowedTools) {
+		for _, pattern := range proj.AllowedTools[mcpID] {
+			if err := validateToolPattern(mcpID, pattern); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateToolPattern refuses one allowed_tools pattern, on two grounds.
+//
+// It DOES NOT COMPILE. path.Match rejects an unterminated character class, and
+// toolAllowedByPatterns answers "no" for a pattern it cannot compile — so an
+// allowlist of nothing but a broken pattern grants nothing at all. That is the
+// safe direction and a terrible thing to discover from an agent that stopped
+// working. Note this reason belongs to THIS list and not to the matcher: the
+// same uncompilable pattern in a context field's applies_to governs EVERY tool
+// (ContextField.Governs), because fail-closed for a restriction points the
+// other way. A message about what a broken pattern does has to name which of
+// the two lists it is talking about, which is why it is written here rather
+// than beside the shared matcher.
+//
+// It IS TOO BROAD. ADR-011 decision 2b's rule — registering a tool tomorrow
+// must not widen a grant made today — was enforced as a literal compare
+// against "*" while the matcher underneath was path.Match. Tool names contain
+// no "/", so "**", "?*", "*_*", "[a-z]*" and "*e*" each match every tool of an
+// MCP and not one of them is the string "*". A read-only "mail" profile
+// written with ["**"] was measured holding 26 tools across 11 of macMCP's
+// domains, web_fetch among them — the outbound channel decision 2b exists to
+// remove. The refusal is therefore a property of the matcher and not a list of
+// spellings (see overBroadToolPattern); a list of spellings is answered by the
+// next spelling.
+//
+// The wildcard is not replaced by a narrower wildcard: what an operator means
+// by "all the mail tools" is "mail_*", which is admitted, and what they mean
+// by "everything this MCP has" is a request an allowlist deliberately cannot
+// express — for a profile because a future tool would join it unreviewed, for
+// a local project because leaving the list empty already says it.
+func validateToolPattern(mcpID, pattern string) error {
+	if _, err := matchToolPattern(pattern, toolPatternProbes[0]); err != nil {
+		return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%v); an entry that will not compile matches no tool, so this allowlist would grant less than it reads as", mcpID, pattern, err)
+	}
+	if reason, over := overBroadToolPattern(pattern); over {
+		return fmt.Errorf("allowed_tools for %q: pattern %q is too broad — %s. A tool this MCP gains tomorrow would join the grant with nobody reviewing it, which is the fail-open shape an allowlist exists to close; name the tools, or use a pattern with a real prefix such as %q", mcpID, pattern, reason, "mail_*")
+	}
+	return nil
+}
+
 // permissionPolicyIsEmpty reports whether a policy says nothing at all.
 //
 // It exists because "empty means clear it" is already the update path's rule
@@ -275,17 +324,12 @@ func validateProjectPermissions(proj *Project, surfaces McpSurfaces) error {
 		}
 	}
 
-	// Which tools. matchToolPattern is path.Match, which rejects an
-	// unterminated character class — and toolAllowedByPatterns answers "no" for
-	// a pattern it cannot compile, so an allowlist of nothing but a broken
-	// pattern grants nothing at all. That is the safe direction and a terrible
-	// thing to discover from an agent that stopped working.
-	for _, mcpID := range sortedKeys(proj.AllowedTools) {
-		for _, pattern := range proj.AllowedTools[mcpID] {
-			if _, err := matchToolPattern(pattern, "probe_tool_name"); err != nil {
-				return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%v); it would match no tool at all", mcpID, pattern, err)
-			}
-		}
+	// Which tools. The same rule validateProjectShape applies, applied again
+	// here because the two are reached by different routes: shape runs on the
+	// create path, this runs on the fully-merged candidate of both HTTP and
+	// IPC. Neither is redundant and both refuse identically.
+	if err := validateAllowedToolPatterns(proj); err != nil {
+		return err
 	}
 
 	// Which resources.

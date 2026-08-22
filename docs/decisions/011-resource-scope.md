@@ -232,7 +232,28 @@ scope confines mail *within* the mail tools, and the mode filters mutation
 across all of them, but neither keeps a mail client out of the address book.
 
 **An access profile carries `allowed_tools` per MCP: an explicit enumeration,
-patterns permitted (`mail_*`), the bare `*` refused, absent meaning none.**
+patterns permitted (`mail_*`), an over-broad pattern refused, absent meaning
+none.**
+
+*Over-broad* is a property of the matcher, not a list of spellings. The first
+implementation refused the literal string `"*"` while matching with
+`path.Match`, and a tool name contains no `/` — so `**`, `?*`, `*_*`, `[a-z]*`
+and `*e*` each match **every** tool of an MCP and not one of them is the string
+`"*"`. A pre-merge review built a read-only "mail" profile with
+`allowed_tools: {"macmcp": ["**"]}`, was served 26 tools across 11 of macMCP's
+domains, and exfiltrated through `web_fetch` — restoring the outbound channel
+this decision claims to remove. Blacklisting `**` would have been answered by
+the next spelling. The rule asked instead is *does this pattern select tools by
+name, or by shape?*, and a pattern is refused if it requires no literal
+character at all (`*`, `**`, `?*`, `[a-z]*`) or if it matches a probe name no
+MCP exposes (`*_*`, `*e*` — an underscore or a letter is in every identifier).
+It is enforced in `validateToolPattern` **and** in `toolAllowedByPatterns`, so
+a record that reached `settings.json` by a route validation did not cover
+cannot widen a grant either; the matcher ignoring such an entry is the same
+direction the editor refuses it in. A context field's `applies_to` runs through
+the same matcher and is deliberately **not** subject to this: a field that
+governs everything is a restriction that applies to everything, which is the
+fail-closed reading there.
 
 This is ADR-009 decision 4's reasoning applied one level down. It refused
 `allowed_mcp_ids: ["*"]` on a remote grant because "registering a new MCP on
