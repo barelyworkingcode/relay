@@ -182,9 +182,17 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 }
 
 func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T) {
+	// The allowlist is enumerated rather than wildcarded so this test measures
+	// the MODE and nothing else. A pattern wide enough to admit every tool
+	// ("*_*", "**") is refused by both the editor and the matcher now — that is
+	// F1's fix, and writing one here would have this test passing on a grant
+	// nobody can save.
 	tok := &StoredToken{
-		ProjectKind:  ProjectKindRemote,
-		AllowedTools: map[string][]string{"macmcp": {"*_*"}},
+		ProjectKind: ProjectKindRemote,
+		AllowedTools: map[string][]string{"macmcp": {
+			"mail_*", "xmail_*", "capture_*", "web_*", "contacts_*",
+			"messages_*", "shortcuts_*",
+		}},
 	}
 	surface := macmcpToolSurface()
 	admitted := map[string]bool{"mail_search": true, "mail_get_email": true,
@@ -385,10 +393,21 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 	if err := validateProjectShape(remote); err != nil {
 		t.Fatalf("a pattern allowlist was refused: %v", err)
 	}
-	// And a local project keeps the wildcard.
+	// A LOCAL project is refused it too, and for a reason that is not the
+	// profile's. The call-time matcher ignores an over-broad entry (see
+	// toolAllowedByPatterns), so a local project holding ["*"] holds NO tools
+	// of that MCP — an allowlist that reads as "everything" and grants
+	// nothing. Accepting it on save would be validation and enforcement
+	// disagreeing again, which is the whole of F2. The way a local project
+	// says "everything" is to have no list at all, which it did before this
+	// field existed and still does.
 	local := &Project{Path: "/tmp/x", AllowedTools: map[string][]string{"macmcp": {"*"}}}
+	if err := validateProjectShape(local); err == nil {
+		t.Fatal(`a local project was allowed allowed_tools: ["*"], which grants it nothing`)
+	}
+	local.AllowedTools = nil
 	if err := validateProjectShape(local); err != nil {
-		t.Fatalf("a local project was refused a wildcard allowlist: %v", err)
+		t.Fatalf("a local project with no allowlist was refused: %v", err)
 	}
 }
 

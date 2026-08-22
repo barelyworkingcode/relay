@@ -220,7 +220,15 @@ refusals, each naming the problem:
   reason: the v1 branch replaces the whole blob;
 - an `access` that is not `read` or `write`;
 - an `allowed_tools` pattern that will not compile, which would match no tool
-  at all.
+  at all in *that* list (the same pattern in a field's `applies_to` governs
+  every tool — the two callers of the shared matcher fail closed in opposite
+  directions);
+- an `allowed_tools` pattern that is **over-broad**: one requiring no literal
+  character (`*`, `**`, `?*`, `[a-z]*`) or matching a probe name no MCP exposes
+  (`*_*`, `*e*`). Such a pattern selects by shape rather than by name, so a
+  tool registered tomorrow would join the grant unreviewed. The matcher refuses
+  one at call time as well, so a record that reached `settings.json` by another
+  route cannot widen a grant either.
 
 An MCP relay has never connected to is **permitted** with nothing but an
 emptiness check, exactly as `ValidateProjectGrants` permits a grant it cannot

@@ -1443,7 +1443,7 @@ function renderProjMcpPermissions(mcpID, f) {
         const patterns = projAllowedToolsText(f, mcpID);
         html += '<div class="proj-perm-block">';
         html += '<div class="proj-perm-label">Tools</div>';
-        html += '<p class="proj-section-help">One name or pattern per line, e.g. <code>mail_*</code>. Patterns are anchored — <code>mail_*</code> admits <code>mail_send</code> and not <code>xmail_send</code>. A bare <code>*</code> is refused: registering a new tool would silently widen the grant. <strong>Empty means no tools at all.</strong></p>';
+        html += '<p class="proj-section-help">One name or pattern per line, e.g. <code>mail_*</code>. Patterns are anchored — <code>mail_*</code> admits <code>mail_send</code> and not <code>xmail_send</code>. A pattern that matches by <em>shape</em> rather than by name is refused, whatever it is spelled as: <code>*</code>, <code>**</code>, <code>?*</code>, <code>[a-z]*</code>, <code>*_*</code> all match every tool the MCP has, so a tool registered tomorrow would join this grant with nobody reviewing it. There is no way to say &quot;everything&quot; here, deliberately. <strong>Empty means no tools at all.</strong></p>';
         html += '<textarea rows="3" placeholder="mail_*" oninput="setProjAllowedToolsText(\'' + esc(mcpID) + '\', this.value)">' + esc(patterns) + '</textarea>';
         html += '</div>';
     }
