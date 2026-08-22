@@ -250,3 +250,57 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 		t.Errorf("an unrecognised mode must read as %q, got %q", AccessRead, mode)
 	}
 }
+
+// The outbound grant is stored the same way the mode is, with two differences
+// that are both deliberate: a false is dropped rather than stored, because an
+// absent entry already means false for every kind of record; and there is no
+// unrecognised-value case to keep, because the value is a bool.
+func TestUpdateProjectAllowExternal_DropsUngrantedMcpsAndFalseEntries(t *testing.T) {
+	s := &Settings{Version: 1}
+	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{
+		"macmcp": true,
+		"other":  true,  // not granted
+		"fsmcp":  false, // not granted and not true
+	})
+	got := s.Projects[0]
+	if !got.AllowExternal["macmcp"] {
+		t.Errorf("the granted MCP lost its outbound grant: %#v", got.AllowExternal)
+	}
+	if _, ok := got.AllowExternal["other"]; ok {
+		t.Error("an outbound grant was stored for an MCP the profile does not grant")
+	}
+	tok := s.storedTokenForProject(&s.Projects[0], "hash")
+	if !tok.ExternalAllowed("macmcp") {
+		t.Error("the grant did not reach the token every auth path builds")
+	}
+	if tok.ExternalAllowed("other") {
+		t.Error("a dropped entry still reached the token")
+	}
+
+	// A false clears rather than storing a second spelling of the default, so
+	// settings.json keeps round-tripping byte-identical for the overwhelming
+	// majority of records that never grant one.
+	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": false})
+	if s.Projects[0].AllowExternal != nil {
+		t.Errorf("a cleared grant left a map behind: %#v", s.Projects[0].AllowExternal)
+	}
+	blob, err := json.Marshal(s.Projects[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(blob), "allow_external") {
+		t.Errorf("a record granting nothing serialized the key anyway: %s", blob)
+	}
+
+	// And it is pruned when the MCP stops being granted at all, exactly as the
+	// mode and the tool allowlist are.
+	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": true})
+	s.UpdateProjectMcps(proj.ID, []string{}, v2Surfaces())
+	if _, ok := s.Projects[0].AllowExternal["macmcp"]; ok {
+		t.Errorf("an outbound grant outlived the MCP grant it belonged to: %#v", s.Projects[0].AllowExternal)
+	}
+}

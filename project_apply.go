@@ -28,6 +28,11 @@ type projectCreateFields struct {
 	AllowedTools map[string][]string        `json:"allowed_tools,omitempty"`
 	Access       map[string]string          `json:"access,omitempty"`
 	Context      map[string]json.RawMessage `json:"context,omitempty"`
+	// The second axis of the same permission set (ADR-011 decision 2c): which
+	// MCPs this record may reach outside the host with. Not a pointer here for
+	// the same reason none of the three above is — a create carries the whole
+	// shape or none of it.
+	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 }
 
 // projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -50,9 +55,10 @@ type projectUpdateFields struct {
 	// an operator editing a project's name must not clear its scope, and a
 	// cleared scope must be expressible as an empty object rather than being
 	// indistinguishable from an absent one.
-	AllowedTools *map[string][]string        `json:"allowed_tools,omitempty"`
-	Access       *map[string]string          `json:"access,omitempty"`
-	Context      *map[string]json.RawMessage `json:"context,omitempty"`
+	AllowedTools  *map[string][]string        `json:"allowed_tools,omitempty"`
+	Access        *map[string]string          `json:"access,omitempty"`
+	Context       *map[string]json.RawMessage `json:"context,omitempty"`
+	AllowExternal *map[string]bool            `json:"allow_external,omitempty"`
 }
 
 // applyProjectCreate creates a project and applies its optional policy, skill
@@ -84,8 +90,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 		// validateProjectPermissions is reachable from a create as well as
 		// from an edit. A profile whose scope is only checked when it is
 		// changed is one that can be created wrong and never rechecked.
-		Access:  f.Access,
-		Context: f.Context,
+		Access:        f.Access,
+		Context:       f.Context,
+		AllowExternal: f.AllowExternal,
 		// Both of these are applied by sub-mutations AFTER the project
 		// exists, exactly like GenerateSkill and ShellTemplates, so they have
 		// to be on the candidate or their remote refusals would be reachable
@@ -130,6 +137,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	}
 	if len(f.Access) > 0 {
 		s.UpdateProjectAccess(created.ID, f.Access)
+	}
+	if len(f.AllowExternal) > 0 {
+		s.UpdateProjectAllowExternal(created.ID, f.AllowExternal)
 	}
 	// Last of the three, because it re-runs SyncProjectToken and that pass
 	// prunes by the MCP set the record ends up with.
@@ -210,6 +220,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	if f.Access != nil {
 		candidate.Access = *f.Access
 	}
+	if f.AllowExternal != nil {
+		candidate.AllowExternal = *f.AllowExternal
+	}
 	if f.Context != nil {
 		candidate.Context = *f.Context
 	}
@@ -242,7 +255,7 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	// of it — and only then. A rename cannot invalidate a scope value, and
 	// making every edit pay for a live MCP surface fetch is what the laziness
 	// here exists to avoid.
-	needPermissionsCheck := f.Access != nil || f.AllowedTools != nil || f.Context != nil
+	needPermissionsCheck := f.Access != nil || f.AllowedTools != nil || f.Context != nil || f.AllowExternal != nil
 	var sc McpSurfaces
 	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck || needPermissionsCheck {
 		sc = surfaces()
@@ -302,6 +315,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	}
 	if f.Access != nil {
 		s.UpdateProjectAccess(id, *f.Access)
+	}
+	if f.AllowExternal != nil {
+		s.UpdateProjectAllowExternal(id, *f.AllowExternal)
 	}
 	if f.Context != nil {
 		s.UpdateProjectContext(id, *f.Context, sc)

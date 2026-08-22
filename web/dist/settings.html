@@ -389,6 +389,12 @@ textarea:focus {
 .proj-auth-mode { display: inline-block; padding: 0 6px; border-radius: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; }
 .proj-auth-mode.read { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .proj-auth-mode.write { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+/* The second axis, styled as its own pill rather than as a variant of the mode
+   pill: they are orthogonal (ADR-011 decision 2c), and one pill with four
+   states would read as one question with four answers. */
+.proj-auth-external { display: inline-block; padding: 0 6px; border-radius: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; }
+.proj-auth-external.off { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.proj-auth-external.on { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 .proj-auth-tools { color: var(--text-2); font-family: var(--mono); }
 .proj-auth-scope { color: var(--text-2); }
 .proj-auth-scope.none { color: var(--text-3); font-style: italic; }
@@ -1449,6 +1455,9 @@ window.__RELAY_INIT__ = {
     }
     return isRemoteProject(p) ? "read" : "write";
   }
+  function projAllowExternal(p, mcpID) {
+    return !!(p && p.allow_external ? p.allow_external[mcpID] : false);
+  }
   function scopeValueIsSet(v) {
     if (v === void 0 || v === null) return false;
     if (Array.isArray(v)) return v.length > 0;
@@ -1507,6 +1516,7 @@ window.__RELAY_INIT__ = {
       return {
         mcp: mcpID,
         mode: projAccessMode(p, mcpID),
+        external: projAllowExternal(p, mcpID),
         tools: projToolAuthorityText(p, mcpID),
         scope,
         derived,
@@ -1525,6 +1535,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="proj-auth-row">';
       html += '<span class="proj-auth-mcp">' + esc(r.mcp) + "</span>";
       html += '<span class="proj-auth-mode ' + esc(r.mode) + '">' + esc(r.mode) + "</span>";
+      html += '<span class="proj-auth-external ' + (r.external ? "on" : "off") + '">' + (r.external ? "may reach outside" : "local only") + "</span>";
       html += '<span class="proj-auth-tools">' + esc(r.tools) + "</span>";
       if (r.scope.length) html += '<span class="proj-auth-scope">' + esc(r.scope.join(" \xB7 ")) + "</span>";
       if (r.missing.length) {
@@ -1543,7 +1554,7 @@ window.__RELAY_INIT__ = {
     html += "<h2>Projects &amp; Access Profiles</h2>";
     html += '<button class="btn btn-primary" onclick="newProject()">+ New</button>';
     html += "</div>";
-    html += '<p class="page-intro">Both kinds are the security boundary and both get a scoped bearer token. A <strong>project</strong> is bound to a host directory and has models, shell templates and skills. An <strong>access profile</strong> is a capability grant to a client on another machine: no directory, no skills, no shell, no models \u2014 just which MCPs, which tools, which operations and which resources.</p>';
+    html += '<p class="page-intro">Both kinds are the security boundary and both get a scoped bearer token. A <strong>project</strong> is bound to a host directory and has models, shell templates and skills. An <strong>access profile</strong> is a capability grant to a client on another machine: no directory, no skills, no shell, no models \u2014 just which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     if (state.projectError) {
       html += '<div class="proj-error">' + esc(state.projectError) + "</div>";
     }
@@ -1635,6 +1646,12 @@ window.__RELAY_INIT__ = {
       // mcpID -> [pattern, ...]
       context: {},
       // mcpID -> { field: value }
+      // The second axis (ADR-011 decision 2c). Absent means refused, for a
+      // local project exactly as for an access profile — unlike `access`,
+      // this one has no local/remote asymmetry, because an outbound channel
+      // is an outbound channel whoever holds it.
+      allow_external: {},
+      // mcpID -> true
       // Raw text as typed, so a half-finished value survives a re-render and
       // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
       _scopeText: {},
@@ -1664,6 +1681,7 @@ window.__RELAY_INIT__ = {
       access: JSON.parse(JSON.stringify(p.access || {})),
       allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
       context: JSON.parse(JSON.stringify(p.context || {})),
+      allow_external: JSON.parse(JSON.stringify(p.allow_external || {})),
       _scopeText: {},
       _toolsText: {},
       token: p.token || ""
@@ -1802,6 +1820,17 @@ window.__RELAY_INIT__ = {
     f.access[mcpID] = mode;
     render();
   }
+  function projFormAllowExternal(f, mcpID) {
+    return (f.allow_external || {})[mcpID] === true;
+  }
+  function setProjAllowExternal(mcpID, allow) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f.allow_external) f.allow_external = {};
+    if (allow) f.allow_external[mcpID] = true;
+    else delete f.allow_external[mcpID];
+    render();
+  }
   function setProjMcpGranted(mcpID, granted) {
     const f = state.projectForm;
     if (!f) return;
@@ -1810,6 +1839,7 @@ window.__RELAY_INIT__ = {
     } else {
       f.allowed_mcp_ids = f.allowed_mcp_ids.filter((id) => id !== mcpID);
       delete (f.access || {})[mcpID];
+      delete (f.allow_external || {})[mcpID];
       delete (f.allowed_tools || {})[mcpID];
       delete (f.context || {})[mcpID];
       delete (f._scopeText || {})[mcpID];
@@ -1871,6 +1901,15 @@ window.__RELAY_INIT__ = {
     html += '<button class="perm-btn ' + (mode === "write" ? "active" : "") + `" onclick="setProjAccess('` + esc(mcpID) + `', 'write')">Write</button>`;
     html += "</div>";
     html += '<p class="proj-section-help">' + (mode === "read" ? "Only tools this MCP annotates <code>readOnlyHint: true</code>. A tool that is unannotated, malformed, or added later is refused \u2014 that is what keeps a new mutating tool out of an old grant." : "Every tool this grant admits, mutating included. Write implies read.") + " Unset defaults to <strong>" + (remote ? "read" : "write") + "</strong> for " + (remote ? "an access profile" : "a local project") + ".</p>";
+    html += "</div>";
+    const external = projFormAllowExternal(f, mcpID);
+    html += '<div class="proj-perm-block">';
+    html += '<div class="proj-perm-label">Outside this Mac</div>';
+    html += '<div class="perm-btns">';
+    html += '<button class="perm-btn ' + (external ? "" : "active") + `" onclick="setProjAllowExternal('` + esc(mcpID) + `', false)">Refuse</button>`;
+    html += '<button class="perm-btn ' + (external ? "active" : "") + `" onclick="setProjAllowExternal('` + esc(mcpID) + `', true)">Allow</button>`;
+    html += "</div>";
+    html += '<p class="proj-section-help">' + (external ? "Tools that reach outside this Mac are allowed, <code>mail_send</code> and <code>web_fetch</code> among them. Anything this grant can read, it can send somewhere you cannot see." : "Tools that reach outside this Mac are refused \u2014 <code>mail_send</code>, <code>web_fetch</code>, anything that talks to a network or a mail server. <strong>Drafting still works:</strong> <code>mail_create_draft</code> writes a draft on this Mac for a person to read and send, so an agent can compose without being able to post.") + " This is a <em>separate</em> question from Read/Write above and neither answers the other: <code>web_fetch</code> is read-only and reaches outside, <code>mail_create_draft</code> changes something and does not. A tool whose MCP declares no <code>openWorldHint</code> counts as reaching outside \u2014 that is the MCP specification's own default \u2014 so with this refused, a grant can lose a tool that never touches a network until its MCP annotates one. Unset defaults to <strong>refused</strong>, for a local project and an access profile alike.</p>";
     html += "</div>";
     if (remote) {
       const patterns = projAllowedToolsText(f, mcpID);
@@ -2185,12 +2224,12 @@ window.__RELAY_INIT__ = {
       }
       html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
     } else {
-      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations and which resources.</p>';
+      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += "</div>";
     const wild = !isRemote && isProjMcpWildcard(f);
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">MCPs, Tools, Operations &amp; Resources</div>';
+    html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
     if (!isRemote) {
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
       html += "<span>Allow all registered MCPs (wildcard <code>*</code>)</span>";
@@ -2440,6 +2479,7 @@ window.__RELAY_INIT__ = {
     const perms = harvestProjectPermissions(f);
     if (perms.complete) {
       payload.access = perms.access;
+      payload.allow_external = perms.allow_external;
       payload.allowed_tools = perms.allowed_tools;
       payload.context = perms.context;
     }
@@ -2456,11 +2496,13 @@ window.__RELAY_INIT__ = {
     const complete = !wild || registered.length > 0;
     const granted = wild ? registered : f.allowed_mcp_ids.slice();
     const access = {};
+    const allowExternal = {};
     const allowedTools = {};
     const context = {};
     for (const mcpID of granted) {
       const mode = (f.access || {})[mcpID];
       if (mode === "read" || mode === "write") access[mcpID] = mode;
+      if (projFormAllowExternal(f, mcpID)) allowExternal[mcpID] = true;
       if (remote) {
         const text = projAllowedToolsText(f, mcpID);
         const patterns = String(text).split("\n").map((t) => t.trim()).filter(Boolean);
@@ -2481,7 +2523,7 @@ window.__RELAY_INIT__ = {
       }
       if (Object.keys(existing).length) context[mcpID] = existing;
     }
-    return { access, allowed_tools: allowedTools, context, complete };
+    return { access, allow_external: allowExternal, allowed_tools: allowedTools, context, complete };
   }
   function focusProjectFormIssue() {
     const id = state.projectFormErrorField;
@@ -3977,10 +4019,12 @@ window.__RELAY_INIT__ = {
     harvestProjectPermissions,
     mcpScopeFieldsFor,
     projAccessMode,
+    projAllowExternal,
     projAllowedToolPatterns,
     projAllowedToolsText,
     projAuthorityRows,
     projFormAccessMode,
+    projFormAllowExternal,
     projGrantedMcpIds,
     projMissingScopeFields,
     projNoun,
@@ -4000,6 +4044,7 @@ window.__RELAY_INIT__ = {
     scopeValueIsSet,
     scopeValueText,
     setProjAccess,
+    setProjAllowExternal,
     setProjAllowedToolsText,
     setProjMcpGranted,
     setProjScopeText,

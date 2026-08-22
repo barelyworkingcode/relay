@@ -479,14 +479,14 @@ func TestAppRouter_ListSkillBuckets(t *testing.T) {
 		nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
-				{Name: "mail_send", Description: "Send mail", Category: "Mail"},
-				{Name: "mail_archive", Description: "Archive mail", Category: "Mail"},
+				{Name: "mail_send", Description: "Send mail", Category: "Mail", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
+				{Name: "mail_archive", Description: "Archive mail", Category: "Mail", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
 			}, nil),
 			"mcp-b": newMockConn("mcp-b", []mcp.Tool{
-				{Name: "generate_image", Description: "Generate an image"}, // no category
+				{Name: "generate_image", Description: "Generate an image", Annotations: json.RawMessage(`{"openWorldHint":false}`)}, // no category
 			}, nil),
 			"mcp-c": newMockConn("mcp-c", []mcp.Tool{
-				{Name: "secret_tool", Description: "denied MCP"},
+				{Name: "secret_tool", Description: "denied MCP", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
 			}, nil),
 		},
 	)
