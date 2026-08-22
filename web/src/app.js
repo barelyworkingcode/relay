@@ -81,6 +81,17 @@ let state = {
     projectError: null,
     rotatingProjectId: null,
 
+    // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
+    // into another process, so none of this is populated by a paint: a list is
+    // fetched when an operator opens the control and cached for the life of
+    // the form, keyed on (mcp, field, dependency values) — a mailbox list read
+    // within Bob is not an answer about Alice.
+    scopeEnum: {},            // key -> ContextEnumResult (see scopeEnumKey)
+    scopeEnumReq: {},         // "mcp\0field" -> the key of the in-flight request
+    scopeEnumOpen: {},        // "mcp\0field" -> bool (the operator opened it)
+    scopeEnumUnsupported: {}, // mcpId -> true once it answered -32601, permanently
+    _scopeBind: [],           // per-render bindings from a checkbox to its value
+
     // Remote Clients tab. Enrolments and the remote block are seeded by the
     // initial payload like projects are — the list is one row per enrolled
     // certificate, and a credential you cannot see is one you will not revoke,
@@ -1496,10 +1507,16 @@ function renderScopeFieldInput(mcpID, field, f) {
     }
 
     const text = projScopeText(f, mcpID, field);
-    if (field.type === 'array') {
-        html += '<textarea rows="3" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)">' + esc(text) + '</textarea>';
+    // A picker over real values wherever the MCP says it can list them, and the
+    // text box everywhere else — including for an MCP that answered "I do not
+    // implement that", which is a permanent, silent degrade for that MCP.
+    if (field.enumerable && !state.scopeEnumUnsupported[mcpID]) {
+        html += renderScopeFieldPicker(mcpID, field, f, text);
     } else {
-        html += '<input type="text" value="' + esc(text) + '" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)" />';
+        html += renderScopeFieldTextInput(mcpID, field, text);
+        if (field.enumerable) {
+            html += '<div class="proj-scope-desc">' + esc(mcpID) + ' cannot list this field\'s values, so it is typed by hand. Spelling counts: a value that matches nothing refuses every tool the field governs, silently.</div>';
+        }
     }
     if (!String(text).trim()) {
         html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
@@ -1509,6 +1526,305 @@ function renderScopeFieldInput(mcpID, field, f) {
     }
     html += '</div>';
     return html;
+}
+
+// renderScopeFieldTextInput is the free-text control, which is both the
+// non-enumerable case and the fallback for every way enumeration can fail. It
+// is deliberately the SAME storage as the picker — see setProjScopeText — so
+// the two controls are interchangeable and a value typed here survives the
+// picker appearing later, and vice versa.
+function renderScopeFieldTextInput(mcpID, field, text) {
+    if (field.type === 'array') {
+        return '<textarea rows="3" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)">' + esc(text) + '</textarea>';
+    }
+    return '<input type="text" value="' + esc(text) + '" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)" />';
+}
+
+// ---------------------------------------------------------------------------
+// The enumeration picker (ADR-011 decision 6)
+//
+// The picker is a CONTROL OVER THE SAME VALUE the text box edits. It reads
+// scopeValueFromText and writes back through setProjScopeText, so harvest,
+// clearing, validation and the "needs a scope value" banner all keep working
+// unchanged, and an operator can move between the two without either one
+// losing what the other set.
+//
+// That is also what makes the most important behaviour here free: a stored
+// value the MCP no longer offers is IN the value already, so it is rendered as
+// a selected, flagged entry rather than silently dropped. An account renamed
+// on the host must not quietly widen or narrow a profile by disappearing from
+// a form.
+// ---------------------------------------------------------------------------
+
+// scopeEnumValueKey is the identity of one offered value. Strings are the
+// declared subset's shape; anything else is compared by its JSON, which is
+// honest about a shape this UI does not model.
+function scopeEnumValueKey(v) {
+    return typeof v === 'string' ? v : JSON.stringify(v);
+}
+
+// scopeDependencyValues mirrors dependencyValues on the Go side: the fields
+// THIS one declares in depends_on, and only those with a value.
+//
+// Dropping an empty one is the load-bearing half. The picker's normal opening
+// state is mail_mailboxes with mail_accounts still unchosen, and a request
+// carrying {"mail_accounts": []} invites a server to read it as "match
+// nothing" — an empty picker at exactly the moment an operator opens one, and
+// indistinguishable from a host with no mailboxes. Relay drops it again on the
+// way out; this side is what keeps the CACHE KEY the same for "unchosen"
+// however the emptiness is spelled.
+function scopeDependencyValues(f, mcpID, field) {
+    const out = {};
+    const fields = mcpScopeFieldsFor(mcpID) || [];
+    for (const dep of (field.depends_on || [])) {
+        const depField = fields.find(x => x.name === dep);
+        if (!depField) continue;
+        const v = scopeValueFromText(depField, projScopeText(f, mcpID, depField));
+        if (scopeValueIsSet(v)) out[dep] = v;
+    }
+    return out;
+}
+
+// scopeEnumKey identifies one answer: an MCP, a field, and the dependency
+// values it was read within. The dependencies are in the key because changing
+// the account choice must invalidate the mailbox list rather than leave a
+// stale one on screen under a new account's name.
+function scopeEnumKey(mcpID, fieldName, deps) {
+    return mcpID + ' ' + fieldName + ' ' + JSON.stringify(deps || {});
+}
+
+function scopeOpenKey(mcpID, fieldName) { return mcpID + ' ' + fieldName; }
+
+function scopeFieldIsOpen(mcpID, fieldName) {
+    return !!state.scopeEnumOpen[scopeOpenKey(mcpID, fieldName)];
+}
+
+// requestScopeEnum fires at most one live call per (mcp, field, dependency
+// values) for the life of the form. It is never called from a paint or a
+// keystroke — only from opening the control, from a retry, and from a change
+// to a field something else depends on.
+function requestScopeEnum(mcpID, field, force) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (state.scopeEnumUnsupported[mcpID]) return;
+    const deps = scopeDependencyValues(f, mcpID, field);
+    const key = scopeEnumKey(mcpID, field.name, deps);
+    const openKey = scopeOpenKey(mcpID, field.name);
+    if (!force) {
+        if (Object.prototype.hasOwnProperty.call(state.scopeEnum, key)) return; // cached
+        if (state.scopeEnumReq[openKey] === key) return;                        // in flight
+    }
+    delete state.scopeEnum[key];
+    state.scopeEnumReq[openKey] = key;
+    ipc(JSON.stringify({ type: 'enumerate_scope_field', mcp_id: mcpID, field: field.name, values: deps }));
+}
+
+function scopeFieldByName(mcpID, fieldName) {
+    return (mcpScopeFieldsFor(mcpID) || []).find(x => x.name === fieldName) || null;
+}
+
+function toggleScopeFieldPicker(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    captureProjectFormInputs();
+    const openKey = scopeOpenKey(mcpID, fieldName);
+    state.scopeEnumOpen[openKey] = !state.scopeEnumOpen[openKey];
+    if (state.scopeEnumOpen[openKey]) requestScopeEnum(mcpID, field);
+    render();
+}
+
+function retryScopeEnum(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    captureProjectFormInputs();
+    requestScopeEnum(mcpID, field, true);
+    render();
+}
+
+// refreshDependentScopeFields re-asks for every OPEN field that declares the
+// changed one in depends_on. This is what makes dependency order real rather
+// than decorative: choosing an account changes which mailboxes exist, and a
+// list that did not move would be a picker offering another account's values.
+function refreshDependentScopeFields(mcpID, changedField) {
+    for (const field of (mcpScopeFieldsFor(mcpID) || [])) {
+        if (!field.enumerable) continue;
+        if (!(field.depends_on || []).includes(changedField)) continue;
+        if (!scopeFieldIsOpen(mcpID, field.name)) continue;
+        requestScopeEnum(mcpID, field);
+    }
+}
+
+// scopeSelectedValues is what the field currently holds, as a list, whichever
+// control produced it.
+function scopeSelectedValues(field, text) {
+    const v = scopeValueFromText(field, text);
+    if (Array.isArray(v)) return v;
+    return scopeValueIsSet(v) ? [v] : [];
+}
+
+// unrecognisedScopeValues names the stored values the MCP did not offer. It
+// answers only when there IS an answer to compare against — an empty list from
+// a failed call would flag every stored value as unrecognised, which is the
+// same lie as rendering the failure as "there are none".
+function unrecognisedScopeValues(selected, offered) {
+    const known = new Set((offered || []).map(o => scopeEnumValueKey(o.value)));
+    return selected.filter(v => !known.has(scopeEnumValueKey(v)));
+}
+
+function renderScopeFieldPicker(mcpID, field, f, text) {
+    const selected = scopeSelectedValues(field, text);
+    const open = scopeFieldIsOpen(mcpID, field.name);
+    const deps = scopeDependencyValues(f, mcpID, field);
+    const key = scopeEnumKey(mcpID, field.name, deps);
+    const res = state.scopeEnum[key];
+    const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
+    const args = '\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\'';
+
+    // Always visible, open or closed: what is stored is what confines the
+    // client, so it never sits behind a control someone has to open.
+    let html = '<div class="proj-scope-summary">' + (selected.length
+        ? esc(selected.map(scopeEnumValueKey).join(', '))
+        : '<span class="proj-scope-none">nothing selected — every tool this field governs is refused</span>') + '</div>';
+
+    const unknown = (res && res.status === 'ok') ? unrecognisedScopeValues(selected, res.values) : [];
+    if (unknown.length) {
+        html += '<div class="proj-scope-unrecognised">' + esc(mcpID) + ' does not offer ' + esc(unknown.map(scopeEnumValueKey).join(', '))
+            + '. Kept and still in force — it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>';
+    }
+
+    html += '<button class="btn btn-sm" onclick="toggleScopeFieldPicker(' + args + ')">'
+        + (open ? 'Done' : 'Choose values…') + '</button>';
+    if (!open) return html;
+
+    if (pending) return html + '<div class="proj-scope-pending">Listing values from ' + esc(mcpID) + '…</div>';
+    if (!res) {
+        // Open, with no answer for THESE dependency values: something the list
+        // is read within was edited by hand since it was last asked. Offered as
+        // a button rather than fetched from here, because a paint must never
+        // start a live call — a re-render loop would be one call per frame.
+        return html + '<div class="proj-scope-pending">The values this list is read within have changed.</div>'
+            + '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">List values</button>';
+    }
+
+    if (res.status === 'ok') {
+        return html + renderScopeChoices(mcpID, field, selected, res.values, unknown, deps);
+    }
+
+    // Every remaining status keeps the text box, so an operator is never
+    // blocked by an MCP that will not answer — and none of them renders as an
+    // empty list of values, which would read as "there are none".
+    if (res.status === 'invalid_field' || res.status === 'not_enumerable') {
+        html += '<div class="proj-scope-failed">Relay asked ' + esc(mcpID) + ' for values it will not enumerate, which is a bug in relay rather than in this profile'
+            + (res.error ? ': ' + esc(res.error) : '.') + ' Type the values instead — they are stored and enforced exactly the same way.</div>';
+    } else if (res.status === 'unsupported') {
+        html += '<div class="proj-scope-desc">' + esc(mcpID) + ' cannot list this field\'s values.</div>';
+    } else {
+        html += '<div class="proj-scope-failed">Could not list values from ' + esc(mcpID) + ' just now'
+            + (res.error ? ': ' + esc(res.error) : '.')
+            + ' This is not an empty list — nothing was read. Retry, or type the values.</div>';
+        html += '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">Try again</button>';
+    }
+    return html + renderScopeFieldTextInput(mcpID, field, text);
+}
+
+// renderScopeChoices draws one row per offered value, plus one per stored
+// value the MCP did not offer — checked, flagged, and removable only by an
+// explicit untick.
+//
+// Values reach their handler through an index into a per-render binding array
+// rather than through the onclick attribute. Mailbox names carry quotes,
+// apostrophes and emoji, and building a JS string literal out of one in an
+// HTML attribute is how a mailbox called `a'); doSomething('` becomes a bug.
+function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
+    const multi = field.type === 'array';
+    const rows = [];
+    const byKey = {};
+    const push = (value, label, isUnknown) => {
+        const k = scopeEnumValueKey(value);
+        // One value is one choice, however many times it was offered. A
+        // cross-product scope makes duplicates normal — every account has an
+        // INBOX, and the mailbox value is account-independent — and two boxes
+        // holding the same value would tick and untick together, which reads
+        // as a bug. The labels are joined instead, because each said something
+        // true about where the value came from.
+        if (byKey[k]) {
+            if (label && byKey[k].labels.indexOf(label) < 0) byKey[k].labels.push(label);
+            return;
+        }
+        byKey[k] = { value: value, labels: [label], unknown: isUnknown };
+        rows.push(byKey[k]);
+    };
+    for (const v of unknown) push(v, scopeEnumValueKey(v), true);
+    for (const o of (offered || [])) push(o.value, o.label || scopeEnumValueKey(o.value), false);
+    for (const row of rows) row.label = row.labels.join(' · ');
+
+    if (!rows.length) {
+        return '<div class="proj-scope-desc">' + esc(mcpID) + ' offers no values for this field'
+            + (Object.keys(deps).length ? ' within the values chosen above' : '')
+            + '. That is its answer, not a failure — there is nothing here to grant.</div>';
+    }
+
+    const selectedKeys = new Set(selected.map(scopeEnumValueKey));
+    let html = '<div class="proj-scope-choices">';
+    for (const row of rows) {
+        const idx = state._scopeBind.length;
+        state._scopeBind.push({ mcpID: mcpID, field: field.name, value: row.value });
+        const checked = selectedKeys.has(scopeEnumValueKey(row.value)) ? ' checked' : '';
+        html += '<div class="proj-scope-choice' + (row.unknown ? ' unrecognised' : '') + '">';
+        html += '<input type="' + (multi ? 'checkbox' : 'radio') + '" name="scope-' + esc(mcpID) + '-' + esc(field.name) + '"'
+            + checked + ' onchange="toggleProjScopeValueAt(' + idx + ', this.checked)" />';
+        html += '<label>' + esc(row.label) + '</label>';
+        if (row.unknown) html += '<span class="desc">not offered by this MCP</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// toggleProjScopeValueAt writes the choice back through the SAME text the box
+// edits, so nothing else in the editor has to know a picker exists.
+function toggleProjScopeValueAt(index, checked) {
+    const bind = state._scopeBind[index];
+    if (!bind) return;
+    const f = state.projectForm;
+    if (!f) return;
+    const field = scopeFieldByName(bind.mcpID, bind.field);
+    if (!field) return;
+    captureProjectFormInputs();
+
+    const current = scopeSelectedValues(field, projScopeText(f, bind.mcpID, field));
+    const key = scopeEnumValueKey(bind.value);
+    let next;
+    if (field.type === 'array') {
+        next = current.filter(v => scopeEnumValueKey(v) !== key);
+        if (checked) next.push(bind.value);
+    } else {
+        next = checked ? [bind.value] : [];
+    }
+    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === 'array' ? next : (next[0] !== undefined ? next[0] : '')));
+    // Anything read WITHIN this field is now reading within something else.
+    refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+}
+
+// captureProjectFormInputs writes back the values that live only in the DOM.
+//
+// It exists because the picker repaints the form from an ASYNCHRONOUS event —
+// an enumeration answer arriving — and a repaint rebuilds every input from
+// state.projectForm. The name and path are read from the DOM at harvest and
+// nowhere else, so without this a list arriving while someone was typing a
+// name would erase what they had typed. Empty is treated as "leave it", the
+// same guard harvestProjectForm already uses, so a field the browser has not
+// rendered cannot blank a stored value.
+function captureProjectFormInputs() {
+    const f = state.projectForm;
+    if (!f) return;
+    const val = id => {
+        const el = document.getElementById(id);
+        return el && typeof el.value === 'string' ? el.value : '';
+    };
+    f.name = val('projName') || f.name;
+    if (!isRemoteForm(f)) f.path = val('projPath') || f.path;
 }
 
 function setProjModelsWildcard(checked) {
@@ -1531,6 +1847,10 @@ function isProjModelsWildcard(f) {
 function renderProjectForm() {
     const f = state.projectForm;
     if (!f) return '<div class="empty-state">No form state.</div>';
+    // Rebuilt every render: a scope choice reaches its handler as an index
+    // into this, never as a value interpolated into an onclick attribute.
+    // Mailbox names carry quotes, apostrophes and emoji.
+    state._scopeBind = [];
     const isNew = !f.id;
     const isRemote = isRemoteForm(f);
     const noun = isRemote ? 'Access Profile' : 'Project';
@@ -1683,15 +2003,16 @@ function renderProjectForm() {
     html += '</div>';
 
     // ---- Chat templates (read-only; relay stores them, Eve edits them) ----
-    // Absent for an access profile with none: a profile has no sessions to
-    // launch one from, so an empty section here is a heading that suggests a
-    // capability the record does not have. One that somehow carries templates
-    // still shows them — hiding stored data is worse than an odd heading.
+    // Absent for an access profile, because the model now REFUSES one on a
+    // remote record rather than storing an inert copy (validateProjectShape).
+    // A record that still carries templates from an earlier life is the one
+    // exception: it is shown, and told what saving will do, because hiding
+    // stored data an operator is about to lose is worse than an odd heading.
     if (!isRemote || f.chat_templates.length > 0) {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Chat Templates</div>';
     html += '<p class="proj-section-help">' + (isRemote
-        ? 'An access profile has no chat sessions, so these are inert. They are shown because they are stored on the record.'
+        ? 'An access profile has no chat sessions, so relay refuses chat templates on one. These are stored from before that rule; <strong>saving this profile removes them.</strong>'
         : 'Project-scoped chat presets stored with the project. Create and edit them in Eve\'s project dialog, which offers live model selection.') + '</p>';
     if (f.chat_templates.length === 0) {
         html += '<div class="proj-tool-empty">No templates yet.</div>';
@@ -1708,12 +2029,22 @@ function renderProjectForm() {
     }
 
     // ---- Permission policy ----
+    // Absent for an access profile, for the same reason the skill toggle and
+    // directory auth are: the model refuses it now, so a control here would be
+    // one whose only outcome is a refusal on Save. A profile that still
+    // carries a policy is told, because saving clears it.
     const pol = f.permission_policy;
+    if (isRemote) {
+        if (!isPolicyEmpty(pol)) {
+            html += '<div class="proj-section">';
+            html += '<div class="proj-section-title">Permission Policy</div>';
+            html += '<p class="proj-section-help">Claude CLI permission gates, stored from before relay refused them on an access profile. A profile launches no Claude session, so they gate nothing; what bounds a remote client is the operations, tools and resources above. <strong>Saving this profile removes them.</strong></p>';
+            html += '</div>';
+        }
+    } else {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Permission Policy</div>';
-    html += '<p class="proj-section-help">' + (isRemote
-        ? 'Claude CLI permission gates. An access profile launches no Claude session, so this is inert for one — what bounds a remote client is the mode, tools and scope above.'
-        : 'Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).') + '</p>';
+    html += '<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).</p>';
     html += '<label>Default mode</label>';
     html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
     for (const m of ['', 'default', 'acceptEdits', 'plan', 'bypassPermissions']) {
@@ -1726,6 +2057,7 @@ function renderProjectForm() {
     html += '<label>Denied tools (one per line)</label>';
     html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join('\n')) + '</textarea>';
     html += '</div>';
+    }
 
     // ---- Skill ----
     // Skills are written under <path>/.claude/skills — no path, no skill, so
@@ -1839,6 +2171,14 @@ function pruneStaleDisabledTool(mcpID, name, kept) {
     render();
 }
 
+// isPolicyEmpty mirrors permissionPolicyIsEmpty on the Go side. Both surfaces
+// have to agree that an emptied policy is not a policy, or the editor would
+// send something the model refuses on a record it just cleared.
+function isPolicyEmpty(pol) {
+    if (!pol) return true;
+    return !pol.default_mode && (pol.allowed_tools || []).length === 0 && (pol.denied_tools || []).length === 0;
+}
+
 function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
@@ -1854,16 +2194,25 @@ function harvestProjectForm() {
         const csv = (document.getElementById('projModels') || {}).value || '';
         allowedModels = csv.split(',').map(s => s.trim()).filter(Boolean);
     }
-    const allowedToolsTA = document.getElementById('projAllowedTools');
-    const deniedToolsTA = document.getElementById('projDeniedTools');
-    const policy = {
-        default_mode: f.permission_policy.default_mode,
-        allowed_tools: allowedToolsTA ? allowedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
-        denied_tools: deniedToolsTA ? deniedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.denied_tools,
-    };
+    // An access profile sends an EMPTY policy rather than the one it may still
+    // carry: relay refuses a policy on a remote record, and this is the form
+    // that has to be able to clear one. An empty policy is read as "clear it"
+    // on both sides (permissionPolicyIsEmpty / isPolicyEmpty).
+    let policy = { default_mode: '', allowed_tools: [], denied_tools: [] };
+    if (!isRemote) {
+        const allowedToolsTA = document.getElementById('projAllowedTools');
+        const deniedToolsTA = document.getElementById('projDeniedTools');
+        policy = {
+            default_mode: f.permission_policy.default_mode,
+            allowed_tools: allowedToolsTA ? allowedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
+            denied_tools: deniedToolsTA ? deniedToolsTA.value.split('\n').map(s => s.trim()).filter(Boolean) : f.permission_policy.denied_tools,
+        };
+    }
     // chat_templates is intentionally absent: the form is read-only for
     // templates (Eve owns editing), and omitting the field makes
-    // update_project leave the stored list untouched.
+    // update_project leave the stored list untouched. The one exception is a
+    // profile that still carries some — relay refuses those now, so the field
+    // has to be SENT as empty or the record could never be saved again.
     const payload = {
         name: name.trim(),
         kind: isRemote ? 'remote' : 'local',
@@ -1876,14 +2225,25 @@ function harvestProjectForm() {
         allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
     };
+    if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     // The ADR-011 permission set. Sent on every save, including when it is
     // empty: these are pointer fields on the update DTO, so omitting one means
     // "leave it alone" — which would make clearing a scope value from this
     // editor impossible.
+    //
+    // Unless the three maps could not be BUILT, which is a different thing
+    // from being empty. Under a wildcard grant their keys come from relay's
+    // MCP list, of which this side holds only a copy; if that copy is missing
+    // the harvest produces {} for all three — indistinguishable, on the wire,
+    // from an operator clearing every mode, every tool allowlist and every
+    // scope value. Omitting them lets the update path's nil-means-no-change
+    // convention do the right thing, which is nothing.
     const perms = harvestProjectPermissions(f);
-    payload.access = perms.access;
-    payload.allowed_tools = perms.allowed_tools;
-    payload.context = perms.context;
+    if (perms.complete) {
+        payload.access = perms.access;
+        payload.allowed_tools = perms.allowed_tools;
+        payload.context = perms.context;
+    }
     if (!isRemote) {
         const path = (document.getElementById('projPath') || {}).value || f.path;
         payload.path = path.trim();
@@ -1904,7 +2264,19 @@ function harvestProjectForm() {
 function harvestProjectPermissions(f) {
     const remote = isRemoteForm(f);
     const wild = f.allowed_mcp_ids.length === 1 && f.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD;
-    const granted = wild ? (state.externalMcps || []).map(m => m.id) : f.allowed_mcp_ids.slice();
+    const registered = (state.externalMcps || []).map(m => m.id);
+    // A wildcard grant's MCP set is not in the form. It is whatever relay
+    // currently knows, and this side holds a COPY of that — one that is empty
+    // before the first payload arrives, and empty again if one arrives
+    // malformed. Expanding it then yields no keys at all, and the three maps
+    // built from them come out {} whatever the record actually holds.
+    //
+    // `complete` is what the caller keys on. It is not a validity flag: a
+    // non-wildcard grant naming no MCPs is complete and legitimately produces
+    // three empty maps, because the operator said so in the form. What is
+    // incomplete is a wildcard with nothing to expand it against.
+    const complete = !wild || registered.length > 0;
+    const granted = wild ? registered : f.allowed_mcp_ids.slice();
 
     const access = {};
     const allowedTools = {};
@@ -1935,7 +2307,7 @@ function harvestProjectPermissions(f) {
         }
         if (Object.keys(existing).length) context[mcpID] = existing;
     }
-    return { access: access, allowed_tools: allowedTools, context: context };
+    return { access: access, allowed_tools: allowedTools, context: context, complete: complete };
 }
 
 function saveProjectForm() {
@@ -2023,6 +2395,33 @@ window.onMcpToolsListed = function(mcpID, tools) {
     if (state.page === 'projects' && state.editingProjectId) {
         render('push');
     }
+};
+
+// onScopeFieldEnumerated receives one ContextEnumResult, verbatim, including
+// its status — which is the whole point. "There are none" is `status: "ok"`
+// with an empty list; "nobody could look" is any other status with no list at
+// all, and the two must never render the same way.
+window.onScopeFieldEnumerated = function(res) {
+    if (!res || !res.mcp_id || !res.field) return;
+    const openKey = scopeOpenKey(res.mcp_id, res.field);
+    const key = state.scopeEnumReq[openKey];
+    // No request outstanding for this field: a late answer to a question the
+    // dependencies have since changed. Dropping it is right — the key it would
+    // be filed under is not the key anything is looking up.
+    if (!key) return;
+    delete state.scopeEnumReq[openKey];
+    state.scopeEnum[key] = res;
+    // -32601 is final and it is about the MCP, not about this field: it never
+    // implements enumeration, so every field of it degrades to text entry and
+    // nothing asks again.
+    if (res.status === 'unsupported') state.scopeEnumUnsupported[res.mcp_id] = true;
+    if (state.page !== 'projects' || !state.editingProjectId) return;
+    // A full repaint, not render('push'): this answer is the direct result of
+    // the operator opening a control and it must appear. captureProjectFormInputs
+    // is what makes that safe — the repaint would otherwise rebuild the name
+    // and path inputs from state and erase anything typed while waiting.
+    captureProjectFormInputs();
+    render();
 };
 
 window.onProjectError = function(msg) {
@@ -3776,6 +4175,7 @@ render();
 Object.assign(window, {
     auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
-    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
+    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
+    captureProjectFormInputs, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

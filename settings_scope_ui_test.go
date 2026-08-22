@@ -187,7 +187,9 @@ func TestProjectForm_PermissionPanel(t *testing.T) {
 		"mail_accounts",
 		"Mail accounts this client may read from or send as",
 		"list of strings, one per line",
-		`setProjScopeText('macmcp', 'mail_accounts', this.value)`,
+		// Both mail fields declare enumerable, so both get the picker rather
+		// than a box to type a mailbox name into (ADR-011 decision 6).
+		`toggleScopeFieldPicker('macmcp', 'mail_accounts')`,
 		// The dependency the MCP declared, so an operator knows one field is
 		// read within the other.
 		"Values here are read within mail_accounts",
@@ -196,9 +198,17 @@ func TestProjectForm_PermissionPanel(t *testing.T) {
 			t.Errorf("permission panel is missing %q\n%s", want, html)
 		}
 	}
-	// The existing values are in the boxes, one per line.
-	if !strings.Contains(html, ">Bob</textarea>") || !strings.Contains(html, ">INBOX</textarea>") {
-		t.Error("stored scope values are not rendered back into their inputs")
+	// The stored values are on screen WITHOUT anything being opened: what is
+	// stored is what confines the client, so it is never behind a disclosure.
+	if !strings.Contains(html, `<div class="proj-scope-summary">Bob</div>`) ||
+		!strings.Contains(html, `<div class="proj-scope-summary">INBOX</div>`) {
+		t.Errorf("stored scope values are not shown on the closed panel\n%s", html)
+	}
+	// And nothing was enumerated by merely rendering the form: a live call
+	// into another process is not something a paint does.
+	sent := evalString(t, vm, `JSON.stringify(window.__sent)`)
+	if strings.Contains(sent, "enumerate_scope_field") {
+		t.Errorf("rendering the editor fired a live enumeration: %s", sent)
 	}
 }
 
