@@ -47,7 +47,7 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	// candidate only carries what this function actually knows about; a
 	// direct caller relying solely on this function (as every pre-remote test
 	// does) still gets full path/MCP/model validation.
-	candidate := Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models}
+	candidate := Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
 	}
@@ -196,6 +196,29 @@ func validateProjectShape(proj *Project) error {
 		}
 		return fmt.Errorf(`remote project must not set disabled_tools for %q: a denylist grants every tool an MCP gains in future, which is the fail-open shape a grant to another machine must not have — enumerate what it may call in allowed_tools instead`, mcpID)
 	}
+	// Both of the next two are inert on a record that can hold no session, and
+	// ADR-009 decision 2's rule is that refusing an inert control at the door
+	// is more honest than shipping one that quietly no-ops. They were the last
+	// two fields on a profile that read on screen as a capability and were not
+	// one — the same argument that already removes the path, the skill toggle,
+	// the shell templates, the model allowlist and directory auth.
+	//
+	// A permission policy is a set of gates the CLAUDE CLI applies to a
+	// session it launches. An access profile launches none: it has no path to
+	// launch in, resolvePtyEnv and resolveProjectTemplate both refuse a remote
+	// record outright, and what actually bounds a remote client is the mode,
+	// the tool allowlist and the scope. A default_mode of "bypassPermissions"
+	// sitting on a profile is the worst of it — it reads as a widening that
+	// never happens and cannot be reasoned about from the record alone.
+	if p := proj.PermissionPolicy; p != nil && !permissionPolicyIsEmpty(p) {
+		return fmt.Errorf("remote project must not set permission_policy: those are Claude CLI gates on a session, and an access profile launches none — what bounds a remote client is access, allowed_tools and context")
+	}
+	// A chat template is a preset for starting a chat in that project. Same
+	// argument, one step further along: relay stores them and eve edits them,
+	// and eve has nowhere to offer them for a record with no sessions.
+	if len(proj.ChatTemplates) > 0 {
+		return fmt.Errorf("remote project must not have chat templates: a template is a preset for starting a chat session, and an access profile has no sessions to start")
+	}
 	// modelAllowedForProject (frontend_model_guard.go) treats both len==0 and
 	// ["*"] as "unrestricted" — there is no representation of "no models
 	// listed" that means anything other than "every model is allowed" today.
@@ -205,6 +228,18 @@ func validateProjectShape(proj *Project) error {
 		return fmt.Errorf("remote project must not set allowed_models: an allowlist here would either be misread as unrestricted (see modelAllowedForProject) or need a model-scoping story remote projects don't have yet — leave it empty")
 	}
 	return nil
+}
+
+// permissionPolicyIsEmpty reports whether a policy says nothing at all.
+//
+// It exists because "empty means clear it" is already the update path's rule
+// (applyProjectUpdate stores nil for a policy with no fields set), and a
+// refusal that used a DIFFERENT reading of empty would refuse the very request
+// that clears one — an operator converting a local project to a profile sends
+// the emptied form, and being told "must not set permission_policy" about a
+// policy they just emptied is a wall with no door in it.
+func permissionPolicyIsEmpty(p *PermissionPolicy) bool {
+	return p == nil || (p.DefaultMode == "" && len(p.AllowedTools) == 0 && len(p.DeniedTools) == 0)
 }
 
 // ---------------------------------------------------------------------------
