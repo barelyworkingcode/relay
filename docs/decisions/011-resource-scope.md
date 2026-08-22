@@ -174,7 +174,7 @@ paid in the UI, not in the model.
 **This decision is the one most worth overruling**, and it is cheap to reverse:
 it changes naming and the UI, not the enforcement path.
 
-### 2. Authority has three layers, and relay enforces the two it can verify
+### 2. Authority has four layers, and relay decides three of them
 
 For each `(profile, MCP)` pair:
 
