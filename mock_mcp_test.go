@@ -75,46 +75,18 @@ func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, strin
 	}
 }
 
-// simpleTools creates a []mcp.Tool from a list of tool names carrying NO
-// readOnlyHint — which under ADR-011 decision 2 means "mutating", because an
-// absent hint is not a claim that a tool is safe — and an explicit
-// openWorldHint: false, which under decision 2c is the claim that it stays on
-// this host.
+// simpleTools creates a []mcp.Tool from a list of tool names, with NO
+// annotations — which under ADR-011 decision 2 means "mutating", because an
+// absent readOnlyHint is not a claim that a tool is safe, and under decision 2c
+// means "open-world", because MCP's default for openWorldHint is true and
+// silence there is not a claim of containment either.
 //
-// The two are spelled differently on purpose, and the asymmetry is the
-// design's rather than this helper's. Silence on readOnlyHint is a usable
-// fixture: it is the ordinary tool a local project (default write) calls all
-// day, and it is what the mode tests need to be silent about. Silence on
-// openWorldHint is NOT usable, because that hint defaults to true in the MCP
-// specification, so an unannotated fixture is refused to every grant that has
-// not been given allow_external — which would turn every test of auditing,
-// budgets, scope injection and skill buckets into a test of decision 2c.
-//
-// The absent-hint case therefore has its own fixtures rather than being the
-// ambient default here: see openWorldTools below and
-// TestOpenWorldHint_AbsentMeansOpenWorld.
+// Both silences are usable in a LOCAL project's fixture, and that is the point
+// rather than an accident: a local project defaults to write and to allowed,
+// so an unannotated tool is exactly the ordinary tool such a project calls all
+// day. A remote-profile fixture has to say what it means on both axes — see
+// macmcpToolSurface, which does.
 func simpleTools(names ...string) []mcp.Tool {
-	tools := make([]mcp.Tool, len(names))
-	for i, name := range names {
-		tools[i] = mcp.Tool{Name: name, Annotations: json.RawMessage(`{"openWorldHint":false}`)}
-	}
-	return tools
-}
-
-// openWorldTools is simpleTools with the outbound claim reversed: tools that
-// declare openWorldHint: true, which is web_fetch's shape and mail_send's.
-func openWorldTools(names ...string) []mcp.Tool {
-	tools := make([]mcp.Tool, len(names))
-	for i, name := range names {
-		tools[i] = mcp.Tool{Name: name, Annotations: json.RawMessage(`{"openWorldHint":true}`)}
-	}
-	return tools
-}
-
-// unannotatedTools carry no annotations at all: mutating by decision 2 and
-// open-world by decision 2c, which is what every tool of every MCP that has
-// not yet annotated itself looks like.
-func unannotatedTools(names ...string) []mcp.Tool {
 	tools := make([]mcp.Tool, len(names))
 	for i, name := range names {
 		tools[i] = mcp.Tool{Name: name}
@@ -122,11 +94,37 @@ func unannotatedTools(names ...string) []mcp.Tool {
 	return tools
 }
 
-// readOnlyTools is simpleTools with an explicit annotations.readOnlyHint: true
-// on every tool. Deliberately a SEPARATE helper rather than a default on
-// simpleTools: the whole of decision 2 is that an unannotated tool is refused
-// to a read-only grant, so a helper that quietly annotated everything would
-// make that untestable by making it unreachable.
+// localTools is simpleTools plus the claim that these tools stay on this host:
+// openWorldHint: false, still silent on readOnlyHint. For a fixture that has to
+// be callable from a PROFILE without an outbound grant.
+func localTools(names ...string) []mcp.Tool {
+	tools := simpleTools(names...)
+	for i := range tools {
+		tools[i].Annotations = json.RawMessage(`{"openWorldHint":false}`)
+	}
+	return tools
+}
+
+// openWorldTools declares the opposite: tools that reach outside the host,
+// which is web_fetch's shape and mail_send's.
+func openWorldTools(names ...string) []mcp.Tool {
+	tools := simpleTools(names...)
+	for i := range tools {
+		tools[i].Annotations = json.RawMessage(`{"openWorldHint":true}`)
+	}
+	return tools
+}
+
+// readOnlyTools is simpleTools with both hints declared honestly: read-only
+// and staying on this host. Deliberately a SEPARATE helper rather than a
+// default on simpleTools: the whole of decision 2 is that an unannotated tool
+// is refused to a read-only grant, so a helper that quietly annotated
+// everything would make that untestable by making it unreachable.
+//
+// It carries openWorldHint too because its only consumer is a remote-profile
+// fixture, and a profile defaults to refusing an open-world tool (decision 2c)
+// — so a tool annotated on one axis only would be unreachable there for a
+// reason that has nothing to do with what the test is measuring.
 func readOnlyTools(names ...string) []mcp.Tool {
 	tools := simpleTools(names...)
 	for i := range tools {

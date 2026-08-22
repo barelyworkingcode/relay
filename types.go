@@ -143,23 +143,44 @@ func (t *StoredToken) AccessMode(mcpID string) string {
 // reaches the network, mail_create_draft mutates and touches nothing outside
 // this Mac, so the two questions cross and neither answers the other.
 //
-// THERE IS NO LOCAL/REMOTE ASYMMETRY HERE, and that is deliberate — a reader
-// arriving from AccessMode directly above will expect one. The asymmetry there
-// rests on a local project being "the operator's own machine acting as
-// itself", which is an argument about who the caller IS. This axis is not
-// about the caller: an outbound channel is an outbound channel, and a local
-// agent mailing a file to an arbitrary address exfiltrates it exactly as a
-// remote one does. So the default is false for every project kind, and the
-// grant is something an operator types either way.
+// THE DEFAULT IS ASYMMETRIC, and it is the SAME asymmetry AccessMode has
+// directly above, arrived at from the same place: the threat model, not
+// convenience.
 //
-// Anything other than an explicit true is false, for the same reason
-// AccessMode reads an unrecognised mode as "read": a hand-edited settings.json
-// must narrow rather than widen.
+//   - An ACCESS PROFILE with no entry defaults to REFUSED. A remote client has
+//     no network path off this host except through relay. For it, web_fetch and
+//     mail_send are genuinely new capability — a channel out of a machine it
+//     cannot otherwise reach — and that channel is the whole of what ADR-009
+//     and ADR-010 are written against. This is the case the axis exists for.
+//   - A LOCAL project with no entry defaults to ALLOWED. Its agent already has
+//     the host's network: it runs as the user, on this machine, usually with a
+//     shell, so web_fetch gives it nothing it could not do with curl. Refusing
+//     it there protects nothing and costs every tool of every MCP that has not
+//     annotated openWorldHint yet — which, since an absent hint reads as
+//     open-world, is every tool of an unannotated MCP rather than only its
+//     networked ones.
+//
+// An earlier draft of this said there was no asymmetry, on the grounds that
+// "an outbound channel is an outbound channel". That is true about the channel
+// and wrong about the grant, for exactly the reason decision 2's asymmetry is
+// right: what differs is not the channel but whether relay is the only way to
+// it. Measured before the flip — 63 tests refused, and fsMCP's whole tool
+// surface unreachable from the local Relay project.
+//
+// AN EXPLICIT VALUE WINS IN BOTH DIRECTIONS. The one case the local default is
+// wrong for is a confined local agent that genuinely has no other network path
+// — no shell, no curl, tools reached only through relay — and an operator says
+// so by storing an explicit false rather than by relying on a default that
+// cannot know it. That is why the map is map[string]bool and not a set of the
+// MCPs that are allowed: false has to be a value someone can write.
 func (t *StoredToken) ExternalAllowed(mcpID string) bool {
 	if t == nil {
 		return false
 	}
-	return t.AllowExternal[mcpID]
+	if allowed, ok := t.AllowExternal[mcpID]; ok {
+		return allowed
+	}
+	return !t.IsRemote()
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -399,10 +420,11 @@ type Project struct {
 	// are answered by crossing the two axes rather than by inventing a third
 	// mode, which would have to be mail-specific to mean anything (ADR-006).
 	//
-	// A missing entry means false FOR EVERY KIND — see
-	// StoredToken.ExternalAllowed for why this axis has none of the asymmetry
-	// Access has. omitempty so every project already on disk round-trips
-	// byte-identical.
+	// A missing entry defaults by KIND — refused for a profile, allowed for a
+	// local project — and an explicit value wins either way. See
+	// StoredToken.ExternalAllowed for why the asymmetry is the same one Access
+	// has and why an explicit false has to be storable. omitempty so every
+	// project already on disk round-trips byte-identical.
 	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 
 	// Per-project Claude permission policy.

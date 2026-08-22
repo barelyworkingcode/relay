@@ -884,10 +884,14 @@ function projAccessMode(p, mcpID) {
 }
 
 // projAllowExternal mirrors StoredToken.ExternalAllowed against a stored
-// record: anything but an explicit true is refused, and no kind is consulted
-// because this axis has no local/remote default to consult one for.
+// record: an explicit value wins in either direction, and the default is the
+// same asymmetry projAccessMode has — a profile refuses, a local project
+// allows, because a local agent already has the host's network and a remote
+// client has no path off this host except through relay.
 function projAllowExternal(p, mcpID) {
-    return !!((p && p.allow_external) ? p.allow_external[mcpID] : false);
+    const explicit = (p && p.allow_external) ? p.allow_external[mcpID] : undefined;
+    if (explicit === true || explicit === false) return explicit;
+    return !isRemoteProject(p);
 }
 
 // scopeValueIsSet mirrors hasScopeValue on the Go side: absent, null, empty
@@ -1132,11 +1136,12 @@ function blankProjectForm() {
         access: {},                              // mcpID -> 'read' | 'write'
         allowed_tools: {},                       // mcpID -> [pattern, ...]
         context: {},                             // mcpID -> { field: value }
-        // The second axis (ADR-011 decision 2c). Absent means refused, for a
-        // local project exactly as for an access profile — unlike `access`,
-        // this one has no local/remote asymmetry, because an outbound channel
-        // is an outbound channel whoever holds it.
-        allow_external: {},                      // mcpID -> true
+        // The second axis (ADR-011 decision 2c). Only DISSENT from the kind's
+        // default is ever stored here — refused for an access profile, allowed
+        // for a local project, the same asymmetry `access` has and for the same
+        // reason: a remote client has no way off this Mac except through relay,
+        // and a local agent already has one.
+        allow_external: {},                      // mcpID -> true | false
         // Raw text as typed, so a half-finished value survives a re-render and
         // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
         _scopeText: {},                          // mcpID -> { field: text }
@@ -1379,19 +1384,31 @@ function setProjAccess(mcpID, mode) {
     render();
 }
 
-// projFormAllowExternal is the outbound grant against the in-flight form. No
-// kind is consulted, deliberately: unset is refused for a local project and an
-// access profile alike (ADR-011 decision 2c).
-function projFormAllowExternal(f, mcpID) {
-    return (f.allow_external || {})[mcpID] === true;
+// projFormAllowExternal is projAllowExternal against the in-flight form, which
+// carries `kind` as a string rather than as the stored ProjectKind.
+function projFormAllowExternalDefault(f) {
+    return !isRemoteForm(f);
 }
 
+function projFormAllowExternal(f, mcpID) {
+    const explicit = (f.allow_external || {})[mcpID];
+    if (explicit === true || explicit === false) return explicit;
+    return projFormAllowExternalDefault(f);
+}
+
+// setProjAllowExternal stores only DISSENT from the kind's default, and the
+// deletion is load-bearing rather than tidiness. A local project's default is
+// allowed, so a click on Allow that wrote an explicit true would survive a
+// later conversion to an access profile — where the default is refused — and
+// hand the converted profile an outbound channel nobody granted it. Storing
+// only what differs from the default means settings.json carries what an
+// operator actually decided, and a conversion lands on the new kind's default.
 function setProjAllowExternal(mcpID, allow) {
     const f = state.projectForm;
     if (!f) return;
     if (!f.allow_external) f.allow_external = {};
-    if (allow) f.allow_external[mcpID] = true;
-    else delete f.allow_external[mcpID];
+    if (allow === projFormAllowExternalDefault(f)) delete f.allow_external[mcpID];
+    else f.allow_external[mcpID] = allow;
     render();
 }
 
@@ -1509,7 +1526,12 @@ function renderProjMcpPermissions(mcpID, f) {
     html += '<p class="proj-section-help">' + (external
         ? 'Tools that reach outside this Mac are allowed, <code>mail_send</code> and <code>web_fetch</code> among them. Anything this grant can read, it can send somewhere you cannot see.'
         : 'Tools that reach outside this Mac are refused — <code>mail_send</code>, <code>web_fetch</code>, anything that talks to a network or a mail server. <strong>Drafting still works:</strong> <code>mail_create_draft</code> writes a draft on this Mac for a person to read and send, so an agent can compose without being able to post.')
-        + ' This is a <em>separate</em> question from Read/Write above and neither answers the other: <code>web_fetch</code> is read-only and reaches outside, <code>mail_create_draft</code> changes something and does not. A tool whose MCP declares no <code>openWorldHint</code> counts as reaching outside — that is the MCP specification\'s own default — so with this refused, a grant can lose a tool that never touches a network until its MCP annotates one. Unset defaults to <strong>refused</strong>, for a local project and an access profile alike.</p>';
+        + ' This is a <em>separate</em> question from Read/Write above and neither answers the other: <code>web_fetch</code> is read-only and reaches outside, <code>mail_create_draft</code> changes something and does not.'
+        + ' Unset defaults to <strong>' + (remote ? 'refused' : 'allowed') + '</strong> for ' + (remote ? 'an access profile' : 'a local project') + '. '
+        + (remote
+            ? 'A client on another machine has no way off this Mac except through relay, so these tools are capability it does not otherwise have. Note a tool whose MCP declares no <code>openWorldHint</code> counts as reaching outside — that is the MCP specification\'s own default — so while an MCP is unannotated, refusing this costs a profile <em>every</em> tool of it, not only the networked ones.'
+            : 'An agent running here already has this Mac\'s network — it runs as you, usually with a shell, so <code>web_fetch</code> gives it nothing <code>curl</code> would not. Refuse it anyway if this project\'s agent genuinely has no other way out; that is what the explicit setting is for.')
+        + '</p>';
     html += '</div>';
 
     // Which tools — profiles only. A local project subtracts with the tool
@@ -2393,9 +2415,12 @@ function harvestProjectPermissions(f) {
     for (const mcpID of granted) {
         const mode = (f.access || {})[mcpID];
         if (mode === 'read' || mode === 'write') access[mcpID] = mode;
-        // Only the true is sent. False is what an absent key already means on
-        // both sides, and relay's mutator drops one anyway.
-        if (projFormAllowExternal(f, mcpID)) allowExternal[mcpID] = true;
+        // Whatever the form holds, both values — setProjAllowExternal has
+        // already reduced it to dissent from the kind's default, so an entry
+        // here is something an operator said rather than something a click
+        // happened to write.
+        const ext = (f.allow_external || {})[mcpID];
+        if (ext === true || ext === false) allowExternal[mcpID] = ext;
 
         if (remote) {
             const text = projAllowedToolsText(f, mcpID);
@@ -4333,7 +4358,7 @@ render();
 Object.assign(window, {
     auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
-    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
+    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

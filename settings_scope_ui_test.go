@@ -431,15 +431,69 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 			t.Errorf("the outbound control is missing %q\n%s", want, html)
 		}
 	}
-	// It defaults to refused and says so — for a local project too, which is
-	// where a reader will expect the asymmetry the mode has.
-	if !strings.Contains(html, "for a local project and an access profile alike") {
-		t.Error("the panel does not say the default is the same for both kinds")
+	// A profile's default is refused, and the panel says WHY in the operator's
+	// terms rather than asserting it: relay is the only way off this Mac for a
+	// client on another machine.
+	if !strings.Contains(html, "Unset defaults to <strong>refused</strong> for an access profile") {
+		t.Errorf("the panel does not name the profile default\n%s", html)
 	}
+	if !strings.Contains(html, "no way off this Mac except through relay") {
+		t.Error("the panel asserts the profile default without the reason for it")
+	}
+	// A local project's default is the opposite, and the panel says why that
+	// too — the same asymmetry Operations has, from the same threat model.
 	vm = seedScopeVM(t, scopeProjectsFixture, "p_local")
 	local := evalString(t, vm, `window.renderProjectForm()`)
-	if !strings.Contains(local, `setProjAllowExternal('macmcp', true)`) {
-		t.Error("a local project was not offered the control at all")
+	if !strings.Contains(local, "Unset defaults to <strong>allowed</strong> for a local project") {
+		t.Errorf("the panel does not name the local default\n%s", local)
+	}
+	if !strings.Contains(local, "already has this Mac") {
+		t.Error("the local default is asserted without the reason for it")
+	}
+	// And it is still refusable there, which is the case the default is wrong
+	// for: a confined local agent with no other way out.
+	if !strings.Contains(local, `setProjAllowExternal('macmcp', false)`) {
+		t.Error("a local project cannot refuse its own outbound channel from the editor")
+	}
+}
+
+// Only DISSENT from the kind's default is stored. A click that agrees with the
+// default deletes the key rather than writing it, so a local project's Allow
+// cannot survive a later conversion into an access profile and hand the
+// converted profile a channel nobody granted it.
+func TestProjectForm_OutboundGrantStoresOnlyDissent(t *testing.T) {
+	vm := seedScopeVM(t, scopeProjectsFixture, "p_local")
+	got := evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);   // the local default
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != "{}" {
+		t.Errorf("agreeing with the local default wrote an explicit value: %s", got)
+	}
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', false);  // dissent
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != `{"macmcp":false}` {
+		t.Errorf("a local project's refusal was not stored: %s", got)
+	}
+
+	// The mirror on a profile: Refuse is the default and writes nothing, Allow
+	// is the dissent and is stored.
+	vm = seedScopeVM(t, scopeProjectsFixture, "p_bob")
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', false);
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != "{}" {
+		t.Errorf("agreeing with the profile default wrote an explicit value: %s", got)
+	}
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != `{"macmcp":true}` {
+		t.Errorf("a profile's outbound grant was not stored: %s", got)
 	}
 }
 
@@ -448,13 +502,17 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 func TestProjectList_ShowsTheOutboundGrantOnTheRow(t *testing.T) {
 	vm := seedScopeVM(t, scopeProjectsFixture, "")
 	html := evalString(t, vm, `window.renderProjects()`)
-	if !strings.Contains(html, `<span class="proj-auth-external off">local only</span>`) {
-		t.Errorf("a row does not say the grant holds no outbound channel\n%s", html)
+	// The two profiles say "local only" by default; the local project says the
+	// opposite by default. Both defaults are visible on the list, which is the
+	// point — a row that showed only the mode would answer "what can this
+	// client do" with the axis that does not mention the network.
+	if n := strings.Count(html, `<span class="proj-auth-external off">local only</span>`); n != 2 {
+		t.Errorf("want both profiles marked local only, got %d\n%s", n, html)
 	}
-	if strings.Contains(html, `proj-auth-external on`) {
-		t.Error("a row claimed an outbound grant no fixture record holds")
+	if n := strings.Count(html, `<span class="proj-auth-external on">may reach outside</span>`); n != 1 {
+		t.Errorf("want the local project marked as reaching outside, got %d", n)
 	}
-	// And a record that holds one says so, in the louder style.
+	// And a PROFILE that has been granted one says so, in the louder style.
 	vm = seedScopeVM(t, `[{id:'p_out', name:'Outbound', kind:'remote', path:'', allowed_mcp_ids:['macmcp'],
 		allowed_models:[], allowed_tools:{macmcp:['mail_*']}, access:{macmcp:'write'},
 		allow_external:{macmcp:true},
