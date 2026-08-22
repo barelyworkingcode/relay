@@ -73,10 +73,12 @@ Only tools the MCP annotates `readOnlyHint: true` are admitted to a read grant;
 a tool that is unannotated, malformed, or added later is refused. That is what
 keeps a new mutating tool out of an old grant.
 
-**Outside this Mac** — Refuse or Allow. **Unset defaults to Refuse**, for a
-local project and an access profile alike; unlike Operations there is no
-local/remote asymmetry here, because an outbound channel is an outbound channel
-whoever holds it.
+**Outside this Mac** — Refuse or Allow. **Unset defaults to Refuse for a
+profile** and to Allow for a local project — the same asymmetry Operations has,
+and for the same reason: a client on another machine has no way off this Mac
+except through relay, while an agent running here already has your network and
+usually a shell, so refusing `web_fetch` there would cost you tools and protect
+nothing.
 
 - With it **refused**, tools that reach outside this Mac are denied —
   `mail_send`, `web_fetch`, anything that talks to a network or a mail server.
@@ -85,9 +87,13 @@ whoever holds it.
   can compose and cannot post, which is usually what you want from an agent.
 - A tool whose MCP declares no `openWorldHint` **counts as reaching outside** —
   that is the MCP specification's own default and relay follows it rather than
-  guessing. So while an MCP is unannotated, refusing this costs you *every* tool
-  of that MCP, not only the networked ones. If a grant is emptier than you
-  expect, this is the first thing to check.
+  guessing. So while an MCP is unannotated, refusing this costs a profile
+  *every* tool of that MCP, not only the networked ones. **If a profile is
+  emptier than you expect, this is the first thing to check.**
+- You can refuse it for a **local project** too, and the control is there for
+  it. It is worth doing only when that project's agent genuinely has no other
+  way out — no shell, no `curl`, nothing but relay. Otherwise you are closing a
+  door in a wall that isn't there.
 
 **Tools** — one name or pattern per line, e.g. `mail_*`.
 
@@ -253,18 +259,19 @@ you lack.
   who it is sent **to**, so the profile can mail anything it can read to any
   address. There is no recipient allowlist yet.
 
-  Two profiles that do *not* have that channel: a **read-only** profile has none
-  at all — `web_fetch` is refused by this layer, so there is nothing to leave out
-  of `allowed_tools` and nothing to forget. And a **write profile with Outside
-  this Mac refused** can draft but not post. Prefer either.
+  Two profiles that do *not* have that channel, and both are what you get
+  without asking: a **read-only** profile has none at all — `web_fetch` is
+  refused by this layer whatever `allowed_tools` says, so there is nothing to
+  leave out and nothing to forget. And a **write profile with Outside this Mac
+  refused** can draft but not post. Prefer either.
 - **The scope confines by mailbox, not by correspondent.** A grant on Bob's
   INBOX necessarily exposes everyone who wrote to Bob.
-- **Relay cannot verify that an MCP honoured the scope.** Layer 4 is the MCP's
+- **Relay cannot verify that an MCP honoured the scope.** Layer 5 is the MCP's
   word. The mitigations are containment — the per-enrolment budget bounds the
   drain regardless — and the end-to-end tests, not verification.
 - **Only mail is scoped.** Calendars, contacts and iMessage have no resource
-  scoping yet. A profile granted those tools is bounded by `allowed_tools` and
-  the mode alone, which is one layer rather than four. Grant `mail_*` and
+  scoping yet. A profile granted those tools is bounded by `allowed_tools`, the
+  mode and the outbound grant, which is three layers rather than five. Grant `mail_*` and
   nothing else until that changes.
 - **Co-located agents are only as separate as the client machine makes them.**
   Relay distinguishes them by the key each presents; agents running as the same

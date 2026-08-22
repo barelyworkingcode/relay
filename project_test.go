@@ -365,14 +365,10 @@ func TestProjectTokenScoping(t *testing.T) {
 
 	// Set up mock MCP connections.
 	mgr := NewExternalMcpManager(nil)
-	// openWorldHint: false on each — these are filesystem tools on this host,
-	// and an unannotated one would be refused to every grant without
-	// allow_external (ADR-011 decision 2c), which is not what this test is
-	// about.
 	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", []mcp.Tool{
-		{Name: "fs_read", Description: "Read file", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
-		{Name: "fs_write", Description: "Write file", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
-		{Name: "fs_bash", Description: "Run bash", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
+		{Name: "fs_read", Description: "Read file"},
+		{Name: "fs_write", Description: "Write file"},
+		{Name: "fs_bash", Description: "Run bash"},
 	}, func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
 		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 	}))

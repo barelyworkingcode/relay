@@ -88,53 +88,90 @@ func TestHints_SilenceDeniesOnBothAxesInOppositeSpellings(t *testing.T) {
 // The grant
 // ---------------------------------------------------------------------------
 
-func TestExternalAllowed_DefaultsToFalseAndAnythingButTrueIsFalse(t *testing.T) {
+func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
 	var nilTok *StoredToken
 	if nilTok.ExternalAllowed("macmcp") {
 		t.Error("a nil token allowed external access")
 	}
-	if (&StoredToken{}).ExternalAllowed("macmcp") {
-		t.Error("a token with no map allowed external access")
-	}
 	tok := &StoredToken{AllowExternal: map[string]bool{"macmcp": false, "other": true}}
 	if tok.ExternalAllowed("macmcp") {
-		t.Error("an explicit false allowed external access")
-	}
-	if tok.ExternalAllowed("unnamed") {
-		t.Error("an MCP with no entry allowed external access")
+		t.Error("an explicit false did not refuse")
 	}
 	// Per MCP, not per token: granting one outbound channel is not granting
-	// every MCP's.
+	// every MCP's, and refusing one is not refusing every MCP's.
 	if !tok.ExternalAllowed("other") {
 		t.Error("an explicit true was not honoured")
 	}
+	// The explicit false has to survive on a LOCAL record, where it is the only
+	// way to say the opposite of the default. That is the confined local agent
+	// with no shell — an unusual case, but the reason the field is a
+	// map[string]bool and not a set of allowed MCP ids.
+	local := &StoredToken{AllowExternal: map[string]bool{"macmcp": false}}
+	if local.ExternalAllowed("macmcp") {
+		t.Error("a local project could not refuse its own outbound channel")
+	}
 }
 
-// The asymmetry AccessMode has, deliberately absent here. A reader arriving
-// from that function will expect one, so it is measured rather than asserted
-// in a comment.
-func TestAllowExternal_HasNoLocalRemoteAsymmetry(t *testing.T) {
-	for _, kind := range []ProjectKind{ProjectKindLocal, ProjectKindRemote} {
+// The asymmetry AccessMode has, and it is the SAME asymmetry rather than a
+// coincidence: a remote client has no network path off this host except
+// through relay, so an outbound tool is new capability for it; a local
+// project's agent runs as the user with a shell and already has one, so
+// refusing it there protects nothing and costs every tool of every MCP that
+// has not annotated openWorldHint.
+//
+// The name says "no asymmetry" inverted on purpose: the first draft of this
+// decision claimed there was none, and the property is pinned here rather than
+// deleted so the claim cannot quietly come back.
+func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecision(t *testing.T) {
+	if (&StoredToken{ProjectKind: ProjectKindRemote}).ExternalAllowed("macmcp") {
+		t.Error("an access profile defaulted to allowing external access")
+	}
+	for _, kind := range []ProjectKind{ProjectKindLocal, ""} {
 		local := &StoredToken{ProjectKind: kind}
-		if local.ExternalAllowed("macmcp") {
-			t.Errorf("kind %q defaulted to allowing external access", kind)
+		if !local.ExternalAllowed("macmcp") {
+			t.Errorf("kind %q defaulted to refusing external access", kind)
 		}
 	}
-	// And through the router, where a local project's default write mode is
-	// what would otherwise hide the difference: a local project reaches
-	// mail_create_draft and does not reach web_fetch.
+
+	// Through the router, both directions. A LOCAL project reaches the
+	// outbound tools with nothing granted...
 	r := newProfileRouter(t, profileOpts{})
 	got := listedToolNames(t, r)
-	if !slices.Contains(got, "mail_create_draft") {
-		t.Errorf("a local project lost a mutating LOCAL tool: %v", got)
+	for _, outbound := range []string{"web_fetch", "mail_send"} {
+		if !slices.Contains(got, outbound) {
+			t.Errorf("a local project was refused %q it could reach with curl: %v", outbound, got)
+		}
+		if _, err := r.CallTool(context.Background(), outbound, json.RawMessage(`{}`), testToken); err != nil {
+			t.Errorf("a local project could not call %q: %v", outbound, err)
+		}
 	}
+
+	// ...and says so explicitly when it wants the profile's behaviour, which
+	// has to be expressible even though it is not the default.
+	r = newProfileRouter(t, profileOpts{allowExternal: map[string]bool{"macmcp": false}})
+	got = listedToolNames(t, r)
+	if slices.Contains(got, "web_fetch") {
+		t.Errorf("a local project that refused its outbound channel was served web_fetch: %v", got)
+	}
+	if !slices.Contains(got, "mail_create_draft") {
+		t.Errorf("refusing the outbound channel took a LOCAL tool with it: %v", got)
+	}
+
+	// A PROFILE is the mirror: refused with nothing said, allowed only when
+	// something is.
+	r = newProfileRouter(t, profileOpts{
+		kind:         ProjectKindRemote,
+		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*"}},
+		access:       map[string]string{"macmcp": AccessWrite},
+	})
+	got = listedToolNames(t, r)
 	for _, outbound := range []string{"web_fetch", "mail_send"} {
 		if slices.Contains(got, outbound) {
-			t.Errorf("a local project with no allow_external was served %q", outbound)
+			t.Errorf("an access profile with no allow_external was served %q: %v", outbound, got)
 		}
-		if _, err := r.CallTool(context.Background(), outbound, json.RawMessage(`{}`), testToken); err == nil {
-			t.Errorf("a local project with no allow_external called %q", outbound)
-		}
+	}
+	if !slices.Contains(got, "mail_create_draft") {
+		t.Errorf("the same profile lost a mutating LOCAL tool: %v", got)
 	}
 }
 
@@ -207,7 +244,11 @@ func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 		{Name: "web_fetch", Category: "Web", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":true}`)},
 		{Name: "weather_now", Category: "Weather", Annotations: json.RawMessage(`{"readOnlyHint":true}`)},
 	}
-	r := newProfileRouter(t, profileOpts{tools: tools})
+	r := newProfileRouter(t, profileOpts{
+		kind:         ProjectKindRemote,
+		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*", "weather_*"}},
+		tools:        tools,
+	})
 
 	if got := listedToolNames(t, r); strings.Join(got, ",") != "mail_search" {
 		t.Fatalf("ListTools served %v, want only the tool that stays on this host", got)

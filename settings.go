@@ -502,11 +502,14 @@ func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
 // (ADR-011 decision 2c). Entries naming an MCP the project is not granted are
 // dropped, exactly as UpdateProjectAccess drops them.
 //
-// A false is dropped rather than stored, because false is what the absence of
-// an entry already means for every kind of record (StoredToken.ExternalAllowed
-// has no asymmetry to preserve) — storing it would be a second spelling of one
-// state, and settings.json would stop round-tripping byte-identical for every
-// project that never granted anything.
+// BOTH VALUES ARE STORED, including false. False is not "the same as absent"
+// even though it looks like it for a profile: the default is asymmetric
+// (StoredToken.ExternalAllowed), so for a LOCAL project absent means allowed
+// and an explicit false is the only way to say the opposite — a confined local
+// agent with no shell and no other network path is a real thing to want, and a
+// mutator that discarded the false would make it unsayable. An empty map still
+// clears the whole field, which is how an operator returns every MCP to its
+// default.
 //
 // Does not save; use within store.With.
 func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) {
@@ -519,14 +522,11 @@ func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) 
 		return
 	}
 	cleaned := make(map[string]bool, len(allow))
-	for mcpID, ok := range allow {
-		if !ok {
-			continue
-		}
+	for mcpID, allowed := range allow {
 		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
 			continue
 		}
-		cleaned[mcpID] = true
+		cleaned[mcpID] = allowed
 	}
 	if len(cleaned) == 0 {
 		proj.AllowExternal = nil

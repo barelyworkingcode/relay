@@ -74,7 +74,7 @@ func budgetCtx(clientID string) context.Context {
 func countingMock(result string) (*mockMcpConn, func() int) {
 	var mu sync.Mutex
 	n := 0
-	m := newMockConn("macmcp", simpleTools("mail_search", "mail_get_emails"),
+	m := newMockConn("macmcp", localTools("mail_search", "mail_get_emails"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			mu.Lock()
 			n++

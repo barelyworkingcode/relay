@@ -251,11 +251,12 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 	}
 }
 
-// The outbound grant is stored the same way the mode is, with two differences
-// that are both deliberate: a false is dropped rather than stored, because an
-// absent entry already means false for every kind of record; and there is no
-// unrecognised-value case to keep, because the value is a bool.
-func TestUpdateProjectAllowExternal_DropsUngrantedMcpsAndFalseEntries(t *testing.T) {
+// The outbound grant is stored the same way the mode is, with one difference
+// that is the whole of ADR-011 decision 2c's asymmetry: an explicit FALSE is
+// kept, because for a local project — which defaults to allowed — it is the
+// only way to say the opposite, and a mutator that discarded it would make a
+// confined local agent unexpressible.
+func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *testing.T) {
 	s := &Settings{Version: 1}
 	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
@@ -263,8 +264,7 @@ func TestUpdateProjectAllowExternal_DropsUngrantedMcpsAndFalseEntries(t *testing
 	}
 	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{
 		"macmcp": true,
-		"other":  true,  // not granted
-		"fsmcp":  false, // not granted and not true
+		"other":  true, // not granted
 	})
 	got := s.Projects[0]
 	if !got.AllowExternal["macmcp"] {
@@ -281,19 +281,36 @@ func TestUpdateProjectAllowExternal_DropsUngrantedMcpsAndFalseEntries(t *testing
 		t.Error("a dropped entry still reached the token")
 	}
 
-	// A false clears rather than storing a second spelling of the default, so
-	// settings.json keeps round-tripping byte-identical for the overwhelming
-	// majority of records that never grant one.
-	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": false})
-	if s.Projects[0].AllowExternal != nil {
-		t.Errorf("a cleared grant left a map behind: %#v", s.Projects[0].AllowExternal)
+	// A local project storing an explicit false: kept, and it refuses.
+	local, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
+	if err != nil {
+		t.Fatalf("create local: %v", err)
 	}
-	blob, err := json.Marshal(s.Projects[0])
+	s.UpdateProjectAllowExternal(local.ID, map[string]bool{"macmcp": false})
+	stored, _ := s.findProjectByID(local.ID)
+	if allowed, ok := stored.AllowExternal["macmcp"]; !ok || allowed {
+		t.Fatalf("a local project's explicit refusal was discarded: %#v", stored.AllowExternal)
+	}
+	if s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+		t.Error("a stored refusal did not reach the token")
+	}
+
+	// An EMPTY map clears the field entirely, which is how every MCP goes back
+	// to its default — and a record that says nothing serializes nothing.
+	s.UpdateProjectAllowExternal(local.ID, nil)
+	stored, _ = s.findProjectByID(local.ID)
+	if stored.AllowExternal != nil {
+		t.Errorf("a cleared field left a map behind: %#v", stored.AllowExternal)
+	}
+	blob, err := json.Marshal(*stored)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if strings.Contains(string(blob), "allow_external") {
-		t.Errorf("a record granting nothing serialized the key anyway: %s", blob)
+		t.Errorf("a record saying nothing serialized the key anyway: %s", blob)
+	}
+	if !s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+		t.Error("clearing the field did not return the local project to its default")
 	}
 
 	// And it is pruned when the MCP stops being granted at all, exactly as the

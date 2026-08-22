@@ -418,15 +418,11 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 	}
 
 	// A LOCAL project is unchanged: no allowlist means every tool, with
-	// disabled_tools still subtracting. It is given the outbound grant
-	// because this test is about the TOOL allowlist — a local project without
-	// one is refused the open-world tools exactly as a profile is, which is
-	// decision 2c's deliberate lack of asymmetry and is measured in
-	// TestAllowExternal_HasNoLocalRemoteAsymmetry.
-	r = newProfileRouter(t, profileOpts{
-		allowExternal: map[string]bool{"macmcp": true},
-		disabled:      map[string][]string{"macmcp": {"shortcuts_run"}},
-	})
+	// disabled_tools still subtracting. Nothing is granted to it here, and
+	// nothing needs to be — a local project defaults to write AND to allowing
+	// the outbound tools (ADR-011 decision 2c), because its agent already has
+	// the host's network.
+	r = newProfileRouter(t, profileOpts{disabled: map[string][]string{"macmcp": {"shortcuts_run"}}})
 	got := listedToolNames(t, r)
 	if len(got) != len(macmcpToolSurface())-1 {
 		t.Fatalf("local project listed %d tools, want all but the disabled one", len(got))

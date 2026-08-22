@@ -321,8 +321,9 @@ Two costs, both measured on this tree rather than imagined:
    owner's request and the reason this decision exists. Both mutate; only one
    posts.
 
-**An access profile carries `allow_external` per MCP: a boolean, default
-false, gating any tool whose `openWorldHint` is not explicitly `false`.**
+**A record carries `allow_external` per MCP: a boolean gating any tool whose
+`openWorldHint` is not explicitly `false`, defaulting to refused for an access
+profile and allowed for a local project.**
 
 **It is a separate field, not a third mode.** "Draft" is mail-specific and
 relay must never learn what drafting means (the ADR-006 line). The two
@@ -344,13 +345,36 @@ matches struct fields case-insensitively, and `{"OpenWorldHint": false}` is not
 a declaration the specification defines), a malformed blob denying rather than
 panicking, and a definition relay could not find denying too.
 
-**There is no local/remote asymmetry here, and that is the deliberate part.**
-Decision 2's asymmetric default rests on a local project being "the operator's
-own machine acting as itself" — an argument about who the caller *is*. This
-axis is not about the caller. An outbound channel is an outbound channel: a
-local agent mailing a file to an arbitrary address exfiltrates it exactly as a
-remote one does, and ADR-009's threat model is exfiltration. So the default is
-false for every kind, and the grant is something an operator types either way.
+**The default is asymmetric, and it is the same asymmetry decision 2 has,
+reached from the same place — the threat model.**
+
+- An **access profile** defaults to **refused**. A remote client has no network
+  path off this host except through relay. For it `web_fetch` and `mail_send`
+  are genuinely new capability — a channel out of a machine it cannot otherwise
+  reach — and that channel is what ADR-009 and ADR-010 are written against.
+  This is the case the axis exists for.
+- A **local project** defaults to **allowed**. Its agent already has the host's
+  network: it runs as the user, on this machine, usually with a shell, so
+  `web_fetch` gives it nothing it could not do with `curl`.
+
+**A first draft of this decision said there was no asymmetry**, on the grounds
+that "an outbound channel is an outbound channel". That is true about the
+channel and wrong about the grant, for exactly the reason decision 2's
+asymmetry is right: what differs between the two kinds is not the channel but
+whether relay is the only way to it. It was measured before the flip — 63 tests
+refused, and fsMCP's entire tool surface unreachable from the local `Relay`
+project, because an absent hint reads as open-world and fsMCP annotates
+nothing. Refusing there protects nothing and costs everything, which is
+operability defeating security by the route constraint 2 names.
+
+**An explicit value wins in both directions**, so the case the local default is
+wrong for — a confined local agent with no shell and no other way out — is
+expressible by storing `false` rather than by hoping a default could know. That
+is why the field is `map[string]bool` and not a set of allowed MCP ids, and why
+the mutator keeps a `false` instead of collapsing it into the absent case. The
+editor stores only *dissent* from the kind's default, so a local project's
+"allowed" is an absence rather than a value, and converting that record into a
+profile lands on the profile default instead of carrying a channel across.
 
 **Rejected: reading the axis off the tool's name or its MCP.** A registry of
 "tools relay knows are network tools" is finding 7 in miniature, one level
@@ -368,12 +392,14 @@ that matter — an MCP that annotates nothing keeps every outbound channel it
 has. It also inverts on upgrade: a tool added tomorrow joins every existing
 grant, which is finding 9's shape.
 
-**What it costs is stated rather than hidden: every tool of every MCP that
-does not annotate `openWorldHint` is refused until an operator grants the
-MCP outbound access or the MCP annotates itself.** That is loud and closed and
-it is the same trade decision 2 already made for `readOnlyHint` — but it is
-larger, because it lands on *local projects too* and because no MCP on this
-host annotates the field today. See the consequence below.
+**What it costs is stated rather than hidden: an access profile loses every
+tool of every MCP that does not annotate `openWorldHint`, until the MCP
+annotates itself or an operator grants that MCP outbound access.** Since an
+absent hint reads as open-world, that is *every* tool of an unannotated MCP and
+not only its networked ones. It is loud, closed, and the same trade decision 2
+already made for `readOnlyHint` — and it is confined to profiles, which is
+where the capability is real. It is also why macMCP's annotation audit lands
+with this rather than after it. See the consequence below.
 
 ### 3. The context schema carries five keywords and no field names relay knows
 
@@ -1036,20 +1062,20 @@ mail or quietly returning nothing.
   previously decorative — including the three mail tools that lack it today and
   `mail_get_source`, whose `true` is wrong while `save_to` exists.
 
-- **And a truthful `openWorldHint`, which no MCP on this host publishes yet.**
-  This is the largest operational consequence of decision 2c and it is bigger
-  than the `readOnlyHint` one above, in two ways. It lands on **local
-  projects**, which the mode's asymmetry spares — the live wildcard `Relay`
-  project loses every open-world tool of every MCP it reaches. And because an
-  absent hint means open-world, a tool of an MCP that annotates *nothing*
-  is refused, so the loss is not confined to tools that touch a network: it
-  is every tool of fsMCP, and every macMCP tool whose annotation does not yet
-  carry the field. The mitigation is one control per MCP in the editor, and
-  the fix is the MCPs annotating themselves — macMCP's half of this lands
-  with relay's. Until an MCP does, `allow_external` on it is the difference
-  between a working grant and an empty one, which is a blunter instrument
-  than the axis deserves and is the price of the specification's own
-  default.
+- **And a truthful `openWorldHint`, which is why macMCP's annotation audit had
+  to happen first.** An **access profile** loses every tool of an MCP that does
+  not publish the field — not only the networked ones, because an absent hint
+  reads as open-world — until the MCP annotates itself or an operator grants
+  that MCP outbound access. That is the fail-closed direction and it is where
+  the capability is real, so it is the right place for the cost to land.
+
+  **Local projects are unaffected**, which is the whole of decision 2c's
+  asymmetry: the live wildcard `Relay` project keeps fsMCP, whose tools declare
+  neither hint, and keeps every macMCP tool it has today. The first draft of
+  this decision had no asymmetry and would have taken all of that away — 63
+  tests refused and fsMCP dark — for no gain, since an agent running here can
+  already reach the network with `curl`. The measurement is what corrected the
+  decision, and it is recorded in 2c rather than quietly fixed.
 
 - **Relay learns five keywords and no field names.** After this, the only
   domain-specific string left in relay is the v1 `allowed_dirs` compatibility
@@ -1078,8 +1104,9 @@ mail or quietly returning nothing.
   about who it is sent *to*, so a profile holding `mail_send` can still mail
   anything it can read to any address. What changed is that holding
   `mail_send` now takes two grants rather than one: `access: "write"` **and**
-  `allow_external`. A write mail profile without the second drafts and does
-  not post, which is the shape the owner asked for. A **read-only** profile has
+  `allow_external`, neither of which a profile has by default. A write mail
+  profile without the second drafts and does not post, which is the shape the
+  owner asked for. A **read-only** profile has
   no outbound channel at all — not "once `allowed_tools` excludes `web_fetch`",
   which is what the old sentence had to qualify itself with, but by
   construction, because `web_fetch` is open-world and no read-only default

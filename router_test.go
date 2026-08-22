@@ -157,8 +157,8 @@ func TestListTools_ReturnsPermittedTools(t *testing.T) {
 		map[string]Permission{"mcp-a": PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
-				{Name: "tool_one", Description: "First tool", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
-				{Name: "tool_two", Description: "Second tool", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
+				{Name: "tool_one", Description: "First tool"},
+				{Name: "tool_two", Description: "Second tool"},
 			}, nil),
 		},
 	)
@@ -209,9 +209,9 @@ func TestListTools_ExcludesDisabledTools(t *testing.T) {
 		map[string][]string{"mcp-a": {"tool_two"}}, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
-				{Name: "tool_one", Description: "Allowed", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
-				{Name: "tool_two", Description: "Disabled", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
-				{Name: "tool_three", Description: "Also allowed", Annotations: json.RawMessage(`{"openWorldHint":false}`)},
+				{Name: "tool_one", Description: "Allowed"},
+				{Name: "tool_two", Description: "Disabled"},
+				{Name: "tool_three", Description: "Also allowed"},
 			}, nil),
 		},
 	)
