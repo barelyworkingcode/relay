@@ -472,3 +472,139 @@ func TestProjectListBadgesRemote(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// relay#25 — the New Project form silently discarded a typed name, and a
+// refused Create said nothing an operator could see. Three tests below, one
+// per load-bearing fix:
+//
+//   - capture-and-restore is now a property of render() itself, not
+//     something each mutator has to remember to call, so ANY re-render of
+//     the form (not only the enumeration picker's async answer) preserves
+//     what was typed;
+//   - a Create refused by a check THIS form can localize (name, path) says
+//     so next to the field and focuses it;
+//   - a Create refused by the SERVER (validateProjectShape /
+//     validateProjectPermissions, reached over IPC as onProjectError) now
+//     actually repaints while the form is open — it used to be silently
+//     swallowed by the exact guard meant to protect the form from an
+//     unrelated external change.
+// ---------------------------------------------------------------------------
+
+// TestGrantingAnMcpDoesNotEatTheTypedName reproduces relay#25 defect (a)
+// directly: type a name into a new access profile, click "Granted" on an
+// MCP, and the name must still be there. Before the fix, capture-before-
+// repaint lived only in toggleScopeFieldPicker / retryScopeEnum /
+// toggleProjScopeValueAt / onScopeFieldEnumerated — each a special case added
+// for the enumeration picker's OWN async re-render — and setProjMcpGranted
+// (along with setProjMcpState, setProjMcpWildcard, setProjAccess,
+// setProjModelsWildcard) had no such call, so its render() rebuilt the name
+// input from state.projectForm.name, which was still '' from blankProjectForm.
+func TestGrantingAnMcpDoesNotEatTheTypedName(t *testing.T) {
+	vm := newAppVM(t)
+	script := `(function(){
+		window.state.page = 'projects';
+		window.state.externalMcps = [{id:'macmcp', display_name:'macMCP'}];
+		window.newProject();
+		window.setProjKind('remote');
+		document.getElementById('projName').value = 'Hermes — Bob INBOX';
+		window.setProjMcpGranted('macmcp', true);
+		return JSON.stringify({
+			stateName: window.state.projectForm.name,
+			htmlHasValue: window.renderProjectForm().indexOf('value="Hermes — Bob INBOX"') >= 0,
+			granted: window.state.projectForm.allowed_mcp_ids.indexOf('macmcp') >= 0
+		});
+	})()`
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"stateName":"Hermes — Bob INBOX"`,
+		`"htmlHasValue":true`,
+		`"granted":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("granting an MCP lost the typed name: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt covers the half
+// of relay#25 defect (b) this form CAN localize: an empty required field. The
+// refusal was always correct (a required field is empty) and always set
+// state.projectFormError — what was missing is anything that made an operator
+// notice, since the message rendered only in a banner at the very top of a
+// form that can be scrolled well past it. The fix names the field, prints the
+// reason next to it, and moves focus there. Also pins that a refused Create
+// never reaches the wire.
+func TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt(t *testing.T) {
+	vm := newAppVM(t)
+	script := `(function(){
+		window.__sent = [];
+		window.webkit = { messageHandlers: { ipc: { postMessage: function(m){ window.__sent.push(String(m)); } } } };
+		window.state.page = 'projects';
+		window.newProject();
+		document.getElementById('projName').value = '';
+		document.getElementById('projPath').value = '/tmp/whatever';
+		var focused = null;
+		document.getElementById('projName').focus = function(){ focused = 'projName'; };
+		window.saveProjectForm();
+		var html = window.renderProjectForm();
+		return JSON.stringify({
+			errorField: window.state.projectFormErrorField,
+			errorText: window.state.projectFormError,
+			htmlHasFieldError: html.indexOf('proj-field-error') >= 0,
+			htmlHasInvalidClass: html.indexOf('proj-field-invalid') >= 0,
+			focused: focused,
+			sentAnything: window.__sent.length > 0
+		});
+	})()`
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"errorField":"projName"`,
+		`"errorText":"Project name is required"`,
+		`"htmlHasFieldError":true`,
+		`"htmlHasInvalidClass":true`,
+		`"focused":"projName"`,
+		`"sentAnything":false`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refused create did not name+focus the field: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestOnProjectError_SurfacesWhileTheFormIsStillOpen covers the more
+// important half of relay#25 defect (b): a refusal from
+// validateProjectShape / validateProjectPermissions on the SERVER, which
+// arrives over IPC as onProjectError while Create's form is still open (it is
+// never closed on a refusal). onProjectError answered with render('push'),
+// which is the exact guard written to stop an UNRELATED external change from
+// wiping keystrokes mid-edit — so the guard swallowed the refusal's own
+// answer too, and #content was never repainted: "no error banner, no field
+// highlight, no log line. The dialog sits there looking complete," verbatim
+// from the issue, for a call that is the security check ADR-011 exists to
+// enforce.
+func TestOnProjectError_SurfacesWhileTheFormIsStillOpen(t *testing.T) {
+	vm := newAppVM(t)
+	script := `(function(){
+		window.state.page = 'projects';
+		window.newProject();
+		var before = document.getElementById('content').innerHTML;
+		window.onProjectError('Access for macmcp must be read or write, not wrIte');
+		var after = document.getElementById('content').innerHTML;
+		return JSON.stringify({
+			stillEditing: window.state.editingProjectId !== null,
+			repainted: before !== after,
+			bannerAppeared: after.indexOf('Access for macmcp must be read or write, not wrIte') >= 0
+		});
+	})()`
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"stillEditing":true`,
+		`"repainted":true`,
+		`"bannerAppeared":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server-side refusal did not surface while the form was open: missing %s in %s", want, got)
+		}
+	}
+}
