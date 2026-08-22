@@ -361,7 +361,25 @@ textarea:focus {
 .proj-token-banner code { color: var(--text); background: var(--bg-control); padding: 2px 6px; border-radius: 3px; font-family: var(--mono); word-break: break-all; }
 .proj-template-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
 .proj-template-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.proj-form-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+/* Sticky so Create/Save/Cancel stay reachable regardless of how tall the form
+   above them gets — two scope pickers open at once (each with its own inner
+   scroll area, .proj-scope-choices below) can make the form taller than the
+   window, at which point a wheel scroll over an open picker moves the picker,
+   not the page, and the actions row could not be reached without closing one
+   first. Sticky to the bottom of .content's own scrollport fixes it without
+   caring how tall the form above gets. The background matches .content so
+   text scrolling underneath doesn't show through, and the box-shadow stands
+   in for the border-top now that there's real content stacked behind it. */
+.proj-form-actions {
+    margin-top: 18px;
+    padding: 14px 0;
+    display: flex;
+    gap: 8px;
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
+    box-shadow: 0 -1px 0 var(--border);
+}
 /* Effective authority: what a record can actually DO, per MCP. On the list row
    and on an enrolment card, because "MCPs: 1" beside a client that can read
    every mailbox on the machine is the failure ADR-011 exists to fix. */
@@ -413,6 +431,12 @@ textarea:focus {
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+.proj-error[tabindex] { outline: none; } /* focusable so an off-screen refusal can be scrolled/focused to, not so it looks focused */
+/* A refusal localized to one field (relay#25) — printed right under it, where
+   the fix actually happens, instead of only in the banner above. */
+.proj-field-error { color: var(--danger); font-size: 11px; margin-top: 4px; }
+input.proj-field-invalid { border-color: var(--danger); }
+input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
 .proj-ok { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
 /* ---- Tool Calls (audit log) ---- */
