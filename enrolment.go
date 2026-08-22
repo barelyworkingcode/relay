@@ -194,10 +194,10 @@ func (s *Settings) ValidateEnrolmentGrants(e *Enrolment) error {
 	for _, id := range e.ProjectIDs {
 		proj, _ := s.findProjectByID(id)
 		if proj == nil {
-			return fmt.Errorf("enrolment %q cannot grant unknown project %q", e.ClientID, id)
+			return fmt.Errorf("enrolment %q cannot grant unknown access profile %q", e.ClientID, id)
 		}
 		if !proj.IsRemote() {
-			return fmt.Errorf("enrolment %q cannot grant project %q (%s): it is a local project, and a remote client granted one would inherit its host directory scope — only remote-kind projects may be enrolled", e.ClientID, id, proj.Name)
+			return fmt.Errorf("enrolment %q cannot grant %q (%s): it is a local project, not an access profile, and a remote client granted one would inherit its host directory scope — only access profiles may be enrolled", e.ClientID, id, proj.Name)
 		}
 	}
 	return nil
@@ -226,7 +226,7 @@ func (s *Settings) ValidateProjectEnrolments(proj *Project) error {
 	if len(holders) == 0 {
 		return nil
 	}
-	return fmt.Errorf("project %q cannot become a local project while enrolled clients grant it: %s — revoke those enrolments or drop the grant first", proj.ID, strings.Join(holders, ", "))
+	return fmt.Errorf("access profile %q cannot become a local project while enrolled clients grant it: %s — revoke those enrolments or drop the grant first", proj.ID, strings.Join(holders, ", "))
 }
 
 // ---------------------------------------------------------------------------
