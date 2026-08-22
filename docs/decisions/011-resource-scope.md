@@ -447,6 +447,39 @@ every mail account on the machine becomes readable by anything that can open
 the Settings UI or reach the project routes. That is host-local admin surface
 today, so it is acceptable — but it is a new read path.
 
+**The wire shape**, pinned so both halves interoperate:
+
+    -> {"method":"context/enumerate",
+        "params":{"field":"mail_mailboxes","values":{"mail_accounts":["Bob"]}}}
+    <- {"result":{"field":"mail_mailboxes",
+        "values":[{"value":"INBOX","label":"INBOX"},
+                  {"value":"Projects/Archive","label":"Projects/Archive (Bob)"}]}}
+
+`value` is what goes into `_meta` verbatim — for a mailbox, the full path,
+never a leaf name. `label` is display only. `values` on the request carries
+already-chosen values for `depends_on` fields.
+
+Four outcomes that must stay distinct, because collapsing any two of them
+produces a form that lies: `-32601` means the MCP does not enumerate and the
+field degrades to text entry; `-32602` means relay asked for a field the MCP
+will not enumerate, which is a relay bug and is surfaced; any other error or a
+transport failure means the MCP could not answer *right now*, which keeps text
+entry available so an operator is never blocked; and an empty list is a valid
+answer meaning there are none. **An empty list must never be rendered for a
+call that failed.**
+
+**A stored value that is no longer offered stays visible and selected**, marked
+unrecognised. An account renamed on the host must not quietly widen or narrow a
+profile by vanishing from a form — a permission that changes because a list
+refreshed is the failure this whole picker exists to prevent.
+
+**Enumeration is not scoped and is not a tool.** It runs for the operator
+configuring a profile, not for any client, so it lists the whole host; and it
+stays off `tools/list` so it can never become agent-callable or appear in a
+generated `SKILL.md`. It is unreachable from a remote client by construction —
+that dispatch table is `ListTools` and `CallTool` and nothing else — and it
+sits behind the same admin authentication as the other project routes.
+
 **A raw JSON editor is the fallback, not the plan.** The owner offered one as a
 first draft. It is retained for MCPs that do not implement `context/enumerate`,
 and for those it is the honest surface. Where the MCP *can* enumerate, a
@@ -532,6 +565,30 @@ on disk — never a client's own report of success. That standard is inherited:
 ADR-010's client passed 95 tests and an adversarial review while its primary
 interface was broken, because nobody had executed the string the generator
 printed.
+
+### 9b. What an editor may save, and what it must refuse
+
+Building the editor forced four questions the ADR had not answered. The rule
+that settles them: **refuse what cannot be made true, permit what is merely
+incomplete, and never let a save silently delete something.**
+
+- **An incomplete profile may be saved.** Refusing would make it impossible to
+  grant an MCP before typing a scope. A missing value is a warning in the
+  editor, a warning in the list, and a `denied` at call time — loud in three
+  places without making the editor unusable.
+- **A value for a v1-schema MCP is refused.** The v1 branch of
+  `SyncProjectToken` replaces the whole context blob, so a stored value would
+  vanish at the next path or grant edit. A silent disappearance is worse than a
+  refusal.
+- **`permission_policy` and `chat_templates` are refused on a profile**, joining
+  path, cwd-auth, skills, shell templates and models. Both are inert on a record
+  that can hold no session, and ADR-009 decision 2's argument — refusing at the
+  door is more honest than a control that quietly no-ops — does not stop at the
+  fields that ADR happened to list.
+- **Editing one thing must not delete another.** Writing an operator's scope
+  re-runs the derivation so `source: "project_path"` fields are put back;
+  without that, editing a local project's mail scope would silently drop its
+  `write_dirs` and disable the two tools that field governs.
 
 ### 10. Two seams that are not in the list, and one reference implementation that was wrong
 
