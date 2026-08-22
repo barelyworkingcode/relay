@@ -14,7 +14,7 @@ import (
 
 func (a *App) openSettingsWindow() {
 	s := a.store.Get()
-	html := renderSettingsHTML(s, a.registry.RunningIDs(), a.buildToolCache(s))
+	html := renderSettingsHTML(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields())
 	a.platform.OpenSettings(html)
 	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
@@ -74,11 +74,12 @@ func (a *App) pushServiceStatus() {
 func (a *App) pushFullSettings() {
 	s := a.store.Get()
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
-		"external_mcps":  s.ExternalMcps,
-		"services":       s.Services,
-		"running_ids":    a.registry.RunningIDs(),
-		"projects":       s.Projects,
-		"mcp_tool_cache": a.buildToolCache(s),
+		"external_mcps":    s.ExternalMcps,
+		"services":         s.Services,
+		"running_ids":      a.registry.RunningIDs(),
+		"projects":         s.Projects,
+		"mcp_tool_cache":   a.buildToolCache(s),
+		"mcp_scope_fields": a.buildScopeFields(),
 		// Enrolments and the remote block ride along so the Remote Clients tab
 		// reflects an enrolment created or revoked by `relay enrol` while the
 		// window is open. The audit state comes from the live recorder rather
@@ -103,6 +104,15 @@ func (a *App) buildToolCache(s *Settings) map[string][]ToolInfo {
 		out[m.ID] = infos
 	}
 	return out
+}
+
+// buildScopeFields snapshots what each connected MCP declares as narrowable
+// (ADR-011 decision 6). Keyed by MCP id; an MCP that declares no restrict
+// fields gets an empty slice, and one relay has never connected to gets no key
+// at all — which is what lets the editor say "relay cannot see what this MCP
+// scopes" instead of "this MCP scopes nothing".
+func (a *App) buildScopeFields() map[string][]ScopeFieldView {
+	return a.extMgr.AllMcpSurfaces().ScopeFields()
 }
 
 // pushFullProjects sends only the projects slice. Used as the

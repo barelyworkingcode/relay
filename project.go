@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -202,4 +205,158 @@ func validateProjectShape(proj *Project) error {
 		return fmt.Errorf("remote project must not set allowed_models: an allowlist here would either be misread as unrestricted (see modelAllowedForProject) or need a model-scoping story remote projects don't have yet — leave it empty")
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// The permission set an operator can now type (ADR-011 decisions 2, 2b, 4, 6)
+// ---------------------------------------------------------------------------
+
+// validateProjectPermissions refuses an invalid access mode, an uncompilable
+// tool pattern, and a context value the MCP's own schema will not stand behind.
+// It is called from applyProjectCreate and applyProjectUpdate against the
+// fully-merged candidate, so every surface — the HTTP routes, the IPC handlers
+// the tray uses, and any future one — is refused identically.
+//
+// It exists because of the constraint ADR-011 states as its second: an editor
+// whose easiest failure is a confinement that does not confine is operability
+// DEFEATING security rather than trading against it. A scope value is typed
+// text today, a typo now fails closed (decision 4), and a closed failure is
+// silent from the agent's side — so the moment to catch a value that means
+// nothing is the moment it is written, not the call that later returns nothing.
+//
+// It is separate from validateProjectShape because it needs something that
+// function does not have: what the MCP declared. Shape is answerable from the
+// record alone; whether "mail_accounts" is a field macMCP has, and whether it
+// is one an operator may set, is answerable only from the live surface.
+func validateProjectPermissions(proj *Project, surfaces McpSurfaces) error {
+	// Which operations. AccessMode reads anything that is not exactly "write"
+	// as read, so a stored typo is already fail-closed — but a mode of "wrIte"
+	// that silently means read is a confinement the operator did not choose,
+	// and this is the one place it can still be said out loud.
+	for _, mcpID := range sortedKeys(proj.Access) {
+		mode := proj.Access[mcpID]
+		if mode != AccessRead && mode != AccessWrite {
+			return fmt.Errorf("access for %q must be %q or %q, not %q", mcpID, AccessRead, AccessWrite, mode)
+		}
+	}
+
+	// Which tools. matchToolPattern is path.Match, which rejects an
+	// unterminated character class — and toolAllowedByPatterns answers "no" for
+	// a pattern it cannot compile, so an allowlist of nothing but a broken
+	// pattern grants nothing at all. That is the safe direction and a terrible
+	// thing to discover from an agent that stopped working.
+	for _, mcpID := range sortedKeys(proj.AllowedTools) {
+		for _, pattern := range proj.AllowedTools[mcpID] {
+			if _, err := matchToolPattern(pattern, "probe_tool_name"); err != nil {
+				return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%v); it would match no tool at all", mcpID, pattern, err)
+			}
+		}
+	}
+
+	// Which resources.
+	for _, mcpID := range sortedKeys(proj.Context) {
+		if err := validateProjectContextForMcp(mcpID, proj.Context[mcpID], surfaces); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProjectContextForMcp checks one MCP's context blob against what that
+// MCP declared.
+//
+// Three cases, and which one applies is decided by the MCP's own declaration:
+//
+//   - A v2 schema is the case this was written for. Every field name must be
+//     one the MCP declares, every value must conform to the declared fragment,
+//     and a source: "project_path" field is refused outright — relay derives
+//     those from the project's path, so an operator setting one is either
+//     confused about what the field is or is trying to widen a bound relay
+//     controls. SyncProjectToken would overwrite it on the next resync either
+//     way, and a value that silently disappears is worse than a refusal.
+//
+//   - A v1 declaration is refused entirely, because relay knows enough to know
+//     nothing here is operator-set: the v1 branch of SyncProjectToken REPLACES
+//     the whole blob with the derived allowed_dirs. Storing a value there means
+//     storing one that vanishes at the next path or MCP edit.
+//
+//   - No declaration at all — an MCP relay has never connected to, or one that
+//     publishes no contextSchema — cannot be checked, and is permitted with
+//     nothing but an emptiness check. That is the same stance
+//     ValidateProjectGrants takes and for the same reason: this is a coherence
+//     check an operator sees at edit time, not the boundary. Refusing on
+//     missing information would make an MCP that is merely not running
+//     unconfigurable, and the call-time presence re-check still denies.
+func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces McpSurfaces) error {
+	trimmed := strings.TrimSpace(string(blob))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &values); err != nil {
+		return fmt.Errorf("context for %q must be an object of field values", mcpID)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	surface := surfaces[mcpID]
+	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+	names := sortedKeys(values)
+
+	if !schema.V2() {
+		if len(surface.Schema) > 0 {
+			return fmt.Errorf("context for %q cannot be set here: it declares a v1 context schema, whose only field relay derives from the project's path — a value written here would be replaced on the next resync", mcpID)
+		}
+		// Unknown MCP. Presence is the only thing that can be checked, and it
+		// is the one that matters: an empty value is how a restrict field says
+		// "refuse everything I govern".
+		for _, name := range names {
+			if !hasScopeValue(values, name) {
+				return fmt.Errorf("context %q for %q: a non-empty value is required", name, mcpID)
+			}
+		}
+		return nil
+	}
+
+	for _, name := range names {
+		f, ok := schema.Field(name)
+		if !ok {
+			return fmt.Errorf("MCP %q declares no context field named %q (it declares: %s)", mcpID, name, declaredFieldList(schema))
+		}
+		if f.FromProjectPath() {
+			return fmt.Errorf("context %q for %q is derived by relay from the project's path and cannot be set by hand", name, mcpID)
+		}
+		if err := f.ValidateValue(values[name]); err != nil {
+			return fmt.Errorf("context for %q: %w", mcpID, err)
+		}
+	}
+	return nil
+}
+
+// declaredFieldList names an MCP's declared fields for a refusal. A refusal
+// that says a name is wrong without saying which are right is a refusal an
+// operator answers by guessing.
+func declaredFieldList(cs ContextSchema) string {
+	if len(cs.Fields) == 0 {
+		return "no fields"
+	}
+	names := make([]string, 0, len(cs.Fields))
+	for _, f := range cs.Fields {
+		names = append(names, strconv.Quote(f.Name))
+	}
+	return strings.Join(names, ", ")
+}
+
+// sortedKeys returns a map's keys in name order, so a refusal naming one of
+// several offending entries names the same one every time. Go's map iteration
+// is randomised per range, and an error message that varies between identical
+// requests is one nobody can write a test against.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

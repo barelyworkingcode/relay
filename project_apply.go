@@ -1,5 +1,7 @@
 package main
 
+import "encoding/json"
+
 // projectCreateFields is the transport-agnostic body for creating a project.
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
 // create orchestration lives in exactly one place (applyProjectCreate).
@@ -16,12 +18,16 @@ type projectCreateFields struct {
 	AllowCwdAuth     bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   []string            `json:"session_folders,omitempty"`
-	// AllowedTools is the per-MCP tool allowlist (ADR-011 decision 2b). It is
-	// carried on the transport DTO because validateProjectShape refuses a
-	// remote-kind record that names "*" here, and refuses one that sets
-	// disabled_tools at all — a refusal that is unreachable if the request
-	// cannot express the field.
-	AllowedTools map[string][]string `json:"allowed_tools,omitempty"`
+	// The three fields that make up the permission set an operator can now
+	// type (ADR-011 decisions 2, 2b and 6). Before this they were reachable
+	// only from Go: allowed_tools carried a refusal nothing could trigger,
+	// access did not exist on the wire, and context had never been settable at
+	// all — it was only ever derived, by the one hardcoded rule in
+	// SyncProjectToken (ADR-011 finding 6). A confinement an operator cannot
+	// express is a confinement that does not exist.
+	AllowedTools map[string][]string        `json:"allowed_tools,omitempty"`
+	Access       map[string]string          `json:"access,omitempty"`
+	Context      map[string]json.RawMessage `json:"context,omitempty"`
 }
 
 // projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -40,7 +46,13 @@ type projectUpdateFields struct {
 	AllowCwdAuth     *bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   *[]string            `json:"session_folders,omitempty"`
-	AllowedTools     *map[string][]string `json:"allowed_tools,omitempty"`
+	// Pointers for the same nil-means-no-change reason as everything above:
+	// an operator editing a project's name must not clear its scope, and a
+	// cleared scope must be expressible as an empty object rather than being
+	// indistinguishable from an absent one.
+	AllowedTools *map[string][]string        `json:"allowed_tools,omitempty"`
+	Access       *map[string]string          `json:"access,omitempty"`
+	Context      *map[string]json.RawMessage `json:"context,omitempty"`
 }
 
 // applyProjectCreate creates a project and applies its optional policy, skill
@@ -68,8 +80,17 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 		// refusal: a "*" in allowed_tools, and disabled_tools set at all.
 		DisabledTools: f.DisabledTools,
 		AllowedTools:  f.AllowedTools,
+		// And the rest of the permission set, so every refusal in
+		// validateProjectPermissions is reachable from a create as well as
+		// from an edit. A profile whose scope is only checked when it is
+		// changed is one that can be created wrong and never rechecked.
+		Access:  f.Access,
+		Context: f.Context,
 	}
 	if err := validateProjectShape(&candidate); err != nil {
+		return Project{}, err
+	}
+	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
 		return Project{}, err
 	}
 	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
@@ -99,6 +120,14 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	}
 	if len(f.AllowedTools) > 0 {
 		s.UpdateProjectAllowedTools(created.ID, f.AllowedTools)
+	}
+	if len(f.Access) > 0 {
+		s.UpdateProjectAccess(created.ID, f.Access)
+	}
+	// Last of the three, because it re-runs SyncProjectToken and that pass
+	// prunes by the MCP set the record ends up with.
+	if len(f.Context) > 0 {
+		s.UpdateProjectContext(created.ID, f.Context, surfaces)
 	}
 	if len(f.ShellTemplates) > 0 {
 		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
@@ -158,6 +187,12 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	if f.AllowedTools != nil {
 		candidate.AllowedTools = *f.AllowedTools
 	}
+	if f.Access != nil {
+		candidate.Access = *f.Access
+	}
+	if f.Context != nil {
+		candidate.Context = *f.Context
+	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, true, err
 	}
@@ -183,9 +218,19 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	// the MCP set changing on an already/still-remote project. A bare rename
 	// of an already-valid remote project doesn't need to pay for it.
 	needGrantsCheck := candidate.IsRemote() && (f.AllowedMcpIDs != nil || f.Kind != nil)
+	// The permission set is re-validated whenever the request names any part
+	// of it — and only then. A rename cannot invalidate a scope value, and
+	// making every edit pay for a live MCP surface fetch is what the laziness
+	// here exists to avoid.
+	needPermissionsCheck := f.Access != nil || f.AllowedTools != nil || f.Context != nil
 	var sc McpSurfaces
-	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck {
+	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck || needPermissionsCheck {
 		sc = surfaces()
+	}
+	if needPermissionsCheck {
+		if err := validateProjectPermissions(&candidate, sc); err != nil {
+			return Project{}, true, err
+		}
 	}
 	if needGrantsCheck {
 		if err := s.ValidateProjectGrants(&candidate, sc); err != nil {
@@ -233,6 +278,12 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	}
 	if f.AllowedTools != nil {
 		s.UpdateProjectAllowedTools(id, *f.AllowedTools)
+	}
+	if f.Access != nil {
+		s.UpdateProjectAccess(id, *f.Access)
+	}
+	if f.Context != nil {
+		s.UpdateProjectContext(id, *f.Context, sc)
 	}
 	if f.DisabledTools != nil {
 		// Replace the entire disabled-tools map: any MCP key omitted from the

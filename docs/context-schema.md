@@ -120,6 +120,51 @@ names fields whose already-chosen values must be sent as parameters, so the UI
 fills in dependency order (mailboxes cannot be listed without an account).
 Neither affects enforcement.
 
+## Who fills a value in, and where
+
+An `operator` field is set in the Settings UI's per-MCP permission panel
+(Projects tab → edit a record → the MCP's panel), or over the HTTP routes eve
+uses:
+
+    GET  /api/mcps/{id}/scope_fields   -> the restrict fields this MCP declares
+    POST /api/projects                 -> { "context": { "<mcp>": { "<field>": … } } }
+    PUT  /api/projects/{id}            -> the same, as a patch
+
+`scope_fields` is the projection an editor renders from: name, `type`,
+`item_type`, `description`, `source`, `applies_to`, `enumerable`, `depends_on`.
+`source` is **normalised** there — a field that declared none comes back as
+`operator`, so no consumer re-derives that rule. An MCP relay has never
+connected to is a **404**, not an empty list: "scopes nothing" and "cannot say"
+are different answers and only the first lets an editor safely offer no fields.
+
+**Every value is validated on save, whichever surface produced it**, and an
+invalid one is refused rather than stored (`validateProjectPermissions`). The
+refusals, each naming the problem:
+
+- a value for a field the MCP does not declare — the refusal lists the ones it
+  does, because a refusal that says a name is wrong without saying which are
+  right is one an operator answers by guessing;
+- a value of the wrong type for the declared fragment;
+- an empty value for a `scope: "restrict"` field;
+- an operator-supplied value for a `source: "project_path"` field — relay
+  derives those, and one written by hand would be replaced at the next resync;
+- a context value for an MCP that declares a **v1** schema, for the same
+  reason: the v1 branch replaces the whole blob;
+- an `access` that is not `read` or `write`;
+- an `allowed_tools` pattern that will not compile, which would match no tool
+  at all.
+
+An MCP relay has never connected to is **permitted** with nothing but an
+emptiness check, exactly as `ValidateProjectGrants` permits a grant it cannot
+qualify: this is a coherence check an operator sees at edit time, not the
+boundary, and refusing on missing information would make an MCP that is merely
+not running unconfigurable. The call-time presence re-check still denies.
+
+A grant that is missing a value is named in the UI — on the record's row, in
+the editor, and in a banner over the list — because the other half of
+loud-and-closed is a `denied` at call time, which is silent from the operator's
+side.
+
 ## Versioning
 
 `contextSchemaVersion: 2` marks a schema using these keywords.
