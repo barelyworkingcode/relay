@@ -642,6 +642,18 @@ mail or quietly returning nothing.
   thing this ADR exists to prevent. The UI surfaces it as "N profiles need a
   value for `macmcp`" rather than leaving it to be discovered from a `denied`.
 
+- **A `write` mail profile is an exfiltration channel and this ADR does not
+  close it.** `mail_accounts` scopes the identity a message is *sent as*; it
+  says nothing about who it is sent *to*. A profile holding `mail_send` can
+  mail anything it can read to any address. That is inherent in granting send
+  to a semi-trusted agent rather than a defect in the scope model, and it is
+  why `read` is the default (decision 2) and why the layers are worth having
+  separately: a read-only mail profile has no outbound channel at all, once
+  decision 2b has taken `web_fetch` away from it. A recipient allowlist is a
+  coherent later addition on the same `applies_to` machinery. The fixture hides
+  this — its SMTP server refuses non-fixture recipients with 550 — so it must
+  not be mistaken for a control that exists.
+
 - **Relay still cannot tell whether an MCP honoured `_meta`.** There is no
   structural answer and this ADR does not pretend one. The mitigations are
   containment, not verification: MCPs are host-side code the operator installed
