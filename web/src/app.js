@@ -75,6 +75,13 @@ let state = {
     editingProjectId: null,                 // null = list, 'new' = create form, '<id>' = edit
     projectForm: null,                      // in-flight form values (kept out of state.projects until Save)
     projectFormError: null,
+    // Set only when the refusal localizes to one control (name, path) so the
+    // message can render next to it instead of only in the top banner, and so
+    // focusProjectFormIssue() knows where to put the cursor. null for a
+    // refusal this form can't localize (a server-side shape/permissions
+    // refusal) -- that one still shows in the banner, which is why the two
+    // fields travel separately rather than as one.
+    projectFormErrorField: null,
     projectTokenVisible: {},                // id -> bool (eye toggle)
     projectFreshToken: {},                  // id -> plaintext shown once after rotate
     projectSkillRegen: {},                  // id -> { ok, message, t } (last regen result)
@@ -142,7 +149,20 @@ const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args":
 // skip the repaint if a form for the current tab is open so we don't wipe
 // keystrokes mid-edit. User-initiated renders always proceed — tab switches
 // and explicit form mutations must always reflect on screen.
+//
+// The project form's name and path inputs live only in the DOM between
+// renders (see captureProjectFormInputs), so ANY repaint that rebuilds them
+// from state.projectForm without reading the DOM first erases whatever was
+// typed. That used to be one call site's problem (the picker's async answer)
+// and a special case was added there; granting an MCP re-renders too, and it
+// had no such call, so the name field went empty (relay#25). Rather than find
+// every mutator that can trigger a repaint and add the same line to each,
+// capture-and-restore is done exactly once, here, unconditionally, before any
+// page-specific branch runs — which is also what makes it safe: it is a
+// harmless no-op on every page but Projects, and a no-op there too when no
+// form is open or the DOM hasn't rendered the form's inputs yet.
 function render(source) {
+    if (state.projectForm) captureProjectFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
     if (state.page === 'services') {
@@ -1137,6 +1157,7 @@ function newProject() {
     state.editingProjectId = 'new';
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
 }
 
@@ -1146,6 +1167,7 @@ function editProject(id) {
     state.editingProjectId = id;
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
 }
 
@@ -1153,6 +1175,7 @@ function cancelProjectEdit() {
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
 }
 
@@ -1626,19 +1649,17 @@ function scopeFieldByName(mcpID, fieldName) {
 function toggleScopeFieldPicker(mcpID, fieldName) {
     const field = scopeFieldByName(mcpID, fieldName);
     if (!field) return;
-    captureProjectFormInputs();
     const openKey = scopeOpenKey(mcpID, fieldName);
     state.scopeEnumOpen[openKey] = !state.scopeEnumOpen[openKey];
     if (state.scopeEnumOpen[openKey]) requestScopeEnum(mcpID, field);
-    render();
+    render(); // captures the DOM-only name/path fields before repainting — see render()
 }
 
 function retryScopeEnum(mcpID, fieldName) {
     const field = scopeFieldByName(mcpID, fieldName);
     if (!field) return;
-    captureProjectFormInputs();
     requestScopeEnum(mcpID, field, true);
-    render();
+    render(); // captures the DOM-only name/path fields before repainting — see render()
 }
 
 // refreshDependentScopeFields re-asks for every OPEN field that declares the
@@ -1790,7 +1811,6 @@ function toggleProjScopeValueAt(index, checked) {
     if (!f) return;
     const field = scopeFieldByName(bind.mcpID, bind.field);
     if (!field) return;
-    captureProjectFormInputs();
 
     const current = scopeSelectedValues(field, projScopeText(f, bind.mcpID, field));
     const key = scopeEnumValueKey(bind.value);
@@ -1809,11 +1829,16 @@ function toggleProjScopeValueAt(index, checked) {
 
 // captureProjectFormInputs writes back the values that live only in the DOM.
 //
-// It exists because the picker repaints the form from an ASYNCHRONOUS event —
-// an enumeration answer arriving — and a repaint rebuilds every input from
-// state.projectForm. The name and path are read from the DOM at harvest and
-// nowhere else, so without this a list arriving while someone was typing a
-// name would erase what they had typed. Empty is treated as "leave it", the
+// A repaint rebuilds every input from state.projectForm, but the name and
+// path are read from the DOM at harvest and nowhere else — nothing keeps
+// state.projectForm.name in sync with a keystroke as it happens. Called from
+// render() itself (the one place that repaints the form), unconditionally and
+// before ANY page-specific branch, so every path that can trigger a repaint —
+// an async enumeration answer, a click that grants an MCP, a tab switch, a
+// picker opening — is covered by construction rather than by whichever call
+// sites remembered to ask for it. relay#25 was granting an MCP re-rendering
+// without asking: the picker's async answer had its own explicit call for
+// exactly this, and nothing else did. Empty is treated as "leave it", the
 // same guard harvestProjectForm already uses, so a field the browser has not
 // rendered cannot blank a stored value.
 function captureProjectFormInputs() {
@@ -1825,6 +1850,16 @@ function captureProjectFormInputs() {
     };
     f.name = val('projName') || f.name;
     if (!isRemoteForm(f)) f.path = val('projPath') || f.path;
+    // A field-level refusal (see saveProjectForm) clears itself the moment its
+    // own field holds something again, rather than sitting there stale — red
+    // border and all — until the operator clicks Create a second time.
+    if (state.projectFormErrorField === 'projName' && f.name.trim()) {
+        state.projectFormError = null;
+        state.projectFormErrorField = null;
+    } else if (state.projectFormErrorField === 'projPath' && f.path && f.path.trim()) {
+        state.projectFormError = null;
+        state.projectFormErrorField = null;
+    }
 }
 
 function setProjModelsWildcard(checked) {
@@ -1857,8 +1892,15 @@ function renderProjectForm() {
     const title = (isNew ? 'New ' : 'Edit ') + noun;
 
     let html = '<h2>' + esc(title) + '</h2>';
-    if (state.projectFormError) {
-        html += '<div class="proj-error">' + esc(state.projectFormError) + '</div>';
+    // A refusal localized to one control (name, path — see saveProjectForm)
+    // renders next to that control instead, where focusProjectFormIssue()
+    // sends the cursor; this banner is for the rest — a server-side
+    // validateProjectShape / validateProjectPermissions refusal keyed by MCP
+    // id and field name, which has no single DOM control of its own to sit
+    // beside. tabindex="-1" + the id is what lets focusProjectFormIssue()
+    // still land the operator on it wherever the form is scrolled to.
+    if (state.projectFormError && !state.projectFormErrorField) {
+        html += '<div class="proj-error" id="projFormBanner" tabindex="-1">' + esc(state.projectFormError) + '</div>';
     }
     // The same gap the list names, named again here — this is the editor the
     // operator would have to open to fix it, so it is the one place the
@@ -1899,10 +1941,21 @@ function renderProjectForm() {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += '<label>' + (isRemote ? 'Profile name' : 'Project name') + '</label>';
-    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="' + (isRemote ? 'e.g. Hermes — Bob INBOX (read-only)' : 'e.g. Acme Website') + '" />';
+    html += '<input type="text" id="projName" class="' + (state.projectFormErrorField === 'projName' ? 'proj-field-invalid' : '') + '" value="' + esc(f.name) + '" placeholder="' + (isRemote ? 'e.g. Hermes — Bob INBOX (read-only)' : 'e.g. Acme Website') + '" />';
+    // Next to the field, not only in the top banner (relay#25): a required-
+    // field refusal is common enough, and this field specifically is easy
+    // enough to lose (see captureProjectFormInputs / render()), that it earns
+    // its own message where the fix actually happens. focusProjectFormIssue()
+    // is what puts the cursor here in the first place.
+    if (state.projectFormErrorField === 'projName') {
+        html += '<div class="proj-field-error">' + esc(state.projectFormError) + '</div>';
+    }
     if (!isRemote) {
         html += '<label>Project path</label>';
-        html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+        html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === 'projPath' ? 'proj-field-invalid' : '') + '" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+        if (state.projectFormErrorField === 'projPath') {
+            html += '<div class="proj-field-error">' + esc(state.projectFormError) + '</div>';
+        }
         html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
     } else {
         html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations and which resources.</p>';
@@ -2310,6 +2363,26 @@ function harvestProjectPermissions(f) {
     return { access: access, allowed_tools: allowedTools, context: context, complete: complete };
 }
 
+// focusProjectFormIssue puts the cursor, and the scroll position, on whatever
+// a refused Create/Save just explained — wherever in a long, scrolled form
+// the operator happened to be. A refusal localized to one control (name,
+// path — see saveProjectForm) focuses that control directly, next to which
+// renderProjectForm has already printed the reason. A refusal this form
+// cannot localize to a single input (a server-side validateProjectShape /
+// validateProjectPermissions refusal, keyed by MCP id and field name rather
+// than by a DOM id this form controls) focuses the banner instead, via the
+// tabindex it carries for exactly this. Either way the point is the same one
+// relay#25 was filed over: an error string sitting off-screen at the top of a
+// tall dialog is indistinguishable, to the operator looking at the Create
+// button, from no error at all.
+function focusProjectFormIssue() {
+    const id = state.projectFormErrorField;
+    const el = (id && document.getElementById(id)) || document.getElementById('projFormBanner');
+    if (!el) return;
+    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center' });
+    if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+}
+
 function saveProjectForm() {
     const f = state.projectForm;
     if (!f) return;
@@ -2317,15 +2390,20 @@ function saveProjectForm() {
     if (!payload) return;
     if (!payload.name) {
         state.projectFormError = 'Project name is required';
+        state.projectFormErrorField = 'projName';
         render();
+        focusProjectFormIssue();
         return;
     }
     if (payload.kind !== 'remote' && !payload.path) {
         state.projectFormError = 'Project path is required';
+        state.projectFormErrorField = 'projPath';
         render();
+        focusProjectFormIssue();
         return;
     }
     state.projectFormError = null;
+    state.projectFormErrorField = null;
 
     if (!f.id) {
         ipc(JSON.stringify(Object.assign({ type: 'create_project' }, payload)));
@@ -2393,7 +2471,15 @@ window.onProjectSkillRegen = function(id, ok, message) {
 window.onMcpToolsListed = function(mcpID, tools) {
     state.mcpToolCache[mcpID] = tools || [];
     if (state.page === 'projects' && state.editingProjectId) {
-        render('push');
+        // Not render('push'): the push guard exists to stop an UNRELATED
+        // external change from wiping keystrokes mid-edit, but this answer is
+        // the direct result of the operator's own click ("Selected" on this
+        // MCP) — routed through 'push' it would never appear at all while the
+        // form is open, since render()'s projects branch bails out before
+        // painting anything whenever fromPush && editingProjectId. render()
+        // itself now captures the DOM-only name/path fields before every
+        // repaint, so a plain render() here is exactly as safe as a push one.
+        render();
     }
 };
 
@@ -2417,17 +2503,31 @@ window.onScopeFieldEnumerated = function(res) {
     if (res.status === 'unsupported') state.scopeEnumUnsupported[res.mcp_id] = true;
     if (state.page !== 'projects' || !state.editingProjectId) return;
     // A full repaint, not render('push'): this answer is the direct result of
-    // the operator opening a control and it must appear. captureProjectFormInputs
-    // is what makes that safe — the repaint would otherwise rebuild the name
-    // and path inputs from state and erase anything typed while waiting.
-    captureProjectFormInputs();
+    // the operator opening a control and it must appear, and the push guard
+    // would otherwise swallow it while the form is open. render() itself now
+    // captures the DOM-only name/path fields before every repaint (see
+    // render()), which is what makes a plain repaint here safe.
     render();
 };
 
 window.onProjectError = function(msg) {
     state.projectError = msg;
     state.projectFormError = msg;
-    if (state.page === 'projects') render('push');
+    state.projectFormErrorField = null;
+    if (state.page !== 'projects') return;
+    // Not render('push'). This event is the direct answer to the operator's
+    // own Create/Save click, not an unrelated external change — but routed
+    // through 'push' it hit the exact guard that change is there to enforce:
+    // render()'s projects branch returns before painting anything whenever
+    // fromPush && editingProjectId, which is true for the entire time a
+    // refused Create's response is in flight. So a security refusal from
+    // validateProjectShape / validateProjectPermissions (or a plain client-
+    // side "name is required") reached state.projectFormError correctly and
+    // was never painted: the dialog sat there looking complete (relay#25).
+    // render() itself now captures the DOM-only name/path fields before every
+    // repaint, so a plain render() here costs nothing a push would have saved.
+    render();
+    focusProjectFormIssue();
 };
 
 // ---------------------------------------------------------------------------
@@ -4176,6 +4276,6 @@ Object.assign(window, {
     auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
-    captureProjectFormInputs, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
+    captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

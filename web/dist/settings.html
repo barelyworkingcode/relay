@@ -361,7 +361,25 @@ textarea:focus {
 .proj-token-banner code { color: var(--text); background: var(--bg-control); padding: 2px 6px; border-radius: 3px; font-family: var(--mono); word-break: break-all; }
 .proj-template-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
 .proj-template-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.proj-form-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+/* Sticky so Create/Save/Cancel stay reachable regardless of how tall the form
+   above them gets — two scope pickers open at once (each with its own inner
+   scroll area, .proj-scope-choices below) can make the form taller than the
+   window, at which point a wheel scroll over an open picker moves the picker,
+   not the page, and the actions row could not be reached without closing one
+   first. Sticky to the bottom of .content's own scrollport fixes it without
+   caring how tall the form above gets. The background matches .content so
+   text scrolling underneath doesn't show through, and the box-shadow stands
+   in for the border-top now that there's real content stacked behind it. */
+.proj-form-actions {
+    margin-top: 18px;
+    padding: 14px 0;
+    display: flex;
+    gap: 8px;
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
+    box-shadow: 0 -1px 0 var(--border);
+}
 /* Effective authority: what a record can actually DO, per MCP. On the list row
    and on an enrolment card, because "MCPs: 1" beside a client that can read
    every mailbox on the machine is the failure ADR-011 exists to fix. */
@@ -413,6 +431,12 @@ textarea:focus {
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+.proj-error[tabindex] { outline: none; } /* focusable so an off-screen refusal can be scrolled/focused to, not so it looks focused */
+/* A refusal localized to one field (relay#25) — printed right under it, where
+   the fix actually happens, instead of only in the banner above. */
+.proj-field-error { color: var(--danger); font-size: 11px; margin-top: 4px; }
+input.proj-field-invalid { border-color: var(--danger); }
+input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
 .proj-ok { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
 /* ---- Tool Calls (audit log) ---- */
@@ -782,6 +806,13 @@ window.__RELAY_INIT__ = {
     projectForm: null,
     // in-flight form values (kept out of state.projects until Save)
     projectFormError: null,
+    // Set only when the refusal localizes to one control (name, path) so the
+    // message can render next to it instead of only in the top banner, and so
+    // focusProjectFormIssue() knows where to put the cursor. null for a
+    // refusal this form can't localize (a server-side shape/permissions
+    // refusal) -- that one still shows in the banner, which is why the two
+    // fields travel separately rather than as one.
+    projectFormErrorField: null,
     projectTokenVisible: {},
     // id -> bool (eye toggle)
     projectFreshToken: {},
@@ -851,6 +882,7 @@ window.__RELAY_INIT__ = {
   }
   var JSON_PLACEHOLDER = JSON.stringify({ "my-server": { "command": "npx", "args": ["-y", "@example/server"], "env": { "API_KEY": "..." } } }, null, 2);
   function render(source) {
+    if (state.projectForm) captureProjectFormInputs();
     const el = document.getElementById("content");
     const fromPush = source === "push";
     if (state.page === "services") {
@@ -1641,6 +1673,7 @@ window.__RELAY_INIT__ = {
     state.editingProjectId = "new";
     state.projectForm = blankProjectForm();
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
   }
   function editProject(id) {
@@ -1649,12 +1682,14 @@ window.__RELAY_INIT__ = {
     state.editingProjectId = id;
     state.projectForm = projectFormFromExisting(p);
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
   }
   function cancelProjectEdit() {
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     render();
   }
   function regenProjectSkill(id) {
@@ -1954,7 +1989,6 @@ window.__RELAY_INIT__ = {
   function toggleScopeFieldPicker(mcpID, fieldName) {
     const field = scopeFieldByName(mcpID, fieldName);
     if (!field) return;
-    captureProjectFormInputs();
     const openKey = scopeOpenKey(mcpID, fieldName);
     state.scopeEnumOpen[openKey] = !state.scopeEnumOpen[openKey];
     if (state.scopeEnumOpen[openKey]) requestScopeEnum(mcpID, field);
@@ -1963,7 +1997,6 @@ window.__RELAY_INIT__ = {
   function retryScopeEnum(mcpID, fieldName) {
     const field = scopeFieldByName(mcpID, fieldName);
     if (!field) return;
-    captureProjectFormInputs();
     requestScopeEnum(mcpID, field, true);
     render();
   }
@@ -2057,7 +2090,6 @@ window.__RELAY_INIT__ = {
     if (!f) return;
     const field = scopeFieldByName(bind.mcpID, bind.field);
     if (!field) return;
-    captureProjectFormInputs();
     const current = scopeSelectedValues(field, projScopeText(f, bind.mcpID, field));
     const key = scopeEnumValueKey(bind.value);
     let next;
@@ -2080,6 +2112,13 @@ window.__RELAY_INIT__ = {
     };
     f.name = val("projName") || f.name;
     if (!isRemoteForm(f)) f.path = val("projPath") || f.path;
+    if (state.projectFormErrorField === "projName" && f.name.trim()) {
+      state.projectFormError = null;
+      state.projectFormErrorField = null;
+    } else if (state.projectFormErrorField === "projPath" && f.path && f.path.trim()) {
+      state.projectFormError = null;
+      state.projectFormErrorField = null;
+    }
   }
   function setProjModelsWildcard(checked) {
     const f = state.projectForm;
@@ -2103,8 +2142,8 @@ window.__RELAY_INIT__ = {
     const noun = isRemote ? "Access Profile" : "Project";
     const title = (isNew ? "New " : "Edit ") + noun;
     let html = "<h2>" + esc(title) + "</h2>";
-    if (state.projectFormError) {
-      html += '<div class="proj-error">' + esc(state.projectFormError) + "</div>";
+    if (state.projectFormError && !state.projectFormErrorField) {
+      html += '<div class="proj-error" id="projFormBanner" tabindex="-1">' + esc(state.projectFormError) + "</div>";
     }
     const formGaps = projScopeGaps({
       kind: f.kind,
@@ -2134,10 +2173,16 @@ window.__RELAY_INIT__ = {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += "<label>" + (isRemote ? "Profile name" : "Project name") + "</label>";
-    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="' + (isRemote ? "e.g. Hermes \u2014 Bob INBOX (read-only)" : "e.g. Acme Website") + '" />';
+    html += '<input type="text" id="projName" class="' + (state.projectFormErrorField === "projName" ? "proj-field-invalid" : "") + '" value="' + esc(f.name) + '" placeholder="' + (isRemote ? "e.g. Hermes \u2014 Bob INBOX (read-only)" : "e.g. Acme Website") + '" />';
+    if (state.projectFormErrorField === "projName") {
+      html += '<div class="proj-field-error">' + esc(state.projectFormError) + "</div>";
+    }
     if (!isRemote) {
       html += "<label>Project path</label>";
-      html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+      html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === "projPath" ? "proj-field-invalid" : "") + '" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+      if (state.projectFormErrorField === "projPath") {
+        html += '<div class="proj-field-error">' + esc(state.projectFormError) + "</div>";
+      }
       html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
     } else {
       html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations and which resources.</p>';
@@ -2438,6 +2483,13 @@ window.__RELAY_INIT__ = {
     }
     return { access, allowed_tools: allowedTools, context, complete };
   }
+  function focusProjectFormIssue() {
+    const id = state.projectFormErrorField;
+    const el = id && document.getElementById(id) || document.getElementById("projFormBanner");
+    if (!el) return;
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center" });
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+  }
   function saveProjectForm() {
     const f = state.projectForm;
     if (!f) return;
@@ -2445,15 +2497,20 @@ window.__RELAY_INIT__ = {
     if (!payload) return;
     if (!payload.name) {
       state.projectFormError = "Project name is required";
+      state.projectFormErrorField = "projName";
       render();
+      focusProjectFormIssue();
       return;
     }
     if (payload.kind !== "remote" && !payload.path) {
       state.projectFormError = "Project path is required";
+      state.projectFormErrorField = "projPath";
       render();
+      focusProjectFormIssue();
       return;
     }
     state.projectFormError = null;
+    state.projectFormErrorField = null;
     if (!f.id) {
       ipc(JSON.stringify(Object.assign({ type: "create_project" }, payload)));
     } else {
@@ -2507,7 +2564,7 @@ window.__RELAY_INIT__ = {
   window.onMcpToolsListed = function(mcpID, tools) {
     state.mcpToolCache[mcpID] = tools || [];
     if (state.page === "projects" && state.editingProjectId) {
-      render("push");
+      render();
     }
   };
   window.onScopeFieldEnumerated = function(res) {
@@ -2519,13 +2576,15 @@ window.__RELAY_INIT__ = {
     state.scopeEnum[key] = res;
     if (res.status === "unsupported") state.scopeEnumUnsupported[res.mcp_id] = true;
     if (state.page !== "projects" || !state.editingProjectId) return;
-    captureProjectFormInputs();
     render();
   };
   window.onProjectError = function(msg) {
     state.projectError = msg;
     state.projectFormError = msg;
-    if (state.page === "projects") render("push");
+    state.projectFormErrorField = null;
+    if (state.page !== "projects") return;
+    render();
+    focusProjectFormIssue();
   };
   var REMOTE_NOTE = "Enabling, disabling and moving the listener take effect within a few seconds \u2014 no restart needed. Re-enabling auditing after turning it off is the exception: that still needs Relay to relaunch.";
   function remoteGrantableProjects() {
@@ -3945,6 +4004,7 @@ window.__RELAY_INIT__ = {
     setProjMcpGranted,
     setProjScopeText,
     captureProjectFormInputs,
+    focusProjectFormIssue,
     isPolicyEmpty,
     refreshDependentScopeFields,
     requestScopeEnum,
