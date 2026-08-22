@@ -195,22 +195,28 @@ func TestMcpHandshake_ContextSchemaExtracted(t *testing.T) {
 
 func TestExtractContextSchema(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    json.RawMessage
-		wantNil  bool
-		wantType string // expected "type" field if non-nil
+		name        string
+		input       json.RawMessage
+		wantNil     bool
+		wantType    string // expected "type" field if non-nil
+		wantVersion int
 	}{
-		{"nil input", nil, true, ""},
-		{"valid with schema", json.RawMessage(`{"serverInfo":{"name":"test","contextSchema":{"type":"object","properties":{"dirs":{"type":"array"}}}}}`), false, "object"},
-		{"no contextSchema", json.RawMessage(`{"serverInfo":{"name":"test","version":"1.0"}}`), true, ""},
-		{"malformed JSON", json.RawMessage(`{not valid json`), true, ""},
-		{"empty serverInfo", json.RawMessage(`{"serverInfo":{}}`), true, ""},
-		{"no serverInfo", json.RawMessage(`{"protocolVersion":"2024-11-05"}`), true, ""},
+		{"nil input", nil, true, "", 0},
+		{"valid with schema", json.RawMessage(`{"serverInfo":{"name":"test","contextSchema":{"type":"object","properties":{"dirs":{"type":"array"}}}}}`), false, "object", 0},
+		{"v2 version carried", json.RawMessage(`{"serverInfo":{"name":"test","contextSchemaVersion":2,"contextSchema":{"type":"object"}}}`), false, "object", 2},
+		{"no contextSchema", json.RawMessage(`{"serverInfo":{"name":"test","version":"1.0"}}`), true, "", 0},
+		{"version without schema is still v1-shaped nothing", json.RawMessage(`{"serverInfo":{"name":"test","contextSchemaVersion":2}}`), true, "", 0},
+		{"malformed JSON", json.RawMessage(`{not valid json`), true, "", 0},
+		{"empty serverInfo", json.RawMessage(`{"serverInfo":{}}`), true, "", 0},
+		{"no serverInfo", json.RawMessage(`{"protocolVersion":"2024-11-05"}`), true, "", 0},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := extractContextSchema(tc.input)
+			result, version := extractContextSchema(tc.input)
+			if version != tc.wantVersion {
+				t.Errorf("expected version %d, got %d", tc.wantVersion, version)
+			}
 			if tc.wantNil {
 				if result != nil {
 					t.Errorf("expected nil, got %s", string(result))

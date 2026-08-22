@@ -31,7 +31,7 @@ func startFrontendServerWith(t *testing.T, token string, enhanced *EnhancedServi
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	extMgr := NewExternalMcpManager(nil)
-	srv, err := NewFrontendServer(store, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil)
+	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
 	}

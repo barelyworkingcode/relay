@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,16 +17,16 @@ import (
 // token. Kept with its original signature so no existing caller or test has
 // to change; it's a thin wrapper over CreateProjectWithTokenKind. Call within
 // store.With.
-func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []string, templates []ChatTemplate, schemas map[string]json.RawMessage) (Project, error) {
-	return s.CreateProjectWithTokenKind(ProjectKindLocal, name, path, mcpIDs, models, templates, schemas)
+func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
+	return s.CreateProjectWithTokenKind(ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
 }
 
 // CreateProjectWithTokenKind is CreateProjectWithToken's kind-aware variant.
 // The token's permissions, disabled tools, and context are configured based on
-// the project's allowedMcpIDs and path. schemas maps MCP IDs to their runtime
-// context schemas (from ExternalMcpManager) for filesystem auto-detection.
+// the project's allowedMcpIDs and path. surfaces maps MCP IDs to their runtime
+// schema + tool surface (from ExternalMcpManager) for scope derivation.
 // Call within store.With.
-func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path string, mcpIDs, models []string, templates []ChatTemplate, schemas map[string]json.RawMessage) (Project, error) {
+func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
 	// See normalizeProjectKind: a local project's stored Kind is always "",
 	// never the literal "local" string, so every local project — however it
 	// was created — serializes identically with no "kind" key.
@@ -44,11 +47,11 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	// candidate only carries what this function actually knows about; a
 	// direct caller relying solely on this function (as every pre-remote test
 	// does) still gets full path/MCP/model validation.
-	candidate := Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models}
+	candidate := Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, schemas); err != nil {
+	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
 		return Project{}, err
 	}
 
@@ -71,7 +74,7 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	}
 
 	s.Projects = append(s.Projects, proj)
-	s.SyncProjectToken(&s.Projects[len(s.Projects)-1], schemas)
+	s.SyncProjectToken(&s.Projects[len(s.Projects)-1], surfaces)
 
 	return proj, nil
 }
@@ -115,12 +118,22 @@ func validateProjectPath(path string) error {
 // in a self-contradictory shape.
 //
 // A LOCAL project (the zero value — see the Kind field comment) keeps
-// today's rules exactly: validateProjectPath's absolute-path, no-".."
-// checks, nothing else.
+// today's rules: validateProjectPath's absolute-path, no-".." checks, plus
+// the one rule below that is about the allowlist itself rather than about a
+// host directory and therefore belongs to both kinds.
 //
 // A REMOTE project is a capability grant to a client on another machine, not
 // a host directory, so every host-directory-flavored feature must be absent:
 func validateProjectShape(proj *Project) error {
+	// Kind-independent, and first. An over-broad allowed_tools entry is not a
+	// remote-only hazard: for a profile it is a grant of every tool the MCP
+	// has, and for a local project it is an entry the call-time matcher
+	// ignores, i.e. an allowlist that reads as a grant and holds nothing.
+	// Refusing both is how validation and enforcement stay the same rule —
+	// see validateToolPattern.
+	if err := validateAllowedToolPatterns(proj); err != nil {
+		return err
+	}
 	if !proj.IsRemote() {
 		return validateProjectPath(proj.Path)
 	}
@@ -156,6 +169,52 @@ func validateProjectShape(proj *Project) error {
 	if isWildcard(proj.AllowedMcpIDs) {
 		return fmt.Errorf(`remote project must not use the "*" wildcard for allowed_mcp_ids: it would let a future MCP registration silently widen what the remote client can reach; list MCP IDs explicitly`)
 	}
+	// A denylist cannot bound a client, and an inert control is worse than no
+	// control: it reads on the screen as a boundary and enforces nothing that
+	// allowed_tools has not already decided. disabled_tools stays for local
+	// projects, where the caller is the same user on the same machine and
+	// subtracting from everything is coherent; a profile that sets one is
+	// refused here, naming the mechanism that does bound it. (checkToolAccess
+	// still honours a denylist that reaches it by some other route — ignoring
+	// one is the only direction that widens.)
+	//
+	// Only for an MCP this record still grants. A local project that had
+	// fs_bash auto-disabled and is being converted to remote in the same
+	// request that drops the fsmcp grant carries a leftover entry that
+	// SyncProjectToken prunes moments later; refusing on that would block a
+	// legal conversion on the strength of a map key about to be deleted.
+	for mcpID, tools := range proj.DisabledTools {
+		if len(tools) == 0 {
+			continue
+		}
+		if !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		return fmt.Errorf(`remote project must not set disabled_tools for %q: a denylist grants every tool an MCP gains in future, which is the fail-open shape a grant to another machine must not have — enumerate what it may call in allowed_tools instead`, mcpID)
+	}
+	// Both of the next two are inert on a record that can hold no session, and
+	// ADR-009 decision 2's rule is that refusing an inert control at the door
+	// is more honest than shipping one that quietly no-ops. They were the last
+	// two fields on a profile that read on screen as a capability and were not
+	// one — the same argument that already removes the path, the skill toggle,
+	// the shell templates, the model allowlist and directory auth.
+	//
+	// A permission policy is a set of gates the CLAUDE CLI applies to a
+	// session it launches. An access profile launches none: it has no path to
+	// launch in, resolvePtyEnv and resolveProjectTemplate both refuse a remote
+	// record outright, and what actually bounds a remote client is the mode,
+	// the tool allowlist and the scope. A default_mode of "bypassPermissions"
+	// sitting on a profile is the worst of it — it reads as a widening that
+	// never happens and cannot be reasoned about from the record alone.
+	if p := proj.PermissionPolicy; p != nil && !permissionPolicyIsEmpty(p) {
+		return fmt.Errorf("remote project must not set permission_policy: those are Claude CLI gates on a session, and an access profile launches none — what bounds a remote client is access, allowed_tools and context")
+	}
+	// A chat template is a preset for starting a chat in that project. Same
+	// argument, one step further along: relay stores them and eve edits them,
+	// and eve has nowhere to offer them for a record with no sessions.
+	if len(proj.ChatTemplates) > 0 {
+		return fmt.Errorf("remote project must not have chat templates: a template is a preset for starting a chat session, and an access profile has no sessions to start")
+	}
 	// modelAllowedForProject (frontend_model_guard.go) treats both len==0 and
 	// ["*"] as "unrestricted" — there is no representation of "no models
 	// listed" that means anything other than "every model is allowed" today.
@@ -165,4 +224,218 @@ func validateProjectShape(proj *Project) error {
 		return fmt.Errorf("remote project must not set allowed_models: an allowlist here would either be misread as unrestricted (see modelAllowedForProject) or need a model-scoping story remote projects don't have yet — leave it empty")
 	}
 	return nil
+}
+
+// validateAllowedToolPatterns refuses every allowed_tools entry that cannot
+// serve as an allowlist entry, in MCP-name order so a record with two bad
+// patterns names the same one every time.
+func validateAllowedToolPatterns(proj *Project) error {
+	for _, mcpID := range sortedKeys(proj.AllowedTools) {
+		for _, pattern := range proj.AllowedTools[mcpID] {
+			if err := validateToolPattern(mcpID, pattern); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateToolPattern refuses one allowed_tools pattern, on two grounds.
+//
+// It DOES NOT COMPILE. path.Match rejects an unterminated character class, and
+// toolAllowedByPatterns answers "no" for a pattern it cannot compile — so an
+// allowlist of nothing but a broken pattern grants nothing at all. That is the
+// safe direction and a terrible thing to discover from an agent that stopped
+// working. Note this reason belongs to THIS list and not to the matcher: the
+// same uncompilable pattern in a context field's applies_to governs EVERY tool
+// (ContextField.Governs), because fail-closed for a restriction points the
+// other way. A message about what a broken pattern does has to name which of
+// the two lists it is talking about, which is why it is written here rather
+// than beside the shared matcher.
+//
+// It IS TOO BROAD. ADR-011 decision 2b's rule — registering a tool tomorrow
+// must not widen a grant made today — was enforced as a literal compare
+// against "*" while the matcher underneath was path.Match. Tool names contain
+// no "/", so "**", "?*", "*_*", "[a-z]*" and "*e*" each match every tool of an
+// MCP and not one of them is the string "*". A read-only "mail" profile
+// written with ["**"] was measured holding 26 tools across 11 of macMCP's
+// domains, web_fetch among them — the outbound channel decision 2b exists to
+// remove. The refusal is therefore a property of the matcher and not a list of
+// spellings (see overBroadToolPattern); a list of spellings is answered by the
+// next spelling.
+//
+// The wildcard is not replaced by a narrower wildcard: what an operator means
+// by "all the mail tools" is "mail_*", which is admitted, and what they mean
+// by "everything this MCP has" is a request an allowlist deliberately cannot
+// express — for a profile because a future tool would join it unreviewed, for
+// a local project because leaving the list empty already says it.
+func validateToolPattern(mcpID, pattern string) error {
+	if _, err := matchToolPattern(pattern, toolPatternProbes[0]); err != nil {
+		return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%v); an entry that will not compile matches no tool, so this allowlist would grant less than it reads as", mcpID, pattern, err)
+	}
+	if reason, over := overBroadToolPattern(pattern); over {
+		return fmt.Errorf("allowed_tools for %q: pattern %q is too broad — %s. A tool this MCP gains tomorrow would join the grant with nobody reviewing it, which is the fail-open shape an allowlist exists to close; name the tools, or use a pattern with a real prefix such as %q", mcpID, pattern, reason, "mail_*")
+	}
+	return nil
+}
+
+// permissionPolicyIsEmpty reports whether a policy says nothing at all.
+//
+// It exists because "empty means clear it" is already the update path's rule
+// (applyProjectUpdate stores nil for a policy with no fields set), and a
+// refusal that used a DIFFERENT reading of empty would refuse the very request
+// that clears one — an operator converting a local project to a profile sends
+// the emptied form, and being told "must not set permission_policy" about a
+// policy they just emptied is a wall with no door in it.
+func permissionPolicyIsEmpty(p *PermissionPolicy) bool {
+	return p == nil || (p.DefaultMode == "" && len(p.AllowedTools) == 0 && len(p.DeniedTools) == 0)
+}
+
+// ---------------------------------------------------------------------------
+// The permission set an operator can now type (ADR-011 decisions 2, 2b, 4, 6)
+// ---------------------------------------------------------------------------
+
+// validateProjectPermissions refuses an invalid access mode, an uncompilable
+// tool pattern, and a context value the MCP's own schema will not stand behind.
+// It is called from applyProjectCreate and applyProjectUpdate against the
+// fully-merged candidate, so every surface — the HTTP routes, the IPC handlers
+// the tray uses, and any future one — is refused identically.
+//
+// It exists because of the constraint ADR-011 states as its second: an editor
+// whose easiest failure is a confinement that does not confine is operability
+// DEFEATING security rather than trading against it. A scope value is typed
+// text today, a typo now fails closed (decision 4), and a closed failure is
+// silent from the agent's side — so the moment to catch a value that means
+// nothing is the moment it is written, not the call that later returns nothing.
+//
+// It is separate from validateProjectShape because it needs something that
+// function does not have: what the MCP declared. Shape is answerable from the
+// record alone; whether "mail_accounts" is a field macMCP has, and whether it
+// is one an operator may set, is answerable only from the live surface.
+func validateProjectPermissions(proj *Project, surfaces McpSurfaces) error {
+	// Which operations. AccessMode reads anything that is not exactly "write"
+	// as read, so a stored typo is already fail-closed — but a mode of "wrIte"
+	// that silently means read is a confinement the operator did not choose,
+	// and this is the one place it can still be said out loud.
+	for _, mcpID := range sortedKeys(proj.Access) {
+		mode := proj.Access[mcpID]
+		if mode != AccessRead && mode != AccessWrite {
+			return fmt.Errorf("access for %q must be %q or %q, not %q", mcpID, AccessRead, AccessWrite, mode)
+		}
+	}
+
+	// Which tools. The same rule validateProjectShape applies, applied again
+	// here because the two are reached by different routes: shape runs on the
+	// create path, this runs on the fully-merged candidate of both HTTP and
+	// IPC. Neither is redundant and both refuse identically.
+	if err := validateAllowedToolPatterns(proj); err != nil {
+		return err
+	}
+
+	// Which resources.
+	for _, mcpID := range sortedKeys(proj.Context) {
+		if err := validateProjectContextForMcp(mcpID, proj.Context[mcpID], surfaces); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProjectContextForMcp checks one MCP's context blob against what that
+// MCP declared.
+//
+// Three cases, and which one applies is decided by the MCP's own declaration:
+//
+//   - A v2 schema is the case this was written for. Every field name must be
+//     one the MCP declares, every value must conform to the declared fragment,
+//     and a source: "project_path" field is refused outright — relay derives
+//     those from the project's path, so an operator setting one is either
+//     confused about what the field is or is trying to widen a bound relay
+//     controls. SyncProjectToken would overwrite it on the next resync either
+//     way, and a value that silently disappears is worse than a refusal.
+//
+//   - A v1 declaration is refused entirely, because relay knows enough to know
+//     nothing here is operator-set: the v1 branch of SyncProjectToken REPLACES
+//     the whole blob with the derived allowed_dirs. Storing a value there means
+//     storing one that vanishes at the next path or MCP edit.
+//
+//   - No declaration at all — an MCP relay has never connected to, or one that
+//     publishes no contextSchema — cannot be checked, and is permitted with
+//     nothing but an emptiness check. That is the same stance
+//     ValidateProjectGrants takes and for the same reason: this is a coherence
+//     check an operator sees at edit time, not the boundary. Refusing on
+//     missing information would make an MCP that is merely not running
+//     unconfigurable, and the call-time presence re-check still denies.
+func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces McpSurfaces) error {
+	trimmed := strings.TrimSpace(string(blob))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &values); err != nil {
+		return fmt.Errorf("context for %q must be an object of field values", mcpID)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	surface := surfaces[mcpID]
+	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+	names := sortedKeys(values)
+
+	if !schema.V2() {
+		if len(surface.Schema) > 0 {
+			return fmt.Errorf("context for %q cannot be set here: it declares a v1 context schema, whose only field relay derives from the project's path — a value written here would be replaced on the next resync", mcpID)
+		}
+		// Unknown MCP. Presence is the only thing that can be checked, and it
+		// is the one that matters: an empty value is how a restrict field says
+		// "refuse everything I govern".
+		for _, name := range names {
+			if !hasScopeValue(values, name) {
+				return fmt.Errorf("context %q for %q: a non-empty value is required", name, mcpID)
+			}
+		}
+		return nil
+	}
+
+	for _, name := range names {
+		f, ok := schema.Field(name)
+		if !ok {
+			return fmt.Errorf("MCP %q declares no context field named %q (it declares: %s)", mcpID, name, declaredFieldList(schema))
+		}
+		if f.FromProjectPath() {
+			return fmt.Errorf("context %q for %q is derived by relay from the project's path and cannot be set by hand", name, mcpID)
+		}
+		if err := f.ValidateValue(values[name]); err != nil {
+			return fmt.Errorf("context for %q: %w", mcpID, err)
+		}
+	}
+	return nil
+}
+
+// declaredFieldList names an MCP's declared fields for a refusal. A refusal
+// that says a name is wrong without saying which are right is a refusal an
+// operator answers by guessing.
+func declaredFieldList(cs ContextSchema) string {
+	if len(cs.Fields) == 0 {
+		return "no fields"
+	}
+	names := make([]string, 0, len(cs.Fields))
+	for _, f := range cs.Fields {
+		names = append(names, strconv.Quote(f.Name))
+	}
+	return strings.Join(names, ", ")
+}
+
+// sortedKeys returns a map's keys in name order, so a refusal naming one of
+// several offending entries names the same one every time. Go's map iteration
+// is randomised per range, and an error message that varies between identical
+// requests is one nobody can write a test against.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -255,7 +255,7 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 		Fingerprint: "sha256:" + strings.Repeat("a", 64),
 		ProjectIDs:  []string{mail.ID},
 	})
-	schemas := func() map[string]json.RawMessage { return nil }
+	schemas := func() McpSurfaces { return nil }
 
 	local := ProjectKindLocal
 	path := t.TempDir()

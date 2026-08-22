@@ -17,6 +17,14 @@ const (
 	// handshake (spawn, initialize, tools/list, kill).
 	MCPDiscoveryTimeout = 30 * time.Second
 
+	// MCPEnumerateTimeout bounds one context/enumerate request (ADR-011
+	// decision 6). Deliberately far shorter than MCPRequestTimeout: that one
+	// is five minutes because a tool call can be an LLM inference, whereas
+	// this is a control an operator is looking at, and the correct degraded
+	// answer — "could not list, try again", with the text box still there —
+	// is much better than a spinner.
+	MCPEnumerateTimeout = 15 * time.Second
+
 	// MCPStartupTimeout is the maximum time for a single MCP to complete
 	// its startup handshake during StartAll/Reconcile. This bounds the
 	// HTTP transport path which has no independent per-request timer

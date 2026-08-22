@@ -33,6 +33,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 		store,
 		extMgr,
 		extMgr,
+		extMgr,
 		Endpoint{Socket: sock, Token: token},
 		enhanced,
 		nil,

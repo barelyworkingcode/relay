@@ -19,12 +19,14 @@ import (
 func runAuditCommand(args []string) {
 	fs := flag.NewFlagSet("audit", flag.ExitOnError)
 	tail := fs.Int("tail", 50, "show the most recent N events")
-	project := fs.String("project", "", "filter by project id")
+	// A remote actor's project_id names an ACCESS PROFILE (ADR-011 decision 1);
+	// it is the same field and the same ids, so one flag serves both.
+	project := fs.String("project", "", "filter by project / access profile id")
 	mcpID := fs.String("mcp", "", "filter by MCP id")
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending")
 	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, unknown")
 	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills")
-	text := fs.String("grep", "", "substring match over tool, MCP, error, project, caller, args")
+	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
 	fs.Parse(args)
