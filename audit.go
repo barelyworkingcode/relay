@@ -157,6 +157,37 @@ type AuditEvent struct {
 	ResultIsError bool   `json:"result_is_error,omitempty"`
 	ResultPreview string `json:"result_preview,omitempty"`
 
+	// Access and Scope record the AUTHORITY the call ran with, not just the
+	// grant it ran under (ADR-011 decision 7). ADR-008's property is that the
+	// log answers what was attempted with what authority, and the authority is
+	// the grant PLUS the mode PLUS the injected scope. A record carrying the
+	// tool and the args but not these cannot answer "was this call confined?"
+	// once an operator has since edited the profile, and re-reading
+	// settings.json at query time answers a different question.
+	//
+	// Scope carries ONLY the fields the MCP declared as scope: "restrict",
+	// never the whole per-MCP context map — _meta is a general channel and a
+	// future MCP may pass an API key through it, so logging it wholesale would
+	// make this file the place credentials go to be archived (see
+	// scopeFromMeta). Both are set on the single record a local call produces
+	// and on the INTENT record of a remote one, which is the record written
+	// before the MCP runs.
+	Access string                     `json:"access,omitempty"`
+	Scope  map[string]json.RawMessage `json:"scope,omitempty"`
+
+	// ScopeViolation marks a tool_error the MCP labelled as a scope refusal
+	// (see scopeViolationMarker). It is a FIELD and not an outcome on purpose:
+	// ADR-008 already places this case — tool_error means the call completed
+	// and the MCP answered no, i.e. a boundary was probed and held. `throttled`
+	// earned its own slot in ADR-010 because a budget refusal is a decision
+	// RELAY makes with relay's numbers; a scope violation is made inside the
+	// MCP and relay is only relaying it. Promoting it would inflate a small
+	// enum that --outcome, the CLI table and the UI pill all key on, in
+	// exchange for a signal a boolean gives alerting just as well. A `denied`
+	// from the mode or presence check is a different thing and is already
+	// correctly `denied`, because relay decided it.
+	ScopeViolation bool `json:"scope_violation,omitempty"`
+
 	// ToolCount is set on list events: how many tools the credential could see.
 	ToolCount int `json:"tool_count,omitempty"`
 }

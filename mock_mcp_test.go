@@ -40,9 +40,9 @@ func (m *mockMcpConn) Close() {
 	}
 }
 
-func (m *mockMcpConn) GetTools() []mcp.Tool       { return m.tools }
-func (m *mockMcpConn) SetTools(tools []mcp.Tool)  { m.tools = tools }
-func (m *mockMcpConn) GetConfig() ExternalMcp      { return m.config }
+func (m *mockMcpConn) GetTools() []mcp.Tool      { return m.tools }
+func (m *mockMcpConn) SetTools(tools []mcp.Tool) { m.tools = tools }
+func (m *mockMcpConn) GetConfig() ExternalMcp    { return m.config }
 
 // ---------------------------------------------------------------------------
 // Test helpers — reduce lock/unlock boilerplate in router and manager tests
@@ -56,6 +56,15 @@ func addMockConn(mgr *ExternalMcpManager, id string, mock *mockMcpConn) {
 	mgr.mu.Unlock()
 }
 
+// addMockSchema registers a context schema and its declared version for an MCP
+// under lock, which is what a real handshake does in finalizeConnection.
+func addMockSchema(mgr *ExternalMcpManager, id, schema string, version int) {
+	mgr.mu.Lock()
+	mgr.schemas[id] = json.RawMessage(schema)
+	mgr.schemaVersions[id] = version
+	mgr.mu.Unlock()
+}
+
 // newMockConn creates a mockMcpConn with the given ID and tools.
 // Optionally accepts a sendRequestFunc for tool call interception.
 func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, string, interface{}) (json.RawMessage, error)) *mockMcpConn {
@@ -66,11 +75,26 @@ func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, strin
 	}
 }
 
-// simpleTools creates a []mcp.Tool from a list of tool names.
+// simpleTools creates a []mcp.Tool from a list of tool names, with NO
+// annotations — which under ADR-011 decision 2 means "mutating", because an
+// absent readOnlyHint is not a claim that a tool is safe.
 func simpleTools(names ...string) []mcp.Tool {
 	tools := make([]mcp.Tool, len(names))
 	for i, name := range names {
 		tools[i] = mcp.Tool{Name: name}
+	}
+	return tools
+}
+
+// readOnlyTools is simpleTools with an explicit annotations.readOnlyHint: true
+// on every tool. Deliberately a SEPARATE helper rather than a default on
+// simpleTools: the whole of decision 2 is that an unannotated tool is refused
+// to a read-only grant, so a helper that quietly annotated everything would
+// make that untestable by making it unreachable.
+func readOnlyTools(names ...string) []mcp.Tool {
+	tools := simpleTools(names...)
+	for i := range tools {
+		tools[i].Annotations = json.RawMessage(`{"readOnlyHint":true}`)
 	}
 	return tools
 }
