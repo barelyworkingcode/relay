@@ -120,6 +120,62 @@ names fields whose already-chosen values must be sent as parameters, so the UI
 fills in dependency order (mailboxes cannot be listed without an account).
 Neither affects enforcement.
 
+## `context/enumerate`
+
+An MCP declaring `enumerable: true` on a field must answer this JSON-RPC
+method. Relay sends it for those fields and no others.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"context/enumerate",
+ "params":{"field":"mail_mailboxes","values":{"mail_accounts":["Bob"]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":7,"result":{"field":"mail_mailboxes",
+ "values":[{"value":"INBOX","label":"INBOX"},
+           {"value":"Projects/Archive","label":"Projects/Archive (Bob)"}]}}
+```
+
+`value` is what goes into `_meta` verbatim; `label` is display only. An empty
+`values` list is a valid answer and means there are none.
+
+**`values` carries only the fields this one declares in `depends_on`**, and only
+those the operator has already chosen. An absent key — and an empty one, which
+relay never sends — means **across everything**, never "match nothing". A server
+that reads an empty filter as matching nothing returns an empty list in exactly
+the state a picker opens in, which is indistinguishable from a host that holds
+nothing.
+
+It is **not a tool call**. It carries no `_meta`, spends no ADR-010 budget, and
+never reaches the audited tool chokepoint — routing an operator-UI read through
+`CallTool` would put a call nobody made in the audit log and run it with relay's
+own unscoped authority (ADR-011 decision 6).
+
+### Failing it
+
+Relay recognises exactly two error codes and treats every other outcome the
+same way. The three cases are kept apart because an operator's next action
+differs in each.
+
+| the server answers | relay | the editor |
+|---|---|---|
+| `-32601` method not found | records it for the life of the connection and stops asking | falls back to text entry, silently and permanently for that MCP |
+| `-32602` invalid params | surfaces it | says relay asked for a field it should not have — a relay bug — and offers text entry |
+| anything else, or no answer at all | surfaces it as retryable | says the values could not be listed *right now*, offers a retry, and keeps text entry |
+
+"Anything else" includes JSON-RPC's implementation-defined server-error range
+(`-32000` to `-32099`), which is what macMCP answers when Mail itself will not
+answer, along with a transport failure, a timeout, and a malformed result. None
+of them is ever rendered as an empty list: **a failure and "there are none" must
+not look the same**, or a profile gets saved against a host the operator was
+shown nothing about. Relay enforces that on the wire — `"values": []` is an
+answer, `"values": null` is a failure.
+
+Enumeration is **disclosure**: the list of every mail account on the host. It is
+served only on relay's admin-authenticated surfaces (the frontend socket and the
+tray's IPC channel) and is unreachable from the remote listener, whose dispatch
+table holds `ListTools` and `CallTool` and nothing else.
+
 ## Who fills a value in, and where
 
 An `operator` field is set in the Settings UI's per-MCP permission panel
@@ -127,8 +183,20 @@ An `operator` field is set in the Settings UI's per-MCP permission panel
 uses:
 
     GET  /api/mcps/{id}/scope_fields   -> the restrict fields this MCP declares
+    POST /api/mcps/{id}/enumerate      -> { "field": …, "values": {…} } (see below)
     POST /api/projects                 -> { "context": { "<mcp>": { "<field>": … } } }
     PUT  /api/projects/{id}            -> the same, as a patch
+
+`enumerate` is a POST for a read because `values` is a map from field name to
+that field's value, whose shape is whatever the MCP declared — there is no
+query-string encoding of that which does not quietly assume array-of-string.
+It answers with `{mcp_id, field, status, values, error}`: `200` for a real
+answer and for an MCP that does not implement enumeration (a true, final answer
+about that MCP), `404` for an MCP relay has never connected to, `400` for a
+field it never declared enumerable, `502` when the MCP refused the request relay
+built, and `503` when it could not answer. The `status` field is the precise
+answer; the code is there so a client reading only codes cannot mistake a
+failure for an empty list.
 
 `scope_fields` is the projection an editor renders from: name, `type`,
 `item_type`, `description`, `source`, `applies_to`, `enumerable`, `depends_on`.

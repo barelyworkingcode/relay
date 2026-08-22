@@ -34,7 +34,7 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 		}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), nil, nil, nil)
+	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
 	return httptest.NewServer(mux), store
 }
 
@@ -72,7 +72,7 @@ func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister Ski
 		}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), tools, lister, onChange)
+	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
 	return httptest.NewServer(mux), store
 }
 

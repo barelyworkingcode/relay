@@ -24,6 +24,48 @@ type MCPToolsProvider interface {
 	ToolInfos(id string) []ToolInfo
 }
 
+// enumHTTPStatus maps an enumeration outcome onto an HTTP code.
+//
+// The body always carries the precise `status` — a client that must tell
+// "does not implement" from "could not answer right now" reads that field, not
+// the code. What the code is for is the client that reads only codes: a
+// failure must never arrive as a 200 whose empty body could be mistaken for
+// "there are none". So the two MCP failures get 5xx (the upstream refused, or
+// could not answer), relay's own refusals get 4xx, and only a real answer is
+// a 200.
+func enumHTTPStatus(status string) int {
+	switch status {
+	case EnumStatusOK, EnumStatusUnsupported:
+		// Unsupported is a 200 because it is a true, final answer ABOUT the
+		// MCP — "this one does not enumerate" — not a failure to obtain one.
+		// The caller's correct response is to render a text box, permanently.
+		return http.StatusOK
+	case EnumStatusUnknownMcp:
+		return http.StatusNotFound
+	case EnumStatusNotEnumerable:
+		return http.StatusBadRequest
+	case EnumStatusInvalidField:
+		// The MCP refused the request relay built. Relay is the one at fault,
+		// and a 502 says the failure is on this side of the operator.
+		return http.StatusBadGateway
+	default: // EnumStatusUnavailable
+		return http.StatusServiceUnavailable
+	}
+}
+
+// enumerateRequest is the POST body for the enumeration route.
+//
+// POST rather than GET, for a read: `values` is a map from field name to that
+// field's already-chosen value, whose shape is whatever the MCP declared, and
+// there is no query-string encoding of that which does not quietly assume
+// array-of-string. A GET would work today and break on the first MCP that
+// declares something else, which is precisely the domain knowledge ADR-011
+// decision 3 keeps out of relay.
+type enumerateRequest struct {
+	Field  string                     `json:"field"`
+	Values map[string]json.RawMessage `json:"values,omitempty"`
+}
+
 // ProjectsChangedFn is fired after any successful project mutation so the
 // tray UI can refresh. nil = no fan-out.
 type ProjectsChangedFn func()
@@ -67,6 +109,10 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 // Settings are persisted on save; cross-process state stays consistent
 // because relay's bridge re-reads settings on every ListProjects/GetProject.
 //
+// enum asks a connected MCP to list a scope field's real values; nil makes
+// POST /api/mcps/{id}/enumerate answer "unavailable" rather than 404, because
+// the field still exists and the editor's fallback is still text entry.
+//
 // skillLister resolves the live tool set for a project token; supplying nil
 // disables out-of-band skill regen.
 //
@@ -75,7 +121,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
@@ -291,6 +337,27 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps McpSurf
 			return
 		}
 		writeJSON(w, http.StatusOK, surfaces.Schema(id).ScopeFieldViews())
+	})
+
+	// POST /api/mcps/{id}/enumerate — ask the MCP for one scope field's real
+	// values (ADR-011 decision 6), so the editor offers a picker instead of a
+	// free-text box whose easiest failure is a confinement that does not
+	// confine. Body: {"field": "...", "values": {"<dependency>": <chosen>}}.
+	//
+	// It sits on the same mux as every other project route, which is the
+	// guard: the frontend socket is 0600 and every request through it is
+	// bearer-checked by frontendBearerAuth. Enumeration is disclosure — the
+	// list of every mail account on this machine — so it belongs behind the
+	// same admin boundary and nowhere near the remote listener, whose dispatch
+	// table is ListTools and CallTool and gains nothing here.
+	mux.HandleFunc("POST /api/mcps/{id}/enumerate", func(w http.ResponseWriter, r *http.Request) {
+		var body enumerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		res := enumerateScopeField(r.Context(), mcps.AllMcpSurfaces(), enum, r.PathValue("id"), body.Field, body.Values)
+		writeJSON(w, enumHTTPStatus(res.Status), res)
 	})
 
 	// GET /api/mcps/{id}/tools — live tool list for the project picker.

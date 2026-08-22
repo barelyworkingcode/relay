@@ -174,6 +174,7 @@ var mockBridgeScript = `<script>
         else if (msg.op === 'save') { window.onServiceConfigResult({ serviceId: msg.serviceId, op: 'save', ok: true }); window.onServiceConfigApplied({ serviceId: msg.serviceId, mode: 'restarting' }); }
         break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
+      case 'enumerate_scope_field': window.onScopeFieldEnumerated(enumerate(msg)); break;
       case 'service_action': window.onServiceActionResult({ serviceId: msg.serviceId, actionId: msg.actionId, row: msg.row, ok: true }); break;
       case 'query_audit': window.onAuditEvents(FIXTURE_AUDIT, FIXTURE_AUDIT_STATUS); break;
       case 'export_audit': window.onAuditExported('/Users/you/Library/Application Support/relay/logs/audit/toolcalls-export-20260819-150000.jsonl'); break;
@@ -197,6 +198,32 @@ var mockBridgeScript = `<script>
         break;
       // add/update/remove/start/stop etc. — no-op in the harness, just logged above
     }
+  }
+  // enumerate answers context/enumerate the way a v2 MCP does, including the
+  // degraded shapes — those are the ones worth eyeballing, because each has to
+  // read differently and none of them may look like an empty list. Force one
+  // by asking for a field named after the status you want to see.
+  function enumerate(msg) {
+    var res = { mcp_id: msg.mcp_id, field: msg.field, status: 'ok', values: null };
+    if (msg.mcp_id !== 'macmcp') { res.status = 'unsupported'; res.error = msg.mcp_id + ' does not implement context/enumerate'; return res; }
+    if (msg.field === 'mail_accounts') {
+      res.values = [{ value: 'Alice', label: 'Alice <alice@example.com>' }, { value: 'Bob', label: 'Bob <bob@example.com>' }];
+      return res;
+    }
+    if (msg.field === 'mail_mailboxes') {
+      // Read WITHIN the accounts already chosen; unchosen means all of them.
+      var accounts = (msg.values && msg.values.mail_accounts) || ['Alice', 'Bob'];
+      res.values = [];
+      for (var i = 0; i < accounts.length; i++) {
+        res.values.push({ value: 'INBOX', label: 'INBOX (' + accounts[i] + ')' });
+        res.values.push({ value: 'Projects/Archive', label: 'Projects/Archive (' + accounts[i] + ')' });
+      }
+      return res;
+    }
+    res.status = 'invalid_field';
+    res.error = 'no enumerable field named ' + msg.field;
+    res.values = null;
+    return res;
   }
 })();
 </script>`

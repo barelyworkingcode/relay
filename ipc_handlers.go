@@ -154,6 +154,12 @@ type IPCContext struct {
 	// picker. nil means "no tool data available" — handlers degrade by
 	// emitting empty lists rather than panicking.
 	Tools MCPToolsProvider
+	// Enumerate asks a connected MCP for a scope field's real values
+	// (ADR-011 decision 6), so the Projects tab can offer a picker instead of
+	// a box. nil means every enumeration answers "unavailable", which is the
+	// state the editor already has to render correctly — the text box is the
+	// fallback, so a missing provider costs nothing but the picker.
+	Enumerate ContextEnumerator
 	// SkillLister is the same interface skills.go uses; threaded here so the
 	// Regen Now button can run without re-importing *appRouter.
 	SkillLister SkillLister
@@ -269,6 +275,7 @@ const (
 	MsgRegenProjectSkill          = "regen_project_skill"
 	MsgUpdateProjectDisabledTools = "update_project_disabled_tools"
 	MsgListMcpTools               = "list_mcp_tools"
+	MsgEnumerateScopeField        = "enumerate_scope_field"
 
 	// Tool Calls / audit log (ipc_audit.go)
 	MsgQueryAudit     = "query_audit"
@@ -308,6 +315,7 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRegenProjectSkill:          ipcRegenProjectSkill,
 	MsgUpdateProjectDisabledTools: ipcUpdateProjectDisabledTools,
 	MsgListMcpTools:               ipcListMcpTools,
+	MsgEnumerateScopeField:        ipcEnumerateScopeField,
 
 	// Tool Calls (ipc_audit.go)
 	MsgQueryAudit:     ipcQueryAudit,

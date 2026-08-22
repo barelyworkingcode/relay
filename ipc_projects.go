@@ -32,6 +32,14 @@ type ipcListMcpToolsMsg struct {
 	McpID string `json:"mcp_id"`
 }
 
+// ipcEnumerateScopeFieldMsg mirrors the POST /api/mcps/{id}/enumerate body,
+// with the MCP id inline as every IPC message carries it.
+type ipcEnumerateScopeFieldMsg struct {
+	McpID  string                     `json:"mcp_id"`
+	Field  string                     `json:"field"`
+	Values map[string]json.RawMessage `json:"values,omitempty"`
+}
+
 // ipcCreateProject creates a new project, applies optional skill/policy, and
 // emits onProjectAdded with the full row (including the freshly-generated
 // plaintext token — the user copies it from the form's Token field).
@@ -268,6 +276,33 @@ func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 		infos = []ToolInfo{}
 	}
 	ctx.UI.EmitEvent("onMcpToolsListed", msg.McpID, marshalForUI(infos))
+}
+
+// ipcEnumerateScopeField is the tray's half of ADR-011 decision 6, and the
+// exact counterpart of POST /api/mcps/{id}/enumerate: ADR-004 keeps the two
+// editors co-equal, and an editor that can only offer a picker over HTTP is
+// not co-equal with one that cannot.
+//
+// Both surfaces call enumerateScopeField, so every check relay makes on its
+// own — is this a field the MCP declared, did it declare it enumerable, which
+// dependency values may be sent — is made once and identically. The result is
+// emitted VERBATIM, including its status, because the whole point is that the
+// picker must render "no values" and "could not ask" differently.
+//
+// It runs off the UI thread: a context/enumerate is a live round trip to
+// another process, and blocking the main thread on one would freeze the whole
+// settings window for as long as the MCP takes.
+func ipcEnumerateScopeField(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcEnumerateScopeFieldMsg](raw, "enumerate_scope_field")
+	if !ok {
+		return
+	}
+	surfaces := mcpSurfacesFrom(ctx)
+	enum := ctx.Enumerate
+	ctx.GoFunc(func() {
+		res := enumerateScopeField(ctx.Ctx, surfaces, enum, msg.McpID, msg.Field, msg.Values)
+		dispatchEmit(ctx, "onScopeFieldEnumerated", marshalForUI(res))
+	})
 }
 
 // mcpSurfacesFrom returns the runtime MCP surfaces from the IPC context's

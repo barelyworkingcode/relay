@@ -27,7 +27,7 @@ func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 		s.ExternalMcps = []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(v2Surfaces), nil, nil, nil)
+	RegisterProjectRoutes(mux, store, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL, store
