@@ -15,6 +15,19 @@ const (
 	// A client opts in by including _meta.progressToken on a request; the
 	// server then emits these referencing that token.
 	MethodProgress = "notifications/progress"
+
+	// MethodContextEnumerate asks a server to list the valid values of one
+	// contextSchema field it declared `enumerable: true` (ADR-011 decision 6),
+	// so an operator picks a resource rather than typing its name.
+	//
+	// Params: {"field": "<name>", "values": {"<dependency>": <chosen>}}
+	// Result: {"field": "<name>", "values": [{"value": …, "label": "…"}]}
+	//
+	// A server that does not implement it answers -32601, which relay reads as
+	// "free-text entry for this MCP" and stops asking. It is NOT a tool call:
+	// it carries no _meta, spends no budget, and never reaches the audited
+	// tool chokepoint.
+	MethodContextEnumerate = "context/enumerate"
 )
 
 // Tool represents an MCP tool definition.

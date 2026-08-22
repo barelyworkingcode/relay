@@ -20,9 +20,15 @@ import "encoding/json"
 // token in its native Projects tab. Only the eve-facing HTTP routes in
 // project_routes.go project through this.
 type projectView struct {
-	ID               string                     `json:"id"`
-	Name             string                     `json:"name"`
-	Path             string                     `json:"path"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Kind, and below it Access and AllowedTools, are here because without
+	// them the GET cannot show what the PUT accepted — a UI that cannot render
+	// its own state. Kind additionally decides how everything else on the row
+	// reads: a record with no path, no models and no skill is either an access
+	// profile or a broken project, and only this field says which.
+	Kind             ProjectKind                `json:"kind,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
 	ChatTemplates    []ChatTemplate             `json:"chat_templates,omitempty"`
@@ -30,6 +36,8 @@ type projectView struct {
 	CreatedAt        string                     `json:"created_at"`
 	DisabledTools    map[string][]string        `json:"disabled_tools,omitempty"`
 	Context          map[string]json.RawMessage `json:"context,omitempty"`
+	AllowedTools     map[string][]string        `json:"allowed_tools,omitempty"`
+	Access           map[string]string          `json:"access,omitempty"`
 	PermissionPolicy *PermissionPolicy          `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
 	AllowCwdAuth     bool                       `json:"allow_cwd_auth,omitempty"`
@@ -41,6 +49,7 @@ func projectToView(p Project) projectView {
 		ID:               p.ID,
 		Name:             p.Name,
 		Path:             p.Path,
+		Kind:             p.Kind,
 		AllowedMcpIDs:    p.AllowedMcpIDs,
 		AllowedModels:    p.AllowedModels,
 		ChatTemplates:    p.ChatTemplates,
@@ -48,6 +57,8 @@ func projectToView(p Project) projectView {
 		CreatedAt:        p.CreatedAt,
 		DisabledTools:    p.DisabledTools,
 		Context:          p.Context,
+		AllowedTools:     p.AllowedTools,
+		Access:           p.Access,
 		PermissionPolicy: p.PermissionPolicy,
 		GenerateSkill:    p.GenerateSkill,
 		AllowCwdAuth:     p.AllowCwdAuth,

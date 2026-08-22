@@ -38,6 +38,7 @@ type remoteFixture struct {
 	router  *appRouter
 	audit   *AuditRecorder
 	server  *RemoteServer
+	mgr     *ExternalMcpManager
 	project Project
 	bundle  *enrolmentBundle
 	// mcpCalls counts how many times a tool actually reached the (mock) MCP.
@@ -100,6 +101,15 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 		}
 		f.project, createErr = s.CreateProjectWithTokenKind(
 			ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
+		// A profile names the tools it may call (ADR-011 decision 2b); with no
+		// allowed_tools it holds none of them, which is the fail-closed default
+		// and would make every fixture below assert on a denial. These tests
+		// are about the transport, the budget and the audit path, so they grant
+		// the one tool they exercise.
+		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_*"}})
+		if p, _ := s.findProjectByID(f.project.ID); p != nil {
+			f.project = *p
+		}
 		for i := 0; i < opts.extraProjects; i++ {
 			if _, err := s.CreateProjectWithTokenKind(
 				ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
@@ -110,7 +120,7 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	assertNoErr(t, createErr, "create remote project")
 
 	mgr := NewExternalMcpManager(nil)
-	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("mail_search"),
+	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools("mail_search"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			f.mcpCalls.Add(1)
 			return json.RawMessage(`{"content":[{"type":"text","text":"3 messages"}]}`), nil
@@ -119,6 +129,7 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	if !opts.disableAudit {
 		f.audit = newTestAudit(t, nil)
 	}
+	f.mgr = mgr
 	f.router = &appRouter{
 		store:    store,
 		tools:    mgr,

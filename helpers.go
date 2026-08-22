@@ -66,14 +66,42 @@ func marshalForUI(v interface{}) json.RawMessage {
 	return json.RawMessage(data)
 }
 
+// mcpRPCError is the error every transport returns when an external MCP
+// answers with a JSON-RPC error object, carrying the CODE alongside the
+// rendered text.
+//
+// The code has to survive the trip because a caller can be required to act
+// differently on different ones: context/enumerate must tell -32601 ("this MCP
+// does not implement enumeration" — degrade permanently) from -32602 ("relay
+// asked for a field it should not have" — a relay bug, surface it) from
+// everything else ("could not answer right now" — offer a retry), and doing
+// that by matching on the message text is how the three quietly become one.
+//
+// It is deliberately NOT jsonrpc.CodedError. That type means "this is the code
+// relay's own listener should answer its caller with" (bridge/frameconn.go
+// reads it that way), and an external MCP's -32001 is not relay's -32001 —
+// promoting one to the other would let an MCP dictate how relay's own access
+// denials read.
+type mcpRPCError struct {
+	Code    int
+	Message string
+	Data    interface{}
+}
+
+func (e *mcpRPCError) Error() string {
+	if e.Data != nil {
+		return fmt.Sprintf("JSON-RPC error %d: %s (data: %v)", e.Code, e.Message, e.Data)
+	}
+	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
+}
+
 // formatJSONRPCError formats a JSON-RPC error response into a Go error.
 // Includes the Data field when present so diagnostic details from external
-// MCPs are not silently discarded.
+// MCPs are not silently discarded. The text is unchanged from when this
+// returned a bare fmt.Errorf; what is new is that the code is recoverable with
+// errors.As (see mcpRPCError).
 func formatJSONRPCError(e *jsonrpc.Error) error {
-	if e.Data != nil {
-		return fmt.Errorf("JSON-RPC error %d: %s (data: %v)", e.Code, e.Message, e.Data)
-	}
-	return fmt.Errorf("JSON-RPC error %d: %s", e.Code, e.Message)
+	return &mcpRPCError{Code: e.Code, Message: e.Message, Data: e.Data}
 }
 
 // formatBytes renders a byte count for display in the tray menu's aux column.

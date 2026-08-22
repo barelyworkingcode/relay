@@ -163,6 +163,19 @@ func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
 	}
 }
 
+// setAuthority records the access mode in force and the scope actually
+// injected. Called at the point CallTool assembles _meta, which is before
+// intent() writes the pre-call record, so a remote call's intent line carries
+// the authority it is about to run with rather than only the completion doing
+// so.
+func (a *auditCall) setAuthority(access string, scope map[string]json.RawMessage) {
+	if a == nil {
+		return
+	}
+	a.ev.Access = access
+	a.ev.Scope = scope
+}
+
 // setToolCount records how many tools a list call exposed.
 func (a *auditCall) setToolCount(n int) {
 	if a == nil {
@@ -240,6 +253,7 @@ func (a *auditCall) doneResult(result json.RawMessage, err error) {
 	}
 	a.ev.ResultBytes = len(result)
 	a.ev.ResultIsError = resultIsError(result)
+	a.ev.ScopeViolation = a.ev.ResultIsError && resultIsScopeViolation(result)
 	if n := a.rec.cfg.MaxResultPreviewBytes; n > 0 && len(result) > 0 {
 		a.ev.ResultPreview = truncateRunes(string(result), n)
 	}
@@ -270,6 +284,62 @@ func resultIsError(result json.RawMessage) bool {
 		return false
 	}
 	return probe.IsError
+}
+
+// scopeViolationMarker is the _meta key an MCP sets on an error result to say
+// that the refusal was a resource-scope refusal rather than any other kind.
+//
+// The wire shape, which is the whole of the contract:
+//
+//	{"content": [...], "isError": true,
+//	 "_meta": {"scope_violation": true}}
+//
+// _meta on a result is the symmetric channel to the _meta relay injects on a
+// request. It is honoured ONLY when isError is true — a successful call cannot
+// claim to have refused anything — and only when the value is boolean true.
+// Everything else (absent, a string, a number, a malformed blob) leaves the
+// flag off, because this is an optional signal an MCP volunteers and a garbled
+// one must degrade to "an ordinary tool_error", never to an error about the
+// marker.
+//
+// It is deliberately a marker relay TRUSTS rather than a message relay parses.
+// Distinguishing a scope refusal from any other isError by reading the error
+// text would be the ADR-006 line — domain knowledge inside relay — and this
+// stays honest about which it is: the flag is what the MCP said about itself,
+// and it changes no outcome and gates no decision. It exists so alerting has
+// something to select on.
+const scopeViolationMarker = "scope_violation"
+
+// scopeViolationMarkerNamespaced is the same signal under MCP's convention for
+// a namespaced _meta key. Both spellings are accepted because the cost of
+// accepting two is nil — the flag gates nothing — and the cost of accepting
+// the wrong one is a signal that silently never appears.
+const scopeViolationMarkerNamespaced = "relay/scope_violation"
+
+// resultIsScopeViolation reports whether an MCP error result carries the
+// marker. Nil-safe and malformed-safe by construction: every failure to decode
+// answers false.
+func resultIsScopeViolation(result json.RawMessage) bool {
+	if len(result) == 0 {
+		return false
+	}
+	var probe struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if err := json.Unmarshal(result, &probe); err != nil {
+		return false
+	}
+	raw, ok := probe.Meta[scopeViolationMarker]
+	if !ok {
+		if raw, ok = probe.Meta[scopeViolationMarkerNamespaced]; !ok {
+			return false
+		}
+	}
+	var flag bool
+	if err := json.Unmarshal(raw, &flag); err != nil {
+		return false
+	}
+	return flag
 }
 
 // projectNameFor resolves a display name for the audited project. Prefers the

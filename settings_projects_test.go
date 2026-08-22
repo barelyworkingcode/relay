@@ -32,10 +32,10 @@ func newProjectsTestStore(t *testing.T) SettingsStore {
 
 // fsSchemas returns a schemas map where fsmcp declares allowed_dirs (the
 // trigger for filesystem auto-detection in SyncProjectToken).
-func fsSchemas() map[string]json.RawMessage {
-	return map[string]json.RawMessage{
-		"fsmcp":  json.RawMessage(`{"allowed_dirs": {"type": "array"}}`),
-		"macmcp": json.RawMessage(`{}`),
+func fsSchemas() McpSurfaces {
+	return McpSurfaces{
+		"fsmcp":  {Schema: json.RawMessage(`{"allowed_dirs": {"type": "array"}}`)},
+		"macmcp": {Schema: json.RawMessage(`{}`)},
 	}
 }
 

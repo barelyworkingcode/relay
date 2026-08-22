@@ -217,15 +217,15 @@ func (s *Settings) RemoveProject(id string) {
 
 // UpdateProjectMcps updates the allowed MCP IDs for a project and syncs
 // the associated token's permissions and context.
-// schemas maps MCP IDs to their runtime context schemas.
+// surfaces maps MCP IDs to their runtime schema + tool surface.
 // Does not save; use within store.With.
-func (s *Settings) UpdateProjectMcps(id string, mcpIDs []string, schemas map[string]json.RawMessage) {
+func (s *Settings) UpdateProjectMcps(id string, mcpIDs []string, surfaces McpSurfaces) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
 	proj.AllowedMcpIDs = mcpIDs
-	s.SyncProjectToken(proj, schemas)
+	s.SyncProjectToken(proj, surfaces)
 }
 
 // UpdateProjectModels updates the allowed models for a project.
@@ -249,9 +249,9 @@ func (s *Settings) UpdateProjectName(id string, name string) {
 }
 
 // UpdateProjectPath updates a project's path and syncs token context.
-// schemas maps MCP IDs to their runtime context schemas.
+// surfaces maps MCP IDs to their runtime schema + tool surface.
 // Does not save; use within store.With.
-func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]json.RawMessage) {
+func (s *Settings) UpdateProjectPath(id string, path string, surfaces McpSurfaces) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
@@ -268,7 +268,7 @@ func (s *Settings) UpdateProjectPath(id string, path string, schemas map[string]
 		return
 	}
 	proj.Path = path
-	s.SyncProjectToken(proj, schemas)
+	s.SyncProjectToken(proj, surfaces)
 }
 
 // UpdateProjectKind changes a project's kind. Does not save; use within
@@ -422,6 +422,120 @@ func (s *Settings) UpdateProjectDisabledTools(id, mcpID string, disabled []strin
 	proj.DisabledTools[mcpID] = cleaned
 }
 
+// UpdateProjectAllowedTools replaces a project's per-MCP tool allowlist
+// (ADR-011 decision 2b). Entries naming an MCP the project is not granted are
+// dropped rather than stored: a stale allowlist reads as a grant and is not
+// one, and SyncProjectToken already prunes them on every resync.
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectAllowedTools(id string, allowed map[string][]string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(allowed) == 0 {
+		proj.AllowedTools = nil
+		return
+	}
+	cleaned := make(map[string][]string, len(allowed))
+	for mcpID, patterns := range allowed {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		list := make([]string, 0, len(patterns))
+		seen := make(map[string]bool, len(patterns))
+		for _, p := range patterns {
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			list = append(list, p)
+		}
+		if len(list) > 0 {
+			cleaned[mcpID] = list
+		}
+	}
+	if len(cleaned) == 0 {
+		proj.AllowedTools = nil
+		return
+	}
+	proj.AllowedTools = cleaned
+}
+
+// UpdateProjectAccess replaces a project's per-MCP operation mode (ADR-011
+// decision 2). Entries naming an MCP the project is not granted are dropped
+// rather than stored, exactly as UpdateProjectAllowedTools drops them: a mode
+// for an MCP this record cannot reach reads as an authority it does not have,
+// and SyncProjectToken prunes them on every resync anyway.
+//
+// An unrecognised mode is stored as given rather than dropped or corrected.
+// Dropping it would fall back to the DEFAULT, which for a local project is
+// write — a mutator silently widening a grant on the strength of a typo. What
+// StoredToken.AccessMode does with a value it does not recognise is read it as
+// read-only, so keeping it is the fail-closed direction; the loud refusal is
+// validateProjectPermissions, at the surfaces an operator actually types into.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(access) == 0 {
+		proj.Access = nil
+		return
+	}
+	cleaned := make(map[string]string, len(access))
+	for mcpID, mode := range access {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		cleaned[mcpID] = mode
+	}
+	if len(cleaned) == 0 {
+		proj.Access = nil
+		return
+	}
+	proj.Access = cleaned
+}
+
+// UpdateProjectContext replaces a project's per-MCP context values — the
+// resource scope an operator sets (ADR-011 decisions 4 and 6). Until this
+// existed, Context was only ever DERIVED, by SyncProjectToken, and there was no
+// operator path to it at all (ADR-011 finding 6).
+//
+// The map an operator supplies replaces what was there, and then
+// SyncProjectToken runs so every source: "project_path" field is re-derived on
+// top of it. That ordering is what makes a wholesale replace safe: the operator
+// cannot set a derived field (validateProjectPermissions refuses it), so a
+// replace would otherwise DELETE one — and a project whose write_dirs silently
+// disappeared when its mail scope was edited would lose the two tools that
+// field governs, fail-closed and unexplained. mergeContextField, which
+// SyncProjectToken uses, puts each derived field back without touching the
+// operator's.
+//
+// surfaces is what that re-derivation needs; passing nil means no derivation,
+// which is the pre-ADR-011 contract for a caller with no live MCP manager.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectContext(id string, values map[string]json.RawMessage, surfaces McpSurfaces) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	cleaned := make(map[string]json.RawMessage, len(values))
+	for mcpID, blob := range values {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		if len(contextValues(blob)) == 0 {
+			continue
+		}
+		cleaned[mcpID] = blob
+	}
+	proj.Context = cleaned
+	s.SyncProjectToken(proj, surfaces)
+}
+
 // SetProjectGenerateSkill toggles the GenerateSkill flag. Extracted from the
 // HTTP route so the IPC path can reuse the same mutation without duplicating
 // the lookup. Does not save; use within store.With.
@@ -446,9 +560,16 @@ func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
 // SyncProjectToken updates the project's disabled tools and context to match
 // its current allowedMcpIDs and path. Permissions are derived at auth time
 // from AllowedMcpIDs, so they're not stored.
-// schemas maps MCP IDs to their runtime context schemas (from ExternalMcpManager).
-// If schemas is nil, filesystem auto-detection is skipped.
-func (s *Settings) SyncProjectToken(proj *Project, schemas map[string]json.RawMessage) {
+//
+// surfaces maps MCP IDs to what relay knows about them at runtime (from
+// ExternalMcpManager). A nil map skips derivation entirely, which is the
+// pre-ADR-011 contract for a caller with no live MCP manager wired.
+//
+// The derivation is driven by the SCHEMA, not by a field name relay knows:
+// relay writes the project's path into every field declaring
+// source: "project_path" because the schema asked it to (ADR-011 decision 5).
+// The v1 branch below is the one exception and is scheduled for removal.
+func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	if proj.Context == nil {
 		proj.Context = make(map[string]json.RawMessage)
 	}
@@ -475,57 +596,165 @@ func (s *Settings) SyncProjectToken(proj *Project, schemas map[string]json.RawMe
 			delete(proj.DisabledTools, id)
 		}
 	}
+	for id := range proj.Access {
+		if !allowed[id] {
+			delete(proj.Access, id)
+		}
+	}
+	for id := range proj.AllowedTools {
+		if !allowed[id] {
+			delete(proj.AllowedTools, id)
+		}
+	}
 	// Defence in depth: a remote project has no Path, and BOTH ways to handle
-	// that are unsafe — writing allowed_dirs: [""] hands a downstream MCP an
-	// empty root to interpret (a Node MCP's path.resolve("") resolves to ITS
-	// OWN cwd, which can be far more permissive than intended), and omitting
+	// that are unsafe — writing a path-derived field as [""] hands a downstream
+	// MCP an empty root to interpret (a Node MCP's path.resolve("") resolves to
+	// ITS OWN cwd, which can be far more permissive than intended), and omitting
 	// the field lets the MCP fall back to its own default, which may be
 	// unrestricted. Relay can't see how a given MCP interprets either, so
 	// remote projects skip this derivation entirely — never just when
 	// validation happens to catch it. ValidateProjectGrants is supposed to
-	// refuse granting a path-scoped MCP to a remote project before this ever
-	// runs; this guard is what keeps a bypass of that check from turning into
-	// a silent filesystem-scope widening instead of a loud one.
+	// refuse granting an MCP whose whole tool surface needs a path to a remote
+	// project before this ever runs; this guard is what keeps a bypass of that
+	// check from turning into a silent scope widening instead of a loud one.
+	//
+	// Stated generically now (ADR-011 decision 5): NEVER derive a
+	// source: "project_path" field for a remote-kind record, unconditionally,
+	// before the loop. The reasoning is ADR-009's and is unchanged — the
+	// failure mode is a silent widening, and schemas are discovered at runtime,
+	// so an MCP can grow such a field after a grant was already validated.
 	if proj.IsRemote() {
 		return
 	}
 	for _, mcpID := range mcpIDs {
-		if schemaHasField(schemas[mcpID], "allowed_dirs") {
+		surface := surfaces[mcpID]
+		schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+
+		if schema.V2() {
+			derived := 0
+			for _, f := range schema.ProjectPathFields() {
+				value, err := json.Marshal(projectPathValue(f, proj.Path))
+				if err != nil {
+					continue
+				}
+				proj.Context[mcpID] = mergeContextField(proj.Context[mcpID], f.Name, value)
+				derived++
+			}
+			// DEFERRED (ADR-011): fs_bash auto-disable stays a hardcoded tool
+			// name here. Moving it into the schema as a default_disabled_tools
+			// declaration is the same ADR-006 violation as the old
+			// allowed_dirs branch, but it is not resource scoping, so it is
+			// explicitly out of ADR-011's scope. Keyed off "this MCP scopes
+			// something to the project path" rather than off the field's name,
+			// which is the most domain-blind form available without the schema
+			// change.
+			if derived > 0 {
+				s.disableToolByDefault(proj, mcpID, v1FsBashTool)
+			}
+			continue
+		}
+
+		// v1 compatibility, for one release. This is the last place in relay
+		// that knows a field name; see v1AllowedDirsField. An MCP that declares
+		// no contextSchemaVersion is handled exactly as it was before ADR-011,
+		// nested-schema tolerance (issue #17) included.
+		if schemaHasField(surface.Schema, v1AllowedDirsField) {
 			ctx, _ := json.Marshal(map[string]interface{}{
-				"allowed_dirs": []string{proj.Path},
+				v1AllowedDirsField: []string{proj.Path},
 			})
 			proj.Context[mcpID] = ctx
-			// Disable fs_bash by default for filesystem MCPs.
-			if !slices.Contains(proj.DisabledTools[mcpID], "fs_bash") {
-				proj.DisabledTools[mcpID] = append(proj.DisabledTools[mcpID], "fs_bash")
-			}
+			s.disableToolByDefault(proj, mcpID, v1FsBashTool)
 		}
 	}
 }
 
-// ValidateProjectGrants rejects a remote project's MCP grant list if it
-// includes any MCP whose runtime context schema declares allowed_dirs — i.e.
-// an MCP that expects to be scoped to a filesystem path. A remote project has
-// no Path (validateProjectShape enforces that), so granting it a path-scoped
-// MCP would leave SyncProjectToken with no safe way to derive allowed_dirs
-// (see the comment there). The grant itself is refused up front instead,
-// naming the offending MCP so the caller knows what to remove.
+// projectPathValue renders the project's path in the shape the field declared.
+// An array-typed field gets a one-element list, a string-typed one gets the
+// bare path. Anything else gets the list, which is what every path-scoped MCP
+// relay has met declares and the only shape that can carry more than one root
+// later.
+func projectPathValue(f ContextField, path string) interface{} {
+	if f.Type == "string" {
+		return path
+	}
+	return []string{path}
+}
+
+// mergeContextField sets one field inside an MCP's context blob, leaving every
+// other field alone. The old code replaced the whole blob, which was harmless
+// while relay derived exactly one field and destructive as soon as an operator
+// can set others beside it (ADR-011 decision 6).
+func mergeContextField(base json.RawMessage, name string, value json.RawMessage) json.RawMessage {
+	m := contextValues(base)
+	if m == nil {
+		m = map[string]json.RawMessage{}
+	}
+	m[name] = value
+	out, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return out
+}
+
+// disableToolByDefault adds a tool to a project's disabled list once.
+func (s *Settings) disableToolByDefault(proj *Project, mcpID, tool string) {
+	if !slices.Contains(proj.DisabledTools[mcpID], tool) {
+		proj.DisabledTools[mcpID] = append(proj.DisabledTools[mcpID], tool)
+	}
+}
+
+// ValidateProjectGrants refuses a grant that would leave an MCP with no usable
+// tools (ADR-011 decision 5).
+//
+// This replaces the old rule, which asked the wrong question: it refused a
+// remote project any MCP declaring the literal field "allowed_dirs", encoding
+// "filesystem" where it meant "derived from the project's path". The general
+// question is asked here instead.
+//
+// A remote-kind record has no Path, so a source: "project_path" field cannot be
+// supplied for one. By ADR-011 decision 4 every tool that field governs then
+// refuses. If the field's applies_to covers EVERY tool the MCP exposes, the
+// grant buys nothing and is refused, naming the MCP and why. If it covers only
+// some — macMCP, where only mail_save_attachment and mail_get_source are
+// governed — the grant is permitted and precisely those tools lose out. That
+// is ADR-011 finding 1's fix, arriving as a consequence of the model rather
+// than as a special case.
+//
+// Note what this is and is not. It is a coherence check an operator sees at
+// edit time, not the security boundary: the boundary is SyncProjectToken
+// refusing to derive the value (above) and CallTool refusing the call
+// (appRouter.CallTool's presence re-check). So where the information needed to
+// answer is missing — relay has never connected to the MCP, so it does not know
+// what tools it exposes — this permits, and the call-time check still denies.
+// Refusing on missing information would turn an MCP that is merely not running
+// into an un-grantable one.
 //
 // Local projects are exempt: a path-scoped MCP granted to a local project is
 // exactly the expected case, and SyncProjectToken fills in its real Path.
-//
-// schemas is the same runtime context-schema map SyncProjectToken consumes.
-// A nil/missing entry can't declare allowed_dirs, so passing nil schemas
-// (e.g. a test with no MCP manager wired) is a no-op here, matching
-// SyncProjectToken's "schemas nil => skip filesystem auto-detection" contract
-// rather than failing closed on missing information.
-func (s *Settings) ValidateProjectGrants(proj *Project, schemas map[string]json.RawMessage) error {
+func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) error {
 	if !proj.IsRemote() {
 		return nil
 	}
 	for _, mcpID := range proj.AllowedMcpIDs {
-		if schemaHasField(schemas[mcpID], "allowed_dirs") {
-			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares allowed_dirs) and a remote project has no path to scope it to", mcpID)
+		surface := surfaces[mcpID]
+		schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+
+		if schema.V2() {
+			for _, f := range schema.ProjectPathFields() {
+				if !f.GovernsAll(surface.Tools) {
+					continue
+				}
+				return fmt.Errorf("remote project cannot be granted %q: its %q scope is derived from the project's path, it governs every tool this MCP exposes, and a remote project has no path — the grant would leave no usable tools", mcpID, f.Name)
+			}
+			continue
+		}
+
+		// v1 compatibility, for one release: an MCP that declares
+		// allowed_dirs and no version is refused exactly as before, without
+		// consulting a tool list it has no way to qualify.
+		if schemaHasField(surface.Schema, v1AllowedDirsField) {
+			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares %s) and a remote project has no path to scope it to", mcpID, v1AllowedDirsField)
 		}
 	}
 	return nil
@@ -534,20 +763,22 @@ func (s *Settings) ValidateProjectGrants(proj *Project, schemas map[string]json.
 // schemaHasField reports whether a context schema declares a given field, in
 // either shape an MCP might reasonably use.
 //
-// fsMCP declares its context flat — {"allowed_dirs": {...}} — but the ordinary
-// JSON-Schema shape nests the same declaration under "properties", and relay's
-// own test fixtures use that form. Checking only the flat shape made the answer
-// depend on how an MCP happened to spell an identical declaration.
+// THIS IS THE V1 PATH ONLY. A v2 schema (contextSchemaVersion >= 2) is parsed
+// by ParseContextSchema and never reaches here; this exists because fsMCP as
+// shipped declares its context flat — {"allowed_dirs": {...}} — with no
+// version, while the ordinary JSON-Schema shape nests the same declaration
+// under "properties", and relay's own test fixtures use that form. Checking
+// only the flat shape made the answer depend on how an MCP happened to spell an
+// identical declaration.
 //
 // Getting that wrong fails OPEN, which is why both shapes are checked here
-// rather than a shape being mandated elsewhere. This function is the first of
-// ADR-009 decision 3's two defences: it is what stops a filesystem-scoped MCP
-// being granted to a pathless remote project. A false negative does not merely
-// skip a warning — the grant is allowed, the second defence then correctly
-// declines to derive allowed_dirs for a remote project, the MCP receives no
-// value at all, and an MCP that reads an absent allowlist as "unrestricted"
-// (fsMCP does) hands a client on another machine the whole host filesystem.
-// ADR-009 names that exact sequence as the thing this check exists to prevent.
+// rather than a shape being mandated elsewhere. A false negative does not
+// merely skip a warning — the grant is allowed, the second defence then
+// correctly declines to derive a path-scoped field for a remote project, the
+// MCP receives no value at all, and an MCP that reads an absent allowlist as
+// "unrestricted" (fsMCP does) hands a client on another machine the whole host
+// filesystem. ADR-009 names that exact sequence as the thing this check exists
+// to prevent.
 func schemaHasField(schema json.RawMessage, field string) bool {
 	if len(schema) == 0 {
 		return false
@@ -700,9 +931,12 @@ func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToke
 		return &StoredToken{
 			Name:          "project:" + proj.Name,
 			ProjectID:     proj.ID,
+			ProjectKind:   proj.Kind,
 			Hash:          hash,
 			DisabledTools: proj.DisabledTools,
 			Context:       proj.Context,
+			Access:        proj.Access,
+			AllowedTools:  proj.AllowedTools,
 		}
 	}
 	// Explicit list: only store PermOff entries (deny-set).
@@ -719,9 +953,12 @@ func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToke
 	return &StoredToken{
 		Name:          "project:" + proj.Name,
 		ProjectID:     proj.ID,
+		ProjectKind:   proj.Kind,
 		Hash:          hash,
 		Permissions:   perms,
 		DisabledTools: proj.DisabledTools,
 		Context:       proj.Context,
+		Access:        proj.Access,
+		AllowedTools:  proj.AllowedTools,
 	}
 }

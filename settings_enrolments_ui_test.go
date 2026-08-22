@@ -93,7 +93,7 @@ func TestRemoteTab_GrantsRenderAsProjectNames(t *testing.T) {
 	}
 }
 
-// A grant naming a project that no longer exists is SHOWN, marked, not
+// A grant naming an access profile that no longer exists is SHOWN, marked, not
 // silently dropped: an enrolment holding something relay cannot resolve is
 // exactly the row an operator needs to see before deciding to revoke.
 func TestRemoteTab_DanglingGrantIsShownNotHidden(t *testing.T) {
@@ -104,8 +104,8 @@ func TestRemoteTab_DanglingGrantIsShownNotHidden(t *testing.T) {
 	}]`, remoteEnabled)
 	html := evalString(t, vm, `window.renderEnrolments()`)
 
-	if !strings.Contains(html, "p_deleted") || !strings.Contains(html, "unknown project") {
-		t.Errorf("a grant naming a missing project was not surfaced\n%s", html)
+	if !strings.Contains(html, "p_deleted") || !strings.Contains(html, "unknown access profile") {
+		t.Errorf("a grant naming a missing access profile was not surfaced\n%s", html)
 	}
 	if !strings.Contains(html, "enrol-grant dangling") {
 		t.Error("dangling grant did not get its own class, so it reads like a normal grant")
@@ -231,13 +231,13 @@ func TestRemoteTab_OnlyRemoteProjectsAreOffered(t *testing.T) {
 	}
 }
 
-// With no remote project to grant, the form says where to make one rather than
+// With no access profile to grant, the form says where to make one rather than
 // showing an empty list that looks broken.
 func TestRemoteTab_NoRemoteProjectsExplainsWhere(t *testing.T) {
 	vm := seedRemoteVM(t, `[{id:'p_work', name:'Workspace', path:'/w', allowed_mcp_ids:['*'], allowed_models:['*'], disabled_tools:{}}]`, `[]`, remoteEnabled)
 	html := evalString(t, vm, `(function(){ window.newEnrolment(); return window.renderEnrolmentForm(); })()`)
-	if !strings.Contains(html, "No remote projects exist yet") || !strings.Contains(html, "Projects") {
-		t.Errorf("empty grant picker does not say where to create a remote project\n%s", html)
+	if !strings.Contains(html, "No access profiles exist yet") || !strings.Contains(html, "Projects") {
+		t.Errorf("empty grant picker does not say where to create an access profile\n%s", html)
 	}
 }
 
@@ -278,7 +278,7 @@ func TestRemoteTab_CreatePayloadShape(t *testing.T) {
 func TestRemoteTab_ZeroGrantsIsAllowedAndAnnounced(t *testing.T) {
 	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)
 	html := evalString(t, vm, `(function(){ window.newEnrolment(); return window.renderEnrolmentForm(); })()`)
-	if !strings.Contains(html, "can reach no project until one is added") {
+	if !strings.Contains(html, "can reach no access profile until one is added") {
 		t.Errorf("form does not say what a grantless enrolment means\n%s", html)
 	}
 }

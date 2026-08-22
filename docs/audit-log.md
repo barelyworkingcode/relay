@@ -92,6 +92,60 @@ The pid is for attribution only. It is never consulted for an authorization
 decision: pids are reusable and racy, which is fine for "who called this" and
 not fine for "may they call it".
 
+### The authority a call ran with
+
+A record that carries the tool and the arguments but not the authority cannot
+answer *was this call confined?* once an operator has since edited the grant,
+and re-reading `settings.json` at query time answers a different question. So a
+`call_tool` record carries what was actually in force (ADR-011 decision 7):
+
+```json
+{
+  "mcp_id": "macmcp",
+  "tool": "mail_search",
+  "access": "read",
+  "scope": { "mail_accounts": ["Bob"], "mail_mailboxes": ["INBOX"] },
+  "outcome": "tool_error",
+  "scope_violation": true
+}
+```
+
+- **`access`** is the operation mode the call ran under — `read` or `write`.
+  Relay applies this rule itself and this field is the record of what it
+  decided; the *input* (whether a tool is read-only) is the MCP's own
+  `annotations.readOnlyHint`. Absent for a service token, which is not scoped
+  by it.
+- **`scope`** is the resource scope relay injected, taken from the `_meta` it
+  assembled rather than from the project, so what is recorded is what went on
+  the wire. It carries **only** the fields the MCP declared as
+  `scope: "restrict"` in its `contextSchema` — never the whole per-MCP context
+  map, because `_meta` is a general channel and a future MCP may pass an API
+  key through it. Filtering to declared restrict-fields is both safer and
+  domain-blind.
+- For a **remote** call both fields are on the **intent** record as well as the
+  completion — the intent is the one written before the MCP runs, and an
+  authority recorded only on the completion would be missing from exactly the
+  record that survives a crash mid-call.
+
+**`scope_violation`** is a field and not an outcome. `tool_error` already means
+"the call completed and the MCP answered no", which is what a scope refusal is;
+promoting it would inflate a small enum that `--outcome`, the CLI table and the
+UI pill all key on. It is set when an MCP marks its own error result:
+
+```json
+{"content": [...], "isError": true, "_meta": {"scope_violation": true}}
+```
+
+The key `relay/scope_violation` is accepted as an equivalent spelling. The
+marker is honoured only when `isError` is true and the value is boolean `true`;
+anything else leaves the flag off and the record is an ordinary `tool_error`.
+Relay trusts the marker rather than parsing the error text — reading the text
+would put domain knowledge inside relay — so the flag says what the MCP said
+about itself. It changes no outcome and gates no decision; it exists so
+alerting has something to select on. A refusal relay made itself (a tool
+outside `allowed_tools`, a read-only grant meeting a mutating tool, a missing
+scope value) is `denied`, not this.
+
 ### Arguments and results
 
 **Arguments** are recorded with values under credential-like keys replaced by

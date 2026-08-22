@@ -70,6 +70,7 @@ func buildPage(html string) string {
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
+		"__MCP_SCOPE_FIELDS_JSON__", fixtureMcpScopeFields,
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
 		"__REMOTE_JSON__", fixtureRemote,
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
@@ -128,6 +129,22 @@ const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:991
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
 
+// fixtureMcpScopeFields mirrors what a v2 contextSchema projects to
+// (ScopeFieldView): macMCP's worked example from ADR-011, so the per-MCP
+// permission panel has an operator-set field, a dependent one, and a
+// project_path-derived one to render read-only.
+const fixtureMcpScopeFields = `{
+  "fsmcp":[
+    {"name":"allowed_dirs","type":"array","item_type":"string","description":"Directories this client may reach","source":"project_path"}
+  ],
+  "macmcp":[
+    {"name":"mail_accounts","type":"array","item_type":"string","description":"Mail accounts this client may read from or send as","source":"operator","applies_to":["mail_*"],"enumerable":true},
+    {"name":"mail_mailboxes","type":"array","item_type":"string","description":"Mailbox paths within those accounts this client may reach","source":"operator","applies_to":["mail_*"],"enumerable":true,"depends_on":["mail_accounts"]},
+    {"name":"write_dirs","type":"array","item_type":"string","description":"Directories this client may write files into","source":"project_path","applies_to":["mail_save_attachment","mail_get_source"]}
+  ],
+  "krisp":[]
+}`
+
 const fixtureMcpToolCache = `{
   "fsmcp":[
     {"name":"read_file","description":"Read the contents of a file at the given path."},
@@ -157,6 +174,7 @@ var mockBridgeScript = `<script>
         else if (msg.op === 'save') { window.onServiceConfigResult({ serviceId: msg.serviceId, op: 'save', ok: true }); window.onServiceConfigApplied({ serviceId: msg.serviceId, mode: 'restarting' }); }
         break;
       case 'list_mcp_tools': window.onMcpToolsListed(msg.mcp_id, FIXTURE_TOOLS[msg.mcp_id] || []); break;
+      case 'enumerate_scope_field': window.onScopeFieldEnumerated(enumerate(msg)); break;
       case 'service_action': window.onServiceActionResult({ serviceId: msg.serviceId, actionId: msg.actionId, row: msg.row, ok: true }); break;
       case 'query_audit': window.onAuditEvents(FIXTURE_AUDIT, FIXTURE_AUDIT_STATUS); break;
       case 'export_audit': window.onAuditExported('/Users/you/Library/Application Support/relay/logs/audit/toolcalls-export-20260819-150000.jsonl'); break;
@@ -180,6 +198,32 @@ var mockBridgeScript = `<script>
         break;
       // add/update/remove/start/stop etc. — no-op in the harness, just logged above
     }
+  }
+  // enumerate answers context/enumerate the way a v2 MCP does, including the
+  // degraded shapes — those are the ones worth eyeballing, because each has to
+  // read differently and none of them may look like an empty list. Force one
+  // by asking for a field named after the status you want to see.
+  function enumerate(msg) {
+    var res = { mcp_id: msg.mcp_id, field: msg.field, status: 'ok', values: null };
+    if (msg.mcp_id !== 'macmcp') { res.status = 'unsupported'; res.error = msg.mcp_id + ' does not implement context/enumerate'; return res; }
+    if (msg.field === 'mail_accounts') {
+      res.values = [{ value: 'Alice', label: 'Alice <alice@example.com>' }, { value: 'Bob', label: 'Bob <bob@example.com>' }];
+      return res;
+    }
+    if (msg.field === 'mail_mailboxes') {
+      // Read WITHIN the accounts already chosen; unchosen means all of them.
+      var accounts = (msg.values && msg.values.mail_accounts) || ['Alice', 'Bob'];
+      res.values = [];
+      for (var i = 0; i < accounts.length; i++) {
+        res.values.push({ value: 'INBOX', label: 'INBOX (' + accounts[i] + ')' });
+        res.values.push({ value: 'Projects/Archive', label: 'Projects/Archive (' + accounts[i] + ')' });
+      }
+      return res;
+    }
+    res.status = 'invalid_field';
+    res.error = 'no enumerable field named ' + msg.field;
+    res.values = null;
+    return res;
   }
 })();
 </script>`

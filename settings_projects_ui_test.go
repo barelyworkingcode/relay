@@ -437,11 +437,13 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 	}
 }
 
-// TestProjectListBadgesRemote covers renderProjects: a remote project gets a
-// visible badge and local projects don't. Also pins that a LOCAL project with
-// zero explicit MCP grants keeps showing the plain "0" count (unchanged),
-// while a REMOTE project with zero grants shows the friendlier "no tools
-// granted" instead of looking broken/empty-by-accident.
+// TestProjectListBadgesRemote covers renderProjects: a remote-kind record gets
+// a visible badge naming it an ACCESS PROFILE (ADR-011 decision 1) and local
+// projects don't. Also pins what a record granting no MCP says: the row states
+// that it reaches nothing, in the noun that record deserves, rather than
+// rendering a count an operator has to interpret. The count itself is gone —
+// "MCPs: 1" beside a client that can read every mailbox on the machine is the
+// failure ADR-011 exists to fix, and it was rendered from this function.
 func TestProjectListBadgesRemote(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -455,13 +457,15 @@ func TestProjectListBadgesRemote(t *testing.T) {
 		var badgeCount = (html.match(/proj-badge-remote/g) || []).length;
 		return JSON.stringify({
 			badgeCount: badgeCount,
-			remoteShowsNoTools: html.indexOf('no tools granted') >= 0,
-			localZeroStillShowsPlainZero: /MCPs: <strong>0<\/strong>/.test(html)
+			remoteSaysProfileReachesNothing: html.indexOf('this access profile reaches nothing') >= 0,
+			localSaysProjectReachesNothing: html.indexOf('this project reaches nothing') >= 0,
+			noBareMcpCount: !/MCPs: <strong>/.test(html)
 		});
 	})()`
 	got := evalString(t, vm, script)
 	for _, want := range []string{
-		`"badgeCount":1`, `"remoteShowsNoTools":true`, `"localZeroStillShowsPlainZero":true`,
+		`"badgeCount":1`, `"remoteSaysProfileReachesNothing":true`,
+		`"localSaysProjectReachesNothing":true`, `"noBareMcpCount":true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("project list remote badge: missing %s in %s", want, got)

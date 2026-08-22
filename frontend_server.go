@@ -35,6 +35,11 @@ type FrontendServer struct {
 // tools enumerates the live MCP tool list for the project-picker UI; nil
 // makes the GET /api/mcps/{id}/tools endpoint return 503.
 //
+// enum asks a connected MCP for a scope field's real values (ADR-011
+// decision 6). It rides on this server rather than on any other because the
+// answer is disclosure — every mail account on the host — and this is the
+// admin-authenticated surface.
+//
 // onProjectsChanged fires after every successful project mutation so the
 // tray Settings webview can rebuild its state; nil suppresses fan-out.
 //
@@ -42,7 +47,7 @@ type FrontendServer struct {
 // relay-internal endpoints (project routes). It reads from the enhanced-
 // services registry to pick a target service per request — no hardcoded
 // per-service handlers live here.
-func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools MCPToolsProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
+func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -51,7 +56,7 @@ func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools M
 	}
 
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, mcps, tools, skillLister, onProjectsChanged)
+	RegisterProjectRoutes(mux, store, mcps, tools, enum, skillLister, onProjectsChanged)
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
 	// (project routes above) is resolved against the manifest registry and
