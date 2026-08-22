@@ -93,9 +93,16 @@ Findings 2–8 restate issue #16's, re-verified; findings 1 and 9 are new.
    More importantly it is the *wrong rule*: it encodes "filesystem" where it
    means "derived from the project's path".
 
-8. **The one enforcing MCP fails open on empty.** `validatePath`
-   (`fsmcp/src/security.ts:13`): `if (allowedDirs.length === 0) return null; //
-   no restrictions`.
+8. **The one enforcing MCP fails open on empty, and separately escapes its own
+   bound.** `validatePath` (`fsmcp/src/security.ts:13`): `if
+   (allowedDirs.length === 0) return null; // no restrictions`. And its
+   `realpath`-with-lexical-fallback resolution lets a symlink inside an allowed
+   directory escape it whenever the target does not exist yet — which for
+   `fs_write` creating a file is the normal case. Confirmed against the shipped
+   build: a write to `<allowed>/link/new.txt` reports success and lands outside.
+   Two further fail-open shapes were found alongside the first: `fs_glob` and
+   `fs_grep` fell back to `process.cwd()` when `path` was omitted, bypassing
+   `validatePath` altogether. See decision 10.
 
 9. **`disabled_tools` is a denylist, so it fails open twice over.** Granting
    `macmcp` grants all 47 tools minus whatever was enumerated *at grant time*.
@@ -360,6 +367,14 @@ field omitted while the grant stands.
 and with `wildcard` dropped it is not expressible at all — it is spelled by
 enumerating, or by not granting the MCP.
 
+**What the MCP cannot tell is *who* mediated.** `_meta` present means some
+client sent it, not that relay did. Any MCP client that sends `_meta` for its
+own reasons therefore loses every governed tool. That is the fail-closed
+direction and is accepted, but it is a compatibility surface rather than a
+relay-only rule, and it is the reason this test belongs to the MCP: an MCP that
+tried to identify relay specifically would be trusting a caller's assertion
+about its own identity, which is the thing neither side may do.
+
 **Presence is re-checked at call time**, in `CallTool`, against the MCP's
 *live* schema, and a missing value is `denied`. This is the third defence and
 the only one *in relay* that catches an MCP which grows a scope field *after* a
@@ -517,6 +532,69 @@ on disk — never a client's own report of success. That standard is inherited:
 ADR-010's client passed 95 tests and an adversarial review while its primary
 interface was broken, because nobody had executed the string the generator
 printed.
+
+### 10. Two seams that are not in the list, and one reference implementation that was wrong
+
+Both were found while building the enforcement, not while writing this ADR, and
+neither is a mail-specific accident — each is a shape any scoping MCP will have.
+
+**A cache is a seam.** macMCP holds a fetched message source for 60 seconds
+keyed on the message id and account. A cache hit returns bytes *without running
+the script*, and the script is where the scope is checked — so a second,
+differently-confined caller reaching the same process is served a message it
+may not read, with nothing having decided that. The confinement is therefore
+part of the cache key, with unscoped as its own bucket. Generally: **any
+memoisation of a scope-governed result must be keyed on the scope**, and the
+quietest bypass in this design is the one where no check runs at all.
+
+**A path that does not exist yet is the dangerous one.** The obvious
+implementation of a directory bound resolves symlinks with `realpath` and falls
+back to a lexical resolve when the path is absent — and for a tool whose job is
+*creating* a file, absent is the normal case. A symlink inside the allowed
+directory then escapes it, because the lexical resolve keeps the symlink in the
+string and the prefix check passes.
+
+This ADR named fsMCP's `validatePath` as the reference implementation for that
+comparison. **That was wrong and it is withdrawn.** fsMCP has exactly this bug,
+confirmed against the shipped build: `fs_write` to `<allowed>/link/new.txt`,
+where `link` points outside, reports success and writes outside. Resolution
+must be **component by component**, following symlinks in the existing prefix
+and carrying the not-yet-existing tail lexically. fsMCP is being fixed
+separately; the correct reference is macMCP's `resolvedForContainment`.
+
+A check-then-use of a path is still racy in principle. Whether that matters
+depends on who can create a symlink inside an allowed directory — if that is
+only the same user who already runs the MCP, it is not a new capability, and
+write-time enforcement (`O_NOFOLLOW`) is the answer if it ever becomes one.
+
+### 11. Three rulings on what a refusal says
+
+**A found-but-out-of-scope message is a refusal, not a "not found".** Because
+`byId` resolves globally, the id of a message in another account is a valid
+handle, so the MCP knows the difference and has to choose which to say. Saying
+"not found" is indistinguishable from a real miss and leaves an operator with
+nothing to debug; saying "out of scope" discloses that *some* message holds
+that id. The disclosure is real and is accepted: it is bounded by ADR-010's
+per-enrolment budget, which makes id-space enumeration impractical, and the
+refusal never names the account or mailbox the message is actually in. This is
+the same reasoning the reconciliation rule uses to refuse rather than silently
+narrow.
+
+**A scope naming a mailbox that does not exist is an error and NOT a
+violation.** The two are different events with different audiences: a violation
+is a client probing a boundary and belongs in alerting; a nonexistent mailbox is
+an operator typo and belongs in the editor. Conflating them would fill a
+security signal with configuration mistakes. Note this used to be silent —
+`total_messages: 0` with `scan_complete: true`, an affirmative claim of
+emptiness about a mailbox that was never there.
+
+**A tool's bookkeeping about the message it just wrote is not a read of the
+user's mail.** macMCP's compose path sweeps the sending account's Drafts for
+the copy Mail autosaves behind its back, and does so regardless of
+`mail_mailboxes`. It matches only ids absent before the compose began that
+carry this message's subject, so it can surface nothing but the client's own
+message. Scoping it would break the sweep and protect nothing. The account it
+runs in is already scope-checked by the sender guard.
 
 ## The reconciliation rule the MCP implements
 
