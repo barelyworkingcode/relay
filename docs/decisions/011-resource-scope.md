@@ -171,12 +171,25 @@ it changes naming and the UI, not the enforcement path.
 
 For each `(profile, MCP)` pair:
 
-| layer | field | who enforces | verifiable by relay |
+| layer | field | who decides | what relay can stand behind |
 |---|---|---|---|
-| which MCP | `allowed_mcp_ids` (exists) | relay | yes |
-| which tools | `allowed_tools` (**new**, decision 2b) | relay | yes |
-| which operations | `access: "read" \| "write"` (**new**) | relay | yes |
-| which resources | `context` → injected `_meta` (mechanism exists) | the MCP | **no** |
+| which MCP | `allowed_mcp_ids` (exists) | relay | the whole thing |
+| which tools | `allowed_tools` (**new**, decision 2b) | relay | the whole thing |
+| which operations | `access: "read" \| "write"` (**new**) | relay | the rule, not the input |
+| which resources | `context` → injected `_meta` (mechanism exists) | the MCP | nothing |
+
+The third row needs its qualifier stated rather than rounded up. Relay applies
+the mode itself, at its own chokepoint, and the decision is visible in the
+audit log and in what `ListTools` returns — so an operator can see it was
+made. But the *classification* of a tool as read-only comes from the MCP's own
+`readOnlyHint`. An MCP that mislabels a mutating tool defeats the mode.
+
+That is still meaningfully stronger than the resource layer, in two ways worth
+being precise about. Relay can tell you with certainty that it applied the rule
+and what it decided; for scope it cannot tell whether the MCP did anything at
+all. And a false `readOnlyHint` is a lie told in the MCP's *published tool
+list*, which an operator can read, `relay mcp list --schema` prints, and a
+reviewer can diff — whereas an ignored `_meta` leaves no trace anywhere.
 
 The third layer is the one issue #16 proposed and it is genuinely
 unverifiable — relay cannot check that a returned message came from INBOX
@@ -310,6 +323,35 @@ present and empty, means the server **refuses every call governed by it**
 must change (finding 8); macMCP is being written to this contract from the
 start.
 
+**`_meta` present is what makes a call governed, and this is the MCP's own
+test, not relay's.** The obvious reading — "a call is scoped if it carries one
+of my restrict fields" — has a hole in the fail-open direction: relay failing to
+inject a field for any reason produces a call that looks, to the MCP, exactly
+like an unscoped one. The MCP would then be relying entirely on relay's
+call-time presence check to have run, which is one check and not two.
+
+Relay injects `_meta.project_id` on **every** mediated call and has since
+ADR-007. So the presence of `_meta` at all is a reliable signal that a
+chokepoint mediated this call, and the MCP can require its own declared
+restrict fields on that basis — reading its own `applies_to`, needing nothing
+from relay beyond the fact of mediation. An absent `_meta` means nobody
+mediated: an operator running the MCP over stdio by hand, which is same-user
+local access equivalent to opening Mail.app, and behaves exactly as today.
+
+This is the belt-and-braces ADR-009 decision 3 called for, in the one place it
+was still missing, and it is genuinely independent: relay's check lives in
+`CallTool`, the MCP's lives in the MCP, and neither is derived from the other.
+
+**It applies to local projects too, and that is the deliberate part.** A local
+project granted an MCP that declares an operator-set restrict field must set a
+value or lose the tools that field governs. The asymmetry in decision 2 is not
+extended here, because the two cases are different in kind: a *mode* has a
+defensible default in each direction (`read` is safe, `write` is what a local
+project already had), whereas a *scope* has no default at all — there is no
+answer to "which mailbox" that relay could pick and be right about. So mode
+defaults asymmetrically and scope is always required, and the reason is that
+one of them has a safe wrong answer and the other does not.
+
 **Relay's contract.** Relay writes a non-empty, type-conformant value or it
 refuses the operation. Never a placeholder, never `[]`, never `null`, never the
 field omitted while the grant stands.
@@ -320,8 +362,8 @@ enumerating, or by not granting the MCP.
 
 **Presence is re-checked at call time**, in `CallTool`, against the MCP's
 *live* schema, and a missing value is `denied`. This is the third defence and
-the only one that catches an MCP which grows a scope field *after* a grant was
-validated — the runtime-discovery argument ADR-009 gave for defending
+the only one *in relay* that catches an MCP which grows a scope field *after* a
+grant was validated — the runtime-discovery argument ADR-009 gave for defending
 `allowed_dirs` twice, generalised. `denied` is the right outcome because relay
 made the decision.
 
@@ -633,6 +675,12 @@ mail or quietly returning nothing.
   domain-specific string left in relay is the v1 `allowed_dirs` compatibility
   branch, kept for one release with a deprecation line and a test asserting it
   is the last one.
+
+- **Local projects granted a scope-declaring MCP need a scope too.** The
+  presence requirement is not remote-only (decision 4), so the existing local
+  `Relay` project — which holds `allowed_mcp_ids: ["*"]` and therefore macMCP —
+  loses the mail tools until someone sets one. Loud and closed, and the UI
+  names it.
 
 - **Profiles can break after an MCP upgrade**, loudly and closed: an MCP that
   adds a restrict-field makes existing grants unsatisfiable, and
