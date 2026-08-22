@@ -393,6 +393,23 @@ textarea:focus {
 .proj-scope-desc { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
 .proj-scope-missing { font-size: 11px; color: var(--warn); margin-top: 2px; }
 .proj-scope-field input[readonly] { color: var(--text-2); font-family: var(--mono); }
+
+/* The enumeration picker (ADR-011 decision 6). The summary is outside the
+   disclosure on purpose: what is stored is what confines the client, so it is
+   never behind a control someone has to open to see. */
+.proj-scope-summary { font-size: 12px; font-family: var(--mono); color: var(--text); margin: 2px 0 4px; word-break: break-word; }
+.proj-scope-summary .proj-scope-none { font-family: var(--sans, inherit); color: var(--text-3); font-style: italic; }
+.proj-scope-choices { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 6px; max-height: 260px; overflow-y: auto; }
+.proj-scope-choice { display: flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 2px 0; }
+.proj-scope-choice label { font-family: var(--mono); color: var(--text); }
+.proj-scope-choice .desc { font-family: var(--sans, inherit); font-size: 11px; color: var(--text-3); }
+/* A stored value the MCP no longer offers stays visible and stays SELECTED.
+   An account renamed on the host must not quietly widen or narrow a profile by
+   vanishing from a form, so it is flagged rather than dropped. */
+.proj-scope-choice.unrecognised label { color: var(--warn); }
+.proj-scope-unrecognised { font-size: 11px; color: var(--warn); margin: 2px 0; }
+.proj-scope-failed { font-size: 11px; color: var(--danger); margin: 4px 0 2px; }
+.proj-scope-pending { font-size: 11px; color: var(--text-3); margin: 4px 0 2px; }
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
@@ -773,6 +790,21 @@ window.__RELAY_INIT__ = {
     // id -> { ok, message, t } (last regen result)
     projectError: null,
     rotatingProjectId: null,
+    // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
+    // into another process, so none of this is populated by a paint: a list is
+    // fetched when an operator opens the control and cached for the life of
+    // the form, keyed on (mcp, field, dependency values) — a mailbox list read
+    // within Bob is not an answer about Alice.
+    scopeEnum: {},
+    // key -> ContextEnumResult (see scopeEnumKey)
+    scopeEnumReq: {},
+    // "mcp\0field" -> the key of the in-flight request
+    scopeEnumOpen: {},
+    // "mcp\0field" -> bool (the operator opened it)
+    scopeEnumUnsupported: {},
+    // mcpId -> true once it answered -32601, permanently
+    _scopeBind: [],
+    // per-render bindings from a checkbox to its value
     // Remote Clients tab. Enrolments and the remote block are seeded by the
     // initial payload like projects are — the list is one row per enrolled
     // certificate, and a credential you cannot see is one you will not revoke,
@@ -1855,10 +1887,13 @@ window.__RELAY_INIT__ = {
       return html;
     }
     const text = projScopeText(f, mcpID, field);
-    if (field.type === "array") {
-      html += `<textarea rows="3" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)">` + esc(text) + "</textarea>";
+    if (field.enumerable && !state.scopeEnumUnsupported[mcpID]) {
+      html += renderScopeFieldPicker(mcpID, field, f, text);
     } else {
-      html += '<input type="text" value="' + esc(text) + `" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)" />`;
+      html += renderScopeFieldTextInput(mcpID, field, text);
+      if (field.enumerable) {
+        html += '<div class="proj-scope-desc">' + esc(mcpID) + " cannot list this field's values, so it is typed by hand. Spelling counts: a value that matches nothing refuses every tool the field governs, silently.</div>";
+      }
     }
     if (!String(text).trim()) {
       html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
@@ -1868,6 +1903,183 @@ window.__RELAY_INIT__ = {
     }
     html += "</div>";
     return html;
+  }
+  function renderScopeFieldTextInput(mcpID, field, text) {
+    if (field.type === "array") {
+      return `<textarea rows="3" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)">` + esc(text) + "</textarea>";
+    }
+    return '<input type="text" value="' + esc(text) + `" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)" />`;
+  }
+  function scopeEnumValueKey(v) {
+    return typeof v === "string" ? v : JSON.stringify(v);
+  }
+  function scopeDependencyValues(f, mcpID, field) {
+    const out = {};
+    const fields = mcpScopeFieldsFor(mcpID) || [];
+    for (const dep of field.depends_on || []) {
+      const depField = fields.find((x) => x.name === dep);
+      if (!depField) continue;
+      const v = scopeValueFromText(depField, projScopeText(f, mcpID, depField));
+      if (scopeValueIsSet(v)) out[dep] = v;
+    }
+    return out;
+  }
+  function scopeEnumKey(mcpID, fieldName, deps) {
+    return mcpID + "\0" + fieldName + "\0" + JSON.stringify(deps || {});
+  }
+  function scopeOpenKey(mcpID, fieldName) {
+    return mcpID + "\0" + fieldName;
+  }
+  function scopeFieldIsOpen(mcpID, fieldName) {
+    return !!state.scopeEnumOpen[scopeOpenKey(mcpID, fieldName)];
+  }
+  function requestScopeEnum(mcpID, field, force) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (state.scopeEnumUnsupported[mcpID]) return;
+    const deps = scopeDependencyValues(f, mcpID, field);
+    const key = scopeEnumKey(mcpID, field.name, deps);
+    const openKey = scopeOpenKey(mcpID, field.name);
+    if (!force) {
+      if (Object.prototype.hasOwnProperty.call(state.scopeEnum, key)) return;
+      if (state.scopeEnumReq[openKey] === key) return;
+    }
+    delete state.scopeEnum[key];
+    state.scopeEnumReq[openKey] = key;
+    ipc(JSON.stringify({ type: "enumerate_scope_field", mcp_id: mcpID, field: field.name, values: deps }));
+  }
+  function scopeFieldByName(mcpID, fieldName) {
+    return (mcpScopeFieldsFor(mcpID) || []).find((x) => x.name === fieldName) || null;
+  }
+  function toggleScopeFieldPicker(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    captureProjectFormInputs();
+    const openKey = scopeOpenKey(mcpID, fieldName);
+    state.scopeEnumOpen[openKey] = !state.scopeEnumOpen[openKey];
+    if (state.scopeEnumOpen[openKey]) requestScopeEnum(mcpID, field);
+    render();
+  }
+  function retryScopeEnum(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    captureProjectFormInputs();
+    requestScopeEnum(mcpID, field, true);
+    render();
+  }
+  function refreshDependentScopeFields(mcpID, changedField) {
+    for (const field of mcpScopeFieldsFor(mcpID) || []) {
+      if (!field.enumerable) continue;
+      if (!(field.depends_on || []).includes(changedField)) continue;
+      if (!scopeFieldIsOpen(mcpID, field.name)) continue;
+      requestScopeEnum(mcpID, field);
+    }
+  }
+  function scopeSelectedValues(field, text) {
+    const v = scopeValueFromText(field, text);
+    if (Array.isArray(v)) return v;
+    return scopeValueIsSet(v) ? [v] : [];
+  }
+  function unrecognisedScopeValues(selected, offered) {
+    const known = new Set((offered || []).map((o) => scopeEnumValueKey(o.value)));
+    return selected.filter((v) => !known.has(scopeEnumValueKey(v)));
+  }
+  function renderScopeFieldPicker(mcpID, field, f, text) {
+    const selected = scopeSelectedValues(field, text);
+    const open = scopeFieldIsOpen(mcpID, field.name);
+    const deps = scopeDependencyValues(f, mcpID, field);
+    const key = scopeEnumKey(mcpID, field.name, deps);
+    const res = state.scopeEnum[key];
+    const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
+    const args = "'" + esc(mcpID) + "', '" + esc(field.name) + "'";
+    let html = '<div class="proj-scope-summary">' + (selected.length ? esc(selected.map(scopeEnumValueKey).join(", ")) : '<span class="proj-scope-none">nothing selected \u2014 every tool this field governs is refused</span>') + "</div>";
+    const unknown = res && res.status === "ok" ? unrecognisedScopeValues(selected, res.values) : [];
+    if (unknown.length) {
+      html += '<div class="proj-scope-unrecognised">' + esc(mcpID) + " does not offer " + esc(unknown.map(scopeEnumValueKey).join(", ")) + ". Kept and still in force \u2014 it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>";
+    }
+    html += '<button class="btn btn-sm" onclick="toggleScopeFieldPicker(' + args + ')">' + (open ? "Done" : "Choose values\u2026") + "</button>";
+    if (!open) return html;
+    if (pending) return html + '<div class="proj-scope-pending">Listing values from ' + esc(mcpID) + "\u2026</div>";
+    if (!res) {
+      return html + '<div class="proj-scope-pending">The values this list is read within have changed.</div><button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">List values</button>';
+    }
+    if (res.status === "ok") {
+      return html + renderScopeChoices(mcpID, field, selected, res.values, unknown, deps);
+    }
+    if (res.status === "invalid_field" || res.status === "not_enumerable") {
+      html += '<div class="proj-scope-failed">Relay asked ' + esc(mcpID) + " for values it will not enumerate, which is a bug in relay rather than in this profile" + (res.error ? ": " + esc(res.error) : ".") + " Type the values instead \u2014 they are stored and enforced exactly the same way.</div>";
+    } else if (res.status === "unsupported") {
+      html += '<div class="proj-scope-desc">' + esc(mcpID) + " cannot list this field's values.</div>";
+    } else {
+      html += '<div class="proj-scope-failed">Could not list values from ' + esc(mcpID) + " just now" + (res.error ? ": " + esc(res.error) : ".") + " This is not an empty list \u2014 nothing was read. Retry, or type the values.</div>";
+      html += '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">Try again</button>';
+    }
+    return html + renderScopeFieldTextInput(mcpID, field, text);
+  }
+  function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
+    const multi = field.type === "array";
+    const rows = [];
+    const byKey = {};
+    const push = (value, label, isUnknown) => {
+      const k = scopeEnumValueKey(value);
+      if (byKey[k]) {
+        if (label && byKey[k].labels.indexOf(label) < 0) byKey[k].labels.push(label);
+        return;
+      }
+      byKey[k] = { value, labels: [label], unknown: isUnknown };
+      rows.push(byKey[k]);
+    };
+    for (const v of unknown) push(v, scopeEnumValueKey(v), true);
+    for (const o of offered || []) push(o.value, o.label || scopeEnumValueKey(o.value), false);
+    for (const row of rows) row.label = row.labels.join(" \xB7 ");
+    if (!rows.length) {
+      return '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
+    }
+    const selectedKeys = new Set(selected.map(scopeEnumValueKey));
+    let html = '<div class="proj-scope-choices">';
+    for (const row of rows) {
+      const idx = state._scopeBind.length;
+      state._scopeBind.push({ mcpID, field: field.name, value: row.value });
+      const checked = selectedKeys.has(scopeEnumValueKey(row.value)) ? " checked" : "";
+      html += '<div class="proj-scope-choice' + (row.unknown ? " unrecognised" : "") + '">';
+      html += '<input type="' + (multi ? "checkbox" : "radio") + '" name="scope-' + esc(mcpID) + "-" + esc(field.name) + '"' + checked + ' onchange="toggleProjScopeValueAt(' + idx + ', this.checked)" />';
+      html += "<label>" + esc(row.label) + "</label>";
+      if (row.unknown) html += '<span class="desc">not offered by this MCP</span>';
+      html += "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+  function toggleProjScopeValueAt(index, checked) {
+    const bind = state._scopeBind[index];
+    if (!bind) return;
+    const f = state.projectForm;
+    if (!f) return;
+    const field = scopeFieldByName(bind.mcpID, bind.field);
+    if (!field) return;
+    captureProjectFormInputs();
+    const current = scopeSelectedValues(field, projScopeText(f, bind.mcpID, field));
+    const key = scopeEnumValueKey(bind.value);
+    let next;
+    if (field.type === "array") {
+      next = current.filter((v) => scopeEnumValueKey(v) !== key);
+      if (checked) next.push(bind.value);
+    } else {
+      next = checked ? [bind.value] : [];
+    }
+    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === "array" ? next : next[0] !== void 0 ? next[0] : ""));
+    refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+  }
+  function captureProjectFormInputs() {
+    const f = state.projectForm;
+    if (!f) return;
+    const val = (id) => {
+      const el = document.getElementById(id);
+      return el && typeof el.value === "string" ? el.value : "";
+    };
+    f.name = val("projName") || f.name;
+    if (!isRemoteForm(f)) f.path = val("projPath") || f.path;
   }
   function setProjModelsWildcard(checked) {
     const f = state.projectForm;
@@ -1885,6 +2097,7 @@ window.__RELAY_INIT__ = {
   function renderProjectForm() {
     const f = state.projectForm;
     if (!f) return '<div class="empty-state">No form state.</div>';
+    state._scopeBind = [];
     const isNew = !f.id;
     const isRemote = isRemoteForm(f);
     const noun = isRemote ? "Access Profile" : "Project";
@@ -2007,7 +2220,7 @@ window.__RELAY_INIT__ = {
     if (!isRemote || f.chat_templates.length > 0) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Chat Templates</div>';
-      html += '<p class="proj-section-help">' + (isRemote ? "An access profile has no chat sessions, so these are inert. They are shown because they are stored on the record." : "Project-scoped chat presets stored with the project. Create and edit them in Eve's project dialog, which offers live model selection.") + "</p>";
+      html += '<p class="proj-section-help">' + (isRemote ? "An access profile has no chat sessions, so relay refuses chat templates on one. These are stored from before that rule; <strong>saving this profile removes them.</strong>" : "Project-scoped chat presets stored with the project. Create and edit them in Eve's project dialog, which offers live model selection.") + "</p>";
       if (f.chat_templates.length === 0) {
         html += '<div class="proj-tool-empty">No templates yet.</div>';
       }
@@ -2022,21 +2235,30 @@ window.__RELAY_INIT__ = {
       html += "</div>";
     }
     const pol = f.permission_policy;
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Permission Policy</div>';
-    html += '<p class="proj-section-help">' + (isRemote ? "Claude CLI permission gates. An access profile launches no Claude session, so this is inert for one \u2014 what bounds a remote client is the mode, tools and scope above." : "Claude CLI permission gates. Empty mode inherits Claude's default. Patterns follow Claude's tool grammar (e.g. <code>Bash(ls *)</code>).") + "</p>";
-    html += "<label>Default mode</label>";
-    html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
-    for (const m of ["", "default", "acceptEdits", "plan", "bypassPermissions"]) {
-      const sel = pol.default_mode === m ? "selected" : "";
-      html += '<option value="' + esc(m) + '" ' + sel + ">" + (m || "(inherit)") + "</option>";
+    if (isRemote) {
+      if (!isPolicyEmpty(pol)) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Permission Policy</div>';
+        html += '<p class="proj-section-help">Claude CLI permission gates, stored from before relay refused them on an access profile. A profile launches no Claude session, so they gate nothing; what bounds a remote client is the operations, tools and resources above. <strong>Saving this profile removes them.</strong></p>';
+        html += "</div>";
+      }
+    } else {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Permission Policy</div>';
+      html += `<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude's default. Patterns follow Claude's tool grammar (e.g. <code>Bash(ls *)</code>).</p>`;
+      html += "<label>Default mode</label>";
+      html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
+      for (const m of ["", "default", "acceptEdits", "plan", "bypassPermissions"]) {
+        const sel = pol.default_mode === m ? "selected" : "";
+        html += '<option value="' + esc(m) + '" ' + sel + ">" + (m || "(inherit)") + "</option>";
+      }
+      html += "</select>";
+      html += "<label>Allowed tools (one per line)</label>";
+      html += '<textarea id="projAllowedTools" rows="3" placeholder="Read&#10;Grep&#10;Bash(ls *)">' + esc(pol.allowed_tools.join("\n")) + "</textarea>";
+      html += "<label>Denied tools (one per line)</label>";
+      html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join("\n")) + "</textarea>";
+      html += "</div>";
     }
-    html += "</select>";
-    html += "<label>Allowed tools (one per line)</label>";
-    html += '<textarea id="projAllowedTools" rows="3" placeholder="Read&#10;Grep&#10;Bash(ls *)">' + esc(pol.allowed_tools.join("\n")) + "</textarea>";
-    html += "<label>Denied tools (one per line)</label>";
-    html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join("\n")) + "</textarea>";
-    html += "</div>";
     if (!isRemote) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
@@ -2131,6 +2353,10 @@ window.__RELAY_INIT__ = {
     f.disabled_tools[mcpID] = (f.disabled_tools[mcpID] || []).filter((n) => n !== name);
     render();
   }
+  function isPolicyEmpty(pol) {
+    if (!pol) return true;
+    return !pol.default_mode && (pol.allowed_tools || []).length === 0 && (pol.denied_tools || []).length === 0;
+  }
   function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
@@ -2143,13 +2369,16 @@ window.__RELAY_INIT__ = {
       const csv = (document.getElementById("projModels") || {}).value || "";
       allowedModels = csv.split(",").map((s) => s.trim()).filter(Boolean);
     }
-    const allowedToolsTA = document.getElementById("projAllowedTools");
-    const deniedToolsTA = document.getElementById("projDeniedTools");
-    const policy = {
-      default_mode: f.permission_policy.default_mode,
-      allowed_tools: allowedToolsTA ? allowedToolsTA.value.split("\n").map((s) => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
-      denied_tools: deniedToolsTA ? deniedToolsTA.value.split("\n").map((s) => s.trim()).filter(Boolean) : f.permission_policy.denied_tools
-    };
+    let policy = { default_mode: "", allowed_tools: [], denied_tools: [] };
+    if (!isRemote) {
+      const allowedToolsTA = document.getElementById("projAllowedTools");
+      const deniedToolsTA = document.getElementById("projDeniedTools");
+      policy = {
+        default_mode: f.permission_policy.default_mode,
+        allowed_tools: allowedToolsTA ? allowedToolsTA.value.split("\n").map((s) => s.trim()).filter(Boolean) : f.permission_policy.allowed_tools,
+        denied_tools: deniedToolsTA ? deniedToolsTA.value.split("\n").map((s) => s.trim()).filter(Boolean) : f.permission_policy.denied_tools
+      };
+    }
     const payload = {
       name: name.trim(),
       kind: isRemote ? "remote" : "local",
@@ -2162,10 +2391,13 @@ window.__RELAY_INIT__ = {
       allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
       disabled_tools: f.disabled_tools
     };
+    if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     const perms = harvestProjectPermissions(f);
-    payload.access = perms.access;
-    payload.allowed_tools = perms.allowed_tools;
-    payload.context = perms.context;
+    if (perms.complete) {
+      payload.access = perms.access;
+      payload.allowed_tools = perms.allowed_tools;
+      payload.context = perms.context;
+    }
     if (!isRemote) {
       const path = (document.getElementById("projPath") || {}).value || f.path;
       payload.path = path.trim();
@@ -2175,7 +2407,9 @@ window.__RELAY_INIT__ = {
   function harvestProjectPermissions(f) {
     const remote = isRemoteForm(f);
     const wild = f.allowed_mcp_ids.length === 1 && f.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD;
-    const granted = wild ? (state.externalMcps || []).map((m) => m.id) : f.allowed_mcp_ids.slice();
+    const registered = (state.externalMcps || []).map((m) => m.id);
+    const complete = !wild || registered.length > 0;
+    const granted = wild ? registered : f.allowed_mcp_ids.slice();
     const access = {};
     const allowedTools = {};
     const context = {};
@@ -2202,7 +2436,7 @@ window.__RELAY_INIT__ = {
       }
       if (Object.keys(existing).length) context[mcpID] = existing;
     }
-    return { access, allowed_tools: allowedTools, context };
+    return { access, allowed_tools: allowedTools, context, complete };
   }
   function saveProjectForm() {
     const f = state.projectForm;
@@ -2275,6 +2509,18 @@ window.__RELAY_INIT__ = {
     if (state.page === "projects" && state.editingProjectId) {
       render("push");
     }
+  };
+  window.onScopeFieldEnumerated = function(res) {
+    if (!res || !res.mcp_id || !res.field) return;
+    const openKey = scopeOpenKey(res.mcp_id, res.field);
+    const key = state.scopeEnumReq[openKey];
+    if (!key) return;
+    delete state.scopeEnumReq[openKey];
+    state.scopeEnum[key] = res;
+    if (res.status === "unsupported") state.scopeEnumUnsupported[res.mcp_id] = true;
+    if (state.page !== "projects" || !state.editingProjectId) return;
+    captureProjectFormInputs();
+    render();
   };
   window.onProjectError = function(msg) {
     state.projectError = msg;
@@ -3686,6 +3932,9 @@ window.__RELAY_INIT__ = {
     renderAuthorityRows,
     renderProjMcpPermissions,
     renderScopeFieldInput,
+    renderScopeFieldPicker,
+    renderScopeFieldTextInput,
+    renderScopeChoices,
     renderScopeGapBanner,
     scopeTextFromValue,
     scopeValueFromText,
@@ -3695,6 +3944,21 @@ window.__RELAY_INIT__ = {
     setProjAllowedToolsText,
     setProjMcpGranted,
     setProjScopeText,
+    captureProjectFormInputs,
+    isPolicyEmpty,
+    refreshDependentScopeFields,
+    requestScopeEnum,
+    retryScopeEnum,
+    scopeDependencyValues,
+    scopeEnumKey,
+    scopeEnumValueKey,
+    scopeFieldByName,
+    scopeFieldIsOpen,
+    scopeOpenKey,
+    scopeSelectedValues,
+    toggleProjScopeValueAt,
+    toggleScopeFieldPicker,
+    unrecognisedScopeValues,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,

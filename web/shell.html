@@ -393,6 +393,23 @@ textarea:focus {
 .proj-scope-desc { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
 .proj-scope-missing { font-size: 11px; color: var(--warn); margin-top: 2px; }
 .proj-scope-field input[readonly] { color: var(--text-2); font-family: var(--mono); }
+
+/* The enumeration picker (ADR-011 decision 6). The summary is outside the
+   disclosure on purpose: what is stored is what confines the client, so it is
+   never behind a control someone has to open to see. */
+.proj-scope-summary { font-size: 12px; font-family: var(--mono); color: var(--text); margin: 2px 0 4px; word-break: break-word; }
+.proj-scope-summary .proj-scope-none { font-family: var(--sans, inherit); color: var(--text-3); font-style: italic; }
+.proj-scope-choices { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 6px; max-height: 260px; overflow-y: auto; }
+.proj-scope-choice { display: flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 2px 0; }
+.proj-scope-choice label { font-family: var(--mono); color: var(--text); }
+.proj-scope-choice .desc { font-family: var(--sans, inherit); font-size: 11px; color: var(--text-3); }
+/* A stored value the MCP no longer offers stays visible and stays SELECTED.
+   An account renamed on the host must not quietly widen or narrow a profile by
+   vanishing from a form, so it is flagged rather than dropped. */
+.proj-scope-choice.unrecognised label { color: var(--warn); }
+.proj-scope-unrecognised { font-size: 11px; color: var(--warn); margin: 2px 0; }
+.proj-scope-failed { font-size: 11px; color: var(--danger); margin: 4px 0 2px; }
+.proj-scope-pending { font-size: 11px; color: var(--text-3); margin: 4px 0 2px; }
 .enrol-profile { margin-top: 6px; }
 
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
