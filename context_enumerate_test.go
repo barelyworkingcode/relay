@@ -39,7 +39,7 @@ func enumSurfaces() McpSurfaces {
 				"scope":"restrict","source":"operator","applies_to":["mail_*"],"enumerable":true,
 				"depends_on":["mail_accounts"]},
 			"mail_note": {"type":"string","scope":"restrict","source":"operator","applies_to":["mail_*"]},
-			"write_dirs": {"type":"array","items":{"type":"string"},
+			"file_dirs": {"type":"array","items":{"type":"string"},
 				"scope":"restrict","source":"project_path","applies_to":["mail_save_attachment"]}
 		}`),
 	}}
@@ -90,7 +90,7 @@ func TestEnumerate_RelaysOwnRefusalsNeverReachTheMcp(t *testing.T) {
 		{"an MCP relay has never connected to", "ghostmcp", "mail_accounts", EnumStatusUnknownMcp},
 		{"a field the MCP does not declare", "macmcp", "nosuch", EnumStatusNotEnumerable},
 		{"a declared field that is not enumerable", "macmcp", "mail_note", EnumStatusNotEnumerable},
-		{"a field relay derives from the project path", "macmcp", "write_dirs", EnumStatusNotEnumerable},
+		{"a field relay derives from the project path", "macmcp", "file_dirs", EnumStatusNotEnumerable},
 		{"no field at all", "macmcp", "", EnumStatusNotEnumerable},
 	}
 	for _, c := range cases {
@@ -532,7 +532,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 		},
 		{
 			name: "a field the MCP never said it could enumerate", mcpID: "macmcp",
-			body: `{"field":"write_dirs"}`, enum: okEnum("Alice"),
+			body: `{"field":"file_dirs"}`, enum: okEnum("Alice"),
 			wantCode: http.StatusBadRequest, wantStatus: EnumStatusNotEnumerable, wantValues: `"values":null`,
 		},
 	}

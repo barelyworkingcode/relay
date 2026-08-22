@@ -62,6 +62,13 @@ Findings 2–8 restate issue #16's, re-verified; findings 1 and 9 are new.
    holds no filesystem grant), so these parameters have close to zero utility
    remotely and are pure liability.
 
+   **Reopened on the read side**, after this ADR's own review missed it —
+   see Consequences, "Finding 1 is reopened, on the read side."
+   `mail_send` and `mail_create_draft`'s `attachments` read a file from this
+   host to send it out, which this finding's write-only framing did not cover
+   and which is worse: an unscoped read wired to an outbound channel is
+   exfiltration, not the escalation this finding named.
+
 2. **macMCP declares no `contextSchema`.** `main.swift:60-71` returns
    `serverInfo` with `name` and `version` only. It cannot be narrowed and would
    ignore a narrowing if relay attempted one.
@@ -650,7 +657,8 @@ incomplete, and never let a save silently delete something.**
 - **Editing one thing must not delete another.** Writing an operator's scope
   re-runs the derivation so `source: "project_path"` fields are put back;
   without that, editing a local project's mail scope would silently drop its
-  `write_dirs` and disable the two tools that field governs.
+  `file_dirs` and disable `mail_save_attachment`, the one tool that field's
+  `applies_to` governs.
 
 ### 10. Two seams that are not in the list, and one reference implementation that was wrong
 
@@ -756,11 +764,11 @@ Stated once, here, so every scoping MCP implements it identically:
       "applies_to": ["mail_*"], "enumerable": true,
       "depends_on": ["mail_accounts"]
     },
-    "write_dirs": {
+    "file_dirs": {
       "type": "array", "items": {"type": "string"},
-      "description": "Directories this client may write files into",
+      "description": "Directories on this host this client may write files into and read attachments from",
       "scope": "restrict", "source": "project_path",
-      "applies_to": ["mail_save_attachment", "mail_get_source"]
+      "applies_to": ["mail_save_attachment"]
     }
   }
 }
@@ -775,6 +783,32 @@ line and the reconciliation rule would each have to learn. Mailbox values are
 the **full paths** `mail_list_mailboxes` already returns (`Projects/Archive`,
 not `Archive`) — the path work in macMCP is what makes a mailbox name
 unambiguous enough to be a permission value at all.
+
+`file_dirs` was named `write_dirs` until it was found to govern a read as well
+(Consequences, "finding 1 reopened on the read side"): `mail_save_attachment`'s
+`destination` and `mail_get_source`'s `save_to` write a file to this host,
+`mail_send`'s `attachments` and `mail_create_draft`'s `attachments` read one
+from it. One field, four parameters, two directions — the name and the
+description both had to stop implying "write" alone.
+
+Its `applies_to` names exactly **one** tool, not four, and not the two the
+field governed before this revision. `mail_save_attachment` cannot do anything
+without `destination` — there is no call that succeeds without a value, so
+relay's presence check (decision 4) is right to refuse the whole tool outright
+when `file_dirs` is absent. The other three each have a *purpose that does not
+touch the field*: `mail_get_source` without `save_to` is a plain read,
+`mail_send` and `mail_create_draft` without `attachments` are plain mail. Naming
+them in `applies_to` would make relay refuse a metadata-only `mail_get_source`
+or an attachment-free `mail_send` for want of a value neither call needed —
+gating the tool on a parameter it never used. So `applies_to` names only the
+tool that cannot function without the field; a tool with a mere *parameter*
+that needs it keeps working, and it is macMCP, not relay, that refuses the
+parameter. This is unaffected by the narrower `applies_to`: `_meta` injection
+is not gated by it (`filterKnownContextFields` keeps every field the live
+schema still declares, for every tool call, whatever that field's `applies_to`
+says), so `mail_get_source`, `mail_send` and `mail_create_draft` all receive
+`file_dirs` on every call and can check `save_to` / each attachment path
+against it — or refuse the specific argument, never the tool — themselves.
 
 ### The resulting access profile
 
@@ -793,8 +827,8 @@ unambiguous enough to be a permission value at all.
 ```
 
 `ValidateProjectGrants` permits it: macMCP retains usable tools without
-`write_dirs`. It still refuses fsMCP, whose every tool is governed by one.
-`SyncProjectToken` derives nothing — `write_dirs` is `project_path` and this
+`file_dirs`. It still refuses fsMCP, whose every tool is governed by one.
+`SyncProjectToken` derives nothing — `file_dirs` is `project_path` and this
 record has no path.
 
 ### What macMCP receives on `mail_search`
@@ -846,7 +880,7 @@ mail or quietly returning nothing.
 - **A read-only profile loses `mail_get_source` entirely**, which is a real
   capability loss and not the one the tool's name suggests. The tool can write
   a file (`save_to`), so it is annotated `readOnlyHint: false`, so the mode
-  denies it before `write_dirs` is ever consulted — including for the inline
+  denies it before `file_dirs` is ever consulted — including for the inline
   read that writes nothing. The layers deny in order and the outer one wins.
 
   Keeping the annotation truthful is the right call anyway: the mode is relay's
@@ -858,11 +892,48 @@ mail or quietly returning nothing.
   needs raw source today must be granted `write`, which also grants send — so
   the workaround is bad enough to be worth the eventual split.
 
-- **Two macMCP tools lose their filesystem write for every access profile**, and
-  gain a project-directory bound for every local project. `mail_save_attachment`
-  is unusable remotely by construction — it requires `destination`. That is the
-  correct outcome (finding 1) and it removes a capability that has been
-  exercised, so it is a behaviour change and not only a hardening.
+- **`mail_save_attachment` loses its filesystem write for every access
+  profile**, and gains a project-directory bound for every local project. It is
+  unusable remotely by construction — it requires `destination` and there is no
+  call that succeeds without one, so relay's presence check refuses the whole
+  tool when `file_dirs` is absent. That is the correct outcome (finding 1) and
+  it removes a capability that has been exercised, so it is a behaviour change
+  and not only a hardening. `mail_get_source`'s `save_to`, `mail_send`'s
+  `attachments` and `mail_create_draft`'s `attachments` are bounded
+  differently, and deliberately not by relay refusing the tool — see finding 1,
+  reopened, below.
+
+- **Finding 1 is reopened, on the read side, and this ADR is what missed it.**
+  Finding 1 named `mail_save_attachment`'s `destination` and
+  `mail_get_source`'s `save_to` — both writes — and scoped exactly those two
+  under `write_dirs`. `mail_send` and `mail_create_draft` both take an
+  `attachments` list naming a file **on this host** to read and encode into the
+  outgoing message, and that parameter was not scoped by anything: any client
+  holding either tool could name any path this process could read. The two
+  write parameters were scoped; the read parameter sitting right next to them,
+  on the same field's obvious remit, was missed — not a different risk found
+  later, an omission in this review.
+
+  It is worse than the hole finding 1 closed, not merely a repeat of it. The
+  write side was named **escalation, not exfiltration** (Context, above) — a
+  remote client with no filesystem grant of its own cannot read back a file it
+  wrote there, so the practical use of an arbitrary write with no arbitrary
+  read is limited to damage, not theft. `attachments` on `mail_send` is a read
+  wired directly to an outbound channel: whatever this process can read, a
+  `write`-mode mail profile can mail out, which is exactly the exfiltration
+  this ADR's threat model (Context) says is the thing being defended against —
+  not the one exception finding 1 carved out for escalation, but the main
+  case. Reproduced live, not theoretical: an adversarial validator read and
+  exfiltrated `/tmp/zsec-secret.txt` — a file with no relationship to any
+  mailbox — through `mail_send.attachments` via a real `write` access profile,
+  before this field existed.
+
+  This is why the field was renamed `write_dirs` -> `file_dirs` and its
+  description stopped saying only "write": the same directory bound now gates
+  both directions, on all four parameters, under the worked example above. The
+  fix is a scope value macMCP checks the attachment path against, exactly as
+  it already checks `save_to` — there is no new mechanism here, only a
+  parameter that should have been named in the first pass and was not.
 
 - **The live `Hermes Mail` profile loses 36 tools**, including screen capture,
   microphone capture, `shortcuts_run`, `web_fetch`, contacts, calendars and

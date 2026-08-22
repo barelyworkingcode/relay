@@ -85,9 +85,9 @@ func TestValidatePermissions_RefusesOperatorSuppliedProjectPathField(t *testing.
 	proj := &Project{
 		ID: "p1", Name: "Local", Path: "/tmp/x",
 		AllowedMcpIDs: []string{"macmcp"},
-		Context:       map[string]json.RawMessage{"macmcp": json.RawMessage(`{"write_dirs":["/etc"]}`)},
+		Context:       map[string]json.RawMessage{"macmcp": json.RawMessage(`{"file_dirs":["/etc"]}`)},
 	}
-	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "write_dirs", "path", "cannot be set")
+	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "file_dirs", "path", "cannot be set")
 }
 
 // The mode is a closed set. AccessMode already reads anything that is not
@@ -177,7 +177,7 @@ func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // UpdateProjectContext replaces the operator's fields and RE-DERIVES the ones
-// relay owns. Without the re-derivation a local project's write_dirs would
+// relay owns. Without the re-derivation a local project's file_dirs would
 // disappear the first time someone edited its mail scope, and the two tools
 // that field governs would start refusing with nothing on screen to say why.
 func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
@@ -188,8 +188,8 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	before := contextValues(s.Projects[0].Context["macmcp"])
-	if !hasScopeValue(before, "write_dirs") {
-		t.Fatalf("precondition: write_dirs should have been derived, got %s", s.Projects[0].Context["macmcp"])
+	if !hasScopeValue(before, "file_dirs") {
+		t.Fatalf("precondition: file_dirs should have been derived, got %s", s.Projects[0].Context["macmcp"])
 	}
 
 	s.UpdateProjectContext(proj.ID, map[string]json.RawMessage{
@@ -200,7 +200,7 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 	if !hasScopeValue(after, "mail_accounts") {
 		t.Errorf("operator value was not stored: %s", s.Projects[0].Context["macmcp"])
 	}
-	if !hasScopeValue(after, "write_dirs") {
+	if !hasScopeValue(after, "file_dirs") {
 		t.Errorf("the derived field was destroyed by an operator edit: %s", s.Projects[0].Context["macmcp"])
 	}
 }

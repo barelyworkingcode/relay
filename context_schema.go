@@ -566,6 +566,43 @@ func contextValues(raw json.RawMessage) map[string]json.RawMessage {
 	return m
 }
 
+// filterKnownContextFields drops any key from a stored context blob that cs
+// — the MCP's LIVE schema — does not currently declare, so a value stored
+// under a field name an MCP has since renamed or dropped is never injected
+// into _meta under that stale name. This is the call-time half of the stale-
+// key problem SyncProjectToken's doc comment describes: relay does not
+// rewrite settings.json when a schema changes underneath a stored grant
+// (doing that from a possibly-empty live schema would be indistinguishable
+// from an MCP that is merely down declaring nothing, and would delete an
+// operator's values on the strength of that), so the safe place to enforce
+// "no unknown key reaches the wire" is here, against the schema of an MCP
+// CallTool has already confirmed is live.
+//
+// Restricted to v2: a v1 schema's context blob is always exactly
+// {v1AllowedDirsField: [...]}, fully replaced by SyncProjectToken on every
+// resync, so there is no drift to filter and nothing else can be stored there
+// (validateProjectContextForMcp refuses it).
+func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMessage {
+	if !cs.V2() {
+		return base
+	}
+	values := contextValues(base)
+	if values == nil {
+		return base
+	}
+	kept := make(map[string]json.RawMessage, len(values))
+	for name, v := range values {
+		if _, ok := cs.Field(name); ok {
+			kept[name] = v
+		}
+	}
+	out, err := json.Marshal(kept)
+	if err != nil {
+		return base
+	}
+	return out
+}
+
 // hasScopeValue reports whether the context blob carries a usable value for
 // the field — present, non-null, and non-empty, which is the whole of what
 // decision 4 requires relay to check at call time. It deliberately does NOT

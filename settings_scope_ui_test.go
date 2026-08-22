@@ -24,7 +24,7 @@ const scopeFieldsFixture = `{
 	macmcp: [
 		{name:'mail_accounts', type:'array', item_type:'string', description:'Mail accounts this client may read from or send as', source:'operator', applies_to:['mail_*'], enumerable:true},
 		{name:'mail_mailboxes', type:'array', item_type:'string', description:'Mailbox paths within those accounts this client may reach', source:'operator', applies_to:['mail_*'], enumerable:true, depends_on:['mail_accounts']},
-		{name:'write_dirs', type:'array', item_type:'string', description:'Directories this client may write files into', source:'project_path', applies_to:['mail_save_attachment','mail_get_source']}
+		{name:'file_dirs', type:'array', item_type:'string', description:'Directories this client may write files into', source:'project_path', applies_to:['mail_save_attachment','mail_get_source']}
 	],
 	quietmcp: []
 }`
@@ -69,7 +69,7 @@ const scopeProjectsFixture = `[
 	 context:{macmcp:{mail_accounts:['Bob'], mail_mailboxes:['INBOX']}}, disabled_tools:{}},
 	{id:'p_bare', name:'Hermes Mail', kind:'remote', path:'', allowed_mcp_ids:['macmcp'], allowed_models:[], disabled_tools:{}},
 	{id:'p_local', name:'Workspace', path:'/Users/x/work', allowed_mcp_ids:['macmcp'], allowed_models:['*'],
-	 context:{macmcp:{write_dirs:['/Users/x/work'], mail_accounts:['Alice']}}, disabled_tools:{}}
+	 context:{macmcp:{file_dirs:['/Users/x/work'], mail_accounts:['Alice']}}, disabled_tools:{}}
 ]`
 
 // ---------------------------------------------------------------------------
@@ -219,9 +219,9 @@ func TestProjectForm_ProjectPathFieldIsReadOnly(t *testing.T) {
 	vm := seedScopeVM(t, scopeProjectsFixture, "p_local")
 	html := evalString(t, vm, `window.renderProjectForm()`)
 	if !strings.Contains(html, `readonly value="/Users/x/work"`) {
-		t.Errorf("the derived write_dirs value is not shown read-only\n%s", html)
+		t.Errorf("the derived file_dirs value is not shown read-only\n%s", html)
 	}
-	if strings.Contains(html, `setProjScopeText('macmcp', 'write_dirs'`) {
+	if strings.Contains(html, `setProjScopeText('macmcp', 'file_dirs'`) {
 		t.Error("a derived field was rendered as an editable input")
 	}
 
@@ -290,7 +290,7 @@ func TestProjectForm_HarvestsThePermissionSet(t *testing.T) {
 			t.Errorf("harvested payload missing %s in %s", want, got)
 		}
 	}
-	if strings.Contains(got, "write_dirs") {
+	if strings.Contains(got, "file_dirs") {
 		t.Errorf("the editor sent a field relay derives and refuses: %s", got)
 	}
 }

@@ -22,7 +22,7 @@ in its `initialize` response, beside its name and version:
       "applies_to": ["mail_*"], "enumerable": true,
       "depends_on": ["mail_accounts"]
     },
-    "write_dirs": {
+    "file_dirs": {
       "type": "array", "items": {"type": "string"},
       "description": "Directories this client may write files into",
       "scope": "restrict", "source": "project_path",
@@ -98,7 +98,7 @@ account added later does not silently join the grant.
 A grant is refused at edit time if a `project_path` field's `applies_to` covers
 **every** tool the MCP exposes and the record has no path — the grant would buy
 nothing. fsMCP is refused to a profile for that reason; macMCP is not, and
-loses exactly the two tools its `write_dirs` governs.
+loses exactly the two tools its `file_dirs` governs.
 
 ### `applies_to` selects tools, anchored
 

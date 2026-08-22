@@ -507,7 +507,7 @@ func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
 // SyncProjectToken runs so every source: "project_path" field is re-derived on
 // top of it. That ordering is what makes a wholesale replace safe: the operator
 // cannot set a derived field (validateProjectPermissions refuses it), so a
-// replace would otherwise DELETE one — and a project whose write_dirs silently
+// replace would otherwise DELETE one — and a project whose file_dirs silently
 // disappeared when its mail scope was edited would lose the two tools that
 // field governs, fail-closed and unexplained. mergeContextField, which
 // SyncProjectToken uses, puts each derived field back without touching the
@@ -569,6 +569,32 @@ func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
 // relay writes the project's path into every field declaring
 // source: "project_path" because the schema asked it to (ADR-011 decision 5).
 // The v1 branch below is the one exception and is scheduled for removal.
+//
+// Deliberately NOT done here: pruning a stored field the live schema no
+// longer declares. macMCP renaming write_dirs to file_dirs is the concrete
+// case — a project synced under the old name keeps a "write_dirs" entry in
+// its stored context.macmcp blob forever, unreachable (nothing governs by
+// that name any more) but not deleted. Two reasons that is the right call
+// rather than a gap:
+//
+//   - surfaces is exactly as reliable as "is this MCP running right now".
+//     An MCP that is merely down — restarting, mid-upgrade, network-flaky if
+//     remote — reports no schema at all, which is bit-for-bit the same shape
+//     as "this schema now declares zero fields". Pruning on that signal would
+//     delete an operator's stored values because a process happened to be
+//     down at sync time, which is a worse failure than a harmless stale key:
+//     ADR-009's reasoning (see the remote-project guard a few lines below)
+//     applies here too.
+//   - it does not need doing here to be safe. A stale key cannot be set by an
+//     operator (validateProjectContextForMcp refuses any name the live schema
+//     does not currently declare, at write time), so the only way one exists
+//     is a schema that changed after the value was written — and it is inert:
+//     filterKnownContextFields drops any key CallTool's _meta injection does
+//     not find in the schema of the MCP it just confirmed is live, so a
+//     stale key is never sent to an MCP under its old name. It just sits in
+//     settings.json, harmlessly, until an operator re-saves that project's
+//     context (UpdateProjectContext replaces the blob) or removes the value
+//     by hand.
 func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	if proj.Context == nil {
 		proj.Context = make(map[string]json.RawMessage)
