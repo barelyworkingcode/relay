@@ -461,12 +461,22 @@ already-chosen values for `depends_on` fields.
 
 Four outcomes that must stay distinct, because collapsing any two of them
 produces a form that lies: `-32601` means the MCP does not enumerate and the
-field degrades to text entry; `-32602` means relay asked for a field the MCP
-will not enumerate, which is a relay bug and is surfaced; any other error or a
-transport failure means the MCP could not answer *right now*, which keeps text
-entry available so an operator is never blocked; and an empty list is a valid
-answer meaning there are none. **An empty list must never be rendered for a
-call that failed.**
+field degrades to text entry, permanently; `-32602` means relay asked for a
+field the MCP will not enumerate, which is a relay bug and is surfaced;
+`-32000..-32099` (JSON-RPC's implementation-defined server range), any
+unrecognised code, or a transport failure all mean the MCP could not answer
+*right now*, which is retryable and keeps text entry available so an operator is
+never blocked; and an empty list is a valid answer meaning there are none.
+**An empty list must never be rendered for a call that failed.**
+
+**An empty `values` entry means "all", never "none".** The dependent field's
+picker is opened before its dependency has been chosen — that is its normal
+initial state — so reading an empty-but-present filter as "match nothing" shows
+an operator zero mailboxes everywhere at exactly the moment they are trying to
+choose one. Absent and empty are the same request here. Note this is the
+opposite of decision 4's rule for a *scope value*, where empty is a refusal, and
+the two are not in tension: a scope value is an authorisation and must fail
+closed, while a picker filter is a query and must fail informative.
 
 **A stored value that is no longer offered stays visible and selected**, marked
 unrecognised. An account renamed on the host must not quietly widen or narrow a
