@@ -1,9 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,16 +14,16 @@ import (
 // token. Kept with its original signature so no existing caller or test has
 // to change; it's a thin wrapper over CreateProjectWithTokenKind. Call within
 // store.With.
-func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []string, templates []ChatTemplate, schemas map[string]json.RawMessage) (Project, error) {
-	return s.CreateProjectWithTokenKind(ProjectKindLocal, name, path, mcpIDs, models, templates, schemas)
+func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
+	return s.CreateProjectWithTokenKind(ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
 }
 
 // CreateProjectWithTokenKind is CreateProjectWithToken's kind-aware variant.
 // The token's permissions, disabled tools, and context are configured based on
-// the project's allowedMcpIDs and path. schemas maps MCP IDs to their runtime
-// context schemas (from ExternalMcpManager) for filesystem auto-detection.
+// the project's allowedMcpIDs and path. surfaces maps MCP IDs to their runtime
+// schema + tool surface (from ExternalMcpManager) for scope derivation.
 // Call within store.With.
-func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path string, mcpIDs, models []string, templates []ChatTemplate, schemas map[string]json.RawMessage) (Project, error) {
+func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
 	// See normalizeProjectKind: a local project's stored Kind is always "",
 	// never the literal "local" string, so every local project — however it
 	// was created — serializes identically with no "kind" key.
@@ -48,7 +48,7 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, schemas); err != nil {
+	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
 		return Project{}, err
 	}
 
@@ -71,7 +71,7 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	}
 
 	s.Projects = append(s.Projects, proj)
-	s.SyncProjectToken(&s.Projects[len(s.Projects)-1], schemas)
+	s.SyncProjectToken(&s.Projects[len(s.Projects)-1], surfaces)
 
 	return proj, nil
 }
@@ -155,6 +155,43 @@ func validateProjectShape(proj *Project) error {
 	// widening it deliberately later is the expected resting state.)
 	if isWildcard(proj.AllowedMcpIDs) {
 		return fmt.Errorf(`remote project must not use the "*" wildcard for allowed_mcp_ids: it would let a future MCP registration silently widen what the remote client can reach; list MCP IDs explicitly`)
+	}
+	// The same argument one level down (ADR-011 decision 2b). Registering a new
+	// TOOL is the same event as registering a new MCP at finer grain, and it
+	// happens far more often — macmcp went from 46 tools to 47 during ADR-010's
+	// own testing. A pattern is fine ("mail_*"), because the layers compose: a
+	// future mail_delete_everything is still refused by a read mode and still
+	// confined by mail_accounts, whose applies_to is the same "mail_*". A bare
+	// "*" composes with nothing; it is the wildcard again.
+	for mcpID, patterns := range proj.AllowedTools {
+		for _, pattern := range patterns {
+			if pattern == "*" {
+				return fmt.Errorf(`remote project must not use the "*" wildcard in allowed_tools for %q: it would let a future tool registration silently widen what the remote client can reach; list tool names or patterns explicitly`, mcpID)
+			}
+		}
+	}
+	// A denylist cannot bound a client, and an inert control is worse than no
+	// control: it reads on the screen as a boundary and enforces nothing that
+	// allowed_tools has not already decided. disabled_tools stays for local
+	// projects, where the caller is the same user on the same machine and
+	// subtracting from everything is coherent; a profile that sets one is
+	// refused here, naming the mechanism that does bound it. (checkToolAccess
+	// still honours a denylist that reaches it by some other route — ignoring
+	// one is the only direction that widens.)
+	//
+	// Only for an MCP this record still grants. A local project that had
+	// fs_bash auto-disabled and is being converted to remote in the same
+	// request that drops the fsmcp grant carries a leftover entry that
+	// SyncProjectToken prunes moments later; refusing on that would block a
+	// legal conversion on the strength of a map key about to be deleted.
+	for mcpID, tools := range proj.DisabledTools {
+		if len(tools) == 0 {
+			continue
+		}
+		if !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		return fmt.Errorf(`remote project must not set disabled_tools for %q: a denylist grants every tool an MCP gains in future, which is the fail-open shape a grant to another machine must not have — enumerate what it may call in allowed_tools instead`, mcpID)
 	}
 	// modelAllowedForProject (frontend_model_guard.go) treats both len==0 and
 	// ["*"] as "unrestricted" — there is no representation of "no models

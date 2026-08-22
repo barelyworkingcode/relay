@@ -42,7 +42,7 @@ type FrontendServer struct {
 // relay-internal endpoints (project routes). It reads from the enhanced-
 // services registry to pick a target service per request — no hardcoded
 // per-service handlers live here.
-func NewFrontendServer(store SettingsStore, mcps ContextSchemasProvider, tools MCPToolsProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
+func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}

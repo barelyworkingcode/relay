@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 )
 
-// ContextSchemasProvider supplies MCP context schemas required when
-// (re)scoping a project's token. Implemented by *ExternalMcpManager.
-type ContextSchemasProvider interface {
-	AllContextSchemas() map[string]json.RawMessage
+// McpSurfaceProvider supplies what relay knows at runtime about each MCP —
+// context schema, its version, and the tool surface — required when
+// (re)scoping a project's token and when validating its grants.
+// Implemented by *ExternalMcpManager.
+type McpSurfaceProvider interface {
+	AllMcpSurfaces() McpSurfaces
 }
 
 // MCPToolsProvider supplies the live tool list for a registered MCP. The
@@ -73,7 +75,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps ContextSchemasProvider, tools MCPToolsProvider, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
@@ -111,7 +113,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		var created Project
 		var createErr error
 		if err := store.With(func(s *Settings) {
-			created, createErr = applyProjectCreate(s, body, mcps.AllContextSchemas())
+			created, createErr = applyProjectCreate(s, body, mcps.AllMcpSurfaces())
 		}); err != nil {
 			slog.Error("create project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
@@ -152,7 +154,7 @@ func RegisterProjectRoutes(mux *http.ServeMux, store SettingsStore, mcps Context
 		var found bool
 		var updateErr error
 		if err := store.With(func(s *Settings) {
-			updated, found, updateErr = applyProjectUpdate(s, id, body, mcps.AllContextSchemas)
+			updated, found, updateErr = applyProjectUpdate(s, id, body, mcps.AllMcpSurfaces)
 		}); err != nil {
 			slog.Error("update project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})

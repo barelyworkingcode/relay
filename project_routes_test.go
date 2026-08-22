@@ -17,9 +17,9 @@ import (
 
 // schemaProviderFunc adapts a plain function to ContextSchemasProvider
 // so the tests can reuse the existing testSchemas() helper.
-type schemaProviderFunc func() map[string]json.RawMessage
+type schemaProviderFunc func() McpSurfaces
 
-func (f schemaProviderFunc) AllContextSchemas() map[string]json.RawMessage { return f() }
+func (f schemaProviderFunc) AllMcpSurfaces() McpSurfaces { return f() }
 
 func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	t.Helper()

@@ -13,8 +13,8 @@ import (
 func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) {
 	dir := t.TempDir()
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}}}
-	schemas := func() map[string]json.RawMessage {
-		return map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}
+	schemas := func() McpSurfaces {
+		return McpSurfaces{"fsmcp": {Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}}
 	}
 
 	proj, err := s.CreateProjectWithToken("Local", dir, []string{"fsmcp"}, nil, nil, schemas())

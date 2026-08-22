@@ -32,11 +32,10 @@ func (f *fakeTools) ToolInfos(id string) []ToolInfo {
 	return f.infos[id]
 }
 
-// AllContextSchemas lets fakeTools also stand in as the
-// ContextSchemasProvider that mcpContextSchemasFrom looks for. Returning nil
-// causes SyncProjectToken to skip filesystem auto-detection — fine for unit
-// tests that don't exercise allowed_dirs.
-func (f *fakeTools) AllContextSchemas() map[string]json.RawMessage { return nil }
+// AllMcpSurfaces lets fakeTools also stand in as the McpSurfaceProvider that
+// mcpSurfacesFrom looks for. Returning nil causes SyncProjectToken to skip
+// scope derivation — fine for unit tests that don't exercise it.
+func (f *fakeTools) AllMcpSurfaces() McpSurfaces { return nil }
 
 // fakeSkillLister returns a fixed minimal tool list so EmitSkill can produce
 // a stable SKILL.md without spinning up a real router.

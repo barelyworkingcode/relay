@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -122,7 +121,7 @@ func TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip(t *testing.T) {
 	}
 
 	allow := true
-	_, found, err := applyProjectUpdate(s, created.ID, projectUpdateFields{AllowCwdAuth: &allow}, func() map[string]json.RawMessage { return nil })
+	_, found, err := applyProjectUpdate(s, created.ID, projectUpdateFields{AllowCwdAuth: &allow}, func() McpSurfaces { return nil })
 	_ = found
 	if err == nil {
 		t.Fatal("expected rejection of allow_cwd_auth flip on a remote project")
@@ -143,7 +142,7 @@ func TestApplyProjectUpdate_RemoteRejectsWildcardMcps(t *testing.T) {
 	}
 
 	wildcard := []string{"*"}
-	_, _, err = applyProjectUpdate(s, created.ID, projectUpdateFields{AllowedMcpIDs: &wildcard}, func() map[string]json.RawMessage { return nil })
+	_, _, err = applyProjectUpdate(s, created.ID, projectUpdateFields{AllowedMcpIDs: &wildcard}, func() McpSurfaces { return nil })
 	if err == nil {
 		t.Fatal("expected rejection of wildcard allowed_mcp_ids on update for a remote project")
 	}
