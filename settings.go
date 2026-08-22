@@ -291,7 +291,7 @@ func (s *Settings) UpdateProjectKind(id string, kind ProjectKind) {
 	// client reaches — a host directory, its allowed_dirs context, cwd auth —
 	// rather than a loud error. Refuse silently here so a bypass of the
 	// validated path cannot produce it (ADR-010 decision 3).
-	if kind != ProjectKindRemote && proj.IsRemote() && len(s.EnrolmentsGrantingProject(id)) > 0 {
+	if !kind.IsRemote() && proj.IsRemote() && len(s.EnrolmentsGrantingProject(id)) > 0 {
 		return
 	}
 	proj.Kind = kind

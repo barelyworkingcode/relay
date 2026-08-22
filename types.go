@@ -50,6 +50,21 @@ const (
 	AccessWrite = "write"
 )
 
+// IsRemote reports whether this token authenticates a remote-kind record.
+//
+// It goes through ProjectKind.IsRemote for the reason the Kind field comment
+// gives: the zero value must never be readable as remote, and every place that
+// spelled the test itself — `!= ProjectKindRemote` here, `== ProjectKindRemote`
+// in AccessMode — is a place where a later edit against the wrong constant
+// turns an unset field into a remote grant, or a remote grant into a local one.
+// The decision is made once, on the type.
+func (t *StoredToken) IsRemote() bool {
+	if t == nil {
+		return false
+	}
+	return t.ProjectKind.IsRemote()
+}
+
 // ToolAllowed reports whether this token's allowlist admits a tool of an MCP
 // (ADR-011 decision 2b). The MCP-level grant is checked separately; this is
 // the second of the four allowlists, and none of the four may widen another.
@@ -74,7 +89,7 @@ func (t *StoredToken) ToolAllowed(mcpID, toolName string) bool {
 	}
 	patterns := t.AllowedTools[mcpID]
 	if len(patterns) == 0 {
-		return t.ProjectKind != ProjectKindRemote
+		return !t.IsRemote()
 	}
 	return toolAllowedByPatterns(patterns, toolName)
 }
@@ -110,7 +125,7 @@ func (t *StoredToken) AccessMode(mcpID string) string {
 		}
 		return AccessRead
 	}
-	if t.ProjectKind == ProjectKindRemote {
+	if t.IsRemote() {
 		return AccessRead
 	}
 	return AccessWrite
@@ -433,12 +448,18 @@ func (e *Enrolment) GrantsProject(projectID string) bool {
 	return slices.Contains(e.ProjectIDs, projectID)
 }
 
+// IsRemote reports whether a kind is the remote one. This is the ONE place the
+// comparison is written — see the comment on Project.Kind for why the zero
+// value must always read as local. Everything that holds a kind (a Project, a
+// StoredToken) asks here rather than comparing against a constant itself.
+func (k ProjectKind) IsRemote() bool {
+	return k == ProjectKindRemote
+}
+
 // IsRemote reports whether this project is a remote capability grant rather
-// than a host-directory project. This is the ONLY place that decision should
-// be made — see the comment on Kind for why the zero value must always read
-// as local.
+// than a host-directory project.
 func (p *Project) IsRemote() bool {
-	return p.Kind == ProjectKindRemote
+	return p.Kind.IsRemote()
 }
 
 // normalizeProjectKind collapses anything that isn't ProjectKindRemote to the
@@ -452,7 +473,7 @@ func (p *Project) IsRemote() bool {
 // the overwhelmingly common case. Mirrors IsRemote()'s pattern of testing
 // for remote rather than for local.
 func normalizeProjectKind(kind ProjectKind) ProjectKind {
-	if kind == ProjectKindRemote {
+	if kind.IsRemote() {
 		return ProjectKindRemote
 	}
 	return ""
