@@ -12,7 +12,7 @@ The design and its reasoning are in
 
 | | what it is | what it carries |
 |---|---|---|
-| **Access profile** | what may be done | which MCPs, which tools, which operations, which resources |
+| **Access profile** | what may be done | which MCPs, which tools, which operations, whether it may reach outside this Mac, which resources |
 | **Enrolment** | who is doing it | one client certificate, a call/volume budget |
 
 An enrolment names one or more profiles. Several enrolments may name the same
@@ -30,14 +30,21 @@ that reason; on disk it is `kind: "remote"`.
 
 ## What you are setting
 
-Four independent allowlists. Each answers a different question, each fails
+Five independent allowlists. Each answers a different question, each fails
 closed, and **none can widen another** — so you can reason about them one at a
 time.
 
-    1  which MCP        allowed_mcp_ids     relay enforces
-    2  which tools      allowed_tools       relay enforces
-    3  which operations access: read|write  relay enforces
-    4  which resources  context             the MCP enforces
+    1  which MCP           allowed_mcp_ids     relay enforces
+    2  which tools         allowed_tools       relay enforces
+    3  which operations    access: read|write  relay enforces
+    4  outside this Mac?   allow_external      relay enforces
+    5  which resources     context             the MCP enforces
+
+**Layers 3 and 4 are separate questions and neither answers the other.**
+`web_fetch` changes nothing and reaches the internet; `mail_create_draft`
+changes something and touches nothing beyond this Mac. So "read-only" does not
+mean "cannot send data out", and "may write" does not mean "may post". You set
+them independently, and a tool needs to clear both.
 
 **Empty never means "everything".** For a profile, an unset `allowed_tools`
 means *no tools*; an unset scope value means *every tool that field governs is
@@ -65,6 +72,22 @@ query, not an authorisation.
 Only tools the MCP annotates `readOnlyHint: true` are admitted to a read grant;
 a tool that is unannotated, malformed, or added later is refused. That is what
 keeps a new mutating tool out of an old grant.
+
+**Outside this Mac** — Refuse or Allow. **Unset defaults to Refuse**, for a
+local project and an access profile alike; unlike Operations there is no
+local/remote asymmetry here, because an outbound channel is an outbound channel
+whoever holds it.
+
+- With it **refused**, tools that reach outside this Mac are denied —
+  `mail_send`, `web_fetch`, anything that talks to a network or a mail server.
+- **Drafting still works.** `mail_create_draft` writes a draft on this Mac for
+  a person to read and send. A profile with `access: write` and this refused
+  can compose and cannot post, which is usually what you want from an agent.
+- A tool whose MCP declares no `openWorldHint` **counts as reaching outside** —
+  that is the MCP specification's own default and relay follows it rather than
+  guessing. So while an MCP is unannotated, refusing this costs you *every* tool
+  of that MCP, not only the networked ones. If a grant is emptier than you
+  expect, this is the first thing to check.
 
 **Tools** — one name or pattern per line, e.g. `mail_*`.
 
@@ -137,7 +160,8 @@ Three checks, in order:
 
 A read-only mail profile should list only the read mail tools. If you see
 `web_fetch`, `capture_screenshot` or `contacts_*`, your `allowed_tools` is wider
-than you think.
+than you think. If you see `mail_send` on a profile you meant to keep to
+drafting, **Outside this Mac** is set to Allow.
 
 **2. What happens when it reaches outside?**
 
@@ -157,7 +181,13 @@ Every record carries the authority in force. A refusal names the layer:
     denied  capture_screenshot  not in the allowed tools for MCP 'macmcp'      ← layer 2
     denied  mail_send           not annotated read-only, and this grant is
                                 read-only for MCP 'macmcp'                     ← layer 3
-    tool_error  mail_get_email  scope_violation: true                          ← layer 4
+    denied  web_fetch           reaches outside this host and this grant does
+                                not allow external access for MCP 'macmcp'     ← layer 4
+    tool_error  mail_get_email  scope_violation: true                          ← layer 5
+
+Every `call_tool` record carries `access` and `allow_external` — the two
+authorities relay decided by itself — so a refusal on either is answerable from
+the log alone, months later, whatever the profile says by then.
 
 **`scope_violation: true` is the signal worth watching.** It means a client
 probed a resource boundary and the MCP refused it. A misconfigured scope — a
@@ -175,7 +205,8 @@ request.
 Two things to know:
 
 - **Narrowing takes effect immediately.** Removing a mailbox stops the next call
-  that would have used it.
+  that would have used it. So does setting Outside this Mac back to Refuse — the
+  next `mail_send` is denied, and any already in flight is not.
 - **Editing a scope re-derives what relay owns.** Changing a mail scope will not
   silently drop a local project's `file_dirs`.
 
@@ -210,11 +241,22 @@ enrolment first.
 Stated plainly, because a control you think you have is worse than one you know
 you lack.
 
-- **A `write` mail profile can exfiltrate.** `mail_accounts` scopes the identity
-  a message is sent **as**, never who it is sent **to**. A profile holding
-  `mail_send` can mail anything it can read to any address. This is inherent in
-  granting send to a semi-trusted agent. A read-only profile has no outbound
-  channel at all — prefer one.
+- **A profile you have granted an outbound channel can exfiltrate, and that is
+  now your choice rather than the model's.** It used to be inherent: a `write`
+  mail profile held `mail_send` and that was that. Today sending takes *two*
+  grants — `access: write` **and** Outside this Mac — so the honest statement is
+  narrower and it is about what you granted, not about what the design can
+  express.
+
+  If you do grant it, the channel is real and unbounded in the direction that
+  matters: `mail_accounts` scopes the identity a message is sent **as**, never
+  who it is sent **to**, so the profile can mail anything it can read to any
+  address. There is no recipient allowlist yet.
+
+  Two profiles that do *not* have that channel: a **read-only** profile has none
+  at all — `web_fetch` is refused by this layer, so there is nothing to leave out
+  of `allowed_tools` and nothing to forget. And a **write profile with Outside
+  this Mac refused** can draft but not post. Prefer either.
 - **The scope confines by mailbox, not by correspondent.** A grant on Bob's
   INBOX necessarily exposes everyone who wrote to Bob.
 - **Relay cannot verify that an MCP honoured the scope.** Layer 4 is the MCP's
