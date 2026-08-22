@@ -39,7 +39,8 @@ tokens.go                hashToken, auth sentinel errors
 project.go               Project + token creation
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
-router.go                Bridge auth (service vs project tokens), tool filtering, _meta injection
+context_schema.go        MCP contextSchema vocabulary (scope/source/applies_to), McpSurface, the tool-name matcher
+router.go                Bridge auth (service vs project tokens), tool filtering, access mode, scope presence, _meta injection
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
 audit_cmd.go             `relay audit` CLI
@@ -77,11 +78,37 @@ and context.
 - `allowed_mcp_ids: ["*"]` = all registered MCPs; explicit IDs to restrict.
 - `allowed_models: ["*"]` = all models; explicit IDs to restrict.
 - Permissions are derived at auth time from `allowed_mcp_ids` — not stored separately.
-- `fs_bash` auto-disabled for filesystem MCPs; `allowed_dirs` auto-set to the project path.
+- `fs_bash` auto-disabled for filesystem MCPs; any `source: "project_path"` field
+  in the MCP's context schema is auto-set to the project path.
 
 Auth flow: `AuthenticateProject(plaintext)` → find project by token hash → derive
 permissions from `allowed_mcp_ids` + registered MCPs → return a `StoredToken`
-view with permissions + disabled_tools + context.
+view with permissions + allowed_tools + access + disabled_tools + context.
+
+### Four allowlists, each failing closed (ADR-011)
+
+A grant answers four questions, and none of the four may widen another:
+
+| question | field | notes |
+|---|---|---|
+| which MCP | `allowed_mcp_ids` | `["*"]` refused for a remote record |
+| which tools | `allowed_tools` (MCP id → patterns) | anchored globs; `"*"` refused for a remote record; **absent means none for a remote record, all for a local project** |
+| which operations | `access` (MCP id → `read`\|`write`) | admitted to `read` only on an explicit `annotations.readOnlyHint: true`; **absent means read for a remote record, write for a local project** |
+| which resources | `context` → injected `_meta` | the MCP enforces it; relay cannot verify it |
+
+The two asymmetric defaults are deliberate — the threat model differs, and a
+local project written before these fields existed must keep working. The
+resource scope is **not** given a default in either direction: a mode has a safe
+wrong answer and a scope does not, so a `scope: "restrict"` field with no value
+denies every call it governs, local projects included.
+
+`disabled_tools` stays a **local-project** control and is refused on a remote
+record, naming `allowed_tools` — an inert control reads on the screen as a
+boundary and is not one. `checkToolAccess` still honours one that reaches it by
+another route, because ignoring a denylist is the only direction that widens.
+
+What each MCP may be narrowed by is read from its `contextSchema`:
+[`docs/context-schema.md`](docs/context-schema.md).
 
 `allow_cwd_auth` (default false, per project) opts into a token-less fallback:
 a caller with no token whose working directory is inside the project path
@@ -104,11 +131,13 @@ directory — `AllowCwdAuth`, `GenerateSkill`, `ShellTemplates`, and the
 `allowed_mcp_ids: ["*"]` wildcard are all refused by `validateProjectShape`
 (`project.go`), as is a non-empty `allowed_models` (an empty allowlist is the
 only value `modelAllowedForProject` won't misread as "unrestricted"). A
-filesystem-scoped MCP (schema declares `allowed_dirs`) can't be granted to a
-remote project either (`ValidateProjectGrants`) — and `SyncProjectToken`
-independently refuses to derive `allowed_dirs` for one regardless, since an
-MCP's schema is discovered at runtime and could gain that field after a
-grant was already validated. Sessions (`refuseRemoteSession`) and PTY
+MCP whose every tool needs the project path can't be granted to a remote
+project either (`ValidateProjectGrants`) — and `SyncProjectToken`
+independently refuses to derive any `source: "project_path"` field for one
+regardless, since an MCP's schema is discovered at runtime and could gain
+such a field after a grant was already validated. `appRouter.CallTool`
+re-checks scope presence against the MCP's *live* schema, which is the only
+one of the three defences that catches that upgrade. Sessions (`refuseRemoteSession`) and PTY
 launches (`refuseRemotePty`) are refused at the point of use too, not just
 at validation — see ADR-009 for why each of these is defended twice rather
 than once.

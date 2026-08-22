@@ -26,6 +26,13 @@ type ToolProvider interface {
 	Tools(id string) []mcp.Tool
 	FindToolOwner(name string) (string, *ExternalMcp)
 	CallTool(ctx context.Context, id, name string, args, meta json.RawMessage) (json.RawMessage, error)
+	// McpSurfaceFor is the LIVE declaration: the context schema an MCP
+	// published at its last handshake, that schema's version, and the tools it
+	// exposes now. Read at call time rather than from the stored grant because
+	// the only defence that catches an MCP which grew a scope field AFTER a
+	// grant was validated is one that asks the running server (ADR-011
+	// decision 4).
+	McpSurfaceFor(id string) McpSurface
 }
 
 // ToolManager extends ToolProvider with lifecycle operations for reconciling
@@ -45,15 +52,91 @@ type ServiceReloader interface {
 // the specified MCP and (optionally) tool. Pass empty toolName to check
 // only the MCP-level permission. Operates on the StoredToken directly so it
 // works for both external tokens (from Tokens[]) and project tokens (inline).
-func checkToolAccess(tok *StoredToken, mcpID, toolName string) error {
+//
+// tool is the live definition of toolName, needed for the access-mode check
+// below; pass nil for an MCP-level check. A nil tool with a non-empty toolName
+// means relay could not find the definition, which under a read grant is a
+// denial — see the fail-closed reasoning there.
+func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) error {
 	// Check MCP-level permission.
 	if perm, ok := tok.Permissions[mcpID]; ok && perm == PermOff {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID))
 	}
-	// Check tool-level disabling.
-	if toolName != "" && tok.DisabledTools != nil {
-		if slices.Contains(tok.DisabledTools[mcpID], toolName) {
-			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
+	if toolName == "" {
+		return nil
+	}
+	// Which tools (ADR-011 decision 2b). An allowlist, checked before the mode
+	// and before the denylist: a tool this grant does not name is refused
+	// whatever its annotations say and whatever any denylist omits. This is
+	// what keeps a profile named for one mailbox out of capture_screenshot,
+	// shortcuts_run, web_fetch and the address book — all of which the live
+	// "Hermes Mail" enrolment was measured to reach, and none of which the
+	// access mode below would have stopped, because they are honestly
+	// read-only.
+	if !tok.ToolAllowed(mcpID, toolName) {
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not in the allowed tools for MCP '%s'", toolName, mcpID))
+	}
+	// Which operations (ADR-011 decision 2). Relay applies this rule itself, at
+	// its own chokepoint, and what it decided is visible in the audit log and
+	// in what ListTools returns. What relay does NOT verify is the input: the
+	// classification of a tool as read-only is the MCP's own readOnlyHint, and
+	// an MCP that mislabels a mutating tool defeats the mode. That is still
+	// meaningfully stronger than the resource layer — a false hint is a lie
+	// told in a published tool list an operator can read and diff, whereas an
+	// ignored _meta leaves no trace anywhere.
+	if tok.AccessMode(mcpID) != AccessWrite {
+		if !readOnlyHintTrue(tool) {
+			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not annotated read-only and this grant is read-only for MCP '%s'", toolName, mcpID))
+		}
+	}
+	// Tool-level disabling. Last, because it can only ever SUBTRACT from what
+	// the three allowlists already admitted, and because that is the order in
+	// which the layers are easiest to reason about: which MCP, which tools,
+	// which operations, then what an operator switched off by hand.
+	//
+	// Applied to every token kind, not only local ones. validateProjectShape
+	// refuses disabled_tools on a remote-kind record — an inert control is
+	// worse than none — but a record that acquired one by a route validation
+	// did not cover (a hand-edited settings.json) must still have it honoured:
+	// ignoring a denylist is the one direction that widens.
+	if tok.DisabledTools != nil && slices.Contains(tok.DisabledTools[mcpID], toolName) {
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
+	}
+	return nil
+}
+
+// readOnlyHintTrue reports whether a tool's annotations declare
+// readOnlyHint: true, EXPLICITLY and as a boolean.
+//
+// Everything else is "mutating": absent, null, malformed JSON, a string
+// "true", a number 1, or false. That is the whole rule and it is what makes
+// ADR-011 finding 9 safe — a tool added to an MCP after a grant was written is
+// denied to every read-only grant until someone annotates it truthfully,
+// rather than silently granted the way a denylist would grant it.
+//
+// It must never panic on a malformed blob: annotations are server-supplied
+// bytes relay has carried unread since the type was written, so this is the
+// first code to trust them with anything, and the first thing an MCP could get
+// wrong. json.Unmarshal into a *bool gives all three answers — error, nil,
+// value — without a type switch that could miss a case.
+func readOnlyHintTrue(tool *mcp.Tool) bool {
+	if tool == nil || len(tool.Annotations) == 0 {
+		return false
+	}
+	var probe struct {
+		ReadOnlyHint *bool `json:"readOnlyHint"`
+	}
+	if err := json.Unmarshal(tool.Annotations, &probe); err != nil {
+		return false
+	}
+	return probe.ReadOnlyHint != nil && *probe.ReadOnlyHint
+}
+
+// findTool locates a tool definition by name in a list.
+func findTool(tools []mcp.Tool, name string) *mcp.Tool {
+	for i := range tools {
+		if tools[i].Name == name {
+			return &tools[i]
 		}
 	}
 	return nil
@@ -201,13 +284,15 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 
 	// External MCP tools.
 	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(stored, ext.ID, "") != nil {
+		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
+		note := newScopeNoter(r, stored, ext.ID, isServiceToken)
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name) != nil {
+			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
+			note.annotate(&t)
 			tools = append(tools, t)
 		}
 	}
@@ -239,13 +324,20 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	isServiceToken := stored.Name == serviceTokenName
 	groups := map[string][]mcp.Tool{}
 	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(stored, ext.ID, "") != nil {
+		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
+		note := newScopeNoter(r, stored, ext.ID, isServiceToken)
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name) != nil {
+			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
+			// Membership already mirrors ListTools; the scope note has to
+			// mirror it too, or the skill renderer would describe a tool
+			// surface as unconfined that ListTools describes as confined.
+			// appendScopeNote is idempotent, which is what keeps the two
+			// paths from double-appending if they ever meet.
+			note.annotate(&t)
 			key := t.Category
 			if key == "" {
 				key = ext.DisplayName
@@ -312,8 +404,36 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	}
 	au.setMcp(extID)
 
+	// The MCP's LIVE declaration, read now rather than taken from the stored
+	// grant. That is the whole point of the third defence below: a grant is
+	// validated once, at edit time, against the schema an MCP published then,
+	// and an MCP that grows a restrict-field afterwards would otherwise keep
+	// serving every existing grant with no scope at all (ADR-011 decision 4).
+	surface := r.tools.McpSurfaceFor(extID)
+	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+
 	if !isServiceToken {
-		if err := checkToolAccess(stored, extID, name); err != nil {
+		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
+			au.done(AuditOutcomeDenied, err)
+			return nil, err
+		}
+		// Presence re-check. `denied` is the right outcome because RELAY made
+		// this decision — no MCP was reached, nothing was probed, and there is
+		// no result to relay (ADR-011 decision 7). It sits ahead of the budget
+		// check because a call with no scope is not a legitimate call whose
+		// pattern of use was refused; it is a call the grant does not cover.
+		//
+		// NOT remote-only, deliberately. Decision 2's asymmetric default
+		// (remote reads, local writes) is not extended to scope, because the
+		// two are different in kind: a MODE has a defensible default in each
+		// direction, and a SCOPE has none — there is no answer to "which
+		// mailbox" relay could pick and be right about. One has a safe wrong
+		// answer; the other does not. So a local project granted an MCP with an
+		// operator-set restrict field must set a value or lose the tools that
+		// field governs. A source: "project_path" field is unaffected, because
+		// SyncProjectToken derives it for a local project and it is therefore
+		// always present.
+		if err := checkScopePresence(schema, contextValues(stored.Context[extID]), extID, name); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
 		}
@@ -351,6 +471,17 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// project id so an MCP can attribute the call to a project without
 	// trusting LLM-supplied values. Relay is the project authority here.
 	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
+
+	// Audit the authority actually in force (ADR-011 decision 7). The grant
+	// alone does not answer "was this call confined?" once an operator has
+	// since edited the profile, and re-reading settings.json at query time
+	// answers a different question. Taken from `meta` — the bytes about to go
+	// on the wire — rather than from the project, so what is recorded is what
+	// was injected. This runs BEFORE au.intent() so a remote call's intent
+	// record carries it.
+	if !isServiceToken {
+		au.setAuthority(stored.AccessMode(extID), scopeFromMeta(schema, meta))
+	}
 
 	// Fail-closed auditing for a remote caller (ADR-010 decision 5). This sits
 	// after auth resolution, so the actor is known and the record is
@@ -401,6 +532,95 @@ func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 		return base
 	}
 	return out
+}
+
+// checkScopePresence is ADR-011 decision 4's third defence: for every
+// scope: "restrict" field in the MCP's live schema that governs this tool,
+// require a non-empty value in the grant's context.
+//
+// Absent and empty are both refusals, and that is the whole rule — relay
+// writes a non-empty value or it refuses the operation, never a placeholder,
+// never [], never null, never the field omitted while the grant stands.
+// "No restriction" is deliberately not expressible as emptiness.
+//
+// A v1 schema is exempt: it declared no scope keywords, so there is nothing
+// here to be present.
+func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcpID, toolName string) error {
+	if !cs.V2() {
+		return nil
+	}
+	for _, f := range cs.GoverningFields(toolName) {
+		if hasScopeValue(values, f.Name) {
+			continue
+		}
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: MCP '%s' scopes tool '%s' by %q and this grant supplies no value for it",
+			mcpID, toolName, f.Name))
+	}
+	return nil
+}
+
+// scopeFromMeta extracts the injected scope for the audit record: ONLY the
+// fields the MCP declared as scope: "restrict", never the whole context map.
+//
+// _meta is a general channel and a future MCP may pass an API key through it.
+// Logging the map wholesale would make the audit file the place credentials go
+// to be archived. Filtering to declared restrict-fields is both safer and
+// domain-blind — relay is not deciding which keys look sensitive, it is
+// recording only the ones something declared as permissions.
+func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
+	if !cs.V2() {
+		return nil
+	}
+	injected := contextValues(meta)
+	if len(injected) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage)
+	for _, f := range cs.RestrictFields() {
+		if v, ok := injected[f.Name]; ok {
+			out[f.Name] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// scopeNoter appends ADR-011 decision 8's scope note to the tools in a
+// listing. Built once per MCP per listing so the schema is parsed once rather
+// than per tool.
+//
+// A client is told its own limits here because renderBucketSkillMd is the
+// wrong ONLY place: access profiles have no skills (validateProjectShape
+// refuses GenerateSkill), so the agent this feature exists for would never see
+// it. One implementation reaches the remote listener's ListTools,
+// `relay mcp call --list`, and ListSkillBuckets.
+type scopeNoter struct {
+	schema ContextSchema
+	values map[string]json.RawMessage
+}
+
+func newScopeNoter(r *appRouter, stored *StoredToken, mcpID string, isServiceToken bool) scopeNoter {
+	// A service token holds no project context and is not scoped, so there is
+	// nothing truthful to say about its limits.
+	if isServiceToken || stored == nil {
+		return scopeNoter{}
+	}
+	surface := r.tools.McpSurfaceFor(mcpID)
+	cs := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+	if !cs.V2() {
+		return scopeNoter{}
+	}
+	return scopeNoter{schema: cs, values: contextValues(stored.Context[mcpID])}
+}
+
+func (n scopeNoter) annotate(t *mcp.Tool) {
+	if !n.schema.V2() {
+		return
+	}
+	t.Description = appendScopeNote(t.Description, scopeNoteFor(n.schema, n.values, t.Name))
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {
