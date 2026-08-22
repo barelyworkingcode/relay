@@ -646,6 +646,21 @@ mail or quietly returning nothing.
   asymmetric default is what does the first half; the second half cannot be
   guessed and must be typed.
 
+- **A read-only profile loses `mail_get_source` entirely**, which is a real
+  capability loss and not the one the tool's name suggests. The tool can write
+  a file (`save_to`), so it is annotated `readOnlyHint: false`, so the mode
+  denies it before `write_dirs` is ever consulted — including for the inline
+  read that writes nothing. The layers deny in order and the outer one wins.
+
+  Keeping the annotation truthful is the right call anyway: the mode is relay's
+  own check and does not depend on macMCP's scope enforcement being correct,
+  which is exactly the independence decision 4 argued for. The clean fix is to
+  split the writing half into its own tool so the reading half can be annotated
+  honestly read-only; that is deferred rather than done here, because it is a
+  tool-surface change and this ADR is already large. A profile that genuinely
+  needs raw source today must be granted `write`, which also grants send — so
+  the workaround is bad enough to be worth the eventual split.
+
 - **Two macMCP tools lose their filesystem write for every access profile**, and
   gain a project-directory bound for every local project. `mail_save_attachment`
   is unusable remotely by construction — it requires `destination`. That is the
@@ -715,6 +730,11 @@ mail or quietly returning nothing.
   it grants `messages_*` in `allowed_tools` and is confined by the mode alone.
   Until then decision 2b keeps it out, which is the change that matters.
 - **A per-account mailbox map**, replacing the cross-product.
+- **Splitting `mail_get_source`'s `save_to` into its own tool**, so the reading
+  half can carry an honest `readOnlyHint: true` and stay available to
+  read-only profiles. See the consequence above.
+- **A recipient allowlist for `mail_send`**, on the same `applies_to`
+  machinery, closing the channel named in the consequences.
 - **`fs_bash` auto-disable moving into the schema** (`default_disabled_tools`).
   The same ADR-006 violation as finding 7, but it is not resource scoping.
 - **Per-tool tri-state permissions** (`allow`/`prompt`/`deny`), still where
