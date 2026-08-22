@@ -208,7 +208,13 @@ about a client.
 
 **`access` is enforced in `checkToolAccess` and fails closed.** A tool is
 admitted to a `read` profile only if its `annotations.readOnlyHint` is
-explicitly `true`. Absent, malformed, or `false` all mean *mutating*. This is
+explicitly `true`, **under that exact spelling**. Absent, malformed, `false`,
+or a case variant all mean *mutating* — the hint is read out of a map rather
+than decoded into a struct, because `encoding/json` matches struct fields
+case-insensitively and `{"ReadOnlyHint": true}` admitted a tool to a read
+profile under a key the MCP specification does not define. The whole claim of
+this decision is that the mode is decided from a declaration an operator can
+read and diff, which a near-miss key is not. This is
 the rule that makes finding 9 safe: a tool added to an MCP after a grant was
 written is denied to every read-only profile until someone annotates it, rather
 than silently granted.

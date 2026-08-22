@@ -163,6 +163,21 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 		{"a string that says true", `{"readOnlyHint":"true"}`, false},
 		{"the number one", `{"readOnlyHint":1}`, false},
 		{"an object", `{"readOnlyHint":{"yes":true}}`, false},
+		// F3. encoding/json matches STRUCT FIELDS case-insensitively, so a
+		// `ReadOnlyHint *bool` field admitted every one of these to a
+		// read-only grant while the doc comment said they were treated as
+		// mutating. None of them is the key the MCP specification defines, and
+		// decision 2's whole claim is that the mode is decided from a
+		// declaration an operator can read and diff — a buggy or hostile MCP
+		// must not be able to widen a grant with a near-miss spelling.
+		{"the spec key in title case", `{"ReadOnlyHint":true}`, false},
+		{"the spec key lowercased", `{"readonlyhint":true}`, false},
+		{"the spec key shouted", `{"READONLYHINT":true}`, false},
+		{"a near miss with an underscore", `{"read_only_hint":true}`, false},
+		// A variant beside the real key does not get a vote either way: the
+		// exact key is the only one read, and here it says false.
+		{"a variant beside an honest false", `{"ReadOnlyHint":true,"readOnlyHint":false}`, false},
+		{"a variant beside an honest true", `{"ReadOnlyHint":false,"readOnlyHint":true}`, true},
 		{"annotations are not an object", `"read-only"`, false},
 		{"annotations are an array", `[true]`, false},
 		{"invalid JSON", `{"readOnlyHint":`, false},
@@ -178,6 +193,30 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 	}
 	if readOnlyHintTrue(nil) {
 		t.Error("a nil tool was admitted to a read grant")
+	}
+}
+
+// The same finding at the boundary rather than at the helper: a tool whose
+// only claim to being read-only is a case variant is refused by a read grant,
+// and is not listed to one.
+func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) {
+	tools := []mcp.Tool{
+		{Name: "mail_search", Description: "Search mail.", Annotations: json.RawMessage(`{"readOnlyHint":true}`)},
+		{Name: "mail_wipe", Description: "Delete everything.", Annotations: json.RawMessage(`{"ReadOnlyHint":true}`)},
+		{Name: "mail_burn", Description: "Delete everything, quietly.", Annotations: json.RawMessage(`{"readonlyhint":true}`)},
+	}
+	r := newProfileRouter(t, profileOpts{
+		kind:         ProjectKindRemote,
+		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
+		tools:        tools,
+	})
+	if got := listedToolNames(t, r); strings.Join(got, ",") != "mail_search" {
+		t.Fatalf("read profile listed %v, want only the honestly annotated tool", got)
+	}
+	for _, tool := range []string{"mail_wipe", "mail_burn"} {
+		if _, err := r.CallTool(context.Background(), tool, json.RawMessage(`{}`), testToken); err == nil {
+			t.Errorf("%s widened a read grant with a spelling the MCP spec does not define", tool)
+		}
 	}
 }
 
