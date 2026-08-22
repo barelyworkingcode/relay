@@ -1033,8 +1033,8 @@ func TestValidateProjectGrants_RefusesFilesystemMcpInEitherSchemaShape(t *testin
 			s := &Settings{Projects: []Project{{
 				ID: "p1", Name: "Remote", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"fsmcp"},
 			}}}
-			err := s.ValidateProjectGrants(&s.Projects[0], map[string]json.RawMessage{
-				"fsmcp": json.RawMessage(schema),
+			err := s.ValidateProjectGrants(&s.Projects[0], McpSurfaces{
+				"fsmcp": {Schema: json.RawMessage(schema)},
 			})
 			if err == nil {
 				t.Fatalf("%s schema: remote project was granted a filesystem-scoped MCP", name)

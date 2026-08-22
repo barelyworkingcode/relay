@@ -463,7 +463,7 @@ func TestRenderSettingsHTML_SeedsEnrolmentsAndRemoteBlock(t *testing.T) {
 	})
 
 	s := store.Get()
-	html := renderSettingsHTML(s, nil, nil)
+	html := renderSettingsHTML(s, nil, nil, nil)
 	fingerprint := s.Enrolments[0].Fingerprint
 
 	for _, want := range []string{"hermes-mail", fingerprint, `"configured":true`, `"listen":"127.0.0.1:9910"`} {
@@ -488,7 +488,7 @@ func TestRenderSettingsHTML_SeedsEnrolmentsAndRemoteBlock(t *testing.T) {
 // the same reason.)
 func TestRenderSettingsHTML_LeavesNoUnsubstitutedPlaceholder(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	html := renderSettingsHTML(store.Get(), nil, nil)
+	html := renderSettingsHTML(store.Get(), nil, nil, nil)
 	if left := regexp.MustCompile(`__[A-Z0-9_]+_JSON__`).FindAllString(html, -1); len(left) > 0 {
 		t.Fatalf("renderSettingsHTML left placeholders unsubstituted: %v", left)
 	}

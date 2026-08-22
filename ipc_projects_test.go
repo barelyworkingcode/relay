@@ -23,6 +23,11 @@ import (
 // so a map-backed stub is plenty.
 type fakeTools struct {
 	infos map[string][]ToolInfo
+	// surfaces is what mcpSurfacesFrom hands to the apply layer. Nil (the
+	// default) means SyncProjectToken skips scope derivation, which is what
+	// every test predating ADR-011's operator path wants; a test that
+	// exercises a v2 contextSchema sets it.
+	surfaces McpSurfaces
 }
 
 func (f *fakeTools) ToolInfos(id string) []ToolInfo {
@@ -32,11 +37,15 @@ func (f *fakeTools) ToolInfos(id string) []ToolInfo {
 	return f.infos[id]
 }
 
-// AllContextSchemas lets fakeTools also stand in as the
-// ContextSchemasProvider that mcpContextSchemasFrom looks for. Returning nil
-// causes SyncProjectToken to skip filesystem auto-detection — fine for unit
-// tests that don't exercise allowed_dirs.
-func (f *fakeTools) AllContextSchemas() map[string]json.RawMessage { return nil }
+// AllMcpSurfaces lets fakeTools also stand in as the McpSurfaceProvider that
+// mcpSurfacesFrom looks for. Returning nil causes SyncProjectToken to skip
+// scope derivation — fine for unit tests that don't exercise it.
+func (f *fakeTools) AllMcpSurfaces() McpSurfaces {
+	if f == nil {
+		return nil
+	}
+	return f.surfaces
+}
 
 // fakeSkillLister returns a fixed minimal tool list so EmitSkill can produce
 // a stable SKILL.md without spinning up a real router.

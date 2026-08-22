@@ -32,12 +32,23 @@ func mustMarshalJSON(label string, v interface{}) string {
 // picker; it's preseeded so the first paint of a project edit form doesn't
 // have to round-trip an IPC for every allowed MCP. Pass nil in tests that
 // don't exercise the picker.
-func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo) string {
+//
+// scopeFields is the same idea for ADR-011's per-MCP permission panel: the
+// scope: "restrict" fields each MCP declares, so the editor can render one
+// input per field with the MCP's own description as help text. It is seeded
+// rather than fetched because it is small (a handful of fields per MCP) and
+// because the PROJECT LIST needs it too — a row has to say "needs a scope
+// value" without anyone opening the editor first, and a list that had to
+// round-trip for that would render the reassuring answer first.
+func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
 	if toolCache == nil {
 		toolCache = map[string][]ToolInfo{}
+	}
+	if scopeFields == nil {
+		scopeFields = map[string][]ScopeFieldView{}
 	}
 	projects := settings.Projects
 	if projects == nil {
@@ -63,6 +74,7 @@ func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[s
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
 		"__PROJECTS_JSON__", mustMarshalJSON("projects", projects),
 		"__MCP_TOOL_CACHE_JSON__", mustMarshalJSON("mcp_tool_cache", toolCache),
+		"__MCP_SCOPE_FIELDS_JSON__", mustMarshalJSON("mcp_scope_fields", scopeFields),
 		"__ENROLMENTS_JSON__", mustMarshalJSON("enrolments", enrolments),
 		"__REMOTE_JSON__", mustMarshalJSON("remote", remote),
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", mustMarshalJSON("enrolment_budget_defaults", enrolmentBudgetDefaults()),

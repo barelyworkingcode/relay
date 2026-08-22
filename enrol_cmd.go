@@ -26,7 +26,11 @@ func enrolCreate(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("enrol create", flag.ExitOnError)
 	clientID := fs.String("client-id", "", "human-readable id for this enrolment (required, unique)")
 	var grants stringSlice
-	fs.Var(&grants, "grant", "project id this certificate may use (repeatable); every grant must name a remote-kind project")
+	// ADR-011 decision 1: a remote-kind record is an ACCESS PROFILE in every
+	// operator-facing surface. It has no directory, no skills, no shell and no
+	// models, so calling it a project invites the reader to expect all four.
+	// The stored kind, and every Go identifier, is unchanged.
+	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project")
 	windowSeconds := fs.Int("window-seconds", defaultEnrolmentWindowSeconds, "budget window in seconds")
 	maxCalls := fs.Int("max-calls", defaultEnrolmentMaxCalls, "max tool calls per window")
 	maxResultBytes := fs.Int64("max-result-bytes", defaultEnrolmentMaxResultBytes, "max cumulative result bytes per window")
@@ -40,7 +44,7 @@ func enrolCreate(store SettingsStore, args []string) {
 	// takes on an empty allowed_mcp_ids. Say so rather than silently emitting
 	// a certificate that can reach nothing.
 	if len(grants) == 0 {
-		fmt.Println("note: no --grant given; this client is enrolled but can reach no project until one is added")
+		fmt.Println("note: no --grant given; this client is enrolled but can reach no access profile until one is added")
 	}
 
 	bundle, err := createEnrolment(store, enrolmentRequest{
@@ -59,7 +63,7 @@ func enrolCreate(store SettingsStore, args []string) {
 	e := bundle.Enrolment
 	fmt.Printf("enrolled %q\n", e.ClientID)
 	fmt.Printf("  fingerprint: %s\n", e.Fingerprint)
-	fmt.Printf("  grants:      %s\n", formatGrants(e.ProjectIDs))
+	fmt.Printf("  profiles:    %s\n", formatGrants(e.ProjectIDs))
 	fmt.Printf("  budget:      %d calls / %d bytes per %ds\n", e.Budget.MaxCalls, e.Budget.MaxResultBytes, e.Budget.WindowSeconds)
 	fmt.Printf("  bundle:      %s\n", bundle.Dir)
 	fmt.Println("    client.key  client private key (0600)")
@@ -81,7 +85,7 @@ func enrolList(store SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "CLIENT ID\tGRANTS\tCALLS/WINDOW\tBYTES/WINDOW\tCREATED\tFINGERPRINT")
+	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCALLS/WINDOW\tBYTES/WINDOW\tCREATED\tFINGERPRINT")
 	for _, e := range s.Enrolments {
 		// The fingerprint prints in full. It is the last column precisely so
 		// that showing all 64 hex characters costs nothing in readability —
@@ -113,7 +117,7 @@ func enrolRevoke(store SettingsStore, args []string) {
 
 	fmt.Printf("revoked enrolment %q\n", removed.ClientID)
 	fmt.Printf("  fingerprint: %s\n", removed.Fingerprint)
-	fmt.Println("  the certificate itself is unchanged and no project was touched; the record is what granted it access")
+	fmt.Println("  the certificate itself is unchanged and no access profile was touched; the record is what granted it access")
 }
 
 // formatGrants renders a grant list for CLI output, distinguishing "enrolled

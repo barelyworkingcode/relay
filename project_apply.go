@@ -18,6 +18,16 @@ type projectCreateFields struct {
 	AllowCwdAuth     bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   []string            `json:"session_folders,omitempty"`
+	// The three fields that make up the permission set an operator can now
+	// type (ADR-011 decisions 2, 2b and 6). Before this they were reachable
+	// only from Go: allowed_tools carried a refusal nothing could trigger,
+	// access did not exist on the wire, and context had never been settable at
+	// all — it was only ever derived, by the one hardcoded rule in
+	// SyncProjectToken (ADR-011 finding 6). A confinement an operator cannot
+	// express is a confinement that does not exist.
+	AllowedTools map[string][]string        `json:"allowed_tools,omitempty"`
+	Access       map[string]string          `json:"access,omitempty"`
+	Context      map[string]json.RawMessage `json:"context,omitempty"`
 }
 
 // projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -36,15 +46,22 @@ type projectUpdateFields struct {
 	AllowCwdAuth     *bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   *[]string            `json:"session_folders,omitempty"`
+	// Pointers for the same nil-means-no-change reason as everything above:
+	// an operator editing a project's name must not clear its scope, and a
+	// cleared scope must be expressible as an empty object rather than being
+	// indistinguishable from an absent one.
+	AllowedTools *map[string][]string        `json:"allowed_tools,omitempty"`
+	Access       *map[string]string          `json:"access,omitempty"`
+	Context      *map[string]json.RawMessage `json:"context,omitempty"`
 }
 
 // applyProjectCreate creates a project and applies its optional policy, skill
 // flag, and disabled-tools map inside a single settings mutation. Call within
 // store.With / withSettings. The caller is responsible for validating the
 // permission policy *before* invoking (so a bad policy never creates a project
-// that has to be rolled back) and for fetching schemas the same way it always
-// has. Returns the fully-resolved project (re-read after the sub-mutations).
-func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]json.RawMessage) (Project, error) {
+// that has to be rolled back) and for fetching the MCP surfaces the same way
+// it always has. Returns the fully-resolved project (re-read after the sub-mutations).
+func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces) (Project, error) {
 	// GenerateSkill, AllowCwdAuth, and ShellTemplates aren't parameters of
 	// CreateProjectWithTokenKind — they're applied by the sub-mutations below,
 	// after the project already exists. Validate the FULL requested shape
@@ -59,11 +76,31 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 		ShellTemplates: f.ShellTemplates,
 		GenerateSkill:  f.GenerateSkill,
 		AllowCwdAuth:   f.AllowCwdAuth,
+		// Both allowlists are on the candidate because both carry a remote
+		// refusal: a "*" in allowed_tools, and disabled_tools set at all.
+		DisabledTools: f.DisabledTools,
+		AllowedTools:  f.AllowedTools,
+		// And the rest of the permission set, so every refusal in
+		// validateProjectPermissions is reachable from a create as well as
+		// from an edit. A profile whose scope is only checked when it is
+		// changed is one that can be created wrong and never rechecked.
+		Access:  f.Access,
+		Context: f.Context,
+		// Both of these are applied by sub-mutations AFTER the project
+		// exists, exactly like GenerateSkill and ShellTemplates, so they have
+		// to be on the candidate or their remote refusals would be reachable
+		// only from an edit — i.e. a profile could be CREATED carrying a
+		// permission policy or a chat template and never rechecked.
+		PermissionPolicy: f.PermissionPolicy,
+		ChatTemplates:    f.ChatTemplates,
 	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, schemas); err != nil {
+	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
+		return Project{}, err
+	}
+	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
 		return Project{}, err
 	}
 
@@ -71,12 +108,12 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 		f.Kind, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
-		schemas,
+		surfaces,
 	)
 	if err != nil {
 		return Project{}, err
 	}
-	if f.PermissionPolicy != nil {
+	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
 	}
 	if f.GenerateSkill {
@@ -87,6 +124,17 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 	}
 	if len(f.SessionFolders) > 0 {
 		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
+	}
+	if len(f.AllowedTools) > 0 {
+		s.UpdateProjectAllowedTools(created.ID, f.AllowedTools)
+	}
+	if len(f.Access) > 0 {
+		s.UpdateProjectAccess(created.ID, f.Access)
+	}
+	// Last of the three, because it re-runs SyncProjectToken and that pass
+	// prunes by the MCP set the record ends up with.
+	if len(f.Context) > 0 {
+		s.UpdateProjectContext(created.ID, f.Context, surfaces)
 	}
 	if len(f.ShellTemplates) > 0 {
 		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
@@ -107,7 +155,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 // mutated. The caller validates the permission policy up front; schemas is a
 // lazy fetch invoked only when a path/MCP change or a remote-shaped result
 // actually needs it (the common rename stays allocation-free).
-func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas func() map[string]json.RawMessage) (Project, bool, error) {
+func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces func() McpSurfaces) (Project, bool, error) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return Project{}, false, nil
@@ -140,6 +188,31 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	if f.AllowCwdAuth != nil {
 		candidate.AllowCwdAuth = *f.AllowCwdAuth
 	}
+	if f.DisabledTools != nil {
+		candidate.DisabledTools = *f.DisabledTools
+	}
+	if f.ChatTemplates != nil {
+		candidate.ChatTemplates = *f.ChatTemplates
+	}
+	if f.PermissionPolicy != nil {
+		// Normalised the same way the mutation below normalises it, so the
+		// shape that is VALIDATED is the shape that would be STORED. Without
+		// this, emptying a policy to convert a project to a profile would be
+		// refused on the strength of a value the same request was clearing.
+		candidate.PermissionPolicy = f.PermissionPolicy
+		if permissionPolicyIsEmpty(f.PermissionPolicy) {
+			candidate.PermissionPolicy = nil
+		}
+	}
+	if f.AllowedTools != nil {
+		candidate.AllowedTools = *f.AllowedTools
+	}
+	if f.Access != nil {
+		candidate.Access = *f.Access
+	}
+	if f.Context != nil {
+		candidate.Context = *f.Context
+	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, true, err
 	}
@@ -157,7 +230,7 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 		}
 	}
 
-	// schemas() is a lazy fetch (real callers wire it to a live MCP-manager
+	// surfaces() is a lazy fetch (real callers wire it to a live MCP-manager
 	// call); fetch it once and reuse for both the grants check and the
 	// existing path/MCP resync below rather than fetching it twice. Grants
 	// only need re-checking when something that could have changed the
@@ -165,9 +238,19 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	// the MCP set changing on an already/still-remote project. A bare rename
 	// of an already-valid remote project doesn't need to pay for it.
 	needGrantsCheck := candidate.IsRemote() && (f.AllowedMcpIDs != nil || f.Kind != nil)
-	var sc map[string]json.RawMessage
-	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck {
-		sc = schemas()
+	// The permission set is re-validated whenever the request names any part
+	// of it — and only then. A rename cannot invalidate a scope value, and
+	// making every edit pay for a live MCP surface fetch is what the laziness
+	// here exists to avoid.
+	needPermissionsCheck := f.Access != nil || f.AllowedTools != nil || f.Context != nil
+	var sc McpSurfaces
+	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck || needPermissionsCheck {
+		sc = surfaces()
+	}
+	if needPermissionsCheck {
+		if err := validateProjectPermissions(&candidate, sc); err != nil {
+			return Project{}, true, err
+		}
 	}
 	if needGrantsCheck {
 		if err := s.ValidateProjectGrants(&candidate, sc); err != nil {
@@ -197,9 +280,10 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 		s.UpdateProjectShellTemplates(id, *f.ShellTemplates)
 	}
 	if f.PermissionPolicy != nil {
+		// An empty struct (no fields set) clears the policy — the same
+		// reading the candidate above was validated under.
 		policy := f.PermissionPolicy
-		// An empty struct (no fields set) clears the policy.
-		if policy.DefaultMode == "" && len(policy.AllowedTools) == 0 && len(policy.DeniedTools) == 0 {
+		if permissionPolicyIsEmpty(policy) {
 			policy = nil
 		}
 		s.UpdateProjectPermissionPolicy(id, policy)
@@ -212,6 +296,15 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 	if f.SessionFolders != nil {
 		s.UpdateProjectSessionFolders(id, *f.SessionFolders)
+	}
+	if f.AllowedTools != nil {
+		s.UpdateProjectAllowedTools(id, *f.AllowedTools)
+	}
+	if f.Access != nil {
+		s.UpdateProjectAccess(id, *f.Access)
+	}
+	if f.Context != nil {
+		s.UpdateProjectContext(id, *f.Context, sc)
 	}
 	if f.DisabledTools != nil {
 		// Replace the entire disabled-tools map: any MCP key omitted from the
