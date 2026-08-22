@@ -68,7 +68,7 @@ func TestAuditRemote_IntentIsOnDiskBeforeTheMcpRuns(t *testing.T) {
 	// The recorder has to exist before the mock, because the mock reads its log.
 	var rec *AuditRecorder
 	var seen []AuditEvent
-	mock := newMockConn("macmcp", simpleTools("mail_search"),
+	mock := newMockConn("macmcp", localTools("mail_search"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			// Read the log from inside the tool call: whatever is here now was
 			// written before the MCP was reached.
@@ -113,7 +113,7 @@ func TestAuditRemote_FailedIntentRefusesTheCallAndTheMcpNeverRuns(t *testing.T) 
 	mkSandboxRelayHome(t)
 
 	called := false
-	mock := newMockConn("macmcp", simpleTools("mail_search"),
+	mock := newMockConn("macmcp", localTools("mail_search"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			called = true
 			return json.RawMessage(`{"content":[]}`), nil
@@ -147,7 +147,7 @@ func TestAuditLocal_UnwritableSinkStillCompletesTheCall(t *testing.T) {
 	mkSandboxRelayHome(t)
 
 	called := false
-	mock := newMockConn("fsmcp", simpleTools("read_file"),
+	mock := newMockConn("fsmcp", localTools("read_file"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			called = true
 			return json.RawMessage(`{"content":[]}`), nil
@@ -175,7 +175,7 @@ func TestAuditLocal_UnwritableSinkStillCompletesTheCall(t *testing.T) {
 func TestAuditRemote_IntentAndCompletionShareOneEventID(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("macmcp", simpleTools("mail_search"),
+	mock := newMockConn("macmcp", localTools("mail_search"),
 		okHandler(`{"content":[{"type":"text","text":"3 messages"}]}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"macmcp": PermOn}, nil,
@@ -213,7 +213,7 @@ func TestAuditRemote_IntentAndCompletionShareOneEventID(t *testing.T) {
 func TestAuditRemote_DeniedCallIsOneRecordWithNoIntent(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("macmcp", simpleTools("mail_search", "send_mail"), okHandler(`{}`))
+	mock := newMockConn("macmcp", localTools("mail_search", "send_mail"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"macmcp": PermOn},
 		map[string][]string{"macmcp": {"send_mail"}},
@@ -243,7 +243,7 @@ func TestAuditRemote_DeniedCallIsOneRecordWithNoIntent(t *testing.T) {
 func TestAuditRemote_ActorIsAttestedAndProcessFieldsAreAbsent(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("macmcp", simpleTools("mail_search"), okHandler(`{"content":[]}`))
+	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"macmcp": PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
@@ -310,7 +310,7 @@ func TestAuditRemote_ActorIsAttestedAndProcessFieldsAreAbsent(t *testing.T) {
 func TestAuditRemote_UnauthorizedKeepsTheAttestedIdentity(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("macmcp", simpleTools("mail_search"), okHandler(`{}`))
+	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"macmcp": PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
@@ -335,7 +335,7 @@ func TestAuditRemote_UnauthorizedKeepsTheAttestedIdentity(t *testing.T) {
 func TestAuditLocal_StillWritesExactlyOneRecordWithNoPhase(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{"content":[]}`))
+	mock := newMockConn("fsmcp", localTools("read_file"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"fsmcp": PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
@@ -366,7 +366,7 @@ func TestAuditLocal_StillWritesExactlyOneRecordWithNoPhase(t *testing.T) {
 func TestAuditLocal_DropsRatherThanBlockingWhenTheQueueIsFull(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{"content":[]}`))
+	mock := newMockConn("fsmcp", localTools("read_file"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"fsmcp": PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
@@ -450,7 +450,7 @@ func TestAuditQuery_KindAndThrottledFilters(t *testing.T) {
 func TestAuditCmd_KindFilterMatchesLoggedRecords(t *testing.T) {
 	mkSandboxRelayHome(t)
 
-	mock := newMockConn("macmcp", simpleTools("mail_search"), okHandler(`{"content":[]}`))
+	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
 		map[string]Permission{"macmcp": PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)

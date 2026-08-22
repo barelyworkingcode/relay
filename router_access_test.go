@@ -22,25 +22,37 @@ import (
 // reproducible here — capture_screenshot, web_fetch and contacts_list_groups
 // are all honestly read-only, so the access mode alone leaves every one of
 // them reachable from a profile named for a mailbox.
+//
+// It carries BOTH axes (ADR-011 decisions 2 and 2c) because the point of the
+// second one is that they cross: web_fetch is read-only and reaches the
+// network, mail_create_draft mutates and touches nothing outside this Mac. A
+// fixture that annotated only one axis could not show either case.
 func macmcpToolSurface() []mcp.Tool {
-	readOnly := json.RawMessage(`{"readOnlyHint":true}`)
+	readOnly := json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)
 	return []mcp.Tool{
 		{Name: "mail_search", Description: "Search mail.", Annotations: readOnly},
 		{Name: "mail_get_email", Description: "Read one message.", Annotations: readOnly},
 		// No annotations at all — macMCP omits them on mail_move and
 		// mail_mark_read today, and an absent hint is not a claim of safety.
+		// Under decision 2c the same silence means the opposite thing and
+		// denies the same way: absent openWorldHint IS open-world.
 		{Name: "mail_move", Description: "Move a message."},
-		// Explicitly false.
-		{Name: "mail_send", Description: "Send mail.", Annotations: json.RawMessage(`{"readOnlyHint":false}`)},
-		// A blob that parses as JSON but not as annotations. Must deny, and
-		// must not panic — these are server-supplied bytes relay has carried
-		// unread until now.
+		// Mutating AND outbound: the tool the whole of decision 2c is about.
+		{Name: "mail_send", Description: "Send mail.", Annotations: json.RawMessage(`{"readOnlyHint":false,"openWorldHint":true}`)},
+		// Mutating and LOCAL — the other half of "draft but do not send". A
+		// write grant holds it with no outbound grant at all.
+		{Name: "mail_create_draft", Description: "Write a draft.", Annotations: json.RawMessage(`{"readOnlyHint":false,"openWorldHint":false}`)},
+		// A blob that parses as JSON but not as annotations. Must deny on both
+		// axes, and must not panic — these are server-supplied bytes relay has
+		// carried unread until now.
 		{Name: "mail_save_attachment", Description: "Write a file.", Annotations: json.RawMessage(`"read-only, honest"`)},
 		// A hint of the wrong type inside a well-formed object.
 		{Name: "mail_get_source", Description: "Fetch raw source.", Annotations: json.RawMessage(`{"readOnlyHint":"true"}`)},
 
 		{Name: "capture_screenshot", Description: "Screenshot the display.", Annotations: readOnly},
-		{Name: "web_fetch", Description: "Fetch a URL.", Annotations: readOnly},
+		// Read-only AND outbound: honestly readOnlyHint: true, and an HTTP
+		// channel out of the host. The mode cannot see it; decision 2c can.
+		{Name: "web_fetch", Description: "Fetch a URL.", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":true}`)},
 		{Name: "contacts_list_groups", Description: "List contact groups.", Annotations: readOnly},
 		{Name: "messages_send", Description: "Send an iMessage."},
 		{Name: "shortcuts_run", Description: "Run a Shortcut."},
@@ -53,6 +65,7 @@ type profileOpts struct {
 	kind          ProjectKind
 	allowedTools  map[string][]string
 	access        map[string]string
+	allowExternal map[string]bool
 	contextValues map[string]json.RawMessage
 	disabled      map[string][]string
 	tools         []mcp.Tool
@@ -81,6 +94,7 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		TokenHash:     hashToken(testToken),
 		AllowedTools:  o.allowedTools,
 		Access:        o.access,
+		AllowExternal: o.allowExternal,
 		DisabledTools: o.disabled,
 	}
 	if !proj.IsRemote() {
@@ -205,10 +219,12 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 // only claim to being read-only is a case variant is refused by a read grant,
 // and is not listed to one.
 func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) {
+	// Each carries an honest openWorldHint: false, so the only thing under
+	// test here is the mode's spelling.
 	tools := []mcp.Tool{
-		{Name: "mail_search", Description: "Search mail.", Annotations: json.RawMessage(`{"readOnlyHint":true}`)},
-		{Name: "mail_wipe", Description: "Delete everything.", Annotations: json.RawMessage(`{"ReadOnlyHint":true}`)},
-		{Name: "mail_burn", Description: "Delete everything, quietly.", Annotations: json.RawMessage(`{"readonlyhint":true}`)},
+		{Name: "mail_search", Description: "Search mail.", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)},
+		{Name: "mail_wipe", Description: "Delete everything.", Annotations: json.RawMessage(`{"ReadOnlyHint":true,"openWorldHint":false}`)},
+		{Name: "mail_burn", Description: "Delete everything, quietly.", Annotations: json.RawMessage(`{"readonlyhint":true,"openWorldHint":false}`)},
 	}
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
@@ -231,12 +247,17 @@ func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T)
 	// ("*_*", "**") is refused by both the editor and the matcher now — that is
 	// F1's fix, and writing one here would have this test passing on a grant
 	// nobody can save.
+	//
+	// The outbound grant is given for the same reason: web_fetch is honestly
+	// read-only AND open-world, so without it this test would be measuring
+	// decision 2c on that one row and the mode everywhere else.
 	tok := &StoredToken{
 		ProjectKind: ProjectKindRemote,
 		AllowedTools: map[string][]string{"macmcp": {
 			"mail_*", "xmail_*", "capture_*", "web_*", "contacts_*",
 			"messages_*", "shortcuts_*",
 		}},
+		AllowExternal: map[string]bool{"macmcp": true},
 	}
 	surface := macmcpToolSurface()
 	admitted := map[string]bool{"mail_search": true, "mail_get_email": true,
@@ -260,11 +281,18 @@ func TestCheckToolAccess_ANilToolDefinitionIsDeniedUnderARead(t *testing.T) {
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
 		t.Fatal("a tool whose definition relay could not find was admitted to a read grant")
 	}
-	// And a write grant is unaffected: the mode check is the only thing that
-	// reads annotations.
+	// A write grant does not rescue it, because the OTHER annotation is
+	// unreadable too and its default points the other way: a definition relay
+	// could not find is open-world (ADR-011 decision 2c). Both layers read
+	// annotations, and both refuse when there are none to read.
 	tok.Access = map[string]string{"macmcp": AccessWrite}
+	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
+		t.Fatal("a tool whose definition relay could not find was admitted for want of an openWorldHint")
+	}
+	// Only a grant that has said yes to both admits it.
+	tok.AllowExternal = map[string]bool{"macmcp": true}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err != nil {
-		t.Fatalf("a write grant was refused for want of an annotation: %v", err)
+		t.Fatalf("a write grant allowing external access was still refused: %v", err)
 	}
 }
 
@@ -278,14 +306,28 @@ func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("read profile listed %v, want %v", got, want)
 	}
-	// The same profile in write mode sees the mutating mail tools too.
+	// The same profile in write mode sees the mutating mail tools too — the
+	// local ones. The outbound grant is a separate question and this profile
+	// has not been given one, so mail_send and the tools whose annotations
+	// relay cannot read stay hidden (ADR-011 decision 2c).
 	r = newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		access:       map[string]string{"macmcp": AccessWrite},
 	})
-	if got := listedToolNames(t, r); len(got) != 6 {
-		t.Fatalf("write profile listed %v, want all six mail_* tools", got)
+	want = []string{"mail_create_draft", "mail_get_email", "mail_search"}
+	if got := listedToolNames(t, r); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("write profile listed %v, want %v", got, want)
+	}
+	// With both, all seven.
+	r = newProfileRouter(t, profileOpts{
+		kind:          ProjectKindRemote,
+		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
+		access:        map[string]string{"macmcp": AccessWrite},
+		allowExternal: map[string]bool{"macmcp": true},
+	})
+	if got := listedToolNames(t, r); len(got) != 7 {
+		t.Fatalf("write profile allowing external access listed %v, want all seven mail_* tools", got)
 	}
 }
 
@@ -376,7 +418,10 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 	}
 
 	// A LOCAL project is unchanged: no allowlist means every tool, with
-	// disabled_tools still subtracting.
+	// disabled_tools still subtracting. Nothing is granted to it here, and
+	// nothing needs to be — a local project defaults to write AND to allowing
+	// the outbound tools (ADR-011 decision 2c), because its agent already has
+	// the host's network.
 	r = newProfileRouter(t, profileOpts{disabled: map[string][]string{"macmcp": {"shortcuts_run"}}})
 	got := listedToolNames(t, r)
 	if len(got) != len(macmcpToolSurface())-1 {

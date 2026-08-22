@@ -104,6 +104,7 @@ and re-reading `settings.json` at query time answers a different question. So a
   "mcp_id": "macmcp",
   "tool": "mail_search",
   "access": "read",
+  "allow_external": false,
   "scope": { "mail_accounts": ["Bob"], "mail_mailboxes": ["INBOX"] },
   "outcome": "tool_error",
   "scope_violation": true
@@ -115,6 +116,14 @@ and re-reading `settings.json` at query time answers a different question. So a
   decided; the *input* (whether a tool is read-only) is the MCP's own
   `annotations.readOnlyHint`. Absent for a service token, which is not scoped
   by it.
+- **`allow_external`** is the other half of what relay decided by itself
+  (ADR-011 decision 2c): whether this grant could call a tool that reaches
+  outside the host. It is written as an explicit `true` or `false`, never
+  omitted for a scoped call, because **false is the value that matters** — it
+  is the resting state, and the one a `denied` on that layer was decided by. An
+  omitted key would make "the grant was not given" and "nobody recorded a
+  grant" the same record. It is absent only where there was no authority to
+  record: a service token, and events that name no MCP.
 - **`scope`** is the resource scope relay injected, taken from the `_meta` it
   assembled rather than from the project, so what is recorded is what went on
   the wire. It carries **only** the fields the MCP declared as
@@ -122,14 +131,14 @@ and re-reading `settings.json` at query time answers a different question. So a
   map, because `_meta` is a general channel and a future MCP may pass an API
   key through it. Filtering to declared restrict-fields is both safer and
   domain-blind.
-- Both fields are on a **refusal** as well as a completion. A `denied` or
-  `throttled` record carries the mode that was in force and the scope the grant
-  carried, because "which layer refused this, and under what mode?" is the
+- All three are on a **refusal** as well as a completion. A `denied` or
+  `throttled` record carries the mode that was in force, the outbound grant,
+  and the scope the grant carried, because "which layer refused this, and under what mode?" is the
   question those records exist to answer. Nothing went on the wire for a
   refused call, so what `scope` shows there is the authority the call was
   judged against; an empty `scope` on a `denied` record is itself the finding —
   a grant with no value for a field its MCP declares.
-- For a **remote** call both fields are on the **intent** record as well as the
+- For a **remote** call they are on the **intent** record as well as the
   completion — the intent is the one written before the MCP runs, and an
   authority recorded only on the completion would be missing from exactly the
   record that survives a crash mid-call.

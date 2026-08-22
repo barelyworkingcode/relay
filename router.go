@@ -53,10 +53,12 @@ type ServiceReloader interface {
 // only the MCP-level permission. Operates on the StoredToken directly so it
 // works for both external tokens (from Tokens[]) and project tokens (inline).
 //
-// tool is the live definition of toolName, needed for the access-mode check
-// below; pass nil for an MCP-level check. A nil tool with a non-empty toolName
-// means relay could not find the definition, which under a read grant is a
-// denial — see the fail-closed reasoning there.
+// tool is the live definition of toolName, needed for the two checks below
+// that read its annotations — the access mode and the outbound grant; pass nil
+// for an MCP-level check. A nil tool with a non-empty toolName means relay
+// could not find the definition, which is a denial on both of them, in
+// opposite spellings of the same fail-closed rule — see readOnlyHintTrue and
+// toolIsOpenWorld.
 func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) error {
 	// Check MCP-level permission.
 	if perm, ok := tok.Permissions[mcpID]; ok && perm == PermOff {
@@ -87,6 +89,24 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) e
 	if tok.AccessMode(mcpID) != AccessWrite {
 		if !readOnlyHintTrue(tool) {
 			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not annotated read-only and this grant is read-only for MCP '%s'", toolName, mcpID))
+		}
+	}
+	// Which side of the host (ADR-011 decision 2c). Orthogonal to the mode
+	// above, not a value of it, so it is a separate check and not a third
+	// branch of that one: a tool can be read-only and open-world (web_fetch),
+	// or mutating and local (mail_create_draft), and neither question answers
+	// the other.
+	//
+	// It sits AFTER the mode and BEFORE the denylist. After the mode because
+	// the two are both grant-shaped and either may refuse, so their order only
+	// decides which refusal is named — and putting the new one second means no
+	// call that is denied today changes the sentence it is denied with. Before
+	// the denylist for the reason stated there: a denylist can only subtract
+	// from what the allowlists admitted, and a refusal should name the grant
+	// that was never given rather than the switch an operator flipped.
+	if !tok.ExternalAllowed(mcpID) {
+		if toolIsOpenWorld(tool) {
+			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' reaches outside this host and this grant does not allow external access for MCP '%s'", toolName, mcpID))
 		}
 	}
 	// Tool-level disabling. Last, because it can only ever SUBTRACT from what
@@ -153,6 +173,59 @@ func readOnlyHintTrue(tool *mcp.Tool) bool {
 // the specification's spelling. It is a constant so the exactness above is one
 // value rather than a string literal someone later "tidies".
 const mcpReadOnlyHintKey = "readOnlyHint"
+
+// toolIsOpenWorld reports whether a tool must be treated as reaching outside
+// this host: whether it may talk to the network, to a remote mailbox, to
+// anything relay cannot see the other end of.
+//
+// THE POLARITY IS INVERTED FROM readOnlyHintTrue, AND THAT IS NOT A BUG. Both
+// fail closed; they fail closed in opposite directions because the two hints
+// have opposite defaults in the MCP specification, and each function answers
+// the question that DENIES when the hint is missing:
+//
+//	readOnlyHint  defaults to false — absent means "mutating", which a READ
+//	              grant must refuse. So that function asks "is it explicitly
+//	              true?" and absent answers no.
+//	openWorldHint defaults to TRUE  — absent means "open-world", which a grant
+//	              without allow_external must refuse. So this one asks "is it
+//	              explicitly false?" and absent answers no to THAT, i.e. yes to
+//	              open-world.
+//
+// Written out because the asymmetry is exactly what a later reader will try to
+// "tidy" into one shared helper, and the tidy version admits every unannotated
+// tool to every grant.
+//
+// Everything else about it is readOnlyHintTrue's discipline, unchanged and for
+// unchanged reasons: the exact key spelling, read out of a map because
+// encoding/json matches struct fields case-insensitively and {"OpenWorldHint":
+// false} is not a declaration the MCP specification defines; a malformed blob
+// answering "open-world" rather than panicking; a nil tool — relay could not
+// find the definition — answering "open-world", because a grant must not be
+// widened by relay's own ignorance of what it is about to call.
+func toolIsOpenWorld(tool *mcp.Tool) bool {
+	if tool == nil || len(tool.Annotations) == 0 {
+		return true
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(tool.Annotations, &fields); err != nil {
+		return true
+	}
+	raw, ok := fields[mcpOpenWorldHintKey]
+	if !ok {
+		return true
+	}
+	var hint *bool
+	if err := json.Unmarshal(raw, &hint); err != nil {
+		return true
+	}
+	// A null is not a declaration. Absent, null and malformed are one answer.
+	return hint == nil || *hint
+}
+
+// mcpOpenWorldHintKey is the annotation key the MCP specification defines for
+// the second axis, in the specification's spelling, and a constant for the
+// same reason mcpReadOnlyHintKey is.
+const mcpOpenWorldHintKey = "openWorldHint"
 
 // findTool locates a tool definition by name in a list.
 func findTool(tools []mcp.Tool, name string) *mcp.Tool {
@@ -472,7 +545,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// question the record is being asked. Assembling meta a few lines earlier
 	// costs one map merge on a path that was going to do it anyway.
 	if !isServiceToken {
-		au.setAuthority(stored.AccessMode(extID), scopeFromMeta(schema, meta))
+		au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
 
 		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
 			au.done(AuditOutcomeDenied, err)
