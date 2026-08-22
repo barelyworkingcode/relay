@@ -181,7 +181,7 @@ paid in the UI, not in the model.
 **This decision is the one most worth overruling**, and it is cheap to reverse:
 it changes naming and the UI, not the enforcement path.
 
-### 2. Authority has four layers, and relay decides three of them
+### 2. Authority has five layers, and relay decides four of them
 
 For each `(profile, MCP)` pair:
 
@@ -190,6 +190,7 @@ For each `(profile, MCP)` pair:
 | which MCP | `allowed_mcp_ids` (exists) | relay | the whole thing |
 | which tools | `allowed_tools` (**new**, decision 2b) | relay | the whole thing |
 | which operations | `access: "read" \| "write"` (**new**) | relay | the rule, not the input |
+| which side of the host | `allow_external` (**new**, decision 2c) | relay | the rule, not the input |
 | which resources | `context` → injected `_meta` (mechanism exists) | the MCP | nothing |
 
 The third row needs its qualifier stated rather than rounded up. Relay applies
@@ -293,9 +294,86 @@ denylist into an allowlist it did not ask for. A profile that sets
 `disabled_tools` is refused at validation, naming `allowed_tools` — an inert
 control is the thing ADR-009 decision 2 refuses at the door.
 
-The four layers are then four allowlists, each failing closed, each answering a
+The layers are then allowlists, each failing closed, each answering a
 different question, and none able to widen another: **which MCP, which tools,
-which operations, which resources.**
+which operations, which side of the host, which resources.**
+
+### 2c. A second axis: does this tool reach outside the host
+
+The mode reads one axis — *does this tool change anything*. There is a second,
+**orthogonal** one it cannot see, and MCP already defines the field for it:
+`openWorldHint`.
+
+Two costs, both measured on this tree rather than imagined:
+
+1. **`web_fetch` is `readOnlyHint: true` and open-world.** It is honestly
+   read-only — it changes nothing — so decision 2 admits it to a `read`
+   profile, and a profile created to *read one mailbox* held an outbound HTTP
+   channel unless `allowed_tools` happened to exclude it. Decision 2b's own
+   pre-merge review exfiltrated through exactly that, which is why the sentence
+   "a read-only mail profile has no outbound channel at all" in the
+   Consequences below had to be qualified with *once decision 2b has taken
+   `web_fetch` away from it*. A grant that depends on someone remembering to
+   leave one tool out of a list is not a control.
+
+2. **`mail_send` and `mail_create_draft` are both just "write".** An operator
+   cannot say *compose a draft a human reviews and sends*, which is the
+   owner's request and the reason this decision exists. Both mutate; only one
+   posts.
+
+**An access profile carries `allow_external` per MCP: a boolean, default
+false, gating any tool whose `openWorldHint` is not explicitly `false`.**
+
+**It is a separate field, not a third mode.** "Draft" is mail-specific and
+relay must never learn what drafting means (the ADR-006 line). The two
+questions genuinely cross — read-only and open-world (`web_fetch`), mutating
+and local (`mail_create_draft`), and both remaining combinations — so a single
+enum would need a member per cell and each member would be a claim about a
+domain. Crossing two booleans needs none.
+
+**The default is inverted from `readOnlyHint`, and both are fail-closed.** MCP
+specifies `readOnlyHint` as defaulting to *false* and `openWorldHint` as
+defaulting to *true*, so the same silence means "mutating" on one axis and
+"open-world" on the other — and denies on both. `readOnlyHintTrue` asks *is it
+explicitly true?*; `toolIsOpenWorld` asks *is it explicitly false?*. The
+asymmetry is written at both functions because it is what a later reader will
+try to tidy into one helper, and the tidied version admits every unannotated
+tool to every grant. Everything else is decision 2's discipline unchanged: the
+exact key spelling read out of a map rather than a struct (`encoding/json`
+matches struct fields case-insensitively, and `{"OpenWorldHint": false}` is not
+a declaration the specification defines), a malformed blob denying rather than
+panicking, and a definition relay could not find denying too.
+
+**There is no local/remote asymmetry here, and that is the deliberate part.**
+Decision 2's asymmetric default rests on a local project being "the operator's
+own machine acting as itself" — an argument about who the caller *is*. This
+axis is not about the caller. An outbound channel is an outbound channel: a
+local agent mailing a file to an arbitrary address exfiltrates it exactly as a
+remote one does, and ADR-009's threat model is exfiltration. So the default is
+false for every kind, and the grant is something an operator types either way.
+
+**Rejected: reading the axis off the tool's name or its MCP.** A registry of
+"tools relay knows are network tools" is finding 7 in miniature, one level
+further from home — it would not survive a second MCP and it is precisely the
+domain knowledge ADR-006 keeps out of relay. `openWorldHint` is a declaration
+the MCP already publishes, an operator can read, `relay mcp list --schema`
+prints, and a reviewer can diff, which is the same standing decision 2 gives
+`readOnlyHint` and comes with the same honest qualifier: relay applies the
+rule at its own chokepoint and records what it decided, but the
+*classification* is the MCP's word.
+
+**Rejected: gating only tools that declare `openWorldHint: true`.** That is
+the reading the field name suggests and it fails open on exactly the tools
+that matter — an MCP that annotates nothing keeps every outbound channel it
+has. It also inverts on upgrade: a tool added tomorrow joins every existing
+grant, which is finding 9's shape.
+
+**What it costs is stated rather than hidden: every tool of every MCP that
+does not annotate `openWorldHint` is refused until an operator grants the
+MCP outbound access or the MCP annotates itself.** That is loud and closed and
+it is the same trade decision 2 already made for `readOnlyHint` — but it is
+larger, because it lands on *local projects too* and because no MCP on this
+host annotates the field today. See the consequence below.
 
 ### 3. The context schema carries five keywords and no field names relay knows
 
@@ -537,7 +615,10 @@ rather than stored.**
 
 **Record it.** ADR-008's property is that the log answers what was attempted
 with what authority. The authority is the grant *plus* the mode *plus* the
-injected scope. A record carrying the tool and the args but not those cannot
+outbound grant *plus* the injected scope. `allow_external` is recorded as a
+JSON `false` rather than an omitted key, because false is the resting state
+and the one a refusal on that layer was decided by — an absent key would make
+"the grant was not given" and "nobody recorded a grant" the same record. A record carrying the tool and the args but not those cannot
 answer "was this call confined?" once an operator has since edited the profile,
 and re-reading `settings.json` at query time answers a different question. The
 values recorded are the ones actually injected, taken from `meta` where
@@ -865,6 +946,7 @@ mail or quietly returning nothing.
   "mcp_id": "macmcp", "tool": "mail_search",
   "args": {"query": "invoice", "limit": 20},
   "access": "read",
+  "allow_external": false,
   "scope": {"mail_accounts": ["Bob"], "mail_mailboxes": ["INBOX"]},
   "outcome": "pending"
 }
@@ -954,6 +1036,21 @@ mail or quietly returning nothing.
   previously decorative — including the three mail tools that lack it today and
   `mail_get_source`, whose `true` is wrong while `save_to` exists.
 
+- **And a truthful `openWorldHint`, which no MCP on this host publishes yet.**
+  This is the largest operational consequence of decision 2c and it is bigger
+  than the `readOnlyHint` one above, in two ways. It lands on **local
+  projects**, which the mode's asymmetry spares — the live wildcard `Relay`
+  project loses every open-world tool of every MCP it reaches. And because an
+  absent hint means open-world, a tool of an MCP that annotates *nothing*
+  is refused, so the loss is not confined to tools that touch a network: it
+  is every tool of fsMCP, and every macMCP tool whose annotation does not yet
+  carry the field. The mitigation is one control per MCP in the editor, and
+  the fix is the MCPs annotating themselves — macMCP's half of this lands
+  with relay's. Until an MCP does, `allow_external` on it is the difference
+  between a working grant and an empty one, which is a blunter instrument
+  than the axis deserves and is the price of the specification's own
+  default.
+
 - **Relay learns five keywords and no field names.** After this, the only
   domain-specific string left in relay is the v1 `allowed_dirs` compatibility
   branch, kept for one release with a deprecation line and a test asserting it
@@ -973,17 +1070,24 @@ mail or quietly returning nothing.
   thing this ADR exists to prevent. The UI surfaces it as "N profiles need a
   value for `macmcp`" rather than leaving it to be discovered from a `denied`.
 
-- **A `write` mail profile is an exfiltration channel and this ADR does not
-  close it.** `mail_accounts` scopes the identity a message is *sent as*; it
-  says nothing about who it is sent *to*. A profile holding `mail_send` can
-  mail anything it can read to any address. That is inherent in granting send
-  to a semi-trusted agent rather than a defect in the scope model, and it is
-  why `read` is the default (decision 2) and why the layers are worth having
-  separately: a read-only mail profile has no outbound channel at all, once
-  decision 2b has taken `web_fetch` away from it. A recipient allowlist is a
-  coherent later addition on the same `applies_to` machinery. The fixture hides
-  this — its SMTP server refuses non-fixture recipients with 550 — so it must
-  not be mistaken for a control that exists.
+- **A `write` mail profile is an exfiltration channel only if you grant it
+  one.** This bullet used to end "that is inherent in granting send to a
+  semi-trusted agent". It is not inherent any more; it is a choice, and
+  decision 2c is what makes it one. The channel itself is unchanged —
+  `mail_accounts` scopes the identity a message is *sent as* and says nothing
+  about who it is sent *to*, so a profile holding `mail_send` can still mail
+  anything it can read to any address. What changed is that holding
+  `mail_send` now takes two grants rather than one: `access: "write"` **and**
+  `allow_external`. A write mail profile without the second drafts and does
+  not post, which is the shape the owner asked for. A **read-only** profile has
+  no outbound channel at all — not "once `allowed_tools` excludes `web_fetch`",
+  which is what the old sentence had to qualify itself with, but by
+  construction, because `web_fetch` is open-world and no read-only default
+  grants it. A recipient allowlist remains a coherent later addition on the
+  same `applies_to` machinery, and it is the thing that would bound a channel
+  deliberately granted. The fixture hides the underlying channel — its SMTP
+  server refuses non-fixture recipients with 550 — so that must still not be
+  mistaken for a control that exists.
 
 - **Relay still cannot tell whether an MCP honoured `_meta`.** There is no
   structural answer and this ADR does not pretend one. The mitigations are
@@ -1002,7 +1106,7 @@ mail or quietly returning nothing.
   half can carry an honest `readOnlyHint: true` and stay available to
   read-only profiles. See the consequence above.
 - **A recipient allowlist for `mail_send`**, on the same `applies_to`
-  machinery, closing the channel named in the consequences.
+  machinery, bounding the channel a deliberate `allow_external` grant opens.
 - **`fs_bash` auto-disable moving into the schema** (`default_disabled_tools`).
   The same ADR-006 violation as finding 7, but it is not resource scoping.
 - **Per-tool tri-state permissions** (`allow`/`prompt`/`deny`), still where
