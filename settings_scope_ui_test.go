@@ -282,6 +282,10 @@ func TestProjectForm_HarvestsThePermissionSet(t *testing.T) {
 
 	for _, want := range []string{
 		`"access":{"macmcp":"write"}`,
+		// Sent even when nothing is granted, because it is a pointer on the
+		// update DTO: an omitted map means "no change", so an editor that only
+		// sent the grant could never revoke one.
+		`"allow_external":{}`,
 		`"allowed_tools":{"macmcp":["mail_*","mail_send"]}`,
 		`"mail_accounts":["Alice","Bob"]`,
 		`"mail_mailboxes":["INBOX"]`,
@@ -393,5 +397,165 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 	}
 	if created.Access["macmcp"] != AccessRead || !strings.Contains(string(created.Context["macmcp"]), "Bob") {
 		t.Errorf("the permission set did not survive the create: %#v", created)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The outbound grant (ADR-011 decision 2c)
+// ---------------------------------------------------------------------------
+
+// The control is its own block rather than a third button beside Read/Write,
+// because the two axes cross and a control that read as a third mode would
+// teach an operator that they are one. The copy has to say what it does in an
+// operator's terms — which tools go away, and which keep working.
+func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T) {
+	vm := seedScopeVM(t, scopeProjectsFixture, "p_bob")
+	html := evalString(t, vm, `window.renderProjectForm()`)
+
+	for _, want := range []string{
+		"Outside this Mac",
+		`setProjAllowExternal('macmcp', false)`,
+		`setProjAllowExternal('macmcp', true)`,
+		// Named examples, because "external access" means nothing on its own.
+		"mail_send",
+		"web_fetch",
+		// The request this feature exists for, in the operator's words.
+		"Drafting still works",
+		"mail_create_draft",
+		// The orthogonality, said rather than implied.
+		"separate</em> question from Read/Write",
+		// And the trap: an unannotated tool counts as outbound.
+		"openWorldHint",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the outbound control is missing %q\n%s", want, html)
+		}
+	}
+	// A profile's default is refused, and the panel says WHY in the operator's
+	// terms rather than asserting it: relay is the only way off this Mac for a
+	// client on another machine.
+	if !strings.Contains(html, "Unset defaults to <strong>refused</strong> for an access profile") {
+		t.Errorf("the panel does not name the profile default\n%s", html)
+	}
+	if !strings.Contains(html, "no way off this Mac except through relay") {
+		t.Error("the panel asserts the profile default without the reason for it")
+	}
+	// A local project's default is the opposite, and the panel says why that
+	// too — the same asymmetry Operations has, from the same threat model.
+	vm = seedScopeVM(t, scopeProjectsFixture, "p_local")
+	local := evalString(t, vm, `window.renderProjectForm()`)
+	if !strings.Contains(local, "Unset defaults to <strong>allowed</strong> for a local project") {
+		t.Errorf("the panel does not name the local default\n%s", local)
+	}
+	if !strings.Contains(local, "already has this Mac") {
+		t.Error("the local default is asserted without the reason for it")
+	}
+	// And it is still refusable there, which is the case the default is wrong
+	// for: a confined local agent with no other way out.
+	if !strings.Contains(local, `setProjAllowExternal('macmcp', false)`) {
+		t.Error("a local project cannot refuse its own outbound channel from the editor")
+	}
+}
+
+// Only DISSENT from the kind's default is stored. A click that agrees with the
+// default deletes the key rather than writing it, so a local project's Allow
+// cannot survive a later conversion into an access profile and hand the
+// converted profile a channel nobody granted it.
+func TestProjectForm_OutboundGrantStoresOnlyDissent(t *testing.T) {
+	vm := seedScopeVM(t, scopeProjectsFixture, "p_local")
+	got := evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);   // the local default
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != "{}" {
+		t.Errorf("agreeing with the local default wrote an explicit value: %s", got)
+	}
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', false);  // dissent
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != `{"macmcp":false}` {
+		t.Errorf("a local project's refusal was not stored: %s", got)
+	}
+
+	// The mirror on a profile: Refuse is the default and writes nothing, Allow
+	// is the dissent and is stored.
+	vm = seedScopeVM(t, scopeProjectsFixture, "p_bob")
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', false);
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != "{}" {
+		t.Errorf("agreeing with the profile default wrote an explicit value: %s", got)
+	}
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if got != `{"macmcp":true}` {
+		t.Errorf("a profile's outbound grant was not stored: %s", got)
+	}
+}
+
+// A list row answers "what can this client do", and a row that showed only the
+// mode would answer it with the axis that does not mention the network.
+func TestProjectList_ShowsTheOutboundGrantOnTheRow(t *testing.T) {
+	vm := seedScopeVM(t, scopeProjectsFixture, "")
+	html := evalString(t, vm, `window.renderProjects()`)
+	// The two profiles say "local only" by default; the local project says the
+	// opposite by default. Both defaults are visible on the list, which is the
+	// point — a row that showed only the mode would answer "what can this
+	// client do" with the axis that does not mention the network.
+	if n := strings.Count(html, `<span class="proj-auth-external off">local only</span>`); n != 2 {
+		t.Errorf("want both profiles marked local only, got %d\n%s", n, html)
+	}
+	if n := strings.Count(html, `<span class="proj-auth-external on">may reach outside</span>`); n != 1 {
+		t.Errorf("want the local project marked as reaching outside, got %d", n)
+	}
+	// And a PROFILE that has been granted one says so, in the louder style.
+	vm = seedScopeVM(t, `[{id:'p_out', name:'Outbound', kind:'remote', path:'', allowed_mcp_ids:['macmcp'],
+		allowed_models:[], allowed_tools:{macmcp:['mail_*']}, access:{macmcp:'write'},
+		allow_external:{macmcp:true},
+		context:{macmcp:{mail_accounts:['Bob'], mail_mailboxes:['INBOX']}}, disabled_tools:{}}]`, "")
+	html = evalString(t, vm, `window.renderProjects()`)
+	if !strings.Contains(html, `<span class="proj-auth-external on">may reach outside</span>`) {
+		t.Errorf("a row does not show an outbound grant that is in force\n%s", html)
+	}
+}
+
+// What the editor sends when the grant is turned on, and — the direction that
+// matters — when it is turned back off.
+func TestProjectForm_HarvestsTheOutboundGrantBothWays(t *testing.T) {
+	vm := seedScopeVM(t, scopeProjectsFixture, "p_bob")
+	got := evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);
+		document.getElementById('projName').value = 'X';
+		return JSON.stringify(window.harvestProjectForm());
+	})()`)
+	if !strings.Contains(got, `"allow_external":{"macmcp":true}`) {
+		t.Errorf("the granted channel was not sent: %s", got)
+	}
+
+	got = evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', false);
+		document.getElementById('projName').value = 'X';
+		return JSON.stringify(window.harvestProjectForm());
+	})()`)
+	if !strings.Contains(got, `"allow_external":{}`) {
+		t.Errorf("revoking the channel did not reach the wire: %s", got)
+	}
+	if strings.Contains(got, `"macmcp":false`) {
+		t.Errorf("a false was sent where an absent key is the same state: %s", got)
+	}
+
+	// Ungranting the MCP drops it with everything else: a grant for an MCP the
+	// record no longer reaches reads as an authority it does not have.
+	dropped := evalString(t, vm, `(function(){
+		window.setProjAllowExternal('macmcp', true);
+		window.setProjMcpGranted('macmcp', false);
+		return JSON.stringify(window.state.projectForm.allow_external);
+	})()`)
+	if dropped != "{}" {
+		t.Errorf("the outbound grant outlived the MCP grant in the form: %s", dropped)
 	}
 }

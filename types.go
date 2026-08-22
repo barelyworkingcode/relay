@@ -38,6 +38,11 @@ type StoredToken struct {
 	// authentication path yields the same scope.
 	Access       map[string]string
 	AllowedTools map[string][]string
+
+	// AllowExternal is the per-MCP outbound grant (ADR-011 decision 2c),
+	// carried the same way and for the same reason. It is a SEPARATE axis from
+	// Access, not a third mode — see ExternalAllowed.
+	AllowExternal map[string]bool
 }
 
 // Access modes (ADR-011 decision 2). Relay applies this rule at its own
@@ -129,6 +134,53 @@ func (t *StoredToken) AccessMode(mcpID string) string {
 		return AccessRead
 	}
 	return AccessWrite
+}
+
+// ExternalAllowed reports whether this grant may call a tool of one MCP that
+// reaches outside the host (ADR-011 decision 2c). It is the second axis of
+// authority relay can decide by itself, and it is ORTHOGONAL to the mode
+// rather than a value of it: web_fetch is honestly readOnlyHint: true and
+// reaches the network, mail_create_draft mutates and touches nothing outside
+// this Mac, so the two questions cross and neither answers the other.
+//
+// THE DEFAULT IS ASYMMETRIC, and it is the SAME asymmetry AccessMode has
+// directly above, arrived at from the same place: the threat model, not
+// convenience.
+//
+//   - An ACCESS PROFILE with no entry defaults to REFUSED. A remote client has
+//     no network path off this host except through relay. For it, web_fetch and
+//     mail_send are genuinely new capability — a channel out of a machine it
+//     cannot otherwise reach — and that channel is the whole of what ADR-009
+//     and ADR-010 are written against. This is the case the axis exists for.
+//   - A LOCAL project with no entry defaults to ALLOWED. Its agent already has
+//     the host's network: it runs as the user, on this machine, usually with a
+//     shell, so web_fetch gives it nothing it could not do with curl. Refusing
+//     it there protects nothing and costs every tool of every MCP that has not
+//     annotated openWorldHint yet — which, since an absent hint reads as
+//     open-world, is every tool of an unannotated MCP rather than only its
+//     networked ones.
+//
+// An earlier draft of this said there was no asymmetry, on the grounds that
+// "an outbound channel is an outbound channel". That is true about the channel
+// and wrong about the grant, for exactly the reason decision 2's asymmetry is
+// right: what differs is not the channel but whether relay is the only way to
+// it. Measured before the flip — 63 tests refused, and fsMCP's whole tool
+// surface unreachable from the local Relay project.
+//
+// AN EXPLICIT VALUE WINS IN BOTH DIRECTIONS. The one case the local default is
+// wrong for is a confined local agent that genuinely has no other network path
+// — no shell, no curl, tools reached only through relay — and an operator says
+// so by storing an explicit false rather than by relying on a default that
+// cannot know it. That is why the map is map[string]bool and not a set of the
+// MCPs that are allowed: false has to be a value someone can write.
+func (t *StoredToken) ExternalAllowed(mcpID string) bool {
+	if t == nil {
+		return false
+	}
+	if allowed, ok := t.AllowExternal[mcpID]; ok {
+		return allowed
+	}
+	return !t.IsRemote()
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -355,6 +407,25 @@ type Project struct {
 	// readOnlyHint works on tools that did not exist when the profile was
 	// written.
 	Access map[string]string `json:"access,omitempty"`
+
+	// AllowExternal is the per-MCP outbound grant: MCP id -> may this record
+	// call tools that reach outside this host (ADR-011 decision 2c).
+	//
+	// It exists because the mode reads ONE axis — does this tool change
+	// anything — and there is a second one it cannot see. MCP defines the
+	// field for it: annotations.openWorldHint. web_fetch is readOnlyHint: true
+	// AND open-world, so a read-only profile held an outbound HTTP channel
+	// unless allowed_tools happened to exclude it; mail_create_draft mutates
+	// and is local, so "draft but never send" was not expressible at all. Both
+	// are answered by crossing the two axes rather than by inventing a third
+	// mode, which would have to be mail-specific to mean anything (ADR-006).
+	//
+	// A missing entry defaults by KIND — refused for a profile, allowed for a
+	// local project — and an explicit value wins either way. See
+	// StoredToken.ExternalAllowed for why the asymmetry is the same one Access
+	// has and why an explicit false has to be storable. omitempty so every
+	// project already on disk round-trips byte-identical.
+	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 
 	// Per-project Claude permission policy.
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`

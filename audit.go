@@ -175,6 +175,23 @@ type AuditEvent struct {
 	Access string                     `json:"access,omitempty"`
 	Scope  map[string]json.RawMessage `json:"scope,omitempty"`
 
+	// AllowExternal is the other half of the authority relay decided by
+	// itself (ADR-011 decision 2c): whether this grant could call a tool that
+	// reaches outside the host. Recorded beside Access for the same reason
+	// Access is recorded — "was this call confined?" is not answerable from a
+	// record that omits half of what confined it, and re-reading settings.json
+	// at query time answers a different question.
+	//
+	// A POINTER, unlike Access, because the value that matters most here is
+	// the FALSE one: that is the resting state, the one a read-only profile
+	// has, and the one a `denied` on this layer was decided by. With a plain
+	// bool and omitempty, "the grant was not given" and "nobody recorded the
+	// grant" would be the same absent key — and the second is a real state
+	// (service tokens bypass every check in checkToolAccess, and list events
+	// carry no MCP at all). Nil means not recorded; false means refused by
+	// default.
+	AllowExternal *bool `json:"allow_external,omitempty"`
+
 	// ScopeViolation marks a tool_error the MCP labelled as a scope refusal
 	// (see scopeViolationMarker). It is a FIELD and not an outcome on purpose:
 	// ADR-008 already places this case — tool_error means the call completed

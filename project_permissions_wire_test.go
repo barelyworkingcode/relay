@@ -247,3 +247,78 @@ func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 		t.Errorf("a refused IPC patch mutated the record: %s", stored.Context["macmcp"])
 	}
 }
+
+// The outbound grant travels the same wire as the other three layers, and the
+// case that matters is turning it OFF: an operator who cannot revoke a channel
+// from the surface that granted it has a control they can only ever widen.
+func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
+	base, store := newV2ProjectRoutesServer(t)
+
+	resp, body := doJSON(t, "POST", base+"/api/projects", map[string]interface{}{
+		"name":            "Hermes — outbound",
+		"kind":            "remote",
+		"allowed_mcp_ids": []string{"macmcp"},
+		"allowed_tools":   map[string][]string{"macmcp": {"mail_*"}},
+		"access":          map[string]string{"macmcp": "write"},
+		"allow_external":  map[string]bool{"macmcp": true},
+		"context": map[string]interface{}{
+			"macmcp": map[string]interface{}{"mail_accounts": []string{"Bob"}, "mail_mailboxes": []string{"INBOX"}},
+		},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", resp.StatusCode, body)
+	}
+	var created projectView
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !created.AllowExternal["macmcp"] {
+		t.Errorf("allow_external missing from the view: %#v", created.AllowExternal)
+	}
+	stored, _ := store.Get().findProjectByID(created.ID)
+	if stored == nil || !stored.AllowExternal["macmcp"] {
+		t.Fatalf("the outbound grant did not persist: %#v", stored)
+	}
+
+	// GET shows it, because a UI that cannot render its own state is one an
+	// operator edits blind.
+	resp, body = doJSON(t, "GET", base+"/api/projects/"+created.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get: status %d", resp.StatusCode)
+	}
+	var fetched projectView
+	if err := json.Unmarshal(body, &fetched); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if !fetched.AllowExternal["macmcp"] {
+		t.Errorf("GET does not show what the POST accepted: %#v", fetched)
+	}
+
+	// Patching another layer leaves it alone — nil means no change.
+	resp, _ = doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
+		"access": map[string]string{"macmcp": "read"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update: status %d", resp.StatusCode)
+	}
+	stored, _ = store.Get().findProjectByID(created.ID)
+	if !stored.AllowExternal["macmcp"] {
+		t.Error("a patch of the mode revoked the outbound grant")
+	}
+
+	// And an empty map clears it. This is the direction that must work: the
+	// channel is what a read-only profile is supposed not to have.
+	resp, body = doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
+		"allow_external": map[string]bool{},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear: status %d: %s", resp.StatusCode, body)
+	}
+	stored, _ = store.Get().findProjectByID(created.ID)
+	if stored.AllowExternal["macmcp"] {
+		t.Errorf("an emptied allow_external left the grant standing: %#v", stored.AllowExternal)
+	}
+	if len(stored.Context["macmcp"]) == 0 || !strings.Contains(string(stored.Context["macmcp"]), "INBOX") {
+		t.Errorf("clearing the outbound grant cleared another layer: %s", stored.Context["macmcp"])
+	}
+}

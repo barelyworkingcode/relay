@@ -161,6 +161,10 @@ func TestListTools_AnOverBroadAllowlistIsNotTheWholeMcp(t *testing.T) {
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		access:       map[string]string{"macmcp": AccessWrite},
+		// mail_send needs the outbound grant as well as the write mode
+		// (ADR-011 decision 2c); this test is about the pattern, so it is
+		// given both.
+		allowExternal: map[string]bool{"macmcp": true},
 	})
 	got := listedToolNames(t, r)
 	if !slices.Contains(got, "mail_search") || !slices.Contains(got, "mail_send") {

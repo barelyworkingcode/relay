@@ -250,3 +250,74 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 		t.Errorf("an unrecognised mode must read as %q, got %q", AccessRead, mode)
 	}
 }
+
+// The outbound grant is stored the same way the mode is, with one difference
+// that is the whole of ADR-011 decision 2c's asymmetry: an explicit FALSE is
+// kept, because for a local project — which defaults to allowed — it is the
+// only way to say the opposite, and a mutator that discarded it would make a
+// confined local agent unexpressible.
+func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *testing.T) {
+	s := &Settings{Version: 1}
+	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{
+		"macmcp": true,
+		"other":  true, // not granted
+	})
+	got := s.Projects[0]
+	if !got.AllowExternal["macmcp"] {
+		t.Errorf("the granted MCP lost its outbound grant: %#v", got.AllowExternal)
+	}
+	if _, ok := got.AllowExternal["other"]; ok {
+		t.Error("an outbound grant was stored for an MCP the profile does not grant")
+	}
+	tok := s.storedTokenForProject(&s.Projects[0], "hash")
+	if !tok.ExternalAllowed("macmcp") {
+		t.Error("the grant did not reach the token every auth path builds")
+	}
+	if tok.ExternalAllowed("other") {
+		t.Error("a dropped entry still reached the token")
+	}
+
+	// A local project storing an explicit false: kept, and it refuses.
+	local, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
+	if err != nil {
+		t.Fatalf("create local: %v", err)
+	}
+	s.UpdateProjectAllowExternal(local.ID, map[string]bool{"macmcp": false})
+	stored, _ := s.findProjectByID(local.ID)
+	if allowed, ok := stored.AllowExternal["macmcp"]; !ok || allowed {
+		t.Fatalf("a local project's explicit refusal was discarded: %#v", stored.AllowExternal)
+	}
+	if s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+		t.Error("a stored refusal did not reach the token")
+	}
+
+	// An EMPTY map clears the field entirely, which is how every MCP goes back
+	// to its default — and a record that says nothing serializes nothing.
+	s.UpdateProjectAllowExternal(local.ID, nil)
+	stored, _ = s.findProjectByID(local.ID)
+	if stored.AllowExternal != nil {
+		t.Errorf("a cleared field left a map behind: %#v", stored.AllowExternal)
+	}
+	blob, err := json.Marshal(*stored)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(blob), "allow_external") {
+		t.Errorf("a record saying nothing serialized the key anyway: %s", blob)
+	}
+	if !s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+		t.Error("clearing the field did not return the local project to its default")
+	}
+
+	// And it is pruned when the MCP stops being granted at all, exactly as the
+	// mode and the tool allowlist are.
+	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": true})
+	s.UpdateProjectMcps(proj.ID, []string{}, v2Surfaces())
+	if _, ok := s.Projects[0].AllowExternal["macmcp"]; ok {
+		t.Errorf("an outbound grant outlived the MCP grant it belonged to: %#v", s.Projects[0].AllowExternal)
+	}
+}

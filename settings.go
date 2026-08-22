@@ -498,6 +498,43 @@ func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
 	proj.Access = cleaned
 }
 
+// UpdateProjectAllowExternal replaces a project's per-MCP outbound grant
+// (ADR-011 decision 2c). Entries naming an MCP the project is not granted are
+// dropped, exactly as UpdateProjectAccess drops them.
+//
+// BOTH VALUES ARE STORED, including false. False is not "the same as absent"
+// even though it looks like it for a profile: the default is asymmetric
+// (StoredToken.ExternalAllowed), so for a LOCAL project absent means allowed
+// and an explicit false is the only way to say the opposite — a confined local
+// agent with no shell and no other network path is a real thing to want, and a
+// mutator that discarded the false would make it unsayable. An empty map still
+// clears the whole field, which is how an operator returns every MCP to its
+// default.
+//
+// Does not save; use within store.With.
+func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	if len(allow) == 0 {
+		proj.AllowExternal = nil
+		return
+	}
+	cleaned := make(map[string]bool, len(allow))
+	for mcpID, allowed := range allow {
+		if !isWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
+			continue
+		}
+		cleaned[mcpID] = allowed
+	}
+	if len(cleaned) == 0 {
+		proj.AllowExternal = nil
+		return
+	}
+	proj.AllowExternal = cleaned
+}
+
 // UpdateProjectContext replaces a project's per-MCP context values — the
 // resource scope an operator sets (ADR-011 decisions 4 and 6). Until this
 // existed, Context was only ever DERIVED, by SyncProjectToken, and there was no
@@ -630,6 +667,11 @@ func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	for id := range proj.AllowedTools {
 		if !allowed[id] {
 			delete(proj.AllowedTools, id)
+		}
+	}
+	for id := range proj.AllowExternal {
+		if !allowed[id] {
+			delete(proj.AllowExternal, id)
 		}
 	}
 	// Defence in depth: a remote project has no Path, and BOTH ways to handle
@@ -963,6 +1005,7 @@ func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToke
 			Context:       proj.Context,
 			Access:        proj.Access,
 			AllowedTools:  proj.AllowedTools,
+			AllowExternal: proj.AllowExternal,
 		}
 	}
 	// Explicit list: only store PermOff entries (deny-set).
@@ -986,5 +1029,6 @@ func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToke
 		Context:       proj.Context,
 		Access:        proj.Access,
 		AllowedTools:  proj.AllowedTools,
+		AllowExternal: proj.AllowExternal,
 	}
 }
