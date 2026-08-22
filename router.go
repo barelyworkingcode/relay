@@ -106,7 +106,7 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) e
 }
 
 // readOnlyHintTrue reports whether a tool's annotations declare
-// readOnlyHint: true, EXPLICITLY and as a boolean.
+// readOnlyHint: true, EXPLICITLY, as a boolean, and under that exact spelling.
 //
 // Everything else is "mutating": absent, null, malformed JSON, a string
 // "true", a number 1, or false. That is the whole rule and it is what makes
@@ -114,23 +114,45 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) e
 // denied to every read-only grant until someone annotates it truthfully,
 // rather than silently granted the way a denylist would grant it.
 //
+// The spelling is read from a map rather than decoded into a struct, and that
+// is the point rather than a style choice. encoding/json matches struct fields
+// CASE-INSENSITIVELY, so a `ReadOnlyHint *bool` field admitted
+// {"ReadOnlyHint":true} and {"readonlyhint":true} — neither of which is the
+// key the MCP specification defines — to every read-only grant, while the
+// comment above said such blobs were treated as mutating. A map lookup is
+// exact, which is what decision 2 asks for: relay's whole claim here is that a
+// mode is decided from a declaration an operator can read and diff, and a
+// buggy or hostile MCP must not be able to widen a grant with a near-miss key
+// that no reviewer reading the spec would recognise as one.
+//
 // It must never panic on a malformed blob: annotations are server-supplied
 // bytes relay has carried unread since the type was written, so this is the
 // first code to trust them with anything, and the first thing an MCP could get
-// wrong. json.Unmarshal into a *bool gives all three answers — error, nil,
-// value — without a type switch that could miss a case.
+// wrong. Unmarshalling the one value into a *bool gives all three answers —
+// error, nil, value — without a type switch that could miss a case.
 func readOnlyHintTrue(tool *mcp.Tool) bool {
 	if tool == nil || len(tool.Annotations) == 0 {
 		return false
 	}
-	var probe struct {
-		ReadOnlyHint *bool `json:"readOnlyHint"`
-	}
-	if err := json.Unmarshal(tool.Annotations, &probe); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(tool.Annotations, &fields); err != nil {
 		return false
 	}
-	return probe.ReadOnlyHint != nil && *probe.ReadOnlyHint
+	raw, ok := fields[mcpReadOnlyHintKey]
+	if !ok {
+		return false
+	}
+	var hint *bool
+	if err := json.Unmarshal(raw, &hint); err != nil {
+		return false
+	}
+	return hint != nil && *hint
 }
+
+// mcpReadOnlyHintKey is the annotation key the MCP specification defines, in
+// the specification's spelling. It is a constant so the exactness above is one
+// value rather than a string literal someone later "tidies".
+const mcpReadOnlyHintKey = "readOnlyHint"
 
 // findTool locates a tool definition by name in a list.
 func findTool(tools []mcp.Tool, name string) *mcp.Tool {
