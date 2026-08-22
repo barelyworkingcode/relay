@@ -139,16 +139,16 @@ type ExternalMcp struct {
 	Command         string            `json:"command,omitempty"`
 	Args            []string          `json:"args"`
 	Env             map[string]string `json:"env"`
-	DiscoveredTools []ToolInfo        `json:"-"`                   // runtime-only; populated from live MCP connection
-	ContextSchema   json.RawMessage   `json:"-"`                   // runtime-only; discovered during MCP handshake
+	DiscoveredTools []ToolInfo        `json:"-"` // runtime-only; populated from live MCP connection
+	ContextSchema   json.RawMessage   `json:"-"` // runtime-only; discovered during MCP handshake
 	// ContextSchemaVersion is the declared contextSchemaVersion from the same
 	// serverInfo. Absent or < 2 means v1 (ADR-011 decision 3). Runtime-only,
 	// and it travels with ContextSchema everywhere — the version is what says
 	// how the schema may be read.
-	ContextSchemaVersion int `json:"-"`
-	Transport       string            `json:"transport,omitempty"` // "stdio" (default) or "http"
-	URL             string            `json:"url,omitempty"`       // MCP endpoint for HTTP transport
-	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
+	ContextSchemaVersion int         `json:"-"`
+	Transport            string      `json:"transport,omitempty"` // "stdio" (default) or "http"
+	URL                  string      `json:"url,omitempty"`       // MCP endpoint for HTTP transport
+	OAuthState           *OAuthState `json:"oauth_state,omitempty"`
 
 	// TccServices lists the macOS TCC services this MCP needs (e.g.
 	// ["calendar","contacts","reminders","microphone","appleevents"]).
