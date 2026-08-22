@@ -11,6 +11,12 @@ const SERVICES_INIT = window.__RELAY_INIT__.services;
 const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
 const PROJECTS_INIT = window.__RELAY_INIT__.projects;
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
+// What each MCP declares as narrowable: its scope: "restrict" fields, already
+// projected by Go (ScopeFieldView) so the rule that an absent `source` means
+// "operator" lives in exactly one place. Seeded rather than fetched because
+// the LIST needs it — a row has to be able to say "needs a scope value"
+// without anyone opening the editor first.
+const MCP_SCOPE_FIELDS_INIT = window.__RELAY_INIT__.mcpScopeFields || {};
 const ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
 const REMOTE_INIT = window.__RELAY_INIT__.remote || null;
 // The conservative per-enrolment budget defaults, shipped from Go so the
@@ -65,6 +71,7 @@ let state = {
     // Projects tab.
     projects: PROJECTS_INIT,
     mcpToolCache: MCP_TOOL_CACHE_INIT,     // mcpId -> [{name, description, category}]
+    mcpScopeFields: MCP_SCOPE_FIELDS_INIT, // mcpId -> [ScopeFieldView]; NO KEY = relay has never seen that MCP
     editingProjectId: null,                 // null = list, 'new' = create form, '<id>' = edit
     projectForm: null,                      // in-flight form values (kept out of state.projects until Save)
     projectFormError: null,
@@ -751,6 +758,7 @@ window.onSettingsReloaded = function(data) {
     state.runningServices = data.running_ids.reduce(function(m, id) { m[id] = true; return m; }, {});
     if (data.projects) state.projects = data.projects;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
+    if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
     if (data.remote) {
         state.remote = data.remote;
@@ -791,27 +799,199 @@ window.onProjectsReloaded = function(projects) {
 
 const PROJ_MCP_WILDCARD = '*';
 
+// ---------------------------------------------------------------------------
+// Effective authority (ADR-011 decisions 1 and 2)
+//
+// Everything below answers one question in one place: given a record and an
+// MCP it grants, what can the client actually do? A row that says "MCPs: 1"
+// while the client can read every mailbox on the machine is the problem this
+// ADR exists to fix, so the same helpers feed the Projects list, the project
+// editor, and the Remote Clients tab — a summary that disagreed with the
+// editor beside it would be worse than no summary.
+//
+// The mode rule is StoredToken.AccessMode's, restated: an explicit entry that
+// is not exactly "write" reads as read, and an ABSENT entry defaults read for
+// an access profile and write for a local project. The asymmetry is
+// deliberate (ADR-011 decision 2) and it is why this is a function rather than
+// a lookup with a default argument — a caller that forgot which default
+// applied would draw the wrong one.
+// ---------------------------------------------------------------------------
+
+// A remote-kind record is an ACCESS PROFILE everywhere an operator reads it
+// (ADR-011 decision 1). It has no directory, no skills, no shell and no
+// models, and calling it a project invites the reader to expect all four. The
+// stored kind is unchanged; this is presentation only.
+function projNoun(p) { return isRemoteProject(p) ? 'access profile' : 'project'; }
+
+// mcpScopeFieldsFor returns what an MCP declares as narrowable, or null when
+// relay has never connected to it. Null is not an empty list: "this MCP scopes
+// nothing" and "relay cannot tell you what this MCP scopes" are different
+// answers, and only the first one means an editor may safely offer no fields.
+function mcpScopeFieldsFor(mcpID) {
+    const m = state.mcpScopeFields || {};
+    return Object.prototype.hasOwnProperty.call(m, mcpID) ? (m[mcpID] || []) : null;
+}
+
+// projGrantedMcpIds expands the wildcard the way SyncProjectToken does — to
+// every MCP relay currently knows about — because that is what the grant
+// actually reaches. A summary that printed "*" would be hiding the number the
+// operator needs.
+function projGrantedMcpIds(p) {
+    const ids = (p && p.allowed_mcp_ids) || [];
+    if (ids.length === 1 && ids[0] === PROJ_MCP_WILDCARD) {
+        return (state.externalMcps || []).map(m => m.id);
+    }
+    return ids.slice();
+}
+
+function projAccessMode(p, mcpID) {
+    const explicit = (p && p.access) ? p.access[mcpID] : undefined;
+    if (explicit !== undefined && explicit !== null && explicit !== '') {
+        return explicit === 'write' ? 'write' : 'read';
+    }
+    return isRemoteProject(p) ? 'read' : 'write';
+}
+
+// scopeValueIsSet mirrors hasScopeValue on the Go side: absent, null, empty
+// string, empty list and empty object are all ABSENT, because a restrict field
+// with no value refuses every call it governs. "No restriction" is not
+// expressible as emptiness anywhere in this model.
+function scopeValueIsSet(v) {
+    if (v === undefined || v === null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'string') return v.trim() !== '';
+    if (typeof v === 'object') return Object.keys(v).length > 0;
+    return true;
+}
+
+function projScopeValue(p, mcpID, fieldName) {
+    const perMcp = (p && p.context) ? p.context[mcpID] : null;
+    return perMcp ? perMcp[fieldName] : undefined;
+}
+
+// scopeValueText renders a stored value for a human. Arrays are the shape
+// every scope field met so far declares; anything else prints as its JSON,
+// which is honest about a shape this UI does not model.
+function scopeValueText(v) {
+    if (Array.isArray(v)) return v.join(', ');
+    if (typeof v === 'string') return v;
+    if (v === undefined || v === null) return '';
+    return JSON.stringify(v);
+}
+
+// projMissingScopeFields names the OPERATOR-set restrict fields this record
+// grants an MCP for but supplies no value for. Those are the ones an operator
+// can fix; a project_path field on an access profile is reported separately,
+// because there is nothing to type — the tools it governs are simply gone.
+function projMissingScopeFields(p, mcpID) {
+    const fields = mcpScopeFieldsFor(mcpID);
+    if (!fields) return [];
+    return fields
+        .filter(f => f.source !== 'project_path')
+        .filter(f => !scopeValueIsSet(projScopeValue(p, mcpID, f.name)))
+        .map(f => f.name);
+}
+
+// projScopeGaps is the list-level form: every (record, MCP) pair still missing
+// a value someone has to type. This is the operator-facing half of ADR-011's
+// loud-and-closed behaviour — the client-facing half is a `denied` at call
+// time, which is silent from the operator's side and baffling from the
+// agent's.
+function projScopeGaps(p) {
+    const out = [];
+    for (const mcpID of projGrantedMcpIds(p)) {
+        const missing = projMissingScopeFields(p, mcpID);
+        if (missing.length) out.push({ mcp: mcpID, fields: missing });
+    }
+    return out;
+}
+
+function projAllowedToolPatterns(p, mcpID) {
+    return ((p && p.allowed_tools) ? p.allowed_tools[mcpID] : null) || [];
+}
+
+// projToolAuthorityText says which tools the grant admits. The two kinds are
+// genuinely different mechanisms and the text says so rather than smoothing it
+// over: an access profile holds only what allowed_tools enumerates (absent
+// means NOTHING), a local project holds everything minus its denylist.
+function projToolAuthorityText(p, mcpID) {
+    const patterns = projAllowedToolPatterns(p, mcpID);
+    if (isRemoteProject(p)) {
+        return patterns.length ? patterns.join(', ') : 'no tools';
+    }
+    if (patterns.length) return patterns.join(', ');
+    const disabled = ((p.disabled_tools || {})[mcpID] || []).length;
+    return disabled ? ('all tools except ' + disabled) : 'all tools';
+}
+
+// projAuthorityRows is the one shape every authority summary renders from.
+function projAuthorityRows(p) {
+    return projGrantedMcpIds(p).map(function(mcpID) {
+        const fields = mcpScopeFieldsFor(mcpID);
+        const scope = [];
+        const derived = [];
+        for (const f of (fields || [])) {
+            const v = projScopeValue(p, mcpID, f.name);
+            if (f.source === 'project_path') {
+                if (scopeValueIsSet(v)) derived.push(f.name + ': ' + scopeValueText(v));
+                continue;
+            }
+            if (scopeValueIsSet(v)) scope.push(f.name + ': ' + scopeValueText(v));
+        }
+        return {
+            mcp: mcpID,
+            mode: projAccessMode(p, mcpID),
+            tools: projToolAuthorityText(p, mcpID),
+            scope: scope,
+            derived: derived,
+            missing: projMissingScopeFields(p, mcpID),
+            schemaUnknown: fields === null,
+        };
+    });
+}
+
+function renderAuthorityRows(p) {
+    const rows = projAuthorityRows(p);
+    if (!rows.length) {
+        return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
+    }
+    let html = '';
+    for (const r of rows) {
+        html += '<div class="proj-auth-row">';
+        html += '<span class="proj-auth-mcp">' + esc(r.mcp) + '</span>';
+        html += '<span class="proj-auth-mode ' + esc(r.mode) + '">' + esc(r.mode) + '</span>';
+        html += '<span class="proj-auth-tools">' + esc(r.tools) + '</span>';
+        if (r.scope.length) html += '<span class="proj-auth-scope">' + esc(r.scope.join(' · ')) + '</span>';
+        if (r.missing.length) {
+            html += '<span class="proj-auth-missing">needs a scope value for ' + esc(r.missing.join(', ')) + '</span>';
+        } else if (!r.scope.length && !r.schemaUnknown) {
+            html += '<span class="proj-auth-scope none">no resource scope declared by this MCP</span>';
+        }
+        if (r.schemaUnknown) html += '<span class="proj-auth-scope none">not connected — scope unknown</span>';
+        html += '</div>';
+    }
+    return html;
+}
+
 function renderProjects() {
     if (state.editingProjectId) return renderProjectForm();
 
     let html = '<div class="page-header">';
-    html += '<h2>Projects</h2>';
-    html += '<button class="btn btn-primary" onclick="newProject()">+ New Project</button>';
+    html += '<h2>Projects &amp; Access Profiles</h2>';
+    html += '<button class="btn btn-primary" onclick="newProject()">+ New</button>';
     html += '</div>';
-    html += '<p class="page-intro">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
+    html += '<p class="page-intro">Both kinds are the security boundary and both get a scoped bearer token. A <strong>project</strong> is bound to a host directory and has models, shell templates and skills. An <strong>access profile</strong> is a capability grant to a client on another machine: no directory, no skills, no shell, no models — just which MCPs, which tools, which operations and which resources.</p>';
 
     if (state.projectError) {
         html += '<div class="proj-error">' + esc(state.projectError) + '</div>';
     }
+    html += renderScopeGapBanner();
 
     if (state.projects.length === 0) {
-        html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> to create one.</div>';
+        html += '<div class="empty-state">Nothing here yet. Click <strong>+ New</strong> to create a project or an access profile.</div>';
     } else {
         for (const p of state.projects) {
             const remote = isRemoteProject(p);
-            const allowedCount = p.allowed_mcp_ids && p.allowed_mcp_ids.length > 0
-                ? (p.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_mcp_ids.length))
-                : (remote ? 'no tools granted' : '0');
             const modelsCount = p.allowed_models && p.allowed_models.length > 0
                 ? (p.allowed_models[0] === PROJ_MCP_WILDCARD ? 'all' : String(p.allowed_models.length))
                 : '0';
@@ -822,19 +1002,32 @@ function renderProjects() {
             html += '<div class="proj-card-header">';
             html += '<div style="display:flex;align-items:center;gap:6px">';
             html += '<span class="proj-card-name">' + esc(p.name) + '</span>';
-            if (remote) html += '<span class="proj-badge-remote">Remote</span>';
+            if (remote) html += '<span class="proj-badge-remote">Access profile</span>';
             html += '</div>';
             html += '<div style="display:flex;gap:4px">';
             html += '<button class="btn btn-sm" onclick="editProject(\'' + esc(p.id) + '\')">Edit</button>';
-            html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
+            // Regen Skill is absent for a profile rather than disabled:
+            // validateProjectShape refuses generate_skill on a remote record,
+            // and the regen handler refuses a record with no path, so the
+            // button could never do anything. ADR-009 decision 2's argument
+            // applies to the control as much as to the flag — refusing at the
+            // door is more honest than something that quietly no-ops.
+            if (!remote) {
+                html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
+            }
             html += '<button class="btn btn-sm btn-danger" onclick="removeProject(\'' + esc(p.id) + '\', \'' + esc(p.name) + '\')">Delete</button>';
             html += '</div></div>';
-            html += '<div class="proj-card-path">' + esc(p.path || '(no path)') + '</div>';
+            html += '<div class="proj-card-path">' + esc(remote ? 'no host directory — an access profile grants capability, not a filesystem' : (p.path || '(no path)')) + '</div>';
+            // What this record can actually DO, per MCP: mode, tools, scope.
+            // Counts alone were the ADR's own example of the failure — "MCPs: 1"
+            // beside a client that can read every mailbox on the machine.
+            html += '<div class="proj-authority">' + renderAuthorityRows(p) + '</div>';
             html += '<div class="proj-card-meta">';
-            html += '<span>MCPs: <strong>' + esc(allowedCount) + '</strong></span>';
-            html += '<span>Models: <strong>' + esc(modelsCount) + '</strong></span>';
+            if (!remote) {
+                html += '<span>Models: <strong>' + esc(modelsCount) + '</strong></span>';
+                html += '<span>Skill: <strong>' + esc(skillState) + '</strong></span>';
+            }
             html += '<span>Policy: <strong>' + esc(policy) + '</strong></span>';
-            html += '<span>Skill: <strong>' + esc(skillState) + '</strong></span>';
             // Only shown when on: directory auth is the exception, and a row of
             // "off" labels would bury the projects where it's actually enabled.
             if (p.allow_cwd_auth) html += '<span>Dir auth: <strong>on</strong></span>';
@@ -847,6 +1040,29 @@ function renderProjects() {
         }
     }
 
+    return html;
+}
+
+// renderScopeGapBanner is ADR-011's "N profiles need a scope value for
+// `macmcp`" — the operator-facing half of loud-and-closed. Without it the only
+// signal is a `denied` in the audit log for a call the operator never saw,
+// against a grant the UI otherwise renders as complete.
+function renderScopeGapBanner() {
+    const rows = [];
+    for (const p of (state.projects || [])) {
+        for (const gap of projScopeGaps(p)) {
+            rows.push({ name: p.name, noun: projNoun(p), mcp: gap.mcp, fields: gap.fields });
+        }
+    }
+    if (!rows.length) return '';
+    let html = '<div class="proj-scope-gap">';
+    html += '<strong>' + rows.length + (rows.length === 1 ? ' grant needs' : ' grants need') + ' a scope value.</strong> ';
+    html += 'Until one is set, every tool the field governs is <em>denied</em> at call time — the client gets nothing and nothing else says why.';
+    html += '<ul>';
+    for (const r of rows) {
+        html += '<li>' + esc(r.name) + ' (' + esc(r.noun) + ') → <code>' + esc(r.mcp) + '</code>: ' + esc(r.fields.join(', ')) + '</li>';
+    }
+    html += '</ul></div>';
     return html;
 }
 
@@ -863,6 +1079,18 @@ function blankProjectForm() {
         generate_skill: false,
         allow_cwd_auth: false,                   // token-less auth by working directory
         disabled_tools: {},                      // mcpID -> [toolName, ...]
+        // The ADR-011 permission set. access and allowed_tools are what relay
+        // enforces at its own chokepoint; context is what it injects and
+        // cannot verify. All three are absent by default, which for an access
+        // profile means read, no tools, and no scope — every layer failing
+        // closed until someone widens it deliberately.
+        access: {},                              // mcpID -> 'read' | 'write'
+        allowed_tools: {},                       // mcpID -> [pattern, ...]
+        context: {},                             // mcpID -> { field: value }
+        // Raw text as typed, so a half-finished value survives a re-render and
+        // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
+        _scopeText: {},                          // mcpID -> { field: text }
+        _toolsText: {},                          // mcpID -> text
     };
 }
 
@@ -885,6 +1113,11 @@ function projectFormFromExisting(p) {
         generate_skill: !!p.generate_skill,
         allow_cwd_auth: !!p.allow_cwd_auth,
         disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
+        access: JSON.parse(JSON.stringify(p.access || {})),
+        allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
+        context: JSON.parse(JSON.stringify(p.context || {})),
+        _scopeText: {},
+        _toolsText: {},
         token: p.token || '',
     };
 }
@@ -917,7 +1150,15 @@ function regenProjectSkill(id) {
 }
 
 function removeProject(id, name) {
-    if (!confirm('Delete project "' + name + '"?\nThis revokes its token immediately and removes its SKILL.md.')) return;
+    const p = (state.projects || []).find(x => x.id === id);
+    const remote = isRemoteProject(p);
+    const what = remote ? 'access profile' : 'project';
+    // A profile has no skills to remove, and saying it does would be the
+    // clearest possible signal that the two kinds are being confused.
+    const consequence = remote
+        ? '\nThis revokes its token immediately. Any enrolment granting it is left holding an id that resolves to nothing.'
+        : '\nThis revokes its token immediately and removes its SKILL.md.';
+    if (!confirm('Delete ' + what + ' "' + name + '"?' + consequence)) return;
     ipc(JSON.stringify({ type: 'remove_project', id }));
 }
 
@@ -940,9 +1181,10 @@ function copyProjectToken(text) {
 
 // ---- Kind helpers ----
 //
-// A remote project (types.go ProjectKind) is a capability grant to an agent
-// on another machine, not a host directory: it carries no path, can't use
-// allow_cwd_auth or generate_skill (both are directory-flavored), can't use
+// A remote-kind record is an ACCESS PROFILE (ADR-011 decision 1): a capability
+// grant to an agent on another machine, not a host directory. It carries no
+// path, can't use allow_cwd_auth or generate_skill (both are
+// directory-flavored), can't use
 // the "*" MCP wildcard (a remote grant must be an explicit enumeration —
 // see validateProjectShape in project_apply.go), and always sends an empty
 // allowed_models. Kind is chosen at create time only; the edit form shows it
@@ -1053,6 +1295,222 @@ function toggleProjTool(mcpID, toolName, isChecked) {
     f.disabled_tools[mcpID] = Array.from(currentlyDisabled);
 }
 
+// ---------------------------------------------------------------------------
+// The per-MCP permission panel (ADR-011 decisions 2, 2b, 4, 6)
+//
+// One panel per granted MCP, and it is the whole authority in one place: which
+// operations (the mode), which tools (the allowlist, profiles only), and which
+// resources (one input per scope: "restrict" field the MCP declares).
+//
+// Scope values are TEXT ENTRY for now. `context/enumerate` (decision 6) is a
+// later change that replaces them with pickers over real values, and the swap
+// is meant to be local: renderScopeFieldInput is the only function that decides
+// what a field's control looks like, and scopeValueFromText / scopeTextFromValue
+// are the only two that convert between what is typed and what is stored.
+// ---------------------------------------------------------------------------
+
+// projFormAccessMode is projAccessMode against the in-flight form, which
+// carries `kind` as a string rather than as the stored ProjectKind.
+function projFormAccessMode(f, mcpID) {
+    const explicit = (f.access || {})[mcpID];
+    if (explicit === 'read' || explicit === 'write') return explicit;
+    return isRemoteForm(f) ? 'read' : 'write';
+}
+
+function setProjAccess(mcpID, mode) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f.access) f.access = {};
+    f.access[mcpID] = mode;
+    render();
+}
+
+// setProjMcpGranted is the access-profile form's grant control. A profile has
+// no tri-state, because the third state is a DENYLIST and a denylist cannot
+// bound a client — validateProjectShape refuses disabled_tools on a remote
+// record outright (ADR-011 decision 2b). What replaces it is the allowed-tools
+// box in the panel below.
+function setProjMcpGranted(mcpID, granted) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (granted) {
+        if (f.allowed_mcp_ids.indexOf(mcpID) < 0) f.allowed_mcp_ids.push(mcpID);
+    } else {
+        f.allowed_mcp_ids = f.allowed_mcp_ids.filter(id => id !== mcpID);
+        // Drop the permission set with the grant. Relay's mutators prune these
+        // on every resync anyway; leaving them here would show a mode and a
+        // scope for an MCP the record no longer reaches, which reads as an
+        // authority it does not have.
+        delete (f.access || {})[mcpID];
+        delete (f.allowed_tools || {})[mcpID];
+        delete (f.context || {})[mcpID];
+        delete (f._scopeText || {})[mcpID];
+        delete (f._toolsText || {})[mcpID];
+    }
+    render();
+}
+
+// ---- Scope value <-> text --------------------------------------------------
+//
+// The one pair of functions that knows how a typed value becomes a stored one.
+// A picker replaces the CONTROL, not this conversion.
+
+function scopeTextFromValue(field, v) {
+    if (v === undefined || v === null) return '';
+    if (Array.isArray(v)) return v.join('\n');
+    if (typeof v === 'string') return v;
+    return JSON.stringify(v);
+}
+
+function scopeValueFromText(field, text) {
+    const raw = String(text === undefined || text === null ? '' : text);
+    if (field.type === 'array') {
+        return raw.split('\n').map(s => s.trim()).filter(Boolean);
+    }
+    if (field.type === 'string') return raw.trim();
+    // A type outside the declared subset. Send what parses as JSON, otherwise
+    // the trimmed string — and let the server refuse it, which it will do
+    // against the MCP's own declaration rather than against a guess made here.
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+    try { return JSON.parse(trimmed); } catch (e) { return trimmed; }
+}
+
+function projScopeText(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID];
+    if (typed && Object.prototype.hasOwnProperty.call(typed, field.name)) return typed[field.name];
+    return scopeTextFromValue(field, ((f.context || {})[mcpID] || {})[field.name]);
+}
+
+function setProjScopeText(mcpID, fieldName, text) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f._scopeText) f._scopeText = {};
+    if (!f._scopeText[mcpID]) f._scopeText[mcpID] = {};
+    f._scopeText[mcpID][fieldName] = text;
+    // No render(): this fires on every keystroke and a repaint would eat the
+    // caret. The list-level "needs a scope value" banner catches up on save.
+}
+
+function projAllowedToolsText(f, mcpID) {
+    const typed = (f._toolsText || {})[mcpID];
+    if (typed !== undefined) return typed;
+    return ((f.allowed_tools || {})[mcpID] || []).join('\n');
+}
+
+function setProjAllowedToolsText(mcpID, text) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f._toolsText) f._toolsText = {};
+    f._toolsText[mcpID] = text;
+}
+
+// ---- The panel -------------------------------------------------------------
+
+function renderProjMcpPermissions(mcpID, f) {
+    const remote = isRemoteForm(f);
+    const mode = projFormAccessMode(f, mcpID);
+    let html = '<div class="proj-perm-panel">';
+
+    // Which operations.
+    html += '<div class="proj-perm-block">';
+    html += '<div class="proj-perm-label">Operations</div>';
+    html += '<div class="perm-btns">';
+    html += '<button class="perm-btn ' + (mode === 'read' ? 'active' : '') + '" onclick="setProjAccess(\'' + esc(mcpID) + '\', \'read\')">Read</button>';
+    html += '<button class="perm-btn ' + (mode === 'write' ? 'active' : '') + '" onclick="setProjAccess(\'' + esc(mcpID) + '\', \'write\')">Write</button>';
+    html += '</div>';
+    html += '<p class="proj-section-help">' + (mode === 'read'
+        ? 'Only tools this MCP annotates <code>readOnlyHint: true</code>. A tool that is unannotated, malformed, or added later is refused — that is what keeps a new mutating tool out of an old grant.'
+        : 'Every tool this grant admits, mutating included. Write implies read.')
+        + ' Unset defaults to <strong>' + (remote ? 'read' : 'write') + '</strong> for ' + (remote ? 'an access profile' : 'a local project') + '.</p>';
+    html += '</div>';
+
+    // Which tools — profiles only. A local project subtracts with the tool
+    // picker above; a profile enumerates, because a denylist grants every tool
+    // the MCP gains tomorrow.
+    if (remote) {
+        const patterns = projAllowedToolsText(f, mcpID);
+        html += '<div class="proj-perm-block">';
+        html += '<div class="proj-perm-label">Tools</div>';
+        html += '<p class="proj-section-help">One name or pattern per line, e.g. <code>mail_*</code>. Patterns are anchored — <code>mail_*</code> admits <code>mail_send</code> and not <code>xmail_send</code>. A bare <code>*</code> is refused: registering a new tool would silently widen the grant. <strong>Empty means no tools at all.</strong></p>';
+        html += '<textarea rows="3" placeholder="mail_*" oninput="setProjAllowedToolsText(\'' + esc(mcpID) + '\', this.value)">' + esc(patterns) + '</textarea>';
+        html += '</div>';
+    }
+
+    // Which resources.
+    const fields = mcpScopeFieldsFor(mcpID);
+    html += '<div class="proj-perm-block">';
+    html += '<div class="proj-perm-label">Resource scope</div>';
+    if (fields === null) {
+        html += '<p class="proj-section-help">Relay has not connected to this MCP, so it cannot say what may be narrowed. Anything this MCP scopes will be enforced at call time regardless — a grant with no value for a field it declares is <em>denied</em>, not unrestricted.</p>';
+    } else if (!fields.length) {
+        html += '<p class="proj-section-help">This MCP declares nothing narrowable. The grant is bounded by the tools and the mode above and by nothing else.</p>';
+    } else {
+        html += '<p class="proj-section-help">Each field below is declared by the MCP as one that <strong>restricts</strong> access. An empty value is not "no restriction" — it refuses every tool the field governs. There is no wildcard: to allow everything, list everything.</p>';
+        for (const field of fields) {
+            html += renderScopeFieldInput(mcpID, field, f);
+        }
+    }
+    html += '</div>';
+
+    html += '</div>';
+    return html;
+}
+
+// renderScopeFieldInput is the one place a scope field's CONTROL is chosen, so
+// swapping text entry for a `context/enumerate` picker (ADR-011 decision 6) is
+// a change to this function and nothing else.
+function renderScopeFieldInput(mcpID, field, f) {
+    const remote = isRemoteForm(f);
+    const typeLabel = field.type === 'array'
+        ? ('list of ' + (field.item_type || 'value') + 's, one per line')
+        : (field.type || 'value');
+    let html = '<div class="proj-scope-field">';
+    html += '<label>' + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + '</span></label>';
+    if (field.description) html += '<div class="proj-scope-desc">' + esc(field.description) + '</div>';
+
+    if (field.source === 'project_path') {
+        // Read-only, and it shows the DERIVED value rather than hiding the
+        // field: an operator has to be able to see that the bound exists
+        // without being able to type in it. Relay refuses an operator-supplied
+        // value for one of these outright — it would be overwritten by the
+        // next resync anyway.
+        const derived = ((f.context || {})[mcpID] || {})[field.name];
+        let shown, note;
+        if (remote) {
+            shown = '';
+            note = 'An access profile has no host directory, so relay derives nothing here and every tool this field governs'
+                + (field.applies_to && field.applies_to.length ? ' (' + field.applies_to.join(', ') + ')' : '')
+                + ' is refused. That is the intended outcome, not a gap to fill in.';
+        } else if (scopeValueIsSet(derived)) {
+            shown = scopeTextFromValue(field, derived);
+            note = 'Derived by relay from this project\'s path. Change the path to change it.';
+        } else {
+            shown = f.path || '';
+            note = 'Derived by relay from this project\'s path on save.';
+        }
+        html += '<input type="text" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
+        html += '<div class="proj-scope-desc">' + esc(note) + '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    const text = projScopeText(f, mcpID, field);
+    if (field.type === 'array') {
+        html += '<textarea rows="3" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)">' + esc(text) + '</textarea>';
+    } else {
+        html += '<input type="text" value="' + esc(text) + '" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)" />';
+    }
+    if (!String(text).trim()) {
+        html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
+    }
+    if (field.depends_on && field.depends_on.length) {
+        html += '<div class="proj-scope-desc">Values here are read within ' + esc(field.depends_on.join(', ')) + '.</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
 function setProjModelsWildcard(checked) {
     const f = state.projectForm;
     if (!f) return;
@@ -1075,11 +1533,28 @@ function renderProjectForm() {
     if (!f) return '<div class="empty-state">No form state.</div>';
     const isNew = !f.id;
     const isRemote = isRemoteForm(f);
-    const title = isNew ? 'New Project' : 'Edit Project';
+    const noun = isRemote ? 'Access Profile' : 'Project';
+    const title = (isNew ? 'New ' : 'Edit ') + noun;
 
     let html = '<h2>' + esc(title) + '</h2>';
     if (state.projectFormError) {
         html += '<div class="proj-error">' + esc(state.projectFormError) + '</div>';
+    }
+    // The same gap the list names, named again here — this is the editor the
+    // operator would have to open to fix it, so it is the one place the
+    // sentence has to appear.
+    const formGaps = projScopeGaps({
+        kind: f.kind,
+        allowed_mcp_ids: f.allowed_mcp_ids,
+        context: harvestProjectPermissions(f).context,
+    });
+    if (formGaps.length) {
+        html += '<div class="proj-scope-gap">';
+        html += '<strong>A scope value is missing.</strong> Every tool the field governs is denied at call time until it is set — the client gets nothing, and nothing else says why.<ul>';
+        for (const g of formGaps) {
+            html += '<li><code>' + esc(g.mcp) + '</code>: ' + esc(g.fields.join(', ')) + '</li>';
+        }
+        html += '</ul></div>';
     }
 
     // ---- Kind ----
@@ -1091,11 +1566,11 @@ function renderProjectForm() {
     html += '<div class="proj-section-title">Kind</div>';
     if (isNew) {
         html += '<div class="perm-btns">';
-        html += '<button class="perm-btn ' + (!isRemote ? 'active' : '') + '" onclick="setProjKind(\'local\')">Local</button>';
-        html += '<button class="perm-btn ' + (isRemote ? 'active' : '') + '" onclick="setProjKind(\'remote\')">Remote</button>';
+        html += '<button class="perm-btn ' + (!isRemote ? 'active' : '') + '" onclick="setProjKind(\'local\')">Local project</button>';
+        html += '<button class="perm-btn ' + (isRemote ? 'active' : '') + '" onclick="setProjKind(\'remote\')">Access profile</button>';
         html += '</div>';
     } else {
-        html += '<div class="proj-kind-label">' + (isRemote ? 'Remote — capability grant to another machine' : 'Local — bound to a host directory') + '</div>';
+        html += '<div class="proj-kind-label">' + (isRemote ? 'Access profile — a capability grant to a client on another machine' : 'Local project — bound to a host directory') + '</div>';
         html += '<p class="proj-section-help">Kind can\'t be changed here after creation.</p>';
     }
     html += '</div>';
@@ -1103,28 +1578,28 @@ function renderProjectForm() {
     // ---- Identity ----
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += '<label>Project name</label>';
-    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="e.g. Acme Website" />';
+    html += '<label>' + (isRemote ? 'Profile name' : 'Project name') + '</label>';
+    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="' + (isRemote ? 'e.g. Hermes — Bob INBOX (read-only)' : 'e.g. Acme Website') + '" />';
     if (!isRemote) {
         html += '<label>Project path</label>';
         html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
         html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
     } else {
-        html += '<p class="proj-section-help">Remote projects are capability grants to an agent on another machine — they have no host directory, so path, directory auth, and skill generation don\'t apply.</p>';
+        html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations and which resources.</p>';
     }
     html += '</div>';
 
     // ---- Allowed MCPs + tri-state picker ----
     const wild = !isRemote && isProjMcpWildcard(f);
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Allowed MCPs &amp; Tools</div>';
+    html += '<div class="proj-section-title">MCPs, Tools, Operations &amp; Resources</div>';
     if (!isRemote) {
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += '<span>Allow all registered MCPs (wildcard <code>*</code>)</span>';
         html += '<label class="switch"><input type="checkbox" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
         html += '</div>';
     } else {
-        html += '<p class="proj-section-help">Remote projects can\'t use the wildcard — list MCPs explicitly. Zero granted is a valid starting point; widen it deliberately later.</p>';
+        html += '<p class="proj-section-help">An access profile can\'t use the wildcard — list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>';
     }
 
     if (!wild) {
@@ -1137,16 +1612,32 @@ function renderProjectForm() {
         }
         for (const mcp of registered) {
             const st = projMcpState(f, mcp.id);
+            const granted = f.allowed_mcp_ids.indexOf(mcp.id) >= 0;
             html += '<div class="proj-mcp-row">';
             html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ')</span></span>';
             html += '<div class="perm-btns">';
-            html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'all\')">All tools</button>';
-            html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'selected\')">Selected</button>';
-            html += '<button class="perm-btn ' + (st === 'none' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'none\')">No tools</button>';
+            if (isRemote) {
+                // Two states, not three. The third one is a denylist, and a
+                // denylist grants every tool the MCP gains after the grant was
+                // written — the fail-open shape a grant to another machine must
+                // not have. What bounds a profile is the allowlist in the panel.
+                html += '<button class="perm-btn ' + (granted ? 'active' : '') + '" onclick="setProjMcpGranted(\'' + esc(mcp.id) + '\', true)">Granted</button>';
+                html += '<button class="perm-btn ' + (!granted ? 'active' : '') + '" onclick="setProjMcpGranted(\'' + esc(mcp.id) + '\', false)">Not granted</button>';
+            } else {
+                html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'all\')">All tools</button>';
+                html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'selected\')">Selected</button>';
+                html += '<button class="perm-btn ' + (st === 'none' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'none\')">No tools</button>';
+            }
             html += '</div>';
             html += '</div>';
-            if (st === 'selected') {
+            if (!isRemote && st === 'selected') {
                 html += renderProjToolPicker(mcp.id, f);
+            }
+            // Mode, tool allowlist and resource scope for every MCP this
+            // record actually grants — the three layers relay checks beneath
+            // the MCP itself.
+            if (granted) {
+                html += renderProjMcpPermissions(mcp.id, f);
             }
         }
         for (const id of dangling) {
@@ -1155,6 +1646,20 @@ function renderProjectForm() {
             html += '<button class="perm-btn" onclick="setProjMcpState(\'' + esc(id) + '\', \'none\')">Remove</button>';
             html += '</div>';
         }
+    } else {
+        // A wildcard grant still reaches every registered MCP, and a scope
+        // requirement is not waived by how the grant was spelled — ADR-011
+        // decision 4 applies to local projects too, which is why the live
+        // wildcard "Relay" project loses macMCP's mail tools until someone
+        // sets a value. The panel has to be reachable here or the editor
+        // would name a problem it offers no way to fix.
+        for (const mcp of state.externalMcps) {
+            html += '<div class="proj-mcp-row">';
+            html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ')</span></span>';
+            html += '<span class="proj-mcp-name" style="color:var(--text-3)">granted by the wildcard</span>';
+            html += '</div>';
+            html += renderProjMcpPermissions(mcp.id, f);
+        }
     }
     html += '</div>';
 
@@ -1162,7 +1667,7 @@ function renderProjectForm() {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
     if (isRemote) {
-        html += '<p class="proj-section-help">Not applicable to remote projects — the model allowlist stays empty.</p>';
+        html += '<p class="proj-section-help">Not applicable to an access profile — the model allowlist stays empty.</p>';
     } else {
         const modelsWild = isProjModelsWildcard(f);
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
@@ -1178,9 +1683,16 @@ function renderProjectForm() {
     html += '</div>';
 
     // ---- Chat templates (read-only; relay stores them, Eve edits them) ----
+    // Absent for an access profile with none: a profile has no sessions to
+    // launch one from, so an empty section here is a heading that suggests a
+    // capability the record does not have. One that somehow carries templates
+    // still shows them — hiding stored data is worse than an odd heading.
+    if (!isRemote || f.chat_templates.length > 0) {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Chat Templates</div>';
-    html += '<p class="proj-section-help">Project-scoped chat presets stored with the project. Create and edit them in Eve\'s project dialog, which offers live model selection.</p>';
+    html += '<p class="proj-section-help">' + (isRemote
+        ? 'An access profile has no chat sessions, so these are inert. They are shown because they are stored on the record.'
+        : 'Project-scoped chat presets stored with the project. Create and edit them in Eve\'s project dialog, which offers live model selection.') + '</p>';
     if (f.chat_templates.length === 0) {
         html += '<div class="proj-tool-empty">No templates yet.</div>';
     }
@@ -1193,12 +1705,15 @@ function renderProjectForm() {
         html += '</div>';
     }
     html += '</div>';
+    }
 
     // ---- Permission policy ----
     const pol = f.permission_policy;
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Permission Policy</div>';
-    html += '<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).</p>';
+    html += '<p class="proj-section-help">' + (isRemote
+        ? 'Claude CLI permission gates. An access profile launches no Claude session, so this is inert for one — what bounds a remote client is the mode, tools and scope above.'
+        : 'Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).') + '</p>';
     html += '<label>Default mode</label>';
     html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
     for (const m of ['', 'default', 'acceptEdits', 'plan', 'bypassPermissions']) {
@@ -1361,11 +1876,66 @@ function harvestProjectForm() {
         allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
     };
+    // The ADR-011 permission set. Sent on every save, including when it is
+    // empty: these are pointer fields on the update DTO, so omitting one means
+    // "leave it alone" — which would make clearing a scope value from this
+    // editor impossible.
+    const perms = harvestProjectPermissions(f);
+    payload.access = perms.access;
+    payload.allowed_tools = perms.allowed_tools;
+    payload.context = perms.context;
     if (!isRemote) {
         const path = (document.getElementById('projPath') || {}).value || f.path;
         payload.path = path.trim();
     }
     return payload;
+}
+
+// harvestProjectPermissions turns the panel's typed text into the three maps
+// relay stores. Every value is validated on the server, whichever surface
+// produced it — this side is a convenience, never the check.
+//
+// Two things it deliberately does NOT do. It does not drop a context key it
+// cannot render: a field the MCP no longer declares, or one belonging to an
+// MCP relay has not connected to, is passed through untouched, because opening
+// the editor must not silently delete a value nobody looked at. And it does
+// not send a source: "project_path" field — relay derives those, refuses an
+// operator-supplied one, and would overwrite it on the next resync anyway.
+function harvestProjectPermissions(f) {
+    const remote = isRemoteForm(f);
+    const wild = f.allowed_mcp_ids.length === 1 && f.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD;
+    const granted = wild ? (state.externalMcps || []).map(m => m.id) : f.allowed_mcp_ids.slice();
+
+    const access = {};
+    const allowedTools = {};
+    const context = {};
+
+    for (const mcpID of granted) {
+        const mode = (f.access || {})[mcpID];
+        if (mode === 'read' || mode === 'write') access[mcpID] = mode;
+
+        if (remote) {
+            const text = projAllowedToolsText(f, mcpID);
+            const patterns = String(text).split('\n').map(t => t.trim()).filter(Boolean);
+            if (patterns.length) allowedTools[mcpID] = patterns;
+        } else if (((f.allowed_tools || {})[mcpID] || []).length) {
+            // A local project's tool narrowing is the picker above
+            // (disabled_tools); an allowlist here can only have arrived from
+            // eve or the API, so it is carried through rather than erased.
+            allowedTools[mcpID] = (f.allowed_tools[mcpID] || []).slice();
+        }
+
+        const existing = Object.assign({}, (f.context || {})[mcpID] || {});
+        const fields = mcpScopeFieldsFor(mcpID);
+        for (const field of (fields || [])) {
+            if (field.source === 'project_path') { delete existing[field.name]; continue; }
+            const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
+            if (scopeValueIsSet(value)) existing[field.name] = value;
+            else delete existing[field.name];
+        }
+        if (Object.keys(existing).length) context[mcpID] = existing;
+    }
+    return { access: access, allowed_tools: allowedTools, context: context };
 }
 
 function saveProjectForm() {
@@ -1469,11 +2039,14 @@ window.onProjectError = function(msg) {
 // and that sentence is this tab's whole specification. Two consequences shape
 // everything below:
 //
-//   * Grants render as project NAMES. An operator deciding whether to revoke
-//     needs to know what they are cutting, not which opaque id it was stored
-//     under. A grant naming a project that no longer exists still renders — as
-//     the raw id, marked — because hiding it would hide the fact that the
-//     enrolment is holding something relay cannot resolve.
+//   * Grants render as access-profile NAMES, with the profile's EFFECTIVE
+//     AUTHORITY beside each one — MCPs, mode, tools, scope (ADR-011 decision
+//     1). Two records is the model, and the cost of two records is paid here:
+//     "what can this client do" has to be answerable without mentally joining
+//     an enrolment to a profile in another tab. A grant naming a profile that
+//     no longer exists still renders — as the raw id, marked — because hiding
+//     it would hide the fact that the enrolment is holding something relay
+//     cannot resolve.
 //   * The certificate fingerprint renders IN FULL. After an enrolment is
 //     deleted the fingerprint is the only thing that identifies that client's
 //     calls in the audit log, which is why the Tool Calls tab prints it
@@ -1497,9 +2070,10 @@ window.onProjectError = function(msg) {
 // actually likely to change here.
 const REMOTE_NOTE = 'Enabling, disabling and moving the listener take effect within a few seconds — no restart needed. Re-enabling auditing after turning it off is the exception: that still needs Relay to relaunch.';
 
-// remoteGrantableProjects is the only set the create form offers.
-// ValidateEnrolmentGrants refuses a grant naming a local project outright, so
-// presenting one would be offering a choice relay is about to reject. This is
+// remoteGrantableProjects is the only set the create form offers: the access
+// profiles. ValidateEnrolmentGrants refuses a grant naming a local project
+// outright, so presenting one would be offering a choice relay is about to
+// reject. This is
 // a courtesy, not the enforcement — the server validates regardless, inside
 // the same store.With that claims the client id.
 function remoteGrantableProjects() {
@@ -1512,7 +2086,7 @@ function remoteGrantableProjects() {
 function enrolGrantNames(e) {
     return ((e && e.project_ids) || []).map(function(id) {
         const p = (state.projects || []).find(x => x.id === id);
-        return { id: id, name: p ? p.name : null };
+        return { id: id, name: p ? p.name : null, profile: p || null };
     });
 }
 
@@ -1520,8 +2094,8 @@ function enrolGrantNames(e) {
 // The confirmation names what is being cut; "are you sure?" over an opaque id
 // is not a decision anyone can make.
 function enrolGrantSummary(e) {
-    const names = enrolGrantNames(e).map(g => g.name || (g.id + ' (unknown project)'));
-    if (!names.length) return 'no projects — this enrolment grants nothing today';
+    const names = enrolGrantNames(e).map(g => g.name || (g.id + ' (unknown access profile)'));
+    if (!names.length) return 'no access profiles — this enrolment grants nothing today';
     return names.join(', ');
 }
 
@@ -1545,7 +2119,7 @@ function renderEnrolments() {
 
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
-    html += '<p class="page-intro">An enrolment binds one client certificate to the remote projects it may use. The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
 
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
@@ -1566,19 +2140,23 @@ function renderEnrolments() {
 
         // Grants, by name. A card that showed ids would make the revoke
         // decision unanswerable without a second tab open beside it.
-        html += '<div class="enrol-grants">';
         const grants = enrolGrantNames(e);
         if (!grants.length) {
-            html += '<span class="enrol-grant none">no projects granted</span>';
+            html += '<div class="enrol-grants"><span class="enrol-grant none">no access profiles granted</span></div>';
         }
         for (const g of grants) {
-            if (g.name) {
-                html += '<span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + '</span>';
-            } else {
-                html += '<span class="enrol-grant dangling" title="No project carries this id">' + esc(g.id) + ' — unknown project</span>';
+            if (!g.name) {
+                html += '<div class="enrol-grants"><span class="enrol-grant dangling" title="No access profile carries this id">' + esc(g.id) + ' — unknown access profile</span></div>';
+                continue;
             }
+            // The profile's name, and then what it actually permits. A card
+            // that stopped at the name answers "which grant" and leaves "what
+            // can this client do" to a second tab.
+            html += '<div class="enrol-profile">';
+            html += '<div class="enrol-grants"><span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + '</span></div>';
+            html += '<div class="proj-authority">' + renderAuthorityRows(g.profile) + '</div>';
+            html += '</div>';
         }
-        html += '</div>';
 
         html += '<div class="enrol-meta">';
         html += '<span>Budget: <strong>' + esc(enrolBudgetText(e.budget)) + '</strong></span>';
@@ -1627,11 +2205,11 @@ function renderEnrolmentForm() {
 
     // ---- Grants ----
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Granted Projects</div>';
-    html += '<p class="proj-section-help">Only <strong>remote</strong> projects can be granted. A remote client granted a local project would inherit that project\'s host-directory scope, so the grant is refused outright — this list offers nothing that would be refused.</p>';
+    html += '<div class="proj-section-title">Granted Access Profiles</div>';
+    html += '<p class="proj-section-help">Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project\'s host-directory scope, so the grant is refused outright — this list offers nothing that would be refused.</p>';
     const grantable = remoteGrantableProjects();
     if (!grantable.length) {
-        html += '<div class="proj-tool-empty">No remote projects exist yet. Create one in the <strong>Projects</strong> tab (Kind → Remote) first.</div>';
+        html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind → Access profile) first.</div>';
     }
     for (const p of grantable) {
         const checked = f.project_ids.indexOf(p.id) >= 0;
@@ -1645,7 +2223,7 @@ function renderEnrolmentForm() {
         // legal and is the expected "enrol now, widen deliberately later"
         // resting state. Say so rather than emitting a certificate that
         // silently reaches nothing.
-        html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no project until one is added.</p>';
+        html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
     }
     html += '</div>';
 
@@ -3198,5 +3776,6 @@ render();
 Object.assign(window, {
     auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
+    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

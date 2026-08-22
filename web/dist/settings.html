@@ -362,6 +362,39 @@ textarea:focus {
 .proj-template-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
 .proj-template-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .proj-form-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+/* Effective authority: what a record can actually DO, per MCP. On the list row
+   and on an enrolment card, because "MCPs: 1" beside a client that can read
+   every mailbox on the machine is the failure ADR-011 exists to fix. */
+.proj-authority { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.proj-auth-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 11px; }
+.proj-auth-mcp { font-family: var(--mono); color: var(--text); }
+.proj-auth-mode { display: inline-block; padding: 0 6px; border-radius: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; }
+.proj-auth-mode.read { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.proj-auth-mode.write { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.proj-auth-tools { color: var(--text-2); font-family: var(--mono); }
+.proj-auth-scope { color: var(--text-2); }
+.proj-auth-scope.none { color: var(--text-3); font-style: italic; }
+/* A grant that cannot be satisfied is not a detail. It reads as a warning here
+   and again in the banner, because the client-facing half of this is a silent
+   `denied` nobody watching the UI would ever see. */
+.proj-auth-missing { color: var(--warn); font-weight: 600; }
+.proj-auth-none { color: var(--text-3); font-style: italic; font-size: 11px; }
+.proj-scope-gap { border: 1px solid var(--warn); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warn) 10%, transparent); padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
+.proj-scope-gap ul { margin: 6px 0 0 18px; }
+.proj-scope-gap code { font-family: var(--mono); }
+
+/* The per-MCP permission panel: mode, tools, resource scope. */
+.proj-perm-panel { padding: 8px 0 10px 16px; border-left: 2px solid var(--accent); margin: 4px 0 10px 8px; display: flex; flex-direction: column; gap: 10px; }
+.proj-perm-block { }
+.proj-perm-label { font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+.proj-scope-field { margin-top: 8px; }
+.proj-scope-field > label { display: block; font-size: 12px; color: var(--text); font-family: var(--mono); margin-bottom: 1px; }
+.proj-scope-type { font-family: var(--sans, inherit); font-size: 10px; color: var(--text-3); text-transform: none; letter-spacing: 0; }
+.proj-scope-desc { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
+.proj-scope-missing { font-size: 11px; color: var(--warn); margin-top: 2px; }
+.proj-scope-field input[readonly] { color: var(--text-2); font-family: var(--mono); }
+.enrol-profile { margin-top: 6px; }
+
 .proj-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 .proj-ok { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
@@ -446,6 +479,7 @@ window.__RELAY_INIT__ = {
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
+  mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,
   remote: __REMOTE_JSON__,
   enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__
@@ -659,6 +693,7 @@ window.__RELAY_INIT__ = {
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
+  var MCP_SCOPE_FIELDS_INIT = window.__RELAY_INIT__.mcpScopeFields || {};
   var ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
   var REMOTE_INIT = window.__RELAY_INIT__.remote || null;
   var ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
@@ -723,6 +758,8 @@ window.__RELAY_INIT__ = {
     projects: PROJECTS_INIT,
     mcpToolCache: MCP_TOOL_CACHE_INIT,
     // mcpId -> [{name, description, category}]
+    mcpScopeFields: MCP_SCOPE_FIELDS_INIT,
+    // mcpId -> [ScopeFieldView]; NO KEY = relay has never seen that MCP
     editingProjectId: null,
     // null = list, 'new' = create form, '<id>' = edit
     projectForm: null,
@@ -1307,6 +1344,7 @@ window.__RELAY_INIT__ = {
     }, {});
     if (data.projects) state.projects = data.projects;
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
+    if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
     if (data.remote) {
       state.remote = data.remote;
@@ -1326,22 +1364,131 @@ window.__RELAY_INIT__ = {
     if (state.page === "projects") render("push");
   };
   var PROJ_MCP_WILDCARD = "*";
+  function projNoun(p) {
+    return isRemoteProject(p) ? "access profile" : "project";
+  }
+  function mcpScopeFieldsFor(mcpID) {
+    const m = state.mcpScopeFields || {};
+    return Object.prototype.hasOwnProperty.call(m, mcpID) ? m[mcpID] || [] : null;
+  }
+  function projGrantedMcpIds(p) {
+    const ids = p && p.allowed_mcp_ids || [];
+    if (ids.length === 1 && ids[0] === PROJ_MCP_WILDCARD) {
+      return (state.externalMcps || []).map((m) => m.id);
+    }
+    return ids.slice();
+  }
+  function projAccessMode(p, mcpID) {
+    const explicit = p && p.access ? p.access[mcpID] : void 0;
+    if (explicit !== void 0 && explicit !== null && explicit !== "") {
+      return explicit === "write" ? "write" : "read";
+    }
+    return isRemoteProject(p) ? "read" : "write";
+  }
+  function scopeValueIsSet(v) {
+    if (v === void 0 || v === null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === "string") return v.trim() !== "";
+    if (typeof v === "object") return Object.keys(v).length > 0;
+    return true;
+  }
+  function projScopeValue(p, mcpID, fieldName) {
+    const perMcp = p && p.context ? p.context[mcpID] : null;
+    return perMcp ? perMcp[fieldName] : void 0;
+  }
+  function scopeValueText(v) {
+    if (Array.isArray(v)) return v.join(", ");
+    if (typeof v === "string") return v;
+    if (v === void 0 || v === null) return "";
+    return JSON.stringify(v);
+  }
+  function projMissingScopeFields(p, mcpID) {
+    const fields = mcpScopeFieldsFor(mcpID);
+    if (!fields) return [];
+    return fields.filter((f) => f.source !== "project_path").filter((f) => !scopeValueIsSet(projScopeValue(p, mcpID, f.name))).map((f) => f.name);
+  }
+  function projScopeGaps(p) {
+    const out = [];
+    for (const mcpID of projGrantedMcpIds(p)) {
+      const missing = projMissingScopeFields(p, mcpID);
+      if (missing.length) out.push({ mcp: mcpID, fields: missing });
+    }
+    return out;
+  }
+  function projAllowedToolPatterns(p, mcpID) {
+    return (p && p.allowed_tools ? p.allowed_tools[mcpID] : null) || [];
+  }
+  function projToolAuthorityText(p, mcpID) {
+    const patterns = projAllowedToolPatterns(p, mcpID);
+    if (isRemoteProject(p)) {
+      return patterns.length ? patterns.join(", ") : "no tools";
+    }
+    if (patterns.length) return patterns.join(", ");
+    const disabled = ((p.disabled_tools || {})[mcpID] || []).length;
+    return disabled ? "all tools except " + disabled : "all tools";
+  }
+  function projAuthorityRows(p) {
+    return projGrantedMcpIds(p).map(function(mcpID) {
+      const fields = mcpScopeFieldsFor(mcpID);
+      const scope = [];
+      const derived = [];
+      for (const f of fields || []) {
+        const v = projScopeValue(p, mcpID, f.name);
+        if (f.source === "project_path") {
+          if (scopeValueIsSet(v)) derived.push(f.name + ": " + scopeValueText(v));
+          continue;
+        }
+        if (scopeValueIsSet(v)) scope.push(f.name + ": " + scopeValueText(v));
+      }
+      return {
+        mcp: mcpID,
+        mode: projAccessMode(p, mcpID),
+        tools: projToolAuthorityText(p, mcpID),
+        scope,
+        derived,
+        missing: projMissingScopeFields(p, mcpID),
+        schemaUnknown: fields === null
+      };
+    });
+  }
+  function renderAuthorityRows(p) {
+    const rows = projAuthorityRows(p);
+    if (!rows.length) {
+      return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs granted \u2014 this ' + esc(projNoun(p)) + " reaches nothing</span></div>";
+    }
+    let html = "";
+    for (const r of rows) {
+      html += '<div class="proj-auth-row">';
+      html += '<span class="proj-auth-mcp">' + esc(r.mcp) + "</span>";
+      html += '<span class="proj-auth-mode ' + esc(r.mode) + '">' + esc(r.mode) + "</span>";
+      html += '<span class="proj-auth-tools">' + esc(r.tools) + "</span>";
+      if (r.scope.length) html += '<span class="proj-auth-scope">' + esc(r.scope.join(" \xB7 ")) + "</span>";
+      if (r.missing.length) {
+        html += '<span class="proj-auth-missing">needs a scope value for ' + esc(r.missing.join(", ")) + "</span>";
+      } else if (!r.scope.length && !r.schemaUnknown) {
+        html += '<span class="proj-auth-scope none">no resource scope declared by this MCP</span>';
+      }
+      if (r.schemaUnknown) html += '<span class="proj-auth-scope none">not connected \u2014 scope unknown</span>';
+      html += "</div>";
+    }
+    return html;
+  }
   function renderProjects() {
     if (state.editingProjectId) return renderProjectForm();
     let html = '<div class="page-header">';
-    html += "<h2>Projects</h2>";
-    html += '<button class="btn btn-primary" onclick="newProject()">+ New Project</button>';
+    html += "<h2>Projects &amp; Access Profiles</h2>";
+    html += '<button class="btn btn-primary" onclick="newProject()">+ New</button>';
     html += "</div>";
-    html += '<p class="page-intro">Projects are the security boundary: each gets a scoped bearer token, an allowed-MCP list, per-tool selection, and optional auto-generated SKILL.md.</p>';
+    html += '<p class="page-intro">Both kinds are the security boundary and both get a scoped bearer token. A <strong>project</strong> is bound to a host directory and has models, shell templates and skills. An <strong>access profile</strong> is a capability grant to a client on another machine: no directory, no skills, no shell, no models \u2014 just which MCPs, which tools, which operations and which resources.</p>';
     if (state.projectError) {
       html += '<div class="proj-error">' + esc(state.projectError) + "</div>";
     }
+    html += renderScopeGapBanner();
     if (state.projects.length === 0) {
-      html += '<div class="empty-state">No projects yet. Click <strong>+ New Project</strong> to create one.</div>';
+      html += '<div class="empty-state">Nothing here yet. Click <strong>+ New</strong> to create a project or an access profile.</div>';
     } else {
       for (const p of state.projects) {
         const remote = isRemoteProject(p);
-        const allowedCount = p.allowed_mcp_ids && p.allowed_mcp_ids.length > 0 ? p.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD ? "all" : String(p.allowed_mcp_ids.length) : remote ? "no tools granted" : "0";
         const modelsCount = p.allowed_models && p.allowed_models.length > 0 ? p.allowed_models[0] === PROJ_MCP_WILDCARD ? "all" : String(p.allowed_models.length) : "0";
         const skillState = p.generate_skill ? "auto" : "off";
         const policy = p.permission_policy && p.permission_policy.default_mode || "\u2014";
@@ -1350,19 +1497,23 @@ window.__RELAY_INIT__ = {
         html += '<div class="proj-card-header">';
         html += '<div style="display:flex;align-items:center;gap:6px">';
         html += '<span class="proj-card-name">' + esc(p.name) + "</span>";
-        if (remote) html += '<span class="proj-badge-remote">Remote</span>';
+        if (remote) html += '<span class="proj-badge-remote">Access profile</span>';
         html += "</div>";
         html += '<div style="display:flex;gap:4px">';
         html += `<button class="btn btn-sm" onclick="editProject('` + esc(p.id) + `')">Edit</button>`;
-        html += `<button class="btn btn-sm" onclick="regenProjectSkill('` + esc(p.id) + `')" title="Regenerate SKILL.md now">Regen Skill</button>`;
+        if (!remote) {
+          html += `<button class="btn btn-sm" onclick="regenProjectSkill('` + esc(p.id) + `')" title="Regenerate SKILL.md now">Regen Skill</button>`;
+        }
         html += `<button class="btn btn-sm btn-danger" onclick="removeProject('` + esc(p.id) + "', '" + esc(p.name) + `')">Delete</button>`;
         html += "</div></div>";
-        html += '<div class="proj-card-path">' + esc(p.path || "(no path)") + "</div>";
+        html += '<div class="proj-card-path">' + esc(remote ? "no host directory \u2014 an access profile grants capability, not a filesystem" : p.path || "(no path)") + "</div>";
+        html += '<div class="proj-authority">' + renderAuthorityRows(p) + "</div>";
         html += '<div class="proj-card-meta">';
-        html += "<span>MCPs: <strong>" + esc(allowedCount) + "</strong></span>";
-        html += "<span>Models: <strong>" + esc(modelsCount) + "</strong></span>";
+        if (!remote) {
+          html += "<span>Models: <strong>" + esc(modelsCount) + "</strong></span>";
+          html += "<span>Skill: <strong>" + esc(skillState) + "</strong></span>";
+        }
         html += "<span>Policy: <strong>" + esc(policy) + "</strong></span>";
-        html += "<span>Skill: <strong>" + esc(skillState) + "</strong></span>";
         if (p.allow_cwd_auth) html += "<span>Dir auth: <strong>on</strong></span>";
         html += "</div>";
         if (regen) {
@@ -1372,6 +1523,24 @@ window.__RELAY_INIT__ = {
         html += "</div>";
       }
     }
+    return html;
+  }
+  function renderScopeGapBanner() {
+    const rows = [];
+    for (const p of state.projects || []) {
+      for (const gap of projScopeGaps(p)) {
+        rows.push({ name: p.name, noun: projNoun(p), mcp: gap.mcp, fields: gap.fields });
+      }
+    }
+    if (!rows.length) return "";
+    let html = '<div class="proj-scope-gap">';
+    html += "<strong>" + rows.length + (rows.length === 1 ? " grant needs" : " grants need") + " a scope value.</strong> ";
+    html += "Until one is set, every tool the field governs is <em>denied</em> at call time \u2014 the client gets nothing and nothing else says why.";
+    html += "<ul>";
+    for (const r of rows) {
+      html += "<li>" + esc(r.name) + " (" + esc(r.noun) + ") \u2192 <code>" + esc(r.mcp) + "</code>: " + esc(r.fields.join(", ")) + "</li>";
+    }
+    html += "</ul></div>";
     return html;
   }
   function blankProjectForm() {
@@ -1389,8 +1558,25 @@ window.__RELAY_INIT__ = {
       generate_skill: false,
       allow_cwd_auth: false,
       // token-less auth by working directory
-      disabled_tools: {}
+      disabled_tools: {},
       // mcpID -> [toolName, ...]
+      // The ADR-011 permission set. access and allowed_tools are what relay
+      // enforces at its own chokepoint; context is what it injects and
+      // cannot verify. All three are absent by default, which for an access
+      // profile means read, no tools, and no scope — every layer failing
+      // closed until someone widens it deliberately.
+      access: {},
+      // mcpID -> 'read' | 'write'
+      allowed_tools: {},
+      // mcpID -> [pattern, ...]
+      context: {},
+      // mcpID -> { field: value }
+      // Raw text as typed, so a half-finished value survives a re-render and
+      // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
+      _scopeText: {},
+      // mcpID -> { field: text }
+      _toolsText: {}
+      // mcpID -> text
     };
   }
   function projectFormFromExisting(p) {
@@ -1411,6 +1597,11 @@ window.__RELAY_INIT__ = {
       generate_skill: !!p.generate_skill,
       allow_cwd_auth: !!p.allow_cwd_auth,
       disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
+      access: JSON.parse(JSON.stringify(p.access || {})),
+      allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
+      context: JSON.parse(JSON.stringify(p.context || {})),
+      _scopeText: {},
+      _toolsText: {},
       token: p.token || ""
     };
   }
@@ -1438,7 +1629,11 @@ window.__RELAY_INIT__ = {
     ipc(JSON.stringify({ type: "regen_project_skill", id }));
   }
   function removeProject(id, name) {
-    if (!confirm('Delete project "' + name + '"?\nThis revokes its token immediately and removes its SKILL.md.')) return;
+    const p = (state.projects || []).find((x) => x.id === id);
+    const remote = isRemoteProject(p);
+    const what = remote ? "access profile" : "project";
+    const consequence = remote ? "\nThis revokes its token immediately. Any enrolment granting it is left holding an id that resolves to nothing." : "\nThis revokes its token immediately and removes its SKILL.md.";
+    if (!confirm("Delete " + what + ' "' + name + '"?' + consequence)) return;
     ipc(JSON.stringify({ type: "remove_project", id }));
   }
   function rotateProjectToken(id, name) {
@@ -1528,6 +1723,152 @@ window.__RELAY_INIT__ = {
     }
     f.disabled_tools[mcpID] = Array.from(currentlyDisabled);
   }
+  function projFormAccessMode(f, mcpID) {
+    const explicit = (f.access || {})[mcpID];
+    if (explicit === "read" || explicit === "write") return explicit;
+    return isRemoteForm(f) ? "read" : "write";
+  }
+  function setProjAccess(mcpID, mode) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f.access) f.access = {};
+    f.access[mcpID] = mode;
+    render();
+  }
+  function setProjMcpGranted(mcpID, granted) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (granted) {
+      if (f.allowed_mcp_ids.indexOf(mcpID) < 0) f.allowed_mcp_ids.push(mcpID);
+    } else {
+      f.allowed_mcp_ids = f.allowed_mcp_ids.filter((id) => id !== mcpID);
+      delete (f.access || {})[mcpID];
+      delete (f.allowed_tools || {})[mcpID];
+      delete (f.context || {})[mcpID];
+      delete (f._scopeText || {})[mcpID];
+      delete (f._toolsText || {})[mcpID];
+    }
+    render();
+  }
+  function scopeTextFromValue(field, v) {
+    if (v === void 0 || v === null) return "";
+    if (Array.isArray(v)) return v.join("\n");
+    if (typeof v === "string") return v;
+    return JSON.stringify(v);
+  }
+  function scopeValueFromText(field, text) {
+    const raw = String(text === void 0 || text === null ? "" : text);
+    if (field.type === "array") {
+      return raw.split("\n").map((s) => s.trim()).filter(Boolean);
+    }
+    if (field.type === "string") return raw.trim();
+    const trimmed = raw.trim();
+    if (!trimmed) return "";
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      return trimmed;
+    }
+  }
+  function projScopeText(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID];
+    if (typed && Object.prototype.hasOwnProperty.call(typed, field.name)) return typed[field.name];
+    return scopeTextFromValue(field, ((f.context || {})[mcpID] || {})[field.name]);
+  }
+  function setProjScopeText(mcpID, fieldName, text) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f._scopeText) f._scopeText = {};
+    if (!f._scopeText[mcpID]) f._scopeText[mcpID] = {};
+    f._scopeText[mcpID][fieldName] = text;
+  }
+  function projAllowedToolsText(f, mcpID) {
+    const typed = (f._toolsText || {})[mcpID];
+    if (typed !== void 0) return typed;
+    return ((f.allowed_tools || {})[mcpID] || []).join("\n");
+  }
+  function setProjAllowedToolsText(mcpID, text) {
+    const f = state.projectForm;
+    if (!f) return;
+    if (!f._toolsText) f._toolsText = {};
+    f._toolsText[mcpID] = text;
+  }
+  function renderProjMcpPermissions(mcpID, f) {
+    const remote = isRemoteForm(f);
+    const mode = projFormAccessMode(f, mcpID);
+    let html = '<div class="proj-perm-panel">';
+    html += '<div class="proj-perm-block">';
+    html += '<div class="proj-perm-label">Operations</div>';
+    html += '<div class="perm-btns">';
+    html += '<button class="perm-btn ' + (mode === "read" ? "active" : "") + `" onclick="setProjAccess('` + esc(mcpID) + `', 'read')">Read</button>`;
+    html += '<button class="perm-btn ' + (mode === "write" ? "active" : "") + `" onclick="setProjAccess('` + esc(mcpID) + `', 'write')">Write</button>`;
+    html += "</div>";
+    html += '<p class="proj-section-help">' + (mode === "read" ? "Only tools this MCP annotates <code>readOnlyHint: true</code>. A tool that is unannotated, malformed, or added later is refused \u2014 that is what keeps a new mutating tool out of an old grant." : "Every tool this grant admits, mutating included. Write implies read.") + " Unset defaults to <strong>" + (remote ? "read" : "write") + "</strong> for " + (remote ? "an access profile" : "a local project") + ".</p>";
+    html += "</div>";
+    if (remote) {
+      const patterns = projAllowedToolsText(f, mcpID);
+      html += '<div class="proj-perm-block">';
+      html += '<div class="proj-perm-label">Tools</div>';
+      html += '<p class="proj-section-help">One name or pattern per line, e.g. <code>mail_*</code>. Patterns are anchored \u2014 <code>mail_*</code> admits <code>mail_send</code> and not <code>xmail_send</code>. A bare <code>*</code> is refused: registering a new tool would silently widen the grant. <strong>Empty means no tools at all.</strong></p>';
+      html += `<textarea rows="3" placeholder="mail_*" oninput="setProjAllowedToolsText('` + esc(mcpID) + `', this.value)">` + esc(patterns) + "</textarea>";
+      html += "</div>";
+    }
+    const fields = mcpScopeFieldsFor(mcpID);
+    html += '<div class="proj-perm-block">';
+    html += '<div class="proj-perm-label">Resource scope</div>';
+    if (fields === null) {
+      html += '<p class="proj-section-help">Relay has not connected to this MCP, so it cannot say what may be narrowed. Anything this MCP scopes will be enforced at call time regardless \u2014 a grant with no value for a field it declares is <em>denied</em>, not unrestricted.</p>';
+    } else if (!fields.length) {
+      html += '<p class="proj-section-help">This MCP declares nothing narrowable. The grant is bounded by the tools and the mode above and by nothing else.</p>';
+    } else {
+      html += '<p class="proj-section-help">Each field below is declared by the MCP as one that <strong>restricts</strong> access. An empty value is not "no restriction" \u2014 it refuses every tool the field governs. There is no wildcard: to allow everything, list everything.</p>';
+      for (const field of fields) {
+        html += renderScopeFieldInput(mcpID, field, f);
+      }
+    }
+    html += "</div>";
+    html += "</div>";
+    return html;
+  }
+  function renderScopeFieldInput(mcpID, field, f) {
+    const remote = isRemoteForm(f);
+    const typeLabel = field.type === "array" ? "list of " + (field.item_type || "value") + "s, one per line" : field.type || "value";
+    let html = '<div class="proj-scope-field">';
+    html += "<label>" + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + "</span></label>";
+    if (field.description) html += '<div class="proj-scope-desc">' + esc(field.description) + "</div>";
+    if (field.source === "project_path") {
+      const derived = ((f.context || {})[mcpID] || {})[field.name];
+      let shown, note;
+      if (remote) {
+        shown = "";
+        note = "An access profile has no host directory, so relay derives nothing here and every tool this field governs" + (field.applies_to && field.applies_to.length ? " (" + field.applies_to.join(", ") + ")" : "") + " is refused. That is the intended outcome, not a gap to fill in.";
+      } else if (scopeValueIsSet(derived)) {
+        shown = scopeTextFromValue(field, derived);
+        note = "Derived by relay from this project's path. Change the path to change it.";
+      } else {
+        shown = f.path || "";
+        note = "Derived by relay from this project's path on save.";
+      }
+      html += '<input type="text" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
+      html += '<div class="proj-scope-desc">' + esc(note) + "</div>";
+      html += "</div>";
+      return html;
+    }
+    const text = projScopeText(f, mcpID, field);
+    if (field.type === "array") {
+      html += `<textarea rows="3" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)">` + esc(text) + "</textarea>";
+    } else {
+      html += '<input type="text" value="' + esc(text) + `" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)" />`;
+    }
+    if (!String(text).trim()) {
+      html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
+    }
+    if (field.depends_on && field.depends_on.length) {
+      html += '<div class="proj-scope-desc">Values here are read within ' + esc(field.depends_on.join(", ")) + ".</div>";
+    }
+    html += "</div>";
+    return html;
+  }
   function setProjModelsWildcard(checked) {
     const f = state.projectForm;
     if (!f) return;
@@ -1546,45 +1887,59 @@ window.__RELAY_INIT__ = {
     if (!f) return '<div class="empty-state">No form state.</div>';
     const isNew = !f.id;
     const isRemote = isRemoteForm(f);
-    const title = isNew ? "New Project" : "Edit Project";
+    const noun = isRemote ? "Access Profile" : "Project";
+    const title = (isNew ? "New " : "Edit ") + noun;
     let html = "<h2>" + esc(title) + "</h2>";
     if (state.projectFormError) {
       html += '<div class="proj-error">' + esc(state.projectFormError) + "</div>";
+    }
+    const formGaps = projScopeGaps({
+      kind: f.kind,
+      allowed_mcp_ids: f.allowed_mcp_ids,
+      context: harvestProjectPermissions(f).context
+    });
+    if (formGaps.length) {
+      html += '<div class="proj-scope-gap">';
+      html += "<strong>A scope value is missing.</strong> Every tool the field governs is denied at call time until it is set \u2014 the client gets nothing, and nothing else says why.<ul>";
+      for (const g of formGaps) {
+        html += "<li><code>" + esc(g.mcp) + "</code>: " + esc(g.fields.join(", ")) + "</li>";
+      }
+      html += "</ul></div>";
     }
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Kind</div>';
     if (isNew) {
       html += '<div class="perm-btns">';
-      html += '<button class="perm-btn ' + (!isRemote ? "active" : "") + `" onclick="setProjKind('local')">Local</button>`;
-      html += '<button class="perm-btn ' + (isRemote ? "active" : "") + `" onclick="setProjKind('remote')">Remote</button>`;
+      html += '<button class="perm-btn ' + (!isRemote ? "active" : "") + `" onclick="setProjKind('local')">Local project</button>`;
+      html += '<button class="perm-btn ' + (isRemote ? "active" : "") + `" onclick="setProjKind('remote')">Access profile</button>`;
       html += "</div>";
     } else {
-      html += '<div class="proj-kind-label">' + (isRemote ? "Remote \u2014 capability grant to another machine" : "Local \u2014 bound to a host directory") + "</div>";
+      html += '<div class="proj-kind-label">' + (isRemote ? "Access profile \u2014 a capability grant to a client on another machine" : "Local project \u2014 bound to a host directory") + "</div>";
       html += `<p class="proj-section-help">Kind can't be changed here after creation.</p>`;
     }
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += "<label>Project name</label>";
-    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="e.g. Acme Website" />';
+    html += "<label>" + (isRemote ? "Profile name" : "Project name") + "</label>";
+    html += '<input type="text" id="projName" value="' + esc(f.name) + '" placeholder="' + (isRemote ? "e.g. Hermes \u2014 Bob INBOX (read-only)" : "e.g. Acme Website") + '" />';
     if (!isRemote) {
       html += "<label>Project path</label>";
       html += '<input type="text" id="projPath" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
       html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
     } else {
-      html += `<p class="proj-section-help">Remote projects are capability grants to an agent on another machine \u2014 they have no host directory, so path, directory auth, and skill generation don't apply.</p>`;
+      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations and which resources.</p>';
     }
     html += "</div>";
     const wild = !isRemote && isProjMcpWildcard(f);
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Allowed MCPs &amp; Tools</div>';
+    html += '<div class="proj-section-title">MCPs, Tools, Operations &amp; Resources</div>';
     if (!isRemote) {
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
       html += "<span>Allow all registered MCPs (wildcard <code>*</code>)</span>";
       html += '<label class="switch"><input type="checkbox" ' + (wild ? "checked" : "") + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
       html += "</div>";
     } else {
-      html += `<p class="proj-section-help">Remote projects can't use the wildcard \u2014 list MCPs explicitly. Zero granted is a valid starting point; widen it deliberately later.</p>`;
+      html += `<p class="proj-section-help">An access profile can't use the wildcard \u2014 list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>`;
     }
     if (!wild) {
       const registered = state.externalMcps.slice();
@@ -1595,16 +1950,25 @@ window.__RELAY_INIT__ = {
       }
       for (const mcp of registered) {
         const st = projMcpState(f, mcp.id);
+        const granted = f.allowed_mcp_ids.indexOf(mcp.id) >= 0;
         html += '<div class="proj-mcp-row">';
         html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
         html += '<div class="perm-btns">';
-        html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'all')">All tools</button>`;
-        html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'selected')">Selected</button>`;
-        html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'none')">No tools</button>`;
+        if (isRemote) {
+          html += '<button class="perm-btn ' + (granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', true)">Granted</button>`;
+          html += '<button class="perm-btn ' + (!granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', false)">Not granted</button>`;
+        } else {
+          html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'all')">All tools</button>`;
+          html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'selected')">Selected</button>`;
+          html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'none')">No tools</button>`;
+        }
         html += "</div>";
         html += "</div>";
-        if (st === "selected") {
+        if (!isRemote && st === "selected") {
           html += renderProjToolPicker(mcp.id, f);
+        }
+        if (granted) {
+          html += renderProjMcpPermissions(mcp.id, f);
         }
       }
       for (const id of dangling) {
@@ -1613,12 +1977,20 @@ window.__RELAY_INIT__ = {
         html += `<button class="perm-btn" onclick="setProjMcpState('` + esc(id) + `', 'none')">Remove</button>`;
         html += "</div>";
       }
+    } else {
+      for (const mcp of state.externalMcps) {
+        html += '<div class="proj-mcp-row">';
+        html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
+        html += '<span class="proj-mcp-name" style="color:var(--text-3)">granted by the wildcard</span>';
+        html += "</div>";
+        html += renderProjMcpPermissions(mcp.id, f);
+      }
     }
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
     if (isRemote) {
-      html += '<p class="proj-section-help">Not applicable to remote projects \u2014 the model allowlist stays empty.</p>';
+      html += '<p class="proj-section-help">Not applicable to an access profile \u2014 the model allowlist stays empty.</p>';
     } else {
       const modelsWild = isProjModelsWildcard(f);
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
@@ -1632,25 +2004,27 @@ window.__RELAY_INIT__ = {
       }
     }
     html += "</div>";
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Chat Templates</div>';
-    html += `<p class="proj-section-help">Project-scoped chat presets stored with the project. Create and edit them in Eve's project dialog, which offers live model selection.</p>`;
-    if (f.chat_templates.length === 0) {
-      html += '<div class="proj-tool-empty">No templates yet.</div>';
-    }
-    for (const t of f.chat_templates) {
-      html += '<div class="proj-template-card">';
-      html += '<div class="proj-template-header">';
-      html += "<span>" + esc(t.name || "(unnamed)") + "</span>";
-      html += '<span class="desc">' + esc(t.model || "") + (t.mode === "voice" ? " \xB7 voice" : "") + "</span>";
+    if (!isRemote || f.chat_templates.length > 0) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Chat Templates</div>';
+      html += '<p class="proj-section-help">' + (isRemote ? "An access profile has no chat sessions, so these are inert. They are shown because they are stored on the record." : "Project-scoped chat presets stored with the project. Create and edit them in Eve's project dialog, which offers live model selection.") + "</p>";
+      if (f.chat_templates.length === 0) {
+        html += '<div class="proj-tool-empty">No templates yet.</div>';
+      }
+      for (const t of f.chat_templates) {
+        html += '<div class="proj-template-card">';
+        html += '<div class="proj-template-header">';
+        html += "<span>" + esc(t.name || "(unnamed)") + "</span>";
+        html += '<span class="desc">' + esc(t.model || "") + (t.mode === "voice" ? " \xB7 voice" : "") + "</span>";
+        html += "</div>";
+        html += "</div>";
+      }
       html += "</div>";
-      html += "</div>";
     }
-    html += "</div>";
     const pol = f.permission_policy;
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Permission Policy</div>';
-    html += `<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude's default. Patterns follow Claude's tool grammar (e.g. <code>Bash(ls *)</code>).</p>`;
+    html += '<p class="proj-section-help">' + (isRemote ? "Claude CLI permission gates. An access profile launches no Claude session, so this is inert for one \u2014 what bounds a remote client is the mode, tools and scope above." : "Claude CLI permission gates. Empty mode inherits Claude's default. Patterns follow Claude's tool grammar (e.g. <code>Bash(ls *)</code>).") + "</p>";
     html += "<label>Default mode</label>";
     html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
     for (const m of ["", "default", "acceptEdits", "plan", "bypassPermissions"]) {
@@ -1788,11 +2162,47 @@ window.__RELAY_INIT__ = {
       allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
       disabled_tools: f.disabled_tools
     };
+    const perms = harvestProjectPermissions(f);
+    payload.access = perms.access;
+    payload.allowed_tools = perms.allowed_tools;
+    payload.context = perms.context;
     if (!isRemote) {
       const path = (document.getElementById("projPath") || {}).value || f.path;
       payload.path = path.trim();
     }
     return payload;
+  }
+  function harvestProjectPermissions(f) {
+    const remote = isRemoteForm(f);
+    const wild = f.allowed_mcp_ids.length === 1 && f.allowed_mcp_ids[0] === PROJ_MCP_WILDCARD;
+    const granted = wild ? (state.externalMcps || []).map((m) => m.id) : f.allowed_mcp_ids.slice();
+    const access = {};
+    const allowedTools = {};
+    const context = {};
+    for (const mcpID of granted) {
+      const mode = (f.access || {})[mcpID];
+      if (mode === "read" || mode === "write") access[mcpID] = mode;
+      if (remote) {
+        const text = projAllowedToolsText(f, mcpID);
+        const patterns = String(text).split("\n").map((t) => t.trim()).filter(Boolean);
+        if (patterns.length) allowedTools[mcpID] = patterns;
+      } else if (((f.allowed_tools || {})[mcpID] || []).length) {
+        allowedTools[mcpID] = (f.allowed_tools[mcpID] || []).slice();
+      }
+      const existing = Object.assign({}, (f.context || {})[mcpID] || {});
+      const fields = mcpScopeFieldsFor(mcpID);
+      for (const field of fields || []) {
+        if (field.source === "project_path") {
+          delete existing[field.name];
+          continue;
+        }
+        const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
+        if (scopeValueIsSet(value)) existing[field.name] = value;
+        else delete existing[field.name];
+      }
+      if (Object.keys(existing).length) context[mcpID] = existing;
+    }
+    return { access, allowed_tools: allowedTools, context };
   }
   function saveProjectForm() {
     const f = state.projectForm;
@@ -1878,12 +2288,12 @@ window.__RELAY_INIT__ = {
   function enrolGrantNames(e) {
     return (e && e.project_ids || []).map(function(id) {
       const p = (state.projects || []).find((x) => x.id === id);
-      return { id, name: p ? p.name : null };
+      return { id, name: p ? p.name : null, profile: p || null };
     });
   }
   function enrolGrantSummary(e) {
-    const names = enrolGrantNames(e).map((g) => g.name || g.id + " (unknown project)");
-    if (!names.length) return "no projects \u2014 this enrolment grants nothing today";
+    const names = enrolGrantNames(e).map((g) => g.name || g.id + " (unknown access profile)");
+    if (!names.length) return "no access profiles \u2014 this enrolment grants nothing today";
     return names.join(", ");
   }
   function enrolBytes(n) {
@@ -1900,7 +2310,7 @@ window.__RELAY_INIT__ = {
     if (state.enrolForm) return renderEnrolmentForm();
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
-    html += '<p class="page-intro">An enrolment binds one client certificate to the remote projects it may use. The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
       html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + "</strong>. Its calls remain in the Tool Calls log under fingerprint <code>" + esc(state.enrolRevoked.fingerprint) + "</code> \u2014 now the only thing that names them.</div>";
@@ -1916,19 +2326,20 @@ window.__RELAY_INIT__ = {
       html += '<span class="enrol-card-name">' + esc(e.client_id) + "</span>";
       html += `<button class="btn btn-sm btn-danger" onclick="revokeEnrolment('` + esc(e.client_id) + `')">Revoke</button>`;
       html += "</div>";
-      html += '<div class="enrol-grants">';
       const grants = enrolGrantNames(e);
       if (!grants.length) {
-        html += '<span class="enrol-grant none">no projects granted</span>';
+        html += '<div class="enrol-grants"><span class="enrol-grant none">no access profiles granted</span></div>';
       }
       for (const g of grants) {
-        if (g.name) {
-          html += '<span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + "</span>";
-        } else {
-          html += '<span class="enrol-grant dangling" title="No project carries this id">' + esc(g.id) + " \u2014 unknown project</span>";
+        if (!g.name) {
+          html += '<div class="enrol-grants"><span class="enrol-grant dangling" title="No access profile carries this id">' + esc(g.id) + " \u2014 unknown access profile</span></div>";
+          continue;
         }
+        html += '<div class="enrol-profile">';
+        html += '<div class="enrol-grants"><span class="enrol-grant" title="' + esc(g.id) + '">' + esc(g.name) + "</span></div>";
+        html += '<div class="proj-authority">' + renderAuthorityRows(g.profile) + "</div>";
+        html += "</div>";
       }
-      html += "</div>";
       html += '<div class="enrol-meta">';
       html += "<span>Budget: <strong>" + esc(enrolBudgetText(e.budget)) + "</strong></span>";
       html += "<span>Enrolled: <strong>" + esc(e.created_at || "\u2014") + "</strong></span>";
@@ -1964,11 +2375,11 @@ window.__RELAY_INIT__ = {
     html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="hermes-mail" />';
     html += "</div>";
     html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">Granted Projects</div>';
-    html += `<p class="proj-section-help">Only <strong>remote</strong> projects can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
+    html += '<div class="proj-section-title">Granted Access Profiles</div>';
+    html += `<p class="proj-section-help">Only <strong>access profiles</strong> can be granted. A remote client granted a local project would inherit that project's host-directory scope, so the grant is refused outright \u2014 this list offers nothing that would be refused.</p>`;
     const grantable = remoteGrantableProjects();
     if (!grantable.length) {
-      html += '<div class="proj-tool-empty">No remote projects exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Remote) first.</div>';
+      html += '<div class="proj-tool-empty">No access profiles exist yet. Create one in the <strong>Projects</strong> tab (Kind \u2192 Access profile) first.</div>';
     }
     for (const p of grantable) {
       const checked = f.project_ids.indexOf(p.id) >= 0;
@@ -1978,7 +2389,7 @@ window.__RELAY_INIT__ = {
       html += "</label>";
     }
     if (grantable.length && f.project_ids.length === 0) {
-      html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no project until one is added.</p>';
+      html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
     }
     html += "</div>";
     html += '<div class="proj-section">';
@@ -3258,6 +3669,32 @@ window.__RELAY_INIT__ = {
     saveEnrolment,
     saveRemoteConfig,
     toggleEnrolGrant,
+    harvestProjectPermissions,
+    mcpScopeFieldsFor,
+    projAccessMode,
+    projAllowedToolPatterns,
+    projAllowedToolsText,
+    projAuthorityRows,
+    projFormAccessMode,
+    projGrantedMcpIds,
+    projMissingScopeFields,
+    projNoun,
+    projScopeGaps,
+    projScopeText,
+    projScopeValue,
+    projToolAuthorityText,
+    renderAuthorityRows,
+    renderProjMcpPermissions,
+    renderScopeFieldInput,
+    renderScopeGapBanner,
+    scopeTextFromValue,
+    scopeValueFromText,
+    scopeValueIsSet,
+    scopeValueText,
+    setProjAccess,
+    setProjAllowedToolsText,
+    setProjMcpGranted,
+    setProjScopeText,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,
