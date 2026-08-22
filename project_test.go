@@ -10,9 +10,9 @@ import (
 )
 
 // testSchemas returns a schema map marking fsmcp as a filesystem MCP.
-func testSchemas() map[string]json.RawMessage {
-	return map[string]json.RawMessage{
-		"fsmcp": json.RawMessage(`{"allowed_dirs":{"type":"array"}}`),
+func testSchemas() McpSurfaces {
+	return McpSurfaces{
+		"fsmcp": {Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)},
 	}
 }
 
@@ -392,7 +392,7 @@ func TestProjectTokenScoping(t *testing.T) {
 	}
 	tools := unmarshalTools(t, result)
 	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools (fs_read, fs_write — fs_bash disabled), got %d: %v", len(tools), toolNames(tools))
+		t.Fatalf("expected 2 tools (fs_read, fs_write — fs_bash disabled), got %d: %v", len(tools), toolNamesOf(tools))
 	}
 	for _, tool := range tools {
 		if tool.Name == "fs_bash" {
@@ -502,7 +502,7 @@ func TestProjectPersistence(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func toolNames(tools []mcp.Tool) []string {
+func toolNamesOf(tools []mcp.Tool) []string {
 	names := make([]string, len(tools))
 	for i, t := range tools {
 		names[i] = t.Name

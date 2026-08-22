@@ -1,7 +1,5 @@
 package main
 
-import "encoding/json"
-
 // projectCreateFields is the transport-agnostic body for creating a project.
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
 // create orchestration lives in exactly one place (applyProjectCreate).
@@ -18,6 +16,12 @@ type projectCreateFields struct {
 	AllowCwdAuth     bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   []string            `json:"session_folders,omitempty"`
+	// AllowedTools is the per-MCP tool allowlist (ADR-011 decision 2b). It is
+	// carried on the transport DTO because validateProjectShape refuses a
+	// remote-kind record that names "*" here, and refuses one that sets
+	// disabled_tools at all — a refusal that is unreachable if the request
+	// cannot express the field.
+	AllowedTools map[string][]string `json:"allowed_tools,omitempty"`
 }
 
 // projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -36,15 +40,16 @@ type projectUpdateFields struct {
 	AllowCwdAuth     *bool                `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
 	SessionFolders   *[]string            `json:"session_folders,omitempty"`
+	AllowedTools     *map[string][]string `json:"allowed_tools,omitempty"`
 }
 
 // applyProjectCreate creates a project and applies its optional policy, skill
 // flag, and disabled-tools map inside a single settings mutation. Call within
 // store.With / withSettings. The caller is responsible for validating the
 // permission policy *before* invoking (so a bad policy never creates a project
-// that has to be rolled back) and for fetching schemas the same way it always
-// has. Returns the fully-resolved project (re-read after the sub-mutations).
-func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]json.RawMessage) (Project, error) {
+// that has to be rolled back) and for fetching the MCP surfaces the same way
+// it always has. Returns the fully-resolved project (re-read after the sub-mutations).
+func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces) (Project, error) {
 	// GenerateSkill, AllowCwdAuth, and ShellTemplates aren't parameters of
 	// CreateProjectWithTokenKind — they're applied by the sub-mutations below,
 	// after the project already exists. Validate the FULL requested shape
@@ -59,11 +64,15 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 		ShellTemplates: f.ShellTemplates,
 		GenerateSkill:  f.GenerateSkill,
 		AllowCwdAuth:   f.AllowCwdAuth,
+		// Both allowlists are on the candidate because both carry a remote
+		// refusal: a "*" in allowed_tools, and disabled_tools set at all.
+		DisabledTools: f.DisabledTools,
+		AllowedTools:  f.AllowedTools,
 	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, schemas); err != nil {
+	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
 		return Project{}, err
 	}
 
@@ -71,7 +80,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 		f.Kind, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
-		schemas,
+		surfaces,
 	)
 	if err != nil {
 		return Project{}, err
@@ -87,6 +96,9 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 	}
 	if len(f.SessionFolders) > 0 {
 		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
+	}
+	if len(f.AllowedTools) > 0 {
+		s.UpdateProjectAllowedTools(created.ID, f.AllowedTools)
 	}
 	if len(f.ShellTemplates) > 0 {
 		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
@@ -107,7 +119,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, schemas map[string]j
 // mutated. The caller validates the permission policy up front; schemas is a
 // lazy fetch invoked only when a path/MCP change or a remote-shaped result
 // actually needs it (the common rename stays allocation-free).
-func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas func() map[string]json.RawMessage) (Project, bool, error) {
+func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces func() McpSurfaces) (Project, bool, error) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return Project{}, false, nil
@@ -140,6 +152,12 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	if f.AllowCwdAuth != nil {
 		candidate.AllowCwdAuth = *f.AllowCwdAuth
 	}
+	if f.DisabledTools != nil {
+		candidate.DisabledTools = *f.DisabledTools
+	}
+	if f.AllowedTools != nil {
+		candidate.AllowedTools = *f.AllowedTools
+	}
 	if err := validateProjectShape(&candidate); err != nil {
 		return Project{}, true, err
 	}
@@ -157,7 +175,7 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 		}
 	}
 
-	// schemas() is a lazy fetch (real callers wire it to a live MCP-manager
+	// surfaces() is a lazy fetch (real callers wire it to a live MCP-manager
 	// call); fetch it once and reuse for both the grants check and the
 	// existing path/MCP resync below rather than fetching it twice. Grants
 	// only need re-checking when something that could have changed the
@@ -165,9 +183,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	// the MCP set changing on an already/still-remote project. A bare rename
 	// of an already-valid remote project doesn't need to pay for it.
 	needGrantsCheck := candidate.IsRemote() && (f.AllowedMcpIDs != nil || f.Kind != nil)
-	var sc map[string]json.RawMessage
+	var sc McpSurfaces
 	if f.Path != nil || f.AllowedMcpIDs != nil || needGrantsCheck {
-		sc = schemas()
+		sc = surfaces()
 	}
 	if needGrantsCheck {
 		if err := s.ValidateProjectGrants(&candidate, sc); err != nil {
@@ -212,6 +230,9 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, schemas f
 	}
 	if f.SessionFolders != nil {
 		s.UpdateProjectSessionFolders(id, *f.SessionFolders)
+	}
+	if f.AllowedTools != nil {
+		s.UpdateProjectAllowedTools(id, *f.AllowedTools)
 	}
 	if f.DisabledTools != nil {
 		// Replace the entire disabled-tools map: any MCP key omitted from the

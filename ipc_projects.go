@@ -52,7 +52,7 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 	var created Project
 	var createErr error
 	okSettings := ctx.withSettings(func(s *Settings) {
-		created, createErr = applyProjectCreate(s, *msg, mcpContextSchemasFrom(ctx))
+		created, createErr = applyProjectCreate(s, *msg, mcpSurfacesFrom(ctx))
 	})
 	if !okSettings {
 		return
@@ -93,8 +93,8 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 	var found bool
 	var updateErr error
 	okSettings := ctx.withSettings(func(s *Settings) {
-		updated, found, updateErr = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() map[string]json.RawMessage {
-			return mcpContextSchemasFrom(ctx)
+		updated, found, updateErr = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
+			return mcpSurfacesFrom(ctx)
 		})
 	})
 	if !okSettings {
@@ -270,14 +270,14 @@ func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onMcpToolsListed", msg.McpID, marshalForUI(infos))
 }
 
-// mcpContextSchemasFrom returns the MCP context-schema map from the IPC
-// context's tool provider when it also implements ContextSchemasProvider
-// (the production *ExternalMcpManager satisfies both). In tests where Tools
-// is a narrow stub, returns nil and SyncProjectToken falls back to its
-// "no filesystem auto-detect" path.
-func mcpContextSchemasFrom(ctx *IPCContext) map[string]json.RawMessage {
-	if p, ok := ctx.Tools.(ContextSchemasProvider); ok {
-		return p.AllContextSchemas()
+// mcpSurfacesFrom returns the runtime MCP surfaces from the IPC context's
+// tool provider when it also implements McpSurfaceProvider (the production
+// *ExternalMcpManager satisfies both). In tests where Tools is a narrow stub,
+// returns nil and SyncProjectToken falls back to its "no scope derivation"
+// path.
+func mcpSurfacesFrom(ctx *IPCContext) McpSurfaces {
+	if p, ok := ctx.Tools.(McpSurfaceProvider); ok {
+		return p.AllMcpSurfaces()
 	}
 	return nil
 }

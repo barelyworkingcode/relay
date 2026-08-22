@@ -63,6 +63,7 @@ type ExternalMcpManager struct {
 	mu             sync.RWMutex
 	conns          map[string]McpConnection
 	schemas        map[string]json.RawMessage // id → context schema (runtime-only)
+	schemaVersions map[string]int             // id → contextSchemaVersion (runtime-only)
 	onTokenRefresh OnTokenRefreshFunc
 }
 
@@ -200,9 +201,16 @@ func (c *externalMcpConn) routeNotification(line []byte) {
 
 // handshakeResult holds the results of an MCP initialize + tools/list sequence.
 type handshakeResult struct {
-	Tools         []mcp.Tool
-	ToolInfos     []ToolInfo
-	ContextSchema json.RawMessage
+	Tools     []mcp.Tool
+	ToolInfos []ToolInfo
+	// ContextSchema and ContextSchemaVersion are read from the SAME serverInfo
+	// object and are stored together everywhere after this, because the
+	// version is what decides how the schema is read at all: absent or < 2 is
+	// v1, handled exactly as it was before ADR-011. A schema that arrived
+	// without its version would silently be read as v1 and every scope
+	// keyword in it ignored — fail-open, which is why they never travel apart.
+	ContextSchema        json.RawMessage
+	ContextSchemaVersion int
 }
 
 // mcpHandshake performs the MCP initialize -> notifications/initialized -> tools/list
@@ -221,7 +229,7 @@ func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, er
 		return nil, fmt.Errorf("MCP handshake failed: %w", err)
 	}
 
-	contextSchema := extractContextSchema(initResp)
+	contextSchema, contextSchemaVersion := extractContextSchema(initResp)
 	conn.SendNotification(mcp.MethodInitialized)
 
 	resp, err := conn.SendRequest(ctx, mcp.MethodToolsList, nil)
@@ -246,26 +254,34 @@ func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, er
 	}
 
 	return &handshakeResult{
-		Tools:         toolsResult.Tools,
-		ToolInfos:     toolInfos,
-		ContextSchema: contextSchema,
+		Tools:                toolsResult.Tools,
+		ToolInfos:            toolInfos,
+		ContextSchema:        contextSchema,
+		ContextSchemaVersion: contextSchemaVersion,
 	}, nil
 }
 
-// extractContextSchema pulls the contextSchema from an initialize response.
-func extractContextSchema(initResp json.RawMessage) json.RawMessage {
+// extractContextSchema pulls the contextSchema and its declared version from
+// an initialize response. Both live in serverInfo, beside name and version.
+//
+// A version of 0 (absent, or not a number) means v1 — the schema is read the
+// way it always was, allowed_dirs branch included, for one release. It is
+// returned even when the schema itself is absent so a caller can tell an MCP
+// that declared nothing from one that declared a v2 vocabulary and no fields.
+func extractContextSchema(initResp json.RawMessage) (json.RawMessage, int) {
 	if initResp == nil {
-		return nil
+		return nil, 0
 	}
 	var result struct {
 		ServerInfo struct {
-			ContextSchema json.RawMessage `json:"contextSchema,omitempty"`
+			ContextSchema        json.RawMessage `json:"contextSchema,omitempty"`
+			ContextSchemaVersion int             `json:"contextSchemaVersion,omitempty"`
 		} `json:"serverInfo"`
 	}
 	if err := json.Unmarshal(initResp, &result); err == nil && len(result.ServerInfo.ContextSchema) > 0 {
-		return result.ServerInfo.ContextSchema
+		return result.ServerInfo.ContextSchema, result.ServerInfo.ContextSchemaVersion
 	}
-	return nil
+	return nil, 0
 }
 
 // NewExternalMcpManager creates a manager with an injected callback for OAuth
@@ -274,6 +290,7 @@ func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManage
 	return &ExternalMcpManager{
 		conns:          make(map[string]McpConnection),
 		schemas:        make(map[string]json.RawMessage),
+		schemaVersions: make(map[string]int),
 		onTokenRefresh: onTokenRefresh,
 	}
 }
@@ -302,7 +319,17 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 	if len(result.ContextSchema) > 0 {
 		m.mu.Lock()
 		m.schemas[id] = result.ContextSchema
+		m.schemaVersions[id] = result.ContextSchemaVersion
 		m.mu.Unlock()
+		if result.ContextSchemaVersion < contextSchemaV2 {
+			// One line per connection, not per derivation: the v1 branch is
+			// scheduled for removal one release after every MCP relay serves
+			// declares v2, and this is what makes the remaining ones visible.
+			slog.Warn("MCP declares a v1 context schema (deprecated)",
+				"id", id,
+				"want_version", contextSchemaV2,
+				"detail", "relay falls back to the literal allowed_dirs rule; declare contextSchemaVersion 2 with scope/source/applies_to keywords (docs/context-schema.md)")
+		}
 	}
 	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
 }
@@ -480,15 +507,72 @@ func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
 	return m.schemas[id]
 }
 
-// AllContextSchemas returns a snapshot copy of all known MCP context schemas,
-// keyed by MCP ID. Used by the project routes when (re)scoping a project's
-// token across every allowed MCP.
-func (m *ExternalMcpManager) AllContextSchemas() map[string]json.RawMessage {
+// AllMcpSurfaces returns a snapshot of everything relay knows at runtime about
+// each connected MCP: its context schema, that schema's version, and the tools
+// it currently exposes. Used by the project routes when (re)scoping a
+// project's token and when validating its grants across every allowed MCP.
+//
+// The tool list is part of the snapshot because ADR-011 decision 5's question
+// — would this grant leave the MCP with no usable tools — cannot be answered
+// from a schema alone: a field's applies_to has to be measured against the
+// tools that exist.
+func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make(map[string]json.RawMessage, len(m.schemas))
-	for id, schema := range m.schemas {
-		out[id] = schema
+	ids := make([]string, 0, len(m.conns)+len(m.schemas))
+	seen := make(map[string]bool, len(m.conns)+len(m.schemas))
+	for id := range m.schemas {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for id := range m.conns {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	out := make(McpSurfaces, len(ids))
+	for _, id := range ids {
+		out[id] = McpSurface{Schema: m.schemas[id], SchemaVersion: m.schemaVersions[id]}
+	}
+	conns := make(map[string]McpConnection, len(m.conns))
+	for id, c := range m.conns {
+		conns[id] = c
+	}
+	m.mu.RUnlock()
+
+	// GetTools takes the connection's own lock, so it is called outside m.mu
+	// to keep the lock order (m.mu -> toolsMu) the one FindToolOwner and Tools
+	// already establish.
+	for id, c := range conns {
+		s := out[id]
+		s.Tools = toolNames(c.GetTools())
+		out[id] = s
+	}
+	return out
+}
+
+// McpSurfaceFor returns the runtime surface for one MCP.
+func (m *ExternalMcpManager) McpSurfaceFor(id string) McpSurface {
+	m.mu.RLock()
+	surface := McpSurface{Schema: m.schemas[id], SchemaVersion: m.schemaVersions[id]}
+	conn := m.conns[id]
+	m.mu.RUnlock()
+	if conn != nil {
+		surface.Tools = toolNames(conn.GetTools())
+	}
+	return surface
+}
+
+// toolNames projects a tool list down to its names.
+func toolNames(tools []mcp.Tool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, t.Name)
 	}
 	return out
 }
@@ -622,6 +706,7 @@ func (m *ExternalMcpManager) StopAll() {
 	conns := m.conns
 	m.conns = make(map[string]McpConnection)
 	m.schemas = make(map[string]json.RawMessage)
+	m.schemaVersions = make(map[string]int)
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -645,6 +730,7 @@ func discoverMcp(ctx context.Context, conn McpConnection, base ExternalMcp) (*Ex
 	}
 	base.DiscoveredTools = result.ToolInfos
 	base.ContextSchema = result.ContextSchema
+	base.ContextSchemaVersion = result.ContextSchemaVersion
 	return &base, nil
 }
 

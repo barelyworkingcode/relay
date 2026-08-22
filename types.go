@@ -21,11 +21,99 @@ type StoredToken struct {
 	// ProjectID is the stable id of the project this token authenticates (empty
 	// for service/external tokens). Injected into _meta so an MCP can attribute a
 	// call to its project without trusting LLM-supplied values.
-	ProjectID     string
+	ProjectID string
+	// ProjectKind is the kind of the project this token authenticates. It is
+	// carried because the access-mode default is ASYMMETRIC — see AccessMode —
+	// and checkToolAccess therefore has to know which side of that asymmetry a
+	// token is on. Empty (the zero value) is local, exactly as on Project.
+	ProjectKind   ProjectKind
 	Hash          string
 	Permissions   map[string]Permission
 	DisabledTools map[string][]string
 	Context       map[string]json.RawMessage
+
+	// Access is the per-MCP operation mode (ADR-011 decision 2), and
+	// AllowedTools the per-MCP tool allowlist (decision 2b). Both are carried
+	// onto the token the same way DisabledTools and Context are, so that every
+	// authentication path yields the same scope.
+	Access       map[string]string
+	AllowedTools map[string][]string
+}
+
+// Access modes (ADR-011 decision 2). Relay applies this rule at its own
+// chokepoint and records what it decided; the INPUT — whether a given tool is
+// read-only — is the MCP's own readOnlyHint and is not something relay can
+// check. Write implies read; there is deliberately no third mode. Nobody has named one, and an enum with a speculative member is
+// a migration cost paid in advance.
+const (
+	AccessRead  = "read"
+	AccessWrite = "write"
+)
+
+// ToolAllowed reports whether this token's allowlist admits a tool of an MCP
+// (ADR-011 decision 2b). The MCP-level grant is checked separately; this is
+// the second of the four allowlists, and none of the four may widen another.
+//
+// The default is asymmetric for the same reason AccessMode's is, and in the
+// same direction:
+//
+//   - An ACCESS PROFILE with no list for an MCP holds NO tools of it. That is
+//     ADR-009 decision 4's reasoning one level down: a grant to another machine
+//     must be an enumeration someone typed, and a tool registered later must
+//     not silently join it. macMCP grew from 46 tools to 47 during ADR-010's
+//     own testing.
+//   - A LOCAL project with no list holds all of them, exactly as before, with
+//     disabled_tools still subtracting.
+//
+// An empty list is the same as an absent one, deliberately: for a profile both
+// mean nothing, and there is no reading under which an operator who saved an
+// empty allowlist meant "everything".
+func (t *StoredToken) ToolAllowed(mcpID, toolName string) bool {
+	if t == nil {
+		return false
+	}
+	patterns := t.AllowedTools[mcpID]
+	if len(patterns) == 0 {
+		return t.ProjectKind != ProjectKindRemote
+	}
+	return toolAllowedByPatterns(patterns, toolName)
+}
+
+// AccessMode resolves the operation mode in force for one MCP.
+//
+// THE DEFAULT IS ASYMMETRIC ON PURPOSE, and it is the point of the decision
+// rather than an oversight to be tidied away later:
+//
+//   - An ACCESS PROFILE (a remote-kind record) with no entry defaults to
+//     "read". A grant to a client on another machine that nobody has said
+//     anything about must not be able to send mail, move messages or write
+//     files. This is the same asymmetry ADR-009 and ADR-010 apply everywhere
+//     else on this path — the threat model differs — and it means ADR-011
+//     landing turns the live "Hermes Mail" profile read-only until an operator
+//     says otherwise. That is the safe direction and it is loud in the UI.
+//   - A LOCAL project with no entry defaults to "write". Every local project
+//     that exists today was written before this field did, and silently
+//     revoking every mutating tool from all of them is not a security
+//     improvement, it is an outage. A local project is the operator's own
+//     machine acting as itself.
+//
+// Anything that is not exactly "write" resolves to "read": a hand-edited
+// settings.json carrying "readwrite", "rw", or a typo must narrow rather than
+// widen, and there is no third mode for it to mean.
+func (t *StoredToken) AccessMode(mcpID string) string {
+	if t == nil {
+		return AccessRead
+	}
+	if mode, ok := t.Access[mcpID]; ok {
+		if mode == AccessWrite {
+			return AccessWrite
+		}
+		return AccessRead
+	}
+	if t.ProjectKind == ProjectKindRemote {
+		return AccessRead
+	}
+	return AccessWrite
 }
 
 // ToolInfo describes a discovered tool from an external MCP server.
@@ -53,6 +141,11 @@ type ExternalMcp struct {
 	Env             map[string]string `json:"env"`
 	DiscoveredTools []ToolInfo        `json:"-"`                   // runtime-only; populated from live MCP connection
 	ContextSchema   json.RawMessage   `json:"-"`                   // runtime-only; discovered during MCP handshake
+	// ContextSchemaVersion is the declared contextSchemaVersion from the same
+	// serverInfo. Absent or < 2 means v1 (ADR-011 decision 3). Runtime-only,
+	// and it travels with ContextSchema everywhere — the version is what says
+	// how the schema may be read.
+	ContextSchemaVersion int `json:"-"`
 	Transport       string            `json:"transport,omitempty"` // "stdio" (default) or "http"
 	URL             string            `json:"url,omitempty"`       // MCP endpoint for HTTP transport
 	OAuthState      *OAuthState       `json:"oauth_state,omitempty"`
@@ -213,6 +306,40 @@ type Project struct {
 	// Per-project tool/context scoping (derived from allowed_mcp_ids at auth time).
 	DisabledTools map[string][]string        `json:"disabled_tools,omitempty"`
 	Context       map[string]json.RawMessage `json:"context,omitempty"`
+
+	// AllowedTools is the per-MCP tool allowlist: MCP id -> patterns
+	// (ADR-011 decision 2b). The MCP is the wrong unit of grant — macMCP is
+	// one MCP and thirteen domains — and finding 9 measured what that costs:
+	// a profile called "Hermes Mail" was authorized for capture_screenshot,
+	// capture_audio, shortcuts_run, web_fetch, contacts_* and messages_send,
+	// every one of them through a grant naming one mailbox.
+	//
+	// The access mode does not close that, because contacts_*, calendars_*,
+	// messages_get_chat and web_fetch are all legitimately readOnlyHint: true
+	// and survive a read grant. An allowlist is the only thing that does.
+	//
+	// Patterns are matched by matchToolPattern, the same anchored matcher a
+	// context field's applies_to uses. Absent or empty means NO TOOLS for a
+	// remote-kind record and ALL TOOLS for a local project — the same
+	// asymmetry, and the same reason, as Access.
+	AllowedTools map[string][]string `json:"allowed_tools,omitempty"`
+
+	// Access is the per-MCP operation mode: MCP id -> AccessRead | AccessWrite
+	// (ADR-011 decision 2). It is the layer of authority relay can decide by
+	// itself, at its own chokepoint, from a declaration the MCP already
+	// publishes — unlike Context, which relay injects and cannot verify.
+	//
+	// A missing entry does NOT mean "unset, so allow": see StoredToken.AccessMode
+	// for the asymmetric default and why it is asymmetric. omitempty so every
+	// project already on disk round-trips byte-identical.
+	//
+	// This is what makes ADR-011 finding 9 safe. disabled_tools is a denylist,
+	// so it fails open on upgrade: granting an MCP grants every tool it has
+	// minus whatever was enumerated AT GRANT TIME, and a tool added tomorrow
+	// silently joins every existing grant. A mode derived from the MCP's own
+	// readOnlyHint works on tools that did not exist when the profile was
+	// written.
+	Access map[string]string `json:"access,omitempty"`
 
 	// Per-project Claude permission policy.
 	PermissionPolicy *PermissionPolicy `json:"permission_policy,omitempty"`
