@@ -537,6 +537,17 @@ values recorded are the ones actually injected, taken from `meta` where
 `CallTool` assembles it, on the single record for a local call and on the
 **intent** record for a remote one.
 
+**On a refusal too, and that is where it matters most.** The authority was
+first recorded where the call is handed to the MCP, which is *after* the tool
+check, the scope-presence check and the budget — so `denied` and `throttled`
+records, the two a security review reads first, carried no `access` and no
+`scope` at all. "Which layer refused this, and under what mode?" was
+unanswerable from exactly the records `relay audit --outcome denied` returns.
+It is recorded immediately after the MCP's live surface is read, before the
+first thing that can refuse. On a refusal nothing goes on the wire, so what is
+recorded is the authority the call was judged against — the same set of values,
+and the question the record is being asked.
+
 **Only declared `scope: "restrict"` fields, never the whole context map.**
 `_meta` is a general channel and a future MCP may pass an API key through it.
 Logging `Context[extID]` wholesale would make the audit file the place

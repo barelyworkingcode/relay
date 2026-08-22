@@ -163,6 +163,123 @@ func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 	}
 }
 
+// F4. A `denied` or `throttled` record carries the authority the call was
+// refused under, because those are the two records a security review reads
+// first and "which layer refused this, and under what mode?" is not answerable
+// from a record that omits the mode.
+//
+// setAuthority used to run where _meta was assembled, which is AFTER the tool
+// check, the scope-presence check and the budget — so every one of those three
+// refusals wrote a record with no `access` and no `scope` at all, while
+// docs/audit-log.md says a call_tool record carries what was in force. Live,
+// `relay audit --outcome denied` showed neither field on any record.
+func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
+	scoped := map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)}
+
+	cases := []struct {
+		name    string
+		tool    string
+		opts    profileOpts
+		outcome string
+	}{
+		{
+			// Refused by the tool allowlist — the layer F1 is about.
+			name: "a tool the allowlist does not name", tool: "web_fetch",
+			opts: profileOpts{kind: ProjectKindRemote,
+				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
+				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
+			outcome: AuditOutcomeDenied,
+		},
+		{
+			// Refused by the mode: mail_send is not annotated read-only.
+			name: "a mutating tool under a read grant", tool: "mail_send",
+			opts: profileOpts{kind: ProjectKindRemote,
+				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
+				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
+			outcome: AuditOutcomeDenied,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newProfileRouter(t, tc.opts)
+			rec := newTestAudit(t, nil)
+			r.audit = rec
+
+			if _, err := r.CallTool(context.Background(), tc.tool, json.RawMessage(`{}`), testToken); err == nil {
+				t.Fatalf("%s was not refused", tc.tool)
+			}
+			ev := lastEvent(t, rec)
+			if ev.Outcome != tc.outcome {
+				t.Fatalf("outcome = %q, want %q", ev.Outcome, tc.outcome)
+			}
+			if ev.Access != AccessRead {
+				t.Errorf("access = %q, want %q — a refusal must say what mode was in force", ev.Access, AccessRead)
+			}
+			if string(ev.Scope["mail_accounts"]) != `["Bob"]` {
+				t.Errorf("scope = %v, want the value the grant carried", ev.Scope)
+			}
+		})
+	}
+
+	// A grant with no value at all is refused by the presence check, and that
+	// record still has to say which mode it was refused under — the scope is
+	// empty because there was none, which is the finding itself and must be
+	// distinguishable from the field simply not being recorded.
+	t.Run("a grant missing its scope value", func(t *testing.T) {
+		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
+			allowedTools: map[string][]string{"macmcp": {"mail_*"}},
+			access:       map[string]string{"macmcp": AccessWrite},
+			schema:       scopedSchema, schemaVersion: 2})
+		rec := newTestAudit(t, nil)
+		r.audit = rec
+
+		if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
+			t.Fatal("a call with no scope value was allowed")
+		}
+		ev := lastEvent(t, rec)
+		if ev.Outcome != AuditOutcomeDenied {
+			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
+		}
+		if ev.Access != AccessWrite {
+			t.Errorf("access = %q, want %q", ev.Access, AccessWrite)
+		}
+		if len(ev.Scope) != 0 {
+			t.Errorf("scope = %v, want nothing recorded for a grant that carried none", ev.Scope)
+		}
+	})
+
+	// And the budget refusal, which is the other outcome relay decides by
+	// itself. Both records a review filters on now carry the authority.
+	t.Run("a call over its enrolment budget", func(t *testing.T) {
+		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
+			allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
+			contextValues: scoped, schema: scopedSchema, schemaVersion: 2,
+			enrolments: []Enrolment{{
+				ClientID:    "hermes-mail",
+				Fingerprint: budgetFingerprint("hermes-mail"),
+				ProjectIDs:  []string{"test-project"},
+				Budget:      EnrolmentBudget{WindowSeconds: 60, MaxCalls: 1, MaxResultBytes: 1 << 20},
+			}}})
+		rec := newTestAudit(t, nil)
+		r.audit = rec
+
+		ctx := budgetCtx("hermes-mail")
+		if _, err := r.CallTool(ctx, "mail_search", json.RawMessage(`{}`), testToken); err != nil {
+			t.Fatalf("the first call was refused: %v", err)
+		}
+		if _, err := r.CallTool(ctx, "mail_search", json.RawMessage(`{}`), testToken); err == nil {
+			t.Fatal("the call over the budget succeeded")
+		}
+		ev := lastEvent(t, rec)
+		if ev.Outcome != AuditOutcomeThrottled {
+			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeThrottled)
+		}
+		if ev.Access != AccessRead || string(ev.Scope["mail_accounts"]) != `["Bob"]` {
+			t.Errorf("throttled record carried access=%q scope=%v, want the authority in force", ev.Access, ev.Scope)
+		}
+	})
+}
+
 func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
 	// ADR-008 already places this case: tool_error means the call completed
 	// and the MCP answered no. Promoting it to an outcome would inflate a

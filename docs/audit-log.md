@@ -122,6 +122,13 @@ and re-reading `settings.json` at query time answers a different question. So a
   map, because `_meta` is a general channel and a future MCP may pass an API
   key through it. Filtering to declared restrict-fields is both safer and
   domain-blind.
+- Both fields are on a **refusal** as well as a completion. A `denied` or
+  `throttled` record carries the mode that was in force and the scope the grant
+  carried, because "which layer refused this, and under what mode?" is the
+  question those records exist to answer. Nothing went on the wire for a
+  refused call, so what `scope` shows there is the authority the call was
+  judged against; an empty `scope` on a `denied` record is itself the finding —
+  a grant with no value for a field its MCP declares.
 - For a **remote** call both fields are on the **intent** record as well as the
   completion — the intent is the one written before the MCP runs, and an
   authority recorded only on the completion would be missing from exactly the

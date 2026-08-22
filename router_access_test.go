@@ -58,6 +58,10 @@ type profileOpts struct {
 	tools         []mcp.Tool
 	schema        string
 	schemaVersion int
+	// enrolments put the profile behind a remote identity, which is what a
+	// per-enrolment budget is keyed on. Empty means no remote caller can be
+	// budgeted, which is every test that only cares about the grant.
+	enrolments []Enrolment
 }
 
 // newProfileRouter builds a router whose single project grants "macmcp" and
@@ -93,6 +97,7 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		Version:      1,
 		ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
 		Projects:     []Project{proj},
+		Enrolments:   o.enrolments,
 		AdminSecret:  "supersecretadmin",
 	}
 	mgr := NewExternalMcpManager(nil)

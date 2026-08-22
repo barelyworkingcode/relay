@@ -434,7 +434,33 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	surface := r.tools.McpSurfaceFor(extID)
 	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
+	// The _meta this call would run with: the per-token context for this MCP
+	// plus the authenticated project id, so an MCP can attribute the call to a
+	// project without trusting LLM-supplied values. Relay is the project
+	// authority here.
+	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
+
+	// Audit the authority actually in force (ADR-011 decision 7), BEFORE the
+	// first thing that can refuse.
+	//
+	// It used to be recorded where the call was about to be handed to the MCP,
+	// which is after the tool check, the scope-presence check and the budget —
+	// so `denied` and `throttled` records, the two a security review reads
+	// first, carried no `access` and no `scope` at all, while docs/audit-log.md
+	// says a call_tool record carries what was in force. "Which layer refused
+	// this, and under what mode?" is not answerable from a record that omits
+	// the mode, and `relay audit --outcome denied` was the query it was least
+	// answerable for.
+	//
+	// It is taken from `meta` — the bytes that would go on the wire — rather
+	// than from the project, so a permitted call records what was injected. On
+	// a refusal nothing is injected, and what is recorded is then the authority
+	// the call was judged against, which is the same set of values and is the
+	// question the record is being asked. Assembling meta a few lines earlier
+	// costs one map merge on a path that was going to do it anyway.
 	if !isServiceToken {
+		au.setAuthority(stored.AccessMode(extID), scopeFromMeta(schema, meta))
+
 		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
@@ -487,22 +513,6 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			au.done(AuditOutcomeThrottled, err)
 			return nil, err
 		}
-	}
-
-	// Inject per-token context as _meta for this MCP, plus the authenticated
-	// project id so an MCP can attribute the call to a project without
-	// trusting LLM-supplied values. Relay is the project authority here.
-	meta := mergeProjectID(stored.Context[extID], stored.ProjectID)
-
-	// Audit the authority actually in force (ADR-011 decision 7). The grant
-	// alone does not answer "was this call confined?" once an operator has
-	// since edited the profile, and re-reading settings.json at query time
-	// answers a different question. Taken from `meta` — the bytes about to go
-	// on the wire — rather than from the project, so what is recorded is what
-	// was injected. This runs BEFORE au.intent() so a remote call's intent
-	// record carries it.
-	if !isServiceToken {
-		au.setAuthority(stored.AccessMode(extID), scopeFromMeta(schema, meta))
 	}
 
 	// Fail-closed auditing for a remote caller (ADR-010 decision 5). This sits
