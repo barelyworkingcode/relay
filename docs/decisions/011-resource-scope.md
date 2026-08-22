@@ -15,10 +15,14 @@ shows the gap exactly:
                                                           disabled_tools: (none)
 
 That grant reads **both** fixture accounts and **every** folder in each, sends
-mail as either identity, moves messages between mailboxes, and writes files to
-arbitrary absolute paths on the host. Relay's permission model stops at the
-tool: a project holds `mail_search` or it does not. There is no way to say
-*this client may read Bob's INBOX, and nothing else, and may not write.*
+mail as either identity, moves messages between mailboxes, writes files to
+arbitrary absolute paths on the host — and reaches all 47 of macMCP's tools,
+because the grant's unit is the MCP and macMCP is thirteen domains wide. It
+holds screen capture, microphone capture, arbitrary Shortcut execution, an
+outbound HTTP channel, the whole address book, the whole calendar, and
+`messages_send`. Relay's permission model stops at the MCP and, below that, at
+a per-tool *denylist*. There is no way to say *this client may read Bob's
+INBOX, and nothing else, and may not write.*
 
 The owner's target is several agents on one VM, each authenticating with its
 own identity and each confined differently: client A reaches these mailboxes
@@ -93,13 +97,30 @@ Findings 2–8 restate issue #16's, re-verified; findings 1 and 9 are new.
    (`fsmcp/src/security.ts:13`): `if (allowedDirs.length === 0) return null; //
    no restrictions`.
 
-9. **`disabled_tools` is a denylist, so it fails open on upgrade.** Granting
+9. **`disabled_tools` is a denylist, so it fails open twice over.** Granting
    `macmcp` grants all 47 tools minus whatever was enumerated *at grant time*.
    Add a tool to macMCP tomorrow and every existing remote grant silently gains
    it. This is the same fail-open shape ADR-009 decision 3 named for
-   `allowed_dirs`, one level up, and it is why the operation gate below is a
-   *mode* derived from the MCP's own declaration rather than a list an operator
-   maintains by hand.
+   `allowed_dirs`, one level up.
+
+   **It also fails open on the tools that already exist**, which is the more
+   urgent half and was measured rather than reasoned. Every one of the
+   following was called through the live `hermes-vm-2` enrolment — a grant
+   whose name is "Hermes Mail" — and **relay authorized every one**:
+   `capture_screenshot` (reached `/usr/sbin/screencapture` and failed only on a
+   missing Screen Recording TCC grant, not on any permission relay holds),
+   `capture_audio`, `shortcuts_run`, `web_fetch`, `contacts_list_groups`,
+   `shortcuts_list`. The ones that returned nothing returned nothing because
+   the host has no shortcuts and no contacts, not because anything refused
+   them.
+
+   So a profile created to read one mailbox holds screen capture, microphone
+   capture, arbitrary macOS automation, an outbound network channel, the
+   address book, the calendar, and the ability to send iMessage as the user.
+   The access mode in decision 2 does **not** close this: `contacts_*`,
+   `calendars_*`, `messages_get_chat` and `web_fetch` are all legitimately
+   read-only, so a `read` profile keeps every one of them. An allowlist is the
+   only thing that does (decision 2b).
 
    Relay already receives what it needs to fix this and throws it away:
    `mcp.Tool.Annotations` (`mcp/types.go:25`) is carried as `json.RawMessage`
@@ -153,6 +174,7 @@ For each `(profile, MCP)` pair:
 | layer | field | who enforces | verifiable by relay |
 |---|---|---|---|
 | which MCP | `allowed_mcp_ids` (exists) | relay | yes |
+| which tools | `allowed_tools` (**new**, decision 2b) | relay | yes |
 | which operations | `access: "read" \| "write"` (**new**) | relay | yes |
 | which resources | `context` → injected `_meta` (mechanism exists) | the MCP | **no** |
 
@@ -173,9 +195,6 @@ than silently granted.
 
 `write` implies `read`. There is deliberately no third mode: no one has named
 one, and an enum with a speculative member is a migration cost paid in advance.
-`disabled_tools` survives unchanged as the escape hatch for tools with no
-resource axis to scope on — keeping a mail profile out of `messages_*` is its
-job, and that is the honest boundary between the two mechanisms.
 
 **Defaults are asymmetric, deliberately.** An access profile with no `access`
 set for an MCP defaults to `read`; a local project defaults to `write`. The
@@ -183,6 +202,46 @@ asymmetry is the same one ADR-009 and ADR-010 apply everywhere else — the
 threat model differs — and it means this ADR landing turns the live `Hermes
 Mail` profile read-only until an operator says otherwise. That is the safe
 direction, it is loud in the UI, and it is the whole point.
+
+### 2b. An access profile names the tools it may call, and a denylist cannot do it
+
+The MCP is the wrong unit of grant. macMCP is one MCP and thirteen domains, and
+finding 9 measured what that costs: a profile called "Hermes Mail" holds screen
+capture and `messages_send`. Nothing in decisions 2, 3 or 5 addresses it —
+scope confines mail *within* the mail tools, and the mode filters mutation
+across all of them, but neither keeps a mail client out of the address book.
+
+**An access profile carries `allowed_tools` per MCP: an explicit enumeration,
+patterns permitted (`mail_*`), the bare `*` refused, absent meaning none.**
+
+This is ADR-009 decision 4's reasoning applied one level down. It refused
+`allowed_mcp_ids: ["*"]` on a remote grant because "registering a new MCP on
+the host silently widens what another machine can reach — with no action taken
+against the project itself and no diff to review." Registering a new *tool* is
+the same event at finer grain, and it happens far more often: `macmcp` grew
+from 46 tools to 47 during ADR-010's own testing.
+
+**Patterns are permitted, and that is not a hole**, because the layers compose.
+`mail_*` does admit a future `mail_delete_everything` — but that tool is still
+denied by `access: "read"` unless someone annotates it read-only, and still
+confined to the profile's mailboxes by `mail_accounts`, whose `applies_to` is
+the same `mail_*`. A pattern that widens the tool list cannot widen the
+resources or the operations. Without patterns an operator maintains eleven tool
+names by hand and the feature goes unused, which is constraint 2 defeating
+constraint 1 by a slower route.
+
+**`disabled_tools` stays for local projects and is not extended to profiles.**
+Subtracting from everything is coherent when the caller is same-user on the
+same machine and the denylist is a convenience; it is not coherent as the
+boundary against another machine. Two mechanisms for one concept is a cost, and
+it is paid deliberately rather than by migrating every existing local project's
+denylist into an allowlist it did not ask for. A profile that sets
+`disabled_tools` is refused at validation, naming `allowed_tools` — an inert
+control is the thing ADR-009 decision 2 refuses at the door.
+
+The four layers are then four allowlists, each failing closed, each answering a
+different question, and none able to widen another: **which MCP, which tools,
+which operations, which resources.**
 
 ### 3. The context schema carries five keywords and no field names relay knows
 
@@ -486,8 +545,8 @@ unambiguous enough to be a permission value at all.
   "name": "Hermes — Bob INBOX (read-only)",
   "kind": "remote",
   "allowed_mcp_ids": ["macmcp"],
+  "allowed_tools": { "macmcp": ["mail_*"] },
   "access": { "macmcp": "read" },
-  "disabled_tools": { "macmcp": ["messages_send", "messages_get_chat", "messages_list_chats"] },
   "context": {
     "macmcp": { "mail_accounts": ["Bob"], "mail_mailboxes": ["INBOX"] }
   }
@@ -551,10 +610,18 @@ mail or quietly returning nothing.
   correct outcome (finding 1) and it removes a capability that has been
   exercised, so it is a behaviour change and not only a hardening.
 
-- **A denylist stops being the mechanism that bounds a client.**
-  `disabled_tools` remains, but the thing that keeps a new mutating tool away
-  from a read-only client is the mode, and it works on tools that did not exist
-  when the profile was written.
+- **The live `Hermes Mail` profile loses 36 tools**, including screen capture,
+  microphone capture, `shortcuts_run`, `web_fetch`, contacts, calendars and
+  `messages_send` — everything outside `mail_*`. It never should have held
+  them, and it holds them today. This is the largest behaviour change here and
+  the one most likely to surprise: a client that quietly relied on any of those
+  breaks loudly at the next call.
+
+- **A denylist stops being the mechanism that bounds a remote client.**
+  `disabled_tools` remains for local projects only. What bounds a profile is
+  `allowed_tools`, and what keeps a *new mutating* tool away from a read-only
+  profile is the mode — which works on tools that did not exist when the
+  profile was written.
 
 - **Every tool relay serves needs a truthful `readOnlyHint`.** A missing one
   now costs the tool its availability to read-only profiles. That is the
@@ -584,8 +651,9 @@ mail or quietly returning nothing.
 ### Deferred, deliberately
 
 - **Calendars, contacts and iMessage.** Same mechanism, no new decisions.
-  `messages_*` has no resource axis short of per-chat and stays a
-  `disabled_tools` job.
+  `messages_*` has no resource axis short of per-chat, so a profile that needs
+  it grants `messages_*` in `allowed_tools` and is confined by the mode alone.
+  Until then decision 2b keeps it out, which is the change that matters.
 - **A per-account mailbox map**, replacing the cross-product.
 - **`fs_bash` auto-disable moving into the schema** (`default_disabled_tools`).
   The same ADR-006 violation as finding 7, but it is not resource scoping.
