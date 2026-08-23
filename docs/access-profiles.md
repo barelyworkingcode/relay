@@ -82,9 +82,21 @@ nothing.
 
 - With it **refused**, tools that reach outside this Mac are denied —
   `mail_send`, `web_fetch`, anything that talks to a network or a mail server.
-- **Drafting still works.** `mail_create_draft` writes a draft on this Mac for
-  a person to read and send. A profile with `access: write` and this refused
-  can compose and cannot post, which is usually what you want from an agent.
+- **Drafting still works, and what it buys is that nothing is delivered.**
+  `mail_send` reaches an arbitrary address; `mail_create_draft` cannot reach a
+  recipient at all — a person has to open the draft and send it. That is the
+  property worth granting, and it is real.
+
+  **What it does not buy is that the draft stays on this Mac.** Mail
+  IMAP-APPENDs a draft to the account's own mail server, so anyone who can read
+  that account reads it: the provider, a synced phone, a backup, anyone holding
+  the credentials. Reproduced on the shipped `hermes-alice` profile, unchanged,
+  with the audit line reading `allow_external: false` beside a message that had
+  been handed to a server. The body size is uncapped.
+
+  So with **Outside this Mac** refused, a write profile still has an outbound
+  write **to its own account**. If that matters, the answer is a read-only
+  profile, which has no compose tool at all.
 - A tool whose MCP declares no `openWorldHint` **counts as reaching outside** —
   that is the MCP specification's own default and relay follows it rather than
   guessing. So while an MCP is unannotated, refusing this costs a profile
@@ -103,13 +115,31 @@ nothing.
   If you want every mail tool, write `mail_*`.
 - **Empty means no tools at all.**
 
-**Resource scope** — one control per field the MCP declares. For macMCP:
+**Resource scope** — one control per field the MCP declares. macMCP declares
+nine, across four services:
 
-| field | what it means |
-|---|---|
-| `mail_accounts` | accounts this client may read from or send as. `On My Mac` is a valid entry. |
-| `mail_mailboxes` | mailbox **paths** within those accounts. `Projects/Archive`, not `Archive`. |
-| `file_dirs` | directories it may write files into and read attachments from. Derived from a project's path — **a profile can never have one**, so it renders read-only as *(nothing derived)* and the parameters it governs are refused. That is the intended outcome, not a gap to fill in. |
+| field | governs | what it means |
+|---|---|---|
+| `mail_accounts` | `mail_*` | accounts this client may read from or send as. `On My Mac` is a valid entry. |
+| `mail_mailboxes` | `mail_*` | mailbox **paths** within those accounts. `Projects/Archive`, not `Archive`. |
+| `file_dirs` | `mail_save_attachment` | directories it may write files into and read attachments from. See below — a profile can never have one. |
+| `calendar_accounts` | `calendars_*` | the sources Calendar files calendars under: iCloud, On My Mac, a CalDAV server. |
+| `calendars` | `calendars_*` | calendars, each written `Account/Calendar` — `iCloud/Work`. The account is part of the value because a title alone does not identify one. |
+| `contact_accounts` | `contacts_*` | the containers Contacts files cards under. This bounds **cards**: every card in one of these accounts is reachable, group or no group. |
+| `contact_groups` | the four group tools only | groups, written `Account/Group`. This bounds **groups**, not cards — deliberately not `contacts_*`, or "every card in this account, group or not" would be inexpressible. |
+| `reminder_accounts` | `reminders_*` | the sources Reminders files lists under. |
+| `reminder_lists` | `reminders_*` | lists, written `Account/List` — `iCloud/Groceries`. |
+
+`file_dirs` is the one whose `source` is `project_path`: relay derives it from a
+project's directory, and **a profile has none**, so no value for it can exist.
+Tools it governs are therefore not offered to a profile at all — they are left
+out of `relayremote list` and out of the generated `SKILL.md`, and refused if
+called. That is the intended outcome, not a gap to fill in. The optional
+parameters it governs elsewhere (`mail_send`'s and `mail_create_draft`'s
+`attachments`, `mail_get_source`'s `save_to`) are refused by macMCP without
+costing you the tool.
+
+`messages_*` declares no scope field; see *What this does not protect against*.
 
 Use **Choose values…** rather than typing. It asks the MCP for the real account
 and mailbox names, so you cannot typo a mailbox into existence. `mail_mailboxes`
@@ -197,6 +227,13 @@ A read-only mail profile should list only the read mail tools. If you see
 than you think. If you see `mail_send` on a profile you meant to keep to
 drafting, **Outside this Mac** is set to Allow.
 
+**What the list shows is what the profile can call.** A tool a profile could
+never call — one governed by `file_dirs`, which is derived from a project's
+path and so can never have a value for a profile — is not listed at all, and is
+not written into the generated `SKILL.md` either. A tool whose scope you simply
+have not filled in yet *is* listed, and its description says which field is
+missing; that one becomes callable the moment you type a value.
+
 **2. What happens when it reaches outside?**
 
     relayremote call --tool mail_get_emails --args '{"account":"<other>"}'
@@ -222,6 +259,29 @@ for Alice's mailbox, `relay audit --tail 4` shows:
     14:03:15  denied      Hermes Mail  macmcp  mail_send           0   -       access denied: tool 'mail_send' is not annotated read-only and this grant is read-only for MCP 'macmcp'
     14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
     14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
+
+Each refusal names the layer that produced it. The five you can see, in the
+order they are checked:
+
+- *"is not in the allowed tools"* — layer 2. The grant never named this tool.
+- *"is not annotated read-only and this grant is read-only"* — layer 3.
+- *"reaches outside this host and this grant does not allow external access"* — layer 4.
+- *"scopes tool X by \"field\" and this grant supplies no value for it"* — layer 5,
+  and the field is simply **unset**. Set it and the tool works.
+- *"scoped by \"file_dirs\", which relay derives from a project's directory"* —
+  layer 5, and **unsatisfiable**: an access profile has no directory, so that
+  tool can never work for one. It is withheld from the tool listing for that
+  reason, rather than offered and then always refused.
+
+`tool_error` with `scope_violation: true` is different from all of them: the
+grant was in order and the **MCP** refused, because the client named a resource
+outside its scope. That is the line to alert on.
+
+One more `denied` is not about your grant at all: *"publishes a context schema
+relay cannot read"* means that MCP's own `contextSchema` has a malformed field
+declaration, so relay refuses every call to it, for every grant. Relay logs the
+field and the reason when the MCP connects. It is the MCP author's bug, not
+yours.
 
 (CALLER is `-` here because this was driven directly against the router in a
 test harness with no attached process; a real remote call names the enrolled
@@ -327,9 +387,10 @@ Two things to know:
   silently drop a local project's `file_dirs`.
 
 If a grant is left without a required scope value, the profile still saves — you
-may want to grant an MCP before deciding the scope. It is flagged in three
-places: a banner over the list, a warning in the editor, and a `denied` at call
-time naming the missing field. It is never silently permissive.
+may want to grant an MCP before deciding the scope. It is flagged in four
+places: a banner over the list, a warning in the editor, the tool's own
+description in `relayremote list` and the generated `SKILL.md`, and a `denied`
+at call time naming the missing field. It is never silently permissive.
 
 **Retuning a budget is a separate operation from editing a profile — it
 touches the enrolment, not the access profile — and it does not disturb the
@@ -403,10 +464,23 @@ you lack.
 - **Relay cannot verify that an MCP honoured the scope.** Layer 5 is the MCP's
   word. The mitigations are containment — the per-enrolment budget bounds the
   drain regardless — and the end-to-end tests, not verification.
-- **Only mail is scoped.** Calendars, contacts and iMessage have no resource
-  scoping yet. A profile granted those tools is bounded by `allowed_tools`, the
-  mode and the outbound grant, which is three layers rather than five. Grant `mail_*` and
-  nothing else until that changes.
+- **iMessage is not scoped.** Mail, calendars, contacts and reminders all are,
+  and all four are enforced inside macMCP. `messages_*` has no resource axis
+  short of per-chat, so a profile granted those tools is bounded by
+  `allowed_tools`, the mode and the outbound grant — three layers rather than
+  five. (This entry used to say *only* mail was scoped and to advise granting
+  `mail_*` and nothing else. That has been false since macMCP #63.)
+- **`openWorldHint` is a constant per tool, but whether a tool reaches off-host
+  is a property of the resource it acts on.** This is the general form of the
+  drafting correction above, and it is not mail-specific.
+  `calendars_create_event` into a CalDAV calendar, `contacts_create` into
+  CardDAV, `mail_move`, and even `mail_mark_read` — a `\Seen` flag is one bit
+  per message, and one bit per message is still a channel — are all annotated
+  closed-world, and all write to a server whenever the account behind them is
+  server-backed. A grant cannot currently say *may write, but only to local
+  stores*: **Outside this Mac** bounds which tools may run, not which resources
+  they may touch. Where that distinction matters, the control that holds is
+  `access: read`.
 - **Co-located agents are only as separate as the client machine makes them.**
   Relay distinguishes them by the key each presents; agents running as the same
   user can read each other's keys.
