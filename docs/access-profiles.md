@@ -166,6 +166,34 @@ Relay signs a client certificate and writes a bundle — `client.key` (0600),
 > ([#26](https://github.com/barelyworkingcode/relay/issues/26)). It works
 > immediately; only the display is stale.
 
+**Every enrolment also carries a budget** — a call-rate limit and a
+cumulative result-volume limit, both over the same rolling window. They are
+budgeted together because they fail differently: a call cap alone does not
+stop a *slow* drain (a mailbox read out over six hours a message at a time is
+still exfiltrated), and a byte cap alone does not stop a client hammering a
+cheap tool. Exceeding either is refused with its own audit outcome,
+`throttled` — distinct from `denied` (a tool the grant never included) and
+`tool_error` (a boundary inside the MCP) — because it says something none of
+the others do: *the grant was legitimate and the pattern of use was not*,
+which is what exfiltration looks like from the host's side. See ADR-010
+decision 7 for the full design.
+
+The budget is per **enrolment**, not per profile: the enrolment is the unit
+of compromise (a stolen key is one enrolment's key and nothing else), so it
+is the unit that carries the cap. Two agents sharing a grant have independent
+budgets, and a noisy one cannot starve its neighbour.
+
+The defaults — `--window-seconds 3600`, `--max-calls 120`,
+`--max-result-bytes 67108864` (64 MiB) — are sized for a single-user host: an
+hour is the natural unit for an agent that checks or triages mail, 120
+calls/hour is comfortable sustained use, and 64 MiB/hour is enough for real
+work including a handful of large attachments while a bulk drain still takes
+days and stays loud in the audit log. They are a starting point to tune from
+evidence (a `throttled` record in `relay audit` is the signal), not a
+considered ceiling — set your own at creation with the three flags above, or
+retune them later without touching the certificate (see "Changing a rule"
+below).
+
 ### 3. Point the client at it
 
     export RELAY_REMOTE_BUNDLE="…/enrolments/hermes-bob"
@@ -219,34 +247,128 @@ different problem.
     relay audit --tail 20
     relay audit --outcome denied
 
-Every record carries the authority in force. A refusal names the layer:
+A refusal names the layer right there in DETAIL — relay's own refusal messages
+already say which check fired, so the log does not need a second taxonomy on
+top of them. Driving "Hermes Mail" (`access: read`, **Outside this Mac**
+refused, `allowed_tools: mail_*, web_fetch`, `mail_accounts: [Bob]`) at
+`capture_screenshot`, `mail_send`, `web_fetch`, and finally `mail_get_email`
+for Alice's mailbox, `relay audit --tail 4` shows:
 
-    denied  capture_screenshot  not in the allowed tools for MCP 'macmcp'      ← layer 2
-    denied  mail_send           not annotated read-only, and this grant is
-                                read-only for MCP 'macmcp'                     ← layer 3
-    denied  web_fetch           reaches outside this host and this grant does
-                                not allow external access for MCP 'macmcp'     ← layer 4
-    denied  mail_search         scopes tool 'mail_search' by "mail_accounts"
-                                and this grant supplies no value for it        ← layer 5, unset
-    denied  mail_save_attachment  scoped by "file_dirs", which relay derives
-                                from a project's directory — an access profile
-                                has none                                       ← layer 5, unsatisfiable
-    tool_error  mail_get_email  scope_violation: true                          ← layer 5, refused by the MCP
+    TIME      OUTCOME     PROJECT      MCP     TOOL                MS  CALLER  DETAIL
+    14:03:11  denied      Hermes Mail  macmcp  capture_screenshot  0   -       access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'
+    14:03:15  denied      Hermes Mail  macmcp  mail_send           0   -       access denied: tool 'mail_send' is not annotated read-only and this grant is read-only for MCP 'macmcp'
+    14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
 
-One more `denied` is worth recognising because it is not about your grant at
-all: *"publishes a context schema relay cannot read"* means the MCP's own
-`contextSchema` has a malformed field declaration, so relay refuses every call
-to it for every grant. Relay logs the field and the reason when that MCP
-connects. It is the MCP author's bug, not yours.
+Each refusal names the layer that produced it. The five you can see, in the
+order they are checked:
 
-Every `call_tool` record carries `access` and `allow_external` — the two
-authorities relay decided by itself — so a refusal on either is answerable from
-the log alone, months later, whatever the profile says by then.
+- *"is not in the allowed tools"* — layer 2. The grant never named this tool.
+- *"is not annotated read-only and this grant is read-only"* — layer 3.
+- *"reaches outside this host and this grant does not allow external access"* — layer 4.
+- *"scopes tool X by \"field\" and this grant supplies no value for it"* — layer 5,
+  and the field is simply **unset**. Set it and the tool works.
+- *"scoped by \"file_dirs\", which relay derives from a project's directory"* —
+  layer 5, and **unsatisfiable**: an access profile has no directory, so that
+  tool can never work for one. It is withheld from the tool listing for that
+  reason, rather than offered and then always refused.
 
-**`scope_violation: true` is the signal worth watching.** It means a client
-probed a resource boundary and the MCP refused it. A misconfigured scope — a
-mailbox that does not exist — is an ordinary error and deliberately *not*
-marked, so operator typos do not fill the security signal.
+`tool_error` with `scope_violation: true` is different from all of them: the
+grant was in order and the **MCP** refused, because the client named a resource
+outside its scope. That is the line to alert on.
+
+One more `denied` is not about your grant at all: *"publishes a context schema
+relay cannot read"* means that MCP's own `contextSchema` has a malformed field
+declaration, so relay refuses every call to it, for every grant. Relay logs the
+field and the reason when the MCP connects. It is the MCP author's bug, not
+yours.
+
+(CALLER is `-` here because this was driven directly against the router in a
+test harness with no attached process; a real remote call names the enrolled
+client, e.g. `hermes-bob`.)
+
+Reading it top to bottom: the first three are `denied` — relay refused the
+call itself, before any MCP ran — and DETAIL names which of the five controls
+did it: **which tools** (`capture_screenshot` is outside `mail_*, web_fetch`),
+**which operations** (`mail_send` is not annotated read-only, and this grant
+is read: only), **outside this Mac?** (`web_fetch` reaches out and this grant
+refuses that). The fourth is `tool_error`, a different kind of refusal: relay
+allowed the call — `mail_get_email` matches `mail_*`, is annotated read-only,
+and does not reach outside — and macMCP itself refused it, which is exactly
+what a resource-scope violation looks like (**which resources**, control 5,
+ADR-011 decision 7). The `scope_violation: true` marker leads DETAIL so it
+reads the same whether you are looking at this table or `grep`ping the JSONL
+for the field it names.
+
+**`scope_violation: true` is the signal worth watching**, and it is also a
+query you can run directly, even though it is a field rather than a stored
+outcome:
+
+    relay audit --outcome scope_violation
+
+    TIME      OUTCOME     PROJECT      MCP     TOOL            MS  CALLER  DETAIL
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email  0   -       scope_violation: true  {"account":"Alice"}
+
+It means a client probed a resource boundary and the MCP refused it. A
+misconfigured scope — a mailbox that does not exist — is an ordinary error and
+deliberately *not* marked, so operator typos do not fill the security signal.
+The Settings → Tool Calls pane shows the same thing visually: a `scope`
+badge next to the outcome pill, so a scope violation stands out from an
+ordinary `tool_error` without expanding the row.
+
+**Every `call_tool` record carries the authority it ran with** — the mode
+(`access`), the outbound grant (`allow_external`), and the resource scope
+that was injected (`scope`) — not just whether the call was allowed, because
+an operator may have edited the profile since (ADR-011 decision 7). `--json`
+has always carried these three fields; `--authority` puts them in the table
+too, as a second line under each row that has one:
+
+    relay audit --tail 4 --authority
+
+    TIME      OUTCOME     PROJECT      MCP     TOOL                MS  CALLER  DETAIL
+    14:03:11  denied      Hermes Mail  macmcp  capture_screenshot  0   -       access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:15  denied      Hermes Mail  macmcp  mail_send           0   -       access denied: tool 'mail_send' is not annotated read-only and this grant is read-only for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+
+Notice `scope=mail_accounts=["Bob"]` on **every** row, including the first
+three — `mail_accounts` governs `mail_*` tools, not `capture_screenshot` or
+`web_fetch`, yet the record still shows it. `scope` is the authority the whole
+call ran with, not only the part of it that happened to matter for this
+tool: it is every `scope: "restrict"` field the MCP declares, taken from what
+was actually injected into `_meta`, regardless of which fields govern which
+tool. That is deliberate — the record answers "what could this call have
+reached", and the grant's mailbox scope is part of that answer whether or not
+the specific refusal turned on it.
+
+**An absent scope and an empty one are different facts, and look different.**
+A profile with no `mail_accounts` value at all is refused before it reaches
+macMCP — `checkScopePresence`, ADR-011 decision 4's third defence — and that
+denial's own authority line shows the difference from the populated one above:
+
+    relay audit --tail 1 --authority
+
+    TIME      OUTCOME  PROJECT      MCP     TOOL         MS  CALLER  DETAIL
+    14:04:02  denied   Hermes Mail  macmcp  mail_search  0   -       access denied: MCP 'macmcp' scopes tool 'mail_search' by "mail_accounts" and this grant supplies no value for it
+                                                                     authority: access=read  outbound=blocked  scope=(declared, none injected)
+
+`scope=(declared, none injected)` is itself the finding on that record: macMCP
+declares `mail_accounts` and the grant supplied nothing for it. That reads
+differently on purpose from `scope=(none declared)`, which is what an MCP with
+no `scope: "restrict"` field at all would show — there being nothing to
+inject is a different fact from there being something and it being empty, and
+conflating the two (as an earlier version of this field did) would make a
+`denied`-for-missing-scope record indistinguishable from an ordinary MCP that
+was never scoped in the first place. The JSON record carries the same
+distinction (`"scope":{}` vs. `"scope":null`), and so does the Settings pane.
+
+`--authority` is off by default: the eight-column table and `--outcome` /
+`--kind` / `--grep` / `--tail` keep exactly the shape scripts already parse,
+whether or not the authority line is ever requested.
 
 ---
 
@@ -269,6 +391,30 @@ may want to grant an MCP before deciding the scope. It is flagged in four
 places: a banner over the list, a warning in the editor, the tool's own
 description in `relayremote list` and the generated `SKILL.md`, and a `denied`
 at call time naming the missing field. It is never silently permissive.
+
+**Retuning a budget is a separate operation from editing a profile — it
+touches the enrolment, not the access profile — and it does not disturb the
+credential**:
+
+    relay enrol update --client-id hermes-bob --max-calls 240
+
+Each of `--window-seconds`, `--max-calls` and `--max-result-bytes` is
+independent: naming one changes only that field, and any left out keep
+whatever they were set to before (not the default — an unset flag never means
+"reset this"). `relay enrol update` also accepts `--grant`, which replaces the
+whole grant list exactly as `create` does (so drop a profile by naming the
+ones you want to keep, or `--clear-grants` to withdraw every profile at once);
+it runs the same check `create` does, so a grant naming a local project or an
+unknown profile id is refused. Every changed field prints as `before -> after`
+so you see the actual effect.
+
+Before this verb, changing a budget meant `revoke` + `create` — which
+reissues the certificate, because that is the only thing `create` knows how
+to do. Rotating a credential and retuning a limit are different concerns:
+`relay enrol update` changes the number without moving the identity, so
+raising a call cap costs nothing more than reading the new limit off the
+output, and the client's `client.crt`/`client.key` stay exactly what they
+already have on disk.
 
 ---
 

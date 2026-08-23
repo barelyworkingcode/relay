@@ -3978,7 +3978,14 @@ function dispatchServiceAction(serviceId, actionId, row) {
 // 'throttled' is a budget refusal on a remote enrolment: the grant was
 // legitimate and the pattern of use was not. 'pending' is the intent half of a
 // remote call, written before the MCP runs and still awaiting its completion.
-const AUDIT_OUTCOMES = ['ok', 'error', 'tool_error', 'denied', 'unauthorized', 'throttled', 'pending'];
+//
+// 'scope_violation' is last and spelled out differently on purpose: it is not
+// a stored outcome (ADR-011 decision 7 keeps it a field on tool_error, not a
+// fifth thing next to denied), but it is the query a security review reaches
+// for right beside "denied", so the filter accepts it anyway — auditMatches
+// and the Go side (AuditQuery.matches) both special-case this exact value.
+const AUDIT_OUTCOMES = ['ok', 'error', 'tool_error', 'denied', 'unauthorized', 'throttled', 'pending', 'scope_violation'];
+const AUDIT_OUTCOME_LABELS = { scope_violation: 'scope_violation (field, not an outcome)' };
 const AUDIT_EVENT_KINDS = [
     ['call_tool', 'Tool calls'],
     ['list_tools', 'Tool lists'],
@@ -4054,7 +4061,11 @@ function auditMatches(ev) {
     const f = state.auditFilter;
     if (f.project_id && (ev.actor || {}).project_id !== f.project_id) return false;
     if (f.mcp_id && ev.mcp_id !== f.mcp_id) return false;
-    if (f.outcome && ev.outcome !== f.outcome) return false;
+    if (f.outcome === 'scope_violation') {
+        if (!ev.scope_violation) return false;
+    } else if (f.outcome && ev.outcome !== f.outcome) {
+        return false;
+    }
     if (f.event && ev.event !== f.event) return false;
     if (f.kind && (ev.actor || {}).kind !== f.kind) return false;
     if (f.text) {
@@ -4092,7 +4103,37 @@ function auditCaller(a) {
     return a.proc || a.parent || (a.pid ? 'pid ' + a.pid : '');
 }
 
+// A scope violation is the one signal a reviewer must not have to expand the
+// row to see (docs/access-profiles.md's "Checking that it worked"), and
+// ev.error is typically empty for a tool_error in the first place — the MCP's
+// reason lives in the result content, not in this field — so without the
+// marker a scope-violating row can render identically to an ordinary one.
+// Mirrors the Go CLI's auditDetail, deliberately: `grep scope_violation`
+// should find the same calls whichever surface is being read.
 function auditDetail(ev) {
+    const base = auditBaseDetail(ev);
+    if (!ev.scope_violation) return base;
+    return base ? 'scope_violation: true  ' + base : 'scope_violation: true';
+}
+
+// auditScopeText renders the injected scope for the expanded row. null/absent
+// and an empty object are different facts and must read as different
+// sentences: null means this MCP declares no scope: "restrict" field at all,
+// so there was nothing to inject; an empty object means it does declare one
+// and this call's grant supplied no value for it — on a denied record that is
+// the finding itself (ADR-011 decision 4's third defence). Mirrors the Go
+// CLI's auditScopeSummary.
+function auditScopeText(scope) {
+    if (scope === undefined || scope === null) return '(no scope declared for this MCP)';
+    const keys = Object.keys(scope).sort();
+    if (keys.length === 0) return '(declared, but nothing was injected for this call)';
+    return keys.map(function(k) {
+        const v = scope[k];
+        return k + '=' + (typeof v === 'string' ? v : JSON.stringify(v));
+    }).join(', ');
+}
+
+function auditBaseDetail(ev) {
     if (ev.error) return ev.error;
     if (ev.args) return typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args);
     if (ev.tool_count) return ev.tool_count + ' tools visible';
@@ -4143,7 +4184,7 @@ function renderAudit() {
     html += '<input type="search" class="grow" placeholder="Filter by tool, project, caller, arguments\u2026" value="' + esc(f.text) + '" id="auditText" oninput="setAuditFilter(\'text\', this.value)">';
     html += auditSelect('project_id', 'All projects', (state.projects || []).map(p => [p.id, p.name]), f.project_id);
     html += auditSelect('mcp_id', 'All MCPs', (state.externalMcps || []).map(m => [m.id, m.display_name || m.id]), f.mcp_id);
-    html += auditSelect('outcome', 'Any outcome', AUDIT_OUTCOMES.map(o => [o, o]), f.outcome);
+    html += auditSelect('outcome', 'Any outcome', AUDIT_OUTCOMES.map(o => [o, AUDIT_OUTCOME_LABELS[o] || o]), f.outcome);
     html += auditSelect('kind', 'Any caller', AUDIT_ACTOR_KINDS, f.kind);
     html += auditSelect('event', 'All events', AUDIT_EVENT_KINDS, f.event);
     html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
@@ -4175,7 +4216,14 @@ function renderAuditRow(ev) {
     const expanded = !!state.auditExpanded[ev.id];
     let html = '<tr class="row" onclick="toggleAuditRow(\'' + esc(ev.id) + '\')">';
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</td>';
-    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span></td>';
+    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span>';
+    // A scope violation is a distinct finding from an ordinary tool_error — a
+    // client probed a resource boundary and the MCP refused it — and it must
+    // be visible at a glance, not only after expanding the row.
+    if (ev.scope_violation) {
+        html += ' <span class="audit-badge audit-badge-scope" title="a resource boundary was probed and refused">scope</span>';
+    }
+    html += '</td>';
     html += '<td title="' + esc(a.project_name || '') + '">' + esc(a.project_name || '\u2014') + '</td>';
     html += '<td>' + esc(ev.mcp_id || '\u2014') + '</td>';
     html += '<td class="audit-tool" title="' + esc(ev.tool || '') + '">' + esc(ev.tool || ev.event) + '</td>';
@@ -4209,11 +4257,26 @@ function renderAuditDetail(ev) {
     add('Remote address', a.remote_addr);
     add('MCP', ev.mcp_id);
     add('Tool', ev.tool);
+    // The authority this call actually ran with (ADR-011 decision 7): the
+    // mode, the outbound grant, and the injected scope. ev.access is set only
+    // when setAuthority ran — every project/remote call_tool, never a service
+    // token or an event that named no MCP — so its presence is what decides
+    // whether there is anything truthful to say here at all.
+    if (ev.access !== undefined && ev.access !== null && ev.access !== '') {
+        add('Access mode', ev.access);
+        if (ev.allow_external === true) add('Outbound', 'allowed — this grant may reach outside the host');
+        else if (ev.allow_external === false) add('Outbound', 'blocked — confined to this host');
+        add('Scope', auditScopeText(ev.scope));
+    }
     add('Outcome', ev.outcome);
     // An intent with no completion sharing this id means relay invoked an MCP
     // and never learned the outcome. Worth surfacing, not worth hiding.
     add('Phase', ev.phase);
     add('Error', ev.error);
+    // A scope violation is a distinct finding from an ordinary tool_error — it
+    // means an MCP itself refused a resource-boundary probe (ADR-011 decision
+    // 7) — so it gets its own line rather than folding into Outcome or Error.
+    if (ev.scope_violation) add('Scope violation', 'yes — a resource boundary was probed and refused');
     if (ev.result_bytes) add('Result', ev.result_bytes + ' bytes' + (ev.result_is_error ? ' (isError)' : ''));
     if (ev.tool_count) add('Tools visible', ev.tool_count);
     add('Event id', ev.id);
@@ -4356,7 +4419,7 @@ render();
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
-    auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
+    auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
