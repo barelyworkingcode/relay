@@ -726,12 +726,21 @@ func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcp
 // scopeFromMeta extracts the injected scope for the audit record: ONLY the
 // fields the MCP declared as scope: "restrict", never the whole context map.
 //
-// The fields come from auditedScopeFields rather than RestrictFields, so a v1
+// The return is nil ONLY when the live schema declares no restrict field at
+// all -- there is no scope concept for this MCP, so "absent" is the honest
+// answer. Whenever it declares at least one, this returns a map even if that
+// map ends up empty, because "declared, but this call's grant supplied
+// nothing" is itself a fact worth a caller being able to see, and on a
+// `denied` record (checkScopePresence refused right after this ran) it is the
+// finding the record exists to carry. Collapsing that case to nil made it
+// indistinguishable from an MCP that never had a scope to begin with.
+//
+// The fields come from auditedScopeFields rather than RestrictFields so a v1
 // schema is covered too. `if !cs.V2() { return nil }` made decision 7's
 // property fail for every v1 MCP: a call relay had confined with a value relay
-// itself derived was recorded as `scope: null`, which is the same line an MCP
-// with no scope concept at all produces. The one question the field exists to
-// answer — was this call confined? — was unanswerable for exactly the MCP whose
+// itself derived was recorded as `scope: null`, the same line an MCP with no
+// scope concept at all produces. The one question the field exists to answer
+// -- was this call confined? -- was unanswerable for exactly the MCP whose
 // confinement relay writes.
 //
 // _meta is a general channel and a future MCP may pass an API key through it.

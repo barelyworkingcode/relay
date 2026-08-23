@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -23,12 +25,20 @@ func runAuditCommand(args []string) {
 	// it is the same field and the same ids, so one flag serves both.
 	project := fs.String("project", "", "filter by project / access profile id")
 	mcpID := fs.String("mcp", "", "filter by MCP id")
-	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending")
+	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
+		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
+		"it selects tool_error records the MCP marked as a resource-scope refusal")
 	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, unknown")
 	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
+	// Off by default so the table's shape — one line per call, the same eight
+	// columns — never changes under a script that already parses it; the
+	// authority (ADR-011 decision 7) is real information nonetheless, so it is
+	// one flag away rather than buried behind --json and a grep, which was the
+	// gap this flag exists to close.
+	authority := fs.Bool("authority", false, "print a second line per call showing the access mode, the outbound grant, and the injected scope")
 	fs.Parse(args)
 
 	path, err := auditLogPath()
@@ -81,6 +91,16 @@ func runAuditCommand(args []string) {
 	}
 
 	w := newTabWriter()
+	writeAuditTable(w, matched, *authority)
+	w.Flush()
+}
+
+// writeAuditTable renders matched events (newest-first, as returned by the
+// query above) as the human-readable table, oldest-first so the table itself
+// reads top-to-bottom in time order like the --json export does. Factored out
+// of runAuditCommand so the rendering can be exercised without capturing
+// os.Stdout.
+func writeAuditTable(w io.Writer, matched []AuditEvent, authority bool) {
 	fmt.Fprintln(w, "TIME\tOUTCOME\tPROJECT\tMCP\tTOOL\tMS\tCALLER\tDETAIL")
 	for i := len(matched) - 1; i >= 0; i-- {
 		ev := matched[i]
@@ -94,8 +114,19 @@ func runAuditCommand(args []string) {
 			dash(auditCallerLabel(ev.Actor)),
 			auditDetail(ev),
 		)
+		if !authority {
+			continue
+		}
+		if line, ok := auditAuthorityLine(ev); ok {
+			// Seven leading (empty) cells, so this line stays inside the same
+			// tabwriter block as the row above it and lands under DETAIL
+			// instead of resetting column widths for every row that follows.
+			// A script parsing the eight-column grid never has to account for
+			// this either way — --authority is opt-in, and even when passed,
+			// no real row ever has an empty OUTCOME cell to confuse it with.
+			fmt.Fprintf(w, "\t\t\t\t\t\t\tauthority: %s\n", line)
+		}
 	}
-	w.Flush()
 }
 
 // auditCallerLabel renders the actor as "parent→proc", falling back to whatever
@@ -122,8 +153,30 @@ func auditCallerLabel(a AuditActor) string {
 }
 
 // auditDetail is the one-line summary: the error for a failure, the redacted
-// args for a success.
+// args for a success — with a scope_violation marker ahead of either, because
+// that is the one signal on this record a reviewer must not have to expand the
+// row to see (docs/access-profiles.md's "Checking that it worked"). It reads
+// the same in --json (the field is right there) and in the table, and it is
+// literally the field name and its value rather than an invented word, so
+// `grep scope_violation` finds the same calls in both.
+//
+// tool_error alone does not get this treatment: a boundary probed and held is
+// not the same finding as any other in-protocol refusal, and ev.Error is
+// typically empty for a tool_error in the first place (the MCP's reason lives
+// in the result content, not in this field), so without the marker a
+// scope-violating row and an ordinary one can render identically.
 func auditDetail(ev AuditEvent) string {
+	detail := auditBaseDetail(ev)
+	if !ev.ScopeViolation {
+		return detail
+	}
+	if detail == "" {
+		return "scope_violation: true"
+	}
+	return "scope_violation: true  " + detail
+}
+
+func auditBaseDetail(ev AuditEvent) string {
 	if ev.Error != "" {
 		return collapseWhitespace(ev.Error)
 	}
@@ -134,6 +187,57 @@ func auditDetail(ev AuditEvent) string {
 		return fmt.Sprintf("%d tools visible", ev.ToolCount)
 	}
 	return ""
+}
+
+// auditAuthorityLine renders the authority a call ran with (ADR-011 decision
+// 7) for --authority: the access mode, the outbound grant, and the injected
+// scope. ok is false when nothing was recorded for this record at all — a
+// service token, a list event, or a refusal before an MCP was even resolved
+// (an unknown tool name) — in which case the line is omitted rather than
+// printed full of placeholders. Access is the field that says whether
+// anything was recorded: it and Scope/AllowExternal are always set together
+// by setAuthority.
+func auditAuthorityLine(ev AuditEvent) (string, bool) {
+	if ev.Access == "" {
+		return "", false
+	}
+	parts := []string{"access=" + ev.Access}
+	switch {
+	case ev.AllowExternal == nil:
+		parts = append(parts, "outbound=n/a")
+	case *ev.AllowExternal:
+		parts = append(parts, "outbound=allowed")
+	default:
+		parts = append(parts, "outbound=blocked")
+	}
+	parts = append(parts, "scope="+auditScopeSummary(ev.Scope))
+	return strings.Join(parts, "  "), true
+}
+
+// auditScopeSummary renders the injected scope for a human. nil and an empty,
+// non-nil map are different facts and must read as different sentences: nil
+// means this MCP declares no `scope: "restrict"` field at all, so there was
+// nothing to inject; an empty map means it does declare one and this call's
+// grant supplied no value for it — on a `denied` record that is the finding
+// itself (ADR-011 decision 4's third defence), and collapsing the two would
+// erase exactly the distinction the wire format was fixed to carry.
+func auditScopeSummary(scope map[string]json.RawMessage) string {
+	if scope == nil {
+		return "(none declared)"
+	}
+	if len(scope) == 0 {
+		return "(declared, none injected)"
+	}
+	keys := make([]string, 0, len(scope))
+	for k := range scope {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+string(scope[k]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func collapseWhitespace(s string) string {

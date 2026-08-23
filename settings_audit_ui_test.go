@@ -332,3 +332,158 @@ func TestAuditTab_ExpandedRemoteRecordShowsFullFingerprint(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The authority a call ran with (ADR-011 decision 7) — access, scope,
+// allow_external and scope_violation — was recorded on every record but
+// reachable only through --json and a grep. These tests pin that the Tool
+// Calls tab now shows it: a compact badge on the row for a scope violation,
+// and the full authority in the row's expanded detail.
+// ---------------------------------------------------------------------------
+
+const auditAuthorityFixture = `[{
+	id: 'au1', ts: '2026-08-21T09:00:00.000Z', dur_ms: 40, event: 'call_tool',
+	actor: { kind:'project', project_id:'p1', project_name:'Mail RO', auth:'token' },
+	mcp_id: 'macmcp', tool: 'mail_get_email', outcome: 'tool_error', scope_violation: true,
+	access: 'read', allow_external: false, scope: { mail_accounts: ['Bob'] }
+}, {
+	id: 'au2', ts: '2026-08-21T09:00:05.000Z', dur_ms: 12, event: 'call_tool',
+	actor: { kind:'project', project_id:'p1', project_name:'Mail RO', auth:'token' },
+	mcp_id: 'fsmcp', tool: 'fs_read', outcome: 'tool_error',
+	error: 'path outside allowed_dirs',
+	access: 'read', allow_external: false, scope: null
+}, {
+	id: 'au3', ts: '2026-08-21T09:00:09.000Z', dur_ms: 5, event: 'call_tool',
+	actor: { kind:'project', project_id:'p1', project_name:'Mail RO', auth:'token' },
+	mcp_id: 'macmcp', tool: 'mail_search', outcome: 'denied',
+	error: "access denied: MCP 'macmcp' scopes tool 'mail_search' by \"mail_accounts\" and this grant supplies no value for it",
+	access: 'read', allow_external: false, scope: {}
+}, {
+	id: 'au4', ts: '2026-08-21T09:00:12.000Z', dur_ms: 1, event: 'list_tools', outcome: 'ok',
+	actor: { kind:'service', auth:'service' }
+}]`
+
+// A scope violation must be visible without expanding the row: it is the
+// signal a security review watches for, and it must not read the same as an
+// ordinary tool_error.
+func TestAuditTab_ScopeViolationGetsARowBadge(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+	html := evalString(t, vm, `window.renderAudit()`)
+
+	if !strings.Contains(html, "audit-badge-scope") {
+		t.Errorf("scope-violating row did not get the badge:\n%s", html)
+	}
+	// The one-line detail column carries the marker too, mirroring the CLI.
+	if !strings.Contains(html, "scope_violation: true") {
+		t.Errorf("detail column is missing the scope_violation marker:\n%s", html)
+	}
+}
+
+// The ordinary tool_error in the fixture (au2) must not get the badge or the
+// marker — only au1 probed a boundary.
+func TestAuditTab_OrdinaryToolErrorHasNoScopeBadge(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+	got := evalString(t, vm, `(function(){
+		var rows = window.state.auditEvents.filter(function(e){ return e.id === 'au2'; });
+		return window.renderAuditRow(rows[0]);
+	})()`)
+	if strings.Contains(got, "audit-badge-scope") || strings.Contains(got, "scope_violation") {
+		t.Errorf("an ordinary tool_error rendered as a scope violation:\n%s", got)
+	}
+}
+
+// The expanded row is where the full authority lives: the mode, the outbound
+// grant and the injected scope, per ADR-011 decision 7.
+func TestAuditTab_ExpandedRowShowsTheAuthority(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+	html := evalString(t, vm, `(function(){
+		window.state.auditExpanded['au1'] = true;
+		return window.renderAudit();
+	})()`)
+
+	for _, want := range []string{
+		"Access mode", "read",
+		"Outbound", "blocked",
+		"Scope", "mail_accounts=", "Bob", // esc() HTML-entities the quotes
+		"Scope violation", "probed and refused",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("expanded row is missing %q:\n%s", want, html)
+		}
+	}
+}
+
+// An absent scope (this MCP declares none) and an empty one (declared, but
+// nothing was injected — the finding on au3's denied record) must render as
+// different sentences, not the same blank.
+func TestAuditTab_AbsentScopeAndEmptyScopeRenderDifferently(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+
+	absent := evalString(t, vm, `window.auditScopeText(null)`)
+	empty := evalString(t, vm, `window.auditScopeText({})`)
+	if absent == empty {
+		t.Fatalf("absent and empty scope rendered identically: %q", absent)
+	}
+	if !strings.Contains(absent, "no scope declared") {
+		t.Errorf("absent scope = %q", absent)
+	}
+	if !strings.Contains(empty, "nothing was injected") {
+		t.Errorf("empty scope = %q", empty)
+	}
+
+	html := evalString(t, vm, `(function(){
+		window.state.auditExpanded['au2'] = true;
+		window.state.auditExpanded['au3'] = true;
+		return window.renderAudit();
+	})()`)
+	if !strings.Contains(html, "no scope declared") {
+		t.Errorf("au2 (null scope) did not render as absent:\n%s", html)
+	}
+	if !strings.Contains(html, "nothing was injected") {
+		t.Errorf("au3 (empty scope, denied) did not render as declared-but-empty:\n%s", html)
+	}
+}
+
+// A record with no recorded authority at all (a service token's list_tools
+// call) must not show placeholder Access/Outbound/Scope lines.
+func TestAuditTab_NoAuthorityRecordedShowsNoAuthorityLines(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+	html := evalString(t, vm, `(function(){
+		window.state.auditExpanded['au4'] = true;
+		return window.renderAudit();
+	})()`)
+	if strings.Contains(html, "Access mode") || strings.Contains(html, "Outbound") {
+		t.Errorf("a service-token event grew authority lines it has nothing to fill in:\n%s", html)
+	}
+}
+
+// "scope_violation" is a field, not a stored outcome, but the filter dropdown
+// and auditMatches both accept it as a value of `outcome` — it is the query a
+// reviewer reaches for right beside "denied".
+func TestAuditTab_ScopeViolationOutcomeFilterSelectsOnTheField(t *testing.T) {
+	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
+	got := evalString(t, vm, `(function(){
+		window.state.auditFilter.outcome = 'scope_violation';
+		var rows = window.auditVisible();
+		return rows.length + ':' + rows.map(function(r){ return r.id; }).join(',');
+	})()`)
+	if got != "1:au1" {
+		t.Errorf("scope_violation filter returned %q, want 1:au1", got)
+	}
+
+	// The ordinary tool_error filter must still match both tool_error rows,
+	// scope violation or not — unaffected by the new value.
+	got = evalString(t, vm, `(function(){
+		window.state.auditFilter.outcome = 'tool_error';
+		var rows = window.auditVisible();
+		return rows.length;
+	})()`)
+	if got != "2" {
+		t.Errorf("tool_error filter returned %q, want 2", got)
+	}
+
+	html := evalString(t, vm, `window.renderAudit()`)
+	if !strings.Contains(html, `value="scope_violation"`) {
+		t.Errorf("the outcome dropdown is missing the scope_violation option:\n%s", html)
+	}
+}
