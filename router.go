@@ -382,12 +382,15 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		note := newScopeNoter(r, stored, ext.ID, isServiceToken)
+		view := newScopeView(r, stored, ext.ID, isServiceToken)
 		for _, t := range r.tools.Tools(ext.ID) {
 			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
-			note.annotate(&t)
+			if !view.listable(t.Name) {
+				continue
+			}
+			view.annotate(&t)
 			tools = append(tools, t)
 		}
 	}
@@ -422,17 +425,20 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		note := newScopeNoter(r, stored, ext.ID, isServiceToken)
+		view := newScopeView(r, stored, ext.ID, isServiceToken)
 		for _, t := range r.tools.Tools(ext.ID) {
 			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
-			// Membership already mirrors ListTools; the scope note has to
-			// mirror it too, or the skill renderer would describe a tool
-			// surface as unconfined that ListTools describes as confined.
-			// appendScopeNote is idempotent, which is what keeps the two
-			// paths from double-appending if they ever meet.
-			note.annotate(&t)
+			// Membership already mirrors ListTools; the withholding and the
+			// scope note have to mirror it too, or the skill renderer would
+			// write a SKILL.md advertising a tool ListTools withholds and
+			// CallTool refuses. appendScopeNote is idempotent, which is what
+			// keeps the two paths from double-appending if they ever meet.
+			if !view.listable(t.Name) {
+				continue
+			}
+			view.annotate(&t)
 			key := t.Category
 			if key == "" {
 				key = ext.DisplayName
@@ -748,39 +754,81 @@ func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMe
 	return out
 }
 
-// scopeNoter appends ADR-011 decision 8's scope note to the tools in a
-// listing. Built once per MCP per listing so the schema is parsed once rather
-// than per tool.
+// scopeView is what a listing has to know about one MCP's scope to describe it
+// the way CallTool will judge it. Built once per MCP per listing so the schema
+// is parsed once rather than per tool.
+//
+// It answers TWO questions, and they are one type because the whole finding
+// this replaces is that they were answered in different places and disagreed.
+// ListTools applied layers 1-4 and then only ANNOTATED scope; the presence
+// check ran in CallTool alone. So a tool whose grant could never supply a
+// governing field was listed, written into the SKILL.md an agent reads, and
+// then refused on every call — with the appended note naming the fields that
+// DID have values and never the one that was the reason.
 //
 // A client is told its own limits here because renderBucketSkillMd is the
 // wrong ONLY place: access profiles have no skills (validateProjectShape
 // refuses GenerateSkill), so the agent this feature exists for would never see
 // it. One implementation reaches the remote listener's ListTools,
 // `relay mcp call --list`, and ListSkillBuckets.
-type scopeNoter struct {
-	schema ContextSchema
-	values map[string]json.RawMessage
+type scopeView struct {
+	schema   ContextSchema
+	values   map[string]json.RawMessage
+	isRemote bool
+	// scoped is false for a service token, which holds no project context and
+	// is not scoped at all: there is nothing truthful to say about its limits
+	// and nothing to withhold from it.
+	scoped bool
 }
 
-func newScopeNoter(r *appRouter, stored *StoredToken, mcpID string, isServiceToken bool) scopeNoter {
-	// A service token holds no project context and is not scoped, so there is
-	// nothing truthful to say about its limits.
+func newScopeView(r *appRouter, stored *StoredToken, mcpID string, isServiceToken bool) scopeView {
 	if isServiceToken || stored == nil {
-		return scopeNoter{}
+		return scopeView{}
 	}
 	surface := r.tools.McpSurfaceFor(mcpID)
-	cs := ParseContextSchema(surface.Schema, surface.SchemaVersion)
-	if !cs.V2() {
-		return scopeNoter{}
+	return scopeView{
+		schema:   ParseContextSchema(surface.Schema, surface.SchemaVersion),
+		values:   contextValues(stored.Context[mcpID]),
+		isRemote: stored.IsRemote(),
+		scoped:   true,
 	}
-	return scopeNoter{schema: cs, values: contextValues(stored.Context[mcpID])}
 }
 
-func (n scopeNoter) annotate(t *mcp.Tool) {
-	if !n.schema.V2() {
+// listable reports whether a tool may appear in this token's listing at all.
+//
+// It withholds exactly what CallTool refuses UNCONDITIONALLY, and nothing
+// else. The distinction is the one ADR-011 decision 4 and decision 5 draw
+// between two things that look identical at the call:
+//
+//   - A value that is not set YET stays listed, and the loud `denied` naming
+//     the missing field stays with it. That refusal is more diagnostic to an
+//     operator than silent absence, and the gap closes the moment someone
+//     types a value.
+//   - A value that can NEVER be set — a source: "project_path" field on an
+//     access profile, or a v1 filesystem MCP granted to one — is withheld.
+//     There is no configuration under which that tool works, so listing it
+//     advertises a capability the client cannot have, and `relayremote skill`
+//     writes it into a SKILL.md the agent then plans around.
+//
+// A schema relay could not read withholds everything, matching CallTool: the
+// fragment that failed may have been the one governing this tool, so there is
+// nothing to stand behind about any of them.
+func (v scopeView) listable(toolName string) bool {
+	if !v.scoped {
+		return true
+	}
+	if !v.schema.Usable() {
+		return false
+	}
+	_, unsatisfiable := unsatisfiableScopeField(v.schema, v.isRemote, toolName)
+	return !unsatisfiable
+}
+
+func (v scopeView) annotate(t *mcp.Tool) {
+	if !v.scoped || !v.schema.V2() {
 		return
 	}
-	t.Description = appendScopeNote(t.Description, scopeNoteFor(n.schema, n.values, t.Name))
+	t.Description = appendScopeNote(t.Description, scopeNoteFor(v.schema, v.values, t.Name))
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {
