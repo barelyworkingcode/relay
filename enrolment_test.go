@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -361,6 +362,216 @@ func TestRevokeEnrolment_WorksWithNoHookInstalled(t *testing.T) {
 	assertNoErr(t, err, "createEnrolment")
 	_, err = revokeEnrolment(store, "hermes-mail")
 	assertNoErr(t, err, "revokeEnrolment without a hook")
+}
+
+// The retuned single-user-host defaults (window_seconds 3600, max_calls 120,
+// max_result_bytes 64 MiB) apply to a budget with every field left zero —
+// zero must still never mean "unlimited" after the retune, exactly as before
+// it.
+func TestNormalizeEnrolmentBudget_ZeroFieldsTakeTheRetunedDefaults(t *testing.T) {
+	got := normalizeEnrolmentBudget(EnrolmentBudget{})
+	want := EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20}
+	if got != want {
+		t.Fatalf("normalizeEnrolmentBudget(zero) = %+v, want %+v", got, want)
+	}
+	// Pinned against the named constants too, so a future edit to one without
+	// the other cannot pass silently.
+	if defaultEnrolmentWindowSeconds != 3600 || defaultEnrolmentMaxCalls != 120 || defaultEnrolmentMaxResultBytes != 64<<20 {
+		t.Fatalf("default constants drifted from the documented retune: window=%d calls=%d bytes=%d",
+			defaultEnrolmentWindowSeconds, defaultEnrolmentMaxCalls, defaultEnrolmentMaxResultBytes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// updateEnrolment — retuning a budget or regranting profiles WITHOUT
+// reissuing the certificate.
+// ---------------------------------------------------------------------------
+
+// A budget-only update changes exactly the field named and leaves every other
+// field, every grant, and the identity of the enrolment (client id,
+// fingerprint, created-at) untouched — and so does the certificate on disk.
+func TestUpdateEnrolment_ChangesOnlyNamedField(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	bundle, err := createEnrolment(store, enrolmentRequest{
+		ClientID:   "hermes-mail",
+		ProjectIDs: []string{mail.ID},
+	})
+	assertNoErr(t, err, "createEnrolment")
+	origCertPEM, err := os.ReadFile(bundle.CertPath)
+	assertNoErr(t, err, "read cert before update")
+
+	newMaxCalls := 500
+	before, after, err := updateEnrolment(store, enrolmentUpdateRequest{
+		ClientID: "hermes-mail",
+		Budget:   enrolmentBudgetUpdate{MaxCalls: &newMaxCalls},
+	})
+	assertNoErr(t, err, "updateEnrolment")
+
+	if after.Budget.MaxCalls != newMaxCalls {
+		t.Fatalf("the named field did not change: got %d, want %d", after.Budget.MaxCalls, newMaxCalls)
+	}
+	if after.Budget.WindowSeconds != before.Budget.WindowSeconds || after.Budget.MaxResultBytes != before.Budget.MaxResultBytes {
+		t.Fatalf("a field that was not named changed anyway: before=%+v after=%+v", before.Budget, after.Budget)
+	}
+	if !slices.Equal(after.ProjectIDs, before.ProjectIDs) {
+		t.Fatalf("grants changed when --grant was never passed: before=%v after=%v", before.ProjectIDs, after.ProjectIDs)
+	}
+	if after.ClientID != before.ClientID || after.Fingerprint != before.Fingerprint || after.CreatedAt != before.CreatedAt {
+		t.Fatalf("an identity field moved on a budget update: before=%+v after=%+v", before, after)
+	}
+
+	// The certificate itself — the thing revoke+recreate would have reissued
+	// — is byte-for-byte unchanged. This is the load-bearing assertion:
+	// silently reissuing it would be the worst possible bug in this feature.
+	gotCertPEM, err := os.ReadFile(bundle.CertPath)
+	assertNoErr(t, err, "read cert after update")
+	if string(gotCertPEM) != string(origCertPEM) {
+		t.Fatal("the certificate on disk changed after a budget-only update")
+	}
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil || stored.Fingerprint != before.Fingerprint {
+		t.Fatalf("the persisted fingerprint moved: %+v", stored)
+	}
+}
+
+// An unset budget field must preserve whatever was already stored, not reset
+// it to the conservative default — those are different actions and only an
+// explicit 0 asks for the second one (the next test).
+func TestUpdateEnrolment_UnsetFieldsPreserveStoredValueNotDefault(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	_, err := createEnrolment(store, enrolmentRequest{
+		ClientID: "hermes-mail",
+		Budget:   EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
+	})
+	assertNoErr(t, err, "createEnrolment")
+
+	newWindow := 1800
+	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{
+		ClientID: "hermes-mail",
+		Budget:   enrolmentBudgetUpdate{WindowSeconds: &newWindow},
+	})
+	assertNoErr(t, err, "updateEnrolment")
+
+	if after.Budget.WindowSeconds != 1800 {
+		t.Fatalf("the named field did not change: %+v", after.Budget)
+	}
+	if after.Budget.MaxCalls != 999 || after.Budget.MaxResultBytes != 999<<20 {
+		t.Fatalf("unset fields were reset to the default instead of preserved: %+v", after.Budget)
+	}
+}
+
+// An explicit 0 is not "leave alone" — it is "use the default", the same
+// meaning normalizeEnrolmentBudget gives it everywhere else. This is what
+// makes the pointer (not a zero check) the right representation for "unset".
+func TestUpdateEnrolment_ExplicitZeroResetsToDefault(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	_, err := createEnrolment(store, enrolmentRequest{
+		ClientID: "hermes-mail",
+		Budget:   EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
+	})
+	assertNoErr(t, err, "createEnrolment")
+
+	zero := 0
+	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{
+		ClientID: "hermes-mail",
+		Budget:   enrolmentBudgetUpdate{MaxCalls: &zero},
+	})
+	assertNoErr(t, err, "updateEnrolment")
+	if after.Budget.MaxCalls != defaultEnrolmentMaxCalls {
+		t.Fatalf("an explicit 0 must reset to the default (%d), got %d", defaultEnrolmentMaxCalls, after.Budget.MaxCalls)
+	}
+	// The fields not named are still preserved.
+	if after.Budget.WindowSeconds != 7200 || after.Budget.MaxResultBytes != 999<<20 {
+		t.Fatalf("an explicit 0 on one field disturbed the others: %+v", after.Budget)
+	}
+}
+
+// An unknown client id is refused, not silently ignored.
+func TestUpdateEnrolment_RefusesUnknownClientID(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	v := 10
+	_, _, err := updateEnrolment(store, enrolmentUpdateRequest{
+		ClientID: "does-not-exist",
+		Budget:   enrolmentBudgetUpdate{MaxCalls: &v},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does-not-exist") {
+		t.Fatalf("want a refusal naming the unknown client id, got: %v", err)
+	}
+}
+
+// --grant on update runs the same ValidateEnrolmentGrants check create does:
+// a grant naming a local project is refused, exactly as it would be at
+// creation, and a refused update leaves the stored grants untouched. A
+// legitimate replacement (including replacing down to zero grants) works.
+func TestUpdateEnrolment_GrantsValidateAndReplaceWholeList(t *testing.T) {
+	dir, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	cal := mkStoreProject(t, store, ProjectKindRemote, "Calendar", "")
+	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", dir)
+
+	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "createEnrolment")
+
+	// A legitimate replacement swaps the whole list, not just appends.
+	newGrants := []string{cal.ID}
+	before, after, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", ProjectIDs: &newGrants})
+	assertNoErr(t, err, "updateEnrolment: replace grants")
+	if !slices.Equal(before.ProjectIDs, []string{mail.ID}) {
+		t.Fatalf("before-snapshot is wrong: %v", before.ProjectIDs)
+	}
+	if !slices.Equal(after.ProjectIDs, []string{cal.ID}) {
+		t.Fatalf("grants did not replace as requested: %v", after.ProjectIDs)
+	}
+
+	// A grant naming a local project is refused, and names the offender —
+	// same rule as create, same message shape.
+	badGrants := []string{local.ID}
+	_, _, err = updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", ProjectIDs: &badGrants})
+	if err == nil || !strings.Contains(err.Error(), local.ID) {
+		t.Fatalf("want a refusal naming the local project, got: %v", err)
+	}
+	// The refusal changed nothing.
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil || !slices.Equal(stored.ProjectIDs, []string{cal.ID}) {
+		t.Fatalf("a refused grant update mutated the stored record: %+v", stored)
+	}
+
+	// Replacing down to zero grants (--clear-grants) is a legitimate action,
+	// distinct from leaving grants alone: it withdraws every profile without
+	// touching the certificate.
+	empty := []string{}
+	_, after, err = updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", ProjectIDs: &empty})
+	assertNoErr(t, err, "updateEnrolment: clear grants")
+	if len(after.ProjectIDs) != 0 {
+		t.Fatalf("grants were not cleared: %v", after.ProjectIDs)
+	}
+}
+
+// A budget-only update must succeed even when the enrolment's existing grant
+// names a profile that has since been deleted (the #23 dangling-grant case
+// docs/access-profiles.md describes) — re-validating grants nobody asked to
+// change would turn an unrelated budget edit into a refusal.
+func TestUpdateEnrolment_BudgetOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "createEnrolment")
+
+	assertNoErr(t, store.With(func(s *Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
+
+	newMaxCalls := 42
+	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{
+		ClientID: "hermes-mail",
+		Budget:   enrolmentBudgetUpdate{MaxCalls: &newMaxCalls},
+	})
+	assertNoErr(t, err, "a budget-only update must not re-validate untouched grants")
+	if after.Budget.MaxCalls != 42 {
+		t.Fatalf("the named field did not change: %+v", after.Budget)
+	}
+	if !slices.Equal(after.ProjectIDs, []string{mail.ID}) {
+		t.Fatalf("grants changed on a budget-only update: %v", after.ProjectIDs)
+	}
 }
 
 // An install that never enrols a client keeps a settings.json with no
