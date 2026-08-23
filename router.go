@@ -681,27 +681,34 @@ func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcp
 // scopeFromMeta extracts the injected scope for the audit record: ONLY the
 // fields the MCP declared as scope: "restrict", never the whole context map.
 //
+// The return is nil ONLY when the live schema declares no restrict field at
+// all — there is no scope concept for this MCP, so "absent" is the honest
+// answer. Whenever it declares at least one, this returns a map even if that
+// map ends up empty, because "declared, but this call's grant supplied
+// nothing" is itself a fact worth a caller being able to see, and on a
+// `denied` record (checkScopePresence refused right after this ran) it is the
+// finding the record exists to carry. Collapsing that case to nil, as this
+// used to do, made it indistinguishable from an MCP that never had a scope to
+// begin with — the audit log's whole `access`/`scope` story is that a refusal
+// records the authority it was refused under, and an empty answer that reads
+// as "nothing to say" is not that.
+//
 // _meta is a general channel and a future MCP may pass an API key through it.
 // Logging the map wholesale would make the audit file the place credentials go
 // to be archived. Filtering to declared restrict-fields is both safer and
 // domain-blind — relay is not deciding which keys look sensitive, it is
 // recording only the ones something declared as permissions.
 func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
-	if !cs.V2() {
+	fields := cs.RestrictFields()
+	if len(fields) == 0 {
 		return nil
 	}
 	injected := contextValues(meta)
-	if len(injected) == 0 {
-		return nil
-	}
-	out := make(map[string]json.RawMessage)
-	for _, f := range cs.RestrictFields() {
+	out := make(map[string]json.RawMessage, len(fields))
+	for _, f := range fields {
 		if v, ok := injected[f.Name]; ok {
 			out[f.Name] = v
 		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

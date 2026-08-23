@@ -460,6 +460,11 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .audit-tool { font-family: var(--mono); }
 .audit-detail { color: var(--text-2); font-family: var(--mono); }
 .audit-pill { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+/* A scope violation is a distinct finding from an ordinary tool_error — a
+   client probed a resource boundary and the MCP itself refused it — and it
+   has to be visible beside the pill, not only after expanding the row. */
+.audit-badge { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; vertical-align: middle; }
+.audit-badge-scope { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 /* The outcome cell must never ellipsize: a clipped pill reads as a rendering
    fault, and "unauthorized" is exactly the row a reader is looking for. */
 .audit-table td.audit-outcome-cell { overflow: visible; text-overflow: clip; }
