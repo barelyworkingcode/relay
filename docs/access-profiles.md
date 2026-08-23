@@ -136,6 +136,34 @@ Relay signs a client certificate and writes a bundle — `client.key` (0600),
 > ([#26](https://github.com/barelyworkingcode/relay/issues/26)). It works
 > immediately; only the display is stale.
 
+**Every enrolment also carries a budget** — a call-rate limit and a
+cumulative result-volume limit, both over the same rolling window. They are
+budgeted together because they fail differently: a call cap alone does not
+stop a *slow* drain (a mailbox read out over six hours a message at a time is
+still exfiltrated), and a byte cap alone does not stop a client hammering a
+cheap tool. Exceeding either is refused with its own audit outcome,
+`throttled` — distinct from `denied` (a tool the grant never included) and
+`tool_error` (a boundary inside the MCP) — because it says something none of
+the others do: *the grant was legitimate and the pattern of use was not*,
+which is what exfiltration looks like from the host's side. See ADR-010
+decision 7 for the full design.
+
+The budget is per **enrolment**, not per profile: the enrolment is the unit
+of compromise (a stolen key is one enrolment's key and nothing else), so it
+is the unit that carries the cap. Two agents sharing a grant have independent
+budgets, and a noisy one cannot starve its neighbour.
+
+The defaults — `--window-seconds 3600`, `--max-calls 120`,
+`--max-result-bytes 67108864` (64 MiB) — are sized for a single-user host: an
+hour is the natural unit for an agent that checks or triages mail, 120
+calls/hour is comfortable sustained use, and 64 MiB/hour is enough for real
+work including a handful of large attachments while a bulk drain still takes
+days and stays loud in the audit log. They are a starting point to tune from
+evidence (a `throttled` record in `relay audit` is the signal), not a
+considered ceiling — set your own at creation with the three flags above, or
+retune them later without touching the certificate (see "Changing a rule"
+below).
+
 ### 3. Point the client at it
 
     export RELAY_REMOTE_BUNDLE="…/enrolments/hermes-bob"
@@ -220,6 +248,30 @@ If a grant is left without a required scope value, the profile still saves — y
 may want to grant an MCP before deciding the scope. It is flagged in three
 places: a banner over the list, a warning in the editor, and a `denied` at call
 time naming the missing field. It is never silently permissive.
+
+**Retuning a budget is a separate operation from editing a profile — it
+touches the enrolment, not the access profile — and it does not disturb the
+credential**:
+
+    relay enrol update --client-id hermes-bob --max-calls 240
+
+Each of `--window-seconds`, `--max-calls` and `--max-result-bytes` is
+independent: naming one changes only that field, and any left out keep
+whatever they were set to before (not the default — an unset flag never means
+"reset this"). `relay enrol update` also accepts `--grant`, which replaces the
+whole grant list exactly as `create` does (so drop a profile by naming the
+ones you want to keep, or `--clear-grants` to withdraw every profile at once);
+it runs the same check `create` does, so a grant naming a local project or an
+unknown profile id is refused. Every changed field prints as `before -> after`
+so you see the actual effect.
+
+Before this verb, changing a budget meant `revoke` + `create` — which
+reissues the certificate, because that is the only thing `create` knows how
+to do. Rotating a credential and retuning a limit are different concerns:
+`relay enrol update` changes the number without moving the identity, so
+raising a call cap costs nothing more than reading the new limit off the
+output, and the client's `client.crt`/`client.key` stay exactly what they
+already have on disk.
 
 ---
 
