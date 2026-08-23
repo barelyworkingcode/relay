@@ -172,8 +172,18 @@ type AuditEvent struct {
 	// scopeFromMeta). Both are set on the single record a local call produces
 	// and on the INTENT record of a remote one, which is the record written
 	// before the MCP runs.
-	Access string                     `json:"access,omitempty"`
-	Scope  map[string]json.RawMessage `json:"scope,omitempty"`
+	Access string `json:"access,omitempty"`
+
+	// Scope is deliberately NOT omitempty. A nil map and an empty, non-nil map
+	// are different facts on the wire — nil means this MCP declares no
+	// scope: "restrict" field at all, an empty map means it does and this
+	// call's grant supplied no value for it (itself the finding on a `denied`
+	// record; ADR-011 decision 4) — and json's omitempty treats both as
+	// "empty" for a map, which would erase the distinction the moment it hit
+	// disk. Encoding/json renders a nil map as `null` and a non-nil empty one
+	// as `{}`, which is exactly the three-way split (absent / declared-empty /
+	// populated) this field needs and gets for free by keeping the tag plain.
+	Scope map[string]json.RawMessage `json:"scope"`
 
 	// AllowExternal is the other half of the authority relay decided by
 	// itself (ADR-011 decision 2c): whether this grant could call a tool that
@@ -757,12 +767,26 @@ func (r *AuditRecorder) Flush() {
 // Query
 // ---------------------------------------------------------------------------
 
+// auditOutcomeScopeViolation is not a stored outcome (see ScopeViolation's own
+// doc comment for why ADR-011 decision 7 keeps it a field) but is accepted as
+// a value of AuditQuery.Outcome anyway: it is what a security review reaches
+// for first, right beside "denied", and asking it to remember that this one
+// query has to be phrased differently is the sort of gap that gets found by
+// noticing three months of scope probes went unfiltered. matches() special-
+// cases it rather than storing a taxonomy in ScopeViolation's own outcome.
+const auditOutcomeScopeViolation = "scope_violation"
+
 // AuditQuery filters recorded events. Empty fields don't filter.
 type AuditQuery struct {
 	ProjectID string `json:"project_id,omitempty"`
 	McpID     string `json:"mcp_id,omitempty"`
-	Outcome   string `json:"outcome,omitempty"`
-	Event     string `json:"event,omitempty"`
+	// Outcome matches ev.Outcome verbatim, EXCEPT for the value
+	// "scope_violation": that is not a stored outcome (see
+	// auditOutcomeScopeViolation), so it instead matches any record with
+	// ev.ScopeViolation set, whatever its actual outcome (in practice always
+	// tool_error today).
+	Outcome string `json:"outcome,omitempty"`
+	Event   string `json:"event,omitempty"`
 	// Kind filters on the actor kind, which is how "everything any VM did"
 	// (kind=remote) is asked as one question rather than reconstructed from
 	// which actor fields happen to be set.
@@ -781,7 +805,11 @@ func (q AuditQuery) matches(ev *AuditEvent) bool {
 	if q.McpID != "" && ev.McpID != q.McpID {
 		return false
 	}
-	if q.Outcome != "" && ev.Outcome != q.Outcome {
+	if q.Outcome == auditOutcomeScopeViolation {
+		if !ev.ScopeViolation {
+			return false
+		}
+	} else if q.Outcome != "" && ev.Outcome != q.Outcome {
 		return false
 	}
 	if q.Event != "" && ev.Event != q.Event {

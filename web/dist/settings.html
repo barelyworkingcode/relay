@@ -460,6 +460,11 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .audit-tool { font-family: var(--mono); }
 .audit-detail { color: var(--text-2); font-family: var(--mono); }
 .audit-pill { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+/* A scope violation is a distinct finding from an ordinary tool_error — a
+   client probed a resource boundary and the MCP itself refused it — and it
+   has to be visible beside the pill, not only after expanding the row. */
+.audit-badge { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; vertical-align: middle; }
+.audit-badge-scope { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 /* The outcome cell must never ellipsize: a clipped pill reads as a rendering
    fault, and "unauthorized" is exactly the row a reader is looking for. */
 .audit-table td.audit-outcome-cell { overflow: visible; text-overflow: clip; }
@@ -3670,7 +3675,8 @@ window.__RELAY_INIT__ = {
       row: row || void 0
     }));
   }
-  var AUDIT_OUTCOMES = ["ok", "error", "tool_error", "denied", "unauthorized", "throttled", "pending"];
+  var AUDIT_OUTCOMES = ["ok", "error", "tool_error", "denied", "unauthorized", "throttled", "pending", "scope_violation"];
+  var AUDIT_OUTCOME_LABELS = { scope_violation: "scope_violation (field, not an outcome)" };
   var AUDIT_EVENT_KINDS = [
     ["call_tool", "Tool calls"],
     ["list_tools", "Tool lists"],
@@ -3730,7 +3736,11 @@ window.__RELAY_INIT__ = {
     const f = state.auditFilter;
     if (f.project_id && (ev.actor || {}).project_id !== f.project_id) return false;
     if (f.mcp_id && ev.mcp_id !== f.mcp_id) return false;
-    if (f.outcome && ev.outcome !== f.outcome) return false;
+    if (f.outcome === "scope_violation") {
+      if (!ev.scope_violation) return false;
+    } else if (f.outcome && ev.outcome !== f.outcome) {
+      return false;
+    }
     if (f.event && ev.event !== f.event) return false;
     if (f.kind && (ev.actor || {}).kind !== f.kind) return false;
     if (f.text) {
@@ -3767,6 +3777,20 @@ window.__RELAY_INIT__ = {
     return a.proc || a.parent || (a.pid ? "pid " + a.pid : "");
   }
   function auditDetail(ev) {
+    const base = auditBaseDetail(ev);
+    if (!ev.scope_violation) return base;
+    return base ? "scope_violation: true  " + base : "scope_violation: true";
+  }
+  function auditScopeText(scope) {
+    if (scope === void 0 || scope === null) return "(no scope declared for this MCP)";
+    const keys = Object.keys(scope).sort();
+    if (keys.length === 0) return "(declared, but nothing was injected for this call)";
+    return keys.map(function(k) {
+      const v = scope[k];
+      return k + "=" + (typeof v === "string" ? v : JSON.stringify(v));
+    }).join(", ");
+  }
+  function auditBaseDetail(ev) {
     if (ev.error) return ev.error;
     if (ev.args) return typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args);
     if (ev.tool_count) return ev.tool_count + " tools visible";
@@ -3815,7 +3839,7 @@ window.__RELAY_INIT__ = {
     html += '<input type="search" class="grow" placeholder="Filter by tool, project, caller, arguments\u2026" value="' + esc(f.text) + `" id="auditText" oninput="setAuditFilter('text', this.value)">`;
     html += auditSelect("project_id", "All projects", (state.projects || []).map((p) => [p.id, p.name]), f.project_id);
     html += auditSelect("mcp_id", "All MCPs", (state.externalMcps || []).map((m) => [m.id, m.display_name || m.id]), f.mcp_id);
-    html += auditSelect("outcome", "Any outcome", AUDIT_OUTCOMES.map((o) => [o, o]), f.outcome);
+    html += auditSelect("outcome", "Any outcome", AUDIT_OUTCOMES.map((o) => [o, AUDIT_OUTCOME_LABELS[o] || o]), f.outcome);
     html += auditSelect("kind", "Any caller", AUDIT_ACTOR_KINDS, f.kind);
     html += auditSelect("event", "All events", AUDIT_EVENT_KINDS, f.event);
     html += '<label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:5px">';
@@ -3844,7 +3868,11 @@ window.__RELAY_INIT__ = {
     const expanded = !!state.auditExpanded[ev.id];
     let html = `<tr class="row" onclick="toggleAuditRow('` + esc(ev.id) + `')">`;
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + "</td>";
-    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span></td>";
+    html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span>";
+    if (ev.scope_violation) {
+      html += ' <span class="audit-badge audit-badge-scope" title="a resource boundary was probed and refused">scope</span>';
+    }
+    html += "</td>";
     html += '<td title="' + esc(a.project_name || "") + '">' + esc(a.project_name || "\u2014") + "</td>";
     html += "<td>" + esc(ev.mcp_id || "\u2014") + "</td>";
     html += '<td class="audit-tool" title="' + esc(ev.tool || "") + '">' + esc(ev.tool || ev.event) + "</td>";
@@ -3877,9 +3905,16 @@ window.__RELAY_INIT__ = {
     add("Remote address", a.remote_addr);
     add("MCP", ev.mcp_id);
     add("Tool", ev.tool);
+    if (ev.access !== void 0 && ev.access !== null && ev.access !== "") {
+      add("Access mode", ev.access);
+      if (ev.allow_external === true) add("Outbound", "allowed \u2014 this grant may reach outside the host");
+      else if (ev.allow_external === false) add("Outbound", "blocked \u2014 confined to this host");
+      add("Scope", auditScopeText(ev.scope));
+    }
     add("Outcome", ev.outcome);
     add("Phase", ev.phase);
     add("Error", ev.error);
+    if (ev.scope_violation) add("Scope violation", "yes \u2014 a resource boundary was probed and refused");
     if (ev.result_bytes) add("Result", ev.result_bytes + " bytes" + (ev.result_is_error ? " (isError)" : ""));
     if (ev.tool_count) add("Tools visible", ev.tool_count);
     add("Event id", ev.id);
@@ -3988,11 +4023,13 @@ window.__RELAY_INIT__ = {
   };
   render();
   Object.assign(window, {
+    auditBaseDetail,
     auditCaller,
     auditDetail,
     auditFmtTime,
     auditMatches,
     auditPretty,
+    auditScopeText,
     auditSelect,
     auditVisible,
     exportAudit,
