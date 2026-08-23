@@ -481,3 +481,98 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// scopeFromMeta: absent vs. declared-but-empty vs. populated
+//
+// This is the load-bearing check for the audit-visibility work: an absent
+// scope (an MCP with no scope: "restrict" field at all) and an empty one (the
+// field is declared but this call's grant supplied nothing for it) must be
+// different values on the wire, not just different in prose, because a
+// `denied` record's whole claim rests on the second one being distinguishable
+// from "nothing to record". scopeFromMeta used to collapse both to nil.
+// ---------------------------------------------------------------------------
+
+func TestScopeFromMeta_NoRestrictFieldDeclaredIsAbsent(t *testing.T) {
+	// A v1 schema declares no ADR-011 vocabulary at all.
+	v1 := ParseContextSchema(json.RawMessage(`{"anything":"here"}`), 1)
+	if got := scopeFromMeta(v1, json.RawMessage(`{"anything":"here"}`)); got != nil {
+		t.Errorf("v1 schema: scope = %#v, want nil (no scope concept declared)", got)
+	}
+
+	// A v2 schema that declares fields, none of them scope: "restrict".
+	v2NoRestrict := ParseContextSchema(json.RawMessage(`{
+		"note": {"type": "string", "source": "operator"}
+	}`), 2)
+	if got := scopeFromMeta(v2NoRestrict, json.RawMessage(`{"note":"hi"}`)); got != nil {
+		t.Errorf("v2 schema with no restrict field: scope = %#v, want nil", got)
+	}
+}
+
+func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *testing.T) {
+	cs := ParseContextSchema(json.RawMessage(scopedSchema), 2)
+
+	// Empty _meta entirely: the schema declares mail_accounts as restrict, so
+	// there is something to report on even though nothing was supplied.
+	got := scopeFromMeta(cs, json.RawMessage(`{}`))
+	if got == nil {
+		t.Fatal("scope = nil, want a non-nil empty map — the field IS declared, it just carried no value")
+	}
+	if len(got) != 0 {
+		t.Errorf("scope = %#v, want empty", got)
+	}
+
+	// The distinction has to survive encoding/json, not just live as a Go nil
+	// check: omitempty on a map treats a nil and an empty map identically, so
+	// this is what actually reaches the CLI and the settings UI.
+	blob, err := json.Marshal(AuditEvent{Access: AccessRead, Scope: got})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(blob), `"scope":{}`) {
+		t.Errorf("marshaled record = %s, want a literal \"scope\":{}", blob)
+	}
+}
+
+func TestScopeFromMeta_PopulatedValueIsCarried(t *testing.T) {
+	cs := ParseContextSchema(json.RawMessage(scopedSchema), 2)
+	got := scopeFromMeta(cs, json.RawMessage(`{"mail_accounts":["Bob"],"unrelated":1}`))
+	if string(got["mail_accounts"]) != `["Bob"]` {
+		t.Errorf("scope = %v, want mail_accounts = [\"Bob\"]", got)
+	}
+	if _, leaked := got["unrelated"]; leaked {
+		t.Errorf("scope = %v, leaked a field the schema never declared as restrict", got)
+	}
+}
+
+// TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently pins the wire contract
+// scopeFromMeta's fix depends on: encoding/json renders a nil map as `null`
+// and a non-nil empty map as `{}` as long as the field is not `omitempty` (a
+// map's omitempty is defined by length, so it cannot tell the two apart).
+func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
+	absent, err := json.Marshal(AuditEvent{Access: "read"})
+	if err != nil {
+		t.Fatalf("marshal absent: %v", err)
+	}
+	if !strings.Contains(string(absent), `"scope":null`) {
+		t.Errorf("absent scope marshaled as %s, want \"scope\":null", absent)
+	}
+
+	empty, err := json.Marshal(AuditEvent{Access: "read", Scope: map[string]json.RawMessage{}})
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if !strings.Contains(string(empty), `"scope":{}`) {
+		t.Errorf("empty scope marshaled as %s, want \"scope\":{}", empty)
+	}
+
+	populated, err := json.Marshal(AuditEvent{Access: "read", Scope: map[string]json.RawMessage{
+		"mail_accounts": json.RawMessage(`["Bob"]`),
+	}})
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	if !strings.Contains(string(populated), `"scope":{"mail_accounts":["Bob"]}`) {
+		t.Errorf("populated scope marshaled as %s", populated)
+	}
+}
