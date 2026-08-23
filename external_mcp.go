@@ -558,7 +558,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 	}
 	out := make(McpSurfaces, len(ids))
 	for _, id := range ids {
-		out[id] = McpSurface{Schema: m.schemas[id], SchemaVersion: m.schemaVersions[id]}
+		out[id] = m.storedSurfaceLocked(id)
 	}
 	conns := make(map[string]McpConnection, len(m.conns))
 	for id, c := range m.conns {
@@ -577,10 +577,29 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 	return out
 }
 
+// storedSurfaceLocked reads the declaration half of a surface — the schema and
+// the version it was declared under — as ONE fact. Caller holds m.mu.
+//
+// A version is never reported without the schema it belongs to. The two are
+// stored in separate maps and a leak in either direction produces a surface
+// that lies: `{Schema: nil, SchemaVersion: 2}` parses as a v2 schema with no
+// fields, under which every scope-presence check passes and every stored
+// context key is stripped from _meta. The delete in Stop is the leak that was
+// there; this is what makes the next one unable to reach a caller, because a
+// missing schema decides the answer on its own rather than the two maps having
+// to agree.
+func (m *ExternalMcpManager) storedSurfaceLocked(id string) McpSurface {
+	schema, ok := m.schemas[id]
+	if !ok || len(schema) == 0 {
+		return McpSurface{}
+	}
+	return McpSurface{Schema: schema, SchemaVersion: m.schemaVersions[id]}
+}
+
 // McpSurfaceFor returns the runtime surface for one MCP.
 func (m *ExternalMcpManager) McpSurfaceFor(id string) McpSurface {
 	m.mu.RLock()
-	surface := McpSurface{Schema: m.schemas[id], SchemaVersion: m.schemaVersions[id]}
+	surface := m.storedSurfaceLocked(id)
 	conn := m.conns[id]
 	m.mu.RUnlock()
 	if conn != nil {
@@ -716,6 +735,17 @@ func (m *ExternalMcpManager) Stop(id string) {
 		delete(m.conns, id)
 	}
 	delete(m.schemas, id)
+	// The version is deleted WITH the schema, always. It used to be left
+	// behind here while StopAll cleared both, and Reload is Stop + startOne:
+	// so an MCP reloaded onto a handshake that carried no contextSchema (a
+	// build that dropped it, a server that failed to send it) left relay
+	// holding version 2 with no schema at all. ParseContextSchema(nil, 2) is
+	// V2() == true with zero fields, which is the most dangerous state this
+	// type can be in — checkScopePresence finds nothing to require and passes
+	// every tool, filterKnownContextFields finds nothing declared and strips
+	// EVERY stored context key off the wire, and the audit records no scope.
+	// Relay would remove the confinement while reporting that none was needed.
+	delete(m.schemaVersions, id)
 	delete(m.enumUnsupported, id)
 	m.mu.Unlock()
 
