@@ -419,9 +419,14 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 		// Named examples, because "external access" means nothing on its own.
 		"mail_send",
 		"web_fetch",
-		// The request this feature exists for, in the operator's words.
+		// The request this feature exists for, in the operator's words —
+		// including what drafting does NOT buy, which the copy claimed
+		// wrongly until it was measured: Mail IMAP-APPENDs a draft to the
+		// account's own server, so it does not stay on this Mac.
 		"Drafting still works",
 		"mail_create_draft",
+		"nothing is delivered",
+		"does <em>not</em> stay on this Mac",
 		// The orthogonality, said rather than implied.
 		"separate</em> question from Read/Write",
 		// And the trap: an unannotated tool counts as outbound.
