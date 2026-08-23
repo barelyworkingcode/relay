@@ -984,27 +984,36 @@ const scopeNotePrefix = "Scope: "
 
 // scopeNoteFor builds the one-sentence note describing how a tool is confined,
 // from the schema field's OWN description and the operator's value. Returns ""
-// when the tool is governed by nothing, or when nothing has a value.
+// only when the tool is governed by nothing at all.
 //
 // A client is told its own limits through ListTools because renderBucketSkillMd
 // — the obvious place — is the wrong ONLY place: access profiles have no
 // skills (validateProjectShape refuses GenerateSkill), so the agent this
 // feature exists for would never see it.
+//
+// EVERY governing field is named, including one with no value. Skipping those
+// — which is what this did — produced the worst kind of note: a tool that
+// CallTool refuses unconditionally, described to the client as confined by the
+// two fields that do have values and never by the third, which is the field
+// that is the reason. A note that lists two of three restrictions and omits the
+// disqualifying one is worse than no note, because it is read as complete.
+// Decision 8 exists so a client is told its own limits; a limit stated as an
+// absence is still the limit.
 func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName string) string {
 	if !cs.V2() {
 		return ""
 	}
 	var parts []string
 	for _, f := range cs.GoverningFields(toolName) {
-		raw, ok := values[f.Name]
-		if !ok || !hasScopeValue(values, f.Name) {
-			continue
-		}
 		label := f.Description
 		if label == "" {
 			label = f.Name
 		}
-		parts = append(parts, fmt.Sprintf("%s — %s", label, renderScopeValue(raw)))
+		if !hasScopeValue(values, f.Name) {
+			parts = append(parts, fmt.Sprintf("%s — no value is set for %q, so every call to this tool is refused", label, f.Name))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s — %s", label, renderScopeValue(values[f.Name])))
 	}
 	if len(parts) == 0 {
 		return ""

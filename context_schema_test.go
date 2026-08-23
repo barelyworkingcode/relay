@@ -313,8 +313,18 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 	if n := scopeNoteFor(cs, values, "messages_send"); n != "" {
 		t.Errorf("an ungoverned tool got a note: %q", n)
 	}
-	if n := scopeNoteFor(cs, nil, "mail_search"); n != "" {
-		t.Errorf("a grant with no values got a note: %q", n)
+	// A grant with no values still gets a note, and this assertion used to say
+	// the opposite. Skipping a valueless field produced the worst note this
+	// mechanism can produce: on mail_save_attachment, which an access profile
+	// can never call, the client was told it was confined by mail_accounts and
+	// mail_mailboxes and never by file_dirs — the field that is the reason.
+	// A note that lists two of three restrictions and omits the disqualifying
+	// one is read as complete, so it is worse than no note at all.
+	n := scopeNoteFor(cs, nil, "mail_search")
+	for _, want := range []string{"mail_accounts", "mail_mailboxes", "refused"} {
+		if !strings.Contains(n, want) {
+			t.Errorf("a note for a grant with no values omits %q: %q", want, n)
+		}
 	}
 	if n := scopeNoteFor(ParseContextSchema(json.RawMessage(macmcpSchema), 0), values, "mail_search"); n != "" {
 		t.Errorf("a v1 schema got a note: %q", n)
