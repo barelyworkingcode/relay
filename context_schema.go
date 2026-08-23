@@ -100,6 +100,129 @@ type ContextField struct {
 	DependsOn  []string `json:"depends_on,omitempty"`
 }
 
+// The keyword keys of a field fragment, in the spelling docs/context-schema.md
+// defines. They are constants so the exactness below is one value each rather
+// than a string literal someone later "tidies", which is the same reason
+// mcpReadOnlyHintKey and mcpOpenWorldHintKey are constants.
+const (
+	ctxKeyType        = "type"
+	ctxKeyItems       = "items"
+	ctxKeyDescription = "description"
+	ctxKeyScope       = "scope"
+	ctxKeySource      = "source"
+	ctxKeyAppliesTo   = "applies_to"
+	ctxKeyEnumerable  = "enumerable"
+	ctxKeyDependsOn   = "depends_on"
+)
+
+// contextKeywordBySpelling maps a keyword's lower-cased form back to the one
+// spelling that is the keyword, so a NEAR MISS can be told from a key relay
+// simply does not know.
+var contextKeywordBySpelling = func() map[string]string {
+	out := map[string]string{}
+	for _, k := range []string{
+		ctxKeyType, ctxKeyItems, ctxKeyDescription, ctxKeyScope,
+		ctxKeySource, ctxKeyAppliesTo, ctxKeyEnumerable, ctxKeyDependsOn,
+	} {
+		out[strings.ToLower(k)] = k
+	}
+	return out
+}()
+
+// UnmarshalJSON decodes one field fragment by reading each keyword out of a
+// map UNDER ITS EXACT KEY, rather than letting encoding/json match the struct's
+// fields.
+//
+// This is readOnlyHintTrue's discipline applied where it was missing, and the
+// reason it is needed here is the same: encoding/json matches struct fields
+// CASE-INSENSITIVELY, so a plain decode of this struct accepted
+// {"Scope":"restrict"} as a restriction — a key no schema document defines —
+// while {"scope":"RESTRICT"} silently was not one. Two spellings a reviewer
+// reading an MCP's published schema would read identically, decided opposite
+// ways, with no signal either time.
+//
+// The direction that matters is NOT the same as the annotation hints', and
+// that is why "read it exactly" is not the whole rule here. A near-miss
+// readOnlyHint that relay ignores DENIES, so ignoring it is safe. A near-miss
+// `scope` that relay ignores means relay stops requiring a value for a field
+// the MCP believes is a restriction, stops governing the tools it names, and
+// (through filterKnownContextFields, which drops any key the parsed schema no
+// longer declares) strips the operator's value off the wire. Silence is the
+// fail-OPEN direction on this side.
+//
+// So the rule is: an EXACT keyword is read, a key or value relay has never
+// heard of is ignored exactly as decision 3 says it must be, and a NEAR MISS
+// of a keyword — differing only in case — is an error. An error here makes the
+// whole schema unusable (see ContextSchema.Malformed), which is loud, closed,
+// and the only answer that does not require relay to guess which of two
+// readings an MCP author meant.
+func (f *ContextField) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*f = ContextField{}
+
+	for key := range raw {
+		if want, ok := contextKeywordBySpelling[strings.ToLower(key)]; ok && key != want {
+			return fmt.Errorf("declares %q, which is not the keyword %q — keywords are read under their exact spelling, so a near miss is refused rather than guessed at", key, want)
+		}
+	}
+
+	get := func(key string, dst any) error {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return nil
+		}
+		if err := json.Unmarshal(v, dst); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		return nil
+	}
+	for _, step := range []func() error{
+		func() error { return get(ctxKeyType, &f.Type) },
+		func() error { return get(ctxKeyDescription, &f.Description) },
+		func() error { return get(ctxKeyScope, &f.Scope) },
+		func() error { return get(ctxKeySource, &f.Source) },
+		func() error { return get(ctxKeyAppliesTo, &f.AppliesTo) },
+		func() error { return get(ctxKeyEnumerable, &f.Enumerable) },
+		func() error { return get(ctxKeyDependsOn, &f.DependsOn) },
+	} {
+		if err := step(); err != nil {
+			return err
+		}
+	}
+	// Items is carried through as raw bytes: itemType() is the only reader and
+	// it decodes defensively, so a fragment relay does not model is a shape it
+	// declines to describe rather than a schema it refuses.
+	if v, ok := raw[ctxKeyItems]; ok && string(v) != "null" {
+		f.Items = v
+	}
+
+	// A keyword VALUE gets the same treatment its key does. An unrecognised
+	// value is ignored — decision 3's "anything else is ignored rather than
+	// guessed at", which is what lets a later vocabulary land without breaking
+	// this one — but a value that differs from a keyword only in case is a typo
+	// of THIS vocabulary, not a member of a future one, and reading it as
+	// "no scope" is the fail-open answer.
+	if err := nearMissValue(ctxKeyScope, f.Scope, ContextScopeRestrict); err != nil {
+		return err
+	}
+	return nearMissValue(ctxKeySource, f.Source, ContextSourceOperator, ContextSourceProjectPath)
+}
+
+func nearMissValue(key, got string, want ...string) error {
+	for _, w := range want {
+		if got == w {
+			return nil
+		}
+		if strings.EqualFold(got, w) {
+			return fmt.Errorf("%s is %q, which is not the keyword %q — keyword values are read under their exact spelling", key, got, w)
+		}
+	}
+	return nil
+}
+
 // Restricts reports whether this field narrows access.
 func (f ContextField) Restricts() bool { return f.Scope == ContextScopeRestrict }
 
@@ -127,13 +250,26 @@ func (f ContextField) FromOperator() bool {
 // nothing" and "governs everything" — the second is the fail-closed one
 // (more tools require a value, and a grant whose MCP publishes a broken
 // pattern is refused rather than silently unscoped), so it is the one taken.
+//
+// An EMPTY entry governs everything for exactly that reason, and it used to be
+// skipped. applies_to: [""] therefore made a field that declares itself a
+// restriction govern no tool at all, while still being reported as declared
+// everywhere an operator or a client looks — a restriction that restricts
+// nothing, which is the one thing scope: "restrict" is documented to be unable
+// to mean (see ContextScopeRestrict: there is deliberately no keyword letting
+// an MCP say a missing value is unrestricted, and a spelling that achieves it
+// by accident is the same hole through a side door). "" names no tool, exactly
+// as an unparseable pattern does, so it takes the same reading; and because
+// one entry governing everything makes the whole list govern everything, a
+// stray "" beside a real "mail_*" widens the restriction rather than voiding
+// the list.
 func (f ContextField) Governs(toolName string) bool {
 	if len(f.AppliesTo) == 0 {
 		return true
 	}
 	for _, pattern := range f.AppliesTo {
 		if pattern == "" {
-			continue
+			return true
 		}
 		ok, err := matchToolPattern(pattern, toolName)
 		if err != nil {
@@ -414,6 +550,50 @@ type ContextSchema struct {
 
 	Fields []ContextField
 	byName map[string]ContextField
+
+	// Malformed names every declaration relay could not read, one entry per
+	// field, each already carrying its reason. A non-empty list makes the
+	// whole schema UNUSABLE rather than partially applied — see Usable.
+	Malformed []string
+}
+
+// Usable reports whether relay can act on this declaration at all.
+//
+// It is false when any field fragment failed to decode, and the consequence is
+// deliberately total: relay refuses every call to that MCP and lists none of
+// its tools, for every grant.
+//
+// The alternative — what this used to do — was to drop the field that would
+// not parse and apply the rest, silently. That is fail-open twice over for the
+// one kind of field that matters. A restrict field relay does not hold is a
+// field relay does not REQUIRE A VALUE FOR (checkScopePresence never asks about
+// it) and does not GOVERN A TOOL BY (Governs is never consulted), and
+// filterKnownContextFields then drops the operator's stored value on the way to
+// the wire because the parsed schema no longer declares that name. One type
+// slip in one fragment — `"applies_to": "mail_*"` written as a string — and
+// relay stops enforcing a confinement, strips the value that expressed it, and
+// says nothing to anybody: not to the operator, not to the client, not to the
+// MCP author who made the typo.
+//
+// The whole schema rather than the one field, because a fragment relay could
+// not read is a fragment relay cannot bound: the field it failed on may have
+// been the one governing everything, and "apply the parts I understood" is a
+// claim about the parts it did not. This is the same reading ParseContextSchema
+// gives a malformed glob and ContextField.Governs gives an empty applies_to —
+// when the declaration is unreadable, take the widest restriction, not the
+// narrowest.
+//
+// It bites a local project too, and that is not an oversight: the signal an MCP
+// author needs is one they cannot miss, and a rule that only fired for remote
+// grants would let a broken declaration sit unnoticed on a developer's own
+// machine until the day it was granted to a client. checkScopePresence declines
+// the local/remote asymmetry for the same reason and says so at length.
+func (cs ContextSchema) Usable() bool { return len(cs.Malformed) == 0 }
+
+// MalformedReason renders what could not be read, for a refusal and for the log
+// line finalizeConnection writes when the schema arrives.
+func (cs ContextSchema) MalformedReason() string {
+	return strings.Join(cs.Malformed, "; ")
 }
 
 // V2 reports whether this schema declared the ADR-011 vocabulary.
@@ -496,18 +676,28 @@ func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {
 		return cs
 	}
 
-	fields := parseContextFields(top)
+	fields, bad := parseContextFields(top)
 	if !anyRestricts(fields) {
 		if nested, ok := top["properties"]; ok {
 			var props map[string]json.RawMessage
 			if err := json.Unmarshal(nested, &props); err == nil {
-				if alt := parseContextFields(props); anyRestricts(alt) {
+				// The rescue is adopted when the nested reading finds a
+				// restriction the flat one missed — and ALSO when the nested
+				// reading found a fragment it could not read. The second is
+				// the fail-closed half: a nested document whose one restrict
+				// field is the malformed one presents, from out here, as a
+				// document with no restrictions at all, which is exactly the
+				// silence Usable exists to break.
+				alt, altBad := parseContextFields(props)
+				if anyRestricts(alt) || len(altBad) > 0 {
 					fields = alt
+					bad = append(bad, altBad...)
 				}
 			}
 		}
 	}
 
+	cs.Malformed = bad
 	cs.Fields = fields
 	cs.byName = make(map[string]ContextField, len(fields))
 	for _, f := range fields {
@@ -516,7 +706,23 @@ func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {
 	return cs
 }
 
-func parseContextFields(obj map[string]json.RawMessage) []ContextField {
+// parseContextFields decodes each entry of a schema object into a field, and
+// returns alongside them the entries it could NOT decode.
+//
+// The two failures have to be told apart, and telling them apart is the whole
+// of the function:
+//
+//   - A fragment that is not a JSON object at all declares nothing relay could
+//     act on. That is a sibling key of a nested JSON-Schema document — the
+//     `"type": "object"` beside `"properties"` — and skipping it is what makes
+//     ParseContextSchema's nested tolerance work at all. Not an error.
+//   - A fragment that IS an object and still would not decode is a declaration
+//     relay could not read: a type slip inside it (`"applies_to": "mail_*"`),
+//     or a keyword spelled a case off (ContextField.UnmarshalJSON). Silently
+//     dropping one of those is how relay stops enforcing a restriction, and
+//     strips its value, with nobody told. It is reported, and Usable turns the
+//     report into a refusal.
+func parseContextFields(obj map[string]json.RawMessage) (fields []ContextField, malformed []string) {
 	names := make([]string, 0, len(obj))
 	for name := range obj {
 		names = append(names, name)
@@ -525,17 +731,27 @@ func parseContextFields(obj map[string]json.RawMessage) []ContextField {
 
 	out := make([]ContextField, 0, len(names))
 	for _, name := range names {
+		if !isJSONObject(obj[name]) {
+			continue
+		}
 		var f ContextField
-		// A fragment that is not an object declares nothing relay can act on
-		// (a bare "type": "object" sibling key, say). Skipped rather than
-		// carried as an empty field.
 		if err := json.Unmarshal(obj[name], &f); err != nil {
+			malformed = append(malformed, fmt.Sprintf("field %q %v", name, err))
 			continue
 		}
 		f.Name = name
 		out = append(out, f)
 	}
-	return out
+	return out, malformed
+}
+
+// isJSONObject reports whether raw is a JSON object, by its first
+// non-whitespace byte. json.Valid is not consulted: an object that is
+// malformed INSIDE must reach the decode above so its reason can be reported,
+// and this question is only ever "is this shaped like a declaration".
+func isJSONObject(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(trimmed, "{")
 }
 
 func anyRestricts(fields []ContextField) bool {
