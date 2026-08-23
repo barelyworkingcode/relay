@@ -23,10 +23,29 @@ import (
 // enrolment, not a considered ceiling. The first values will be wrong; the
 // audit log's `throttled` outcome is distinguishable precisely so tuning is
 // driven by evidence rather than by guessing twice (ADR-010 decision 7).
+//
+// Retuned once from evidence, for a single-user host (a person running one or
+// two agents against their own machine, not a fleet):
+//   - An hour, not a minute, is the natural unit for an agent that checks or
+//     triages mail. A 60-second window makes a burst of legitimate paging —
+//     opening ten messages back to back — look like an attack.
+//   - 120 calls/hour is 2/minute sustained: comfortable for real work, and
+//     still a rate at which draining a mailbox takes days, not minutes.
+//   - The byte cap has to scale with the window or this would be a 60x
+//     TIGHTENING dressed up as a loosening: 8 MiB per 60s is 480 MiB/hour of
+//     headroom already. 64 MiB/hour is roughly nine of the largest messages
+//     this fixture holds (~7 MB each), or thousands of metadata-only calls —
+//     enough for real work including attachments, while a bulk drain still
+//     takes days and stays loud in the audit log.
+//
+// These are still ADR-010 decision 7's "first values will be wrong, tune from
+// evidence" numbers — tuned once, not derived. Say so here rather than let the
+// next reader assume they were computed from something and re-derive (or
+// "optimise") them.
 const (
-	defaultEnrolmentWindowSeconds  = 60
-	defaultEnrolmentMaxCalls       = 60
-	defaultEnrolmentMaxResultBytes = 8 << 20 // 8 MiB per window
+	defaultEnrolmentWindowSeconds  = 3600
+	defaultEnrolmentMaxCalls       = 120
+	defaultEnrolmentMaxResultBytes = 64 << 20 // 64 MiB per window
 )
 
 // enrolmentBundleDir is the config-dir subdirectory holding emitted bundles,
@@ -398,6 +417,106 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 		return nil, err
 	}
 	return bundle, nil
+}
+
+// ---------------------------------------------------------------------------
+// Update — retuning a budget or regranting profiles WITHOUT touching the
+// certificate.
+// ---------------------------------------------------------------------------
+
+// enrolmentBudgetUpdate carries only the budget fields an update actually
+// names. Each is a pointer rather than a plain value because zero is
+// meaningful on EnrolmentBudget itself (it means "use the default", per
+// normalizeEnrolmentBudget) — a zero-check here could not tell "the caller
+// left this alone" from "the caller asked to reset this to the default"
+// apart. nil means the former; a pointer to 0 means the latter.
+type enrolmentBudgetUpdate struct {
+	WindowSeconds  *int
+	MaxCalls       *int
+	MaxResultBytes *int64
+}
+
+// enrolmentUpdateRequest is the transport-agnostic body for `relay enrol
+// update`, mirroring enrolmentRequest's role for create.
+//
+// ProjectIDs is a pointer to a slice, not a bare slice, for the same reason
+// the budget fields are pointers: nil means "leave the grants alone", and a
+// non-nil-but-empty slice means "replace them with nothing" — a real,
+// deliberate action (withdrawing every profile without revoking the
+// certificate), not the zero value of "field not supplied".
+type enrolmentUpdateRequest struct {
+	ClientID   string
+	ProjectIDs *[]string
+	Budget     enrolmentBudgetUpdate
+}
+
+// updateEnrolment changes an existing enrolment's budget and/or grants
+// without touching its certificate or fingerprint.
+//
+// This exists because revoke+recreate — the only way to change a budget
+// before this — reissues the certificate. Rotating a credential and retuning
+// a limit are different operations, and forcing them together defeats the
+// whole reason ADR-010 separates the enrolment (identity) from the profile
+// (authority): an operator who only wants to raise a call cap should not have
+// to hand out a new key to do it.
+//
+// Only the fields req actually names change; everything else — ClientID,
+// Fingerprint, CreatedAt, and any budget/grant field left nil/unset — is
+// carried over untouched. Grants are only re-validated when req.ProjectIDs is
+// non-nil: a budget-only update must succeed even for an enrolment whose
+// existing grant already names a profile that has since been deleted
+// (docs/access-profiles.md's "dangling grant", #23) — re-validating grants
+// nobody asked to change would turn an unrelated budget edit into a refusal.
+//
+// Returns the enrolment before and after the change (both zero on error), so
+// the caller can report the actual effect — before -> after — rather than a
+// bare "ok".
+func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, after Enrolment, err error) {
+	var validationErr error
+	saveErr := store.With(func(s *Settings) {
+		e, idx := s.findEnrolmentByClientID(req.ClientID)
+		if idx < 0 {
+			validationErr = fmt.Errorf("no enrolment found with client id %q", req.ClientID)
+			return
+		}
+		before = *e
+
+		// Build the candidate on a copy first: validation must see the
+		// post-update shape, and a rejected update must leave the stored
+		// record byte-for-byte as it was, not partially applied.
+		candidate := *e
+		if req.Budget.WindowSeconds != nil {
+			candidate.Budget.WindowSeconds = *req.Budget.WindowSeconds
+		}
+		if req.Budget.MaxCalls != nil {
+			candidate.Budget.MaxCalls = *req.Budget.MaxCalls
+		}
+		if req.Budget.MaxResultBytes != nil {
+			candidate.Budget.MaxResultBytes = *req.Budget.MaxResultBytes
+		}
+		candidate.Budget = normalizeEnrolmentBudget(candidate.Budget)
+
+		if req.ProjectIDs != nil {
+			candidate.ProjectIDs = *req.ProjectIDs
+			if gerr := s.ValidateEnrolmentGrants(&candidate); gerr != nil {
+				validationErr = gerr
+				return // no-op write; the stored record is untouched
+			}
+		}
+
+		e.Budget = candidate.Budget
+		if req.ProjectIDs != nil {
+			e.ProjectIDs = candidate.ProjectIDs
+		}
+		after = *e
+	})
+	if saveErr != nil {
+		return Enrolment{}, Enrolment{}, fmt.Errorf("failed to save settings: %w", saveErr)
+	}
+	if validationErr != nil {
+		return Enrolment{}, Enrolment{}, validationErr
+	}
+	return before, after, nil
 }
 
 // writeEnrolmentBundle emits the three files a client needs — its key, its
