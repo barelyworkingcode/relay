@@ -547,6 +547,19 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	if !isServiceToken {
 		au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
 
+		// A declaration relay could not read (ContextSchema.Usable). Checked
+		// before every other layer because it is the layer that says whether
+		// the other answers mean anything: a fragment that would not decode
+		// may have been the restrict field governing this very tool, so
+		// "nothing governs it" is not a finding, it is the absence of one.
+		if !schema.Usable() {
+			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+				"access denied: MCP '%s' publishes a context schema relay cannot read, so no grant on it can be enforced (%s)",
+				extID, schema.MalformedReason()))
+			au.done(AuditOutcomeDenied, err)
+			return nil, err
+		}
+
 		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err

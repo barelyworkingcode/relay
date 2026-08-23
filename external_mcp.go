@@ -334,6 +334,17 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 		m.schemas[id] = result.ContextSchema
 		m.schemaVersions[id] = result.ContextSchemaVersion
 		m.mu.Unlock()
+		// One line per connection, at the moment the declaration arrives,
+		// rather than per call: ParseContextSchema runs on every tools/call
+		// and logging there would bury the signal in its own repetition. This
+		// is the MCP author's notification that relay has refused their
+		// schema, and it is the only place that notification can be timely.
+		if cs := ParseContextSchema(result.ContextSchema, result.ContextSchemaVersion); !cs.Usable() {
+			slog.Error("MCP publishes a context schema relay cannot read; every call to it is refused",
+				"id", id,
+				"detail", cs.MalformedReason(),
+				"fix", "see docs/context-schema.md — keywords and their values are read under their exact spelling")
+		}
 		if result.ContextSchemaVersion < contextSchemaV2 {
 			// One line per connection, not per derivation: the v1 branch is
 			// scheduled for removal one release after every MCP relay serves
