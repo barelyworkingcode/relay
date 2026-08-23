@@ -809,11 +809,12 @@ func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) er
 		schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
 		if schema.V2() {
+			granted := grantedToolNames(proj, mcpID, surface.Tools)
 			for _, f := range schema.ProjectPathFields() {
-				if !f.GovernsAll(surface.Tools) {
+				if !f.GovernsAll(granted) {
 					continue
 				}
-				return fmt.Errorf("remote project cannot be granted %q: its %q scope is derived from the project's path, it governs every tool this MCP exposes, and a remote project has no path — the grant would leave no usable tools", mcpID, f.Name)
+				return fmt.Errorf("remote project cannot be granted %q: its %q scope is derived from the project's path, it governs every tool this grant names, and a remote project has no path — the grant would leave no usable tools", mcpID, f.Name)
 			}
 			continue
 		}
@@ -826,6 +827,47 @@ func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) er
 		}
 	}
 	return nil
+}
+
+// grantedToolNames narrows an MCP's live tool list to the ones this record may
+// actually call, by the same allowlist StoredToken.ToolAllowed applies at the
+// chokepoint.
+//
+// ValidateProjectGrants asked its question — "does a project_path field govern
+// every tool" — against the MCP's WHOLE surface, which is the wrong set for a
+// record whose grant is an enumeration. macMCP declares file_dirs governing
+// mail_save_attachment alone, so the answer over 47 tools is always no; but
+// allowed_tools: {"macmcp": ["mail_save_attachment"]} is a grant of exactly
+// that one tool, it saves cleanly, and it can call nothing. The coherence check
+// an operator sees at edit time has to be asked about the grant they wrote.
+//
+// The tool list, not the allowlist patterns, is what is filtered: a pattern
+// that matches nothing the MCP exposes contributes no tool, which is the same
+// reading the chokepoint gives it.
+//
+// A grant that names NO tool of this MCP falls back to the whole surface, and
+// that is the fail-closed direction rather than a shortcut. Such a profile
+// holds nothing for a reason that has nothing to do with the scope — decision
+// 9b permits an incomplete profile, and granting an MCP before typing the tool
+// list is the ordinary order of work — so the question to ask is not "are the
+// zero tools you named all dead" (vacuously no, which would permit fsMCP and
+// lose the refusal decision 5 is built on) but "if you named any, would they
+// be". The widest answer to that is the MCP's own list.
+func grantedToolNames(proj *Project, mcpID string, all []string) []string {
+	tok := StoredToken{
+		ProjectKind:  proj.Kind,
+		AllowedTools: proj.AllowedTools,
+	}
+	out := make([]string, 0, len(all))
+	for _, name := range all {
+		if tok.ToolAllowed(mcpID, name) {
+			out = append(out, name)
+		}
+	}
+	if len(out) == 0 {
+		return all
+	}
+	return out
 }
 
 // schemaHasField reports whether a context schema declares a given field, in

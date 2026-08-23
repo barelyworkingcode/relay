@@ -66,6 +66,38 @@ Plus the ordinary fragment relay uses to validate a value: `type`, `items`,
 and string are what is validated, and anything else is accepted as long as it
 is present and non-empty.
 
+### Keywords and their values are read under their exact spelling
+
+Every key and value above is matched exactly. A key relay has never heard of is
+ignored — that is how a later vocabulary lands on an older relay, and it is why
+fsMCP's leftover `ui` costs nothing. But a key or value that differs from a
+keyword only in **case** is a typo of *this* vocabulary, and it is an **error**:
+
+    {"Scope": "restrict"}     refused — the keyword is "scope"
+    {"scope": "RESTRICT"}     refused — the value is "restrict"
+    {"source": "Project_Path"} refused
+    {"ui": "directory-list"}  ignored, as before
+
+Read it exactly and nothing here can bite you. The reason it cannot be lenient
+in either direction is that both readings are wrong and neither is visible:
+accepting `Scope` agrees with a spelling no document defines, and ignoring
+`RESTRICT` disagrees with what a reviewer reading your published schema sees.
+
+### A fragment relay cannot read disables the whole schema
+
+If **any** field fragment fails to decode — a type slip such as
+`"applies_to": "mail_*"` written as a string, or a near miss above — relay
+refuses **every call to that MCP**, for every grant, and lists none of its
+tools. It logs one line naming the field and the reason when your server
+connects; that line is your signal.
+
+This is total rather than per-field on purpose. A fragment relay could not read
+is a fragment relay cannot bound: the field it failed on may have been the one
+governing everything, so "apply the parts I understood" would be a claim about
+the parts it did not. Dropping the field alone is worse than it sounds — relay
+would stop requiring a value for it, stop governing the tools it names, and
+strip the operator's stored value on the way to the wire, all silently.
+
 ### `scope: "restrict"` means fail closed
 
 A restrict field that is missing from `_meta`, or present and empty, means the
@@ -96,9 +128,20 @@ account added later does not silently join the grant.
   mechanism exists to prevent.
 
 A grant is refused at edit time if a `project_path` field's `applies_to` covers
-**every** tool the MCP exposes and the record has no path — the grant would buy
-nothing. fsMCP is refused to a profile for that reason; macMCP is not, and
-loses exactly the two tools its `file_dirs` governs.
+**every** tool the grant names and the record has no path — the grant would buy
+nothing. fsMCP is refused to a profile for that reason; macMCP is not, unless
+the profile's `allowed_tools` happens to name only tools that field governs.
+(The question is asked about the granted tools, not the MCP's whole surface: a
+profile granted `allowed_tools: ["mail_save_attachment"]` alone can call
+nothing. A grant that names no tool of the MCP yet is judged against the whole
+surface, which is the fail-closed reading of an incomplete profile.)
+
+Tools such a field governs are also **withheld from a profile's `tools/list`**,
+not merely refused when called — there is no configuration under which they
+work, so advertising them would hand a client a capability it cannot have and
+put it into the generated agent skill. A field whose value is merely *unset*
+behaves the opposite way: the tool stays listed, its description says which
+field has no value, and the call is refused loudly.
 
 ### `applies_to` selects tools, anchored
 
@@ -109,7 +152,12 @@ and a pattern with no metacharacter is an exact match. The same matcher decides
 
 An **absent or empty** `applies_to` governs every tool the MCP exposes — the
 domain-blind default. A pattern relay cannot compile governs everything too,
-which is the fail-closed reading for a restriction.
+which is the fail-closed reading for a restriction, and so does an **empty
+string** entry: `[""]` names no tool, exactly as an uncompilable pattern names
+none, so it governs everything rather than nothing. A stray `""` beside a real
+`"mail_*"` therefore widens the restriction to every tool — it does not void
+the list. (It used to be skipped, which made `applies_to: [""]` a field that
+declared itself a restriction and governed nothing at all.)
 
 ### `enumerable` and `depends_on`
 

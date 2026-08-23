@@ -321,6 +321,38 @@ Two costs, both measured on this tree rather than imagined:
    owner's request and the reason this decision exists. Both mutate; only one
    posts.
 
+**CORRECTION (post-merge, measured): a draft does not stay on this Mac.** This
+decision, the operator guide and the `allow_external` panel copy all argued
+that refusing the outbound grant was safe for composition because
+`mail_create_draft` "writes a draft on this Mac for a person to read and send".
+That is false. Mail **IMAP-APPENDs** a draft to the account's own mail server.
+Reproduced on the shipped `hermes-alice` profile, unchanged, with the audit line
+reading `allow_external: false` beside a message that had been handed to a
+server; the body size is uncapped (macMCP has tested 300,000-character bodies),
+so it is a high-bandwidth channel rather than a side channel.
+
+What survives the correction, and it is the property worth granting: **the
+message is not delivered to any recipient** without a person opening the draft
+and sending it. `mail_send` reaches an arbitrary address; `mail_create_draft`
+cannot reach one at all. What does not survive is the containment claim: with
+`allow_external` refused, a write profile still has an outbound write **to its
+own account**, readable by the provider, a synced phone, a backup, or anyone
+holding the credentials. Where that matters the answer is a read-only profile,
+which has no compose tool at all.
+
+**The annotation is not what is wrong; the sentence was.**
+`mail_create_draft` stays `openWorldHint: false`. Flipping it would make
+draft-but-not-send inexpressible and would delete the feature to fix a
+sentence — and the same reading would have to be applied to
+`calendars_create_event`, `contacts_create`, `mail_move` and `mail_mark_read`,
+every one of which is annotated closed-world and every one of which writes to a
+server when the account behind it is server-backed. Which generalises the
+finding: **`openWorldHint` is a constant per tool, but whether a tool reaches
+off-host is a property of the RESOURCE it acts on.** A grant cannot currently
+say *may write, but only to local stores*; this axis bounds which tools may
+run, not which resources they may touch. That gap is filed separately and named
+in the operator guide as a known limit rather than left to be discovered.
+
 **A record carries `allow_external` per MCP: a boolean gating any tool whose
 `openWorldHint` is not explicitly `false`, defaulting to refused for an access
 profile and allowed for a local project.**
@@ -520,6 +552,22 @@ grant was validated — the runtime-discovery argument ADR-009 gave for defendin
 `allowed_dirs` twice, generalised. `denied` is the right outcome because relay
 made the decision.
 
+**AMENDED (post-merge): a v1 schema had no call-time defence at all.**
+`checkScopePresence`, `filterKnownContextFields` and `scopeFromMeta` each open
+with their own `!cs.V2()` early return, and `ValidateProjectGrants` runs at save
+time only — so a `settings.json` edited by hand to give an access profile a v1
+filesystem MCP, with any directory it liked in `context`, had that value
+injected and honoured. Reproduced by reading `~/.ssh/authorized_keys`. The
+belt-and-braces principle this decision states was honoured for `allowed_tools`
+and for v2 scope and had no v1 equivalent. A restrict field whose value relay
+*derives* — v2's `source: "project_path"`, and v1's `allowed_dirs`, which is
+the same thing under the one field name relay still knows — can never be
+satisfied by a record with no path, so every tool it governs is refused before
+the presence check. It is a **refusal rather than a strip**, because for a v1
+filesystem MCP an absent `allowed_dirs` is exactly what fsMCP reads as
+*unrestricted*: removing the forged value and letting the call proceed would
+turn a confinement relay disbelieves into no confinement at all.
+
 ### 5. `source` replaces the hardcoded name, and unifies local with remote
 
 This is the decision that marries the two models, and it is the reason the
@@ -546,6 +594,19 @@ It also improves the *local* side, which today is unbounded: a local project
 granted macMCP can currently write an attachment anywhere on the host. Under
 `source: "project_path"` it writes inside its own project directory and nowhere
 else.
+
+**AMENDED (post-merge): the question is asked about the GRANTED tools, and such
+a tool is withheld rather than merely refused.** As first built,
+`ValidateProjectGrants` measured `applies_to` against the MCP's whole published
+surface, never against the profile's `allowed_tools` — so
+`allowed_tools: {"macmcp": ["mail_save_attachment"]}` saved cleanly and could
+call nothing, macMCP's `file_dirs` governing one tool out of 47. It now asks
+about the tools the grant names, falling back to the whole surface when the
+grant names none yet, which is the fail-closed reading of an incomplete
+profile. And because such a field can *never* hold a value for a profile —
+unlike an operator field, which is merely unset — the tools it governs are left
+out of `ListTools` and `ListSkillBuckets` as well as refused by `CallTool`; see
+decision 8's amendment.
 
 `SyncProjectToken` keeps its independent second defence in generic form: never
 derive a `project_path` field for a remote-kind record, unconditionally, before
@@ -662,6 +723,14 @@ first thing that can refuse. On a refusal nothing goes on the wire, so what is
 recorded is the authority the call was judged against — the same set of values,
 and the question the record is being asked.
 
+**AMENDED (post-merge): this property was false for every v1 MCP.**
+`scopeFromMeta` opened `if !cs.V2() { return nil }`, so a call relay had
+confined with a value relay *derived itself* was recorded as `scope: null` —
+the same line an MCP with no scope concept produces. The one question the field
+exists to answer was unanswerable for exactly the MCP whose confinement relay
+writes. It now reads v1's derived field too; an MCP declaring no schema still
+records nil, because that distinction is the whole value of the field.
+
 **Only declared `scope: "restrict"` fields, never the whole context map.**
 `_meta` is a general channel and a future MCP may pass an API key through it.
 Logging `Context[extID]` wholesale would make the audit file the place
@@ -699,6 +768,29 @@ section from the same data.
 
 The mode needs no note: a `read` profile simply does not see mutating tools,
 because `checkToolAccess` already filters `ListTools`.
+
+**AMENDED (post-merge): the note names every governing field, and a tool that
+can never be satisfied is not listed at all.** As first built, `ListTools`
+applied layers 1–4 and then only *annotated* scope, while the presence check
+ran in `CallTool` alone — so a tool governed by a field the grant cannot supply
+was listed, written into the `SKILL.md` `relayremote skill` generates, and then
+refused on every call. Worse, the note skipped any field with no value, so
+`mail_save_attachment` on the live `hermes-alice` profile was described as
+confined by `mail_accounts` and `mail_mailboxes` and never by `file_dirs` —
+the field that was the reason. A note that lists two of three restrictions and
+omits the disqualifying one is read as complete, which makes it worse than no
+note.
+
+Two rules, and the distinction between them is the whole of it. A value that is
+merely **not set yet** keeps its tool listed and keeps the loud `denied` naming
+the missing field, because that is more diagnostic to an operator than silent
+absence and it closes the moment somebody types a value — and the note now says
+which field has none. A value that can **never** be set — a
+`source: "project_path"` field on a profile, or a v1 filesystem MCP granted to
+one — is withheld from both listings, because there is no configuration under
+which the tool works and a client must not plan around a capability it cannot
+have. `ListTools`, `ListSkillBuckets` and `CallTool` go through one object so
+they cannot disagree again.
 
 **The frontmatter `description` does not change.** `synthesizeDescription` is a
 500-byte lazy-load *routing* signal. "Restricted to Bob's INBOX" does not help
@@ -1106,7 +1198,9 @@ mail or quietly returning nothing.
   `mail_send` now takes two grants rather than one: `access: "write"` **and**
   `allow_external`, neither of which a profile has by default. A write mail
   profile without the second drafts and does not post, which is the shape the
-  owner asked for. A **read-only** profile has
+  owner asked for — with the qualification decision 2c's correction adds: the
+  draft is uploaded to the account's own mail server, so "does not post" means
+  "reaches no recipient", not "does not leave this Mac". A **read-only** profile has
   no outbound channel at all — not "once `allowed_tools` excludes `web_fetch`",
   which is what the old sentence had to qualify itself with, but by
   construction, because `web_fetch` is open-world and no read-only default
