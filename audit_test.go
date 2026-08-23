@@ -490,6 +490,34 @@ func TestAuditQuery_FiltersRing(t *testing.T) {
 	}
 }
 
+// "scope_violation" is not a stored outcome (ADR-011 decision 7 keeps it a
+// field, not a fourth thing next to denied/tool_error), but --outcome and the
+// Tool Calls dropdown both accept it as a query value anyway: it is the query
+// a security review reaches for right beside "denied", and it should not have
+// a different shape. It must select on the FIELD, leaving the ordinary
+// "tool_error" query matching every tool_error whether or not it was a scope
+// violation.
+func TestAuditQuery_ScopeViolationFiltersOnTheFieldNotTheOutcome(t *testing.T) {
+	rec := newTestAudit(t, nil)
+	rec.Record(AuditEvent{ID: "1", Event: AuditEventCallTool, Tool: "mail_get_email",
+		Outcome: AuditOutcomeToolError, ScopeViolation: true})
+	rec.Record(AuditEvent{ID: "2", Event: AuditEventCallTool, Tool: "fs_read",
+		Outcome: AuditOutcomeToolError, ScopeViolation: false})
+	rec.Record(AuditEvent{ID: "3", Event: AuditEventCallTool, Tool: "mail_search",
+		Outcome: AuditOutcomeOK})
+	rec.Flush()
+
+	if got := rec.Query(AuditQuery{Outcome: "scope_violation"}); len(got) != 1 || got[0].ID != "1" {
+		t.Errorf("scope_violation filter = %+v, want only event 1", got)
+	}
+	if got := rec.Query(AuditQuery{Outcome: AuditOutcomeToolError}); len(got) != 2 {
+		t.Errorf("tool_error filter returned %d events, want both tool_error records unaffected", len(got))
+	}
+	if got := rec.Query(AuditQuery{Outcome: AuditOutcomeOK}); len(got) != 1 || got[0].ID != "3" {
+		t.Errorf("ok filter = %+v, want only event 3 — existing outcomes must be untouched", got)
+	}
+}
+
 // The deep path answers from the file, so it still works for history the ring
 // has already evicted.
 func TestAuditQuery_DeepReadsBeyondTheRing(t *testing.T) {

@@ -182,23 +182,105 @@ different problem.
     relay audit --tail 20
     relay audit --outcome denied
 
-Every record carries the authority in force. A refusal names the layer:
+A refusal names the layer right there in DETAIL — relay's own refusal messages
+already say which check fired, so the log does not need a second taxonomy on
+top of them. Driving "Hermes Mail" (`access: read`, **Outside this Mac**
+refused, `allowed_tools: mail_*, web_fetch`, `mail_accounts: [Bob]`) at
+`capture_screenshot`, `mail_send`, `web_fetch`, and finally `mail_get_email`
+for Alice's mailbox, `relay audit --tail 4` shows:
 
-    denied  capture_screenshot  not in the allowed tools for MCP 'macmcp'      ← layer 2
-    denied  mail_send           not annotated read-only, and this grant is
-                                read-only for MCP 'macmcp'                     ← layer 3
-    denied  web_fetch           reaches outside this host and this grant does
-                                not allow external access for MCP 'macmcp'     ← layer 4
-    tool_error  mail_get_email  scope_violation: true                          ← layer 5
+    TIME      OUTCOME     PROJECT      MCP     TOOL                MS  CALLER  DETAIL
+    14:03:11  denied      Hermes Mail  macmcp  capture_screenshot  0   -       access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'
+    14:03:15  denied      Hermes Mail  macmcp  mail_send           0   -       access denied: tool 'mail_send' is not annotated read-only and this grant is read-only for MCP 'macmcp'
+    14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
 
-Every `call_tool` record carries `access` and `allow_external` — the two
-authorities relay decided by itself — so a refusal on either is answerable from
-the log alone, months later, whatever the profile says by then.
+(CALLER is `-` here because this was driven directly against the router in a
+test harness with no attached process; a real remote call names the enrolled
+client, e.g. `hermes-bob`.)
 
-**`scope_violation: true` is the signal worth watching.** It means a client
-probed a resource boundary and the MCP refused it. A misconfigured scope — a
-mailbox that does not exist — is an ordinary error and deliberately *not*
-marked, so operator typos do not fill the security signal.
+Reading it top to bottom: the first three are `denied` — relay refused the
+call itself, before any MCP ran — and DETAIL names which of the five controls
+did it: **which tools** (`capture_screenshot` is outside `mail_*, web_fetch`),
+**which operations** (`mail_send` is not annotated read-only, and this grant
+is read: only), **outside this Mac?** (`web_fetch` reaches out and this grant
+refuses that). The fourth is `tool_error`, a different kind of refusal: relay
+allowed the call — `mail_get_email` matches `mail_*`, is annotated read-only,
+and does not reach outside — and macMCP itself refused it, which is exactly
+what a resource-scope violation looks like (**which resources**, control 5,
+ADR-011 decision 7). The `scope_violation: true` marker leads DETAIL so it
+reads the same whether you are looking at this table or `grep`ping the JSONL
+for the field it names.
+
+**`scope_violation: true` is the signal worth watching**, and it is also a
+query you can run directly, even though it is a field rather than a stored
+outcome:
+
+    relay audit --outcome scope_violation
+
+    TIME      OUTCOME     PROJECT      MCP     TOOL            MS  CALLER  DETAIL
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email  0   -       scope_violation: true  {"account":"Alice"}
+
+It means a client probed a resource boundary and the MCP refused it. A
+misconfigured scope — a mailbox that does not exist — is an ordinary error and
+deliberately *not* marked, so operator typos do not fill the security signal.
+The Settings → Tool Calls pane shows the same thing visually: a `scope`
+badge next to the outcome pill, so a scope violation stands out from an
+ordinary `tool_error` without expanding the row.
+
+**Every `call_tool` record carries the authority it ran with** — the mode
+(`access`), the outbound grant (`allow_external`), and the resource scope
+that was injected (`scope`) — not just whether the call was allowed, because
+an operator may have edited the profile since (ADR-011 decision 7). `--json`
+has always carried these three fields; `--authority` puts them in the table
+too, as a second line under each row that has one:
+
+    relay audit --tail 4 --authority
+
+    TIME      OUTCOME     PROJECT      MCP     TOOL                MS  CALLER  DETAIL
+    14:03:11  denied      Hermes Mail  macmcp  capture_screenshot  0   -       access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:15  denied      Hermes Mail  macmcp  mail_send           0   -       access denied: tool 'mail_send' is not annotated read-only and this grant is read-only for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+    14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
+                                                                               authority: access=read  outbound=blocked  scope=mail_accounts=["Bob"]
+
+Notice `scope=mail_accounts=["Bob"]` on **every** row, including the first
+three — `mail_accounts` governs `mail_*` tools, not `capture_screenshot` or
+`web_fetch`, yet the record still shows it. `scope` is the authority the whole
+call ran with, not only the part of it that happened to matter for this
+tool: it is every `scope: "restrict"` field the MCP declares, taken from what
+was actually injected into `_meta`, regardless of which fields govern which
+tool. That is deliberate — the record answers "what could this call have
+reached", and the grant's mailbox scope is part of that answer whether or not
+the specific refusal turned on it.
+
+**An absent scope and an empty one are different facts, and look different.**
+A profile with no `mail_accounts` value at all is refused before it reaches
+macMCP — `checkScopePresence`, ADR-011 decision 4's third defence — and that
+denial's own authority line shows the difference from the populated one above:
+
+    relay audit --tail 1 --authority
+
+    TIME      OUTCOME  PROJECT      MCP     TOOL         MS  CALLER  DETAIL
+    14:04:02  denied   Hermes Mail  macmcp  mail_search  0   -       access denied: MCP 'macmcp' scopes tool 'mail_search' by "mail_accounts" and this grant supplies no value for it
+                                                                     authority: access=read  outbound=blocked  scope=(declared, none injected)
+
+`scope=(declared, none injected)` is itself the finding on that record: macMCP
+declares `mail_accounts` and the grant supplied nothing for it. That reads
+differently on purpose from `scope=(none declared)`, which is what an MCP with
+no `scope: "restrict"` field at all would show — there being nothing to
+inject is a different fact from there being something and it being empty, and
+conflating the two (as an earlier version of this field did) would make a
+`denied`-for-missing-scope record indistinguishable from an ordinary MCP that
+was never scoped in the first place. The JSON record carries the same
+distinction (`"scope":{}` vs. `"scope":null`), and so does the Settings pane.
+
+`--authority` is off by default: the eight-column table and `--outcome` /
+`--kind` / `--grep` / `--tail` keep exactly the shape scripts already parse,
+whether or not the authority line is ever requested.
 
 ---
 
