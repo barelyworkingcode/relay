@@ -580,6 +580,32 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// field governs. A source: "project_path" field is unaffected, because
 		// SyncProjectToken derives it for a local project and it is therefore
 		// always present.
+		// A scope this record's KIND can never supply (ADR-011 decision 5),
+		// checked ahead of the presence re-check because it is a different
+		// finding with a different answer: not "set a value" but "this grant
+		// can never hold one".
+		//
+		// It is also the second defence for a case that had none. Decision 5
+		// gives SyncProjectToken the rule "never DERIVE a project_path field
+		// for a remote-kind record" — but nothing removes one written into
+		// settings.json by hand, and for a v1 schema every call-time guard
+		// returned early: checkScopePresence, filterKnownContextFields and
+		// scopeFromMeta all exempt v1, so a hand-written context.fsmcp
+		// allowed_dirs on an access profile was injected and honoured. The
+		// belt-and-braces principle held for allowed_tools and for v2 scope
+		// and had no v1 equivalent.
+		//
+		// Refusing rather than stripping, and that is the whole reason it is a
+		// refusal: for a v1 filesystem-scoped MCP an ABSENT allowed_dirs is
+		// what fsMCP reads as unrestricted, so removing the value and letting
+		// the call through would turn a forged confinement into no confinement.
+		if f, unsatisfiable := unsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
+			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+				"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
+				extID, name, f.Name))
+			au.done(AuditOutcomeDenied, err)
+			return nil, err
+		}
 		if err := checkScopePresence(schema, contextValues(stored.Context[extID]), extID, name); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
@@ -694,27 +720,30 @@ func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcp
 // scopeFromMeta extracts the injected scope for the audit record: ONLY the
 // fields the MCP declared as scope: "restrict", never the whole context map.
 //
+// The fields come from auditedScopeFields rather than RestrictFields, so a v1
+// schema is covered too. `if !cs.V2() { return nil }` made decision 7's
+// property fail for every v1 MCP: a call relay had confined with a value relay
+// itself derived was recorded as `scope: null`, which is the same line an MCP
+// with no scope concept at all produces. The one question the field exists to
+// answer — was this call confined? — was unanswerable for exactly the MCP whose
+// confinement relay writes.
+//
 // _meta is a general channel and a future MCP may pass an API key through it.
 // Logging the map wholesale would make the audit file the place credentials go
 // to be archived. Filtering to declared restrict-fields is both safer and
 // domain-blind — relay is not deciding which keys look sensitive, it is
 // recording only the ones something declared as permissions.
 func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
-	if !cs.V2() {
+	fields := auditedScopeFields(cs)
+	if len(fields) == 0 {
 		return nil
 	}
 	injected := contextValues(meta)
-	if len(injected) == 0 {
-		return nil
-	}
-	out := make(map[string]json.RawMessage)
-	for _, f := range cs.RestrictFields() {
+	out := make(map[string]json.RawMessage, len(fields))
+	for _, f := range fields {
 		if v, ok := injected[f.Name]; ok {
 			out[f.Name] = v
 		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

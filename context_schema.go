@@ -642,6 +642,104 @@ func (cs ContextSchema) ProjectPathFields() []ContextField {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// The two questions that have to be asked of a v1 schema as well (ADR-011
+// decisions 4, 5 and 7)
+// ---------------------------------------------------------------------------
+//
+// ContextSchema.Fields is populated for v2 ONLY, deliberately: no v2 rule may
+// fire on a declaration that never opted into the vocabulary. That invariant is
+// right and is pinned by a test — but it left v1 with no call-time defence at
+// all and no audit record, because every consumer spelled its own `!cs.V2()`
+// early return and stopped there.
+//
+// The two rules below are the ones that must not stop there, and each is
+// written once for both versions rather than twice. Everything else about v1
+// is unchanged.
+
+// v1DerivedField is v1's allowed_dirs said in the v2 vocabulary: a restriction
+// whose value relay derives from the project's path, governing every tool
+// (v1 has no applies_to, so there is nothing to narrow it with).
+//
+// This is not the "registry of known field names" decision 3 rejects. It is the
+// v1 compatibility branch that already exists — see v1AllowedDirsField, which
+// is the one domain-specific name left in relay and is scheduled for removal —
+// expressed so that the rules below can be written once instead of once per
+// version. Under v2 the same MCP declares the same field with
+// source: "project_path" and none of this is consulted.
+var v1DerivedField = ContextField{
+	Name:   v1AllowedDirsField,
+	Type:   "array",
+	Scope:  ContextScopeRestrict,
+	Source: ContextSourceProjectPath,
+}
+
+// derivedScopeFields returns every restrict field whose value relay DERIVES
+// from the record rather than an operator supplying it.
+//
+// A record with no path cannot have one derived for it, which is what makes
+// this the question "can this grant ever satisfy that field" rather than "has
+// it yet" — see unsatisfiableScopeField.
+func derivedScopeFields(cs ContextSchema) []ContextField {
+	if cs.V2() {
+		return cs.ProjectPathFields()
+	}
+	if schemaHasField(cs.Raw, v1AllowedDirsField) {
+		return []ContextField{v1DerivedField}
+	}
+	return nil
+}
+
+// unsatisfiableScopeField returns a restrict field governing toolName whose
+// value can NEVER be supplied for this record's kind, and is the difference
+// between the two shapes of "this tool has no scope value".
+//
+//   - Not set YET — an operator field on a record that could hold one. The tool
+//     stays listed and the call is refused loudly, because a `denied` naming
+//     the missing field is more diagnostic to an operator than silent absence.
+//   - Can NEVER be set — a source: "project_path" field on an access profile,
+//     which has no path. SyncProjectToken will not derive one, the editor
+//     refuses one typed by hand, and there is no configuration under which the
+//     tool works. A client must not be shown a capability it cannot have.
+//
+// It answers only for a remote-kind record: a local project has a path, so
+// SyncProjectToken derives the value and the field is always satisfiable.
+//
+// It is also the second defence decision 5 asks for, in the direction the
+// first one cannot cover. SyncProjectToken never DERIVES such a value for a
+// remote record — but nothing removes one written into settings.json by hand,
+// and for a v1 MCP nothing at call time looked at it either: the value was
+// injected and honoured. Refusing here is not "strip the value and let the
+// presence check deny", because for v1 an absent allowed_dirs is exactly what
+// fsMCP reads as UNRESTRICTED, which is ADR-009's original finding. The call
+// is refused; nothing goes on the wire.
+func unsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (ContextField, bool) {
+	if !isRemote {
+		return ContextField{}, false
+	}
+	for _, f := range derivedScopeFields(cs) {
+		if f.Governs(toolName) {
+			return f, true
+		}
+	}
+	return ContextField{}, false
+}
+
+// auditedScopeFields returns the fields whose injected values belong on an
+// audit record: every declared restriction under v2, and v1's derived field.
+//
+// ADR-011 decision 7's property is that the log answers what was attempted with
+// what authority, and for a v1 MCP that answer used to be `scope: null` on
+// every record — including a call relay had confined with a value it injected
+// itself. "This MCP has no scope concept" and "this call carried one" were the
+// same line.
+func auditedScopeFields(cs ContextSchema) []ContextField {
+	if cs.V2() {
+		return cs.RestrictFields()
+	}
+	return derivedScopeFields(cs)
+}
+
 // OperatorFields returns every restrict-field an operator must supply. Phase-2
 // operator surfaces (the editor, the enumeration picker) work from this list.
 func (cs ContextSchema) OperatorFields() []ContextField {
