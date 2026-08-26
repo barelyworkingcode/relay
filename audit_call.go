@@ -181,6 +181,16 @@ func (a *auditCall) setAuthority(access string, allowExternal bool, scope map[st
 	a.ev.Scope = scope
 }
 
+// setMcpRoot records the directory relay resolved a --root argument to for
+// this MCP, if it spawned one that way. A no-op when root is empty, so it is
+// always safe to call with whatever McpSurfaceFor returned.
+func (a *auditCall) setMcpRoot(root string) {
+	if a == nil || root == "" {
+		return
+	}
+	a.ev.McpRoot = root
+}
+
 // setUnplacedScope records the fields this grant set a value for that the
 // MCP's live schema does not declare (issue #42). Called immediately before
 // the refusal they cause, so the record that says the call was denied is also

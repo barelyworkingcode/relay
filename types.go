@@ -226,6 +226,14 @@ type ExternalMcp struct {
 	// then spawns the MCP with --check-permissions for a final status
 	// summary. See mcp_permissions.go.
 	TccServices []string `json:"tcc_services,omitempty"`
+
+	// ResolvedRoot is the --root argument in Args, resolved through symlinks,
+	// for a stdio MCP relay spawned with one (fsMCP v3 integration, R2/R5).
+	// Runtime-only, set by prepareStdioLaunch at spawn time: it is a fact
+	// relay derives from its own configuration, not something the MCP
+	// declares, so it travels beside ContextSchema rather than inside it.
+	// Empty means relay did not spawn this MCP with a --root argument.
+	ResolvedRoot string `json:"-"`
 }
 
 // IsHTTP returns true if this MCP uses the HTTP Streamable transport.
