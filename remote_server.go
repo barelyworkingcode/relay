@@ -155,6 +155,7 @@ func handleRemoteListTools(ctx context.Context, _ *bridge.RemoteRequest, router 
 }
 
 func handleRemoteCallTool(ctx context.Context, req *bridge.RemoteRequest, router RemoteToolRouter, token string) bridge.BridgeResponse {
+	ctx = bridge.WithArgsSHA256(ctx, req.ArgsSHA256)
 	result, err := router.CallTool(ctx, req.Name, req.Arguments, token)
 	if err != nil {
 		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())

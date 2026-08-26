@@ -665,6 +665,13 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	surface := r.tools.McpSurfaceFor(extID)
 	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
+	// The directory relay spawned this MCP with, if any (ADR-011 decision 7 /
+	// fsMCP v3 integration R2). Recorded unconditionally, alongside setMcp
+	// rather than gated behind isServiceToken like setAuthority below: it is a
+	// fact about the MCP's configuration, not about the caller's grant, and
+	// costs nothing to set on a record that will not render it.
+	au.setMcpRoot(surface.Root)
+
 	// The _meta this call would run with: the per-token context for this MCP,
 	// filtered down to fields the LIVE schema still declares, plus the
 	// authenticated project id so an MCP can attribute the call to a project
@@ -683,6 +690,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// to a live connection (ToolOwners above), so this can never be the
 	// "MCP is merely down" case that makes pruning stored data unsafe.
 	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
+	meta = mergeArgsSHA256(meta, bridge.ArgsSHA256FromContext(ctx))
 
 	// Audit the authority actually in force (ADR-011 decision 7), BEFORE the
 	// first thing that can refuse.
@@ -858,6 +866,30 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 // projectID is non-empty. base is the per-token _meta context (may be nil). When
 // projectID is empty it returns base unchanged, preserving prior behavior for
 // service/external tokens. Falls back gracefully if base isn't a JSON object.
+// mergeArgsSHA256 places the client's argument hash on the outgoing _meta,
+// verbatim. Relay does not check it — see bridge.RemoteRequest.ArgsSHA256.
+func mergeArgsSHA256(base json.RawMessage, sum string) json.RawMessage {
+	if sum == "" {
+		return base
+	}
+	m := map[string]json.RawMessage{}
+	if len(base) > 0 && string(base) != "null" {
+		if err := json.Unmarshal(base, &m); err != nil || m == nil {
+			m = map[string]json.RawMessage{}
+		}
+	}
+	encoded, err := json.Marshal(sum)
+	if err != nil {
+		return base
+	}
+	m["args_sha256"] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return out
+}
+
 func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 	if projectID == "" {
 		return base

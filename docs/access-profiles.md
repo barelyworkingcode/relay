@@ -616,3 +616,21 @@ you lack.
 - [context-schema.md](context-schema.md) — for MCP authors: how to declare a
   scope relay can carry
 - [audit-log.md](audit-log.md) — every field on a record
+
+## An MCP that declares no scope at all
+
+Not every MCP takes a scope value. One may instead be **launched** already
+confined — fsMCP is spawned with a `--root` and serves that one directory for
+its whole lifetime — in which case it publishes no `contextSchema` and there is
+nothing for a grant to set.
+
+Grant these per MCP, not per value: register one instance per directory
+(`fsmcp-documents`, `fsmcp-projects`), and a profile's `allowed_mcp_ids` decides
+which it can reach. `relay grant` shows `scope: (none set)` for such a profile,
+which is accurate rather than a gap — and `relay audit --authority` still names
+the directory, from `mcp_root`.
+
+Do **not** leave a stale scope field in a grant for an MCP that has stopped
+declaring it. Relay refuses such a call outright and says so
+(`SCOPE NOT APPLIED`), which is the correct fail-closed behaviour but reads as
+a puzzling denial if the grant was simply never cleaned up.

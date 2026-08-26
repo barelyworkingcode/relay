@@ -220,6 +220,13 @@ func auditAuthorityLine(ev AuditEvent) (string, bool) {
 		parts = append(parts, "outbound=blocked")
 	}
 	parts = append(parts, "scope="+auditScopeSummary(ev.Scope))
+	// root is a fact relay knows from its OWN spawn configuration, not a
+	// scope the MCP declared -- kept a separate word so it can never be read
+	// as filling in for "scope=(none declared)", which stays true and stays
+	// meaningful for an MCP that really does publish no contextSchema.
+	if ev.McpRoot != "" {
+		parts = append(parts, "root="+ev.McpRoot)
+	}
 	// Two findings the summary above cannot carry, each appended rather than
 	// substituted, because the coordinates stay on the line either way — the
 	// operator is entitled to them (issue #41) and a warning is the second

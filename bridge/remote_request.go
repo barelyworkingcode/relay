@@ -31,6 +31,13 @@ type RemoteRequest struct {
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	ProjectID string          `json:"project_id,omitempty"`
+
+	// ArgsSHA256 is sha256(Arguments), hex, computed by the client over the
+	// bytes it was handed. Relay FORWARDS it into the MCP call's
+	// `_meta.args_sha256` and never recomputes it: a hash relay derived from
+	// arguments relay had already decoded would validate relay against itself
+	// and detect nothing. Verification belongs to the MCP; relay is a courier.
+	ArgsSHA256 string `json:"args_sha256,omitempty"`
 }
 
 // DecodeRemoteRequest parses one wire line STRICTLY: an unrecognised key is an
