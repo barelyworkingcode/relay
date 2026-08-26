@@ -99,6 +99,38 @@ the parts it did not. Dropping the field alone is worse than it sounds — relay
 would stop requiring a value for it, stop governing the tools it names, and
 strip the operator's stored value on the way to the wire, all silently.
 
+### A value relay cannot PLACE in the live schema is refused too
+
+The mirror image of the rule above, and it fails closed the same way. If a
+grant carries a value for a field the MCP's **live** schema does not declare,
+relay refuses every call to that MCP under that grant, names the field and the
+MCP, and lists none of its tools.
+
+There, relay could not read what the MCP declared. Here, it cannot place what
+the *operator* declared — and the consequence is identical: relay does not
+know what it would be handing over, so it hands over nothing.
+
+Relay used to **drop** such a value and dispatch the call anyway. That reads
+like the conservative option and is not: relay asserted a confinement in the
+operator's profile, did not deliver it, and recorded the omission as
+`scope=(none declared)` — the audit string for "this MCP was never scoped".
+In the reproduction the only thing that stopped an unconfined filesystem call
+was fsMCP's own fail-closed rule. Relay cannot assume the next MCP has one
+(issue #42).
+
+The question is asked of every stored key, not only of ones that were
+restrictions when they were written, because once the declaration is gone
+relay cannot tell the difference — the field it can no longer place may have
+been the one governing everything. A key whose value is **empty** (`[]`,
+`null`, `""`) is exempt: empty is absent everywhere else in this model, and a
+leftover empty key asserts no confinement anybody could fail to deliver.
+
+Reaching this state means something changed underneath a grant: a schema that
+legitimately changed, a downgrade, a rebuild, a different binary at the same
+path, a schema that failed to publish, or a hand-edited `settings.json`. Note
+that this is a **v2 rule**: a v1 or absent declaration has its context blob
+injected verbatim, so nothing is dropped there and nothing is refused.
+
 ### `scope: "restrict"` means fail closed
 
 A restrict field that is missing from `_meta`, or present and empty, means the
@@ -189,6 +221,60 @@ already decided the field governs the tool and has something to show:
 | `"value"` | the value, exactly as it always has — **the default when `disclose` is absent** |
 | `"count"` | the value's shape and nothing else, e.g. "confined to 2 values" |
 | `"none"` | that the field is set and nothing else |
+
+### `disclose` governs the CLIENT's surface and nothing else
+
+This is stated as its own rule because getting it wrong is what issue #41 was.
+There are two audiences for a scope value and they are owed different things:
+
+| audience | surfaces | what it sees |
+|---|---|---|
+| the **client** | the `Scope:` note in `tools/list`, and the generated `SKILL.md` | whatever `disclose` says |
+| the **operator** | Settings → Projects, `relay grant`, `relay audit --authority`, the `_meta` relay injects, the audit JSONL | the real value, **always** |
+
+The operator is entitled to the coordinates: it is their machine and their
+grant, and a review that cannot see what was granted is not a review. So no
+operator surface consults `disclose`, ever, and `ScopeFieldView` deliberately
+does not carry it — a value withheld from an operator is a value nobody
+checks.
+
+Getting this wrong does not look like a leak; it looks like nothing. Relay
+shipped `disclose: "count"` and then pointed the operator guide's first
+verification step at `relayremote list`, a client-side tool. For
+`allowed_dirs: ["/"]` it printed *"confined to 1 value"*, and for a grant of
+one project folder it printed the same eleven bytes — while the first grant
+read `/etc/passwd` and listed `~/.ssh`. The documented way to check a scope
+returned the same answer whether you got it right or catastrophically wrong.
+
+### A value that is not a confinement is named, at every `disclose` setting
+
+**A count is not a measure of confinement.** "1 value" is true of
+`/Users/me/project` and equally true of `/`. So one fact outranks `disclose`:
+when a scope entry resolves to a **filesystem root**, the note says so.
+
+    Scope: Directories this client may read, search and modify within — unrestricted (the whole filesystem).
+
+That holds for `"count"`, for `"none"`, and for `"value"` (which prints the
+phrase *and* the value). It costs the client nothing it does not learn the
+moment it lists `/`, which is the test `disclose` exists to apply — and
+withholding it would mean the one mechanism that tells a client its own limits
+telling it something false about them.
+
+The rule is a question about the **value**, never about the field name: relay
+holds no registry of known field names (ADR-011 decision 3), so it asks the
+same question of every value of every field. An entry is classified by its
+cleaned form, so `/`, `//`, `/..` and `/Users/me/../..` are one value rather
+than four spellings. The cost is a false positive on a non-path field whose
+value is literally `/` — announced as unrestricted, refused by nothing. That
+is the right direction to be wrong in.
+
+A **home directory** (`~`, `/Users/<someone>`, `/home/<someone>`, and the
+parent of either) is deliberately **not** named to the client. It is genuinely
+confined, so "confined to 1 value" is not false there, and saying "this is
+somebody's home" would disclose exactly the host topology `disclose` exists to
+withhold. It is loud on every operator surface instead — the profile card, the
+save-time confirmation, `relay grant` and the audit authority line — because
+that is where the question "did I mean to grant that?" is asked.
 
 `"value"` has to be the absent-default for the same reason every other keyword
 here defaults to the reading that changes nothing: an MCP that predates this

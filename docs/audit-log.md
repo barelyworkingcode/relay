@@ -135,6 +135,17 @@ and re-reading `settings.json` at query time answers a different question. So a
   map, because `_meta` is a general channel and a future MCP may pass an API
   key through it. Filtering to declared restrict-fields is both safer and
   domain-blind.
+- **`scope_unplaced`** names the fields **the grant set a value for** that the
+  MCP's live schema does not declare, so relay could not place them and refused
+  the call. It is a field of its own rather than a fourth reading of `scope`,
+  because `scope`'s three readings (`null`, `{}`, populated) are all about what
+  the *MCP* declares and this is about what the *operator* declared. Folding it
+  in would have let `"scope": null` — "this MCP declares no scope field at all"
+  — do double duty for "this MCP declares none of the fields your profile set",
+  which is exactly the conflation that let a call dispatched with the
+  operator's scope removed read, in the log, as an ordinary unscoped MCP
+  (issue #42). A record carrying it is always a `denied`. **This is the field
+  to alert on**: it means an MCP changed underneath a grant.
 - All three are on a **refusal** as well as a completion. A `denied` or
   `throttled` record carries the mode that was in force, the outbound grant,
   and the scope the grant carried, because "which layer refused this, and under what mode?" is the

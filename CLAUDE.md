@@ -12,6 +12,7 @@ service management.
 - `relay mcp register|unregister|list` — external MCP management.
 - `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
+- `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
 - `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
 
 ## Architecture
@@ -44,6 +45,8 @@ router.go                Bridge auth (service vs project tokens), tool filtering
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
 audit_cmd.go             `relay audit` CLI
+grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
+scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
 enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
@@ -96,7 +99,7 @@ A grant answers four questions, and none of the four may widen another:
 | which MCP | `allowed_mcp_ids` | `["*"]` refused for a remote record |
 | which tools | `allowed_tools` (MCP id → patterns) | anchored globs; `"*"` refused for a remote record; **absent means none for a remote record, all for a local project** |
 | which operations | `access` (MCP id → `read`\|`write`) | admitted to `read` only on an explicit `annotations.readOnlyHint: true`; **absent means read for a remote record, write for a local project** |
-| which resources | `context` → injected `_meta` | the MCP enforces it; relay cannot verify it |
+| which resources | `context` → injected `_meta` | the MCP enforces it; relay cannot verify it — but relay must be able to **place** it |
 
 The two asymmetric defaults are deliberate — the threat model differs, and a
 local project written before these fields existed must keep working. The
@@ -111,6 +114,30 @@ another route, because ignoring a denylist is the only direction that widens.
 
 What each MCP may be narrowed by is read from its `contextSchema`:
 [`docs/context-schema.md`](docs/context-schema.md).
+
+**A scope relay cannot place is a scope relay cannot enforce.** Relay already
+denies every call to an MCP whose `contextSchema` it cannot *read*; a value the
+operator wrote that relay cannot *place* in that MCP's live schema is the same
+condition from the other end and gets the same answer — denied, naming the
+field and the MCP, with the MCP's tools withheld from every listing. It used to
+drop the value and dispatch anyway, recording `scope=(none declared)`: relay
+asserted a confinement in the profile, did not deliver it, and reported the
+omission in the language of "there was nothing to apply". The audit record now
+carries `scope_unplaced` and the two facts no longer share a string (issue
+#42). v2 only — a v1 blob is injected verbatim, so nothing is dropped there.
+
+**A count is not a measure of confinement** (`scope_breadth.go`, issue #41).
+`disclose: "count"` renders `["/"]` and `["/Users/me/project"]` identically, so
+a value whose entries resolve to a **filesystem root** is named as
+`unrestricted (the whole filesystem)` at every `disclose` setting — the client
+learns it the moment it lists `/`, so withholding it buys nothing. A **home
+directory** is not named to the client (it is genuinely confined, and saying so
+would disclose topology) but is loud on every operator surface. And the split
+that made this a bug: **`disclose` governs what reaches the CLIENT and never
+what relay shows the operator** — Settings → Projects, `relay grant`,
+`relay audit --authority`, `_meta` and the audit JSONL all show the real value
+unconditionally. The classification is a question about the *value*, never
+about the field name; ADR-011 decision 3's no-registry rule is intact.
 
 `allow_cwd_auth` (default false, per project) opts into a token-less fallback:
 a caller with no token whose working directory is inside the project path
