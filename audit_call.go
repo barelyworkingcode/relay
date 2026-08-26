@@ -358,3 +358,64 @@ func projectNameFor(stored *StoredToken, settings *Settings) string {
 	}
 	return strings.TrimPrefix(stored.Name, "project:")
 }
+
+// ---------------------------------------------------------------------------
+// Supervision records (ADR-012)
+// ---------------------------------------------------------------------------
+
+// mcpSupervisionEvent builds the audit record for one external-MCP liveness
+// transition. It is the only audit event relay writes about itself rather than
+// about a caller, so the actor is `relay` and every caller-derived field is
+// left absent rather than zero-filled — there is no project, no pid, and no
+// credential behind a process that died.
+//
+// A failed individual restart attempt produces NO record: it is a step inside
+// an outage the mcp_down row already opened, and one line per retry would bury
+// the two lines that bound it. The attempt count survives on the row that
+// closes the outage, and every attempt is in the app log regardless.
+func mcpSupervisionEvent(ev McpHealthEvent) (AuditEvent, bool) {
+	out := AuditEvent{
+		ID:          newAuditID(),
+		TS:          time.Now(),
+		McpID:       ev.ID,
+		Supervision: ev.State,
+		Actor: AuditActor{
+			Kind: AuditActorRelay,
+			Auth: AuditAuthNone,
+			// Named so the CALLER column says who wrote the row rather than a
+			// dash, which on every other line means "could not attribute".
+			Proc: "relay",
+		},
+	}
+	if ev.Err != nil {
+		out.Error = ev.Err.Error()
+	}
+	// DurMs is the outage, which is the question these rows exist to answer:
+	// not "did it flap" but "for how long was every grant naming this MCP
+	// dead". It is 0 on the mcp_down row because at that moment the answer is
+	// not yet known.
+	out.DurMs = ev.Downtime.Milliseconds()
+
+	switch ev.State {
+	case McpHealthDown:
+		out.Event, out.Outcome = AuditEventMcpDown, AuditOutcomeError
+	case McpHealthRestarted:
+		out.Event, out.Outcome = AuditEventMcpUp, AuditOutcomeOK
+	case McpHealthAbandoned:
+		out.Event, out.Outcome = AuditEventMcpDown, AuditOutcomeError
+	default:
+		return AuditEvent{}, false
+	}
+	return out, true
+}
+
+// RecordMcpSupervision writes a supervision record. Nil-safe, like every other
+// method on the recorder, so a build with auditing off simply drops it.
+func (r *AuditRecorder) RecordMcpSupervision(ev McpHealthEvent) {
+	if !r.Enabled() {
+		return
+	}
+	if out, ok := mcpSupervisionEvent(ev); ok {
+		r.Record(out)
+	}
+}

@@ -21,6 +21,10 @@ interesting event:
 | `throttled` | A remote enrolment's rate or volume budget was exceeded |
 | `pending` | An intent record, written before the call ran and awaiting its completion |
 
+Event kinds are `call_tool`, `list_tools`, `list_skills`, and — for records
+relay writes about itself rather than about a caller — `mcp_down` / `mcp_up`
+(see below).
+
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
 only one of the three that says the grant was legitimate and the *pattern of
 use* was not, which is what exfiltration looks like from the host's side.
@@ -244,7 +248,45 @@ every line written before this existed.
 
 **An intent with no matching completion is a signal, not noise.** It means relay
 invoked an MCP and never learned the outcome — a crash, a kill, or a hang. It is
-worth alerting on rather than reconciling away.
+worth alerting on rather than reconciling away. Since ADR-012 the usual cause
+has a record of its own beside it: see `mcp_down` below.
+
+## Records relay writes about itself
+
+Two event kinds are not calls. `mcp_down` and `mcp_up` record that an external
+MCP's child process died and that it came back (ADR-012):
+
+```json
+{"id":"…","ts":"…","dur_ms":0,"event":"mcp_down","actor":{"kind":"relay","auth":"none","proc":"relay"},
+ "mcp_id":"fsmcp","outcome":"error","supervision":"down","error":"read response: EOF","scope":null}
+{"id":"…","ts":"…","dur_ms":1204,"event":"mcp_up","actor":{"kind":"relay","auth":"none","proc":"relay"},
+ "mcp_id":"fsmcp","outcome":"ok","supervision":"restarted","scope":null}
+```
+
+- `actor.kind` is `relay`: this is the one record relay writes about itself
+  rather than about a caller, so there is no project, no pid, and no
+  credential — those fields are absent rather than zero-filled. Select the set
+  with `relay audit --kind relay`.
+- `supervision` names the transition: `down`, `restarted`, or `abandoned`.
+  `abandoned` is an `mcp_down` row too, and means the restart budget is spent
+  and relay has stopped trying — that one needs a human.
+- `dur_ms` on the closing row is the **outage length**, which is the question
+  these rows exist to answer: not "did it flap" but for how long every grant
+  naming this MCP was dead.
+- A failed individual restart attempt gets no row. It is a step inside an outage
+  the `mcp_down` row already opened; every attempt is in the app log.
+
+They are here, and not only in the app log, because of what this file is for. An
+operator is told `relay audit` is the ground truth for anything relay gates, and
+a dead MCP is exactly the state in which every gated call fails for a reason
+that has nothing to do with the grant. Without these rows the log shows a run of
+`error` outcomes and no cause, and the only other signal is the client's own
+`read response: EOF`.
+
+```
+relay audit --event mcp_down          # every external-MCP outage
+relay audit --kind relay --tail 200   # outages and recoveries together
+```
 
 ## Fail-open, visibly
 
@@ -279,6 +321,7 @@ with auditing off. The Tool Calls tab says so rather than showing an empty table
 relay audit                          # 50 most recent, as a table
 relay audit --tail 200 --outcome denied
 relay audit --kind remote                 # everything any VM did
+relay audit --kind relay                  # external-MCP outages and recoveries
 relay audit --project proj_7f2a --mcp fsmcp
 relay audit --grep read_file --json  # JSONL, oldest first, for piping
 relay audit --path                   # print the log path and exit

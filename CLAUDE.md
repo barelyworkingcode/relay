@@ -49,7 +49,8 @@ enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server 
 enrol_cmd.go             `relay enrol` CLI
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
-external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface)
+external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
+                         mcpSupervisor restarts a stdio child that dies (ADR-012)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
 frontend_server.go       Front-door HTTP server; project routes local, rest falls through
@@ -268,6 +269,24 @@ brokering rationale: ADR-007):
 - **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch; an empty configured token fails closed. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
 - **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
 
+**External MCPs are supervised children** — one stdio connection per MCP id,
+shared by every access profile that names it, and therefore restarted when it
+dies rather than left down. `mcpSupervisor` (`external_mcp.go`) waits on the
+reader goroutine, backs off exponentially, and caps restart *intensity*: a child
+that stays up for `MCPRestartStableWindow` resets the counter, so an MCP that
+dies occasionally is recovered forever while one that dies on every spawn is
+abandoned after `MCPRestartMaxAttempts` and says so. A respawn is a **full**
+start — `connectStdio` is the only path, and it re-runs the handshake and the
+context-schema discovery before publishing, because a callable MCP whose schema
+relay has not read yet fails *open*: `ParseContextSchema(nil, 0)` requires no
+scope field and strips every stored context key. Tools and schema are installed
+and the connection published in ONE critical section, so that state is
+unrepresentable rather than merely unlikely. In-flight calls are failed, never
+replayed — relay restores the capability, not the call. A frame longer than
+`bridge.MaxMessageSize` fails only the call it answers and the stream resyncs to
+the next newline. Every death, recovery, and abandonment is an audit row
+(`relay audit --kind relay`). See ADR-012.
+
 **Tool-call audit log** — every call, denial, and auth failure is recorded at
 `appRouter.CallTool`, the single chokepoint every transport funnels through.
 Attribution comes from relay's own auth resolution (project id) and the kernel
@@ -279,7 +298,8 @@ flushed before the MCP runs, a `completion` record with the same `id` follows,
 and a call whose intent cannot be recorded is refused (ADR-010 decision 5).
 Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
 VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
-ADR-008, narrowed for remote callers by ADR-010.
+ADR-008, narrowed for remote callers by ADR-010, widened by ADR-012 with the
+`mcp_down` / `mcp_up` records relay writes about itself.
 
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare

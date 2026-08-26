@@ -469,7 +469,9 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp)
 		return err
 	}
 
-	m.finalizeConnection(mcpCfg.ID, conn, result)
+	// nil supervisor: an HTTP MCP has no child process to supervise, so there
+	// is no restart identity to guard the publication against (ADR-012).
+	m.finalizeConnection(mcpCfg.ID, conn, result, nil)
 	return nil
 }
 
