@@ -249,7 +249,9 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	}
 
 	id := c.allocID()
-	body, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
+	// Verbatim for the same reason the stdio transport is (ADR-012): params
+	// holds the caller's argument bytes and relay does not edit them.
+	body, err := marshalJSONVerbatim(jsonrpc.NewRequest(id, method, params))
 	if err != nil {
 		return nil, err
 	}

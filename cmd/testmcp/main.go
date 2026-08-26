@@ -141,9 +141,19 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
+	// The echo is only evidence if it is faithful. json.Marshal would compact
+	// the echoed params with HTML escaping on, rewriting `<`, `>`, `&` and the
+	// Unicode line separators — so a test asserting that relay forwarded a
+	// caller's bytes unmodified (ADR-012) would be reading this peer's edits
+	// rather than relay's. An encoder with escaping off reports what arrived.
 	writeResp := func(id interface{}, result json.RawMessage) {
-		b, _ := json.Marshal(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id, Result: result})
-		writeLine(b)
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id, Result: result}); err != nil {
+			return
+		}
+		writeLine(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 	}
 	// writeOversize emits one response frame of n filler bytes, tagged with id.
 	// Written by hand rather than through json.Marshal so the id lands in its

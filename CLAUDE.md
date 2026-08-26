@@ -51,6 +51,7 @@ remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
                          mcpSupervisor restarts a stdio child that dies (ADR-012)
+wire_json.go             Verbatim JSON encoding for the outbound JSON-RPC frame (ADR-013)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
 frontend_server.go       Front-door HTTP server; project routes local, rest falls through
@@ -300,6 +301,21 @@ Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything 
 VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
 ADR-008, narrowed for remote callers by ADR-010, widened by ADR-012 with the
 `mcp_down` / `mcp_up` records relay writes about itself.
+
+**What relay modifies about a call it forwards: nothing** (ADR-012). Tool
+arguments travel as `json.RawMessage` from the wire, through authorization, to
+the MCP and into the audit log — relay validates that they are JSON and decides
+whether the call is allowed, and never decodes them into Go values. It cannot:
+a round trip through a Go `string` substitutes U+FFFD for a lone UTF-16
+surrogate, which is legal JSON and which fsMCP refuses on purpose, so relay was
+silently repairing the corruption its downstream was built to catch (issue #40).
+The same round trip also sorted object keys, collapsed duplicate keys and
+reformatted numbers. **Inspect a `RawMessage` for a decision; forward the
+original bytes.** The audit log holds those same bytes — redaction of a
+credential-like value is the only rewrite — because a log that paraphrases what
+a client sent is not ground truth. The one thing relay does change is
+insignificant whitespace: the stdio transport is newline-delimited, so the
+guarantee is `json.Compact` of what the client sent, byte for byte.
 
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -362,30 +363,134 @@ var auditSensitiveKeys = []string{
 	"bearer", "passphrase",
 }
 
-// redactValue walks a decoded JSON value, replacing values under credential-like
-// keys. Recurses through nested objects and arrays; scalars pass through.
-// extra keys are appended to the built-in set (already lowercased by caller).
-func redactValue(v interface{}, extra []string) interface{} {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(t))
-		for k, val := range t {
-			if isSensitiveKey(k, extra) {
-				out[k] = auditRedactedValue
-				continue
-			}
-			out[k] = redactValue(val, extra)
-		}
-		return out
-	case []interface{}:
-		out := make([]interface{}, len(t))
-		for i, val := range t {
-			out[i] = redactValue(val, extra)
-		}
-		return out
-	default:
-		return v
+// auditRedactedJSON is auditRedactedValue as the JSON scalar that replaces a
+// credential-like value in the stored record.
+var auditRedactedJSON = json.RawMessage(`"` + auditRedactedValue + `"`)
+
+// redactRaw walks JSON *as bytes*, replacing values under credential-like keys
+// and copying everything else through untouched. It never decodes a value into
+// a Go interface{}.
+//
+// That is the whole point (ADR-012). The predecessor decoded the arguments into
+// interface{}, redacted, and re-encoded — which meant the record was not what
+// the caller sent but Go's paraphrase of it: an unpaired UTF-16 surrogate came
+// back as U+FFFD, object keys came back sorted, duplicate keys came back as one,
+// and a number came back in Go's float formatting. The audit log is the
+// operator's ground truth for what a client did; a paraphrase that reads as a
+// verbatim quote is worse than no record, because reconstructing issue #40 from
+// the log put the corruption on the client's side of the boundary.
+//
+// It is deliberately total rather than fallible: anything it cannot walk (which
+// after the json.Compact in redactArgs means nothing that is valid JSON) is
+// returned unchanged, so a shape this function did not anticipate is recorded
+// verbatim rather than dropped. Redaction is the one thing it must not skip,
+// and an object is the only shape that can carry a key to redact by — so the
+// object walk is the only branch that can fail closed, and it does: a walk that
+// errors mid-way falls back to the un-redacted bytes only when no key was
+// sensitive, and otherwise to the whole value replaced.
+func redactRaw(raw json.RawMessage, extra []string) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
 	}
+	switch raw[0] {
+	case '{':
+		return redactRawObject(raw, extra)
+	case '[':
+		var elems []json.RawMessage
+		if err := json.Unmarshal(raw, &elems); err != nil {
+			return raw
+		}
+		out := make([]byte, 0, len(raw))
+		out = append(out, '[')
+		for i, e := range elems {
+			if i > 0 {
+				out = append(out, ',')
+			}
+			out = append(out, redactRaw(e, extra)...)
+		}
+		return append(out, ']')
+	default:
+		// A string, number, boolean or null: nothing to redact and nothing to
+		// rewrite. These bytes are exactly what the caller sent.
+		return raw
+	}
+}
+
+// redactRawObject rebuilds a JSON object from its own bytes: each key is copied
+// from the source rather than re-encoded from the decoded Go string, so key
+// order, duplicate keys and any escape a key contains all survive. The decoded
+// key is used only to ASK whether the key looks like a credential.
+func redactRawObject(raw json.RawMessage, extra []string) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil { // the opening brace
+		return raw
+	}
+	out := make([]byte, 0, len(raw))
+	out = append(out, '{')
+	first := true
+	sawSensitive := false
+	for dec.More() {
+		keyFrom := dec.InputOffset()
+		tok, err := dec.Token()
+		if err != nil {
+			return redactRawFallback(raw, sawSensitive)
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return redactRawFallback(raw, sawSensitive)
+		}
+		keyTo := dec.InputOffset()
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return redactRawFallback(raw, sawSensitive)
+		}
+		rawKey := rawKeyBytes(raw, keyFrom, keyTo)
+		if len(rawKey) == 0 {
+			// Unreachable on compacted input — only a brace or a comma
+			// separates a value from the next key — but an empty key would
+			// emit `{:v}`, and docs/audit-log.md promises every line parses.
+			return redactRawFallback(raw, sawSensitive)
+		}
+		if !first {
+			out = append(out, ',')
+		}
+		first = false
+		out = append(out, rawKey...)
+		out = append(out, ':')
+		if isSensitiveKey(key, extra) {
+			sawSensitive = true
+			out = append(out, auditRedactedJSON...)
+			continue
+		}
+		out = append(out, redactRaw(val, extra)...)
+	}
+	if _, err := dec.Token(); err != nil { // the closing brace
+		return redactRawFallback(raw, sawSensitive)
+	}
+	return append(out, '}')
+}
+
+// redactRawFallback answers the only question a half-walked object leaves: has
+// a credential already been seen inside it? If so the partial output cannot be
+// trusted to hold the rest, and the whole value is replaced. If not, nothing in
+// it needed redacting and the original bytes are the most faithful record.
+func redactRawFallback(raw json.RawMessage, sawSensitive bool) json.RawMessage {
+	if sawSensitive {
+		return auditRedactedJSON
+	}
+	return raw
+}
+
+// rawKeyBytes returns the source bytes of an object key. from is the decoder's
+// offset before the key token (the end of the previous token, so a brace or a
+// comma) and to is the offset just past its closing quote; the key itself is
+// everything from the first quote at or after from.
+func rawKeyBytes(raw json.RawMessage, from, to int64) json.RawMessage {
+	i := int(from)
+	for i < int(to) && raw[i] != '"' {
+		i++
+	}
+	return raw[i:int(to)]
 }
 
 func isSensitiveKey(key string, extra []string) bool {
@@ -410,20 +515,29 @@ func isSensitiveKey(key string, extra []string) bool {
 //
 // Arguments that aren't valid JSON are stored as a capped string too: the point
 // is a faithful record of what was attempted, including malformed attempts.
+//
+// Under the cap, what is stored is the caller's own bytes with credential
+// values replaced — not a re-encoding of them (ADR-012). json.Compact is the
+// only rewrite: it strips insignificant whitespace and leaves every string,
+// every escape and every number's spelling exactly as the caller wrote it, so
+// the recorded arguments and the arguments the MCP received are the same bytes.
+// The cap is what keeps that affordable; arguments are unbounded (a file write
+// carries its whole content) and the log is append-only, so the record is
+// bounded first and faithful within that bound, in that order.
 func redactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.RawMessage, size int, truncated bool) {
 	if len(raw) == 0 {
 		return nil, 0, false
 	}
 	size = len(raw)
 
-	var decoded interface{}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
+	// Compact both validates and normalises the whitespace the walk below
+	// assumes away. It does not decode: a lone surrogate escape is still six
+	// bytes of ASCII on the other side of it.
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
 		return capAsString(string(raw), maxBytes)
 	}
-	encoded, err := json.Marshal(redactValue(decoded, extra))
-	if err != nil {
-		return capAsString(string(raw), maxBytes)
-	}
+	encoded := redactRaw(json.RawMessage(buf.Bytes()), extra)
 	if len(encoded) <= maxBytes {
 		return encoded, size, false
 	}

@@ -181,9 +181,21 @@ and arrays. The built-in set is `token`, `secret`, `password`, `passwd`,
 `private_key`, `cookie`, `bearer`, `passphrase`; add your own with
 `audit.redact_keys`.
 
+**Redaction is the only thing that is rewritten.** What is stored otherwise is
+the caller's own bytes: the same bytes the MCP received, with insignificant
+whitespace removed and nothing else. Key order, duplicate keys, the spelling of
+a number, and every escape are all as the client wrote them (ADR-012). This
+matters when you are reading the log as evidence — `args` is a quote, not a
+paraphrase. In particular a `\ud800` in the record is a lone surrogate the
+client actually sent, not a rendering artefact, and relay passed it through to
+the MCP for the MCP to accept or refuse on its own terms.
+
 Over `max_arg_bytes` (4 KiB by default), arguments are stored as a truncated
 string with `args_truncated: true` and the original size in `args_bytes`. Every
-line stays valid JSON either way.
+line stays valid JSON either way. The cap is what makes storing the caller's
+bytes affordable: arguments are unbounded (a file write carries its whole
+content) and this file is append-only, so the record is bounded first and
+faithful within that bound.
 
 **Results** are recorded as size and `isError` only. Tool results carry file
 contents, mail bodies, and calendar entries; storing them by default would make
