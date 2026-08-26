@@ -437,9 +437,7 @@ func TestManager_CallToolWithMeta(t *testing.T) {
 	var capturedParams map[string]interface{}
 	addMockConn(mgr, "fs-mcp", newMockConn("fs-mcp", simpleTools("fs_tool"),
 		func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
-			if p, ok := params.(map[string]interface{}); ok {
-				capturedParams = p
-			}
+			capturedParams = decodedToolParams(params)
 			return json.RawMessage(`{"content":[]}`), nil
 		}))
 

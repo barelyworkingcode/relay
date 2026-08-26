@@ -118,7 +118,7 @@ func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
 func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 	var capturedMeta json.RawMessage
 	capture := func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
-		if m, ok := params.(map[string]interface{}); ok {
+		if m := decodedToolParams(params); m != nil {
 			if raw, err := json.Marshal(m["_meta"]); err == nil {
 				capturedMeta = raw
 			}

@@ -1092,31 +1092,52 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		return nil, fmt.Errorf("external MCP '%s' not connected", id)
 	}
 
-	params := map[string]interface{}{
-		"name": name,
+	// Relay is a broker, not a re-serialiser (ADR-012). The caller's arguments
+	// go out as the bytes they arrived as: they are VALIDATED as JSON and
+	// forwarded, never decoded into Go values and re-encoded. Decoding a JSON
+	// string into a Go `string` is lossy — encoding/json substitutes U+FFFD for
+	// an unpaired UTF-16 surrogate, which is legal JSON — so the round trip
+	// silently rewrote the client's payload and defeated the receiving MCP's own
+	// refusal of exactly that corruption (issue #40). Unmarshalling into a
+	// json.RawMessage runs the same syntax check the old decode did, and keeps
+	// the same error, without materialising a single Go string.
+	params := map[string]json.RawMessage{
+		"name": mustMarshalJSONString(name),
 	}
 	if args != nil {
-		var arguments interface{}
-		if err := json.Unmarshal(args, &arguments); err != nil {
+		if err := json.Unmarshal(args, new(json.RawMessage)); err != nil {
 			return nil, fmt.Errorf("invalid tool arguments: %w", err)
 		}
-		params["arguments"] = arguments
+		params["arguments"] = args
 	}
 
-	// Decode the caller's _meta once. Per-token context is conventionally a JSON
-	// object (e.g. allowed_dirs); when it is, we may add a progressToken. If it's
-	// valid JSON but not an object, forward it verbatim and skip progress
-	// injection rather than failing the call; only malformed JSON is rejected.
-	var metaVal interface{}
-	if len(meta) > 0 && string(meta) != "null" {
-		if err := json.Unmarshal(meta, &metaVal); err != nil {
+	// Validate the caller's _meta once. Per-token context is conventionally a
+	// JSON object (e.g. allowed_dirs); when it is, we may add a progressToken.
+	// If it's valid JSON but not an object, forward it verbatim and skip
+	// progress injection rather than failing the call; only malformed JSON is
+	// rejected. Its members are kept raw for the same reason the arguments are:
+	// a scope value is the operator's data and relay does not rewrite it either.
+	var metaRaw json.RawMessage
+	if len(meta) > 0 {
+		if err := json.Unmarshal(meta, &metaRaw); err != nil {
 			return nil, fmt.Errorf("invalid tool context metadata: %w", err)
+		}
+		// A JSON null is "no context", however it was spelled and whatever
+		// whitespace surrounded it — the same answer as an absent one.
+		if string(metaRaw) == "null" {
+			metaRaw = nil
 		}
 	}
 
-	if metaMap, ok := metaVal.(map[string]interface{}); ok || metaVal == nil {
+	var metaMap map[string]json.RawMessage
+	isObject := len(metaRaw) == 0 // absent or null: an empty object's worth
+	if !isObject {
+		err := json.Unmarshal(metaRaw, &metaMap)
+		isObject = err == nil && metaMap != nil
+	}
+	if isObject {
 		if metaMap == nil {
-			metaMap = map[string]interface{}{}
+			metaMap = map[string]json.RawMessage{}
 		}
 		// If the caller wants progress and this connection can route it,
 		// allocate a progressToken, advertise it via _meta, and bridge inbound
@@ -1124,7 +1145,7 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 		if sink := bridge.ProgressFromContext(ctx); sink != nil {
 			if pc, ok := conn.(progressConn); ok {
 				token := newProgressToken()
-				metaMap["progressToken"] = token
+				metaMap["progressToken"] = mustMarshalJSONString(token)
 				pc.registerProgress(token, func(raw json.RawMessage) {
 					var u bridge.ProgressUpdate
 					if err := json.Unmarshal(raw, &u); err == nil {
@@ -1135,10 +1156,14 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 			}
 		}
 		if len(metaMap) > 0 {
-			params["_meta"] = metaMap
+			encoded, err := marshalJSONVerbatim(metaMap)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool context metadata: %w", err)
+			}
+			params["_meta"] = encoded
 		}
 	} else {
-		params["_meta"] = metaVal
+		params["_meta"] = metaRaw
 	}
 
 	resp, err := conn.SendRequest(ctx, mcp.MethodToolsCall, params)
@@ -1560,7 +1585,10 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 // prepareRequest marshals, registers, and writes a JSON-RPC request under the mutex.
 func (c *externalMcpConn) prepareRequest(method string, params interface{}) (int64, *pendingResponse, error) {
 	id := c.allocID()
-	data, err := json.Marshal(jsonrpc.NewRequest(id, method, params))
+	// marshalJSONVerbatim, not json.Marshal: params carries the caller's own
+	// argument bytes as a json.RawMessage and the default encoder would rewrite
+	// `<`, `>`, `&` inside them (ADR-012).
+	data, err := marshalJSONVerbatim(jsonrpc.NewRequest(id, method, params))
 	if err != nil {
 		return 0, nil, err
 	}
