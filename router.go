@@ -24,7 +24,11 @@ import (
 // ToolProvider abstracts read-only access to external MCP tool data and invocation.
 type ToolProvider interface {
 	Tools(id string) []mcp.Tool
-	FindToolOwner(name string) (string, *ExternalMcp)
+	// ToolOwners returns every connected MCP exposing the name, sorted, so
+	// that resolution happens inside the caller's grant rather than against
+	// whichever connection a map iteration reached first — see
+	// resolveToolOwner.
+	ToolOwners(name string) []string
 	CallTool(ctx context.Context, id, name string, args, meta json.RawMessage) (json.RawMessage, error)
 	// McpSurfaceFor is the LIVE declaration: the context schema an MCP
 	// published at its last handshake, that schema's version, and the tools it
@@ -478,6 +482,50 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	return buckets, nil
 }
 
+// resolveToolOwner picks which of a tool name's owners this grant means.
+//
+// A tool name is not unique across MCPs, and the id chosen here is far more
+// than a dispatch target: it also selects the `_meta` resource scope
+// (stored.Context[id]) the call runs under, the disabled-tools list applied to
+// it, the live schema its scope is checked against, and the mcp_id the audit
+// records. Resolving the name globally therefore let Go's map seed decide
+// which confinement governed a call and which MCP the audit blamed for it —
+// the resource layer, not the routing layer, going nondeterministic. So the
+// grant answers the question: the owners it admits at MCP level are the
+// candidates, and nothing outside them is reachable.
+//
+// More than one candidate is REFUSED rather than resolved. The wire carries a
+// bare tool name, so the caller has not said which MCP it meant and relay has
+// no honest way to infer it; picking one would silently apply one MCP's scope
+// to a call the operator may have meant for the other's, which is the bug
+// being fixed rather than a smaller version of it. Naming every collider tells
+// an operator their grant is ambiguous — a configuration that is already
+// broken today and shows nowhere, since tools/list renders per MCP and looks
+// right. Service tokens are held to the same rule: they admit every MCP, so
+// they are the grant most likely to be ambiguous, and "pick one at random"
+// was never more correct for them than for anyone else.
+//
+// Zero candidates falls through to owners[0] — a real owner of the tool — and
+// lets the existing checks refuse it in their own words, now deterministically.
+func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string) (string, error) {
+	var candidates []string
+	for _, id := range owners {
+		if isServiceToken || checkToolAccess(stored, id, "", nil) == nil {
+			candidates = append(candidates, id)
+		}
+	}
+	switch {
+	case len(candidates) == 1:
+		return candidates[0], nil
+	case len(candidates) > 1:
+		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: tool '%s' is exposed by more than one MCP this grant allows (%s); relay will not choose between them — narrow the grant to one of them",
+			toolName, strings.Join(candidates, ", ")))
+	default:
+		return owners[0], nil
+	}
+}
+
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
 	// Every tool call in the ecosystem funnels through here, which makes this
 	// the one place auditing has to be correct. Note that the refusals are
@@ -497,10 +545,19 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	isServiceToken := stored.Name == serviceTokenName
 
 	// Check external MCPs.
-	extID, extMcp := r.tools.FindToolOwner(name)
-	if extMcp == nil {
+	owners := r.tools.ToolOwners(name)
+	if len(owners) == 0 {
 		err := fmt.Errorf("unknown tool: %s", name)
 		au.done(AuditOutcomeError, err)
+		return nil, err
+	}
+	// Resolved inside the grant, and BEFORE au.setMcp and everything below it:
+	// the schema read, the _meta assembly, the scope checks and the audit's
+	// mcp_id all take a single resolved MCP as given, and an ambiguous name has
+	// no such thing to give them.
+	extID, err := resolveToolOwner(stored, isServiceToken, name, owners)
+	if err != nil {
+		au.done(AuditOutcomeDenied, err)
 		return nil, err
 	}
 	au.setMcp(extID)
@@ -528,7 +585,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// weight ordinarily, but on an MCP that gives a NEW field the OLD name a
 	// stale value would be handed to logic that never validated it.
 	// filterKnownContextFields is only reached once extID has already resolved
-	// to a live connection (FindToolOwner above), so this can never be the
+	// to a live connection (ToolOwners above), so this can never be the
 	// "MCP is merely down" case that makes pruning stored data unsafe.
 	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
 

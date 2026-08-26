@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,7 +320,7 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 // finalizeConnection completes MCP startup after a successful handshake:
 // stores the connection in the manager, sets discovered tools, and caches
 // the context schema. setConnection is called first so that the lock ordering
-// (m.mu -> toolsMu) is consistent with FindToolOwner and Tools, preventing
+// (m.mu -> toolsMu) is consistent with ToolOwners and Tools, preventing
 // potential deadlocks from inverted lock acquisition.
 func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
 	m.setConnection(id, conn)
@@ -567,7 +568,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 	m.mu.RUnlock()
 
 	// GetTools takes the connection's own lock, so it is called outside m.mu
-	// to keep the lock order (m.mu -> toolsMu) the one FindToolOwner and Tools
+	// to keep the lock order (m.mu -> toolsMu) the one ToolOwners and Tools
 	// already establish.
 	for id, c := range conns {
 		s := out[id]
@@ -644,19 +645,33 @@ func (m *ExternalMcpManager) IsConnected(id string) bool {
 	return ok
 }
 
-// FindToolOwner returns the ID and config of the external MCP that owns the named tool.
-func (m *ExternalMcpManager) FindToolOwner(toolName string) (string, *ExternalMcp) {
+// ToolOwners returns the ids of every connected external MCP exposing the
+// named tool, sorted.
+//
+// It returns ALL of them, and it sorts them, because m.conns is a map and Go
+// randomises map iteration. The predecessor returned the first owner the
+// runtime happened to enumerate, which is not a stable answer: two MCPs
+// exposing one tool name — two filesystem MCPs, two mail MCPs, one server
+// registered twice under different scopes — resolved to a different id per
+// call. That id is not merely a dispatch target; it selects the `_meta`
+// resource scope (stored.Context[id]), the disabled-tools list, and the
+// mcp_id the audit records. So the map seed decided which confinement a call
+// ran under and which MCP the audit said served it. Returning an unsorted
+// slice would only move that nondeterminism up to the caller.
+func (m *ExternalMcpManager) ToolOwners(toolName string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	var owners []string
 	for id, conn := range m.conns {
 		for _, t := range conn.GetTools() {
 			if t.Name == toolName {
-				cfg := conn.GetConfig()
-				return id, &cfg
+				owners = append(owners, id)
+				break
 			}
 		}
 	}
-	return "", nil
+	sort.Strings(owners)
+	return owners
 }
 
 // CallTool invokes a tool on the specified external MCP via JSON-RPC.

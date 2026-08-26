@@ -55,6 +55,14 @@ The one place empty means "all" is a **picker filter** while you are choosing �
 before you have picked an account, the mailbox list shows all of them. That is a
 query, not an authorisation.
 
+**A tool name is resolved inside the grant.** Tool names are not unique across
+MCPs — two filesystem MCPs, two mail MCPs, or one server registered twice under
+different scopes will collide — and layer 1 decides which of them a call means:
+only an MCP this profile allows can serve it. If **two** allowed MCPs expose the
+same name, the call is refused and the error names both, because the request
+carries only the bare tool name and the two MCPs may have different resource
+scopes. Grant one of them, or rename the tool on one side.
+
 ---
 
 ## Creating a confined client
