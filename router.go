@@ -589,9 +589,24 @@ func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
 // they are the grant most likely to be ambiguous, and "pick one at random"
 // was never more correct for them than for anyone else.
 //
-// Zero candidates falls through to owners[0] — a real owner of the tool — and
-// lets the existing checks refuse it in their own words, now deterministically.
-func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string) (string, error) {
+// Zero full candidates used to fall through to owners[0] unconditionally and
+// let the checks below refuse it in their own words — but owners[0] is a real
+// owner of the tool GLOBALLY, not within this grant (fsMCP v3 integration R6:
+// measured live as "MCP 'fsmcp' is disabled for this token" on a token that
+// was never granted an MCP of that name). Falling through named an MCP
+// outside the grant and pointed the operator at a permission that was never
+// the problem.
+//
+// The fix distinguishes two zero-candidate shapes rather than treating them
+// as one. An owner this grant admits at the MCP level, just not at the
+// tool/mode/disabled layer grantRoutesToolTo also checks, is an MCP the
+// caller already knows it holds — falling through to it, as before, lets
+// checkToolAccess below write ITS specific reason (wrong tool, wrong mode,
+// hand-disabled) rather than R6's generic one, and keeps every existing
+// denial's wording and audited authority unchanged. Only when NOT ONE owner
+// of the name is granted even at the MCP level — every real owner is outside
+// this grant — is a call refused here, in terms of the grant's own MCPs.
+func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
 		if isServiceToken || grantRoutesToolTo(stored, id, toolName) {
@@ -605,9 +620,42 @@ func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string,
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 			"access denied: tool '%s' is exposed by more than one MCP this grant allows (%s); relay will not choose between them — narrow the grant to one of them",
 			toolName, strings.Join(candidates, ", ")))
-	default:
-		return owners[0], nil
 	}
+	for _, id := range owners {
+		if checkToolAccess(stored, id, "", nil) == nil {
+			return id, nil
+		}
+	}
+	return "", noGrantedOwnerError(toolName, granted)
+}
+
+// noGrantedOwnerError is R6's refusal for a name none of the grant's own MCPs
+// publish. It names the MCPs the caller already knows it holds — never the
+// outside MCP that actually publishes the name, which resolveToolOwner never
+// even reveals to this function.
+func noGrantedOwnerError(toolName string, granted []string) error {
+	if len(granted) == 0 {
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: no tool named '%s' is available to this grant", toolName))
+	}
+	return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+		"access denied: no tool named '%s' is available to this grant (granted: %s)",
+		toolName, strings.Join(granted, ", ")))
+}
+
+// grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP level —
+// the set an R6 refusal is allowed to name, since the caller already knows it
+// holds them. A service token admits every connected MCP (see
+// resolveToolOwner), so its list is every id in s.ExternalMcps.
+func grantedMcpIDsForToken(stored *StoredToken, isServiceToken bool, s *Settings) []string {
+	var ids []string
+	for _, ext := range s.ExternalMcps {
+		if isServiceToken || checkToolAccess(stored, ext.ID, "", nil) == nil {
+			ids = append(ids, ext.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
@@ -650,7 +698,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// the schema read, the _meta assembly, the scope checks and the audit's
 	// mcp_id all take a single resolved MCP as given, and an ambiguous name has
 	// no such thing to give them.
-	extID, err := resolveToolOwner(stored, isServiceToken, name, owners)
+	extID, err := resolveToolOwner(stored, isServiceToken, name, owners, grantedMcpIDsForToken(stored, isServiceToken, settings))
 	if err != nil {
 		au.done(AuditOutcomeDenied, err)
 		return nil, err
