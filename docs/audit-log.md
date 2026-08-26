@@ -138,6 +138,11 @@ and re-reading `settings.json` at query time answers a different question. So a
   refused call, so what `scope` shows there is the authority the call was
   judged against; an empty `scope` on a `denied` record is itself the finding —
   a grant with no value for a field its MCP declares.
+  The one exception is a tool name exposed by more than one MCP the grant
+  allows (issue #35): relay refuses without resolving an MCP, and all three
+  fields — like `mcp_id` — are per-MCP, so none of them has a single true
+  value. The colliding ids are in `error`. Because `--mcp` matches on
+  `mcp_id`, reach those records with `--outcome denied`.
 - For a **remote** call they are on the **intent** record as well as the
   completion — the intent is the one written before the MCP runs, and an
   authority recorded only on the completion would be missing from exactly the

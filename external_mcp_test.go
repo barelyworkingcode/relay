@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -277,14 +278,14 @@ func TestManager_ToolsUnknownID(t *testing.T) {
 	}
 }
 
-func TestManager_FindToolOwnerUnknown(t *testing.T) {
+func TestManager_ToolOwnersUnknown(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
-	id, cfg := mgr.FindToolOwner("no_such_tool")
-	if id != "" {
-		t.Errorf("expected empty id, got %q", id)
-	}
-	if cfg != nil {
-		t.Errorf("expected nil config, got %v", cfg)
+	addMockConn(mgr, "net-mcp", &mockMcpConn{
+		tools:  simpleTools("net_fetch"),
+		config: ExternalMcp{ID: "net-mcp"},
+	})
+	if owners := mgr.ToolOwners("no_such_tool"); len(owners) != 0 {
+		t.Errorf("expected no owners, got %v", owners)
 	}
 }
 
@@ -311,22 +312,42 @@ func TestManager_ToolsWithConnection(t *testing.T) {
 	}
 }
 
-func TestManager_FindToolOwnerWithConnection(t *testing.T) {
+func TestManager_ToolOwnersWithConnection(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "net-mcp", &mockMcpConn{
 		tools:  simpleTools("net_fetch"),
 		config: ExternalMcp{ID: "net-mcp", DisplayName: "Net MCP", Command: "/usr/bin/net-mcp"},
 	})
 
-	id, cfg := mgr.FindToolOwner("net_fetch")
-	if id != "net-mcp" {
-		t.Errorf("expected id 'net-mcp', got %q", id)
+	owners := mgr.ToolOwners("net_fetch")
+	if len(owners) != 1 || owners[0] != "net-mcp" {
+		t.Errorf("expected [net-mcp], got %v", owners)
 	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.DisplayName != "Net MCP" {
-		t.Errorf("expected DisplayName 'Net MCP', got %q", cfg.DisplayName)
+}
+
+// A tool name exposed by several MCPs must yield every one of them in a stable
+// order. The insertion orders are reversed between the two managers because
+// m.conns is a map: nothing about the order they were added in may reach the
+// answer, and a single ordering could pass by luck of the seed.
+func TestManager_ToolOwnersAllOwnersSorted(t *testing.T) {
+	ids := []string{"zeta-mcp", "alpha-mcp", "mid-mcp"}
+	want := []string{"alpha-mcp", "mid-mcp", "zeta-mcp"}
+
+	for _, order := range [][]string{ids, {ids[2], ids[1], ids[0]}} {
+		mgr := NewExternalMcpManager(nil)
+		for _, id := range order {
+			addMockConn(mgr, id, &mockMcpConn{
+				tools:  simpleTools("fs_read", "only_"+id),
+				config: ExternalMcp{ID: id},
+			})
+		}
+		got := mgr.ToolOwners("fs_read")
+		if !slices.Equal(got, want) {
+			t.Errorf("insertion order %v: expected %v, got %v", order, want, got)
+		}
+		if got := mgr.ToolOwners("only_mid-mcp"); len(got) != 1 || got[0] != "mid-mcp" {
+			t.Errorf("insertion order %v: expected [mid-mcp] for the unshared tool, got %v", order, got)
+		}
 	}
 }
 
@@ -450,19 +471,10 @@ func TestManager_MultipleConnectionsFindCorrectOwner(t *testing.T) {
 		config: ExternalMcp{ID: "mcp-beta", DisplayName: "Beta"},
 	})
 
-	id, cfg := mgr.FindToolOwner("beta_tool")
-	if id != "mcp-beta" {
-		t.Errorf("expected 'mcp-beta', got %q", id)
+	if owners := mgr.ToolOwners("beta_tool"); len(owners) != 1 || owners[0] != "mcp-beta" {
+		t.Errorf("expected [mcp-beta], got %v", owners)
 	}
-	if cfg == nil || cfg.DisplayName != "Beta" {
-		t.Errorf("expected Beta config, got %v", cfg)
-	}
-
-	id, cfg = mgr.FindToolOwner("alpha_tool")
-	if id != "mcp-alpha" {
-		t.Errorf("expected 'mcp-alpha', got %q", id)
-	}
-	if cfg == nil || cfg.DisplayName != "Alpha" {
-		t.Errorf("expected Alpha config, got %v", cfg)
+	if owners := mgr.ToolOwners("alpha_tool"); len(owners) != 1 || owners[0] != "mcp-alpha" {
+		t.Errorf("expected [mcp-alpha], got %v", owners)
 	}
 }
