@@ -135,6 +135,13 @@ and re-reading `settings.json` at query time answers a different question. So a
   map, because `_meta` is a general channel and a future MCP may pass an API
   key through it. Filtering to declared restrict-fields is both safer and
   domain-blind.
+- **`mcp_root`** is the directory relay spawned this MCP with (`--root`), when
+  it did. It is a **different fact from `scope`** and must not be read as
+  filling in for one: `scope` is what the MCP declared and the grant supplied,
+  whereas this is what relay itself put on the command line. An MCP that
+  declares no scope at all still has an answer to "which directory did this
+  touch", and this is it.
+
 - **`scope_unplaced`** names the fields **the grant set a value for** that the
   MCP's live schema does not declare, so relay could not place them and refused
   the call. It is a field of its own rather than a fourth reading of `scope`,

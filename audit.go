@@ -225,6 +225,19 @@ type AuditEvent struct {
 	// allowed_dirs and this MCP no longer declares it") rather than generic.
 	ScopeUnplaced []string `json:"scope_unplaced,omitempty"`
 
+	// McpRoot is the resolved --root directory relay spawned this MCP with,
+	// when relay spawned it with one (fsMCP v3 integration, R2). It is a
+	// DIFFERENT fact from Scope and must not be read as filling in for it:
+	// Scope is what the MCP itself declared through a v2 contextSchema and
+	// injected via _meta, and fsMCP v3 publishes no contextSchema at all, so
+	// Scope stays nil — "(none declared)" — on every one of its calls, and
+	// that stays true. McpRoot is something relay knows independently,
+	// because it wrote the spawn arguments, and it is what lets an operator
+	// answer "which directory did this touch" when the MCP itself has
+	// nothing to say about scope. Empty means relay did not spawn this MCP
+	// with a --root argument.
+	McpRoot string `json:"mcp_root,omitempty"`
+
 	// AllowExternal is the other half of the authority relay decided by
 	// itself (ADR-011 decision 2c): whether this grant could call a tool that
 	// reaches outside the host. Recorded beside Access for the same reason

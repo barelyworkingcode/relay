@@ -1087,6 +1087,14 @@ type McpSurface struct {
 	Schema        json.RawMessage
 	SchemaVersion int
 	Tools         []string
+
+	// Root is the resolved --root relay spawned this MCP with, if any
+	// (fsMCP v3 integration, R2). It is not part of Schema and never travels
+	// through ParseContextSchema: an MCP with no contextSchema at all — v3
+	// fsMCP publishes none — still has a Root here, because relay knows it
+	// from its own spawn configuration rather than from anything the MCP
+	// declared.
+	Root string
 }
 
 // McpSurfaces maps MCP id to its surface. A nil map, or a missing entry,

@@ -154,3 +154,22 @@ spelled.
 - `arg_verbatim_test.go` — the regression suite, run against the real
   `cmd/testmcp` stdio child
 - `docs/audit-log.md` — "Arguments and results"
+
+---
+
+## Extended — 2026-08-26
+
+This ADR states that relay forwards a call's arguments rather than
+re-serialising them. Nothing proved it did, which is why the U+FFFD
+substitution documented above went unnoticed for months.
+
+`RemoteRequest` now carries an optional `args_sha256`: the client hashes the
+exact argument bytes it was handed, relay **forwards** that value into the MCP
+call's `_meta.args_sha256`, and the MCP compares it against the bytes it
+received. Any re-serialisation between the two ends is now a loud
+`integrity_failed` rather than silent corruption reported as success.
+
+Relay forwards and never recomputes. A hash relay derived from arguments relay
+had already decoded would validate relay against itself and detect nothing.
+Relay is a courier for this field and never fails a call over it — verification
+belongs to the MCP.

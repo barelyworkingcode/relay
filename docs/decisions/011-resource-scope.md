@@ -1258,3 +1258,19 @@ mail or quietly returning nothing.
 - `macMCP/Sources/macMCP/Services/MailService.swift` — `resolveTargets`,
   `fmInScope`, `mailboxInAccountJXA`, `senderJXA`, `MailCall`.
 - `fsmcp/src/security.ts` — the fail-open empty case.
+
+---
+
+## Superseded in part — 2026-08-26
+
+This ADR's worked example is fsMCP declaring `allowed_dirs` as a v2
+`contextSchema` restriction. fsMCP v3 declares **no context schema**: it is
+spawned with a `--root` and serves one directory for its lifetime, so there is
+no value for a grant to supply.
+
+The decisions here are unchanged and still govern every MCP that does declare a
+scope. What changed is that "this MCP has no scope concept" became a real,
+supported shape rather than a theoretical one — `derivedScopeFields` returns nil
+for such an MCP, its tools stay listed and callable for a remote profile, and
+decision 7's requirement that the log answer "what was attempted with what
+authority" is met by the `mcp_root` field rather than by `scope`.

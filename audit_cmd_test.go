@@ -105,6 +105,39 @@ func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
 	}
 }
 
+// TestAuditAuthorityLine_RootIsDistinctFromScope pins fsMCP v3 integration
+// R2: a schema-less MCP still has "scope=(none declared)" — that stays true
+// and stays meaningful — while the directory relay itself spawned the MCP
+// with is a separate, additional fact on the same line.
+func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
+	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true),
+		McpRoot: "/Users/admin/source/barelyworkingcode/testfolder"}
+	line, ok := auditAuthorityLine(ev)
+	if !ok {
+		t.Fatal("authority line was omitted for a record that carried authority")
+	}
+	if !strings.Contains(line, "scope=(none declared)") {
+		t.Errorf("authority line = %q, a schema-less MCP's scope must stay (none declared)", line)
+	}
+	if !strings.Contains(line, "root=/Users/admin/source/barelyworkingcode/testfolder") {
+		t.Errorf("authority line = %q, missing the spawned root", line)
+	}
+}
+
+// TestAuditAuthorityLine_NoRootOmitsTheField pins the negative: an MCP relay
+// did not spawn with --root prints no root= segment at all, rather than an
+// empty one that would read as "spawned with an empty root".
+func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
+	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true)}
+	line, ok := auditAuthorityLine(ev)
+	if !ok {
+		t.Fatal("authority line was omitted for a record that carried authority")
+	}
+	if strings.Contains(line, "root=") {
+		t.Errorf("authority line = %q, should carry no root segment when relay recorded none", line)
+	}
+}
+
 func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 	// AllowExternal is a pointer specifically so "not recorded" and "recorded
 	// false" don't collide; the CLI must keep that distinction visible too.
