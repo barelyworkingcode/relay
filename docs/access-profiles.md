@@ -57,11 +57,35 @@ query, not an authorisation.
 
 **A tool name is resolved inside the grant.** Tool names are not unique across
 MCPs — two filesystem MCPs, two mail MCPs, or one server registered twice under
-different scopes will collide — and layer 1 decides which of them a call means:
-only an MCP this profile allows can serve it. If **two** allowed MCPs expose the
-same name, the call is refused and the error names both, because the request
-carries only the bare tool name and the two MCPs may have different resource
-scopes. Grant one of them, or rename the tool on one side.
+different scopes will collide — and the grant decides which of them a call
+means. A candidate is an MCP that this profile allows AND on which this profile
+allows this tool: layers 1, 2 and 6, the three you typed. If exactly one
+candidate remains, it serves. If **two** do, the call is refused and the error
+names both, because the request carries only the bare tool name and the two
+MCPs may have different resource scopes. Narrow `allowed_tools` on one of them,
+disable the tool there, or drop the MCP from the profile.
+
+Two details worth knowing, both deliberate:
+
+- **The mode (layer 3) and the outbound grant (layer 4) do not narrow a route,
+  even though either can refuse the call.** Both are decided from the MCP's own
+  `readOnlyHint` / `openWorldHint`, and a route must never be a function of a
+  value an MCP controls — otherwise a server could make itself the only
+  candidate for a name by editing its own annotations. Everything that narrows
+  a route is something a human wrote in `settings.json`.
+- **A colliding name is withheld from `tools/list` and from generated skills.**
+  Every call to it is refused, so advertising it would hand an agent a tool that
+  can never work. Relay logs the withheld names when it does this.
+
+A project whose `allowed_mcp_ids` is the wildcard `["*"]` allows every
+registered MCP, so a name two of them expose is ambiguous under it unless
+`allowed_tools` or `disabled_tools` narrows it. That is the wildcard behaving as
+written: "all of them" answers *which MCPs*, and it does not answer *which one
+did you mean*.
+
+Ambiguity is judged over MCPs that are **connected**. If one collider is down,
+the survivor serves the call under its own scope — relay refuses to choose
+between two servers, not between a server and an absence.
 
 ---
 
