@@ -207,6 +207,21 @@ the tool is dead on arrival; making it optional would trade the one real
 disclosure risk `disclose` exists to close (a set value's content) for a
 silent one (a dead tool a client believes is live).
 
+**An unrecognised `disclose` value does the same thing, silently.** `disclose:
+"hidden"` is not a near miss of any keyword here — it differs from `"count"`
+by more than case — so it is ignored rather than guessed at, which is the rule
+that lets a later vocabulary land on this relay. The consequence for *this*
+keyword is that the note renders the value, and the MCP author who wrote
+`"hidden"` believes they have withheld it. Verified: `Disclosure()` answers
+`"value"` for `"hidden"`, `"redact"`, `"secret"` and anything else outside the
+three spellings above.
+
+That is the same fail-open direction as the older-relay case below and is
+accepted for the same reason — but it is worth knowing that the two failures
+look identical from the MCP's side and neither is detectable from there. If
+you declare `disclose`, spell it exactly, and read the note a real client
+receives before believing it.
+
 **An older relay ignores `disclose` and renders the value anyway.** That
 follows from the rule above ("a key relay has never heard of is ignored") the
 same way it applies to every keyword this document adds after some relay is
