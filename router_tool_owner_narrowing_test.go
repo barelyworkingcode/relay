@@ -272,3 +272,55 @@ func TestListing_AgreesWithCallToolOnCollidingNames(t *testing.T) {
 		}
 	})
 }
+
+// A mutation audit of the #35 tests found two things nothing anywhere pinned:
+// the ambiguity refusal could name one of the colliders as the record's
+// mcp_id, or record no error text at all, and every test still passed. Both
+// matter for the same reason issue #35 does — an audit line that names an MCP
+// which did not serve the call undermines the rule the whole stack rests on,
+// and the error text is the ONLY place the colliding ids are recorded.
+func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testing.T) {
+	for name, order := range bothOrders() {
+		t.Run(name, func(t *testing.T) {
+			rec := newTestAudit(t, nil)
+			tp := newCollidingProvider(order, collisionTools())
+			s := &Settings{
+				Version: 1,
+				ExternalMcps: []ExternalMcp{
+					{ID: collisionMcpA, DisplayName: collisionMcpA},
+					{ID: collisionMcpB, DisplayName: collisionMcpB},
+					{ID: collisionMcpC, DisplayName: collisionMcpC},
+				},
+				Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
+					AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
+					Token:         testToken, TokenHash: hashToken(testToken),
+					Context: collisionScopes()}},
+				AdminSecret: "supersecretadmin",
+			}
+			r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir()},
+				tools: tp, services: NewServiceRegistry(), onChange: func() {}, audit: rec}
+
+			if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {
+				t.Fatal("precondition: this grant must be ambiguous")
+			}
+			events := readLoggedEvents(t, rec)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 audit record, got %d", len(events))
+			}
+			ev := events[0]
+			if ev.Outcome != AuditOutcomeDenied {
+				t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
+			}
+			// Naming either collider here would be the audit blaming an MCP
+			// that never ran, which is the failure mode issue #35 is about.
+			if ev.McpID != "" {
+				t.Errorf("mcp_id = %q on a refusal no MCP served", ev.McpID)
+			}
+			for _, want := range []string{collidingTool, collisionMcpA, collisionMcpB} {
+				if !strings.Contains(ev.Error, want) {
+					t.Errorf("audit error %q does not name %q — the record is the only place the colliders survive", ev.Error, want)
+				}
+			}
+		})
+	}
+}

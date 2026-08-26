@@ -5,8 +5,16 @@ package main
 // resource scope, the disabled-tools list, the live schema the scope is
 // checked against, and the audit's mcp_id. Resolving the name against a Go map
 // therefore let the runtime's map seed choose which confinement a call ran
-// under. Every test here uses BOTH insertion orders for the colliding MCPs,
-// because one ordering can pass on a lucky seed and prove nothing.
+// under.
+//
+// This fixture reaches the REAL ExternalMcpManager through setupRouter, which
+// inserts the connections from a map — so the enumeration order is Go's, fresh
+// on every run, and cannot be dictated from here. That is the right shape for
+// the property below (it must hold whatever order the runtime picks) and it is
+// why the call is repeated rather than run once: a single call against a map
+// that favours the first-inserted key ~7 times in 8 proves very little. The
+// order-controlled cases live in router_tool_collision_test.go, whose provider
+// keeps an ordered slice.
 
 import (
 	"context"
@@ -38,40 +46,31 @@ func collidingRouter(t *testing.T, perms map[string]Permission, order []string, 
 	return setupRouter(t, perms, nil, nil, mocks)
 }
 
-// bothConnOrders runs fn with each insertion order of the two colliding MCPs.
-func bothConnOrders(t *testing.T, fn func(t *testing.T, order []string)) {
-	t.Helper()
-	for _, order := range [][]string{{"mcp-a", "mcp-b"}, {"mcp-b", "mcp-a"}} {
-		t.Run(strings.Join(order, ","), func(t *testing.T) { fn(t, order) })
-	}
-}
-
-// The reported symptom: a grant naming only B, calling a tool A and B both
-// expose, was refused "MCP 'A' is disabled for this token". B owns the name, B
-// is granted, B must serve it.
 // A service token admits every MCP, which makes it the grant most likely to be
 // ambiguous — so it is held to the same rule rather than allowed to pick.
 func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
-	bothConnOrders(t, func(t *testing.T, order []string) {
+	const runs = 20
+	for i := 0; i < runs; i++ {
 		var served string
-		r := collidingRouter(t, map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn}, order, &served)
+		r := collidingRouter(t, map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn},
+			[]string{"mcp-a", "mcp-b"}, &served)
 		const svcToken = "svc-token-for-ambiguity-test-0011223344556677"
 		r.serviceTokens.Register(hashToken(svcToken))
 
 		_, err := r.CallTool(context.Background(), "fs_read", nil, svcToken)
 		if err == nil {
-			t.Fatal("expected a service token to be refused on an ambiguous name")
+			t.Fatalf("run %d: expected a service token to be refused on an ambiguous name", i)
 		}
 		for _, want := range []string{"fs_read", "mcp-a", "mcp-b"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("refusal must name %q, got %q", want, err.Error())
+				t.Fatalf("run %d: refusal must name %q, got %q", i, want, err.Error())
 			}
 		}
 		if served != "" {
-			t.Errorf("an ambiguous service-token call reached %q", served)
+			t.Errorf("run %d: an ambiguous service-token call reached %q", i, served)
 		}
 		if _, err := r.CallTool(context.Background(), "only_mcp-b", nil, svcToken); err != nil {
-			t.Fatalf("expected the unshared tool to still work, got %v", err)
+			t.Fatalf("run %d: expected the unshared tool to still work, got %v", i, err)
 		}
-	})
+	}
 }
