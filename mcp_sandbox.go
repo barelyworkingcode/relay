@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"relaygo/bridge"
@@ -74,24 +75,55 @@ func ensureSandboxProfile(readOnly bool) (string, error) {
 	return path, nil
 }
 
-// stdioRootFlag reads the literal --root value out of a stdio MCP's
-// configured Args. This is the one narrow, declared thing relay parses out of
-// an MCP's own argv (fsMCP v3 integration, R2/R5) — not a general argument
-// parser, and it must not grow into one: relay does not know what any OTHER
-// MCP's flags mean. --root is special only because relay put it there when
-// the MCP was registered and needs it back for two declared reasons, the
-// audit record and the seatbelt grant.
+// splitFlag decodes one argv element the way Go's flag package does, since
+// that is what is on the other end of these arguments.
+//
+// This is deliberate: BOTH "-name" and "--name" are accepted, because Go's
+// flag package accepts both and an MCP spelled "-root /srv/notes" starts and
+// serves exactly as "--root /srv/notes" does. Matching only the double-dash
+// form meant relay found no root, took prepareStdioLaunch's pass-through
+// branch, and spawned the MCP with no seatbelt and no audited root — the one
+// direction this must never fail in, reached by a spelling nothing rejects.
+//
+// ok is false for an argument that is not a flag, including the bare "--"
+// that ends flag parsing.
+func splitFlag(arg string) (name, value string, hasValue, ok bool) {
+	if len(arg) < 2 || arg[0] != '-' {
+		return "", "", false, false
+	}
+	trimmed := strings.TrimPrefix(arg[1:], "-")
+	if trimmed == "" {
+		return "", "", false, false
+	}
+	if n, v, found := strings.Cut(trimmed, "="); found {
+		return n, v, true, true
+	}
+	return trimmed, "", false, true
+}
+
+// stdioRootFlag reads the --root value out of a stdio MCP's configured Args.
+// This is the one narrow, declared thing relay parses out of an MCP's own argv
+// (fsMCP v3 integration, R2/R5) — not a general argument parser, and it must
+// not grow into one: relay does not know what any OTHER MCP's flags mean.
+// --root is special only because relay put it there when the MCP was
+// registered and needs it back for two declared reasons, the audit record and
+// the seatbelt grant.
 func stdioRootFlag(args []string) (string, bool) {
-	for i, a := range args {
-		if a == "--root" {
-			if i+1 < len(args) {
-				return args[i+1], true
-			}
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
 			return "", false
 		}
-		if v, ok := strings.CutPrefix(a, "--root="); ok {
-			return v, true
+		name, value, hasValue, ok := splitFlag(args[i])
+		if !ok || name != "root" {
+			continue
 		}
+		if hasValue {
+			return value, true
+		}
+		if i+1 < len(args) {
+			return args[i+1], true
+		}
+		return "", false
 	}
 	return "", false
 }
@@ -102,9 +134,24 @@ func stdioRootFlag(args []string) (string, bool) {
 // this reads fsMCP's process-level flag back only to pick a profile.
 func stdioReadOnlyFlag(args []string) bool {
 	for _, a := range args {
-		if a == "--read-only" || a == "--read-only=true" {
+		if a == "--" {
+			return false
+		}
+		name, value, hasValue, ok := splitFlag(a)
+		if !ok || name != "read-only" {
+			continue
+		}
+		if !hasValue {
 			return true
 		}
+		// Go's flag package parses a boolean flag's value with
+		// strconv.ParseBool, so "1", "t" and "TRUE" all mean what "true"
+		// means. Reading only the literal "true" left an fsMCP started with
+		// "--read-only=1" running under the read-WRITE profile. A value Go
+		// cannot parse stops the MCP from starting at all, so false is the
+		// honest answer for it.
+		v, err := strconv.ParseBool(value)
+		return err == nil && v
 	}
 	return false
 }
@@ -128,6 +175,12 @@ func stdioReadOnlyFlag(args []string) bool {
 func prepareStdioLaunch(cfg *ExternalMcp) (command string, args []string, err error) {
 	root, ok := stdioRootFlag(cfg.Args)
 	if !ok {
+		// Said out loud, at the same level as the seatbelt line below. An MCP
+		// relay was never told the boundary of is spawned unconfined by
+		// design (R5) — macMCP has no --root and never will — but "no
+		// seatbelt" and "the log line scrolled past" must not look identical
+		// to an operator reading back why a directory was reachable.
+		slog.Info("spawning MCP unsandboxed: no --root argument to bound it with", "id", cfg.ID)
 		return cfg.Command, cfg.Args, nil
 	}
 	// Seatbelt matches real paths; a grant spelled through a symlink would

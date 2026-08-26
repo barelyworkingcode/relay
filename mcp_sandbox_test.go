@@ -26,6 +26,15 @@ func TestStdioRootFlag(t *testing.T) {
 		{"absent", []string{"--read-only"}, "", false},
 		{"trailing with no value", []string{"--root"}, "", false},
 		{"among other flags", []string{"--read-only", "--root", "/a/b", "--max-response-bytes=9"}, "/a/b", true},
+		// Go's flag package accepts one dash as readily as two, so an MCP
+		// spelled this way starts and serves identically. Missing it here
+		// spawned the child with no seatbelt and no audited root.
+		{"single dash, space form", []string{"-root", "/a/b"}, "/a/b", true},
+		{"single dash, equals form", []string{"-root=/a/b"}, "/a/b", true},
+		{"single dash among others", []string{"-read-only", "-root", "/a/b"}, "/a/b", true},
+		// A bare "--" ends flag parsing, so nothing after it is a flag.
+		{"after the terminator", []string{"--", "--root", "/a/b"}, "", false},
+		{"not a flag at all", []string{"root", "/a/b"}, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -46,6 +55,32 @@ func TestStdioReadOnlyFlag(t *testing.T) {
 	}
 	if !stdioReadOnlyFlag([]string{"--read-only=true"}) {
 		t.Error("--read-only=true not recognized")
+	}
+	// Go parses a boolean flag's value with strconv.ParseBool and accepts one
+	// dash. Each of these makes fsMCP read-only, so each must pick the
+	// read-only profile rather than leaving the wider one in force.
+	for _, args := range [][]string{
+		{"-read-only"},
+		{"-read-only=true"},
+		{"--read-only=1"},
+		{"--read-only=t"},
+		{"--read-only=TRUE"},
+		{"-read-only=T"},
+	} {
+		if !stdioReadOnlyFlag(args) {
+			t.Errorf("stdioReadOnlyFlag(%v) = false; fsMCP is read-only but relay would apply the read-WRITE profile", args)
+		}
+	}
+	// And the shapes that genuinely are not read-only.
+	for _, args := range [][]string{
+		{"--read-only=false"},
+		{"--read-only=0"},
+		{"--", "--read-only"},
+		{"--read-only-ish"},
+	} {
+		if stdioReadOnlyFlag(args) {
+			t.Errorf("stdioReadOnlyFlag(%v) = true; want false", args)
+		}
 	}
 }
 
@@ -107,6 +142,39 @@ func TestPrepareStdioLaunch_NoRootPassesThrough(t *testing.T) {
 	}
 	if cfg.ResolvedRoot != "" {
 		t.Errorf("ResolvedRoot set with no --root argument: %q", cfg.ResolvedRoot)
+	}
+}
+
+// The consequence of the spelling, not just the parse: an MCP configured with
+// a single-dash -root must reach seatbelt and the audit record like any other.
+// Before, relay found no root, fell through to the unsandboxed pass-through
+// branch, and left ResolvedRoot empty — so the child ran unconfined and the
+// audit line carried no root= to say so.
+func TestPrepareStdioLaunch_SingleDashRootIsStillSandboxed(t *testing.T) {
+	mkSandboxRelayHome(t)
+	root := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"-root", root},
+		{"-root=" + root},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			cfg := &ExternalMcp{ID: "fsmcp3", Command: "/usr/local/bin/fsmcp3", Args: args}
+			command, _, err := prepareStdioLaunch(cfg)
+			if err != nil {
+				t.Fatalf("prepareStdioLaunch: %v", err)
+			}
+			if command != sandboxExecPath {
+				t.Errorf("command = %q, want %q — the child would run unsandboxed", command, sandboxExecPath)
+			}
+			if cfg.ResolvedRoot != resolved {
+				t.Errorf("ResolvedRoot = %q, want %q — the audit record would not name the directory", cfg.ResolvedRoot, resolved)
+			}
+		})
 	}
 }
 

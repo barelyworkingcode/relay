@@ -340,9 +340,26 @@ The same round trip also sorted object keys, collapsed duplicate keys and
 reformatted numbers. **Inspect a `RawMessage` for a decision; forward the
 original bytes.** The audit log holds those same bytes — redaction of a
 credential-like value is the only rewrite — because a log that paraphrases what
-a client sent is not ground truth. The one thing relay does change is
-insignificant whitespace: the stdio transport is newline-delimited, so the
-guarantee is `json.Compact` of what the client sent, byte for byte.
+a client sent is not ground truth. The one thing relay changes on purpose is
+insignificant whitespace: the stdio transport is newline-delimited, so a
+caller's pretty-printed arguments must lose it or the frame breaks.
+
+"Byte for byte" has **one measured exception** (ADR-013): Go's encoder re-spells
+a raw U+2028/U+2029 inside a `json.RawMessage` as `\u2028`/`\u2029` even with
+`SetEscapeHTML(false)`, and there is no seam short of hand-assembling the frame.
+It decodes back to the same character, which is the line ADR-013 draws — relay
+may not change what a document means, and does not claim to preserve how it was
+spelled. Pinned by `TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged`.
+
+That exception is **load-bearing for `_meta.args_sha256`**, so it is no longer
+merely cosmetic. A client computing that hash must canonicalise through the same
+encoder relay uses, not `json.Compact`: hashing the raw spelling while relay
+forwards the re-spelled one makes the MCP hash bytes the client never hashed, and
+fsMCP refuses a legitimate call with `integrity_failed` — U+2028 is ordinary in
+JavaScript. relayRemote's `compactArgs` is the reference for getting this right.
+Relay itself never recomputes the hash: it forwards the client's verbatim, since
+a hash relay derived from arguments relay already holds would validate relay
+against itself.
 
 **TCC permissions** — relay holds the personal-information entitlements
 (`Relay.entitlements`) and fires the prompts from its own process; MCPs declare
