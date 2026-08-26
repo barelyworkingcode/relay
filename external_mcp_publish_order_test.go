@@ -1,0 +1,114 @@
+//go:build !windows
+
+package main
+
+// A connection relay will dispatch to must never be reachable before the schema
+// that says what a call to it is confined to.
+//
+// finalizeConnection used to publish the connection FIRST, then set the tools,
+// then store the context schema. In that window an MCP was callable and relay
+// believed it declared nothing — and ParseContextSchema(nil, 0) is not a narrow
+// schema, it is no schema: checkScopePresence finds no field to require and
+// passes every tool, filterKnownContextFields finds nothing declared and strips
+// every stored context key off the wire. That is a call answered as though the
+// grant were empty, and it was reachable at startup and on every respawn.
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+)
+
+// A start that lands on an MCP relay already knows must replace the schema, not
+// merge with it. The respawn path does not go through Stop, so a child that
+// stopped declaring a schema would otherwise leave relay enforcing its
+// predecessor's declaration against a process that no longer honours it.
+func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	declaring := stdioMcp("mcp-schema", bin)
+	declaring.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+	if err := m.startOne(ctx, &declaring); err != nil {
+		t.Fatalf("startOne (declaring): %v", err)
+	}
+	if s := m.McpSurfaceFor("mcp-schema"); len(s.Schema) == 0 || s.SchemaVersion != 2 {
+		t.Fatalf("surface after the declaring start = %+v", s)
+	}
+
+	// Same id, a build that no longer declares one — exactly what a respawn
+	// onto a downgraded child looks like, and it does not pass through Stop.
+	silent := stdioMcp("mcp-schema", bin)
+	if err := m.startOne(ctx, &silent); err != nil {
+		t.Fatalf("startOne (silent): %v", err)
+	}
+
+	s := m.McpSurfaceFor("mcp-schema")
+	if len(s.Schema) != 0 || s.SchemaVersion != 0 {
+		t.Errorf("surface = %+v, want empty: relay is holding a schema the live child never declared", s)
+	}
+}
+
+// The publication and the schema write happen in one critical section, so a
+// reader holding the manager's lock cannot observe a connection without the
+// declaration that governs it. This spins a reader across a series of first
+// starts, which is where the window was: on a restart the previous schema was
+// still in the map and hid it.
+func TestPublishOrder_NoConnectionIsReachableBeforeItsSchema(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	const starts = 40
+	for i := 0; i < starts; i++ {
+		id := fmt.Sprintf("mcp-order-%d", i)
+		cfg := stdioMcp(id, bin)
+		cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+
+		stop := make(chan struct{})
+		bad := make(chan string, 1)
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if !m.IsConnected(id) {
+					continue
+				}
+				if s := m.McpSurfaceFor(id); len(s.Schema) == 0 {
+					select {
+					case bad <- "reachable with no context schema":
+					default:
+					}
+					return
+				} else if len(s.Tools) == 0 {
+					select {
+					case bad <- "reachable with no tools":
+					default:
+					}
+					return
+				}
+				return
+			}
+		}()
+
+		if err := m.startOne(ctx, &cfg); err != nil {
+			close(stop)
+			t.Fatalf("startOne %s: %v", id, err)
+		}
+		// Let the reader finish its observation before tearing it down.
+		time.Sleep(time.Millisecond)
+		close(stop)
+		select {
+		case why := <-bad:
+			t.Fatalf("%s was %s", id, why)
+		default:
+		}
+	}
+}

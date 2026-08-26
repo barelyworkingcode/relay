@@ -28,8 +28,8 @@ func runAuditCommand(args []string) {
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
 		"it selects tool_error records the MCP marked as a resource-scope refusal")
-	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, unknown")
-	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills")
+	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, unknown")
+	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
@@ -177,6 +177,15 @@ func auditDetail(ev AuditEvent) string {
 }
 
 func auditBaseDetail(ev AuditEvent) string {
+	// A supervision record (ADR-012) names no tool and carries no arguments:
+	// the transition is the detail, and the reader error that caused it — when
+	// there is one — is the rest of the same sentence.
+	if ev.Supervision != "" {
+		if ev.Error == "" {
+			return ev.Supervision
+		}
+		return ev.Supervision + ": " + collapseWhitespace(ev.Error)
+	}
 	if ev.Error != "" {
 		return collapseWhitespace(ev.Error)
 	}

@@ -12,6 +12,35 @@ import "time"
 // shorten it to exercise the request-timeout path deterministically.
 var MCPRequestTimeout = 5 * time.Minute
 
+// Restart policy for a supervised stdio MCP child (ADR-012). Vars, not consts,
+// for the same reason MCPRequestTimeout is one: the supervision tests have to
+// be able to drive a crash loop to its cap without waiting out the real
+// backoff. Nothing in production writes them.
+var (
+	// MCPRestartBaseDelay is the pause before the FIRST restart attempt, and
+	// the base the backoff doubles from. There is a pause before the first
+	// attempt deliberately: a child that dies on spawn would otherwise be
+	// respawned in a tight loop for as long as the budget lasted.
+	MCPRestartBaseDelay = 250 * time.Millisecond
+
+	// MCPRestartMaxDelay caps the backoff. Half a minute is long enough that a
+	// hopeless MCP costs nothing to keep trying, and short enough that an
+	// operator fixing one does not wait long for it to come back.
+	MCPRestartMaxDelay = 30 * time.Second
+
+	// MCPRestartMaxAttempts bounds a single crash-loop streak. It is not a
+	// lifetime budget: a child that stays up for MCPRestartStableWindow
+	// resets it, so this caps how fast relay gives up on a child that will
+	// not stay up, not how many times it will ever restart a healthy one.
+	MCPRestartMaxAttempts = 8
+
+	// MCPRestartStableWindow is how long a respawned child must live before
+	// its next death counts as a fresh incident rather than the continuation
+	// of a crash loop. Comfortably longer than a spawn plus a handshake, so a
+	// child that dies during startup can never look stable.
+	MCPRestartStableWindow = 2 * time.Minute
+)
+
 const (
 	// MCPDiscoveryTimeout is the maximum time for a one-shot MCP discovery
 	// handshake (spawn, initialize, tools/list, kill).
