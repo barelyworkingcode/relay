@@ -921,6 +921,81 @@ function scopeValueText(v) {
     return JSON.stringify(v);
 }
 
+// ---- How much of the host one scope value reaches (issue #41) --------------
+//
+// Mirrors scope_breadth.go, entry for entry. A count is not a measure of
+// confinement: "1 value" is true of /Users/me/project and equally true of "/",
+// and the profile card rendered the second as a single character inline. It is
+// a question about the VALUE and never about the field name — ADR-011 decision
+// 3 refuses relay a registry of known field names, and this does not smuggle
+// one back in.
+
+const SCOPE_BREADTH_ROOT = 'root';
+const SCOPE_BREADTH_HOME = 'home';
+
+function scopeBreadthPhrase(kind) {
+    if (kind === SCOPE_BREADTH_ROOT) return 'unrestricted (the whole filesystem)';
+    if (kind === SCOPE_BREADTH_HOME) return 'a whole home directory';
+    return '';
+}
+
+// scopeCleanPath is the small part of Go's filepath.Clean this needs: collapse
+// repeated slashes and resolve "." / ".." segments, so "/", "//", "/.." and
+// "/Users/admin/../.." are one value rather than four spellings one of which
+// gets past the check.
+function scopeCleanPath(v) {
+    const out = [];
+    for (const seg of v.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') { out.pop(); continue; }
+        out.push(seg);
+    }
+    return '/' + out.join('/');
+}
+
+function scopeEntryBreadth(entry) {
+    if (typeof entry !== 'string') return '';
+    const v = entry.trim();
+    if (v === '') return '';
+    // "~" is a home directory to every shell and to a good many MCPs. Relay
+    // does not expand it and cannot know whether the MCP receiving it will.
+    if (v === '~' || v === '~/') return SCOPE_BREADTH_HOME;
+    if (v.charAt(0) !== '/') return '';
+    const clean = scopeCleanPath(v);
+    if (clean === '/') return SCOPE_BREADTH_ROOT;
+    const parts = clean.slice(1).split('/');
+    if (parts.length <= 2 && (parts[0] === 'Users' || parts[0] === 'home')) return SCOPE_BREADTH_HOME;
+    return '';
+}
+
+// scopeValueBreadth returns the WIDEST breadth any entry has: a list is a
+// union, so ["/Users/me/proj", "/"] reaches everything and a card that
+// reported the first entry would describe the confinement the operator meant
+// instead of the one in force.
+function scopeValueBreadth(v) {
+    const entries = Array.isArray(v) ? v : (typeof v === 'string' ? [v] : []);
+    let widest = '';
+    for (const e of entries) {
+        const kind = scopeEntryBreadth(e);
+        if (kind === SCOPE_BREADTH_ROOT) return SCOPE_BREADTH_ROOT;
+        if (kind === SCOPE_BREADTH_HOME) widest = SCOPE_BREADTH_HOME;
+    }
+    return widest;
+}
+
+// projScopeBreadthWarnings names every field of one MCP's scope on this record
+// whose value reaches further than a folder. Used by the list row, the editor
+// and the save-time confirmation, so all three say the same thing.
+function projScopeBreadthWarnings(p, mcpID) {
+    const fields = mcpScopeFieldsFor(mcpID) || [];
+    const out = [];
+    for (const f of fields) {
+        const phrase = scopeBreadthPhrase(scopeValueBreadth(projScopeValue(p, mcpID, f.name)));
+        if (phrase) out.push(f.name + ' is ' + phrase);
+    }
+    return out;
+}
+
 // projMissingScopeFields names the OPERATOR-set restrict fields this record
 // grants an MCP for but supplies no value for. Those are the ones an operator
 // can fix; a project_path field on an access profile is reported separately,
@@ -988,6 +1063,11 @@ function projAuthorityRows(p) {
             scope: scope,
             derived: derived,
             missing: projMissingScopeFields(p, mcpID),
+            // Issue #41: the row already showed the real value — "/" is one
+            // character and every reviewer's eye went past it. The finding
+            // gets a line of its own, in the same words the CLI and the audit
+            // authority line use.
+            breadth: projScopeBreadthWarnings(p, mcpID),
             schemaUnknown: fields === null,
         };
     });
@@ -1011,6 +1091,9 @@ function renderAuthorityRows(p) {
         html += '<span class="proj-auth-external ' + (r.external ? 'on' : 'off') + '">' + (r.external ? 'may reach outside' : 'local only') + '</span>';
         html += '<span class="proj-auth-tools">' + esc(r.tools) + '</span>';
         if (r.scope.length) html += '<span class="proj-auth-scope">' + esc(r.scope.join(' · ')) + '</span>';
+        for (const warning of r.breadth) {
+            html += '<span class="proj-auth-unrestricted">' + esc(warning) + '</span>';
+        }
         if (r.missing.length) {
             html += '<span class="proj-auth-missing">needs a scope value for ' + esc(r.missing.join(', ')) + '</span>';
         } else if (!r.scope.length && !r.schemaUnknown) {
@@ -1618,6 +1701,16 @@ function renderScopeFieldInput(mcpID, field, f) {
     }
     if (!String(text).trim()) {
         html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
+    }
+    // Issue #41: an entry that resolves to a filesystem root is not a
+    // confinement, and it is one character to type. It is named here, while
+    // the operator is looking at the box, as well as on the row and in the
+    // save confirmation — the whole finding is that nothing said so anywhere.
+    const breadth = scopeBreadthPhrase(scopeValueBreadth(scopeValueFromText(field, text)));
+    if (breadth) {
+        html += '<div class="proj-scope-unrestricted">This value is ' + esc(breadth) + '. '
+            + 'Everything below it is in scope, including files this grant has no reason to reach. '
+            + 'Set it to the narrowest directory that works unless you mean the whole tree.</div>';
     }
     if (field.depends_on && field.depends_on.length) {
         html += '<div class="proj-scope-desc">Values here are read within ' + esc(field.depends_on.join(', ')) + '.</div>';
@@ -2488,11 +2581,44 @@ function saveProjectForm() {
     state.projectFormError = null;
     state.projectFormErrorField = null;
 
+    // Issue #41, priority 3: a scope entry that resolves to a filesystem root
+    // must be spelled out, not typed past. fsMCP documents `--allowed-dir /`
+    // as a deliberate opt-out that "must be spelled out explicitly"; on a CLI
+    // typing it IS the spelling out, and in a text box it is not. This is the
+    // UI's equivalent. It is a confirmation and never a refusal — an operator
+    // who means it can mean it, and a grant of "/" is legal.
+    if (!confirmBroadScope(payload)) return;
+
     if (!f.id) {
         ipc(JSON.stringify(Object.assign({ type: 'create_project' }, payload)));
     } else {
         ipc(JSON.stringify(Object.assign({ type: 'update_project', id: f.id }, payload)));
     }
+}
+
+// confirmBroadScope asks once, before saving, about every scope value in the
+// payload that reaches further than a folder — naming the MCP, the field and
+// the phrase every other surface uses. Returns true when there is nothing to
+// ask about, so the ordinary save path is unchanged.
+//
+// It reads the PAYLOAD rather than the form state, so what it asks about is
+// exactly what is about to be stored.
+function confirmBroadScope(payload) {
+    const findings = [];
+    const context = (payload && payload.context) || {};
+    for (const mcpID of Object.keys(context).sort()) {
+        const values = context[mcpID] || {};
+        for (const field of Object.keys(values).sort()) {
+            const phrase = scopeBreadthPhrase(scopeValueBreadth(values[field]));
+            if (phrase) findings.push(mcpID + ' · ' + field + ' is ' + phrase);
+        }
+    }
+    if (!findings.length) return true;
+    return confirm(
+        'This grant is broader than a folder:\n\n  ' + findings.join('\n  ') + '\n\n'
+        + 'Everything below those roots is in scope for every tool the field governs — '
+        + 'for an access profile, that is a client on another machine.\n\n'
+        + 'Save it anyway?');
 }
 
 // ---- Project IPC event handlers ----
@@ -4133,6 +4259,19 @@ function auditScopeText(scope) {
     }).join(', ');
 }
 
+// auditScopeBreadthText names every injected scope value that reaches further
+// than a folder, in the same words the profile card and `relay grant` use.
+// Mirrors Go's scopeBreadthWarnings.
+function auditScopeBreadthText(scope) {
+    if (scope === undefined || scope === null) return '';
+    const out = [];
+    for (const k of Object.keys(scope).sort()) {
+        const phrase = scopeBreadthPhrase(scopeValueBreadth(scope[k]));
+        if (phrase) out.push(k + ' is ' + phrase);
+    }
+    return out.join('; ');
+}
+
 function auditBaseDetail(ev) {
     if (ev.error) return ev.error;
     if (ev.args) return typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args);
@@ -4267,6 +4406,19 @@ function renderAuditDetail(ev) {
         if (ev.allow_external === true) add('Outbound', 'allowed — this grant may reach outside the host');
         else if (ev.allow_external === false) add('Outbound', 'blocked — confined to this host');
         add('Scope', auditScopeText(ev.scope));
+        // Issue #42. This is NOT a fourth reading of Scope: Scope's three
+        // readings are about what the MCP declares, and this is about what the
+        // OPERATOR declared and relay could not place. It used to be invisible
+        // — the value was dropped, the call dispatched, and the record said
+        // "(no scope declared for this MCP)", the reassuring one of the two.
+        if (ev.scope_unplaced && ev.scope_unplaced.length) {
+            add('Scope NOT applied', ev.scope_unplaced.join(', ')
+                + ' — set by this grant, not declared by this MCP, so the call was denied');
+        }
+        // The other half of a truthful scope line (issue #41): a value can be
+        // present, injected and enforced and still not be a confinement.
+        const breadth = auditScopeBreadthText(ev.scope);
+        if (breadth) add('Scope breadth', breadth);
     }
     add('Outcome', ev.outcome);
     // An intent with no completion sharing this id means relay invoked an MCP
@@ -4419,9 +4571,9 @@ render();
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
-    auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
+    auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
-    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeTextFromValue, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
+    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

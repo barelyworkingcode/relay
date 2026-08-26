@@ -248,25 +248,78 @@ capable agent concluded *"Alice's mail is accessible through every tool"* when
 it had in fact been refused — it had read mail Alice *sent to Bob*, which is
 Bob's mail. Ground truth is the audit log.
 
-Three checks, in order:
+**And do not ask the client what its scope is.** This used to be step 1 here,
+and it was a check that could not fail. `relayremote list` is a CLIENT-side
+tool showing a CLIENT-facing string, and for a field declaring
+`disclose: "count"` that string names the number of roots and never the roots.
+Against `allowed_dirs: ["/"]` it said:
 
-**1. What can it see?**
+    Scope: Directories this client may read, search and modify within — confined to 1 value.
+
+and against a grant of one project folder it said the same thing, byte for
+byte, while the first grant read `/etc/passwd` and listed `~/.ssh` (issue #41).
+A count is not a measure of confinement. Relay now says *unrestricted (the
+whole filesystem)* rather than "1 value" whenever a scope entry resolves to a
+filesystem root, on that surface and every other — but the general rule stands:
+**ask relay what it granted, not the client what it was told.**
+
+Four checks, in order. The first two are host-side and answer "what did I
+grant"; the last two are behavioural and answer "what happened".
+
+**1. What did I actually grant?**
+
+    relay grant --project hermes-bob
+
+    ACCESS PROFILE  Hermes — Bob INBOX  (id: hermes-bob)
+      macmcp         access=read   outbound=blocked  tools=mail_*
+                     scope: mail_accounts = ["Bob"]
+
+This is the operator's view and it prints the **real values**, always,
+whatever any field's `disclose` says — it is your machine and your grant. A
+scope that reaches further than a folder is called out on its own line:
+
+    ACCESS PROFILE  Probe  (id: probe)
+      fsmcp          access=write  outbound=blocked  tools=fs_*
+                     scope: allowed_dirs = ["/"]
+                     ** ALLOWED_DIRS IS UNRESTRICTED (THE WHOLE FILESYSTEM) **
+
+Run it with no `--project` to sweep every record on the machine, and `--json`
+for a shape you can diff between reviews. Like `relay audit`, it reads
+`settings.json` directly, so it works with the tray stopped. What it cannot do
+is ask a live MCP whether it still declares these fields — check 4 answers
+that.
+
+The same information is on the Settings → Projects card, which is where a
+scope is authored: the real value inline, an `UNRESTRICTED` badge beside it if
+the value reaches a filesystem root or a whole home directory, and a
+confirmation dialog before a grant like that is saved. fsMCP documents
+`--allowed-dir /` as a deliberate opt-out that must be spelled out explicitly;
+relay holds the same line, and the dialog is where you spell it out.
+
+**2. What can it see?**
 
     relayremote list --bundle <dir> --addr <addr>
 
-A read-only mail profile should list only the read mail tools. If you see
-`web_fetch`, `capture_screenshot` or `contacts_*`, your `allowed_tools` is wider
-than you think. If you see `mail_send` on a profile you meant to keep to
-drafting, **Outside this Mac** is set to Allow.
+This is still worth running — it is the definitive answer to **which tools**,
+which is the question it can answer honestly. A read-only mail profile should
+list only the read mail tools. If you see `web_fetch`, `capture_screenshot` or
+`contacts_*`, your `allowed_tools` is wider than you think. If you see
+`mail_send` on a profile you meant to keep to drafting, **Outside this Mac** is
+set to Allow. Just do not read the `Scope:` sentence as the answer to **which
+resources**: that sentence is written for the client, under the field's
+`disclose` setting, and check 1 is the one written for you.
 
 **What the list shows is what the profile can call.** A tool a profile could
 never call — one governed by `file_dirs`, which is derived from a project's
 path and so can never have a value for a profile — is not listed at all, and is
 not written into the generated `SKILL.md` either. A tool whose scope you simply
 have not filled in yet *is* listed, and its description says which field is
-missing; that one becomes callable the moment you type a value.
+missing; that one becomes callable the moment you type a value. A tool of an
+MCP that no longer declares a field your profile scopes is not listed either,
+for the same reason: relay refuses every call to that MCP under that grant
+(see check 4).
 
-**2. What happens when it reaches outside?**
+**3. What happens when it reaches outside?**
 
     relayremote call --tool mail_get_emails --args '{"account":"<other>"}'
 
@@ -274,7 +327,7 @@ Must be an **error**, not an empty result. A scope violation never silently
 narrows and never returns nothing — if you get an empty list, that is a
 different problem.
 
-**3. What did relay actually see?**
+**4. What did relay actually see?**
 
     relay audit --tail 20
     relay audit --outcome denied
@@ -292,7 +345,7 @@ for Alice's mailbox, `relay audit --tail 4` shows:
     14:03:19  denied      Hermes Mail  macmcp  web_fetch           0   -       access denied: tool 'web_fetch' reaches outside this host and this grant does not allow external access for MCP 'macmcp'
     14:03:24  tool_error  Hermes Mail  macmcp  mail_get_email      0   -       scope_violation: true  {"account":"Alice"}
 
-Each refusal names the layer that produced it. The five you can see, in the
+Each refusal names the layer that produced it. The six you can see, in the
 order they are checked:
 
 - *"is not in the allowed tools"* — layer 2. The grant never named this tool.
@@ -304,6 +357,19 @@ order they are checked:
   layer 5, and **unsatisfiable**: an access profile has no directory, so that
   tool can never work for one. It is withheld from the tool listing for that
   reason, rather than offered and then always refused.
+- *"this grant scopes MCP 'X' by \"field\", which 'X' does not declare in its
+  live context schema"* — layer 5, and the value is **unplaceable**: you wrote
+  a scope and the MCP relay is talking to right now has no such field, so
+  relay cannot enforce it. Every call to that MCP under that grant is refused,
+  and its tools are withheld from the listing. Something changed underneath
+  the profile — the MCP was downgraded, rebuilt, or replaced by a different
+  binary at the same path, or the value was hand-edited into `settings.json`.
+  Fix the MCP or re-author the scope against what it declares now
+  (Settings → Projects re-reads the live schema every time you open it).
+  Relay used to **drop** the value here and dispatch the call anyway, which
+  meant the only thing standing between a client and an unconfined filesystem
+  call was whether that particular MCP happened to fail closed on its own
+  behalf (issue #42).
 
 `tool_error` with `scope_violation: true` is different from all of them: the
 grant was in order and the **MCP** refused, because the client named a resource
@@ -397,6 +463,29 @@ conflating the two (as an earlier version of this field did) would make a
 `denied`-for-missing-scope record indistinguishable from an ordinary MCP that
 was never scoped in the first place. The JSON record carries the same
 distinction (`"scope":{}` vs. `"scope":null`), and so does the Settings pane.
+
+**A third fact used to hide inside `scope=(none declared)`, and it is the loud
+one.** When your profile sets a value for a field the MCP's live schema does
+not declare, that is not "this MCP was never scoped" — it is "the scope you
+wrote is not the scope in effect". The record says so, and the call is denied:
+
+    relay audit --tail 1 --authority
+
+    TIME      OUTCOME  PROJECT  MCP    TOOL      MS  CALLER      DETAIL
+    14:07:31  denied   Probe    fsmcp  fs_read   0   hermes-bob  access denied: this grant scopes MCP 'fsmcp' by "allowed_dirs", which 'fsmcp' does not declare in its live context schema — …
+                                                                 authority: access=write  outbound=blocked  scope=(none declared)  SCOPE NOT APPLIED: this grant sets "allowed_dirs", which this MCP does not declare — call denied
+
+The JSON record carries it as `"scope_unplaced": ["allowed_dirs"]`, which is
+the field to alert on: it means an MCP changed underneath a grant. Before
+issue #42 this record read `scope=(none declared)` with outcome `ok`, on a
+call that had been dispatched with the operator's scope removed.
+
+**The authority line also names a scope that is not a confinement.** A value
+can be present, injected and enforced and still be the whole machine, so a
+scope entry that resolves to a filesystem root or a whole home directory is
+called out beside the value rather than instead of it:
+
+    authority: access=write  outbound=blocked  scope=allowed_dirs=["/"]  SCOPE BREADTH: allowed_dirs is unrestricted (the whole filesystem)
 
 `--authority` is off by default: the eight-column table and `--outcome` /
 `--kind` / `--grep` / `--tail` keep exactly the shape scripts already parse,

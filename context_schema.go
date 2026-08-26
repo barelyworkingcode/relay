@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -970,6 +971,85 @@ func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMe
 	return out
 }
 
+// unplaceableContextFields names every field this grant SETS a value for that
+// the MCP's LIVE schema does not declare, in name order. Issue #42.
+//
+// It is the question filterKnownContextFields answers silently and in the
+// wrong direction. That function drops such a key on the way to the wire —
+// correctly, because a stale name handed to an MCP that has since given a NEW
+// field the OLD name is worse than nothing — and relay then DISPATCHED THE
+// CALL ANYWAY, unconfined, recording `scope=(none declared)`: the reassuring
+// one of two very different facts. In the reproduction the only thing that
+// stopped an unconfined filesystem call was fsMCP's own fail-closed rule.
+// Relay did not enforce the operator's grant; the MCP happened to refuse on
+// its own behalf, and relay cannot assume the next MCP does.
+//
+// The rule this restores is the one relay already applies to a schema it
+// cannot READ (ContextSchema.Usable): a scope relay cannot understand is not a
+// scope it can enforce, so every call to that MCP is refused for every grant.
+// A scope the operator WROTE that relay cannot PLACE is the same condition
+// from the other end and gets the same answer. Dropping it is not the
+// conservative option — it is relay asserting a confinement in the profile,
+// not delivering it, and reporting the omission in language that reads like
+// "there was nothing to apply".
+//
+// Only a SET value counts. An empty one (`[]`, `null`, `""`) is absent
+// everywhere else in this model — hasScopeValue, checkScopePresence, the UI —
+// and a leftover empty key asserts no confinement anybody could fail to
+// deliver.
+//
+// It asks the question of EVERY stored key, not only of ones that were
+// restrictions when they were written, because relay cannot tell the
+// difference once the declaration is gone: the field it can no longer place
+// may have been the one governing everything. That is the same reading Usable
+// gives a fragment that would not decode, and the same one Governs gives an
+// empty applies_to — when the declaration is unreadable, take the widest
+// restriction rather than the narrowest.
+//
+// V2 ONLY, and that is not an oversight — it is the exact scope of the defect.
+// The failure is DROP-AND-DISPATCH, and only the v2 branch drops:
+// filterKnownContextFields returns a v1 blob verbatim, so under a v1 or absent
+// declaration the operator's value goes out on the wire under the name they
+// wrote it. It may or may not be honoured there, but that has always been the
+// MCP's half of the bargain (ADR-011: "the MCP enforces it; relay cannot
+// verify it") and is a different question from relay removing a value and
+// dispatching anyway. Widening this to v1 would also break the promise the
+// version exists to keep — "handled exactly as it was before ADR-011" — for
+// every MCP that ships no contextSchema at all.
+//
+// A v2 schema that decodes to NO fields is caught here, which is the case
+// worth naming: {"contextSchemaVersion": 2, "contextSchema": {}} from an MCP
+// that failed to build its declaration presents to ParseContextSchema as a
+// perfectly valid schema declaring nothing, under which every scope-presence
+// check passes and every stored key is stripped. It is now a refusal.
+func unplaceableContextFields(cs ContextSchema, values map[string]json.RawMessage) []string {
+	if !cs.V2() {
+		return nil
+	}
+	var out []string
+	for name := range values {
+		if !hasScopeValue(values, name) {
+			continue
+		}
+		if _, ok := cs.Field(name); ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// quoteNames renders a list of field names for a refusal message, quoted so a
+// name with a space or an empty one is still visible as a name.
+func quoteNames(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, strconv.Quote(n))
+	}
+	return strings.Join(quoted, ", ")
+}
+
 // hasScopeValue reports whether the context blob carries a usable value for
 // the field — present, non-null, and non-empty, which is the whole of what
 // decision 4 requires relay to check at call time. It deliberately does NOT
@@ -1094,13 +1174,38 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 // Disclosure() — hasScopeValue, the audit log, `_meta` injection and every
 // operator surface read the real value regardless, because disclose is
 // specifically and only about what the note handed to a REMOTE CLIENT says.
+//
+// One fact outranks disclose, at every setting: that the value reaches a
+// filesystem root (issue #41). "Confined to 1 value" is true of
+// /Users/me/project and equally true of "/", and a client told the second is
+// told something false about its own limits by a mechanism whose stated
+// purpose is to say what its limits are. Announcing it costs nothing the
+// client does not learn the moment it lists the root — which is the test the
+// disclose keyword exists to apply, and this passes it.
+//
+// A HOME directory does not get the same treatment here, deliberately. It is
+// genuinely confined, so "confined to 1 value" is not false; and naming it
+// would disclose host topology (that the sandbox is somebody's home) to the
+// one audience disclose exists to withhold topology from. It is loud on every
+// OPERATOR surface instead, which is where the question "did I mean to grant
+// that?" is asked.
 func renderScopeDisclosure(f ContextField, raw json.RawMessage) string {
+	unrestricted := scopeValueBreadth(raw) == scopeBreadthRoot
 	switch f.Disclosure() {
 	case ContextDiscloseCount:
+		if unrestricted {
+			return scopeBreadthPhrase(scopeBreadthRoot)
+		}
 		return renderScopeCount(raw)
 	case ContextDiscloseNone:
+		if unrestricted {
+			return scopeBreadthPhrase(scopeBreadthRoot)
+		}
 		return scopeValueWithheld
 	default:
+		if unrestricted {
+			return scopeBreadthPhrase(scopeBreadthRoot) + ": " + renderScopeValue(raw)
+		}
 		return renderScopeValue(raw)
 	}
 }

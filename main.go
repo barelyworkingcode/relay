@@ -58,10 +58,12 @@ func main() {
 		runAuditCommand(args[1:])
 	case "enrol":
 		runEnrolCommand(args[1:])
+	case "grant":
+		runGrantCommand(args[1:])
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol]\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|grant]\n", args[0])
 		os.Exit(1)
 	}
 }

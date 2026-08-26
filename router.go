@@ -718,6 +718,34 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			return nil, err
 		}
 
+		// A scope the OPERATOR wrote that relay cannot place in the MCP's live
+		// schema (issue #42). This used to drop the value, dispatch the call
+		// unconfined, and record `scope=(none declared)` — the reassuring one
+		// of two very different facts.
+		//
+		// Immediately after Usable() because it is the same finding from the
+		// other end. There, relay cannot read what the MCP declared; here, it
+		// cannot place what the operator declared. Both have the same
+		// consequence — for this grant, on this MCP, relay does not know what
+		// it would be handing over — and so both get the same answer: nothing
+		// is handed over. AFTER Usable() rather than before, because a schema
+		// that failed to decode has fields relay never parsed, and reporting
+		// those as "your profile names a field this MCP does not declare"
+		// would blame the operator for the MCP author's typo.
+		//
+		// Ahead of the tool check for the reason Usable() is ahead of it: "this
+		// tool is not in your allowed_tools" is a statement about a boundary,
+		// and this is the layer that decides whether relay is in a position to
+		// make statements about this MCP's boundaries at all.
+		if unplaced := unplaceableContextFields(schema, contextValues(stored.Context[extID])); len(unplaced) > 0 {
+			au.setUnplacedScope(unplaced)
+			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+				"access denied: this grant scopes MCP '%s' by %s, which '%s' does not declare in its live context schema — relay cannot enforce a scope it cannot place, so no call to this MCP is dispatched under this grant",
+				extID, quoteNames(unplaced), extID))
+			au.done(AuditOutcomeDenied, err)
+			return nil, err
+		}
+
 		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
@@ -973,12 +1001,19 @@ func newScopeView(r *appRouter, stored *StoredToken, mcpID string, isServiceToke
 //
 // A schema relay could not read withholds everything, matching CallTool: the
 // fragment that failed may have been the one governing this tool, so there is
-// nothing to stand behind about any of them.
+// nothing to stand behind about any of them. A scope THIS GRANT sets that
+// relay cannot place in that schema withholds everything for the same reason
+// and by the same rule (issue #42): CallTool refuses every tool on this MCP
+// unconditionally, and a listing that advertised them would put a tool into
+// `relayremote list` and into a generated SKILL.md that can never be called.
 func (v scopeView) listable(toolName string) bool {
 	if !v.scoped {
 		return true
 	}
 	if !v.schema.Usable() {
+		return false
+	}
+	if len(unplaceableContextFields(v.schema, v.values)) > 0 {
 		return false
 	}
 	_, unsatisfiable := unsatisfiableScopeField(v.schema, v.isRemote, toolName)
