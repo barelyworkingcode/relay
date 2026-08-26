@@ -331,6 +331,105 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 	}
 }
 
+// discloseSchema is a v2 schema exercising all three disclose settings: an
+// array field left at the default (no "disclose" at all — macmcpSchema above
+// already pins that one byte-for-byte, so it is not repeated here), an array
+// field opting into "count", and a scalar (non-array) field opting into
+// "none". Both restrict fields govern the same tool so one note exercises
+// both settings together, the way a real client would see them.
+const discloseSchema = `{
+  "mail_accounts": {
+    "type": "array", "items": {"type": "string"},
+    "description": "Mail accounts this client may read from or send as",
+    "scope": "restrict", "source": "operator",
+    "applies_to": ["mail_*"], "disclose": "count"
+  },
+  "primary_account": {
+    "type": "string",
+    "description": "The single account this client sends as",
+    "scope": "restrict", "source": "operator",
+    "applies_to": ["mail_*"], "disclose": "none"
+  }
+}`
+
+// TestScopeNoteFor_DiscloseCountAndNoneNameNoValue is issue #33 acceptance 3:
+// "count" and "none" must render notes that name no value, for array and
+// string fields alike.
+func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
+	cs := ParseContextSchema(json.RawMessage(discloseSchema), 2)
+	values := map[string]json.RawMessage{
+		"mail_accounts":   json.RawMessage(`["Bob","Alice"]`),
+		"primary_account": json.RawMessage(`"Bob"`),
+	}
+	note := scopeNoteFor(cs, values, "mail_search")
+	for _, leak := range []string{"Bob", "Alice"} {
+		if strings.Contains(note, leak) {
+			t.Errorf("note %q disclosed a value its field withholds: %q", note, leak)
+		}
+	}
+	if !strings.Contains(note, "confined to 2 values") {
+		t.Errorf("note %q does not report disclose: \"count\"'s shape", note)
+	}
+	if !strings.Contains(note, "set, value withheld") {
+		t.Errorf("note %q does not report disclose: \"none\" on the scalar field", note)
+	}
+
+	// "count" on a SCALAR field: there is no shape beyond "one value exists",
+	// which disclose: "none" already says, so it renders identically rather
+	// than disclosing a count ("1") that names nothing new.
+	scalarCount := `{"primary_account":{"type":"string","description":"d","scope":"restrict","source":"operator","disclose":"count"}}`
+	cs2 := ParseContextSchema(json.RawMessage(scalarCount), 2)
+	note2 := scopeNoteFor(cs2, map[string]json.RawMessage{"primary_account": json.RawMessage(`"Bob"`)}, "mail_search")
+	if strings.Contains(note2, "Bob") {
+		t.Errorf("disclose: \"count\" on a scalar field leaked its value: %q", note2)
+	}
+	if !strings.Contains(note2, "set, value withheld") {
+		t.Errorf("disclose: \"count\" on a scalar field = %q, want the same phrasing as \"none\"", note2)
+	}
+}
+
+// TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose is issue #33
+// acceptance 4: the unset-value warning — a client's only signal that a tool
+// is dead on arrival — must render identically whatever disclose says, because
+// there is no value to withhold and making the warning itself optional would
+// trade a real leak for a silent one.
+func TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose(t *testing.T) {
+	const want = `Scope: Mail accounts this client may read from or send as — no value is set for "mail_accounts", so every call to this tool is refused.`
+	for _, disclose := range []string{"", `"value"`, `"count"`, `"none"`} {
+		clause := ""
+		if disclose != "" {
+			clause = `, "disclose": ` + disclose
+		}
+		raw := `{"mail_accounts":{"type":"array","items":{"type":"string"},` +
+			`"description":"Mail accounts this client may read from or send as",` +
+			`"scope":"restrict","source":"operator","applies_to":["mail_*"]` + clause + `}}`
+		cs := ParseContextSchema(json.RawMessage(raw), 2)
+		if !cs.Usable() {
+			t.Fatalf("disclose %s: schema unusable: %s", disclose, cs.MalformedReason())
+		}
+		if got := scopeNoteFor(cs, nil, "mail_search"); got != want {
+			t.Errorf("disclose %s: note = %q, want %q", disclose, got, want)
+		}
+	}
+}
+
+// TestContextField_DisclosureDefaultsToValue is issue #33 acceptance 2: absent
+// disclose must render exactly as today, pinned directly against Disclosure()
+// rather than only by inspecting a rendered note.
+func TestContextField_DisclosureDefaultsToValue(t *testing.T) {
+	if got := (ContextField{}).Disclosure(); got != ContextDiscloseValue {
+		t.Errorf("a zero-value field disclosure = %q, want %q", got, ContextDiscloseValue)
+	}
+	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
+	f, ok := cs.Field("mail_accounts")
+	if !ok {
+		t.Fatal("mail_accounts missing")
+	}
+	if got := f.Disclosure(); got != ContextDiscloseValue {
+		t.Errorf("a field with no disclose keyword = %q, want %q", got, ContextDiscloseValue)
+	}
+}
+
 func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *testing.T) {
 	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
 	base := json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`)

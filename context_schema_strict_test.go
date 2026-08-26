@@ -33,7 +33,7 @@ func parseStrict(t *testing.T, raw string) ContextSchema {
 // "scope": "RESTRICT" silently disagrees with what a reviewer reading the MCP's
 // published schema would see. Neither may be decided in silence.
 func TestParseContextSchema_ANearMissKeywordKeyIsRefusedRatherThanGuessedAt(t *testing.T) {
-	for _, key := range []string{"Scope", "SCOPE", "Applies_To", "APPLIES_TO", "Source", "Enumerable", "Depends_On"} {
+	for _, key := range []string{"Scope", "SCOPE", "Applies_To", "APPLIES_TO", "Source", "Enumerable", "Depends_On", "Disclose", "DISCLOSE"} {
 		raw := `{"mail_accounts":{"type":"array","` + key + `":"restrict"}}`
 		cs := parseStrict(t, raw)
 		if cs.Usable() {
@@ -48,9 +48,11 @@ func TestParseContextSchema_ANearMissKeywordKeyIsRefusedRatherThanGuessedAt(t *t
 
 func TestParseContextSchema_ANearMissKeywordValueIsRefusedToo(t *testing.T) {
 	cases := map[string]string{
-		"scope":         `{"f":{"scope":"RESTRICT"}}`,
-		"source":        `{"f":{"scope":"restrict","source":"Project_Path"}}`,
-		"source-casing": `{"f":{"scope":"restrict","source":"OPERATOR"}}`,
+		"scope":          `{"f":{"scope":"RESTRICT"}}`,
+		"source":         `{"f":{"scope":"restrict","source":"Project_Path"}}`,
+		"source-casing":  `{"f":{"scope":"restrict","source":"OPERATOR"}}`,
+		"disclose":       `{"f":{"scope":"restrict","disclose":"Count"}}`,
+		"disclose-value": `{"f":{"scope":"restrict","disclose":"VALUE"}}`,
 	}
 	for name, raw := range cases {
 		cs := parseStrict(t, raw)
@@ -111,6 +113,19 @@ func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 	}
 	if len(cs.RestrictFields()) != 0 {
 		t.Fatal(`scope: "advisory" was read as a restriction`)
+	}
+
+	// A disclose value that is neither "count" nor "none" (and not a case
+	// near-miss of one) is a member of some future vocabulary, not a typo of
+	// this one, and Disclosure() reads it as absent — the same collapse
+	// Restricts() applies to an unrecognised scope value.
+	cs = parseStrict(t, `{"f":{"type":"array","scope":"restrict","disclose":"summary"}}`)
+	if !cs.Usable() {
+		t.Fatalf(`disclose: "summary" was refused rather than ignored: %s`, cs.MalformedReason())
+	}
+	f, _ := cs.Field("f")
+	if got := f.Disclosure(); got != ContextDiscloseValue {
+		t.Errorf(`disclose: "summary" resolved to %q, want the default %q`, got, ContextDiscloseValue)
 	}
 }
 
