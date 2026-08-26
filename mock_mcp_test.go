@@ -44,6 +44,25 @@ func (m *mockMcpConn) GetTools() []mcp.Tool      { return m.tools }
 func (m *mockMcpConn) SetTools(tools []mcp.Tool) { m.tools = tools }
 func (m *mockMcpConn) GetConfig() ExternalMcp    { return m.config }
 
+// decodedToolParams renders the tools/call params a mock connection was handed
+// as decoded Go values, for tests that want to assert on `_meta`.
+//
+// Production hands SendRequest a map[string]json.RawMessage and every member of
+// it is bytes, because relay forwards a caller's arguments rather than
+// re-encoding them (ADR-012). A test that wants a Go map has to do the decode
+// itself, and that is the point: nothing on the call path does it any more.
+func decodedToolParams(params interface{}) map[string]interface{} {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers — reduce lock/unlock boilerplate in router and manager tests
 // ---------------------------------------------------------------------------

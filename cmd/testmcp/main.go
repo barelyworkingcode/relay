@@ -32,6 +32,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"sync"
@@ -128,9 +129,19 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
+	// The echo is only evidence if it is faithful. json.Marshal would compact
+	// the echoed params with HTML escaping on, rewriting `<`, `>`, `&` and the
+	// Unicode line separators — so a test asserting that relay forwarded a
+	// caller's bytes unmodified (ADR-012) would be reading this peer's edits
+	// rather than relay's. An encoder with escaping off reports what arrived.
 	writeResp := func(id interface{}, result json.RawMessage) {
-		b, _ := json.Marshal(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id, Result: result})
-		writeLine(b)
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id, Result: result}); err != nil {
+			return
+		}
+		writeLine(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 	}
 	writeErr := func(id interface{}, code int, msg string) {
 		b, _ := json.Marshal(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id,
