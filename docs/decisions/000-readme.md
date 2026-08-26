@@ -48,6 +48,17 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   remote path at all; directory auth is unrepresentable rather than refused;
   audit is fail-closed and written *before* the call; and rate/volume budgets
   live on the enrolment, the unit of compromise.
+- [011 — A client is an identity, an access profile, and a resource
+  scope](011-resource-scope.md): the four allowlists, the `contextSchema`
+  vocabulary (`scope` / `source` / `applies_to`), and why an absent resource
+  scope is a refusal rather than a default.
+- [012 — An external MCP child is supervised, and an over-long frame is one bad
+  answer](012-external-mcp-supervision.md): stdio MCPs are restarted with a
+  backoff and a cap on restart *intensity*; a respawn re-runs the handshake AND
+  the context-schema discovery, and the connection is published only after both
+  — in one critical section, so a callable MCP with no schema is
+  unrepresentable; an over-long frame fails its own call and the stream
+  resyncs; and a child's death, recovery, and abandonment become audit rows.
 
 ## Format
 

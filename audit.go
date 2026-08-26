@@ -27,6 +27,21 @@ const (
 	AuditEventCallTool   = "call_tool"
 	AuditEventListTools  = "list_tools"
 	AuditEventListSkills = "list_skills"
+
+	// McpDown and McpUp are not calls. They record that an external MCP's
+	// child process died and that it came back (ADR-012), and they are the one
+	// deliberate widening of ADR-008's remit from "what a credential
+	// attempted" to "what relay could serve at all".
+	//
+	// They are here rather than in the app log because of what this file is
+	// for. An operator is told the audit log is the ground truth for anything
+	// relay gates, and a dead MCP is the state in which every gated call fails
+	// for a reason that has nothing to do with the grant. Without these rows
+	// the log shows a run of `error` outcomes and no cause, and the only other
+	// signal is the client's own `read response: EOF` — which is the report
+	// this project's docs say to trust last (issue #39, defect 3).
+	AuditEventMcpDown = "mcp_down"
+	AuditEventMcpUp   = "mcp_up"
 )
 
 // Audit outcomes. Denied and Unauthorized are deliberately distinct: the first
@@ -85,6 +100,13 @@ const (
 	AuditActorService = "service"
 	AuditActorRemote  = "remote"
 	AuditActorUnknown = "unknown"
+
+	// Relay is the actor on a record relay wrote about itself rather than
+	// about a caller — today only the mcp_down / mcp_up supervision rows. It
+	// is a distinct kind so `--kind relay` selects them as a set, and so no
+	// consumer has to read an absent project id as "we could not tell who this
+	// was" when the answer is "nobody: this was relay".
+	AuditActorRelay = "relay"
 )
 
 // Auth methods, mirroring resolveAuth's branches.
@@ -217,6 +239,16 @@ type AuditEvent struct {
 
 	// ToolCount is set on list events: how many tools the credential could see.
 	ToolCount int `json:"tool_count,omitempty"`
+
+	// Supervision is set ONLY on the mcp_down / mcp_up events and names the
+	// transition: down, restarted, or abandoned (the McpHealth* constants).
+	//
+	// A field of its own rather than a reuse of Error, because two of the three
+	// are not errors — `restarted` is the good news — and Error means "this
+	// record failed" on every other line in the file. Error is still set
+	// beside it when there is a cause to name, which is what makes
+	// `down: read response: EOF` one legible sentence in the table.
+	Supervision string `json:"supervision,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

@@ -169,6 +169,14 @@ func runTrayApp() {
 	audit := startAuditRecorder(store.Get())
 	app.audit = audit
 
+	// A dead external MCP used to be invisible: every client got
+	// `read response: EOF` and nothing in relay said the server behind them was
+	// gone (issue #39). The supervisor now reports every death, restart, and
+	// abandonment, and this is where those reports become rows in the log an
+	// operator is told to treat as ground truth. Installed here rather than at
+	// construction because the manager is built before the recorder exists.
+	extMgr.SetHealthObserver(audit.RecordMcpSupervision)
+
 	// Create and start bridge server.
 	router := &appRouter{
 		store:    store,
