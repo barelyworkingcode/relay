@@ -19,6 +19,11 @@
 //	                     optional {"delayMs":N} to force out-of-order replies)
 //	garbage_then_echo    write one malformed line, then a valid echo response
 //	                     (exercises readLoop's skip-malformed path)
+//	oversize             write ONE response frame larger than relay's per-frame
+//	                     cap, correctly tagged with this request's id, and
+//	                     nothing else (exercises readLoop's resync path).
+//	                     {"bytes":N} sets the payload size; the default is
+//	                     comfortably over bridge.MaxMessageSize.
 //	hang                 never respond (exercises ctx-cancel / request-timeout)
 //	exit                 os.Exit(0) immediately (exercises reader-death/EOF)
 //	<anything else>      treated as echo
@@ -32,6 +37,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"sync"
@@ -39,6 +45,13 @@ import (
 
 	"relaygo/jsonrpc"
 )
+
+// oversizeDefaultBytes is the payload size the "oversize" method emits when the
+// request does not pick one. Larger than bridge.MaxMessageSize (10 MiB) so the
+// frame is over relay's cap whatever else the response carries. Not imported
+// from bridge on purpose: this peer is meant to be able to emit a frame relay
+// refuses, so it must not be silently retuned by a change to relay's limit.
+const oversizeDefaultBytes = 11 << 20
 
 // contextMode selects the context/enumerate behaviour. Off by default so every
 // test that predates ADR-011 sees exactly the peer it always saw — including
@@ -132,6 +145,27 @@ func main() {
 		b, _ := json.Marshal(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id, Result: result})
 		writeLine(b)
 	}
+	// writeOversize emits one response frame of n filler bytes, tagged with id.
+	// Written by hand rather than through json.Marshal so the id lands in its
+	// conventional place — right after "jsonrpc" and ahead of the giant result
+	// — which is exactly the ordering relay's oversized-frame attribution
+	// relies on, and so the payload never has to exist in memory at once.
+	writeOversize := func(id interface{}, n int) {
+		idJSON, _ := json.Marshal(id)
+		chunk := bytes.Repeat([]byte("A"), 64*1024)
+		mu.Lock()
+		defer mu.Unlock()
+		out.WriteString(`{"jsonrpc":"2.0","id":`)
+		out.Write(idJSON)
+		out.WriteString(`,"result":"`)
+		for written := 0; written < n; written += len(chunk) {
+			out.Write(chunk)
+		}
+		out.WriteString(`"}`)
+		out.WriteByte('\n')
+		out.Flush()
+	}
+
 	writeErr := func(id interface{}, code int, msg string) {
 		b, _ := json.Marshal(jsonrpc.Response{JSONRPC: jsonrpc.Version, ID: id,
 			Error: &jsonrpc.Error{Code: code, Message: msg}})
@@ -179,6 +213,15 @@ func main() {
 		case "garbage_then_echo":
 			writeLine([]byte("{ this is not valid json"))
 			writeResp(req.ID, req.Params)
+		case "oversize":
+			var p struct {
+				Bytes int `json:"bytes"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			if p.Bytes <= 0 {
+				p.Bytes = oversizeDefaultBytes
+			}
+			writeOversize(req.ID, p.Bytes)
 		default: // "echo" and everything else
 			var p struct {
 				DelayMs int `json:"delayMs"`

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,6 +75,19 @@ type ExternalMcpManager struct {
 	// that now implements the method.
 	enumUnsupported map[string]bool
 	onTokenRefresh  OnTokenRefreshFunc
+
+	// supervisors holds the process supervisor of record for each stdio MCP
+	// (ADR-012). Keyed by id and compared by IDENTITY, not by presence: a
+	// respawn publishes its connection only if it is still the supervisor
+	// listed here, which is what stops a restart that raced a Stop or a
+	// Reload from installing a child nobody will ever kill.
+	supervisors map[string]*mcpSupervisor
+
+	// onHealth is the operator-facing side of supervision: an observer relay
+	// installs at startup to turn a child's death, restart, or abandonment
+	// into an audit record. Nil until SetHealthObserver is called, and nil in
+	// every test that does not care.
+	onHealth func(McpHealthEvent)
 }
 
 // pendingResponse holds a channel for delivering a JSON-RPC response to a waiting caller.
@@ -300,6 +315,7 @@ func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManage
 		schemas:         make(map[string]json.RawMessage),
 		schemaVersions:  make(map[string]int),
 		enumUnsupported: make(map[string]bool),
+		supervisors:     make(map[string]*mcpSupervisor),
 		onTokenRefresh:  onTokenRefresh,
 	}
 }
@@ -317,24 +333,65 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 	}
 }
 
-// finalizeConnection completes MCP startup after a successful handshake:
-// stores the connection in the manager, sets discovered tools, and caches
-// the context schema. setConnection is called first so that the lock ordering
-// (m.mu -> toolsMu) is consistent with ToolOwners and Tools, preventing
-// potential deadlocks from inverted lock acquisition.
-func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult) {
-	m.setConnection(id, conn)
+// finalizeConnection completes MCP startup after a successful handshake: it
+// installs the discovered tools and the declared context schema, and only then
+// publishes the connection.
+//
+// The ORDER is the contract, and it used to be the other way round. A
+// connection reachable through m.conns is a connection the router will dispatch
+// to, and the router decides what a call is confined to from the schema this
+// function stores — so publishing first opened a window in which an MCP was
+// callable and relay believed it declared nothing. ParseContextSchema(nil, 0)
+// is not a narrow schema, it is NO schema: checkScopePresence finds no field to
+// require and passes every tool, and filterKnownContextFields finds nothing
+// declared and strips every stored context key off the wire. That is a call
+// answered as though the grant were empty, and it is reachable at startup and
+// on every respawn. Tools and schema are installed first, and the publication
+// happens in the SAME critical section as the schema write, so no reader
+// holding m.mu can observe one without the other.
+//
+// The schema is REPLACED, never merged: it is deleted first and rewritten only
+// if this handshake carried one. Relay's respawn path (mcpSupervisor) does not
+// go through Stop, so without the delete a child that stopped declaring a
+// schema — a downgraded build, a server that failed to send it — would leave
+// relay holding its predecessor's declaration against a process that no longer
+// honours it.
+//
+// sup is the supervisor this connection belongs to, or nil for the HTTP path,
+// which has no child to supervise. When it is non-nil and no longer the
+// supervisor of record, the connection is NOT published and false is returned:
+// a Stop or a Reload landed while this handshake was in flight, and the caller
+// closes the child rather than installing one nothing owns.
+func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult, sup *mcpSupervisor) bool {
+	// Safe without a lock: conn is not reachable by anyone else yet, which is
+	// the whole point of doing this before the publication below.
 	conn.SetTools(result.Tools)
+
+	m.mu.Lock()
+	if sup != nil && m.supervisors[id] != sup {
+		m.mu.Unlock()
+		return false
+	}
 	// A new process gets asked about context/enumerate again: the previous
 	// one's -32601 was a fact about a build, not about the MCP's id.
-	m.mu.Lock()
 	delete(m.enumUnsupported, id)
-	m.mu.Unlock()
+	// The version is written and cleared WITH the schema, always — the two are
+	// one fact (see storedSurfaceLocked).
+	delete(m.schemas, id)
+	delete(m.schemaVersions, id)
 	if len(result.ContextSchema) > 0 {
-		m.mu.Lock()
 		m.schemas[id] = result.ContextSchema
 		m.schemaVersions[id] = result.ContextSchemaVersion
-		m.mu.Unlock()
+	}
+	old := m.conns[id]
+	m.conns[id] = conn
+	m.mu.Unlock()
+
+	if old != nil {
+		old.Close()
+	}
+
+	if len(result.ContextSchema) > 0 {
 		// One line per connection, at the moment the declaration arrives,
 		// rather than per call: ParseContextSchema runs on every tools/call
 		// and logging there would bury the signal in its own repetition. This
@@ -357,6 +414,7 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 		}
 	}
 	slog.Info("MCP connected", "id", id, "tools", len(result.Tools))
+	return true
 }
 
 // StartAll launches all configured external MCP servers concurrently.
@@ -450,20 +508,336 @@ func spawnStdioConn(command string, args []string, env map[string]string, config
 // connection (see externalMcpConn.progressSem).
 const maxInflightProgress = 64
 
-func (m *ExternalMcpManager) startStdio(ctx context.Context, mcpCfg *ExternalMcp) error {
-	conn, err := spawnStdioConn(mcpCfg.Command, mcpCfg.Args, mcpCfg.Env, mcpCfg)
+// startStdio spawns a stdio MCP and leaves a supervisor watching it. startCtx
+// bounds the first handshake and nothing else — see installSupervisor for why
+// the supervisor deliberately does not live on the caller's context.
+//
+// The supervisor is installed BEFORE the first connect so that the connection
+// is published under the same identity guard every later respawn is (see
+// finalizeConnection), and retired again if that first connect fails — an MCP
+// that never came up is not a child to supervise, it is a configuration error,
+// and it is already logged as one.
+func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *ExternalMcp) error {
+	sup := m.installSupervisor(mcpCfg)
+	conn, err := m.connectStdio(startCtx, sup)
 	if err != nil {
+		m.retireSupervisor(sup)
 		return err
+	}
+	go sup.run(conn)
+	return nil
+}
+
+// connectStdio spawns the child, runs the handshake AND the context-schema
+// discovery that comes with it, and publishes the result — in that order, once,
+// for the first start and for every respawn alike. There is deliberately no
+// second entrypoint that skips a step: a respawned MCP that served calls before
+// its schema was known would be a worse bug than the outage this exists to fix.
+func (m *ExternalMcpManager) connectStdio(ctx context.Context, sup *mcpSupervisor) (*externalMcpConn, error) {
+	conn, err := spawnStdioConn(sup.cfg.Command, sup.cfg.Args, sup.cfg.Env, &sup.cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		conn.Close()
-		return err
+		return nil, err
 	}
 
-	m.finalizeConnection(mcpCfg.ID, conn, result)
-	return nil
+	if !m.finalizeConnection(sup.id, conn, result, sup) {
+		conn.Close()
+		return nil, errMcpSuperseded
+	}
+	return conn, nil
+}
+
+// ---------------------------------------------------------------------------
+// Child supervision (ADR-012)
+// ---------------------------------------------------------------------------
+
+// errMcpSuperseded ends a respawn that lost a race with a Stop, a Reload, or
+// another supervisor for the same id. It is not a failure to report: nothing
+// went wrong, the child simply has no owner any more.
+var errMcpSuperseded = errors.New("external MCP supervision superseded")
+
+// McpHealthEvent states. Down and Restarted are the pair an operator reads as
+// an outage and its end. RestartFailed is one attempt that did not take, and
+// there may be several before either of the other two. Abandoned is the end of
+// supervision: the restart budget is spent and relay has stopped trying, which
+// is the state that needs a human and is therefore the one that must never be
+// silent.
+const (
+	McpHealthDown          = "down"
+	McpHealthRestartFailed = "restart_failed"
+	McpHealthRestarted     = "restarted"
+	McpHealthAbandoned     = "abandoned"
+)
+
+// McpHealthEvent reports a change in an external MCP child's liveness to
+// whoever is watching (SetHealthObserver). It exists because a dead MCP was
+// invisible: every client saw `read response: EOF` and nothing else in relay
+// said the server behind them was gone (issue #39, defect 3).
+type McpHealthEvent struct {
+	ID          string
+	DisplayName string
+	State       string
+	// Attempt is the restart attempt this event belongs to, 1-based, and 0 on
+	// the Down event that precedes the first attempt.
+	Attempt int
+
+	// Downtime is how long the MCP was unavailable, set on Restarted and on
+	// Abandoned. It is the number an operator actually wants from these
+	// records — not "did it flap" but "for how long was every grant that names
+	// this MCP dead".
+	Downtime time.Duration
+
+	Err error
+}
+
+// mcpSupervisor owns one stdio MCP's process lifetime: it waits for the child
+// to die, and brings it back with a fresh handshake and a fresh context-schema
+// discovery. One per MCP id, replaced wholesale by Reload and removed by Stop.
+//
+// cfg is a COPY of the settings entry taken at install time. A supervisor
+// restarts the child it was told to start; picking up an edited command on a
+// respawn would make a settings change take effect at a moment nobody chose.
+// Reload is how a new command reaches a running MCP, and it installs a new
+// supervisor.
+type mcpSupervisor struct {
+	mgr    *ExternalMcpManager
+	id     string
+	cfg    ExternalMcp
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// installSupervisor registers a supervisor of record for cfg.ID, cancelling any
+// predecessor. Cancelling rather than merely replacing matters: a predecessor
+// mid-backoff would otherwise respawn a child for an id someone else now owns.
+//
+// The supervisor's context is rooted at Background, NOT at whatever context the
+// caller happened to be holding, and that is load-bearing rather than lazy. A
+// start can arrive down four routes and only one of them carries the app's
+// lifetime: StartAll gets it, but Reconcile and Reload are bridge requests, and
+// bridge.BridgeServer hands each handler a PER-CONNECTION context that is
+// cancelled the moment the client disconnects. `relay mcp register` is one such
+// client and it exits immediately, so a supervisor derived from that context
+// would be dead before the MCP it was supposed to watch had finished starting —
+// supervision that silently applies to some MCPs and not others, decided by
+// which command last touched them.
+//
+// The manager's own lifecycle is the right owner and already exists: Stop,
+// Reload and StopAll each end supervision explicitly, and the tray calls
+// StopAll during cleanup.
+func (m *ExternalMcpManager) installSupervisor(cfg *ExternalMcp) *mcpSupervisor {
+	ctx, cancel := context.WithCancel(context.Background())
+	sup := &mcpSupervisor{mgr: m, id: cfg.ID, cfg: *cfg, ctx: ctx, cancel: cancel}
+
+	m.mu.Lock()
+	old := m.supervisors[cfg.ID]
+	m.supervisors[cfg.ID] = sup
+	m.mu.Unlock()
+
+	if old != nil {
+		old.cancel()
+	}
+	return sup
+}
+
+// retireSupervisor cancels sup and forgets it, but only if it is still the
+// supervisor of record — a newer one must not be uninstalled by an older one's
+// cleanup.
+func (m *ExternalMcpManager) retireSupervisor(sup *mcpSupervisor) {
+	m.mu.Lock()
+	if m.supervisors[sup.id] == sup {
+		delete(m.supervisors, sup.id)
+	}
+	m.mu.Unlock()
+	sup.cancel()
+}
+
+// takeSupervisorsLocked removes and returns the supervisor for one id, or every
+// supervisor when all is set. Caller holds m.mu; the returned supervisors are
+// cancelled by the caller once it has released the lock, because cancelling
+// under m.mu would run a supervisor's teardown inside the manager's own
+// critical section.
+func (m *ExternalMcpManager) takeSupervisorsLocked(id string, all bool) []*mcpSupervisor {
+	var out []*mcpSupervisor
+	if all {
+		for _, sup := range m.supervisors {
+			out = append(out, sup)
+		}
+		m.supervisors = make(map[string]*mcpSupervisor)
+		return out
+	}
+	if sup, ok := m.supervisors[id]; ok {
+		out = append(out, sup)
+		delete(m.supervisors, id)
+	}
+	return out
+}
+
+// SetHealthObserver installs the callback that receives every McpHealthEvent.
+// Called once at startup, after the audit recorder exists — the manager is
+// constructed before it, and this is the seam that keeps the manager from
+// having to know what an audit log is.
+func (m *ExternalMcpManager) SetHealthObserver(fn func(McpHealthEvent)) {
+	m.mu.Lock()
+	m.onHealth = fn
+	m.mu.Unlock()
+}
+
+// reportHealth logs the transition and hands it to the observer. The observer
+// is called WITHOUT m.mu held: it writes an audit record, and an audit sink
+// that took the manager's lock back would deadlock the supervisor.
+func (m *ExternalMcpManager) reportHealth(ev McpHealthEvent) {
+	switch ev.State {
+	case McpHealthDown:
+		slog.Error("external MCP died; restarting", "id", ev.ID, "error", ev.Err)
+	case McpHealthRestartFailed:
+		slog.Error("external MCP restart failed", "id", ev.ID, "attempt", ev.Attempt, "error", ev.Err)
+	case McpHealthRestarted:
+		slog.Info("external MCP restarted", "id", ev.ID, "attempt", ev.Attempt, "downtime", ev.Downtime)
+	case McpHealthAbandoned:
+		slog.Error("external MCP abandoned after repeated restart failures; every grant that names it is down until relay is told to reload it",
+			"id", ev.ID, "attempts", ev.Attempt, "error", ev.Err)
+	}
+
+	m.mu.RLock()
+	fn := m.onHealth
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(ev)
+	}
+}
+
+// run is the supervision loop: wait for the child to die, restart it, repeat.
+//
+// It exits on exactly three things — the supervisor being cancelled (Stop,
+// Reload, StopAll, app shutdown), being superseded by a newer supervisor, and
+// spending its restart budget. It never exits because the child died, which is
+// the whole of issue #39's second defect.
+func (s *mcpSupervisor) run(conn *externalMcpConn) {
+	attempt := 0
+	for {
+		up := time.Now()
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-conn.readerDone:
+		}
+		if s.ctx.Err() != nil {
+			// Stop/Reload/shutdown closed the child. Not a death to report.
+			return
+		}
+
+		// A child that ran for a while and then died is a fresh incident, not
+		// the continuation of a crash loop. The budget below caps restart
+		// INTENSITY — how many times a child may fail in quick succession —
+		// rather than how many times relay will ever restart one, so an MCP
+		// that dies once a week is recovered forever while one that dies on
+		// every spawn is abandoned after a bounded number of tries.
+		if time.Since(up) >= MCPRestartStableWindow {
+			attempt = 0
+		}
+		downAt := time.Now()
+		s.mgr.reportHealth(McpHealthEvent{
+			ID: s.id, DisplayName: s.cfg.DisplayName,
+			State: McpHealthDown, Err: conn.readerFailure(),
+		})
+
+		next := s.restart(&attempt, downAt)
+		if next == nil {
+			return
+		}
+		conn = next
+	}
+}
+
+// restart backs off and respawns until it succeeds, the budget runs out, or
+// supervision ends. It returns the new connection, or nil when the loop above
+// should exit.
+//
+// In-flight calls are NOT replayed. readLoop has already failed every pending
+// request on the dead connection, and a tool call is not idempotent — relay
+// cannot know whether the child sent the mail before it died. The caller sees
+// the failure and decides; relay restores the capability, not the call.
+func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn {
+	var lastErr error
+	for {
+		*attempt++
+		if *attempt > MCPRestartMaxAttempts {
+			// Retire BEFORE reporting: by the time anything hears "abandoned",
+			// supervision must already be over, or an observer that reacts by
+			// reconciling would find a supervisor of record still in place and
+			// conclude the MCP was being looked after.
+			s.mgr.retireSupervisor(s)
+			s.mgr.reportHealth(McpHealthEvent{
+				ID: s.id, DisplayName: s.cfg.DisplayName,
+				State: McpHealthAbandoned, Attempt: *attempt - 1,
+				Downtime: time.Since(downAt), Err: lastErr,
+			})
+			return nil
+		}
+		if !sleepCtx(s.ctx, mcpRestartDelay(*attempt)) {
+			return nil
+		}
+
+		startCtx, cancel := context.WithTimeout(s.ctx, MCPStartupTimeout)
+		conn, err := s.mgr.connectStdio(startCtx, s)
+		cancel()
+		if err == nil {
+			s.mgr.reportHealth(McpHealthEvent{
+				ID: s.id, DisplayName: s.cfg.DisplayName,
+				State: McpHealthRestarted, Attempt: *attempt,
+				Downtime: time.Since(downAt),
+			})
+			return conn
+		}
+		if s.ctx.Err() != nil || errors.Is(err, errMcpSuperseded) {
+			return nil
+		}
+		lastErr = err
+		s.mgr.reportHealth(McpHealthEvent{
+			ID: s.id, DisplayName: s.cfg.DisplayName,
+			State: McpHealthRestartFailed, Attempt: *attempt, Err: err,
+		})
+	}
+}
+
+// mcpRestartDelay is the backoff before the nth restart attempt: exponential
+// from MCPRestartBaseDelay, capped at MCPRestartMaxDelay. There is a delay
+// before the FIRST attempt too, deliberately — a child that dies the moment it
+// is spawned would otherwise be respawned in a tight loop for as long as the
+// budget lasts.
+func mcpRestartDelay(attempt int) time.Duration {
+	d := MCPRestartBaseDelay
+	for i := 1; i < attempt; i++ {
+		if d >= MCPRestartMaxDelay {
+			break
+		}
+		d *= 2
+	}
+	if d > MCPRestartMaxDelay {
+		d = MCPRestartMaxDelay
+	}
+	return d
+}
+
+// sleepCtx waits for d, or returns false as soon as ctx is done.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // Reconcile stops removed MCPs and starts missing ones.
@@ -484,7 +858,7 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 	}
 	var toStart []*ExternalMcp
 	for _, mcpCfg := range mcps {
-		if _, ok := m.conns[mcpCfg.ID]; !ok {
+		if m.needsStartLocked(mcpCfg.ID) {
 			cfg := mcpCfg
 			toStart = append(toStart, &cfg)
 		}
@@ -507,6 +881,39 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 		}(cfg)
 	}
 	wg.Wait()
+}
+
+// needsStartLocked reports whether a reconcile should (re)start this MCP.
+// Caller holds m.mu.
+//
+// True when there is no connection at all — the original test — and ALSO when
+// there is one that is dead with no supervisor left to bring it back. That
+// second case is an MCP whose restart budget ran out (ADR-012 decision 6): the
+// connection stays in the map so its tool list and context schema do not
+// flicker out from under grant validation, but it answers nothing, and without
+// this a reconcile would look at it and see a healthy entry. It is what makes
+// an abandoned MCP recoverable by a settings change instead of only by
+// relaunching the tray, which is the failure mode issue #39 opened on.
+func (m *ExternalMcpManager) needsStartLocked(id string) bool {
+	conn, ok := m.conns[id]
+	if !ok {
+		return true
+	}
+	if _, supervised := m.supervisors[id]; supervised {
+		return false
+	}
+	// Only a stdio child has a reader whose death means the process is gone.
+	// An HTTP MCP has no child and no supervisor, and is left alone.
+	stdio, ok := conn.(*externalMcpConn)
+	if !ok {
+		return false
+	}
+	select {
+	case <-stdio.readerDone:
+		return true
+	default:
+		return false
+	}
 }
 
 // Reload stops a running MCP and starts it fresh from the given config.
@@ -742,13 +1149,17 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 	return resp, nil
 }
 
-// Stop kills and removes a specific external MCP connection.
+// Stop kills and removes a specific external MCP connection, and ends its
+// supervision. The supervisor is cancelled BEFORE the child is killed, so the
+// death it is about to observe reads as "an operator stopped this" rather than
+// as an incident to restart from.
 func (m *ExternalMcpManager) Stop(id string) {
 	m.mu.Lock()
 	conn, ok := m.conns[id]
 	if ok {
 		delete(m.conns, id)
 	}
+	sups := m.takeSupervisorsLocked(id, false)
 	delete(m.schemas, id)
 	// The version is deleted WITH the schema, always. It used to be left
 	// behind here while StopAll cleared both, and Reload is Stop + startOne:
@@ -764,6 +1175,9 @@ func (m *ExternalMcpManager) Stop(id string) {
 	delete(m.enumUnsupported, id)
 	m.mu.Unlock()
 
+	for _, sup := range sups {
+		sup.cancel()
+	}
 	if ok {
 		conn.Close()
 	}
@@ -778,7 +1192,13 @@ func (m *ExternalMcpManager) StopAll() {
 	m.schemas = make(map[string]json.RawMessage)
 	m.schemaVersions = make(map[string]int)
 	m.enumUnsupported = make(map[string]bool)
+	sups := m.takeSupervisorsLocked("", true)
 	m.mu.Unlock()
+
+	// Cancelled before the children are killed, for the same reason as Stop.
+	for _, sup := range sups {
+		sup.cancel()
+	}
 
 	var wg sync.WaitGroup
 	for _, conn := range conns {
@@ -830,64 +1250,277 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 // stdio connection implementation
 // ---------------------------------------------------------------------------
 
+// mcpReadBufferSize is the working buffer readMcpFrame reads through. It
+// matches bridge.NewScanner's initial buffer: ordinary frames are far smaller,
+// and an over-long one is discarded as it streams past rather than held.
+const mcpReadBufferSize = 64 * 1024
+
+// mcpOversizePrefixBytes is how much of an over-long frame is retained so the
+// call it answers can be named (peekFrameResponseID). A JSON-RPC response puts
+// its id beside `jsonrpc`, ahead of the result that made the frame large, so a
+// prefix this size carries it for any conventionally ordered response. The rest
+// of the frame is counted and dropped and never buffered.
+const mcpOversizePrefixBytes = 64 * 1024
+
+// mcpFrame is one newline-delimited frame from a child's stdout, or the report
+// of one that exceeded bridge.MaxMessageSize.
+type mcpFrame struct {
+	// line is the frame, newline stripped. Nil when oversized is set.
+	line []byte
+
+	// oversized reports a frame past the cap. It was discarded AS IT WAS READ
+	// and the reader is left positioned at the start of the next frame, which
+	// is what makes an over-long line survivable rather than terminal.
+	oversized bool
+	size      int    // total bytes of the discarded frame, newline included
+	prefix    []byte // first mcpOversizePrefixBytes of it
+}
+
+// readMcpFrame reads one frame, bounded at bridge.MaxMessageSize.
+//
+// It replaces bufio.Scanner, which cannot do the one thing this needs: resync.
+// A scanner that hits bufio.ErrTooLong is finished — the error is terminal and
+// the reader is left somewhere in the middle of the offending line — so an MCP
+// that emitted a single over-long response took its connection down with it,
+// and with the connection every access profile that MCP served (issue #39).
+// Discarding the frame's bytes as they arrive costs nothing and leaves the
+// stream aligned on the next newline, which is a frame boundary by definition.
+//
+// The cap itself is unchanged and is not negotiable: child stdout is untrusted,
+// and an unbounded read would let one child OOM the tray.
+func readMcpFrame(r *bufio.Reader) (mcpFrame, error) {
+	var (
+		frame  []byte
+		prefix []byte
+		total  int
+		over   bool
+	)
+	for {
+		chunk, err := r.ReadSlice('\n')
+		total += len(chunk)
+		switch {
+		case over:
+			// Past the cap already: counted, not kept.
+		case total > bridge.MaxMessageSize:
+			over = true
+			prefix = keepPrefix(frame, chunk, mcpOversizePrefixBytes)
+			frame = nil
+		default:
+			// chunk aliases r's buffer; append copies.
+			frame = append(frame, chunk...)
+		}
+
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			if !over && len(frame) > 0 {
+				// A final line with no trailing newline. bufio.Scanner would
+				// have delivered it, so it is delivered here too, alongside the
+				// error that ended the stream.
+				return mcpFrame{line: frame}, err
+			}
+			return mcpFrame{}, err
+		}
+		if over {
+			return mcpFrame{oversized: true, size: total, prefix: prefix}, nil
+		}
+		return mcpFrame{line: trimFrameEnd(frame)}, nil
+	}
+}
+
+// trimFrameEnd strips the terminating newline (and a CR before it), matching
+// what bufio.ScanLines handed the previous implementation.
+func trimFrameEnd(b []byte) []byte {
+	b = bytes.TrimSuffix(b, []byte("\n"))
+	return bytes.TrimSuffix(b, []byte("\r"))
+}
+
+// keepPrefix copies at most n bytes from the front of a frame, drawing from the
+// bytes already accumulated and then from the chunk that overflowed the cap.
+func keepPrefix(head, next []byte, n int) []byte {
+	if len(head) >= n {
+		return append([]byte(nil), head[:n]...)
+	}
+	out := make([]byte, 0, n)
+	out = append(out, head...)
+	if rem := n - len(out); rem < len(next) {
+		return append(out, next[:rem]...)
+	}
+	return append(out, next...)
+}
+
+// peekFrameResponseID recovers the JSON-RPC id from the prefix of a frame that
+// was too long to keep, so the one call it answers can be failed instead of
+// left to time out.
+//
+// It reads with a token walk and accepts an id only at the TOP LEVEL of the
+// object. A substring search for `"id":` would find one inside the very result
+// that made the frame oversized and fail an unrelated in-flight call — the one
+// mistake here that is worse than not attributing the frame at all. When the id
+// sits after the large value, the prefix ends mid-token, the walk stops, and
+// this reports nothing: an honest miss.
+func peekFrameResponseID(prefix []byte) (int64, bool) {
+	dec := json.NewDecoder(bytes.NewReader(prefix))
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return 0, false
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return 0, false
+		}
+		if d, ok := tok.(json.Delim); ok && d == '}' {
+			return 0, false
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return 0, false
+		}
+		val, err := dec.Token()
+		if err != nil {
+			return 0, false
+		}
+		if key == "id" {
+			return jsonrpc.RespIDToInt64(val)
+		}
+		if _, ok := val.(json.Delim); ok {
+			if !skipNested(dec) {
+				return 0, false
+			}
+		}
+	}
+}
+
+// skipNested consumes the remainder of an object or array the token walk has
+// just entered, by depth. Returns false if the prefix ends first.
+func skipNested(dec *json.Decoder) bool {
+	depth := 1
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+	return true
+}
+
 // readLoop reads JSON-RPC responses from stdout and dispatches them to waiting callers.
 // Runs in its own goroutine for the lifetime of the connection.
 func (c *externalMcpConn) readLoop(reader io.Reader) {
 	defer close(c.readerDone)
 
-	// Cap the per-line size at the bridge's MaxMessageSize. Child stdout is
-	// untrusted: a raw bufio.Reader.ReadBytes would buffer an arbitrarily long
-	// line (or a never-terminated stream) into memory and OOM the tray. The
-	// scanner returns bufio.ErrTooLong for an oversized frame, which tears the
-	// connection down — anything over MaxMessageSize couldn't traverse the
-	// bridge anyway.
-	scanner := bridge.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-
-		var resp jsonrpc.Response
-		if err := json.Unmarshal(line, &resp); err != nil {
-			slog.Warn("stdio MCP: skipping malformed response line", "error", err)
-			continue
+	br := bufio.NewReaderSize(reader, mcpReadBufferSize)
+	var readErr error
+	for {
+		frame, err := readMcpFrame(br)
+		switch {
+		case frame.oversized:
+			// One bad answer, not a bad child: fail the call it belonged to and
+			// keep reading (issue #39, defect 1). If the child really is broken
+			// the next read fails and the supervisor takes over.
+			c.failOversizedFrame(frame)
+		case len(frame.line) > 0:
+			c.dispatchFrame(frame.line)
 		}
-		if resp.ID == nil {
-			// Server→client notification (e.g. notifications/progress). Route
-			// it to any registered per-call handler; ignore otherwise.
-			c.routeNotification(line)
-			continue
-		}
-
-		respID, ok := jsonrpc.RespIDToInt64(resp.ID)
-		if !ok {
-			slog.Warn("stdio MCP: skipping response with non-numeric ID", "id", resp.ID)
-			continue
-		}
-
-		c.mu.Lock()
-		p, exists := c.pending[respID]
-		if exists {
-			delete(c.pending, respID)
-		}
-		c.mu.Unlock()
-
-		if exists {
-			p.ch <- readerResult{resp: resp}
+		if err != nil {
+			readErr = err
+			break
 		}
 	}
 
-	// Scanner stopped: clean EOF, a read error, or an oversized frame
-	// (bufio.ErrTooLong). Signal all pending requests that the reader is dead.
-	err := scanner.Err()
-	if err == nil {
-		err = io.EOF
-	}
+	// The stream ended: clean EOF, or a read error. Signal every pending
+	// request that the reader is dead. The supervisor watching readerDone
+	// decides whether the child comes back.
 	c.mu.Lock()
-	c.readerErr = fmt.Errorf("read response: %w", err)
+	c.readerErr = fmt.Errorf("read response: %w", readErr)
 	for id, p := range c.pending {
 		p.ch <- readerResult{err: c.readerErr}
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+}
+
+// dispatchFrame routes one well-formed frame to its waiting caller, or to the
+// progress handler when it carries no id.
+func (c *externalMcpConn) dispatchFrame(line []byte) {
+	var resp jsonrpc.Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		slog.Warn("stdio MCP: skipping malformed response line", "error", err)
+		return
+	}
+	if resp.ID == nil {
+		// Server→client notification (e.g. notifications/progress). Route
+		// it to any registered per-call handler; ignore otherwise.
+		c.routeNotification(line)
+		return
+	}
+
+	respID, ok := jsonrpc.RespIDToInt64(resp.ID)
+	if !ok {
+		slog.Warn("stdio MCP: skipping response with non-numeric ID", "id", resp.ID)
+		return
+	}
+
+	c.mu.Lock()
+	p, exists := c.pending[respID]
+	if exists {
+		delete(c.pending, respID)
+	}
+	c.mu.Unlock()
+
+	if exists {
+		p.ch <- readerResult{resp: resp}
+	}
+}
+
+// failOversizedFrame fails the single call an over-long frame answered, with an
+// error that says what happened and what the MCP has to do differently. When
+// the id cannot be recovered from the prefix the frame is dropped and the call
+// falls to its own timeout — still bounded, and still only that one call.
+func (c *externalMcpConn) failOversizedFrame(f mcpFrame) {
+	id, ok := peekFrameResponseID(f.prefix)
+	if !ok {
+		slog.Error("stdio MCP: discarded an over-long response frame; the call it answers will run to its timeout",
+			"id", c.config.ID, "bytes", f.size, "max_bytes", bridge.MaxMessageSize)
+		return
+	}
+
+	c.mu.Lock()
+	p, exists := c.pending[id]
+	if exists {
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+
+	slog.Error("stdio MCP: discarded an over-long response frame",
+		"id", c.config.ID, "request_id", id, "bytes", f.size,
+		"max_bytes", bridge.MaxMessageSize, "matched_pending_call", exists)
+	if exists {
+		p.ch <- readerResult{err: fmt.Errorf(
+			"response of %d bytes exceeds relay's %d-byte per-message limit and was discarded; ask for less at a time, or have the tool page, stream, or return a reference instead of the whole payload",
+			f.size, bridge.MaxMessageSize)}
+	}
+}
+
+// readerFailure reports why the reader goroutine stopped, or nil while it is
+// still running. Read under c.mu, which is where readLoop writes it.
+func (c *externalMcpConn) readerFailure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readerErr
 }
 
 // SendRequest sends a JSON-RPC request and waits for the response with a timeout.

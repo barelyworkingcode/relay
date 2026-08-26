@@ -1,0 +1,428 @@
+//go:build !windows
+
+package main
+
+// Issue #39: an external MCP is shared by every access profile that names it,
+// so anything that kills its child process is an outage for every grant it
+// serves — and relay never brought one back. These tests drive the real
+// spawnStdioConn → readLoop → supervisor path against the in-tree cmd/testmcp
+// peer; nothing here is mocked, because the defect lived in the seam between
+// the process, the reader goroutine and the manager's bookkeeping.
+
+import (
+	"context"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// connOf returns the manager's current connection for id, or nil.
+func connOf(m *ExternalMcpManager, id string) McpConnection {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.conns[id]
+}
+
+// waitForNewConn blocks until the manager holds a connection for id that is not
+// prev — i.e. until a respawn has been published. Fails the test on timeout,
+// which is what "relay never respawns a dead child" looks like from here.
+func waitForNewConn(t *testing.T, m *ExternalMcpManager, id string, prev McpConnection) *externalMcpConn {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := connOf(m, id); c != nil && c != prev {
+			conn, ok := c.(*externalMcpConn)
+			if !ok {
+				t.Fatalf("connection for %s is %T, want *externalMcpConn", id, c)
+			}
+			return conn
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no respawned connection for %q within the deadline: a dead external MCP stays dead", id)
+	return nil
+}
+
+// A child that dies must be brought back — and must come back fully: handshake
+// re-run, tools rediscovered, context schema re-read. A respawn that served
+// calls before its schema was known would be a worse bug than the outage.
+func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	cfg := stdioMcp("mcp-dies", bin)
+	// A peer that declares a v2 context schema, so the assertion below is about
+	// the schema being rediscovered and not about it never having existed.
+	cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+	if err := m.startOne(ctx, &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+
+	first := connOf(m, "mcp-dies")
+	if first == nil {
+		t.Fatal("no connection after startOne")
+	}
+	if s := m.McpSurfaceFor("mcp-dies"); len(s.Schema) == 0 || s.SchemaVersion != 2 {
+		t.Fatalf("before the crash the surface should carry the declared schema, got %+v", s)
+	}
+
+	// Kill the child the way a crash does: it exits with a call in flight.
+	if _, err := first.SendRequest(ctx, "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+
+	second := waitForNewConn(t, m, "mcp-dies", first)
+
+	if got := len(m.Tools("mcp-dies")); got != 1 {
+		t.Errorf("respawned MCP exposes %d tools, want 1: the handshake was not re-run", got)
+	}
+	if s := m.McpSurfaceFor("mcp-dies"); len(s.Schema) == 0 || s.SchemaVersion != 2 {
+		t.Errorf("respawned MCP surface = %+v, want the rediscovered v2 schema: "+
+			"a connection relay will dispatch to with no schema passes every scope check "+
+			"and strips every context key", s)
+	}
+
+	res, err := second.SendRequest(ctx, "echo", map[string]any{"marker": "alive"})
+	if err != nil {
+		t.Fatalf("call on the respawned child: %v", err)
+	}
+	if got := markerOf(t, res); got != "alive" {
+		t.Errorf("marker = %q, want alive", got)
+	}
+}
+
+// The capability comes back through the manager, not only on the connection
+// object: a caller that goes through CallTool must find a working MCP again
+// without anyone reloading anything.
+func TestSupervisor_CallToolWorksAgainAfterACrash(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	cfg := stdioMcp("mcp-crash", bin)
+	if err := m.startOne(ctx, &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+	first := connOf(m, "mcp-crash")
+
+	if _, err := first.SendRequest(ctx, "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+	waitForNewConn(t, m, "mcp-crash", first)
+
+	// CallTool routes through the manager's connection map, which is the path
+	// every access profile's tool call takes.
+	if _, err := m.CallTool(ctx, "mcp-crash", "echo", nil, nil); err != nil {
+		t.Fatalf("CallTool after respawn: %v", err)
+	}
+}
+
+// Stop is not a crash. A supervisor whose MCP an operator removed must not
+// resurrect it, or a removed MCP would be unremovable.
+func TestSupervisor_StopDoesNotRespawn(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	shortenRestartPolicy(t, 8)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	cfg := stdioMcp("mcp-stopped", bin)
+	if err := m.startOne(ctx, &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+	m.Stop("mcp-stopped")
+
+	// Long enough for the whole restart budget to have run, several times over.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if connOf(m, "mcp-stopped") != nil {
+			t.Fatal("a stopped MCP was respawned by its supervisor")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if m.IsConnected("mcp-stopped") {
+		t.Error("stopped MCP is connected again")
+	}
+}
+
+// A child that will not stay up must be abandoned rather than respawned
+// forever, and the abandonment must be reported — it is the state that needs a
+// human, so it is the one that must not be silent.
+func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	shortenRestartPolicy(t, 3)
+
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+
+	var (
+		mu     sync.Mutex
+		states []string
+	)
+	done := make(chan struct{})
+	var once sync.Once
+	m.SetHealthObserver(func(ev McpHealthEvent) {
+		mu.Lock()
+		states = append(states, ev.State)
+		mu.Unlock()
+		if ev.State == McpHealthAbandoned {
+			once.Do(func() { close(done) })
+		}
+	})
+
+	// A first handshake that succeeds, then a command that cannot be respawned:
+	// the config is captured at install time, so pointing the supervisor at a
+	// binary that no longer exists is how a crash loop is produced without a
+	// binary that crashes.
+	dir := t.TempDir()
+	doomed := dir + "/testmcp-copy"
+	copyFile(t, bin, doomed)
+
+	cfg := stdioMcp("mcp-loop", doomed)
+	if err := m.startOne(context.Background(), &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+	first := connOf(m, "mcp-loop")
+	removeFile(t, doomed)
+
+	if _, err := first.SendRequest(context.Background(), "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		mu.Lock()
+		got := append([]string(nil), states...)
+		mu.Unlock()
+		t.Fatalf("a child that cannot be respawned was never abandoned; states seen: %v", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(states) == 0 || states[0] != McpHealthDown {
+		t.Errorf("first reported state = %v, want %q first", states, McpHealthDown)
+	}
+	failed := 0
+	for _, st := range states {
+		if st == McpHealthRestartFailed {
+			failed++
+		}
+	}
+	if failed != MCPRestartMaxAttempts {
+		t.Errorf("%d failed attempts reported, want %d (the budget)", failed, MCPRestartMaxAttempts)
+	}
+}
+
+// A supervision transition has to reach the audit log, because a dead MCP
+// otherwise shows up only as a run of `error` outcomes with no cause and a
+// client-side `read response: EOF` — the report this project's docs say to
+// trust last.
+func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	dir := t.TempDir()
+	rec, err := NewAuditRecorder(&AuditConfig{}, dir+"/audit.jsonl")
+	if err != nil {
+		t.Fatalf("NewAuditRecorder: %v", err)
+	}
+	t.Cleanup(rec.Close)
+
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+
+	// Wait on the observer, not on the connection: the restart is published
+	// before its health event is reported, so watching m.conns would race the
+	// record this test is about.
+	restarted := make(chan struct{})
+	var once sync.Once
+	m.SetHealthObserver(func(ev McpHealthEvent) {
+		rec.RecordMcpSupervision(ev)
+		if ev.State == McpHealthRestarted {
+			once.Do(func() { close(restarted) })
+		}
+	})
+
+	cfg := stdioMcp("mcp-audited", bin)
+	if err := m.startOne(context.Background(), &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+	first := connOf(m, "mcp-audited")
+	if _, err := first.SendRequest(context.Background(), "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+	select {
+	case <-restarted:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the child was never restarted")
+	}
+	rec.Flush()
+
+	events := rec.Query(AuditQuery{McpID: "mcp-audited"})
+	var down, up *AuditEvent
+	for i := range events {
+		switch events[i].Event {
+		case AuditEventMcpDown:
+			down = &events[i]
+		case AuditEventMcpUp:
+			up = &events[i]
+		}
+	}
+	if down == nil {
+		t.Fatalf("no mcp_down record for a child that died; got %d events", len(events))
+	}
+	if up == nil {
+		t.Fatalf("no mcp_up record for a child that came back; got %d events", len(events))
+	}
+	if down.Outcome != AuditOutcomeError || down.Supervision != McpHealthDown {
+		t.Errorf("mcp_down record = outcome %q supervision %q", down.Outcome, down.Supervision)
+	}
+	if down.Error == "" {
+		t.Error("mcp_down record names no cause")
+	}
+	if up.Outcome != AuditOutcomeOK || up.Supervision != McpHealthRestarted {
+		t.Errorf("mcp_up record = outcome %q supervision %q", up.Outcome, up.Supervision)
+	}
+	for _, ev := range []*AuditEvent{down, up} {
+		if ev.Actor.Kind != AuditActorRelay {
+			t.Errorf("%s actor kind = %q, want %q", ev.Event, ev.Actor.Kind, AuditActorRelay)
+		}
+		if ev.Actor.ProjectID != "" {
+			t.Errorf("%s attributes a project (%q) to a record about relay itself", ev.Event, ev.Actor.ProjectID)
+		}
+	}
+	// The table an operator reads has no EVENT column, so the transition has to
+	// survive into the DETAIL cell or the row says nothing at all.
+	if got := auditDetail(*down); !strings.HasPrefix(got, McpHealthDown+": ") {
+		t.Errorf("mcp_down detail = %q, want it to lead with the transition", got)
+	}
+	if got := auditDetail(*up); got != McpHealthRestarted {
+		t.Errorf("mcp_up detail = %q, want %q", got, McpHealthRestarted)
+	}
+}
+
+// shortenRestartPolicy collapses the backoff so a crash loop can be driven to
+// its cap inside a test. Vars, not consts, exactly so this is possible —
+// the same seam MCPRequestTimeout already provides (ADR-002).
+func shortenRestartPolicy(t *testing.T, attempts int) {
+	t.Helper()
+	base, max, cap_, window := MCPRestartBaseDelay, MCPRestartMaxDelay, MCPRestartMaxAttempts, MCPRestartStableWindow
+	MCPRestartBaseDelay = 5 * time.Millisecond
+	MCPRestartMaxDelay = 20 * time.Millisecond
+	MCPRestartMaxAttempts = attempts
+	MCPRestartStableWindow = time.Hour
+	t.Cleanup(func() {
+		MCPRestartBaseDelay, MCPRestartMaxDelay = base, max
+		MCPRestartMaxAttempts, MCPRestartStableWindow = cap_, window
+	})
+}
+
+// copyFile duplicates src at dst with the executable bit set, so a test can own
+// a binary it is allowed to delete out from under a running child.
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+}
+
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove %s: %v", path, err)
+	}
+}
+
+// An MCP whose restart budget ran out must still be recoverable without
+// relaunching the tray — otherwise "abandoned" is the same permanent outage
+// issue #39 opened on, reached more slowly.
+func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	shortenRestartPolicy(t, 2)
+
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+	ctx := context.Background()
+
+	abandoned := make(chan struct{})
+	var once sync.Once
+	m.SetHealthObserver(func(ev McpHealthEvent) {
+		if ev.State == McpHealthAbandoned {
+			once.Do(func() { close(abandoned) })
+		}
+	})
+
+	dir := t.TempDir()
+	doomed := dir + "/testmcp-copy"
+	copyFile(t, bin, doomed)
+
+	cfg := stdioMcp("mcp-abandoned", doomed)
+	if err := m.startOne(ctx, &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+	first := connOf(m, "mcp-abandoned")
+	removeFile(t, doomed)
+	if _, err := first.SendRequest(ctx, "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+
+	select {
+	case <-abandoned:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the child was never abandoned")
+	}
+
+	// The operator fixes whatever was wrong, and anything that reconciles —
+	// any settings change — must pick the MCP back up.
+	copyFile(t, bin, doomed)
+	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-abandoned", doomed)})
+
+	if !m.IsConnected("mcp-abandoned") {
+		t.Fatal("reconcile did not restart an abandoned MCP")
+	}
+	if c := connOf(m, "mcp-abandoned"); c == first {
+		t.Fatal("reconcile left the dead connection in place")
+	}
+	if _, err := m.CallTool(ctx, "mcp-abandoned", "echo", nil, nil); err != nil {
+		t.Fatalf("CallTool after recovery: %v", err)
+	}
+}
+
+// A reload arrives over the bridge, and bridge.BridgeServer hands each handler
+// a PER-CONNECTION context that dies the moment the client disconnects —
+// `relay mcp register` is one such client and it exits immediately. Supervision
+// must outlive it, or it would apply to some MCPs and not others depending on
+// which command last touched them.
+func TestSupervisor_OutlivesTheReloadCallersContext(t *testing.T) {
+	bin := buildTestMcpBinary(t)
+	m := NewExternalMcpManager(nil)
+	t.Cleanup(m.StopAll)
+
+	cfg := stdioMcp("mcp-reloaded", bin)
+	if err := m.startOne(context.Background(), &cfg); err != nil {
+		t.Fatalf("startOne: %v", err)
+	}
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	if err := m.Reload(reqCtx, "mcp-reloaded", &cfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	cancel() // the bridge client hangs up
+
+	first := connOf(m, "mcp-reloaded")
+	if first == nil {
+		t.Fatal("no connection after Reload")
+	}
+	if _, err := first.SendRequest(context.Background(), "exit", nil); err == nil {
+		t.Fatal("expected the in-flight call to fail when the child exits")
+	}
+	waitForNewConn(t, m, "mcp-reloaded", first)
+}
