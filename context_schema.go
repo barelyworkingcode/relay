@@ -56,6 +56,30 @@ const (
 	// An access profile (a remote-kind record) has no path, so such a field
 	// is ABSENT for one, and by decision 4 the tools it governs refuse.
 	ContextSourceProjectPath = "project_path"
+
+	// ContextDiscloseValue renders a set field's value in the scope note, as
+	// relay has always done. It is the default when disclose is absent, and
+	// absent-means-value is the only reading that leaves every schema written
+	// before this keyword existed rendering byte-for-byte as it always has
+	// (issue #33) — an MCP that has never heard of "disclose" must not find
+	// its scope note has quietly changed shape.
+	ContextDiscloseValue = "value"
+
+	// ContextDiscloseCount renders a set field's SHAPE — how many entries an
+	// array carries — and never its content. It exists for a field whose
+	// value is itself reconnaissance: fsMCP's allowed_dirs is host topology
+	// (an absolute path names an account and a directory layout), while
+	// "confined to 2" is exactly what a client needs to reason about a
+	// refusal without being handed the two paths.
+	ContextDiscloseCount = "count"
+
+	// ContextDiscloseNone renders only that a set field governs the tool,
+	// with no shape and no content at all. It is the answer for a field where
+	// even the count is informative — "confined to 1 recipient" narrows a
+	// guess to one identity as surely as naming it would — so an MCP that
+	// wants the note to say nothing beyond "this is confined and it is set"
+	// needs a third setting, not a smaller number from "count".
+	ContextDiscloseNone = "none"
 )
 
 // v1AllowedDirsField is the ONE domain-specific field name left anywhere in
@@ -98,6 +122,13 @@ type ContextField struct {
 	AppliesTo  []string `json:"applies_to,omitempty"`
 	Enumerable bool     `json:"enumerable,omitempty"`
 	DependsOn  []string `json:"depends_on,omitempty"`
+
+	// Disclose governs what the CLIENT-FACING scope note (scopeNoteFor) says
+	// about a SET value, and nothing else: it does not touch enforcement, the
+	// audit log, or any operator surface, all of which keep seeing the real
+	// value regardless. Absent means ContextDiscloseValue — see that constant
+	// for why "value" has to be the reading of absence.
+	Disclose string `json:"disclose,omitempty"`
 }
 
 // The keyword keys of a field fragment, in the spelling docs/context-schema.md
@@ -113,6 +144,7 @@ const (
 	ctxKeyAppliesTo   = "applies_to"
 	ctxKeyEnumerable  = "enumerable"
 	ctxKeyDependsOn   = "depends_on"
+	ctxKeyDisclose    = "disclose"
 )
 
 // contextKeywordBySpelling maps a keyword's lower-cased form back to the one
@@ -123,6 +155,7 @@ var contextKeywordBySpelling = func() map[string]string {
 	for _, k := range []string{
 		ctxKeyType, ctxKeyItems, ctxKeyDescription, ctxKeyScope,
 		ctxKeySource, ctxKeyAppliesTo, ctxKeyEnumerable, ctxKeyDependsOn,
+		ctxKeyDisclose,
 	} {
 		out[strings.ToLower(k)] = k
 	}
@@ -187,6 +220,7 @@ func (f *ContextField) UnmarshalJSON(data []byte) error {
 		func() error { return get(ctxKeyAppliesTo, &f.AppliesTo) },
 		func() error { return get(ctxKeyEnumerable, &f.Enumerable) },
 		func() error { return get(ctxKeyDependsOn, &f.DependsOn) },
+		func() error { return get(ctxKeyDisclose, &f.Disclose) },
 	} {
 		if err := step(); err != nil {
 			return err
@@ -208,7 +242,10 @@ func (f *ContextField) UnmarshalJSON(data []byte) error {
 	if err := nearMissValue(ctxKeyScope, f.Scope, ContextScopeRestrict); err != nil {
 		return err
 	}
-	return nearMissValue(ctxKeySource, f.Source, ContextSourceOperator, ContextSourceProjectPath)
+	if err := nearMissValue(ctxKeySource, f.Source, ContextSourceOperator, ContextSourceProjectPath); err != nil {
+		return err
+	}
+	return nearMissValue(ctxKeyDisclose, f.Disclose, ContextDiscloseValue, ContextDiscloseCount, ContextDiscloseNone)
 }
 
 func nearMissValue(key, got string, want ...string) error {
@@ -237,6 +274,22 @@ func (f ContextField) FromProjectPath() bool { return f.Source == ContextSourceP
 // is the failure this whole mechanism exists to prevent.
 func (f ContextField) FromOperator() bool {
 	return f.Source == ContextSourceOperator || (f.Source == "" && f.Restricts())
+}
+
+// Disclosure reports what scopeNoteFor may say about this field's SET value.
+// An absent or unrecognised disclose reads as ContextDiscloseValue, by the
+// same rule ContextField.Restricts applies to scope: decision 3's "anything
+// else is ignored" already means a value that is neither "count" nor "none"
+// collapses to the default via this equality check — there is no separate
+// branch for "unknown", because a second one would be a second place for the
+// same rule to drift from the first.
+func (f ContextField) Disclosure() string {
+	switch f.Disclose {
+	case ContextDiscloseCount, ContextDiscloseNone:
+		return f.Disclose
+	default:
+		return ContextDiscloseValue
+	}
 }
 
 // Governs reports whether this field's applies_to selects the named tool.
@@ -982,6 +1035,13 @@ func (m McpSurfaces) ToolNames(mcpID string) []string { return m[mcpID].Tools }
 // append a no-op rather than to reason about who calls whom.
 const scopeNotePrefix = "Scope: "
 
+// scopeValueWithheld is what a SET field's scope note says under disclose:
+// "none", and what disclose: "count" falls back to for a scalar field, whose
+// only shape fact ("one value exists") "none" already states. One constant
+// for both keeps the two spots that must say nothing beyond "it is set" from
+// drifting to two different phrasings of the same guarantee.
+const scopeValueWithheld = "set, value withheld"
+
 // scopeNoteFor builds the one-sentence note describing how a tool is confined,
 // from the schema field's OWN description and the operator's value. Returns ""
 // only when the tool is governed by nothing at all.
@@ -999,6 +1059,14 @@ const scopeNotePrefix = "Scope: "
 // disqualifying one is worse than no note, because it is read as complete.
 // Decision 8 exists so a client is told its own limits; a limit stated as an
 // absence is still the limit.
+//
+// A SET field's value is rendered according to its disclose keyword (issue
+// #33) — but the unset branch just above is not: "no value is set for X, so
+// every call to this tool is refused" is unconditional on disclose, at every
+// setting. There is no value there to leak, and this line is the client's
+// only warning that the tool is dead on arrival; making it optional would
+// trade the one real disclosure risk here (a set value's content) for a
+// silent one (a dead tool that looks alive).
 func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName string) string {
 	if !cs.V2() {
 		return ""
@@ -1013,12 +1081,48 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 			parts = append(parts, fmt.Sprintf("%s — no value is set for %q, so every call to this tool is refused", label, f.Name))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s — %s", label, renderScopeValue(values[f.Name])))
+		parts = append(parts, fmt.Sprintf("%s — %s", label, renderScopeDisclosure(f, values[f.Name])))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return scopeNotePrefix + strings.Join(parts, "; ") + "."
+}
+
+// renderScopeDisclosure renders a SET field's value for the scope note
+// according to its disclose keyword. It is the only caller that branches on
+// Disclosure() — hasScopeValue, the audit log, `_meta` injection and every
+// operator surface read the real value regardless, because disclose is
+// specifically and only about what the note handed to a REMOTE CLIENT says.
+func renderScopeDisclosure(f ContextField, raw json.RawMessage) string {
+	switch f.Disclosure() {
+	case ContextDiscloseCount:
+		return renderScopeCount(raw)
+	case ContextDiscloseNone:
+		return scopeValueWithheld
+	default:
+		return renderScopeValue(raw)
+	}
+}
+
+// renderScopeCount describes a scope value's SHAPE — how many entries an
+// array carries — without describing any entry. A scalar has no shape beyond
+// "one value exists", which is exactly what disclose: "none" already says, so
+// it renders identically to that setting rather than inventing a count ("1")
+// that would name nothing an operator did not already get from "none". This
+// keeps the promise of acceptance 3 — count and none both name no value, for
+// array and string fields alike — without a fork in what "count" means per
+// type.
+func renderScopeCount(raw json.RawMessage) string {
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		unit := "value"
+		if len(list) != 1 {
+			unit = "values"
+		}
+		return fmt.Sprintf("confined to %d %s", len(list), unit)
+	}
+	return scopeValueWithheld
 }
 
 // renderScopeValue prints a scope value for a human reading a tool
@@ -1064,6 +1168,17 @@ func appendScopeNote(desc, note string) string {
 // reads an absent source as operator-supplied, and that rule must be applied in
 // exactly one place. A surface that re-derived it from a raw "" would be a
 // second copy of the rule, free to disagree the day it changes.
+//
+// It carries no Disclose (issue #33), deliberately: disclose governs what a
+// REMOTE CLIENT'S scope note says about a value it does not otherwise see.
+// The operator editing this panel already sees and sets the real value
+// unconditionally — this projection has never carried a value at all, only
+// the metadata the input form needs (type, description, source, …) — so
+// disclose has nothing to redact here and no operator question to answer.
+// Surfacing it anyway would tell an operator staring at a text box something
+// true about a different surface, which is a way for a reviewer to misread
+// this panel as the place that decides what a value is set TO, rather than
+// what is said ABOUT it elsewhere.
 type ScopeFieldView struct {
 	Name        string   `json:"name"`
 	Type        string   `json:"type,omitempty"`

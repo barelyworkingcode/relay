@@ -60,6 +60,7 @@ does not see is a grant permitted and nothing enforced. Relay still consults a
 | `applies_to` | tool-name patterns | which of this MCP's tools the field governs |
 | `enumerable` | bool | the MCP can list this field's valid values |
 | `depends_on` | field names | enumeration ordering |
+| `disclose` | `"value"` \| `"count"` \| `"none"` | what a **set** field's value looks like in the scope note a client reads. Absent means `"value"` — see below. |
 
 Plus the ordinary fragment relay uses to validate a value: `type`, `items`,
 `description`. This is a deliberate JSON-Schema **subset** — array-of-string
@@ -167,6 +168,71 @@ where the easiest failure is a confinement that does not confine. `depends_on`
 names fields whose already-chosen values must be sent as parameters, so the UI
 fills in dependency order (mailboxes cannot be listed without an account).
 Neither affects enforcement.
+
+### `disclose` controls what the client's scope note says about a value
+
+Every tool a v2 schema governs gets a "Scope: …" sentence appended to its
+description in `tools/list` (decision 8), naming each governing field and
+either its value or, for a field with none, that every call is refused. That
+value is the field's **content**, not the fact of the restriction — and for a
+field like `allowed_dirs`, the content is host topology: an absolute path
+names an account and a directory layout, on top of whatever the client already
+learns from being told it is confined at all. A field like `mail_accounts` has
+no such second layer — a mailbox name discloses nothing about the machine —
+which is why the mechanism is opt-in per field rather than a blanket redaction.
+
+`disclose` says what the note may show about a **set** value, once relay has
+already decided the field governs the tool and has something to show:
+
+| `disclose` | the note says |
+|---|---|
+| `"value"` | the value, exactly as it always has — **the default when `disclose` is absent** |
+| `"count"` | the value's shape and nothing else, e.g. "confined to 2 values" |
+| `"none"` | that the field is set and nothing else |
+
+`"value"` has to be the absent-default for the same reason every other keyword
+here defaults to the reading that changes nothing: an MCP that predates this
+keyword must render byte-for-byte as it always has, not discover its scope
+note has quietly gone quiet. `disclose` never touches **enforcement** — a
+withheld value is still injected into `_meta` on every call, still validated,
+still required by `scope: "restrict"` — and it never touches the **audit
+log** or an **operator surface**, both of which show the real value
+unconditionally; it changes exactly one string, the one a remote client reads
+off `tools/list`.
+
+The unset-value branch of the note — "no value is set for X, so every call to
+this tool is refused" — is **not** subject to `disclose`, at any setting.
+There is no value to disclose there, and it is the client's only warning that
+the tool is dead on arrival; making it optional would trade the one real
+disclosure risk `disclose` exists to close (a set value's content) for a
+silent one (a dead tool a client believes is live).
+
+**An unrecognised `disclose` value does the same thing, silently.** `disclose:
+"hidden"` is not a near miss of any keyword here — it differs from `"count"`
+by more than case — so it is ignored rather than guessed at, which is the rule
+that lets a later vocabulary land on this relay. The consequence for *this*
+keyword is that the note renders the value, and the MCP author who wrote
+`"hidden"` believes they have withheld it. Verified: `Disclosure()` answers
+`"value"` for `"hidden"`, `"redact"`, `"secret"` and anything else outside the
+three spellings above.
+
+That is the same fail-open direction as the older-relay case below and is
+accepted for the same reason — but it is worth knowing that the two failures
+look identical from the MCP's side and neither is detectable from there. If
+you declare `disclose`, spell it exactly, and read the note a real client
+receives before believing it.
+
+**An older relay ignores `disclose` and renders the value anyway.** That
+follows from the rule above ("a key relay has never heard of is ignored") the
+same way it applies to every keyword this document adds after some relay is
+already running — but it is worth saying plainly here, because `disclose` is
+the first keyword whose whole purpose is to withhold something from a surface
+outside relay's own process. An MCP declaring `disclose: "count"` cannot
+detect which version of relay it is talking to and cannot fail closed on the
+answer: the guarantee is a property of the relay instance actually running,
+not of the schema an MCP declares. Do not read a `disclose: "count"`
+declaration as a promise the declaring MCP is in a position to keep — it is a
+request relay may or may not be new enough to honour.
 
 ## `context/enumerate`
 
