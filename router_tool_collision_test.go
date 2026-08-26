@@ -522,6 +522,70 @@ func TestCallTool_GrantAdmittingNoOwnerDeniesDeterministically(t *testing.T) {
 	}
 }
 
+// fsMCP v3 integration R6: the case above ("grant admits no owner") is the
+// exact live defect — a grant naming only collisionMcpC, calling a tool only
+// fs-a and fs-b own, used to fall through to owners[0] and refuse with "MCP
+// 'fs-a' is disabled for this token": an MCP the grant never named. The
+// refusal must diagnose the tool against the caller's OWN grant instead, and
+// must not teach the caller that fs-a or fs-b exist.
+func TestCallTool_GrantAdmittingNoOwnerNamesNoMcpOutsideTheGrant(t *testing.T) {
+	for orderName, order := range bothOrders() {
+		r, tp := newCollisionRouter(t, nil, t.TempDir(), order, []string{collisionMcpC}, nil)
+
+		_, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken)
+		if err == nil {
+			t.Fatalf("%s: a grant naming only %s reached %q, which it does not own", orderName, collisionMcpC, collidingTool)
+		}
+		if got := tp.dispatchedIDs(); len(got) != 0 {
+			t.Fatalf("%s: a refused call still reached %v", orderName, got)
+		}
+		msg := err.Error()
+		for _, leaked := range []string{collisionMcpA, collisionMcpB} {
+			if strings.Contains(msg, leaked) {
+				t.Errorf("%s: refusal named %q, an MCP outside this grant: %q", orderName, leaked, msg)
+			}
+		}
+		// The grant's own MCP is fine to name — the caller already knows it
+		// holds collisionMcpC, so the message can (and here does) say so.
+		if !strings.Contains(msg, collisionMcpC) {
+			t.Errorf("%s: refusal did not name the grant's own MCP %q: %q", orderName, collisionMcpC, msg)
+		}
+		if !strings.Contains(msg, collidingTool) {
+			t.Errorf("%s: refusal did not name the tool %q: %q", orderName, collidingTool, msg)
+		}
+	}
+}
+
+// A tool the grant's OWN MCP merely refuses at a lower layer (here,
+// hand-disabled) is a different case from R6's: that MCP is not "outside the
+// grant", so it must still be the one resolved and audited — with that
+// layer's own specific denial, not R6's generic "no tool available" one.
+func TestCallTool_GrantedMcpOwnerStillResolvedWhenItRefusesItself(t *testing.T) {
+	rec := newTestAudit(t, nil)
+	r, tp := newCollisionRouter(t, rec, t.TempDir(),
+		[]string{collisionMcpA, collisionMcpB, collisionMcpC}, []string{collisionMcpA},
+		map[string][]string{collisionMcpA: {collidingTool}})
+
+	_, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken)
+	if err == nil {
+		t.Fatal("a hand-disabled tool was not refused")
+	}
+	if got := tp.dispatchedIDs(); len(got) != 0 {
+		t.Fatalf("a refused call still reached %v", got)
+	}
+	if strings.Contains(err.Error(), "is available to this grant") {
+		t.Errorf("a tool the grant's own MCP disabled must get THAT layer's denial, not R6's generic one: %q", err.Error())
+	}
+	events := readLoggedEvents(t, rec)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit record, got %d", len(events))
+	}
+	if events[0].McpID != collisionMcpA {
+		t.Errorf("audit names mcp_id=%q, want the grant's own %q — resolution must still land on it, not go unresolved",
+			events[0].McpID, collisionMcpA)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 5. Single-MCP behaviour is unchanged
 // ---------------------------------------------------------------------------
