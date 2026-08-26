@@ -362,9 +362,7 @@ func TestCallTool_InjectsMetaContext(t *testing.T) {
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("fs_read"),
 				func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
-					if p, ok := params.(map[string]interface{}); ok {
-						capturedParams = p
-					}
+					capturedParams = decodedToolParams(params)
 					return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 				}),
 		},
@@ -402,9 +400,7 @@ func TestCallTool_InjectsProjectIDWhenContextNotSet(t *testing.T) {
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("fs_read"),
 				func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
-					if p, ok := params.(map[string]interface{}); ok {
-						capturedParams = p
-					}
+					capturedParams = decodedToolParams(params)
 					return json.RawMessage(`{"content":[]}`), nil
 				}),
 		},

@@ -48,6 +48,13 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   remote path at all; directory auth is unrepresentable rather than refused;
   audit is fail-closed and written *before* the call; and rate/volume budgets
   live on the enrolment, the unit of compromise.
+- [012 — Relay forwards a call's arguments, it does not re-serialise
+  them](012-relay-forwards-arguments-verbatim.md): tool arguments travel as
+  `json.RawMessage` from the wire to the MCP and into the audit log. Relay
+  validates and authorises a call without decoding its payload, because a round
+  trip through Go values substitutes U+FFFD for a lone surrogate, sorts keys,
+  drops duplicates and reformats numbers — and because a log that paraphrases
+  what a client sent is not ground truth.
 
 ## Format
 
