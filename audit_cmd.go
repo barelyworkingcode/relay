@@ -220,6 +220,17 @@ func auditAuthorityLine(ev AuditEvent) (string, bool) {
 		parts = append(parts, "outbound=blocked")
 	}
 	parts = append(parts, "scope="+auditScopeSummary(ev.Scope))
+	// Two findings the summary above cannot carry, each appended rather than
+	// substituted, because the coordinates stay on the line either way — the
+	// operator is entitled to them (issue #41) and a warning is the second
+	// sentence, not a replacement for the first.
+	if len(ev.ScopeUnplaced) > 0 {
+		parts = append(parts, "SCOPE NOT APPLIED: this grant sets "+
+			quoteNames(ev.ScopeUnplaced)+", which this MCP does not declare — call denied")
+	}
+	if warnings := scopeBreadthWarnings(ev.Scope); len(warnings) > 0 {
+		parts = append(parts, "SCOPE BREADTH: "+strings.Join(warnings, "; "))
+	}
 	return strings.Join(parts, "  "), true
 }
 
