@@ -534,7 +534,14 @@ func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *Extern
 // second entrypoint that skips a step: a respawned MCP that served calls before
 // its schema was known would be a worse bug than the outage this exists to fix.
 func (m *ExternalMcpManager) connectStdio(ctx context.Context, sup *mcpSupervisor) (*externalMcpConn, error) {
-	conn, err := spawnStdioConn(sup.cfg.Command, sup.cfg.Args, sup.cfg.Env, &sup.cfg)
+	// prepareStdioLaunch is the one place that decides whether this child runs
+	// under seatbelt (R5). It fails closed on its own — a non-nil error here
+	// means nothing was spawned, sandboxed or not.
+	command, args, err := prepareStdioLaunch(&sup.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: %w", err)
+	}
+	conn, err := spawnStdioConn(command, args, sup.cfg.Env, &sup.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -980,6 +987,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 	for id, c := range conns {
 		s := out[id]
 		s.Tools = toolNames(c.GetTools())
+		s.Root = c.GetConfig().ResolvedRoot
 		out[id] = s
 	}
 	return out
@@ -1012,6 +1020,7 @@ func (m *ExternalMcpManager) McpSurfaceFor(id string) McpSurface {
 	m.mu.RUnlock()
 	if conn != nil {
 		surface.Tools = toolNames(conn.GetTools())
+		surface.Root = conn.GetConfig().ResolvedRoot
 	}
 	return surface
 }

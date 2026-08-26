@@ -589,9 +589,24 @@ func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
 // they are the grant most likely to be ambiguous, and "pick one at random"
 // was never more correct for them than for anyone else.
 //
-// Zero candidates falls through to owners[0] — a real owner of the tool — and
-// lets the existing checks refuse it in their own words, now deterministically.
-func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string) (string, error) {
+// Zero full candidates used to fall through to owners[0] unconditionally and
+// let the checks below refuse it in their own words — but owners[0] is a real
+// owner of the tool GLOBALLY, not within this grant (fsMCP v3 integration R6:
+// measured live as "MCP 'fsmcp' is disabled for this token" on a token that
+// was never granted an MCP of that name). Falling through named an MCP
+// outside the grant and pointed the operator at a permission that was never
+// the problem.
+//
+// The fix distinguishes two zero-candidate shapes rather than treating them
+// as one. An owner this grant admits at the MCP level, just not at the
+// tool/mode/disabled layer grantRoutesToolTo also checks, is an MCP the
+// caller already knows it holds — falling through to it, as before, lets
+// checkToolAccess below write ITS specific reason (wrong tool, wrong mode,
+// hand-disabled) rather than R6's generic one, and keeps every existing
+// denial's wording and audited authority unchanged. Only when NOT ONE owner
+// of the name is granted even at the MCP level — every real owner is outside
+// this grant — is a call refused here, in terms of the grant's own MCPs.
+func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
 		if isServiceToken || grantRoutesToolTo(stored, id, toolName) {
@@ -605,9 +620,42 @@ func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string,
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 			"access denied: tool '%s' is exposed by more than one MCP this grant allows (%s); relay will not choose between them — narrow the grant to one of them",
 			toolName, strings.Join(candidates, ", ")))
-	default:
-		return owners[0], nil
 	}
+	for _, id := range owners {
+		if checkToolAccess(stored, id, "", nil) == nil {
+			return id, nil
+		}
+	}
+	return "", noGrantedOwnerError(toolName, granted)
+}
+
+// noGrantedOwnerError is R6's refusal for a name none of the grant's own MCPs
+// publish. It names the MCPs the caller already knows it holds — never the
+// outside MCP that actually publishes the name, which resolveToolOwner never
+// even reveals to this function.
+func noGrantedOwnerError(toolName string, granted []string) error {
+	if len(granted) == 0 {
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: no tool named '%s' is available to this grant", toolName))
+	}
+	return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+		"access denied: no tool named '%s' is available to this grant (granted: %s)",
+		toolName, strings.Join(granted, ", ")))
+}
+
+// grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP level —
+// the set an R6 refusal is allowed to name, since the caller already knows it
+// holds them. A service token admits every connected MCP (see
+// resolveToolOwner), so its list is every id in s.ExternalMcps.
+func grantedMcpIDsForToken(stored *StoredToken, isServiceToken bool, s *Settings) []string {
+	var ids []string
+	for _, ext := range s.ExternalMcps {
+		if isServiceToken || checkToolAccess(stored, ext.ID, "", nil) == nil {
+			ids = append(ids, ext.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
@@ -650,7 +698,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// the schema read, the _meta assembly, the scope checks and the audit's
 	// mcp_id all take a single resolved MCP as given, and an ambiguous name has
 	// no such thing to give them.
-	extID, err := resolveToolOwner(stored, isServiceToken, name, owners)
+	extID, err := resolveToolOwner(stored, isServiceToken, name, owners, grantedMcpIDsForToken(stored, isServiceToken, settings))
 	if err != nil {
 		au.done(AuditOutcomeDenied, err)
 		return nil, err
@@ -664,6 +712,13 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// serving every existing grant with no scope at all (ADR-011 decision 4).
 	surface := r.tools.McpSurfaceFor(extID)
 	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+
+	// The directory relay spawned this MCP with, if any (ADR-011 decision 7 /
+	// fsMCP v3 integration R2). Recorded unconditionally, alongside setMcp
+	// rather than gated behind isServiceToken like setAuthority below: it is a
+	// fact about the MCP's configuration, not about the caller's grant, and
+	// costs nothing to set on a record that will not render it.
+	au.setMcpRoot(surface.Root)
 
 	// The _meta this call would run with: the per-token context for this MCP,
 	// filtered down to fields the LIVE schema still declares, plus the
@@ -683,6 +738,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// to a live connection (ToolOwners above), so this can never be the
 	// "MCP is merely down" case that makes pruning stored data unsafe.
 	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
+	meta = mergeArgsSHA256(meta, bridge.ArgsSHA256FromContext(ctx))
 
 	// Audit the authority actually in force (ADR-011 decision 7), BEFORE the
 	// first thing that can refuse.
@@ -858,6 +914,30 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 // projectID is non-empty. base is the per-token _meta context (may be nil). When
 // projectID is empty it returns base unchanged, preserving prior behavior for
 // service/external tokens. Falls back gracefully if base isn't a JSON object.
+// mergeArgsSHA256 places the client's argument hash on the outgoing _meta,
+// verbatim. Relay does not check it — see bridge.RemoteRequest.ArgsSHA256.
+func mergeArgsSHA256(base json.RawMessage, sum string) json.RawMessage {
+	if sum == "" {
+		return base
+	}
+	m := map[string]json.RawMessage{}
+	if len(base) > 0 && string(base) != "null" {
+		if err := json.Unmarshal(base, &m); err != nil || m == nil {
+			m = map[string]json.RawMessage{}
+		}
+	}
+	encoded, err := json.Marshal(sum)
+	if err != nil {
+		return base
+	}
+	m["args_sha256"] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return out
+}
+
 func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 	if projectID == "" {
 		return base
