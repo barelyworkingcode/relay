@@ -181,6 +181,17 @@ func (a *auditCall) setAuthority(access string, allowExternal bool, scope map[st
 	a.ev.Scope = scope
 }
 
+// setUnplacedScope records the fields this grant set a value for that the
+// MCP's live schema does not declare (issue #42). Called immediately before
+// the refusal they cause, so the record that says the call was denied is also
+// the record that says why the grant could not be applied.
+func (a *auditCall) setUnplacedScope(fields []string) {
+	if a == nil {
+		return
+	}
+	a.ev.ScopeUnplaced = fields
+}
+
 // setToolCount records how many tools a list call exposed.
 func (a *auditCall) setToolCount(n int) {
 	if a == nil {

@@ -402,6 +402,10 @@ textarea:focus {
    and again in the banner, because the client-facing half of this is a silent
    `denied` nobody watching the UI would ever see. */
 .proj-auth-missing { color: var(--warn); font-weight: 600; }
+/* Issue #41: a scope reaching a filesystem root or a whole home directory is
+   not "confined to 1 value". It reads as a finding on the row, not as more
+   metadata beside the value it qualifies. */
+.proj-auth-unrestricted { color: var(--danger); font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; padding: 0 6px; border-radius: 9px; background: color-mix(in srgb, var(--danger) 16%, transparent); }
 .proj-auth-none { color: var(--text-3); font-style: italic; font-size: 11px; }
 .proj-scope-gap { border: 1px solid var(--warn); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warn) 10%, transparent); padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
 .proj-scope-gap ul { margin: 6px 0 0 18px; }
@@ -416,6 +420,7 @@ textarea:focus {
 .proj-scope-type { font-family: var(--sans, inherit); font-size: 10px; color: var(--text-3); text-transform: none; letter-spacing: 0; }
 .proj-scope-desc { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
 .proj-scope-missing { font-size: 11px; color: var(--warn); margin-top: 2px; }
+.proj-scope-unrestricted { font-size: 11px; color: var(--danger); font-weight: 600; margin-top: 3px; border-left: 2px solid var(--danger); padding-left: 6px; }
 .proj-scope-field input[readonly] { color: var(--text-2); font-family: var(--mono); }
 
 /* The enumeration picker (ADR-011 decision 6). The summary is outside the
@@ -1482,6 +1487,56 @@ window.__RELAY_INIT__ = {
     if (v === void 0 || v === null) return "";
     return JSON.stringify(v);
   }
+  var SCOPE_BREADTH_ROOT = "root";
+  var SCOPE_BREADTH_HOME = "home";
+  function scopeBreadthPhrase(kind) {
+    if (kind === SCOPE_BREADTH_ROOT) return "unrestricted (the whole filesystem)";
+    if (kind === SCOPE_BREADTH_HOME) return "a whole home directory";
+    return "";
+  }
+  function scopeCleanPath(v) {
+    const out = [];
+    for (const seg of v.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") {
+        out.pop();
+        continue;
+      }
+      out.push(seg);
+    }
+    return "/" + out.join("/");
+  }
+  function scopeEntryBreadth(entry) {
+    if (typeof entry !== "string") return "";
+    const v = entry.trim();
+    if (v === "") return "";
+    if (v === "~" || v === "~/") return SCOPE_BREADTH_HOME;
+    if (v.charAt(0) !== "/") return "";
+    const clean = scopeCleanPath(v);
+    if (clean === "/") return SCOPE_BREADTH_ROOT;
+    const parts = clean.slice(1).split("/");
+    if (parts.length <= 2 && (parts[0] === "Users" || parts[0] === "home")) return SCOPE_BREADTH_HOME;
+    return "";
+  }
+  function scopeValueBreadth(v) {
+    const entries = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+    let widest = "";
+    for (const e of entries) {
+      const kind = scopeEntryBreadth(e);
+      if (kind === SCOPE_BREADTH_ROOT) return SCOPE_BREADTH_ROOT;
+      if (kind === SCOPE_BREADTH_HOME) widest = SCOPE_BREADTH_HOME;
+    }
+    return widest;
+  }
+  function projScopeBreadthWarnings(p, mcpID) {
+    const fields = mcpScopeFieldsFor(mcpID) || [];
+    const out = [];
+    for (const f of fields) {
+      const phrase = scopeBreadthPhrase(scopeValueBreadth(projScopeValue(p, mcpID, f.name)));
+      if (phrase) out.push(f.name + " is " + phrase);
+    }
+    return out;
+  }
   function projMissingScopeFields(p, mcpID) {
     const fields = mcpScopeFieldsFor(mcpID);
     if (!fields) return [];
@@ -1528,6 +1583,11 @@ window.__RELAY_INIT__ = {
         scope,
         derived,
         missing: projMissingScopeFields(p, mcpID),
+        // Issue #41: the row already showed the real value — "/" is one
+        // character and every reviewer's eye went past it. The finding
+        // gets a line of its own, in the same words the CLI and the audit
+        // authority line use.
+        breadth: projScopeBreadthWarnings(p, mcpID),
         schemaUnknown: fields === null
       };
     });
@@ -1545,6 +1605,9 @@ window.__RELAY_INIT__ = {
       html += '<span class="proj-auth-external ' + (r.external ? "on" : "off") + '">' + (r.external ? "may reach outside" : "local only") + "</span>";
       html += '<span class="proj-auth-tools">' + esc(r.tools) + "</span>";
       if (r.scope.length) html += '<span class="proj-auth-scope">' + esc(r.scope.join(" \xB7 ")) + "</span>";
+      for (const warning of r.breadth) {
+        html += '<span class="proj-auth-unrestricted">' + esc(warning) + "</span>";
+      }
       if (r.missing.length) {
         html += '<span class="proj-auth-missing">needs a scope value for ' + esc(r.missing.join(", ")) + "</span>";
       } else if (!r.scope.length && !r.schemaUnknown) {
@@ -1984,6 +2047,10 @@ window.__RELAY_INIT__ = {
     }
     if (!String(text).trim()) {
       html += '<div class="proj-scope-missing">No value: every tool this field governs is denied at call time.</div>';
+    }
+    const breadth = scopeBreadthPhrase(scopeValueBreadth(scopeValueFromText(field, text)));
+    if (breadth) {
+      html += '<div class="proj-scope-unrestricted">This value is ' + esc(breadth) + ". Everything below it is in scope, including files this grant has no reason to reach. Set it to the narrowest directory that works unless you mean the whole tree.</div>";
     }
     if (field.depends_on && field.depends_on.length) {
       html += '<div class="proj-scope-desc">Values here are read within ' + esc(field.depends_on.join(", ")) + ".</div>";
@@ -2567,11 +2634,27 @@ window.__RELAY_INIT__ = {
     }
     state.projectFormError = null;
     state.projectFormErrorField = null;
+    if (!confirmBroadScope(payload)) return;
     if (!f.id) {
       ipc(JSON.stringify(Object.assign({ type: "create_project" }, payload)));
     } else {
       ipc(JSON.stringify(Object.assign({ type: "update_project", id: f.id }, payload)));
     }
+  }
+  function confirmBroadScope(payload) {
+    const findings = [];
+    const context = payload && payload.context || {};
+    for (const mcpID of Object.keys(context).sort()) {
+      const values = context[mcpID] || {};
+      for (const field of Object.keys(values).sort()) {
+        const phrase = scopeBreadthPhrase(scopeValueBreadth(values[field]));
+        if (phrase) findings.push(mcpID + " \xB7 " + field + " is " + phrase);
+      }
+    }
+    if (!findings.length) return true;
+    return confirm(
+      "This grant is broader than a folder:\n\n  " + findings.join("\n  ") + "\n\nEverything below those roots is in scope for every tool the field governs \u2014 for an access profile, that is a client on another machine.\n\nSave it anyway?"
+    );
   }
   window.onProjectAdded = function(p) {
     if (!p || !p.id) return;
@@ -3790,6 +3873,15 @@ window.__RELAY_INIT__ = {
       return k + "=" + (typeof v === "string" ? v : JSON.stringify(v));
     }).join(", ");
   }
+  function auditScopeBreadthText(scope) {
+    if (scope === void 0 || scope === null) return "";
+    const out = [];
+    for (const k of Object.keys(scope).sort()) {
+      const phrase = scopeBreadthPhrase(scopeValueBreadth(scope[k]));
+      if (phrase) out.push(k + " is " + phrase);
+    }
+    return out.join("; ");
+  }
   function auditBaseDetail(ev) {
     if (ev.error) return ev.error;
     if (ev.args) return typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args);
@@ -3910,6 +4002,11 @@ window.__RELAY_INIT__ = {
       if (ev.allow_external === true) add("Outbound", "allowed \u2014 this grant may reach outside the host");
       else if (ev.allow_external === false) add("Outbound", "blocked \u2014 confined to this host");
       add("Scope", auditScopeText(ev.scope));
+      if (ev.scope_unplaced && ev.scope_unplaced.length) {
+        add("Scope NOT applied", ev.scope_unplaced.join(", ") + " \u2014 set by this grant, not declared by this MCP, so the call was denied");
+      }
+      const breadth = auditScopeBreadthText(ev.scope);
+      if (breadth) add("Scope breadth", breadth);
     }
     add("Outcome", ev.outcome);
     add("Phase", ev.phase);
@@ -4029,6 +4126,7 @@ window.__RELAY_INIT__ = {
     auditFmtTime,
     auditMatches,
     auditPretty,
+    auditScopeBreadthText,
     auditScopeText,
     auditSelect,
     auditVisible,
@@ -4075,6 +4173,7 @@ window.__RELAY_INIT__ = {
     projGrantedMcpIds,
     projMissingScopeFields,
     projNoun,
+    projScopeBreadthWarnings,
     projScopeGaps,
     projScopeText,
     projScopeValue,
@@ -4086,7 +4185,11 @@ window.__RELAY_INIT__ = {
     renderScopeFieldTextInput,
     renderScopeChoices,
     renderScopeGapBanner,
+    scopeBreadthPhrase,
+    scopeCleanPath,
+    scopeEntryBreadth,
     scopeTextFromValue,
+    scopeValueBreadth,
     scopeValueFromText,
     scopeValueIsSet,
     scopeValueText,
@@ -4120,6 +4223,7 @@ window.__RELAY_INIT__ = {
     cancelMcpEdit,
     cancelProjectEdit,
     cancelServiceEdit,
+    confirmBroadScope,
     cfgArrayAdd,
     cfgArrayRemove,
     cfgBind,

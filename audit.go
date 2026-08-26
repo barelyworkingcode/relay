@@ -208,6 +208,23 @@ type AuditEvent struct {
 	// populated) this field needs and gets for free by keeping the tag plain.
 	Scope map[string]json.RawMessage `json:"scope"`
 
+	// ScopeUnplaced names every field the GRANT set a value for that the MCP's
+	// live schema does not declare, so relay could not place it and refused
+	// the call (issue #42).
+	//
+	// It is a field of its own rather than a fourth reading of Scope because
+	// Scope's three readings are all about what the MCP declares, and this is
+	// about what the OPERATOR declared. Folding it in would have meant
+	// `scope: null` — "this MCP declares no scope field at all" — doing double
+	// duty for "this MCP declares none of the fields your profile set", which
+	// is the exact conflation that let an unconfined dispatch read, in the
+	// log, as an MCP that was never scoped in the first place.
+	//
+	// A record carrying it is always a `denied`, and the two travel together:
+	// the names are what makes the denial actionable ("your profile scopes
+	// allowed_dirs and this MCP no longer declares it") rather than generic.
+	ScopeUnplaced []string `json:"scope_unplaced,omitempty"`
+
 	// AllowExternal is the other half of the authority relay decided by
 	// itself (ADR-011 decision 2c): whether this grant could call a tool that
 	// reaches outside the host. Recorded beside Access for the same reason

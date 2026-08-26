@@ -112,9 +112,14 @@ func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
 // hazard an MCP renaming a context field leaves behind: a stored blob outlives
 // the schema that wrote it (macMCP's write_dirs -> file_dirs is the concrete
 // case), relay never rewrites settings.json to match, and _meta is a general
-// channel a caller cannot audit from the outside. The one guarantee that has
-// to hold regardless is that a key the LIVE schema no longer declares is never
-// put on the wire under its old name.
+// channel a caller cannot audit from the outside. A key the LIVE schema no
+// longer declares must never be put on the wire under its old name.
+//
+// Issue #42 strengthened the second half. Not injecting it was never in
+// question; DISPATCHING ANYWAY was, and that is what this used to assert.
+// Nothing reaches the wire now, because a scope relay cannot place is a scope
+// relay cannot enforce — see TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace
+// for the case in its own right.
 func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 	var capturedMeta json.RawMessage
 	capture := func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
@@ -146,14 +151,13 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 	addMockSchema(mgr, "macmcp", scopedSchema, 2)
 	r := newTestRouter(t, s, mgr)
 
-	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
-		t.Fatalf("call refused: %v", err)
+	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
+		t.Fatal("a grant carrying a scope the live schema cannot place was dispatched")
+	} else if !strings.Contains(err.Error(), "write_dirs") {
+		t.Errorf("the refusal should name the field that could not be placed, got: %v", err)
 	}
-	if strings.Contains(string(capturedMeta), "write_dirs") {
-		t.Errorf("a context key the live schema no longer declares reached _meta: %s", capturedMeta)
-	}
-	if !strings.Contains(string(capturedMeta), "mail_accounts") {
-		t.Errorf("a field the live schema DOES declare was dropped too: %s", capturedMeta)
+	if capturedMeta != nil {
+		t.Errorf("the MCP was reached at all: _meta = %s", capturedMeta)
 	}
 }
 
@@ -174,13 +178,36 @@ func TestCallTool_AV1SchemaImposesNoPresenceRequirement(t *testing.T) {
 // Decision 7: what the record says about the authority
 // ---------------------------------------------------------------------------
 
+// scopedSchemaWithSecret is scopedSchema plus an ordinary, non-restrict
+// context value: a field relay injects and otherwise ignores. It has to be
+// DECLARED for the call to run at all (issue #42 refuses a value relay cannot
+// place), which is the honest fixture anyway — an undeclared api_key could
+// only ever have got into settings.json by hand.
+const scopedSchemaWithSecret = `{
+  "mail_accounts": {
+    "type": "array", "items": {"type": "string"},
+    "description": "Mail accounts this client may read from or send as",
+    "scope": "restrict", "source": "operator",
+    "applies_to": ["mail_*"], "enumerable": true
+  },
+  "api_key": {"type": "string", "description": "credential for the upstream"}
+}`
+
 func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 	// _meta is a general channel and a future MCP may pass an API key through
 	// it. Logging Context[extID] wholesale would make the audit file the place
 	// credentials go to be archived.
-	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
-		"mail_accounts": json.RawMessage(`["Bob"]`),
-		"api_key":       json.RawMessage(`"sk-do-not-log-me"`),
+	r := newProfileRouter(t, profileOpts{
+		kind:          ProjectKindRemote,
+		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
+		access:        map[string]string{"macmcp": AccessWrite},
+		allowExternal: map[string]bool{"macmcp": true},
+		schema:        scopedSchemaWithSecret,
+		schemaVersion: 2,
+		contextValues: map[string]json.RawMessage{
+			"mail_accounts": json.RawMessage(`["Bob"]`),
+			"api_key":       json.RawMessage(`"sk-do-not-log-me"`),
+		},
 	})
 	rec := newTestAudit(t, nil)
 	r.audit = rec
