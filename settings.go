@@ -40,6 +40,18 @@ type Settings struct {
 	// keeps a settings.json byte-identical to the one it had before this
 	// field existed.
 	APICredentials []APICredential `json:"api_credentials,omitempty"`
+
+	// LoginBootstrap is the single-use anchor `relay login enrol` mints for
+	// passkey registration (ADR-016 decision 2). omitempty: absent means no
+	// registration is anchored, which is both the pre-feature state and the
+	// state the moment after a code is consumed or expires.
+	LoginBootstrap *LoginBootstrap `json:"login_bootstrap,omitempty"`
+
+	// Passkeys holds every registered WebAuthn credential (ADR-016 decision
+	// 3). omitempty, for the same reason as APICredentials: an install that
+	// never registers one keeps settings.json byte-identical to before this
+	// field existed.
+	Passkeys []Passkey `json:"passkeys,omitempty"`
 }
 
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
