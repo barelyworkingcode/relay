@@ -113,20 +113,33 @@ func (o *ServiceOps) Update(id string, f serviceFields) (ServiceConfig, error) {
 	if f.Command == "" {
 		return ServiceConfig{}, invalidService("command is required")
 	}
-	existing, idx := o.Store.Get().findServiceByID(id)
-	if idx < 0 {
-		return ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
-	}
 
-	config := f.toConfig(id)
-	// FrontendConsumer is set by `service register --no-frontend-creds`, never
-	// by an edit form, and UpdateService replaces the whole record. Dropping it
-	// here silently re-enables front-door credential injection for a backend
-	// that opted out.
-	config.FrontendConsumer = existing.FrontendConsumer
+	// IsRunning is sampled before the commit, same as the config merge below;
+	// what makes this race-safe is not when wasRunning is read but that a
+	// stale true never reaches Reload, because found gates that below and is
+	// decided atomically with the write.
 	wasRunning := o.Registry.IsRunning(id)
-	if err := o.Store.With(func(s *Settings) { s.UpdateService(config) }); err != nil {
+
+	var config ServiceConfig
+	found := false
+	if err := o.Store.With(func(s *Settings) {
+		existing, idx := s.findServiceByID(id)
+		if idx < 0 {
+			return // no-op write; the id is gone as of this commit
+		}
+		found = true
+		config = f.toConfig(id)
+		// FrontendConsumer is set by `service register --no-frontend-creds`, never
+		// by an edit form, and UpdateService replaces the whole record. Dropping it
+		// here silently re-enables front-door credential injection for a backend
+		// that opted out.
+		config.FrontendConsumer = existing.FrontendConsumer
+		s.UpdateService(config)
+	}); err != nil {
 		return ServiceConfig{}, fmt.Errorf("save service: %w", err)
+	}
+	if !found {
+		return ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 
 	var reloadErr error
@@ -141,11 +154,18 @@ func (o *ServiceOps) Update(id string, f serviceFields) (ServiceConfig, error) {
 }
 
 func (o *ServiceOps) Remove(id string) error {
-	if _, idx := o.Store.Get().findServiceByID(id); idx < 0 {
-		return fmt.Errorf("%w: %s", errServiceNotFound, id)
-	}
-	if err := o.Store.With(func(s *Settings) { s.RemoveService(id) }); err != nil {
+	found := false
+	if err := o.Store.With(func(s *Settings) {
+		if _, idx := s.findServiceByID(id); idx < 0 {
+			return
+		}
+		found = true
+		s.RemoveService(id)
+	}); err != nil {
 		return fmt.Errorf("save service: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 	o.Registry.Stop(id)
 	o.notify()
@@ -153,11 +173,18 @@ func (o *ServiceOps) Remove(id string) error {
 }
 
 func (o *ServiceOps) SetAutostart(id string, on bool) error {
-	if _, idx := o.Store.Get().findServiceByID(id); idx < 0 {
-		return fmt.Errorf("%w: %s", errServiceNotFound, id)
-	}
-	if err := o.Store.With(func(s *Settings) { s.SetServiceAutostart(id, on) }); err != nil {
+	found := false
+	if err := o.Store.With(func(s *Settings) {
+		if _, idx := s.findServiceByID(id); idx < 0 {
+			return
+		}
+		found = true
+		s.SetServiceAutostart(id, on)
+	}); err != nil {
 		return fmt.Errorf("save service: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 	o.notify()
 	return nil

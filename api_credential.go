@@ -183,15 +183,19 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class CapabilityClass)
 	if cred == nil {
 		return errNoCredential
 	}
-	if !cred.Grants(class) {
-		return errClassNotGranted
-	}
 	// This is subtle: *http.Request is passed by pointer but WithContext
 	// returns a copy, so the only way to hand the resolved id back to the
 	// caller through this fixed Authorize(r, class) error signature is to
 	// overwrite what r points to in place, rather than returning a new
-	// request the caller would have to remember to use.
+	// request the caller would have to remember to use. Attached as soon as
+	// the bearer resolves to a credential, before the class check, so a
+	// class refusal still names the credential that attempted it — only an
+	// unresolved bearer (errNoCredential) leaves the context untouched,
+	// since there is no credential to name.
 	*r = *r.WithContext(withAPICredentialID(r.Context(), cred.ID))
+	if !cred.Grants(class) {
+		return errClassNotGranted
+	}
 	return nil
 }
 

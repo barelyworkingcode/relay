@@ -166,15 +166,20 @@ func (o *McpOps) persist(cfg ExternalMcp) error {
 }
 
 func (o *McpOps) Remove(id string) error {
-	if _, idx := o.Store.Get().findMcpByID(id); idx < 0 {
-		return fmt.Errorf("%w: %s", errMcpNotFound, id)
-	}
 	var secret string
+	found := false
 	if err := o.Store.With(func(s *Settings) {
+		if _, idx := s.findMcpByID(id); idx < 0 {
+			return
+		}
+		found = true
 		s.RemoveExternalMcp(id)
 		secret = s.AdminSecret
 	}); err != nil {
 		return fmt.Errorf("save mcp: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", errMcpNotFound, id)
 	}
 	o.notify()
 	if o.NotifyReconcile != nil {

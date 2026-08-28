@@ -262,18 +262,12 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 		ceAssertNoLeak(t, dump, plaintext, cred.Hash)
 	}
 
-	// This is subtle: Authorize (api_credential.go) only attaches the
-	// resolved credential id to the request context on its SUCCESS return —
-	// a class-refusal returns errClassNotGranted before reaching that line,
-	// so the refused decision's CredID is "" even though the bearer DID
-	// resolve to a known credential. Only the allowed decision can be
-	// checked against cred.ID.
 	allowed := aud.decisions[0]
 	if !allowed.Allowed || allowed.CredID != cred.ID {
 		t.Fatalf("allowed decision = %+v, want Allowed=true CredID=%q", allowed, cred.ID)
 	}
 	refused := aud.decisions[1]
-	if refused.Allowed {
-		t.Fatalf("refused decision recorded as allowed: %+v", refused)
+	if refused.Allowed || refused.CredID != cred.ID {
+		t.Fatalf("refused decision = %+v, want Allowed=false CredID=%q", refused, cred.ID)
 	}
 }
