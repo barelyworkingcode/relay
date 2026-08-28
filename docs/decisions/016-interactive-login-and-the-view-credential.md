@@ -1,6 +1,8 @@
 # ADR-016: A Login Is a Ceremony Anchored on the Host, and the View Holds a Credential of Its Own
 
-**Status:** Proposed
+**Status:** Accepted, and implemented in full: the bootstrap anchor, the
+verifier, the three public routes, the `proxy` class, credential expiry, and
+the tray and Settings surfaces.
 **Date:** 2026-08-28
 
 ## Context
