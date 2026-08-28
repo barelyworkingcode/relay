@@ -1076,7 +1076,7 @@ func TestWebAuthnRegistrationMalformedCBOR(t *testing.T) {
 			cborEntry(cborEncText("attStmt"), cborEncMap()),
 			cborEntry(cborEncText("fmt"), cborEncText("none")),
 			cborEntry(cborEncText("authData"), cborEncBytes(nil)),
-		), want: errCBORKeyOrder},
+		), want: errCBORNotCanonical},
 		"nesting too deep": {object: cborEncMap(
 			cborEntry(cborEncText("attStmt"), cborEncMap(
 				cborEntry(cborEncText("x"), cborEncMap(
@@ -1295,9 +1295,9 @@ func TestCBORReaderRefuses(t *testing.T) {
 		"null":                     {in: []byte{0xF6}, want: errCBORMajorType},
 		"indefinite-length map":    {in: []byte{0xBF, 0xFF}, want: errCBORIndefinite},
 		"indefinite-length bytes":  {in: []byte{0x5F, 0xFF}, want: errCBORIndefinite},
-		"reserved additional info": {in: []byte{0x1C}, want: errCBORReserved},
-		"non-minimal one-byte int": {in: []byte{0x18, 0x01}, want: errCBORNonMinimal},
-		"non-minimal two-byte int": {in: []byte{0x19, 0x00, 0x01}, want: errCBORNonMinimal},
+		"reserved additional info": {in: []byte{0x1C}, want: errCBORSyntax},
+		"non-minimal one-byte int": {in: []byte{0x18, 0x01}, want: errCBORNotCanonical},
+		"non-minimal two-byte int": {in: []byte{0x19, 0x00, 0x01}, want: errCBORNotCanonical},
 		"nesting too deep":         {in: deep, want: errCBORDepth},
 		"duplicate map key": {in: cborEncMap(
 			cborEntry(cborEncUint(1), cborEncUint(1)),
@@ -1306,11 +1306,11 @@ func TestCBORReaderRefuses(t *testing.T) {
 		"map keys out of order": {in: cborEncMap(
 			cborEntry(cborEncUint(2), cborEncUint(1)),
 			cborEntry(cborEncUint(1), cborEncUint(2)),
-		), want: errCBORKeyOrder},
+		), want: errCBORNotCanonical},
 		"text keys out of order": {in: cborEncMap(
 			cborEntry(cborEncText("authData"), cborEncUint(1)),
 			cborEntry(cborEncText("fmt"), cborEncUint(2)),
-		), want: errCBORKeyOrder},
+		), want: errCBORNotCanonical},
 		"a byte string as a map key": {in: cborEncMap(
 			cborEntry(cborEncBytes([]byte{1}), cborEncUint(1)),
 		), want: errCBORKeyType},
@@ -1381,4 +1381,73 @@ func TestNewWebAuthnVerifierRefusesAnEmptyIdentity(t *testing.T) {
 	if _, err := NewWebAuthnVerifier(testOrigin, ""); err == nil {
 		t.Error("accepted an empty relying party id")
 	}
+}
+
+func FuzzCBORParse(f *testing.F) {
+	f.Add(cborEncMap(
+		cborEntry(cborEncText("fmt"), cborEncText("none")),
+		cborEntry(cborEncText("attStmt"), cborEncMap()),
+		cborEntry(cborEncText("authData"), cborEncBytes([]byte{1, 2, 3})),
+	))
+	f.Add(coseKeyWith(coseKeyOpts{
+		kty: cborEncUint(coseKeyTypeEC2),
+		alg: cborEncNegInt(coseAlgES256),
+		crv: cborEncUint(coseCurveP256),
+		x:   cborEncBytes(bytes.Repeat([]byte{1}, 32)),
+		y:   cborEncBytes(bytes.Repeat([]byte{2}, 32)),
+	}))
+	for _, seed := range [][]byte{
+		nil, {0x00}, {0x1C}, {0x18, 0x01}, {0xBF, 0xFF}, {0xC1, 0x01}, {0xF9, 0x00, 0x00},
+		{0xA1, 0x41, 0x01, 0x01}, {0x62, 0xFF, 0xFE}, {0xA2, 0x02, 0x01, 0x01, 0x02},
+	} {
+		f.Add(seed)
+	}
+
+	var check func(t *testing.T, item cborItem, depth int) int
+	check = func(t *testing.T, item cborItem, depth int) int {
+		t.Helper()
+		if depth > cborMaxDepth {
+			t.Fatalf("accepted an item at depth %d", depth)
+		}
+		switch item.kind {
+		case cborUnsigned, cborNegative, cborBytes, cborText:
+			return 1
+		case cborMap:
+		default:
+			t.Fatalf("accepted kind %d", item.kind)
+		}
+		if len(item.pairs) > cborMaxCollection {
+			t.Fatalf("accepted a map of %d pairs", len(item.pairs))
+		}
+		count := 1
+		for _, p := range item.pairs {
+			switch p.key.kind {
+			case cborUnsigned, cborNegative, cborText:
+			default:
+				t.Fatalf("accepted a %s map key", p.key.kind)
+			}
+			count += check(t, p.key, depth+1) + check(t, p.val, depth+1)
+		}
+		return count
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		item, err := cborParse(data)
+		if err != nil {
+			return
+		}
+		if len(data) > cborMaxInput {
+			t.Fatalf("accepted %d bytes", len(data))
+		}
+		if n := check(t, item, 0); n > cborMaxItems {
+			t.Fatalf("accepted %d items", n)
+		}
+		again, err := cborParse(data)
+		if err != nil {
+			t.Fatalf("accepted then refused the same input: %v", err)
+		}
+		if again.kind != item.kind || len(again.pairs) != len(item.pairs) {
+			t.Fatal("two parses of one input disagree")
+		}
+	})
 }

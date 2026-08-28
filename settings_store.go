@@ -103,11 +103,19 @@ func (ss *FileSettingsStore) path() string {
 const currentSettingsVersion = 1
 
 func defaultSettings() *Settings {
+	// This is deliberate: the block is redundant with AuditConfig.resolve(),
+	// which already reads an absent one as enabled, and reads as noise to
+	// delete. A new install must be able to learn what auditing is doing by
+	// reading its own settings.json, and this is the only place the operator
+	// is shown that `false` is a value the key takes — one whose cost
+	// (ADR-010: no remote listener) is in docs/audit-log.md.
+	auditEnabled := true
 	return &Settings{
 		Version:      currentSettingsVersion,
 		ExternalMcps: []ExternalMcp{},
 		Services:     []ServiceConfig{},
 		Projects:     []Project{},
+		Audit:        &AuditConfig{Enabled: &auditEnabled},
 	}
 }
 

@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
-	"unicode/utf8"
+	"math/big"
+
+	"github.com/fxamacker/cbor/v2"
 )
 
 const (
@@ -21,19 +23,48 @@ var (
 	errCBORTrailing     = errors.New("cbor: trailing bytes after the top-level item")
 	errCBORIndefinite   = errors.New("cbor: indefinite-length item")
 	errCBORMajorType    = errors.New("cbor: unsupported major type")
-	errCBORReserved     = errors.New("cbor: reserved additional information")
-	errCBORNonMinimal   = errors.New("cbor: non-minimal integer encoding")
+	errCBORSyntax       = errors.New("cbor: malformed item")
+	errCBORNotCanonical = errors.New("cbor: not CTAP2 canonical")
 	errCBORDepth        = errors.New("cbor: nesting too deep")
 	errCBORTooManyItems = errors.New("cbor: too many items")
 	errCBORTooManyPairs = errors.New("cbor: too many map entries")
 	errCBORDuplicateKey = errors.New("cbor: duplicate map key")
-	errCBORKeyOrder     = errors.New("cbor: map keys are not in canonical order")
 	errCBORTooLarge     = errors.New("cbor: input too large")
 	errCBORKeyType      = errors.New("cbor: map key is not an integer or a text string")
 	errCBORIntRange     = errors.New("cbor: integer out of range")
 	errCBORNotUTF8      = errors.New("cbor: text string is not valid UTF-8")
 	errCBORNotAMap      = errors.New("cbor: item is not a map")
 )
+
+var (
+	cborDecMode cbor.DecMode
+	cborEncMode cbor.EncMode
+)
+
+func init() {
+	var err error
+	cborDecMode, err = cbor.DecOptions{
+		DupMapKey:   cbor.DupMapKeyEnforcedAPF,
+		IndefLength: cbor.IndefLengthForbidden,
+		TagsMd:      cbor.TagsForbidden,
+		UTF8:        cbor.UTF8RejectInvalid,
+		IntDec:      cbor.IntDecConvertNone,
+		BigIntDec:   cbor.BigIntDecodeValue,
+		// This is deliberate: MaxNestedLevels cannot go below 4, so it is a
+		// backstop and not the depth policy; cborMaxDepth is enforced below.
+		MaxNestedLevels:  4,
+		MaxArrayElements: cborMaxCollection,
+		MaxMapPairs:      cborMaxCollection,
+		MapKeyByteString: cbor.MapKeyByteStringForbidden,
+	}.DecMode()
+	if err != nil {
+		panic(err)
+	}
+	cborEncMode, err = cbor.CTAP2EncOptions().EncMode()
+	if err != nil {
+		panic(err)
+	}
+}
 
 type cborKind uint8
 
@@ -78,195 +109,123 @@ func cborParse(data []byte) (cborItem, error) {
 	if len(data) > cborMaxInput {
 		return cborItem{}, fmt.Errorf("%w: %d bytes", errCBORTooLarge, len(data))
 	}
-	r := &cborReader{data: data}
-	item, err := r.item(0)
+	var decoded any
+	if err := cborDecMode.Unmarshal(data, &decoded); err != nil {
+		return cborItem{}, cborDecodeError(err)
+	}
+	c := &cborShape{}
+	item, err := c.item(decoded, 0)
 	if err != nil {
 		return cborItem{}, err
 	}
-	if r.pos != len(data) {
-		return cborItem{}, fmt.Errorf("%w: %d unread", errCBORTrailing, len(data)-r.pos)
+	// This is deliberate: DecOptions has no "the input must already be
+	// canonical" mode, so minimal integer and length encodings and CTAP2 map
+	// key order are enforced by demanding that the input equal its own
+	// canonical re-encoding. It runs after the shape walk so that a float or
+	// an array is reported as the major type it is.
+	canonical, err := cborEncMode.Marshal(decoded)
+	if err != nil {
+		return cborItem{}, fmt.Errorf("%w: %w", errCBORNotCanonical, err)
+	}
+	if !bytes.Equal(canonical, data) {
+		return cborItem{}, errCBORNotCanonical
 	}
 	return item, nil
 }
 
-type cborReader struct {
-	data  []byte
-	pos   int
+func cborDecodeError(err error) error {
+	var (
+		extraneous *cbor.ExtraneousDataError
+		indefinite *cbor.IndefiniteLengthError
+		duplicate  *cbor.DupMapKeyError
+		tooDeep    *cbor.MaxNestedLevelError
+		tooManyEls *cbor.MaxArrayElementsError
+		tooMany    *cbor.MaxMapPairsError
+		keyType    *cbor.InvalidMapKeyTypeError
+		tags       *cbor.TagsMdError
+		semantic   *cbor.SemanticError
+	)
+	switch {
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return fmt.Errorf("%w: %w", errCBORTruncated, err)
+	case errors.As(err, &extraneous):
+		return fmt.Errorf("%w: %w", errCBORTrailing, err)
+	case errors.As(err, &indefinite):
+		return fmt.Errorf("%w: %w", errCBORIndefinite, err)
+	case errors.As(err, &duplicate):
+		return fmt.Errorf("%w: %w", errCBORDuplicateKey, err)
+	case errors.As(err, &tooDeep):
+		return fmt.Errorf("%w: %w", errCBORDepth, err)
+	case errors.As(err, &tooManyEls):
+		return fmt.Errorf("%w: %w", errCBORTooManyItems, err)
+	case errors.As(err, &tooMany):
+		return fmt.Errorf("%w: %w", errCBORTooManyPairs, err)
+	case errors.As(err, &keyType):
+		return fmt.Errorf("%w: %w", errCBORKeyType, err)
+	case errors.As(err, &tags):
+		return fmt.Errorf("%w: tag: %w", errCBORMajorType, err)
+	// This is subtle: the decoder raises SemanticError for invalid UTF-8 and
+	// for nothing else, which is the whole reason this mapping can name a
+	// single refusal.
+	case errors.As(err, &semantic):
+		return fmt.Errorf("%w: %w", errCBORNotUTF8, err)
+	}
+	return fmt.Errorf("%w: %w", errCBORSyntax, err)
+}
+
+// cborShape narrows the decoder's output to the five major types the
+// ceremony needs, under bounds the decoder cannot express.
+type cborShape struct {
 	items int
 }
 
-func (r *cborReader) take(n int) ([]byte, error) {
-	if n < 0 || len(r.data)-r.pos < n {
-		return nil, errCBORTruncated
-	}
-	b := r.data[r.pos : r.pos+n]
-	r.pos += n
-	return b, nil
-}
-
-func (r *cborReader) head() (byte, uint64, error) {
-	b, err := r.take(1)
-	if err != nil {
-		return 0, 0, err
-	}
-	major := b[0] >> 5
-	info := b[0] & 0x1f
-	if info < 24 {
-		return major, uint64(info), nil
-	}
-	var width int
-	var floor uint64
-	switch info {
-	case 24:
-		width, floor = 1, 24
-	case 25:
-		width, floor = 2, 1<<8
-	case 26:
-		width, floor = 4, 1<<16
-	case 27:
-		width, floor = 8, 1<<32
-	case 31:
-		return 0, 0, fmt.Errorf("%w: major type %d", errCBORIndefinite, major)
-	default:
-		return 0, 0, fmt.Errorf("%w: %d", errCBORReserved, info)
-	}
-	raw, err := r.take(width)
-	if err != nil {
-		return 0, 0, err
-	}
-	var arg uint64
-	switch width {
-	case 1:
-		arg = uint64(raw[0])
-	case 2:
-		arg = uint64(binary.BigEndian.Uint16(raw))
-	case 4:
-		arg = uint64(binary.BigEndian.Uint32(raw))
-	case 8:
-		arg = binary.BigEndian.Uint64(raw)
-	}
-	if arg < floor {
-		return 0, 0, fmt.Errorf("%w: %d in a %d-byte argument", errCBORNonMinimal, arg, width)
-	}
-	return major, arg, nil
-}
-
-func (r *cborReader) item(depth int) (cborItem, error) {
+func (c *cborShape) item(v any, depth int) (cborItem, error) {
 	if depth > cborMaxDepth {
 		return cborItem{}, fmt.Errorf("%w: depth %d", errCBORDepth, depth)
 	}
-	r.items++
-	if r.items > cborMaxItems {
+	c.items++
+	if c.items > cborMaxItems {
 		return cborItem{}, errCBORTooManyItems
 	}
-	// This is deliberate: the major type is refused from the initial byte,
-	// before the argument is decoded at all, so a float or a tag is reported
-	// as the unsupported type it is rather than as whatever its argument
-	// bytes happen to violate first.
-	if r.pos < len(r.data) {
-		switch r.data[r.pos] >> 5 {
-		case 4:
-			return cborItem{}, fmt.Errorf("%w: array", errCBORMajorType)
-		case 6:
-			return cborItem{}, fmt.Errorf("%w: tag", errCBORMajorType)
-		case 7:
-			return cborItem{}, fmt.Errorf("%w: simple value or float", errCBORMajorType)
+	switch t := v.(type) {
+	case uint64:
+		if t > math.MaxInt64 {
+			return cborItem{}, fmt.Errorf("%w: %d", errCBORIntRange, t)
 		}
+		return cborItem{kind: cborUnsigned, n: int64(t)}, nil
+	case int64:
+		return cborItem{kind: cborNegative, n: t}, nil
+	case []byte:
+		return cborItem{kind: cborBytes, b: t}, nil
+	case string:
+		return cborItem{kind: cborText, s: t}, nil
+	case map[any]any:
+		return c.mapItem(t, depth)
+	case big.Int:
+		return cborItem{}, fmt.Errorf("%w: %s", errCBORIntRange, t.String())
 	}
-	major, arg, err := r.head()
-	if err != nil {
-		return cborItem{}, err
-	}
-	switch major {
-	case 0:
-		if arg > math.MaxInt64 {
-			return cborItem{}, fmt.Errorf("%w: %d", errCBORIntRange, arg)
-		}
-		return cborItem{kind: cborUnsigned, n: int64(arg)}, nil
-	case 1:
-		if arg > math.MaxInt64 {
-			return cborItem{}, fmt.Errorf("%w: -1-%d", errCBORIntRange, arg)
-		}
-		return cborItem{kind: cborNegative, n: -1 - int64(arg)}, nil
-	case 2:
-		b, err := r.stringBody(arg)
-		if err != nil {
-			return cborItem{}, err
-		}
-		return cborItem{kind: cborBytes, b: b}, nil
-	case 3:
-		b, err := r.stringBody(arg)
-		if err != nil {
-			return cborItem{}, err
-		}
-		if !utf8.Valid(b) {
-			return cborItem{}, errCBORNotUTF8
-		}
-		return cborItem{kind: cborText, s: string(b)}, nil
-	case 5:
-		return r.mapBody(arg, depth)
-	}
-	return cborItem{}, fmt.Errorf("%w: %d", errCBORMajorType, major)
+	return cborItem{}, fmt.Errorf("%w: %T", errCBORMajorType, v)
 }
 
-func (r *cborReader) stringBody(arg uint64) ([]byte, error) {
-	if arg > uint64(len(r.data)-r.pos) {
-		return nil, errCBORTruncated
-	}
-	return r.take(int(arg))
-}
-
-func (r *cborReader) mapBody(arg uint64, depth int) (cborItem, error) {
-	if arg > cborMaxCollection {
-		return cborItem{}, fmt.Errorf("%w: %d", errCBORTooManyPairs, arg)
-	}
-	pairs := make([]cborPair, 0, arg)
-	var prevKey []byte
-	for i := uint64(0); i < arg; i++ {
-		start := r.pos
-		key, err := r.item(depth + 1)
-		if err != nil {
-			return cborItem{}, err
-		}
-		switch key.kind {
-		case cborUnsigned, cborNegative, cborText:
+func (c *cborShape) mapItem(m map[any]any, depth int) (cborItem, error) {
+	pairs := make([]cborPair, 0, len(m))
+	for k, v := range m {
+		switch k.(type) {
+		case uint64, int64, string:
 		default:
-			return cborItem{}, fmt.Errorf("%w: %s", errCBORKeyType, key.kind)
+			return cborItem{}, fmt.Errorf("%w: %T", errCBORKeyType, k)
 		}
-		// This is subtle: duplicate and ordering are decided on the key's
-		// ENCODED bytes, which is sound only because head() has already
-		// refused every non-minimal integer encoding — two encodings of one
-		// key would otherwise compare unequal and slip through both checks.
-		encoded := r.data[start:r.pos]
-		if prevKey != nil {
-			switch cborCompareKeys(prevKey, encoded) {
-			case 0:
-				return cborItem{}, errCBORDuplicateKey
-			case 1:
-				return cborItem{}, errCBORKeyOrder
-			}
+		key, err := c.item(k, depth+1)
+		if err != nil {
+			return cborItem{}, err
 		}
-		prevKey = encoded
-		val, err := r.item(depth + 1)
+		val, err := c.item(v, depth+1)
 		if err != nil {
 			return cborItem{}, err
 		}
 		pairs = append(pairs, cborPair{key: key, val: val})
 	}
 	return cborItem{kind: cborMap, pairs: pairs}, nil
-}
-
-// cborCompareKeys orders by encoded length first and only then bytewise:
-// CTAP2 canonical order, which is what an authenticator emits, and not
-// RFC 8949's bytewise-only deterministic order.
-func cborCompareKeys(a, b []byte) int {
-	if len(a) != len(b) {
-		if len(a) < len(b) {
-			return -1
-		}
-		return 1
-	}
-	return bytes.Compare(a, b)
 }
 
 func (i cborItem) lookupText(key string) (cborItem, bool) {
