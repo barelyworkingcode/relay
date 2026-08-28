@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -19,9 +17,9 @@ import (
 // (projects are a relay-internal concern), and dispatches everything else
 // to whichever enhanced service registered for the route prefix.
 //
-// The frontend bearer token is validated on every request and WS upgrade.
-// The dispatcher then injects each service's own internal token before
-// dialing it — the two trust boundaries stay distinct.
+// The caller's bearer is resolved to a control-plane credential on every
+// request and WS upgrade. The dispatcher then injects each service's own
+// internal token before dialing it — the two trust boundaries stay distinct.
 type FrontendServer struct {
 	socketPath string
 	server     *http.Server
@@ -29,12 +27,11 @@ type FrontendServer struct {
 	tcpLn      net.Listener
 	tcpServer  *http.Server
 
-	// routeDeps, token, authz and auditor let ListenLoopback build the TCP
-	// mux at call time, from the same ingredients NewFrontendServer used for
-	// the socket mux, without threading a second copy of NewFrontendServer's
+	// routeDeps, authz and auditor let ListenLoopback build the TCP mux at
+	// call time, from the same ingredients NewFrontendServer used for the
+	// socket mux, without threading a second copy of NewFrontendServer's
 	// parameter list through it.
 	routeDeps frontendRouteDeps
-	token     string
 	authz     Authorizer
 	auditor   ControlAuditor
 }
@@ -69,7 +66,7 @@ func loopbackOnly(addr string) error {
 // runs ClassReachableOn against TransportTCP this time, so an execute-class
 // route — one where the caller supplies what runs — is never handed to this
 // mux at all, on any credential. The socket and TCP handlers still share
-// frontendBearerAuth and frontendRecover, so authentication and panic
+// frontendCredentialAuth and frontendRecover, so authentication and panic
 // handling cannot drift between the two doors even though their route sets
 // now deliberately do.
 func (s *FrontendServer) ListenLoopback(addr string) error {
@@ -89,7 +86,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendBearerAuth(s.token, frontendRecover(tcpMux)),
+		Handler:           frontendCredentialAuth(s.routeDeps.store, frontendRecover(tcpMux)),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
@@ -139,7 +136,6 @@ type frontendRouteDeps struct {
 // registrars unconditionally on every transport is safe — the per-route
 // class, not a call site here, decides what lands on TCP.
 func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
-	mux := rr.Mux
 	RegisterProjectRoutes(rr, deps.store, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	if deps.auditOps != nil {
 		RegisterAuditRoutes(rr, deps.auditOps)
@@ -166,7 +162,14 @@ func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
 	// dispatcher (rather than a single exact pattern) so trailing-slash and
 	// sibling create paths can't route around it; it self-classifies the
 	// request and forwards everything that isn't a session-create POST.
-	mux.Handle("/", newSessionModelGuard(deps.store, dispatcher))
+	//
+	// This is subtle: the catch-all also absorbs a method that no specific
+	// pattern claims on this transport — POST /api/services on TCP matches
+	// "/" rather than 405-ing — so leaving it unclassed would hand every
+	// proxied service route, and those near-misses, to any credential that
+	// cleared the outer gate. ADR-015 §"The proxied surface" has the
+	// argument for configure.
+	rr.Handle(ClassConfigure, "/", newSessionModelGuard(deps.store, dispatcher))
 }
 
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.
@@ -236,10 +239,12 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		enhanced:          enhanced,
 	}
 
+	ensureFrontendTokenIsCredential(store, frontend.Token)
+
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor}, deps)
 
-	handler := frontendBearerAuth(frontend.Token, frontendRecover(socketMux))
+	handler := frontendCredentialAuth(store, frontendRecover(socketMux))
 
 	srv := &http.Server{
 		Handler: handler,
@@ -269,7 +274,6 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		server:     srv,
 		listener:   ln,
 		routeDeps:  deps,
-		token:      frontend.Token,
 		authz:      authz,
 		auditor:    auditor,
 	}, nil
@@ -310,29 +314,70 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	}
 }
 
-// frontendBearerAuth validates the frontend bearer token. Constant-time
-// comparison runs before any handler so unauthenticated WS upgrades never
-// allocate a session. An empty configured token fails CLOSED: the frontend
-// channel always mints a token (FrontendChannel.Ensure), so empty means
-// misconfiguration, and serving open would silently expose every proxied
-// service. Reject all requests rather than disable auth.
-func frontendBearerAuth(token string, next http.Handler) http.Handler {
-	if token == "" {
-		slog.Error("frontend: no bearer token configured — rejecting all requests (fail closed)")
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-		})
+// ensureFrontendTokenIsCredential makes RELAY_FRONTEND_TOKEN reach the API
+// the only way anything reaches it: as a credential.
+//
+// This is deliberate, and it looks redundant because trayapp.go runs the same
+// migration before it calls NewFrontendServer. The invariant belongs to the
+// server, not to one caller's ordering: a server that admits a token no
+// credential covers 401s every consumer it just handed that token to, and
+// nothing in the constructor's signature would say so. The pre-check keeps
+// the tray's start from writing settings.json a second time.
+//
+// Not fatal, matching the tray's stance on the same migration: a relay that
+// fails this still starts, and frontendCredentialAuth then refuses the legacy
+// token rather than admitting it unclassed.
+func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
+	if store == nil || token == "" {
+		return
 	}
-	expected := []byte(token)
+	if freshSettings(store).AuthenticateAPICredential(token) != nil {
+		return
+	}
+	if err := store.With(func(s *Settings) {
+		migrateFrontendTokenToCredential(s, token)
+	}); err != nil {
+		slog.Error("frontend: could not migrate the frontend token to a credential", "error", err)
+	}
+}
+
+// frontendCredentialAuth admits any bearer that resolves to a credential in
+// Settings.APICredentials (ADR-015 decision 3) and leaves what that credential
+// may then DO to RouteRegistrar's per-route class check.
+//
+// This is the ONLY bearer check in front of either mux, deliberately. A second
+// gate here admitting one fixed value would make every other credential
+// unreachable and the class check behind it dead code — the two layers answer
+// "is this anyone?" and "may they do this?", and only the second may narrow.
+//
+// Resolution runs before any handler, so an unauthenticated WS upgrade never
+// allocates a session, and goes through Settings.findAPICredentialByHash,
+// which compares in constant time over every credential on the host.
+//
+// An empty credential set fails CLOSED. The frontend channel always mints a
+// token and ensureFrontendTokenIsCredential always records it, so empty means
+// misconfiguration, and serving open would silently expose every proxied
+// service.
+//
+// Absent, malformed and unknown bearers all get the same 401 with the same
+// body, deliberately — a message that told them apart would be an oracle.
+func frontendCredentialAuth(store SettingsStore, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if !strings.HasPrefix(header, prefix) {
+		var s *Settings
+		if store != nil {
+			s = freshSettings(store)
+		}
+		if s == nil || len(s.APICredentials) == 0 {
+			slog.Error("frontend: no API credentials configured — rejecting all requests (fail closed)")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		got := []byte(strings.TrimSpace(header[len(prefix):]))
-		if subtle.ConstantTimeCompare(got, expected) != 1 {
+		token, ok := bearerToken(r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if s.AuthenticateAPICredential(token) == nil {
 			slog.Warn("frontend: bad bearer token",
 				"method", r.Method, "path", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

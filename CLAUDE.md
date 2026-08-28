@@ -13,6 +13,7 @@ service management.
 - `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
+- `relay credential mint --name NAME --class CLASS [--class ...] | list | revoke --id ID` — control-plane API credentials (ADR-015). `--class` is one of `read`, `configure`, `grant`, `execute`; an unknown class or an empty set is refused. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
 - `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
 
 ## Architecture
@@ -50,6 +51,9 @@ scope_breadth.go         How much of the host one scope value reaches (root / ho
 enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
+capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
+api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
+credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
@@ -289,12 +293,13 @@ declarations, no service-ID hardcoding anywhere in relay. Full spec:
 
 ## Security
 
-The four-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
+The five-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
 brokering rationale: ADR-007):
 
 - **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Plaintext + SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
 - **Service token** (`RELAY_SERVICE_TOKEN`) — ephemeral, in-memory, full bridge access; lets a service authenticate its own bridge calls. **Never injected into a spawned child** — if a project token can't be resolved, the child gets no token (fail closed).
-- **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch; an empty configured token fails closed. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
+- **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch. It is no longer a credential of its own: relay records it as the `legacy-frontend-token` **control-plane credential** on every start, so it reaches exactly `read`+`configure`. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
+- **Control-plane credential** (`settings.json` → `api_credentials`) — the API's authenticator (ADR-015). Names an explicit set of `read` / `configure` / `grant` / `execute`; absent means **nothing**, never everything. `frontendCredentialAuth` resolves any bearer to one of these before a handler runs (no credentials at all fails closed), and `RouteRegistrar` then checks the route's class — the first asks "is this anyone?", the second "may they do this?". `execute` routes are absent from the TCP mux entirely, not refused on it. Mint with `relay credential mint --name N --class read [--class …]`; the plaintext is printed **once**. A consumer that needs `grant` — including `POST /api/projects/{id}/rotate_token` — or `execute` over HTTP must mint its own.
 - **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
 
 **External MCPs are supervised children** — one stdio connection per MCP id,
