@@ -90,6 +90,12 @@ The CLI runs in a separate process from the tray and writes through
 here authenticates on the API's very next request, with no restart and no poll
 interval — the same guarantee `relay enrol create` gets (issue #21).
 
+That guarantee has a write half, and it is the half that is easy to lose. See
+[The settings file has more than one writer](#the-settings-file-has-more-than-one-writer)
+below: a credential's plaintext is printed once and is unrecoverable, so a
+minted credential that a later write erases leaves the operator holding a token
+that 401s with nothing on any surface saying why.
+
 `legacy-frontend-token` is reserved: the migration below rewrites that record's
 hash on every relay start, so an operator-minted credential under that name
 would be silently clobbered. Both `mint` and `revoke` refuse it.
@@ -112,6 +118,138 @@ tokens needs a credential of its own:
 
 The same applies to `POST /api/enrolments` and `DELETE /api/enrolments/{id}`,
 and to the four `execute` routes on the socket.
+
+## The settings file has more than one writer
+
+Every credential in this document except the ephemeral ones lives in one file,
+`settings.json`, and **relay is not one process**. The tray holds it open for
+the life of the app; `relay credential mint`, `relay enrol create`,
+`relay service register` and `relay mcp register` each write it from a process
+that exits seconds later. Two rules follow, and they are separate rules
+answering opposite directions of the same fact.
+
+**Reads go through `freshSettings`, never `store.Get()`.** `Get()` answers from
+an in-memory cache that only a mutation made by this process and the tray's 2 s
+poll refresh, which is fine for a menu and wrong for an authorization decision.
+`freshSettings` resolves through `ReloadIfChanged`, which stats the file and
+re-reads only when it moved — so a record another process just wrote is
+authoritative on the very next request. Cost is one stat per decision.
+
+**Writes reload before they apply.** `FileSettingsStore.With` re-reads the file
+under the same lock before running its callback, using the same
+stat-then-read-only-if-moved machinery, so a mutation is always derived from
+what is on disk rather than from a cache that could be a whole poll interval
+old. Without that, a tray whose cache predated a CLI's write would serialize
+its own stale view back over the top and silently destroy the record — worst
+for a credential, whose plaintext was printed once and cannot be reissued.
+Within a single process the mutex alone would be enough; it is the second
+process that makes the reload necessary. A reload that could not read the file
+does not fall back to defaults and save those: the write is refused, per
+[An unreadable file is unknown, not empty](#an-unreadable-file-is-unknown-not-empty).
+
+Two consequences worth stating rather than discovering:
+
+- **The callback sees fresher state than its caller did.** The reload happens
+  inside `With`, so anything a caller read beforehand may already be stale by
+  the time the callback runs. This is why every ops core (`service_ops.go`,
+  `enrolment_ops.go`, `mcp_ops.go`) resolves the record it is about to change
+  *inside* the callback and reports "not found" from a flag set there —
+  resolving outside and mutating inside is a TOCTOU window on a file two
+  processes write.
+- **It is still last-writer-wins.** The reload closes the window between the
+  tray's cached view and the file; it does not make read-modify-write atomic
+  against another process writing in the gap between the reload and the save.
+  Nothing in relay takes a lock across processes on this file. The remaining
+  window is the duration of one callback plus one `atomicWriteFile`, against a
+  writer that must land inside it — a different order of magnitude from a 2 s
+  poll interval, and not zero. A cross-process lock is the fix if that ever
+  matters; the durability half is already handled (`atomicWriteFile` fsyncs the
+  temp file, renames, and fsyncs the directory, so a crash cannot leave a
+  half-written or zero-length settings.json behind).
+
+## No settings file means no credentials
+
+Deleting `settings.json` is how an operator locks the control plane out, so it
+must behave like one: **a settings file that existed and no longer does
+resolves to *absent settings*, never to the last-loaded cache.** Every
+credential in the deleted file stops authenticating on the next request, and
+every enrolment in it stops being enrolled — a cache that outlived the file
+would keep the whole set alive in memory with nothing on disk left to say so,
+and no operator surface would show it.
+
+This is one case of the general rule, which holds **for reads** in every
+degraded state of the file: a settings.json that is corrupt, truncated,
+unreadable or missing resolves to empty settings, and an empty credential set
+fails **closed** (`frontendCredentialAuth`). Serving open would silently expose
+every proxied service.
+
+A write may not draw the same conclusion, and that is the whole of
+[An unreadable file is unknown, not empty](#an-unreadable-file-is-unknown-not-empty)
+below.
+
+Two boundaries on that:
+
+- **"Not created yet" is not "deleted".** A fresh install has no
+  `settings.json` until `EnsureInitialized` writes one, and a process can
+  legitimately hold settings that nothing has persisted. The store tracks
+  whether it has ever seen the file, and only a file it *had* seen invalidates
+  the cache when it goes missing. A file that was never there leaves the cache
+  alone, so a first start comes up and creates its settings rather than losing
+  them.
+- **The modtime is the only signal.** The store notices a change by stat'ing
+  the file, so a state change that does not move the modtime is invisible to
+  it. The one reachable case is `chmod 000` on an otherwise untouched
+  settings.json: the file is now unreadable, but nothing tells the store to
+  look again, so it keeps answering from the copy it already parsed until
+  something else moves the modtime. Every state that involves a *write* or a
+  deletion moves it. The signal is only needed to *enter* the degraded state:
+  once a read has failed, the store stops trusting the modtime and re-reads on
+  every look, so the `chmod` back that repairs it needs no timestamp of its own.
+
+## An unreadable file is unknown, not empty
+
+Missing and unreadable are indistinguishable to a *reader* — both resolve to
+empty settings, both fail closed — and they are opposite states to a *writer*.
+
+- A file that is **absent** has known contents: nothing. Relay may write one,
+  and `EnsureInitialized` exists to do exactly that on a fresh install.
+- A file that **exists and could not be read or parsed** has unknown contents.
+  Every project, token hash, API credential, enrolment and OAuth refresh token
+  on the host may still be in it. Resolving that to empty settings is right for
+  a read and catastrophic for a write: saving a mutation on top of the emptiness
+  rewrites settings.json as *defaults plus that one change*, destroying
+  everything else — and reports success.
+
+Three rules follow.
+
+**`FileSettingsStore.With` refuses.** The callback never runs, nothing is
+written, the file is left byte for byte as it was. The error matches
+`errSettingsUnreadable` under `errors.Is` and names the path and the underlying
+read or parse failure, so a caller can tell it from a save that was attempted
+and failed — the two want different operator responses (repair the file vs.
+free the disk).
+
+**`EnsureInitialized` refuses too, and the tray exits.** Creating settings is
+its whole job, and a file that exists and cannot be read is not the case it
+exists for; writing one over it is a total wipe repeated at every launch, with
+no operator surface saying so. Starting anyway — read-only, on the empty
+settings the read produced — was the alternative, and it is worse: it shows the
+operator a relay that appears to have lost every project and credential, which
+invites them to rebuild it by hand and make the loss real, while every write
+silently refuses. A refusal at launch naming the file leaves the only
+recoverable copy on disk and says what to do with it.
+
+**The refusal does not latch.** An `EACCES` or an `EIO` can be a moment rather
+than a verdict, and the two acts that make a file readable again — a `chmod`
+back, or a hand-edit that finally parses — need not move the modtime the store
+watches. So a store that has seen a read fail re-reads on every look until one
+succeeds, and resumes normally the moment it does. There is no retry loop and
+no timer: the cost is one extra read per look, paid only while degraded.
+
+The boundary is the same one the deletion rule draws: an **absent** file is
+still written. A fresh install starts, `EnsureInitialized` creates
+settings.json, and a store holding settings that nothing has persisted yet
+still saves them.
 
 ## Directory auth (`allow_cwd_auth`)
 

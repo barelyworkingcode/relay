@@ -7,6 +7,32 @@ import "time"
 // than surfacing only when the two packages are wired together.
 var _ ControlAuditor = (*AuditRecorder)(nil)
 
+// ControlDecision.Path and .Method are read straight off the request line
+// (r.URL.Path, r.Method) before RouteRegistrar.authorize has resolved a
+// credential, let alone checked its class — a caller holding no class at all,
+// or the wrong one, still reaches this record on every refusal. Bounded here,
+// generously past any real relay or proxied-service route: a control-plane
+// path never needs more than a handful of path segments and ids, and no real
+// or WebDAV-style HTTP method approaches this length. What matters is that
+// neither bound is anywhere near what the caller could otherwise put there —
+// arguments quoted by an attacker are not a source of confinement, distance
+// from the attacker's reach is.
+const (
+	auditMaxControlPathBytes   = 1024
+	auditMaxControlMethodBytes = 32
+)
+
+// Caps s on a rune boundary, reusing audit.go's truncateRunes rather than a
+// second truncation routine for the same on-disk contract (ArgsTruncated):
+// the returned bool is that contract's marker, true exactly when s did not
+// fit and was cut.
+func capControlString(s string, maxBytes int) (string, bool) {
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	return truncateRunes(s, maxBytes), true
+}
+
 // RecordDecision is the control-plane counterpart to the router's tool-call
 // instrumentation (ADR-015): every authorization decision on the frontend
 // API, allowed or refused, becomes an event with the same standing as a
@@ -27,16 +53,20 @@ func (r *AuditRecorder) RecordDecision(d ControlDecision) {
 		outcome = AuditOutcomeDenied
 		reason = d.Reason
 	}
+	method, methodTruncated := capControlString(d.Method, auditMaxControlMethodBytes)
+	path, pathTruncated := capControlString(d.Path, auditMaxControlPathBytes)
 	r.Record(AuditEvent{
-		ID:        newAuditID(),
-		TS:        time.Now().UTC(),
-		Event:     AuditEventControlDecision,
-		Method:    d.Method,
-		Path:      d.Path,
-		Class:     string(d.Class),
-		Transport: string(d.Transport),
-		Outcome:   outcome,
-		Error:     reason,
+		ID:              newAuditID(),
+		TS:              time.Now().UTC(),
+		Event:           AuditEventControlDecision,
+		Method:          method,
+		MethodTruncated: methodTruncated,
+		Path:            path,
+		PathTruncated:   pathTruncated,
+		Class:           string(d.Class),
+		Transport:       string(d.Transport),
+		Outcome:         outcome,
+		Error:           reason,
 		Actor: AuditActor{
 			Kind:   AuditActorControl,
 			Auth:   AuditAuthToken,

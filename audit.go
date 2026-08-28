@@ -241,10 +241,19 @@ type AuditEvent struct {
 	// Class and Transport are plain strings rather than capability.go's
 	// CapabilityClass/Transport types — this file's on-disk shape does not
 	// depend on the authorization package's types.
-	Method    string `json:"method,omitempty"`
-	Path      string `json:"path,omitempty"`
-	Class     string `json:"class,omitempty"`
-	Transport string `json:"transport,omitempty"`
+	//
+	// Method and Path are read off the request line before any class check
+	// runs, so a credential with no class at all — "inert rather than
+	// omnipotent" per ADR-015 decision 3 — can still shape them, including on
+	// its own refusals. audit_control.go caps both at the point this record
+	// is built; MethodTruncated/PathTruncated is how that cut stays visible
+	// to an operator rather than reading as a short, genuine value.
+	Method          string `json:"method,omitempty"`
+	MethodTruncated bool   `json:"method_truncated,omitempty"`
+	Path            string `json:"path,omitempty"`
+	PathTruncated   bool   `json:"path_truncated,omitempty"`
+	Class           string `json:"class,omitempty"`
+	Transport       string `json:"transport,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
