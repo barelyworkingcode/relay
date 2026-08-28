@@ -458,7 +458,7 @@ if anything in the real ConfigDir changes during a run.
 | Command | What runs | When |
 |---|---|---|
 | `go test ./...` | Hermetic suite — pure Go, no spawned binaries, no user files | Every commit (pre-commit hook) |
-| `go test -tags=live ./...` | Spawns the real `../relayLLM` binary end-to-end | After relay↔relayLLM boundary changes |
+| `go test -tags=live ./...` | Spawns real binaries end-to-end: the `../relayLLM` binary, and a headless Google Chrome that runs the passkey login ceremony against the real `/relay/login` document (`webauthn_browser_live_test.go`) | After relay↔relayLLM boundary changes; after any change to the WebAuthn verifier, the login routes or the login page |
 | `go test -race ./...` | Hermetic suite + race detector | Pre-push hook; before merging concurrency changes |
 
 Install the hooks once per clone: `git config core.hooksPath .githooks`.
@@ -470,7 +470,15 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
 3. Need a working router → `newTestRouter(t, settings, mgr)`.
 4. Exercising a manifest-registering service → `NewFakeService(t, FakeServiceOptions{...})`. The relayLLM contract is covered by `integration_fake_relayllm_test.go`.
 5. Need a real spawned subprocess → the `cmd/testservice` / `cmd/testmcp` binaries, built on demand via `buildTestServiceBinary(t)` / `buildTestMcpBinary(t)`, never an `exec.Command` mock.
-6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully if `../relayLLM` isn't built.
+6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully when the
+   real binary they need is absent — `../relayLLM` unbuilt, or Google Chrome
+   not installed. A developer without one must see a skip, never a failure.
+7. The WebAuthn verifier is covered twice on purpose (ADR-016 decision 8):
+   `webauthn_test.go`'s software client owns every negative case in the
+   hermetic tier, and `webauthn_browser_live_test.go` runs exactly one
+   ceremony in a real Chrome — the only evidence that relay agrees with a
+   user agent it did not also write. Neither covers real authenticator
+   hardware or Safari; both gaps are named in `docs/testing-roadmap.md`.
 
 ### Not covered by the suite
 
