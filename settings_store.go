@@ -258,11 +258,21 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 }
 
 // save: caller must hold the mutex.
+//
+// This is subtle: normalize() runs here and not only in load(). A callback that
+// appends a record leaves its slice and map fields nil, and json.Marshal spells
+// nil as `null` where every record that has been through load() spells it `[]`.
+// The next load() repairs it, so nothing in-process notices — but `relay audit`,
+// `relay grant` and a hand-edit read the FILE, and a file whose records disagree
+// with each other about how "empty" is spelled invites the reader to conclude
+// the two mean different things. It mutates s deliberately: both callers make s
+// the cache immediately afterwards, so the cache and the file stay identical.
 func (ss *FileSettingsStore) save(s *Settings) error {
 	if err := os.MkdirAll(ss.dir, 0700); err != nil {
 		return fmt.Errorf("create settings dir: %w", err)
 	}
 
+	s.normalize()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serialize settings: %w", err)
@@ -411,7 +421,24 @@ func (ss *FileSettingsStore) reloadIfChangedLocked() bool {
 		if !os.IsNotExist(err) {
 			slog.Warn("settings file stat failed", "error", err)
 			ss.readErr = err
-			return false
+			// This is subtle: readErr alone closes only WRITES, and a stat
+			// that failed leaves the file's state unknown for reads too — a
+			// read answered from a cache older than the failure is stale
+			// rather than closed, which is the one thing every other degraded
+			// state of this file refuses to be. load() re-reads and decides
+			// readErr itself, so a stat that failed for a reason the open does
+			// not share resolves to the file rather than to this branch's
+			// guess.
+			//
+			// A file this store has NEVER seen is left alone for the same
+			// reason the deletion branch below leaves it alone: a first start
+			// holds settings nothing has written out yet, and emptying the
+			// cache would wipe them before they reach disk.
+			if !ss.fileSeen {
+				return false
+			}
+			ss.cache = ss.load()
+			return true
 		}
 		if !ss.fileSeen {
 			return false

@@ -323,7 +323,7 @@ func runTrayApp() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		}
 	}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, NewCredentialAuthorizer(store), audit)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, NewCredentialAuthorizer(store), controlAuditorOrNil(audit))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

@@ -37,10 +37,24 @@ type Authorizer interface {
 	Authorize(r *http.Request, class CapabilityClass) error
 }
 
-// ControlAuditor records control-plane authorization outcomes. Every
-// implementation must be nil-receiver safe.
+// ControlAuditor records control-plane authorization outcomes. A caller with
+// no auditor must pass a literal nil, not a nil pointer of a concrete
+// implementation: this is subtle, because a nil *AuditRecorder boxed into
+// this interface produces a non-nil ControlAuditor, and RouteRegistrar's nil
+// check below is written against the interface, not the pointer.
 type ControlAuditor interface {
 	RecordDecision(d ControlDecision)
+}
+
+// controlAuditorOrNil converts a possibly-nil *AuditRecorder into a
+// ControlAuditor that compares equal to nil exactly when rec does — the
+// conversion the ControlAuditor doc comment requires every caller to make
+// rather than boxing rec directly.
+func controlAuditorOrNil(rec *AuditRecorder) ControlAuditor {
+	if rec == nil {
+		return nil
+	}
+	return rec
 }
 
 // ControlDecision is one authorization outcome on the control plane.
@@ -71,7 +85,8 @@ func ClassReachableOn(c CapabilityClass, t Transport) bool {
 
 // RouteRegistrar is the single door every control-plane route registration
 // goes through. Authz nil means allow (tests, and the socket during
-// migration); Auditor is nil-safe.
+// migration); Auditor nil means no control-plane auditing, per the
+// ControlAuditor contract above.
 type RouteRegistrar struct {
 	Mux       *http.ServeMux
 	Transport Transport
