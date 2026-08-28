@@ -15,7 +15,7 @@ service management.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
 - `relay credential mint --name NAME --class CLASS [--class ...] [--ttl 12h] | list [--include-expired] | revoke --id ID` — control-plane API credentials (ADR-015, ADR-016). `--class` is one of `read`, `configure`, `grant`, `execute`, `proxy`; an unknown class or an empty set is refused. `--ttl` gives the credential an expiry; omitted means never. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
 - `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
-- `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
+- `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one (and does **not** end sessions it already signed in — those are `relay credential revoke`, or Settings → Passkeys). The code is also mintable from the tray's **Show Login Code...** item, which goes through the same `mintBootstrapCode`. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
 
 ## Architecture
 
@@ -55,7 +55,8 @@ enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
-login_ops.go, login_cmd.go   Bootstrap-code mint/consume + the `relay login` CLI (ADR-016 decision 2)
+login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share)
+login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
 webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, no library
 webauthn_cbor.go         Strict CBOR reader that refuses more than it accepts
 webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
@@ -77,7 +78,7 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 service_registry.go      Background process management + ephemeral service tokens
 service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
 service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
-ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments)
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
@@ -406,13 +407,38 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Remote Clients, Service Inspector, Tool Calls.
+Services, MCP Servers, Projects, Remote Clients, Passkeys, Service Inspector,
+Tool Calls.
 
 The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
 grants it reaches — by project *name*, with the certificate fingerprint in full
 — and reads/writes the `remote` block. Creating an enrolment returns the bundle
 **directory** only: the client private key inside it never crosses the IPC
 boundary.
+
+The Passkeys tab (`ipc_login.go`) is the Remote Clients tab's shape applied to
+interactive login (ADR-016): registered passkeys with name, abbreviated
+credential id, creation time and last sign count — **never** the public key,
+which `passkeyView` has no field for — and beneath them the live browser
+sessions those passkeys minted, each with its own Sign out. The two lists are
+one screen because revoking a passkey stops the *next* login and does nothing
+to a credential it already issued; a tab showing only the first would let
+"revoked" read as "signed out" for up to twelve hours. Sign out goes through
+`revokeAPICredentialIf` with a login-only gate inside the same `store.With` as
+the delete, so the WebView can never revoke an operator's own long-lived
+credential — that stays `relay credential revoke`.
+
+The tray's **Show Login Code...** item is the second presentation ADR-016
+decision 2 allows for the bootstrap anchor. It mints through the same
+`mintBootstrapCode` inside `store.With` the CLI uses (`LoginOps.MintBootstrap`)
+and shows the code in the Settings window, because relay is `LSUIElement` and
+that window is the only surface the tray has. A window that is not open yet
+gets the code seeded into its first paint (`renderSettingsDocument`); one
+already open gets an emit — Cocoa drops a script evaluated against a WebView
+that does not exist yet, and never reloads a window that does. Minting replaces
+rather than accumulates, so the panel says out loud that showing another code
+kills this one. The item is never the *only* source: the menu is unreachable
+over SSH and from the hermetic tier, which is why `relay login enrol` stays.
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via

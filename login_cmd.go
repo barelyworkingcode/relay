@@ -1,20 +1,17 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"net"
-	"os"
-	"slices"
-	"strings"
 )
 
 // Login registration is anchored on the host, by the user who owns the
 // config dir; nothing in this file is reachable over a socket (ADR-016
 // decision 2). It runs in a separate process from the tray, so every read
 // and write goes through the store rather than a cached settings view,
-// matching enrol_cmd.go and credential_cmd.go.
+// matching enrol_cmd.go and credential_cmd.go. The mint, list and revoke
+// themselves live in login_ops.go, which is also what the tray's own
+// surfaces go through — the split enrolment.go and enrol_cmd.go use.
 func runLoginCommand(args []string) {
 	store := NewSettingsStore()
 	runSubcommands("login", []cliSubcommand{
@@ -22,54 +19,6 @@ func runLoginCommand(args []string) {
 		{"list", func(_ []string) { loginList(store) }},
 		{"revoke", func(a []string) { loginRevoke(store, a) }},
 	}, args)
-}
-
-// mintLoginBootstrap wraps mintBootstrapCode in the store.With every CLI
-// mint here goes through, matching mintAPICredential.
-func mintLoginBootstrap(store SettingsStore) (string, string, error) {
-	var plaintext, expires string
-	var mintErr error
-	if err := store.With(func(s *Settings) {
-		plaintext, mintErr = mintBootstrapCode(s)
-		if mintErr == nil {
-			expires = s.LoginBootstrap.Expires
-		}
-	}); err != nil {
-		return "", "", fmt.Errorf("save settings: %w", err)
-	}
-	if mintErr != nil {
-		return "", "", mintErr
-	}
-	return plaintext, expires, nil
-}
-
-// revokePasskey resolves and removes inside one store.With, matching
-// revokeAPICredential: a separate Get() then With() is a TOCTOU window on a
-// file two processes write.
-func revokePasskey(store SettingsStore, id string) (Passkey, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return Passkey{}, errors.New("a passkey id is required")
-	}
-
-	var removed Passkey
-	var found bool
-	if err := store.With(func(s *Settings) {
-		for i := range s.Passkeys {
-			if s.Passkeys[i].ID == id {
-				removed = s.Passkeys[i]
-				found = true
-				s.Passkeys = slices.Delete(s.Passkeys, i, i+1)
-				return
-			}
-		}
-	}); err != nil {
-		return Passkey{}, fmt.Errorf("save settings: %w", err)
-	}
-	if !found {
-		return Passkey{}, fmt.Errorf("no passkey found with id %q", id)
-	}
-	return removed, nil
 }
 
 func loginEnrol(store SettingsStore) {
@@ -81,11 +30,8 @@ func loginEnrol(store SettingsStore) {
 	fmt.Printf("login code: %s\n", plaintext)
 	fmt.Printf("  expires:   %s (valid for %s, single use)\n", expires, bootstrapCodeTTL)
 	fmt.Println("  this code registers a passkey — it is NOT a password and is never accepted in place of one")
-	// The host is rewritten to localhost rather than printed as bound: an RP
-	// ID must be a domain, so a passkey registered at http://127.0.0.1:PORT
-	// cannot exist at all (ADR-016 decision 1).
-	if _, port, err := net.SplitHostPort(os.Getenv(EnvAPIListen)); err == nil && port != "" {
-		fmt.Printf("  open http://%s:%s/relay/login and enter it to register a passkey\n", webauthnRPID, port)
+	if url := loginPageURL(); url != "" {
+		fmt.Printf("  open %s and enter it to register a passkey\n", url)
 	} else {
 		fmt.Println("  open the relay login page (http://localhost:<RELAY_API_LISTEN port>/relay/login) and enter it to register a passkey")
 	}
@@ -125,16 +71,9 @@ func loginRevoke(store SettingsStore, args []string) {
 	fmt.Printf("revoked passkey %q\n", removed.Name)
 	fmt.Printf("  id: %s\n", abbreviatePasskeyID(removed.ID))
 	fmt.Println("  it can no longer complete a login assertion; nothing else was touched")
-}
-
-// abbreviatePasskeyID keeps enough of a credential id to tell one listed
-// passkey from another without putting a value long enough to be mistaken
-// for a secret on a shared screen. `revoke --id` still takes the full id,
-// not this shortened form.
-func abbreviatePasskeyID(id string) string {
-	const keep = 12
-	if len(id) <= keep+1 {
-		return id
-	}
-	return id[:keep] + "…"
+	// Stated because the two are separate records with separate lifetimes: a
+	// browser that signed in before this revoke keeps its credential until it
+	// expires, and an operator who read "revoked" as "signed out" would be
+	// wrong for up to loginCredentialTTL.
+	fmt.Println("  browser sessions this passkey already signed in are NOT ended — see `relay credential list`, or Settings → Passkeys")
 }

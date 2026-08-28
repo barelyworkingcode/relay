@@ -46,6 +46,13 @@ const (
 
 	loginMaxBodyBytes = 1 << 16
 	loginUserName     = "relay owner"
+
+	loginVerifyPath = "/relay/login/verify"
+
+	// loginAuditMaxReasonBytes bounds the one caller-adjacent value on this
+	// path the way ControlDecision.Path and .Method are already bounded: a
+	// refusal naming a credential id carries whatever length was registered.
+	loginAuditMaxReasonBytes = 1024
 )
 
 // loginCredentialClasses is the ceiling ADR-016 decision 3 fixes: read and
@@ -227,6 +234,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 		Existing:          loginCredentials(freshSettings(lr.store)),
 	})
 	if err != nil {
+		lr.recordLoginOutcome("", false, err)
 		writeLoginRefusal(w, err)
 		return
 	}
@@ -248,33 +256,48 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	// VerifyRegistration already ran both: it ran them against a snapshot
 	// read before the ceremony, and two registrations racing would each
 	// pass that snapshot and both commit. The commit-time check under
-	// store.With is the one that decides. The code is consumed only once
+	// withDeclinable is the one that decides. The code is consumed only once
 	// the record is certain to land, so a refused registration does not
 	// spend the operator's anchor.
+	//
+	// This is deliberate: the refusal is RETURNED from the callback, not just
+	// recorded in it. A returned error declines the write, so a registration
+	// refused here leaves settings.json untouched — otherwise every refused
+	// registration, which needs no code and no credential, would drive relay's
+	// settings writer for whatever can reach the listener.
 	var refusal error
-	saveErr := lr.store.With(func(s *Settings) {
+	saveErr := withDeclinable(lr.store, func(s *Settings) error {
 		if len(s.Passkeys) >= MaxRegisteredPasskeys {
 			refusal = fmt.Errorf("%w: %d registered", errWebAuthnPasskeyLimit, len(s.Passkeys))
-			return
-		}
-		if slices.ContainsFunc(s.Passkeys, func(p Passkey) bool { return p.ID == id }) {
+		} else if slices.ContainsFunc(s.Passkeys, func(p Passkey) bool { return p.ID == id }) {
 			refusal = errWebAuthnDuplicateCred
-			return
-		}
-		if err := consumeBootstrapCode(s, req.Code); err != nil {
+		} else if err := consumeBootstrapCode(s, req.Code); err != nil {
 			refusal = err
-			return
+		}
+		if refusal != nil {
+			return refusal
 		}
 		s.Passkeys = append(s.Passkeys, passkey)
+		return nil
 	})
 	if refusal != nil {
+		// The verifier accepted this ceremony and cannot see what refused it,
+		// so the charge is made here or a code guess costs the caller nothing.
+		lr.verifier.CeremonyRefused()
+		lr.recordLoginOutcome("", false, refusal)
 		writeLoginRefusal(w, refusal)
 		return
 	}
 	if saveErr != nil {
+		// Not charged to the limiter: a store relay could not write is
+		// relay's failure, and throttling the owner for it would turn a full
+		// disk into a lockout.
+		lr.recordLoginOutcome("", false, saveErr)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	lr.verifier.CeremonyCompleted()
+	lr.recordLoginOutcome(abbreviatePasskeyID(id), true, nil)
 	slog.Info("login: registered a passkey", "id", abbreviatePasskeyID(id), "name", passkey.Name)
 	writeJSON(w, http.StatusCreated, loginRegisteredResponse{CredentialID: id, Name: passkey.Name})
 }
@@ -319,15 +342,16 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 	if err != nil {
 		var counter *webauthnCounterError
 		if errors.As(err, &counter) {
-			lr.recordCounterRefusal(counter)
+			slog.Warn("login: signature counter did not increase", "error", counter.Error())
 		}
+		lr.recordLoginOutcome("", false, err)
 		writeLoginRefusal(w, err)
 		return
 	}
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
-	var token, expires string
-	saveErr := lr.store.With(func(s *Settings) {
+	var token, expires, credID string
+	saveErr := withDeclinable(lr.store, func(s *Settings) error {
 		if result.UpdateSignCount {
 			for i := range s.Passkeys {
 				if s.Passkeys[i].ID == id {
@@ -338,14 +362,18 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 		reapExpiredAPICredentials(s)
 		cred, plaintext, err := s.MintFor(loginCredentialName(id), loginCredentialClasses, loginCredentialTTL)
 		if err != nil {
-			return
+			return err
 		}
-		token, expires = plaintext, cred.Expires
+		token, expires, credID = plaintext, cred.Expires, cred.ID
+		return nil
 	})
 	if saveErr != nil || token == "" {
+		lr.recordLoginOutcome("", false, saveErr)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	lr.verifier.CeremonyCompleted()
+	lr.recordLoginOutcome(credID, true, nil)
 	// The plaintext is deliberately absent from this line and from every
 	// other: the response body below is the only place it ever appears
 	// (ADR-016 decision 3).
@@ -361,26 +389,84 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 // loginCredentialName names the record for the ceremony that produced it, so
 // ControlDecision.CredID attributes one browser session rather than a role.
 func loginCredentialName(credentialID string) string {
-	return fmt.Sprintf("login %s %s", abbreviatePasskeyID(credentialID), time.Now().UTC().Format(time.RFC3339))
+	return fmt.Sprintf("%s%s %s", loginCredentialPrefix, abbreviatePasskeyID(credentialID), time.Now().UTC().Format(time.RFC3339))
 }
 
-// recordCounterRefusal writes the cloned-authenticator signal ADR-016
-// decision 7 point 10 requires. It records and refuses; it deliberately does
-// NOT disable the passkey, because a legitimate provider replicating a
-// credential produces the same signal and auto-disabling would let one
-// replayed stale assertion lock the owner out of their own machine.
-func (lr *loginRoutes) recordCounterRefusal(err *webauthnCounterError) {
-	slog.Warn("login: signature counter did not increase", "error", err.Error())
+// recordLoginOutcome writes the audit record for one ceremony. `relay audit`
+// is ground truth for anything relay gates, and this is the single surface
+// where an unauthenticated caller can obtain a control-plane credential — a
+// login that produced one, a refused assertion, an unknown credential id, a
+// bad bootstrap code and the cloned-authenticator signal of ADR-016 decision 7
+// point 10 all belong in it.
+//
+// Class is left empty deliberately. These routes are not registered through
+// RouteRegistrar and there is no class that means "none"; naming one here
+// would put in a record the hole in the vocabulary ADR-016 decision 5 refuses
+// to put in the route table.
+//
+// credID is an identifier and never a secret: the minted credential's id for a
+// login, the abbreviated passkey id for a registration. No token, no hash and
+// no bootstrap code reaches a record, from any field.
+func (lr *loginRoutes) recordLoginOutcome(credID string, allowed bool, err error) {
 	if lr.auditor == nil {
 		return
 	}
+	reason := ""
+	if !allowed {
+		// This is deliberate: a refusal the ceremony limiter itself produced
+		// is not recorded. It is the one refusal an unauthenticated caller can
+		// provoke at line rate — the throttle is what makes every OTHER
+		// refusal here rate-bounded — so recording it would hand that caller
+		// the audit-log amplification audit_control_cap_test.go exists about.
+		// The failures that caused the throttle are each recorded.
+		if errors.Is(err, errWebAuthnRateLimited) {
+			return
+		}
+		reason, _ = capControlString(loginAuditReason(err), loginAuditMaxReasonBytes)
+	}
 	lr.auditor.RecordDecision(ControlDecision{
 		Method:    http.MethodPost,
-		Path:      "/relay/login/verify",
+		Path:      loginVerifyPath,
 		Transport: TransportTCP,
-		Allowed:   false,
-		Reason:    err.Error(),
+		CredID:    credID,
+		Allowed:   allowed,
+		Reason:    reason,
 	})
+}
+
+// loginAuditReason reduces a refusal to the sentinel relay itself wrote.
+//
+// This is subtle: the wrapped detail is not always relay's own words. A decode
+// failure quotes the body it choked on, and the body of a registration is
+// where a guessed bootstrap code lives — so recording err.Error() verbatim
+// would put caller-chosen bytes, and on a lucky guess a live code, into the
+// audit log. The counter error is the one refusal whose detail relay composed
+// itself, from a stored credential id and two stored counters, and decision 7
+// point 10 requires exactly that detail.
+func loginAuditReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	var counter *webauthnCounterError
+	if errors.As(err, &counter) {
+		return counter.Error()
+	}
+	for {
+		switch u := err.(type) {
+		case interface{ Unwrap() error }:
+			if u.Unwrap() == nil {
+				return err.Error()
+			}
+			err = u.Unwrap()
+		case interface{ Unwrap() []error }:
+			if len(u.Unwrap()) == 0 {
+				return err.Error()
+			}
+			err = u.Unwrap()[0]
+		default:
+			return err.Error()
+		}
+	}
 }
 
 // loginCredentials projects the stored passkeys into the verifier's plain

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"time"
 )
 
 // The settings document is bundled from web/src/* into web/dist/settings.html by
@@ -41,6 +42,15 @@ func mustMarshalJSON(label string, v interface{}) string {
 // value" without anyone opening the editor first, and a list that had to
 // round-trip for that would render the reassuring answer first.
 func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView) string {
+	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil)
+}
+
+// renderSettingsDocument is renderSettingsHTML plus the one thing only the
+// tray can supply: a bootstrap code minted moments ago by the menu item that
+// opened this window. It is seeded into the first paint rather than emitted,
+// because a window that is not up yet has no document to receive an emit —
+// see App.showLoginCode. nil is the ordinary case and every other caller's.
+func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
@@ -78,5 +88,14 @@ func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[s
 		"__ENROLMENTS_JSON__", mustMarshalJSON("enrolments", enrolments),
 		"__REMOTE_JSON__", mustMarshalJSON("remote", remote),
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", mustMarshalJSON("enrolment_budget_defaults", enrolmentBudgetDefaults()),
+		// Seeded for the enrolments' reason, and projected through the same
+		// view type the IPC door uses so there is exactly one definition of
+		// what a passkey looks like outside relay — one with no field for
+		// the public key. Live sessions ride along because a revoked passkey
+		// does not end a session it already signed in, and the tab has to be
+		// able to say so with both lists on screen.
+		"__PASSKEYS_JSON__", mustMarshalJSON("passkeys", passkeyViews(settings)),
+		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, time.Now())),
+		"__LOGIN_CODE_JSON__", mustMarshalJSON("login_code", loginCode),
 	).Replace(settingsHTML)
 }

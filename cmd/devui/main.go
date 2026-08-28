@@ -53,6 +53,9 @@ func buildPage(html string) string {
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
 		"__REMOTE_JSON__", fixtureRemote,
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
+		"__PASSKEYS_JSON__", fixturePasskeys,
+		"__LOGIN_SESSIONS_JSON__", fixtureLoginSessions,
+		"__LOGIN_CODE_JSON__", fixtureLoginCode,
 	).Replace(html)
 
 	// window.webkit must exist before the page's ipc() runs, so the mock goes
@@ -96,6 +99,21 @@ const fixtureEnrolments = `[
 const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true}`
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
+
+// The credential id is abbreviated and there is no public key here, matching
+// production: passkeyView has no field that could carry one.
+const fixturePasskeys = `[
+  {"id":"cred_9f2a4c1d6b8e0f37a5c9d2e4b6081f3a","short":"cred_9f2a4c…","name":"MacBook Touch ID","created":"2026-08-21T11:02:00Z","sign_count":0,"counter_supported":false},
+  {"id":"cred_31bd77aa04e6c9f2118d5c30ab7e6641","short":"cred_31bd77…","name":"YubiKey 5C","created":"2026-08-24T16:40:00Z","sign_count":7,"counter_supported":true}
+]`
+
+const fixtureLoginSessions = `[
+  {"id":"a3f1c8de-5b21-4f70-9e6a-2d4c81b0e957","name":"login cred_9f2a4c… 2026-08-28T08:12:04Z","created":"2026-08-28T08:12:04Z","expires":"2026-08-28T20:12:04Z"}
+]`
+
+// Null, which is the state on every ordinary open: a code is present only in
+// the paint the tray's "Show Login Code..." item triggered.
+const fixtureLoginCode = `null`
 
 const fixtureMcpScopeFields = `{
   "fsmcp":[

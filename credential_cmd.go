@@ -107,15 +107,25 @@ func mintAPICredential(store SettingsStore, req credentialMintRequest) (APICrede
 }
 
 func revokeAPICredential(store SettingsStore, id string) (APICredential, error) {
+	return revokeAPICredentialIf(store, id, nil)
+}
+
+// revokeAPICredentialIf revokes by id, refusing whatever `permitted` rejects
+// on top of the reserved-name refusal every caller gets.
+//
+// The extra gate runs inside this store.With rather than as a lookup in the
+// caller for the reason the resolve and the remove already share one: a
+// separate Get() then With() is a TOCTOU window on a file two processes
+// write, and a gate on the far side of that window is a gate that can be
+// stepped around.
+func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICredential) error) (APICredential, error) {
 	if strings.TrimSpace(id) == "" {
 		return APICredential{}, errors.New("a credential id is required")
 	}
 
 	var removed APICredential
-	var found, reserved bool
-	// Resolve and remove inside one store.With, matching resolveAndRemove:
-	// a separate Get() then With() is a TOCTOU window on a file two
-	// processes write.
+	var found bool
+	var refusal error
 	if err := store.With(func(s *Settings) {
 		cred := s.FindAPICredential(id)
 		if cred == nil {
@@ -123,8 +133,14 @@ func revokeAPICredential(store SettingsStore, id string) (APICredential, error) 
 		}
 		found = true
 		if cred.Name == legacyFrontendCredentialName {
-			reserved = true
+			refusal = errReservedCredentialName
 			return
+		}
+		if permitted != nil {
+			if err := permitted(*cred); err != nil {
+				refusal = err
+				return
+			}
 		}
 		removed, _ = s.RemoveAPICredential(id)
 	}); err != nil {
@@ -133,8 +149,8 @@ func revokeAPICredential(store SettingsStore, id string) (APICredential, error) 
 	if !found {
 		return APICredential{}, fmt.Errorf("no credential found with id %q", id)
 	}
-	if reserved {
-		return APICredential{}, errReservedCredentialName
+	if refusal != nil {
+		return APICredential{}, refusal
 	}
 	return removed, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -59,6 +60,9 @@ type WebAuthnChallengeStore struct {
 	rand    io.Reader
 	max     int
 	ttl     time.Duration
+	// lastFullWarning is what keeps the warning below from becoming the
+	// amplification it warns about: one line per TTL, not one per refusal.
+	lastFullWarning time.Time
 }
 
 func newWebAuthnChallengeStore() *WebAuthnChallengeStore {
@@ -72,9 +76,25 @@ func newWebAuthnChallengeStore() *WebAuthnChallengeStore {
 }
 
 // Issue refuses rather than evicting a live entry when the table is full:
-// evicting the oldest would let an unauthenticated flood displace the
-// owner's in-flight challenge silently, and a refusal the caller can see
-// lasts at most one TTL.
+// evicting the oldest would let an unauthenticated flood displace the owner's
+// in-flight challenge silently, where a refusal is at least answered to the
+// caller that receives it.
+//
+// What that refusal does NOT bound is how long the owner keeps seeing one.
+// Nothing on this route identifies a caller — it is unauthenticated by
+// construction (ADR-016 decision 5), and on a loopback bind every request
+// arrives from the same address — so a flood that keeps issuing as entries
+// expire holds the table full for as long as it chooses to run, and the owner
+// is refused for that whole time rather than for one TTL. Eviction is not the
+// fix: it converts a visible refusal into a ceremony that fails later, and
+// under the same flood the owner's entry is displaced within milliseconds.
+// Relay can bound what this costs it — a fixed table, no disk, no goroutine —
+// and cannot, without an identity to allocate against, keep an unauthenticated
+// flood from denying the owner a challenge.
+//
+// So the condition is made visible instead of silent: a full table warns at
+// most once per TTL, which is the difference between an operator seeing "login
+// is broken" and seeing that something is hammering the login route.
 func (s *WebAuthnChallengeStore) Issue(ceremony WebAuthnCeremony) ([]byte, error) {
 	if ceremony.clientDataType() == "" {
 		return nil, fmt.Errorf("unknown ceremony %d", ceremony)
@@ -90,6 +110,7 @@ func (s *WebAuthnChallengeStore) Issue(ceremony WebAuthnCeremony) ([]byte, error
 		s.evictExpiredLocked(now)
 	}
 	if len(s.entries) >= s.max {
+		s.warnTableFullLocked(now)
 		return nil, fmt.Errorf("%w: %d outstanding", errChallengeTableFull, len(s.entries))
 	}
 	s.entries[string(challenge)] = webauthnChallengeEntry{
@@ -117,6 +138,18 @@ func (s *WebAuthnChallengeStore) consume(ceremony WebAuthnCeremony, challenge []
 		return false
 	}
 	return s.now().Before(entry.expires)
+}
+
+// challengeTableFullWarning is matched by the test that pins the rate, so the
+// wording and the throttle stay one fact.
+const challengeTableFullWarning = "login: the challenge table is full; a login challenge was refused"
+
+func (s *WebAuthnChallengeStore) warnTableFullLocked(now time.Time) {
+	if !s.lastFullWarning.IsZero() && now.Sub(s.lastFullWarning) < s.ttl {
+		return
+	}
+	s.lastFullWarning = now
+	slog.Warn(challengeTableFullWarning, "outstanding", len(s.entries), "quiet_for", s.ttl)
 }
 
 func (s *WebAuthnChallengeStore) evictExpiredLocked(now time.Time) {
