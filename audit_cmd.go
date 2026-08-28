@@ -24,8 +24,8 @@ func runAuditCommand(args []string) {
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
 		"it selects tool_error records the MCP marked as a resource-scope refusal")
-	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, unknown")
-	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up")
+	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, unknown")
+	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
@@ -127,6 +127,9 @@ func auditCallerLabel(a AuditActor) string {
 	if a.ClientID != "" {
 		return a.ClientID
 	}
+	if a.CredID != "" {
+		return a.CredID
+	}
 	switch {
 	case a.Parent != "" && a.Proc != "":
 		return a.Parent + "→" + a.Proc
@@ -164,6 +167,16 @@ func auditBaseDetail(ev AuditEvent) string {
 			return ev.Supervision
 		}
 		return ev.Supervision + ": " + collapseWhitespace(ev.Error)
+	}
+	// A control_decision row (ADR-015) names no MCP or tool, so the
+	// method/path/class/transport it carries instead is the detail — every
+	// other kind of event leaves Method and Path empty.
+	if ev.Method != "" || ev.Path != "" {
+		detail := fmt.Sprintf("%s %s  class=%s  transport=%s", ev.Method, ev.Path, ev.Class, ev.Transport)
+		if ev.Error != "" {
+			detail += "  " + collapseWhitespace(ev.Error)
+		}
+		return detail
 	}
 	if ev.Error != "" {
 		return collapseWhitespace(ev.Error)

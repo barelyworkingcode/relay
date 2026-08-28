@@ -21,9 +21,10 @@ interesting event:
 | `throttled` | A remote enrolment's rate or volume budget was exceeded |
 | `pending` | An intent record, written before the call ran and awaiting its completion |
 
-Event kinds are `call_tool`, `list_tools`, `list_skills`, and — for records
-relay writes about itself rather than about a caller — `mcp_down` / `mcp_up`
-(see below).
+Event kinds are `call_tool`, `list_tools`, `list_skills`, `control_decision`
+(see [below](#control-plane-authorization-decisions)), and — for records relay
+writes about itself rather than about a caller — `mcp_down` / `mcp_up` (see
+below).
 
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
 only one of the three that says the grant was legitimate and the *pattern of
@@ -316,6 +317,57 @@ that has nothing to do with the grant. Without these rows the log shows a run of
 ```
 relay audit --event mcp_down          # every external-MCP outage
 relay audit --kind relay --tail 200   # outages and recoveries together
+```
+
+## Control-plane authorization decisions
+
+`control_decision` is not a tool call. It is written by `RouteRegistrar.authorize`
+(`capability.go`) for every request to a frontend control-plane route — the
+API ADR-015 classes by blast radius (`read` / `configure` / `grant` /
+`execute`) — one record per request, allowed or refused alike, before the
+handler runs:
+
+```json
+{"id":"…","ts":"…","event":"control_decision","actor":{"kind":"control","auth":"token","cred_id":"5e2a…"},
+ "method":"POST","path":"/api/enrolments","class":"grant","transport":"tcp","outcome":"ok"}
+{"id":"…","ts":"…","event":"control_decision","actor":{"kind":"control","auth":"token","cred_id":"5e2a…"},
+ "method":"POST","path":"/api/mcps","class":"execute","transport":"socket","outcome":"denied","error":"class not granted"}
+```
+
+- `method` and `path` name the route the decision was about; `class` is the
+  ADR-015 class it was checked against and `transport` is the listener the
+  request arrived on (`socket` or `tcp`) — the same axis `ClassReachableOn`
+  gates registration on, so a row here and a route's absence from a listener
+  are two views of the same boundary.
+- `actor.kind` is `control`, a fourth actor alongside `project` / `service` /
+  `remote`: this credential is capability-classed, not a tool caller, and
+  `--kind control` selects the set.
+- `actor.cred_id` names the credential the bearer resolved to. It is attached
+  as soon as the bearer resolves — before the class check — so a credential
+  that authenticates but lacks the class it asked for is still named in its
+  own refusal; the whole point of this record is that "a known credential
+  attempted something it does not hold" gets the same standing as a denied
+  tool call. It is empty only when no credential resolved at all (no bearer,
+  or a bearer matching nothing) — there is no credential to name, and this is
+  the one case indistinguishable from `unauthorized` on a tool call.
+- `outcome` is `ok` for `Allowed: true` and `denied` for `Allowed: false` —
+  reusing the existing outcome enum rather than adding a control-plane-only
+  value, because a refusal here is the same kind of fact a tool-call `denied`
+  is. The refusal reason (`errNoCredential` vs. `errClassNotGranted`) rides in
+  `error`, same as any other outcome this log records.
+
+`relay audit`'s table has no columns for method, path, class or transport —
+those live in DETAIL, and CALLER shows the credential id:
+
+```
+TIME      OUTCOME  PROJECT  MCP  TOOL  MS  CALLER    DETAIL
+08:08:46  ok       -        -    -     0   5e2a…     POST /api/enrolments  class=grant  transport=tcp
+08:08:47  denied   -        -    -     0   5e2a…     POST /api/mcps  class=execute  transport=socket  class not granted
+```
+
+```
+relay audit --kind control              # every control-plane authorization decision
+relay audit --event control_decision --outcome denied   # refusals only
 ```
 
 ## Fail-open, visibly
