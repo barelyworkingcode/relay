@@ -342,38 +342,85 @@ same reason: a fourth unauthenticated route has to be added to a list someone
 reviews, not discovered to already work. `/relay/` is reserved to relay and the
 dispatcher may not claim it.
 
-### 6. No WebAuthn library; the refusals are what keep the surface small
+### 6. The ceremony checks are relay's; the CBOR parser is not
 
 `github.com/go-webauthn/webauthn` is the standard choice and it is refused.
-Relay verifies assertions directly against `crypto/ecdsa`, `crypto/sha256` and
-a strict CBOR reader of its own.
+`github.com/fxamacker/cbor/v2` is a direct dependency and it decodes every
+byte of the binary an unauthenticated caller supplies. Those are not the same
+trade, and the measurement is what separates them: the WebAuthn library pulls
+**fourteen modules** — go-tpm, jwt, msgp, mapstructure, testify, mock, yaml
+among them — and nearly all of that tree serves attestation formats relay
+refuses. The CBOR library pulls **two**, itself and `x448/float16`. It is what
+go-webauthn decodes with internally, it is security-focused, and it is
+continuously fuzzed. Dependency discipline is a judgement about what a
+dependency drags in and what owning the alternative costs, not a reflex.
 
-`go.mod` has five direct dependencies, three of them build-time (esbuild,
-goja, jsonc). The discipline is deliberate and this is exactly the case it
-exists for: a relying party with **one user, one origin, one RP ID, one
-algorithm and no attestation policy** needs a small fraction of what a general
-library implements, and the library's tree is mostly the parts relay refuses.
+What a WebAuthn library would do for relay is small and specific to a relying
+party with **one user, one origin, one RP ID, one algorithm and no attestation
+policy**. Registration: read the attestation object, require `fmt == "none"`,
+take `authData`, and extract a COSE key that must be `kty: 2 (EC2), alg: -7
+(ES256), crv: 1 (P-256)` — two 32-byte coordinates. Assertion: verify an ASN.1
+ECDSA signature over `authData || SHA256(clientDataJSON)` with
+`ecdsa.VerifyASN1`. Every one of those is a policy decision rather than a
+parsing problem, decision 7 enumerates them, and decision 8 puts a negative
+test on each. A general library would implement the policy relay does not have
+and would still leave relay to state the policy it does.
 
-What relay actually needs is bounded. Registration: read the attestation
-object, require `fmt == "none"`, take `authData`, and extract a COSE key that
-must be `kty: 2 (EC2), alg: -7 (ES256), crv: 1 (P-256)` — two 32-byte
-coordinates. Assertion: verify an ASN.1 ECDSA signature over
-`authData || SHA256(clientDataJSON)` with `ecdsa.VerifyASN1`. The CBOR
-required is a strict subset — definite-length maps, byte strings, text strings,
-small integers — and the decoder is written to **refuse more than it accepts**:
-no indefinite lengths, no tags, no floats, no unrecognised keys, a depth cap
-and a size cap, and an error on trailing bytes. That is the same discipline
-`DisallowUnknownFields` gives the remote wire (ADR-010 decision 4), applied to
-a format a caller supplies.
+What a CBOR decoder does for relay is parse attacker-controlled binary input.
+That is the other kind of code, it is where the interesting bugs in this space
+live, and it earns nothing by being local: no relay-specific requirement
+reaches into how a definite-length header is decoded. Owning it means owning
+the only such parser in the codebase, reviewed by whoever happens to be
+reading, against a library that is fuzzed continuously by people who do
+nothing else.
 
-To keep it that small, relay refuses, permanently and by name:
+So `cborParse` is a configured `cbor.DecMode` and a walk that narrows the
+result. The decoder is set to refuse, by option: indefinite-length items
+(`IndefLengthForbidden`), tags (`TagsForbidden`), duplicate map keys
+(`DupMapKeyEnforcedAPF`), byte-string map keys
+(`MapKeyByteStringForbidden`), text that is not valid UTF-8
+(`UTF8RejectInvalid`), more than sixteen pairs in a map or elements in an
+array (`MaxMapPairs`, `MaxArrayElements`), and trailing bytes after the
+top-level item, which `Unmarshal` reports rather than ignores. What no option
+expresses stays relay's, next to the decoder and not scattered into the
+verifier:
+
+- **An 8192-byte cap on the input**, checked before the decoder sees it.
+- **Depth 2.** `MaxNestedLevels` cannot be set below 4, so it is a backstop
+  and the walk carries the policy.
+- **128 items** across the whole document, which no option counts.
+- **Major types 0, 1, 2, 3 and 5 only.** Arrays, floats, booleans, `null` and
+  simple values decode successfully and are refused by the walk, which is also
+  what keeps a map key to an integer or a text string.
+- **Integers that fit `int64`**, so a bignum or an oversized unsigned is a
+  refusal rather than a silently widened value.
+- **Minimal encodings and CTAP2 map order**, enforced by requiring the input
+  to equal its own canonical re-encoding under `cbor.CTAP2EncOptions()`. There
+  is no decode-side option for this, and a round-trip is a stronger statement
+  than a hand-written comparison of adjacent keys: it covers argument
+  minimality for integers and for every major-type-2-through-5 length at the
+  same time. It is also the check most likely to refuse a real authenticator,
+  and it is kept rather than relaxed because the input relay accepts here is
+  produced by a CTAP2 stack and a browser that both already emit canonical
+  form — decision 8's Chrome ceremony is the evidence, and it is the test that
+  fails first if that stops being true. `SortCTAP2` orders bytewise over the
+  encoded keys, which differs from ordering by encoded length first only for a
+  map mixing major types whose keys encode to different lengths; neither the
+  attestation object nor a COSE key is such a map.
+- **Exact pair counts** — three for the attestation object, five for the COSE
+  key — so an unknown key cannot ride along. This is the same discipline
+  `DisallowUnknownFields` gives the remote wire (ADR-010 decision 4), applied
+  to a format a caller supplies.
+
+To keep the surface that small, relay refuses, permanently and by name:
 
 - **Every attestation format but `none`.** `packed`, `tpm`, `android-key`,
   `android-safetynet`, `apple`, `fido-u2f` are refused at registration.
   Attestation answers "what kind of authenticator is this", and relay has no
   policy that consults the answer. Refusing it also means relay never parses an
   X.509 chain or a TPM structure handed to it by an unauthenticated caller —
-  which is where the interesting parsing bugs in this space live.
+  which is where the rest of the interesting parsing bugs in this space live,
+  and which is most of what the fourteen modules are for.
 - **Every algorithm but ES256.** `pubKeyCredParams` advertises `-7` alone.
   RS256 would add RSA key parsing and a second signature path for
   authenticators that overwhelmingly also do ES256; EdDSA the same.
@@ -394,9 +441,9 @@ The cost is named plainly: **relay owns cryptographic verification code, and a
 bug in it is a login bypass rather than a crash.** That is why decision 7
 enumerates the policy instead of describing it, and why decision 8 makes the
 negative cases the bulk of the test suite. The trade flips the moment relay
-needs a second algorithm or a real attestation format; at that point the
-library is the answer and this decision should be revisited rather than
-patched.
+needs a second algorithm or a real attestation format; at that point
+go-webauthn's tree is mostly load-bearing rather than mostly refused, and this
+decision should be revisited rather than patched.
 
 ### 7. What is verified on every assertion
 

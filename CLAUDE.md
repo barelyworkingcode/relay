@@ -57,8 +57,8 @@ api_credential.go        APICredential CRUD, the frontend-token migration, crede
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
 login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share)
 login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
-webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, no library
-webauthn_cbor.go         Strict CBOR reader that refuses more than it accepts
+webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, none attestation only
+webauthn_cbor.go         CBOR decode via fxamacker/cbor, pinned to the CTAP2 canonical subset
 webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
 login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
 login_document.go        The self-contained login page, served under a strict CSP
@@ -361,6 +361,11 @@ caller the sink fails open and shows its drop count rather than stalling a tool
 call; for a remote one it is fail-closed — an `intent` record is written and
 flushed before the MCP runs, a `completion` record with the same `id` follows,
 and a call whose intent cannot be recorded is refused (ADR-010 decision 5).
+**Auditing is on by default**: an absent `audit` block resolves to enabled with
+the rotation caps applied, so a fresh install records without being configured,
+and only an explicit `"enabled": false` turns it off — which costs the remote
+listener (ADR-010) and every `control_decision` (ADR-015). A new install writes
+the block out explicitly so the file says what relay is doing.
 Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
 VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
 ADR-008, narrowed for remote callers by ADR-010, widened by ADR-012 with the

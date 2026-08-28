@@ -228,9 +228,13 @@ without the probe every application-level failure would read as a success.
 
 ## Configuration
 
-Optional `audit` block in `settings.json`. Absent means defaults, so an install
-predating this feature starts logging with no migration. Changes take effect on
-relay restart.
+**Auditing is on by default, including on a fresh install.** The `audit` block
+in `settings.json` is optional and an absent one means the defaults below —
+enabled, with the rotation caps applied — so an install that predates this
+feature and one that simply never wrote the block both come up recording, with
+no migration. A new install writes the block out explicitly, so what an
+operator reads in the file is what relay is doing rather than something they
+have to know the code to infer. Changes take effect on relay restart.
 
 ```jsonc
 {
@@ -247,6 +251,39 @@ relay restart.
   }
 }
 ```
+
+### Turning it off, and what it costs
+
+Only an explicit `"enabled": false` turns auditing off. An absent block never
+does, and the two are deliberately distinguishable: an operator who chose off
+stays off across an upgrade, while an install that never had the block starts
+recording. `enabled` is a nullable field for exactly this reason — a plain
+boolean would make "off" and "never said" the same value on disk, and a rewrite
+of settings.json would silently turn auditing back on for the one operator who
+had decided otherwise.
+
+What is given up by setting it to false:
+
+- **The remote listener will not start.** Auditing is a hard dependency of
+  remote access (ADR-010 decision 5): the case for letting a VM reach host
+  tools rests on detection, so relay refuses to serve remote traffic
+  unrecorded rather than treating it as a degraded mode. This is not weakened
+  by the default being on — it is now simply a rule an operator can only reach
+  deliberately. It also applies at runtime, not just at launch:
+  `RemoteSupervisor` closes a live listener when auditing stops being live.
+- **Control-plane authorization decisions go unrecorded.** Every
+  `control_decision` above — creating a service, issuing an enrolment, a
+  credential refused a class it does not hold — leaves no trace, which is the
+  state ADR-015 argues against.
+- **A passkey login leaves no record.** `/relay/login` is the one surface an
+  unauthenticated caller can obtain a credential from, and its outcomes are
+  recorded here and nowhere else.
+- **`relay audit` stops being ground truth.** It shows an empty log, and an
+  empty log is indistinguishable from a quiet one at the command line; the
+  Tool Calls tab says the state outright instead.
+
+Local tool calls keep working with auditing off. That is the whole of what
+stays unaffected.
 
 `log_lists` covers `list_tools` and `list_skills` events — what tool surface a
 credential was shown. Off by default because skill regeneration lists the tool

@@ -188,6 +188,16 @@ gap closes here, because a control plane whose refusals are invisible cannot
 be reasoned about after an incident — the same argument ADR-010 made for
 making audit a hard dependency of remote access.
 
+That argument only holds if the recording is the resting state, so auditing is
+on unless an operator turns it off: an absent `audit` block means enabled, and
+only an explicit `"enabled": false` disables it. A default that had to be
+opted into would make this section's claim true of a configuration rather than
+of relay, which is not a claim worth making about a security boundary. The
+opt-out is kept — the operator who does not want the file still decides — and
+it is the ADR-010 refusal that prices it, since a control plane and a remote
+listener are different guarantees and only one of them is worth refusing to
+serve without evidence.
+
 **Some things get less convenient, on purpose.** A script that today does
 everything with one token will need a credential per role. The migration path
 above means nothing breaks on upgrade, but the end state deliberately makes
