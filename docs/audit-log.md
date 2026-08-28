@@ -356,6 +356,27 @@ handler runs:
   is. The refusal reason (`errNoCredential` vs. `errClassNotGranted`) rides in
   `error`, same as any other outcome this log records.
 
+`method` and `path` are read straight off the request line, before
+`RouteRegistrar.authorize` has resolved a credential or checked its class —
+they are caller-shaped on *every* request that reaches a registered route,
+including one from a credential holding no class at all, and including a
+refusal, which is the record this log most needs to keep. Left uncapped,
+either field would let such a caller write an arbitrarily large row at will:
+the same amplification `max_arg_bytes` exists to prevent for tool-call
+arguments, except reachable here by a caller with no class to check, purely
+by being refused over and over. A credential ADR-015 decision 3 calls "inert
+rather than omnipotent" must not be able to erase this file's retention
+window through its own refusals.
+
+Both are capped at the point the record is built, so nothing downstream (the
+bounded queue, the ring, the rotating file) ever sees an unbounded value:
+`path` at 1024 bytes, `method` at 32 — generously past any real relay route or
+proxied-service path, and past any real or WebDAV-style HTTP verb. Over the
+cap, the value is truncated on a rune boundary and `path_truncated` /
+`method_truncated` is set `true`, the same marker shape `args_truncated` uses
+for arguments, so a truncated value is never mistaken for a short, genuine
+one.
+
 `relay audit`'s table has no columns for method, path, class or transport —
 those live in DETAIL, and CALLER shows the credential id:
 

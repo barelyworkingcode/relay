@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -29,8 +30,29 @@ type FileSettingsStore struct {
 	mu          sync.Mutex
 	cache       *Settings
 	lastModTime int64
-	dir         string // injected for testability, rather than calling bridge.ConfigDir() directly
+	// fileSeen records whether settings.json existed the last time this store
+	// looked. It is what separates "not created yet" — a first start, where
+	// the tray has legitimate settings in hand and has not written them out —
+	// from "existed and is now gone", which must invalidate the cache rather
+	// than keep serving it. Nothing else can tell those two apart, since both
+	// present as a stat that fails with IsNotExist.
+	fileSeen bool
+	// readErr holds the reason the last look at an EXISTING settings.json
+	// produced no usable settings: a read that failed, or bytes that would
+	// not parse.
+	//
+	// This is subtle: it is the difference between *empty* settings and
+	// *unknown* settings, which the returned *Settings cannot express because
+	// both resolve to defaultSettings() so that reads fail closed. Reads may
+	// treat unknown as empty; a write may not, because the records it would
+	// serialize over are records this process never saw.
+	readErr error
+	dir     string // injected for testability, rather than calling bridge.ConfigDir() directly
 }
+
+// errSettingsUnreadable is what a caller matches with errors.Is to tell a
+// refusal to write from a write that was attempted and failed.
+var errSettingsUnreadable = errors.New("settings file exists but could not be read")
 
 func NewSettingsStore() *FileSettingsStore {
 	return &FileSettingsStore{dir: bridge.ConfigDir()}
@@ -60,21 +82,47 @@ func defaultSettings() *Settings {
 // JSONC comments (// and /* */) are stripped before parsing so users can
 // hand-edit settings.json with comment blocks to toggle sections. Comments
 // don't survive writes — save() goes through json.MarshalIndent.
+//
+// This is subtle: load also maintains fileSeen and readErr, because the open is
+// the one place that learns whether the file is there and whether it could be
+// used. A permission error deliberately leaves fileSeen alone — it says nothing
+// about existence, and treating it as absence would let a chmod erase the
+// store's memory of a file that is still on disk.
+//
+// Every failure still yields defaultSettings(), so a read resolving through
+// here has nothing to authenticate against. readErr is what stops a WRITE from
+// treating that emptiness as the file's contents.
 func (ss *FileSettingsStore) load() *Settings {
 	data, err := os.ReadFile(ss.path())
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if os.IsNotExist(err) {
+			ss.fileSeen = false
+			ss.readErr = nil
+		} else {
 			slog.Warn("failed to read settings file", "error", err)
+			ss.readErr = err
 		}
 		return defaultSettings()
 	}
+	ss.fileSeen = true
 	var s Settings
 	if err := json.Unmarshal(jsonc.ToJSON(data), &s); err != nil {
 		slog.Warn("failed to parse settings file, using defaults", "error", err)
+		ss.readErr = err
 		return defaultSettings()
 	}
+	ss.readErr = nil
 	s.normalize()
 	return &s
+}
+
+// unreadableErrLocked reports why this store must not write, or nil if it may.
+// Caller must hold the mutex.
+func (ss *FileSettingsStore) unreadableErrLocked() error {
+	if ss.readErr == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %w", errSettingsUnreadable, ss.path(), ss.readErr)
 }
 
 func ensureSlice[T any](s *[]T) {
@@ -160,12 +208,13 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	}
 
 	// A crash after a bare rename can leave settings.json zero-length or stale,
-	// and load() treats a parse failure as "use defaults" — silently wiping
-	// every project and its token hashes. atomicWriteFile's fsyncs close that
-	// window.
+	// which resolves to empty settings and takes every project, credential and
+	// enrolment out of service until the file is repaired. atomicWriteFile's
+	// fsyncs close that window.
 	if err := atomicWriteFile(ss.path(), data, 0600); err != nil {
 		return fmt.Errorf("write settings: %w", err)
 	}
+	ss.fileSeen = true
 	return nil
 }
 
@@ -200,10 +249,24 @@ func deepCopySettings(s *Settings) *Settings {
 	return &cp
 }
 
+// EnsureInitialized creates a settings file that is not there yet. That is its
+// whole job, and a file that exists but cannot be read is not that case: it is
+// refused, loudly, with the file untouched.
+//
+// The tray exits on this error rather than starting. Creating settings over an
+// unreadable file destroys every project, token hash, credential and enrolment
+// in it at launch, with no operator surface saying so — and starting instead
+// with the empty settings the read produced shows an operator a relay that
+// appears to have lost everything, inviting them to rebuild it by hand and make
+// the loss real. A refusal naming the file leaves the only recoverable state on
+// disk.
 func (ss *FileSettingsStore) EnsureInitialized() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	s := ss.load()
+	if err := ss.unreadableErrLocked(); err != nil {
+		return fmt.Errorf("%w — refusing to initialize over it; repair or move the file, or delete it to start fresh", err)
+	}
 	if err := ensureAdminSecret(s); err != nil {
 		return err
 	}
@@ -235,6 +298,12 @@ func (ss *FileSettingsStore) EnsureInitialized() error {
 // re-reads only when the modtime moved, so the steady state is a stat and a
 // deep copy of a small struct. Anything on the remote path that decides whether
 // a caller may act MUST go through here rather than Get().
+//
+// This is subtle: the Get() fall-through is not a stale-cache escape hatch. It
+// runs only where ReloadIfChanged has nothing new to report, and a settings
+// file that has been deleted is something to report — it comes back through
+// the branch above as absent settings, with nothing left to authenticate
+// against.
 func freshSettings(store SettingsStore) *Settings {
 	if s := store.ReloadIfChanged(); s != nil {
 		return s
@@ -260,42 +329,99 @@ func (ss *FileSettingsStore) Reload() *Settings {
 	return deepCopySettings(s)
 }
 
-// ReloadIfChanged returns the new settings if the file's modtime moved, or
-// nil if unchanged. Both stat and reload happen under the lock, deliberately,
-// to eliminate a TOCTOU window between checking the modtime and updating the
-// cache — the stat targets a local file, so holding the lock during I/O is
-// negligible.
-func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
+// reloadIfChangedLocked brings the cache in line with the file and reports
+// whether it now holds something the caller has not seen. Caller must hold the
+// mutex; both the stat and the read happen under it, deliberately, so there is
+// no TOCTOU window between checking the modtime and replacing the cache — the
+// stat targets a local file, so holding the lock during I/O is negligible.
+//
+// A settings file that existed and is GONE resolves to absent settings, never
+// to the last good cache. Deleting settings.json is how an operator locks the
+// control plane out, and a cache that outlived the file would keep every
+// credential in it authenticating from memory, with nothing left on disk to
+// say so.
+//
+// A file that was never there is a different state and is left alone: a first
+// start has settings in hand that nothing has written out yet, and emptying
+// the cache would wipe them before they reach disk.
+func (ss *FileSettingsStore) reloadIfChangedLocked() bool {
 	info, err := os.Stat(ss.path())
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("settings file stat failed", "error", err)
+			ss.readErr = err
+			return false
 		}
-		return nil
+		if !ss.fileSeen {
+			return false
+		}
+		slog.Warn("settings file has been deleted; settings now resolve to empty")
+		ss.fileSeen = false
+		ss.readErr = nil
+		ss.cache = defaultSettings()
+		// Zeroed so a settings.json restored from a backup still reads as a
+		// change: a restored file's modtime can predate the deleted one's.
+		ss.lastModTime = 0
+		return true
 	}
 	mt := info.ModTime().UnixNano()
 
-	if mt == ss.lastModTime {
-		return nil
+	// This is deliberate: an unreadable file re-reads on every look, modtime or
+	// not. The two states that produce one — a chmod and a repair of that chmod
+	// — move no timestamp, so a store that trusted the modtime here would stay
+	// refusing writes until something unrelated wrote the file. The extra read
+	// happens only while degraded.
+	if ss.fileSeen && mt == ss.lastModTime && ss.readErr == nil {
+		return false
 	}
 	ss.lastModTime = mt
-	s := ss.load()
-	ss.cache = s
-	return deepCopySettings(s)
+	ss.cache = ss.load()
+	return true
 }
 
-// With mutates a deep copy of the in-memory cache rather than re-reading
-// from disk, since the cache is authoritative under the mutex, and updates
-// lastModTime on success so ReloadIfChanged won't redundantly re-read what
-// was just written. Requires EnsureInitialized to have run first.
+// ReloadIfChanged returns the new settings if the file moved or vanished, or
+// nil if there is nothing new to report.
+func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if !ss.reloadIfChangedLocked() {
+		return nil
+	}
+	return deepCopySettings(ss.cache)
+}
+
+// With mutates a deep copy of the settings as they are ON DISK and updates
+// lastModTime on success so ReloadIfChanged won't redundantly re-read what was
+// just written.
+//
+// The reload before the callback is what makes this safe across processes.
+// `relay credential mint`, `relay enrol create` and `relay service register`
+// each run in their own process and write settings.json directly; a tray that
+// applied its callback to a cache predating that write would save the record
+// away again, and for a minted credential the plaintext is printed once and
+// unrecoverable. Within one process the mutex alone would be enough — relay is
+// not one process. Cost is one stat per mutation, since the file is only
+// re-parsed when it actually moved.
+//
+// This does NOT make the write atomic against another process writing between
+// the reload and the save: that remains last-writer-wins.
+//
+// A file that exists and could not be read is refused with
+// errSettingsUnreadable and the callback never runs. The reload resolves that
+// file to empty settings so reads fail closed, and saving the callback's
+// mutation on top of that emptiness would rewrite settings.json as defaults
+// plus one change — every other record silently gone, with a nil error
+// reporting success.
 func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	ss.reloadIfChangedLocked()
 	if ss.cache == nil {
 		ss.cache = ss.load()
+	}
+	if err := ss.unreadableErrLocked(); err != nil {
+		slog.Error("refusing to save settings over a file that could not be read", "error", err)
+		return err
 	}
 	s := deepCopySettings(ss.cache)
 	fn(s)
