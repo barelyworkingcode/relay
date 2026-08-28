@@ -10,14 +10,10 @@ import (
 	"strings"
 )
 
-// runAuditCommand implements `relay audit` — a read-only tail of the tool-call
-// log for the case where the tray isn't open, or you want to pipe events into
-// something else.
-//
-// It reads the log file directly rather than going over the bridge. The log is
-// owned by the tray process, but appending JSONL and reading it are independent;
-// a reader never needs the writer's cooperation, and this keeps `relay audit`
-// working when the tray is stopped, which is exactly when you'd reach for it.
+// Reads the log file directly rather than going over the bridge: appending
+// JSONL and reading it are independent, so a reader never needs the writer's
+// cooperation, and this keeps `relay audit` working when the tray is
+// stopped, which is exactly when you'd reach for it.
 func runAuditCommand(args []string) {
 	fs := flag.NewFlagSet("audit", flag.ExitOnError)
 	tail := fs.Int("tail", 50, "show the most recent N events")
@@ -34,10 +30,7 @@ func runAuditCommand(args []string) {
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
 	// Off by default so the table's shape — one line per call, the same eight
-	// columns — never changes under a script that already parses it; the
-	// authority (ADR-011 decision 7) is real information nonetheless, so it is
-	// one flag away rather than buried behind --json and a grep, which was the
-	// gap this flag exists to close.
+	// columns — never changes under a script that already parses it.
 	authority := fs.Bool("authority", false, "print a second line per call showing the access mode, the outbound grant, and the injected scope")
 	fs.Parse(args)
 
@@ -95,11 +88,9 @@ func runAuditCommand(args []string) {
 	w.Flush()
 }
 
-// writeAuditTable renders matched events (newest-first, as returned by the
-// query above) as the human-readable table, oldest-first so the table itself
-// reads top-to-bottom in time order like the --json export does. Factored out
-// of runAuditCommand so the rendering can be exercised without capturing
-// os.Stdout.
+// Renders oldest-first so the table reads top-to-bottom in time order, like
+// the --json export. Factored out of runAuditCommand so the rendering can be
+// exercised without capturing os.Stdout.
 func writeAuditTable(w io.Writer, matched []AuditEvent, authority bool) {
 	fmt.Fprintln(w, "TIME\tOUTCOME\tPROJECT\tMCP\tTOOL\tMS\tCALLER\tDETAIL")
 	for i := len(matched) - 1; i >= 0; i-- {
@@ -118,20 +109,16 @@ func writeAuditTable(w io.Writer, matched []AuditEvent, authority bool) {
 			continue
 		}
 		if line, ok := auditAuthorityLine(ev); ok {
-			// Seven leading (empty) cells, so this line stays inside the same
-			// tabwriter block as the row above it and lands under DETAIL
+			// Seven leading (empty) cells so this line stays inside the same
+			// tabwriter block as the row above it, landing under DETAIL
 			// instead of resetting column widths for every row that follows.
-			// A script parsing the eight-column grid never has to account for
-			// this either way — --authority is opt-in, and even when passed,
-			// no real row ever has an empty OUTCOME cell to confuse it with.
 			fmt.Fprintf(w, "\t\t\t\t\t\t\tauthority: %s\n", line)
 		}
 	}
 }
 
-// auditCallerLabel renders the actor as "parent→proc", falling back to whatever
-// half is known. The parent is listed first because it's the agent that asked;
-// the process is often just a short-lived `relay mcp` child.
+// The parent is listed first because it's the agent that asked; the process
+// is often just a short-lived `relay mcp` child.
 //
 // A remote caller has no process to name, so it is labelled by the enrolled
 // client instead — otherwise every row of `relay audit --kind remote` would
@@ -152,19 +139,12 @@ func auditCallerLabel(a AuditActor) string {
 	}
 }
 
-// auditDetail is the one-line summary: the error for a failure, the redacted
-// args for a success — with a scope_violation marker ahead of either, because
-// that is the one signal on this record a reviewer must not have to expand the
-// row to see (docs/access-profiles.md's "Checking that it worked"). It reads
-// the same in --json (the field is right there) and in the table, and it is
-// literally the field name and its value rather than an invented word, so
-// `grep scope_violation` finds the same calls in both.
-//
-// tool_error alone does not get this treatment: a boundary probed and held is
-// not the same finding as any other in-protocol refusal, and ev.Error is
-// typically empty for a tool_error in the first place (the MCP's reason lives
-// in the result content, not in this field), so without the marker a
-// scope-violating row and an ordinary one can render identically.
+// A scope_violation marker goes ahead of the error/args summary because it is
+// the one signal on this record a reviewer must not have to expand the row to
+// see (docs/access-profiles.md's "Checking that it worked"). tool_error alone
+// does not get this treatment: ev.Error is typically empty for a tool_error
+// (the MCP's reason lives in the result content, not this field), so without
+// the marker a scope-violating row and an ordinary one render identically.
 func auditDetail(ev AuditEvent) string {
 	detail := auditBaseDetail(ev)
 	if !ev.ScopeViolation {
@@ -178,8 +158,7 @@ func auditDetail(ev AuditEvent) string {
 
 func auditBaseDetail(ev AuditEvent) string {
 	// A supervision record (ADR-012) names no tool and carries no arguments:
-	// the transition is the detail, and the reader error that caused it — when
-	// there is one — is the rest of the same sentence.
+	// the transition itself is the detail.
 	if ev.Supervision != "" {
 		if ev.Error == "" {
 			return ev.Supervision
@@ -198,14 +177,11 @@ func auditBaseDetail(ev AuditEvent) string {
 	return ""
 }
 
-// auditAuthorityLine renders the authority a call ran with (ADR-011 decision
-// 7) for --authority: the access mode, the outbound grant, and the injected
-// scope. ok is false when nothing was recorded for this record at all — a
-// service token, a list event, or a refusal before an MCP was even resolved
-// (an unknown tool name) — in which case the line is omitted rather than
-// printed full of placeholders. Access is the field that says whether
-// anything was recorded: it and Scope/AllowExternal are always set together
-// by setAuthority.
+// ok is false when nothing was recorded for this record at all — a service
+// token, a list event, or a refusal before an MCP was even resolved — in
+// which case the line is omitted rather than printed full of placeholders.
+// Access is the field that says whether anything was recorded: it and
+// Scope/AllowExternal are always set together by setAuthority.
 func auditAuthorityLine(ev AuditEvent) (string, bool) {
 	if ev.Access == "" {
 		return "", false
@@ -227,10 +203,8 @@ func auditAuthorityLine(ev AuditEvent) (string, bool) {
 	if ev.McpRoot != "" {
 		parts = append(parts, "root="+ev.McpRoot)
 	}
-	// Two findings the summary above cannot carry, each appended rather than
-	// substituted, because the coordinates stay on the line either way — the
-	// operator is entitled to them (issue #41) and a warning is the second
-	// sentence, not a replacement for the first.
+	// Appended rather than substituted: a warning is the second sentence,
+	// not a replacement for the first.
 	if len(ev.ScopeUnplaced) > 0 {
 		parts = append(parts, "SCOPE NOT APPLIED: this grant sets "+
 			quoteNames(ev.ScopeUnplaced)+", which this MCP does not declare — call denied")
@@ -241,13 +215,11 @@ func auditAuthorityLine(ev AuditEvent) (string, bool) {
 	return strings.Join(parts, "  "), true
 }
 
-// auditScopeSummary renders the injected scope for a human. nil and an empty,
-// non-nil map are different facts and must read as different sentences: nil
-// means this MCP declares no `scope: "restrict"` field at all, so there was
-// nothing to inject; an empty map means it does declare one and this call's
-// grant supplied no value for it — on a `denied` record that is the finding
-// itself (ADR-011 decision 4's third defence), and collapsing the two would
-// erase exactly the distinction the wire format was fixed to carry.
+// nil and an empty, non-nil map are different facts: nil means this MCP
+// declares no `scope: "restrict"` field at all, so there was nothing to
+// inject; an empty map means it does declare one and this call's grant
+// supplied no value for it — on a `denied` record that is the finding itself
+// (ADR-011 decision 4's third defence).
 func auditScopeSummary(scope map[string]json.RawMessage) string {
 	if scope == nil {
 		return "(none declared)"

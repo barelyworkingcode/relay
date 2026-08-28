@@ -1,19 +1,5 @@
 package main
 
-// Reading a context schema fails CLOSED.
-//
-// Three findings, one mechanism. A field fragment relay cannot read used to be
-// dropped in silence — which stops relay requiring a value for it, stops relay
-// governing the tools it names, and makes filterKnownContextFields strip the
-// operator's value off the wire, all with nothing said to anybody. And what
-// counted as "cannot read" was decided by encoding/json's case-INSENSITIVE
-// struct matching, so {"Scope":"restrict"} was a restriction and
-// {"scope":"RESTRICT"} silently was not.
-//
-// So: an exact keyword is read, a keyword relay has never heard of is ignored
-// (decision 3 requires that — a later vocabulary has to be able to land), a
-// NEAR MISS of one is an error, and any error makes the whole schema unusable.
-
 import (
 	"context"
 	"encoding/json"
@@ -26,12 +12,6 @@ func parseStrict(t *testing.T, raw string) ContextSchema {
 	return ParseContextSchema(json.RawMessage(raw), 2)
 }
 
-// TestParseContextSchema_ANearMissKeywordKeyIsRefusedRatherThanGuessedAt is the
-// S3 shape: the same discipline readOnlyHintTrue applies to an annotation,
-// applied where the direction of the failure is the opposite one. Accepting
-// "Scope" silently agrees with a spelling no schema document defines; ignoring
-// "scope": "RESTRICT" silently disagrees with what a reviewer reading the MCP's
-// published schema would see. Neither may be decided in silence.
 func TestParseContextSchema_ANearMissKeywordKeyIsRefusedRatherThanGuessedAt(t *testing.T) {
 	for _, key := range []string{"Scope", "SCOPE", "Applies_To", "APPLIES_TO", "Source", "Enumerable", "Depends_On", "Disclose", "DISCLOSE"} {
 		raw := `{"mail_accounts":{"type":"array","` + key + `":"restrict"}}`
@@ -62,8 +42,6 @@ func TestParseContextSchema_ANearMissKeywordValueIsRefusedToo(t *testing.T) {
 	}
 }
 
-// TestParseContextSchema_ATypeSlipIsReportedRatherThanDroppingTheField is the
-// S2 shape, in the spelling the finding used.
 func TestParseContextSchema_ATypeSlipIsReportedRatherThanDroppingTheField(t *testing.T) {
 	raw := `{
 	  "mail_accounts": {"type":"array","scope":"restrict","source":"operator","applies_to":"mail_*"},
@@ -77,9 +55,10 @@ func TestParseContextSchema_ATypeSlipIsReportedRatherThanDroppingTheField(t *tes
 		!strings.Contains(cs.MalformedReason(), "applies_to") {
 		t.Errorf("reason names neither the field nor the keyword: %s", cs.MalformedReason())
 	}
-	// The other field parsed fine, and that is exactly why the verdict cannot
-	// be per-field: the fragment that failed may have been the one governing
-	// everything, so "here is what I understood" is a claim about what was not.
+	// The verdict is deliberately whole-schema rather than per-field, even
+	// though the other field parsed fine: the fragment that failed may have
+	// been the one governing everything, so reporting "here is what I
+	// understood" would be a claim about what was not understood.
 	if len(cs.RestrictFields()) != 1 {
 		t.Fatalf("restrict fields = %d, want the one that parsed", len(cs.RestrictFields()))
 	}
@@ -88,10 +67,9 @@ func TestParseContextSchema_ATypeSlipIsReportedRatherThanDroppingTheField(t *tes
 	}
 }
 
-// TestParseContextSchema_AnUnknownKeywordIsStillIgnored is the boundary the
-// rule above must not cross. Decision 3 dropped `ui` from the vocabulary while
-// fsMCP still ships one, and every keyword added later arrives at an older
-// relay looking exactly like it.
+// "ui" and "x-relay-future" stand in for a keyword this relay doesn't know
+// about yet: fsMCP already ships a "ui" field outside the vocabulary, and any
+// keyword added later will look exactly the same to an older relay.
 func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 	raw := `{"allowed_dirs":{
 	  "type":"array","items":{"type":"string"},
@@ -105,8 +83,6 @@ func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 	if len(cs.ProjectPathFields()) != 1 {
 		t.Fatalf("the field itself was lost: %+v", cs.Fields)
 	}
-	// An unrecognised VALUE is ignored the same way: it is not a restriction,
-	// and it is not an error either.
 	cs = parseStrict(t, `{"f":{"type":"array","scope":"advisory"}}`)
 	if !cs.Usable() {
 		t.Fatalf(`scope: "advisory" was refused rather than ignored: %s`, cs.MalformedReason())
@@ -115,10 +91,6 @@ func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 		t.Fatal(`scope: "advisory" was read as a restriction`)
 	}
 
-	// A disclose value that is neither "count" nor "none" (and not a case
-	// near-miss of one) is a member of some future vocabulary, not a typo of
-	// this one, and Disclosure() reads it as absent — the same collapse
-	// Restricts() applies to an unrecognised scope value.
 	cs = parseStrict(t, `{"f":{"type":"array","scope":"restrict","disclose":"summary"}}`)
 	if !cs.Usable() {
 		t.Fatalf(`disclose: "summary" was refused rather than ignored: %s`, cs.MalformedReason())
@@ -129,9 +101,8 @@ func TestParseContextSchema_AnUnknownKeywordIsStillIgnored(t *testing.T) {
 	}
 }
 
-// TestParseContextSchema_NonObjectSiblingsAreNotMalformed keeps the nested
-// JSON-Schema tolerance alive. The `"type": "object"` beside `"properties"` is
-// not a declaration relay failed to read; it is not a declaration.
+// The `"type": "object"` sibling beside `"properties"` is not a declaration
+// relay failed to read — it is not a declaration at all.
 func TestParseContextSchema_NonObjectSiblingsAreNotMalformed(t *testing.T) {
 	nested := `{"type":"object","properties":` + macmcpSchema + `}`
 	cs := parseStrict(t, nested)
@@ -143,11 +114,10 @@ func TestParseContextSchema_NonObjectSiblingsAreNotMalformed(t *testing.T) {
 	}
 }
 
-// TestParseContextSchema_AMalformedNestedFieldIsStillReported closes the one
-// way a bad fragment could hide: inside a nested document whose only restrict
-// field is the bad one. From the flat reading that presents as a document with
-// no restrictions at all — which is precisely the silence being removed — so
-// the rescue is adopted on a malformed reading as well as on a restricting one.
+// A bad fragment could otherwise hide inside a nested document whose only
+// restrict field is the bad one: the flat reading alone would present that as
+// a document with no restrictions at all, so the nested rescue has to apply
+// to a malformed reading, not just to a restricting one.
 func TestParseContextSchema_AMalformedNestedFieldIsStillReported(t *testing.T) {
 	nested := `{"type":"object","properties":{"mail_accounts":{"type":"array","Scope":"restrict"}}}`
 	cs := parseStrict(t, nested)
@@ -156,11 +126,6 @@ func TestParseContextSchema_AMalformedNestedFieldIsStillReported(t *testing.T) {
 	}
 }
 
-// TestContextField_AnEmptyAppliesToEntryGovernsEverything is S4. applies_to:
-// [""] used to make a field that declares itself a restriction govern no tool
-// at all, while still being reported as declared to the operator, to the client
-// and to the audit log — a restriction that restricts nothing, which is the one
-// thing scope: "restrict" is documented as unable to mean.
 func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
 	cs := parseStrict(t, `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":[""]}}`)
 	if !cs.Usable() {
@@ -179,9 +144,6 @@ func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
 		t.Error(`applies_to [""] did not govern every tool`)
 	}
 
-	// And one stray "" beside a real pattern widens the restriction rather
-	// than voiding the list: the entry names no tool, so it takes the same
-	// reading an unparseable pattern does.
 	cs = parseStrict(t, `{"f":{"type":"array","scope":"restrict","source":"operator","applies_to":["mail_*",""]}}`)
 	f, _ = cs.Field("f")
 	if !f.Governs("capture_screenshot") {
@@ -189,11 +151,6 @@ func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
 	}
 }
 
-// TestCallTool_RefusesEveryToolOfAnMcpWhoseSchemaCannotBeRead is the
-// consequence at the chokepoint, and the reason Usable is total rather than
-// per-field: with the fragment merely dropped, this call succeeds, the stored
-// mail_accounts value is stripped from _meta on the way out, and neither the
-// caller nor the operator nor the MCP author is told anything.
 func TestCallTool_RefusesEveryToolOfAnMcpWhoseSchemaCannotBeRead(t *testing.T) {
 	broken := `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":"mail_*"}}`
 	r := newProfileRouter(t, profileOpts{

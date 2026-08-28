@@ -2,18 +2,13 @@ package main
 
 // A schema version relay reports is a version it holds a schema for.
 //
-// ExternalMcpManager keeps the declaration in two maps — schemas and
-// schemaVersions — and Stop deleted only the first. Reload is Stop + startOne
-// and finalizeConnection stores a schema only when the handshake carried one,
-// so an MCP reloaded onto a handshake with no contextSchema left the version
-// behind: McpSurfaceFor then answered {Schema: nil, SchemaVersion: 2}.
-//
-// That surface is the most dangerous state this type can hold, because
-// ParseContextSchema(nil, 2) is a v2 schema with ZERO fields and nothing about
-// it looks wrong: checkScopePresence finds no restrict field and passes every
-// tool, filterKnownContextFields finds nothing declared and strips every stored
-// context key off the wire, and scopeFromMeta records no scope. Relay removes
-// the confinement and reports that none was needed.
+// A surface reporting a version with no schema is the most dangerous state
+// this type can hold, because ParseContextSchema(nil, 2) is a v2 schema with
+// ZERO fields and nothing about it looks wrong: checkScopePresence finds no
+// restrict field and passes every tool, filterKnownContextFields finds
+// nothing declared and strips every stored context key off the wire, and
+// scopeFromMeta records no scope. Relay removes the confinement and reports
+// that none was needed.
 
 import (
 	"testing"
@@ -46,7 +41,6 @@ func TestMcpSurface_StopClearsTheVersionWithTheSchema(t *testing.T) {
 func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("mail_search"), nil))
-	// Exactly the split state Stop used to leave: a version with no schema.
 	mgr.mu.Lock()
 	mgr.schemaVersions["macmcp"] = 2
 	mgr.mu.Unlock()
@@ -67,6 +61,6 @@ func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
 	}
 }
 
-// hasSchema keeps the assertions above readable; a surface with no bytes is
-// what "relay knows nothing about this MCP" looks like.
+// A surface with no bytes is what "relay knows nothing about this MCP"
+// looks like.
 func (s McpSurface) hasSchema() bool { return len(s.Schema) > 0 }

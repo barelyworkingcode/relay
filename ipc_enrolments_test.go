@@ -51,6 +51,7 @@ func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, SettingsStor
 		NotifyReconcile:        func(string) error { return nil },
 		NotifyReloadMcp:        func(string, string) error { return nil },
 		Audit:                  rec,
+		EnrolmentOps:           &EnrolmentOps{Store: store, Audit: rec},
 	}, store, ui
 }
 

@@ -12,14 +12,12 @@ import (
 	"unsafe"
 )
 
-// ---------------------------------------------------------------------------
-// Callback registry for dispatchToMain
-// ---------------------------------------------------------------------------
-
+// A closure cannot cross the cgo boundary, so callbacks are parked here and
+// C carries only the uintptr key.
 var (
-	cbMu    sync.Mutex
-	cbMap   = make(map[uintptr]func())
-	cbNext  uintptr
+	cbMu   sync.Mutex
+	cbMap  = make(map[uintptr]func())
+	cbNext uintptr
 )
 
 func storeCallback(fn func()) uintptr {
@@ -38,10 +36,6 @@ func loadCallback(id uintptr) func() {
 	delete(cbMap, id)
 	return fn
 }
-
-// ---------------------------------------------------------------------------
-// Go wrappers for C functions
-// ---------------------------------------------------------------------------
 
 func cocoaInitApp() {
 	C.cocoa_init_app()
@@ -73,24 +67,18 @@ func cocoaSettingsEvalJS(js string) {
 	C.cocoa_settings_eval_js(cs)
 }
 
-// dispatchToMain schedules a Go function to run on the main (UI) thread.
 func dispatchToMain(fn func()) {
 	id := storeCallback(fn)
 	C.cocoa_dispatch_main_callback(C.uintptr_t(id))
 }
 
-// cocoaRequestTccCalendar / Contacts / Reminders trigger TCC prompts from
-// Relay's own process. Each blocks the calling goroutine (not the main
-// thread) for up to timeoutSec while the user responds, then returns true
-// iff access is granted. Used as primers before relay spawns an MCP that
-// needs these services -- the MCP inherits Relay's grant via TCC's
-// responsible-parent attribution.
-//
-// Bracket batches with cocoaBeginForegroundActivation / End -- macOS
-// suppresses TCC prompts for .accessory (LSUIElement) apps.
+// macOS suppresses TCC prompts for .accessory (LSUIElement) apps, so every
+// batch of cocoaRequestTcc* calls must be bracketed by these two.
 func cocoaBeginForegroundActivation() { C.cocoa_begin_foreground_activation() }
 func cocoaEndForegroundActivation()   { C.cocoa_end_foreground_activation() }
 
+// Each blocks the calling goroutine — never the main thread — until the user
+// answers or timeoutSec elapses.
 func cocoaRequestTccCalendar(timeoutSec int) bool {
 	return C.cocoa_request_tcc_calendar(C.int(timeoutSec)) != 0
 }
@@ -103,31 +91,23 @@ func cocoaRequestTccReminders(timeoutSec int) bool {
 	return C.cocoa_request_tcc_reminders(C.int(timeoutSec)) != 0
 }
 
-// ---------------------------------------------------------------------------
-// DarwinPlatform implements Platform using Cocoa via cgo.
-// ---------------------------------------------------------------------------
-
 type DarwinPlatform struct{}
 
 func NewPlatform() Platform { return &DarwinPlatform{} }
 
-func (p *DarwinPlatform) Init()                            { cocoaInitApp() }
-func (p *DarwinPlatform) Run()                             { cocoaRunApp() }
-func (p *DarwinPlatform) SetupTray(rgba []byte, w, h int)  { cocoaSetupTray(rgba, w, h) }
-func (p *DarwinPlatform) UpdateMenu(menuJSON string)       { cocoaUpdateMenu(menuJSON) }
-func (p *DarwinPlatform) OpenSettings(html string)         { cocoaOpenSettings(html) }
-func (p *DarwinPlatform) EvalSettingsJS(js string)         { cocoaSettingsEvalJS(js) }
-func (p *DarwinPlatform) DispatchToMain(fn func())         { dispatchToMain(fn) }
+func (p *DarwinPlatform) Init()                           { cocoaInitApp() }
+func (p *DarwinPlatform) Run()                            { cocoaRunApp() }
+func (p *DarwinPlatform) SetupTray(rgba []byte, w, h int) { cocoaSetupTray(rgba, w, h) }
+func (p *DarwinPlatform) UpdateMenu(menuJSON string)      { cocoaUpdateMenu(menuJSON) }
+func (p *DarwinPlatform) OpenSettings(html string)        { cocoaOpenSettings(html) }
+func (p *DarwinPlatform) EvalSettingsJS(js string)        { cocoaSettingsEvalJS(js) }
+func (p *DarwinPlatform) DispatchToMain(fn func())        { dispatchToMain(fn) }
 
 func (p *DarwinPlatform) OpenURL(url string) {
 	cs := C.CString(url)
 	defer C.free(unsafe.Pointer(cs))
 	C.cocoa_open_url(cs)
 }
-
-// ---------------------------------------------------------------------------
-// Exported callbacks invoked from Objective-C
-// ---------------------------------------------------------------------------
 
 //export goOnMenuClick
 func goOnMenuClick(itemID C.int) {

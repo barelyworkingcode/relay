@@ -1,9 +1,8 @@
 package main
 
-// The permission set has to survive the round trip on BOTH surfaces. ADR-004's
-// model is two co-equal editors over one mutator layer, so a field that only
-// eve can set, or only the tray, is a field an operator will eventually set
-// from the wrong window and watch vanish.
+// ADR-004: two co-equal editors over one mutator layer — a field only one can
+// set is a field an operator will eventually set from the wrong window and
+// watch vanish.
 
 import (
 	"encoding/json"
@@ -14,9 +13,6 @@ import (
 	"testing"
 )
 
-// newV2ProjectRoutesServer is newProjectRoutesServer with a LIVE v2 surface
-// (macMCP's worked example) instead of fsMCP's v1 fixture, so the scope
-// validation has a declaration to check against.
 func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 	t.Helper()
 	store := NewSettingsStoreAt(t.TempDir())
@@ -27,15 +23,14 @@ func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 		s.ExternalMcps = []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL, store
 }
 
-// The profile ADR-011's worked example describes, created over HTTP and read
-// back through projectView. Every field the PUT accepted has to be on the GET:
-// a UI that cannot render its own state is one an operator edits blind.
+// A UI that cannot render its own state is one an operator edits blind —
+// every field PUT accepts must be on GET.
 func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 	base, store := newV2ProjectRoutesServer(t)
 
@@ -72,14 +67,11 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 		t.Errorf("context missing from the view: %s", created.Context["macmcp"])
 	}
 
-	// And it is what actually reached settings.json, not just what the
-	// response echoed.
 	stored, _ := store.Get().findProjectByID(created.ID)
 	if stored == nil || stored.Access["macmcp"] != AccessRead {
 		t.Fatalf("the mode did not persist: %#v", stored)
 	}
 
-	// GET renders the same thing.
 	resp, body = doJSON(t, "GET", base+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get: status %d", resp.StatusCode)
@@ -92,7 +84,8 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 		t.Errorf("GET does not show what the POST accepted: %#v", fetched)
 	}
 
-	// PUT patches one layer and leaves the others alone — nil means no change.
+	// Subtle: nil means no change — PUT patches one layer without touching the
+	// others.
 	resp, body = doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
 		"access": map[string]string{"macmcp": "write"},
 	})
@@ -111,8 +104,6 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 	}
 }
 
-// A bad value is refused with a 400 and NOTHING is mutated. The whole point of
-// validating on save is that an invalid confinement never becomes a stored one.
 func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) {
 	base, store := newV2ProjectRoutesServer(t)
 
@@ -156,10 +147,8 @@ func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) 
 	}
 }
 
-// GET /api/mcps/{id}/scope_fields is how eve renders the same panel the tray
-// does. An MCP relay has never connected to is a 404, not an empty list:
-// "scopes nothing" and "cannot say" are different answers and only one of them
-// lets an editor safely offer no fields.
+// Subtle: an MCP relay has never connected to is 404, not an empty list —
+// "scopes nothing" and "cannot say" are different answers.
 func TestProjectRoutes_ScopeFields(t *testing.T) {
 	base, _ := newV2ProjectRoutesServer(t)
 
@@ -178,8 +167,8 @@ func TestProjectRoutes_ScopeFields(t *testing.T) {
 	for _, f := range fields {
 		byName[f.Name] = f
 	}
-	// The absent-source-means-operator rule is applied ON THE GO SIDE so no
-	// consumer has to re-derive it.
+	// Absent-source-means-operator is resolved server-side so no consumer has
+	// to re-derive it.
 	if got := byName["mail_accounts"]; got.Source != ContextSourceOperator || !got.Enumerable || got.Description == "" {
 		t.Errorf("mail_accounts projected wrong: %#v", got)
 	}
@@ -196,8 +185,7 @@ func TestProjectRoutes_ScopeFields(t *testing.T) {
 	}
 }
 
-// The IPC path decodes the SAME DTOs, so it accepts and refuses identically.
-// This is the half a tray-only operator sees.
+// Same DTOs as the HTTP path, so it accepts and refuses identically.
 func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 	ctx, store, ui, _ := newProjectsIPC(t)
 	ctx.Tools.(*fakeTools).surfaces = v2Surfaces()
@@ -248,9 +236,8 @@ func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 	}
 }
 
-// The outbound grant travels the same wire as the other three layers, and the
-// case that matters is turning it OFF: an operator who cannot revoke a channel
-// from the surface that granted it has a control they can only ever widen.
+// Deliberate: the case that matters is turning the grant OFF — a control that
+// can only widen isn't a control.
 func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 	base, store := newV2ProjectRoutesServer(t)
 
@@ -280,8 +267,6 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 		t.Fatalf("the outbound grant did not persist: %#v", stored)
 	}
 
-	// GET shows it, because a UI that cannot render its own state is one an
-	// operator edits blind.
 	resp, body = doJSON(t, "GET", base+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get: status %d", resp.StatusCode)
@@ -294,7 +279,6 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 		t.Errorf("GET does not show what the POST accepted: %#v", fetched)
 	}
 
-	// Patching another layer leaves it alone — nil means no change.
 	resp, _ = doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
 		"access": map[string]string{"macmcp": "read"},
 	})
@@ -306,8 +290,6 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 		t.Error("a patch of the mode revoked the outbound grant")
 	}
 
-	// And an empty map clears it. This is the direction that must work: the
-	// channel is what a read-only profile is supposed not to have.
 	resp, body = doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
 		"allow_external": map[string]bool{},
 	})

@@ -11,14 +11,9 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// RunMCPServer runs the MCP stdio server, bridging JSON-RPC to the bridge client.
-//
-// tools/call requests are handled on their own goroutine so a long-running
-// call (e.g. image generation, minutes) doesn't block other tool calls or the
-// progress notifications it streams. All stdout writes go through a single
-// mutex-guarded emit so concurrent responses/notifications never interleave.
-// The handshake methods (initialize / tools/list / notifications) stay inline
-// to preserve their natural ordering.
+// tools/call runs on its own goroutine so a long call (e.g. image generation,
+// minutes) doesn't block other tool calls or the progress notifications it
+// streams; emit is mutex-guarded so concurrent writes never interleave.
 func RunMCPServer(token string) error {
 	client := bridge.NewClient(token)
 
@@ -70,7 +65,6 @@ func RunMCPServer(token string) error {
 	return nil
 }
 
-// marshalResult converts an arbitrary value into json.RawMessage for a Response.
 func marshalResult(v interface{}) (json.RawMessage, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -79,11 +73,8 @@ func marshalResult(v interface{}) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// jsonrpcVersion is the protocol version string for all responses.
 const jsonrpcVersion = jsonrpc.Version
 
-// rpcResult builds a success Response with the given result for the request ID.
-// If marshaling fails, returns an internal error response instead.
 func rpcResult(id interface{}, result json.RawMessage, err error) *jsonrpc.Response {
 	if err != nil {
 		return rpcError(id, jsonrpc.CodeInternalError, err.Error())
@@ -91,7 +82,6 @@ func rpcResult(id interface{}, result json.RawMessage, err error) *jsonrpc.Respo
 	return &jsonrpc.Response{JSONRPC: jsonrpcVersion, ID: id, Result: result}
 }
 
-// rpcError builds an error Response with the given code and message for the request ID.
 func rpcError(id interface{}, code int, msg string) *jsonrpc.Response {
 	return &jsonrpc.Response{JSONRPC: jsonrpcVersion, ID: id, Error: &jsonrpc.Error{Code: code, Message: msg}}
 }
@@ -100,7 +90,7 @@ func handleMethod(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Re
 	switch req.Method {
 	case MethodInitialize:
 		if req.ID == nil {
-			return nil // notification — no response
+			return nil
 		}
 		return handleInitialize(req)
 	case MethodInitialized:
@@ -150,9 +140,6 @@ func handleToolsList(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc
 	return rpcResult(req.ID, data, err)
 }
 
-// handleToolsCall proxies a tools/call to the bridge and writes the result via
-// emit. If the caller included _meta.progressToken, downstream progress is
-// streamed back as notifications/progress referencing that same token.
 func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest, emit func(interface{})) {
 	var params struct {
 		Name      string          `json:"name"`
@@ -191,13 +178,9 @@ func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest, emit fun
 	emit(rpcResult(req.ID, json.RawMessage(result), nil))
 }
 
-// progressNotification builds an MCP notifications/progress message (no ID)
-// referencing the caller's progressToken.
 func progressNotification(token interface{}, u bridge.ProgressUpdate) jsonrpc.Request {
-	// Per the MCP spec: progressToken + progress are required; total and message
-	// are optional. Omit total when 0/unknown (sending total:0 implies a real
-	// zero total) and message when empty, so spec-conformant clients aren't
-	// misled.
+	// total and message are optional per the MCP spec; omitted rather than sent
+	// as 0/"" so a spec-conformant client doesn't read a real zero total.
 	params := map[string]interface{}{
 		"progressToken": token,
 		"progress":      u.Progress,

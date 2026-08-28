@@ -13,12 +13,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// Directory auth (Project.AllowCwdAuth): a tokenless bridge caller is resolved
-// to a project by its working directory, but only for projects that opted in.
-// Every failure mode must land on "no access" — the danger in this feature is a
-// mismatch that silently widens scope, so the tests below lean on that.
-
-// cwdProject builds a Settings with one opted-in project rooted at path.
 func cwdProject(t *testing.T, path string, allowCwd bool) *Settings {
 	t.Helper()
 	s := makeSettings(nil, nil, nil)
@@ -68,8 +62,6 @@ func TestAuthenticateProjectByPath_NoMatch(t *testing.T) {
 	}
 }
 
-// A project nested inside another wins for its own subtree; the outer project
-// still owns everything above it.
 func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "packages", "inner")
@@ -94,9 +86,9 @@ func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
 	}
 }
 
-// A nested project that did NOT opt in must not shadow an opted-in parent:
-// the longest match is only computed among participants, so the parent's grant
-// still applies inside the nested path.
+// The longest match is computed only among opted-in participants, so a
+// nested project that did NOT opt in cannot shadow an opted-in parent by
+// virtue of its longer path.
 func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "vendored")
@@ -119,8 +111,6 @@ func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 	}
 }
 
-// Directory auth must grant exactly what the token grants — same permissions,
-// same disabled tools, same context. Only the identification differs.
 func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
 	dir := t.TempDir()
 	s := makeSettings(
@@ -143,10 +133,6 @@ func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
 		t.Errorf("scope differs between auth paths:\n token: %s\n  path: %s", wantJSON, gotJSON)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Router integration
-// ---------------------------------------------------------------------------
 
 func TestResolveAuth_CwdFallback(t *testing.T) {
 	dir := t.TempDir()
@@ -180,8 +166,6 @@ func TestResolveAuth_CwdFallbackDeniedWithoutOptIn(t *testing.T) {
 	}
 }
 
-// A wrong token must fail even from a directory that would have authenticated:
-// the fallback covers the absence of a credential, never a bad one.
 func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 	dir := t.TempDir()
 	r := newTestRouter(t, cwdProject(t, dir, true), NewExternalMcpManager(nil))
@@ -192,8 +176,6 @@ func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 	}
 }
 
-// Service-token operations must be unreachable through directory auth, which
-// only ever yields a project-scoped token.
 func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	dir := t.TempDir()
 	r := newTestRouter(t, cwdProject(t, dir, true), NewExternalMcpManager(nil))
@@ -207,8 +189,6 @@ func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	}
 }
 
-// ListTools over the full router: the tool surface a tokenless caller sees from
-// inside the project must equal what the project's token sees.
 func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
 	dir := t.TempDir()
 	mock := newMockConn("fsmcp", simpleTools("read_file", "write_file"), nil)
@@ -244,14 +224,8 @@ func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// dirWithinProject: filesystem identity
-// ---------------------------------------------------------------------------
-
-// A stored project path that differs only in case from the real directory must
-// still match on a case-insensitive volume — this is the common shape of a
-// hand-typed path ("/users/Me/Eve/ACME" vs "/Users/me/Eve/ACME").
-// Skipped on case-sensitive volumes, where the two really are different dirs.
+// Skipped on case-sensitive volumes, where a case variant is genuinely a
+// different directory rather than an alias for the same one.
 func TestDirWithinProject_CaseInsensitiveVolume(t *testing.T) {
 	// A named element, not t.TempDir()'s numeric leaf — digits have no case.
 	dir := filepath.Join(t.TempDir(), "ProjectDir")
@@ -271,7 +245,6 @@ func TestDirWithinProject_CaseInsensitiveVolume(t *testing.T) {
 	}
 }
 
-// The identity walk must not turn unrelated directories into matches.
 func TestDirWithinProject_IdentityRejectsOutsiders(t *testing.T) {
 	proj := t.TempDir()
 	other := t.TempDir()

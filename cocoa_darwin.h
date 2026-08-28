@@ -3,37 +3,22 @@
 
 #include <stdint.h>
 
-// Initialize the Cocoa application (NSApp, delegate, edit menu)
 void cocoa_init_app(void);
-
-// Enter the Cocoa run loop (blocks on main thread)
 void cocoa_run_app(void);
 
-// Create/update tray menu. Called from Go.
 void cocoa_setup_tray(const unsigned char* iconRGBA, int width, int height);
-void cocoa_update_menu(const char* menuJSON);  // JSON array of menu items
+void cocoa_update_menu(const char* menuJSON);
 
-// Settings window
 void cocoa_open_settings(const char* html);
 void cocoa_settings_eval_js(const char* js);
 
-// Open URL in default browser
 void cocoa_open_url(const char* url);
 
-// Dispatch goDispatchCallback(ctx) on the main thread
 void cocoa_dispatch_main_callback(uintptr_t ctx);
 
-// Trigger TCC permission prompts from Relay's own process so the resulting
-// grants are keyed to com.barelyworkingcode.relay. MCPs that relay spawns
-// (e.g. macmcp) inherit these grants via TCC's responsible-parent attribution
-// at runtime. Each function blocks the calling thread (not the main thread)
-// until the request resolves or timeoutSec elapses. Returns 1 if access is
-// granted (already or after prompt), 0 otherwise.
-//
-// Bracket a batch of these calls with begin/end_foreground_activation so
-// Relay bumps from .accessory (LSUIElement tray) to .regular for the
-// duration -- macOS Sequoia suppresses TCC prompts for accessory apps,
-// even /Applications-resident ones.
+// Each request blocks the calling thread, not the main one, and returns 1 if
+// access is granted. A batch must be bracketed by begin/end_foreground_activation:
+// macOS suppresses TCC prompts for .accessory apps.
 void cocoa_begin_foreground_activation(void);
 void cocoa_end_foreground_activation(void);
 int cocoa_request_tcc_calendar(int timeoutSec);

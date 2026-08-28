@@ -15,14 +15,10 @@ import (
 	"relaygo/mcp"
 )
 
-// newTestHTTPServer creates a test HTTP server that responds with valid JSON-RPC
-// responses. The handler can be customized per test.
 func newTestHTTPServer(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
-// readJSONRPCID extracts the request ID from a JSON-RPC request body.
-// Centralizes the body-read + unmarshal pattern used across HTTP test handlers.
 func readJSONRPCID(r *http.Request) int64 {
 	body, _ := io.ReadAll(r.Body)
 	r.Body.Close()
@@ -33,8 +29,6 @@ func readJSONRPCID(r *http.Request) int64 {
 	return req.ID
 }
 
-// jsonRPCHandler returns a handler that responds to any JSON-RPC request with
-// a valid result containing the given payload.
 func jsonRPCHandler(result string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := readJSONRPCID(r)
@@ -155,7 +149,6 @@ func TestHTTPMcpConn_SSEResponse(t *testing.T) {
 		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// Write SSE data.
 		fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}\n\n", id)
 	})
 	defer srv.Close()
@@ -182,7 +175,6 @@ func TestHTTPMcpConn_SSEMultiLineData(t *testing.T) {
 		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// Multi-line SSE data: JSON split across two data: lines, terminated by blank line.
 		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\n", id)
 		fmt.Fprintf(w, "data: \"result\":{\"multi\":true}}\n\n")
 	})
@@ -216,7 +208,6 @@ func TestHTTPMcpConn_SSENoTrailingBlankLine(t *testing.T) {
 		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// Data line with no trailing blank line — stream ends after data.
 		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"ok\":true}}\n", id)
 	})
 	defer srv.Close()
@@ -249,7 +240,6 @@ func TestHTTPMcpConn_SSEInterleavedNotification(t *testing.T) {
 		id := readJSONRPCID(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// Notification (no id) before the actual response.
 		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n")
 		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"found\":true}}\n\n", id)
 	})
@@ -278,19 +268,14 @@ func TestHTTPMcpConn_SSEInterleavedNotification(t *testing.T) {
 	}
 }
 
-// CR-3: a runtime SendRequest (no deadline on the caller's context) must still
-// be bounded so a hung HTTP MCP can't block the call (and its bridge handler)
-// indefinitely. The server never responds; the wrap's timeout must fire.
-func TestHTTPMcpConn_SendRequest_TimesOutHungServer(t *testing.T) {
+func TestHTTPMcpConn_SendRequest_TimesOutHungServerEvenWithNoCallerDeadline(t *testing.T) {
 	old := MCPRequestTimeout
 	MCPRequestTimeout = 150 * time.Millisecond
 	defer func() { MCPRequestTimeout = old }()
 
-	// The handler blocks until released. It does not rely on r.Context() (Go's
-	// HTTP/1 server won't cancel it while the request body sits unread), so the
-	// release channel is the only thing that unblocks it. Ordering matters:
-	// close(release) is deferred after srv.Close() so it runs first (LIFO),
-	// letting srv.Close() drain instead of hanging on the parked handler.
+	// Subtle: defer order matters here. close(release) is deferred after
+	// srv.Close(), so it runs first (LIFO) and unparks the handler, letting
+	// srv.Close() drain instead of hanging.
 	release := make(chan struct{})
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
 		<-release
@@ -308,8 +293,6 @@ func TestHTTPMcpConn_SendRequest_TimesOutHungServer(t *testing.T) {
 	}
 }
 
-// CR-19: an oversized Mcp-Session-Id from an untrusted server must be rejected,
-// not stored and echoed on every subsequent request.
 func TestHTTPMcpConn_SendRequest_RejectsOversizedSessionID(t *testing.T) {
 	huge := strings.Repeat("x", maxSessionIDLen+1)
 	srv := newTestHTTPServer(func(w http.ResponseWriter, r *http.Request) {
@@ -333,8 +316,7 @@ func TestHTTPMcpConn_SendRequest_RejectsOversizedSessionID(t *testing.T) {
 	}
 }
 
-// CR-4: a refresh response without expires_in must clear (zero) the token
-// expiry, otherwise the stale past timestamp makes every subsequent request
+// Deliberate: a stale past expiry would make every subsequent request
 // believe a refresh is due — a refresh storm.
 func TestHTTPMcpConn_RefreshWithoutExpiresIn_DisablesProactiveRefresh(t *testing.T) {
 	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: "https://example.test/mcp"})

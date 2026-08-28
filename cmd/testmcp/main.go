@@ -1,36 +1,8 @@
-// Command testmcp is a minimal stdio JSON-RPC peer used by the hermetic test
-// suite to exercise relay's real external-MCP stdio transport
+// Command testmcp is a minimal stdio JSON-RPC peer the hermetic test suite
+// spawns to exercise relay's real external-MCP stdio transport
 // (externalMcpConn.SendRequest / readLoop) without mocking the connection.
-//
-// It reads newline-delimited JSON-RPC requests on stdin and writes responses
-// on stdout. Behavior is selected by the request method so one binary covers
-// every transport test:
-//
-//	initialize           respond with a minimal MCP initialize result (plus a
-//	                     v2 contextSchema when RELAY_TESTMCP_CONTEXT is set)
-//	context/enumerate    ADR-011 decision 6. Behaviour is selected by the
-//	                     RELAY_TESTMCP_CONTEXT env var: unset or "off" answers
-//	                     -32601 (the shape of an MCP that does not implement
-//	                     it), "v2" declares the schema and answers real values,
-//	                     "unsupported" declares the schema and still answers
-//	                     -32601.
-//	tools/list           respond with one stub tool (so mcpHandshake succeeds)
-//	echo                 respond with result == the request params (honors an
-//	                     optional {"delayMs":N} to force out-of-order replies)
-//	garbage_then_echo    write one malformed line, then a valid echo response
-//	                     (exercises readLoop's skip-malformed path)
-//	oversize             write ONE response frame larger than relay's per-frame
-//	                     cap, correctly tagged with this request's id, and
-//	                     nothing else (exercises readLoop's resync path).
-//	                     {"bytes":N} sets the payload size; the default is
-//	                     comfortably over bridge.MaxMessageSize.
-//	hang                 never respond (exercises ctx-cancel / request-timeout)
-//	exit                 os.Exit(0) immediately (exercises reader-death/EOF)
-//	<anything else>      treated as echo
-//
-// Requests with no id (notifications, e.g. notifications/initialized) get no
-// response. Implementing initialize + tools/list makes testmcp a real minimal
-// MCP, so it doubles as the upstream for manager Reconcile/Reload tests.
+// Behavior is selected by the request method and by RELAY_TESTMCP_CONTEXT;
+// see contextMode below for the context/enumerate modes.
 //
 // Built on demand by buildTestMcpBinary in external_mcp_stdio_test.go.
 package main
@@ -46,23 +18,20 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// oversizeDefaultBytes is the payload size the "oversize" method emits when the
-// request does not pick one. Larger than bridge.MaxMessageSize (10 MiB) so the
-// frame is over relay's cap whatever else the response carries. Not imported
-// from bridge on purpose: this peer is meant to be able to emit a frame relay
-// refuses, so it must not be silently retuned by a change to relay's limit.
+// Larger than bridge.MaxMessageSize (10 MiB) so the frame is over relay's cap
+// whatever else the response carries. Not imported from bridge on purpose:
+// this peer must be able to emit a frame relay refuses, so it must not be
+// silently retuned by a change to relay's limit.
 const oversizeDefaultBytes = 11 << 20
 
-// contextMode selects the context/enumerate behaviour. Off by default so every
-// test that predates ADR-011 sees exactly the peer it always saw — including
-// declaring no contextSchema at all, which is what makes "relay has never seen
-// a schema for this MCP" reachable.
+// Off by default so every test that predates ADR-011 sees exactly the peer it
+// always saw — including declaring no contextSchema at all, which is what
+// makes "relay has never seen a schema for this MCP" reachable.
 func contextMode() string { return os.Getenv("RELAY_TESTMCP_CONTEXT") }
 
-// enumSchema is macMCP's worked example from ADR-011, which is what relay's
-// operator surfaces are built against: two operator-set enumerable fields, the
-// second depending on the first, plus one relay derives from the project path
-// and therefore never enumerates.
+// enumSchema mirrors macMCP's ADR-011 worked example: two operator-set fields
+// (the second depending on the first), plus one relay derives from the
+// project path and therefore never enumerates.
 const enumSchema = `{
   "mail_accounts": {"type":"array","items":{"type":"string"},
     "description":"Mail accounts this client may read from or send as",
@@ -76,9 +45,6 @@ const enumSchema = `{
     "scope":"restrict","source":"project_path","applies_to":["mail_save_attachment"]}
 }`
 
-// allAccounts is what the peer holds. mail_mailboxes enumerates ONE entry per
-// account in scope, so a test can tell "listed within Bob" from "listed across
-// every account" by counting.
 var allAccounts = []string{"Alice", "Bob"}
 
 // enumerate answers a context/enumerate request, or returns a JSON-RPC error.
@@ -141,11 +107,11 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
-	// The echo is only evidence if it is faithful. json.Marshal would compact
-	// the echoed params with HTML escaping on, rewriting `<`, `>`, `&` and the
-	// Unicode line separators — so a test asserting that relay forwarded a
-	// caller's bytes unmodified (ADR-012) would be reading this peer's edits
-	// rather than relay's. An encoder with escaping off reports what arrived.
+	// json.Marshal would compact the echoed params with HTML escaping on,
+	// rewriting `<`, `>`, `&` and the Unicode line separators — so a test
+	// asserting that relay forwarded a caller's bytes unmodified (ADR-012)
+	// would be reading this peer's edits rather than relay's. An encoder with
+	// escaping off reports what arrived.
 	writeResp := func(id interface{}, result json.RawMessage) {
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
@@ -155,11 +121,10 @@ func main() {
 		}
 		writeLine(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 	}
-	// writeOversize emits one response frame of n filler bytes, tagged with id.
-	// Written by hand rather than through json.Marshal so the id lands in its
-	// conventional place — right after "jsonrpc" and ahead of the giant result
-	// — which is exactly the ordering relay's oversized-frame attribution
-	// relies on, and so the payload never has to exist in memory at once.
+	// Written by hand rather than through json.Marshal so the id lands right
+	// after "jsonrpc" and ahead of the giant result — the ordering relay's
+	// oversized-frame attribution relies on — and so the payload never has to
+	// exist in memory at once.
 	writeOversize := func(id interface{}, n int) {
 		idJSON, _ := json.Marshal(id)
 		chunk := bytes.Repeat([]byte("A"), 64*1024)

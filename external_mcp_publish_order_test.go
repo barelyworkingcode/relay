@@ -2,16 +2,11 @@
 
 package main
 
-// A connection relay will dispatch to must never be reachable before the schema
-// that says what a call to it is confined to.
-//
-// finalizeConnection used to publish the connection FIRST, then set the tools,
-// then store the context schema. In that window an MCP was callable and relay
-// believed it declared nothing — and ParseContextSchema(nil, 0) is not a narrow
-// schema, it is no schema: checkScopePresence finds no field to require and
-// passes every tool, filterKnownContextFields finds nothing declared and strips
-// every stored context key off the wire. That is a call answered as though the
-// grant were empty, and it was reachable at startup and on every respawn.
+// Subtle: ParseContextSchema(nil, 0) is not a narrow schema, it is no
+// schema — checkScopePresence finds no field to require and passes every
+// tool, and filterKnownContextFields strips every stored context key. A
+// connection reachable before its schema is published is a call answered as
+// though the grant were empty.
 
 import (
 	"context"
@@ -20,10 +15,9 @@ import (
 	"time"
 )
 
-// A start that lands on an MCP relay already knows must replace the schema, not
-// merge with it. The respawn path does not go through Stop, so a child that
-// stopped declaring a schema would otherwise leave relay enforcing its
-// predecessor's declaration against a process that no longer honours it.
+// Deliberate: a respawn onto a known id replaces the schema, not merges with
+// it — the respawn path doesn't go through Stop, so a child that stopped
+// declaring a schema must not leave relay enforcing its predecessor's.
 func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	m := NewExternalMcpManager(nil)
@@ -39,8 +33,6 @@ func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 		t.Fatalf("surface after the declaring start = %+v", s)
 	}
 
-	// Same id, a build that no longer declares one — exactly what a respawn
-	// onto a downgraded child looks like, and it does not pass through Stop.
 	silent := stdioMcp("mcp-schema", bin)
 	if err := m.startOne(ctx, &silent); err != nil {
 		t.Fatalf("startOne (silent): %v", err)
@@ -52,11 +44,9 @@ func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 	}
 }
 
-// The publication and the schema write happen in one critical section, so a
-// reader holding the manager's lock cannot observe a connection without the
-// declaration that governs it. This spins a reader across a series of first
-// starts, which is where the window was: on a restart the previous schema was
-// still in the map and hid it.
+// Deliberate: publication and schema write happen in one critical section —
+// a reader holding the manager's lock cannot observe a connection without the
+// declaration that governs it.
 func TestPublishOrder_NoConnectionIsReachableBeforeItsSchema(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	m := NewExternalMcpManager(nil)

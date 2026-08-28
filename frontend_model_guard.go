@@ -10,38 +10,16 @@ import (
 	"slices"
 )
 
-// maxSessionBodyBytes bounds how much of a session-create body we buffer for
-// model-allowlist validation. These payloads are small JSON envelopes
-// (projectId, model, name, settings); 1 MiB is generous headroom while
-// capping memory for a malformed or oversized request.
 const maxSessionBodyBytes = 1 << 20
 
-// newSessionModelGuard enforces a project's allowed_models allowlist on
-// session creation, then forwards to the dispatcher.
+// relayLLM has no project knowledge, so this guard is the only layer that
+// can enforce a project's allowed_models allowlist; everything not
+// confidently disallowed is forwarded, keeping relayLLM the source of truth.
 //
-// relayLLM has no project knowledge — the allowlist lives only in relay's
-// settings — so this is the only layer that can enforce it. Keeping it here
-// (rather than teaching relayLLM about projects) preserves the loose coupling
-// between the two services. Eve's pickers filter the model list for UX, but
-// this is the authoritative boundary.
-//
-// Enforcement is deliberately narrow:
-//   - only the POST session-create endpoint (Eve's single chokepoint),
-//   - only when the project declares a non-empty, non-wildcard allowlist,
-//   - only when the request names a concrete model (an empty model lets
-//     relayLLM pick its configured default; the allowlist governs explicit
-//     user choices, not server defaults).
-//
-// The guard is the catch-all wrapper around the dispatcher, so it must
-// classify the request itself rather than relying on a single exact mux
-// pattern: Go's ServeMux routes "POST /api/sessions/" (trailing slash) to the
-// "/" catch-all, which would otherwise skip a guard mounted on the exact
-// "POST /api/sessions" pattern. It gates the create path and its trailing-slash
-// variant only — NOT sub-resources like /api/sessions/{id}/messages, whose
-// larger bodies must not be buffered/truncated and which never name a model.
-//
-// Anything we can't confidently classify as disallowed is forwarded so
-// relayLLM remains the source of truth for every other failure mode.
+// Must classify the request itself rather than rely on an exact mux
+// pattern: Go's ServeMux routes "POST /api/sessions/" (trailing slash) to
+// the "/" catch-all, bypassing a guard mounted only on the exact
+// "POST /api/sessions" pattern.
 func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !isSessionCreatePath(r.URL.Path) {
@@ -49,12 +27,8 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 			return
 		}
 
-		// Read one byte past the cap so we can distinguish a body that just fits
-		// from one that's oversized. We must NOT truncate-and-forward: this is the
-		// authoritative allowlist boundary, and truncating would leave the guard
-		// unable to see the model field (fail-open) while forwarding a mangled
-		// body — relying on relayLLM to also reject the remainder. An oversized
-		// create body can't be fully validated, so fail closed instead.
+		// Read one byte past the cap to distinguish "just fits" from
+		// oversized; truncating and forwarding would fail open instead.
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxSessionBodyBytes+1))
 		if err != nil {
 			http.Error(w, "could not read request body", http.StatusBadRequest)
@@ -69,18 +43,16 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 			})
 			return
 		}
-		// Restore the body for the downstream proxy regardless of outcome.
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 
-		// Parse only the two fields we gate on so we don't couple to
+		// Only the two fields the guard gates on, so it doesn't couple to
 		// relayLLM's evolving session schema.
 		var payload struct {
 			ProjectID string `json:"projectId"`
 			Model     string `json:"model"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			// Not a shape we understand — let relayLLM produce the error.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -102,28 +74,16 @@ func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFu
 	}
 }
 
-// isSessionCreatePath reports whether p targets the session-create endpoint.
-// Both the canonical path and its trailing-slash variant are gated so the
-// allowlist can't be bypassed by appending a slash; deeper sub-resource paths
-// are intentionally excluded (see newSessionModelGuard).
 func isSessionCreatePath(p string) bool {
 	return p == "/api/sessions" || p == "/api/sessions/"
 }
 
-// refuseRemoteSession rejects a session-create request scoped to a remote
-// project. A remote project is a capability grant to a client on another
-// machine, not a context anything runs a session in.
-//
-// This has to be its own check rather than a case inside the model allowlist,
-// because the allowlist cannot express it: modelAllowedForProject treats an
-// EMPTY AllowedModels as "unrestricted", and validateProjectShape requires a
-// remote project's AllowedModels to be empty. Left to the allowlist alone, a
-// remote project would therefore permit every model — the most permissive
-// outcome reached through the most restrictive configuration.
-//
-// Fails open on an unknown project, matching the allowlist's posture: relay
-// only refuses what it can positively identify as remote, and lets relayLLM
-// produce the authoritative error otherwise.
+// Must be a separate check, not a case inside the model allowlist:
+// validateProjectShape requires a remote project's AllowedModels to be
+// empty, but modelAllowedForProject treats an empty allowlist as
+// unrestricted — folded together, a remote project would permit every
+// model, the most permissive outcome reached through the most restrictive
+// configuration.
 func refuseRemoteSession(store SettingsStore, projectID string) error {
 	if projectID == "" {
 		return nil
@@ -135,12 +95,6 @@ func refuseRemoteSession(store SettingsStore, projectID string) error {
 	return fmt.Errorf("project %s is a remote project and cannot host a session", projectID)
 }
 
-// modelAllowedForProject reports whether a session-create request naming
-// `model` under `projectID` should be permitted. It fails open for cases that
-// are not the allowlist's concern (no project scope, server-default model,
-// unknown project, or an unrestricted/wildcard allowlist) and fails closed
-// only when a project with an explicit allowlist is asked for a model not on
-// it.
 func modelAllowedForProject(store SettingsStore, projectID, model string) bool {
 	if projectID == "" || model == "" {
 		return true // no project scope, or server-default model

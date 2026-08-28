@@ -1,11 +1,5 @@
 package main
 
-// Unit coverage for the v2 context-schema vocabulary (ADR-011 decision 3).
-// Every question relay asks of a schema is answered here without a live MCP:
-// the parse, the applies_to glob, the value validator, and the scope note.
-// The enforcement that consumes them is covered in router_access_test.go and
-// router_scope_test.go.
-
 import (
 	"encoding/json"
 	"go/ast"
@@ -18,9 +12,6 @@ import (
 	"testing"
 )
 
-// macmcpSchema is ADR-011's worked example, verbatim: two operator-supplied
-// restrict fields governing mail_*, and one project_path field governing
-// exactly two tools.
 const macmcpSchema = `{
   "mail_accounts": {
     "type": "array", "items": {"type": "string"},
@@ -43,8 +34,6 @@ const macmcpSchema = `{
   }
 }`
 
-// fsmcpV2Schema is what fsMCP looks like once it declares v2: one
-// project_path field with no applies_to at all, which governs everything.
 const fsmcpV2Schema = `{
   "allowed_dirs": {
     "type": "array", "items": {"type": "string"},
@@ -54,10 +43,6 @@ const fsmcpV2Schema = `{
 }`
 
 func TestParseContextSchema_V1DeclaresNoFieldsWhateverItSays(t *testing.T) {
-	// A schema that never opted into the vocabulary must be handled exactly as
-	// it was before ADR-011 — including one that carries a key spelled like a
-	// keyword. Reading v2 semantics off an un-versioned declaration would let
-	// an MCP change how relay enforces without saying so.
 	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 0)
 	if cs.V2() {
 		t.Fatal("version 0 parsed as v2")
@@ -79,7 +64,7 @@ func TestParseContextSchema_V2FlatFormIsTheContract(t *testing.T) {
 		t.Fatalf("restrict fields = %d, want 3", got)
 	}
 	// Name order, so a scope note and an audit line do not reshuffle between
-	// two identical calls.
+	// identical calls.
 	var names []string
 	for _, f := range cs.RestrictFields() {
 		names = append(names, f.Name)
@@ -107,17 +92,11 @@ func TestParseContextSchema_V2FlatFormIsTheContract(t *testing.T) {
 }
 
 func TestParseContextSchema_NestedFormIsRescuedOnlyTowardsFailClosed(t *testing.T) {
-	// Issue #17 showed the flat/nested ambiguity is live and that its failure
-	// direction is fail-open: a restrict field relay does not see is a grant
-	// permitted and nothing enforced. The nested shape is therefore consulted,
-	// but only when the flat reading found no restriction at all.
 	nested := `{"type":"object","properties":` + macmcpSchema + `}`
 	cs := ParseContextSchema(json.RawMessage(nested), 2)
 	if len(cs.RestrictFields()) != 3 {
 		t.Fatalf("nested v2 schema yielded %d restrict fields, want 3", len(cs.RestrictFields()))
 	}
-	// And a flat schema that already declares a restriction is NOT re-read
-	// under a "properties" key it happens to also carry.
 	both := `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator"},` +
 		`"properties":{"decoy":{"type":"array","scope":"restrict","source":"project_path"}}}`
 	cs = ParseContextSchema(json.RawMessage(both), 2)
@@ -152,8 +131,6 @@ func TestContextField_GovernsReadsAppliesTo(t *testing.T) {
 }
 
 func TestContextField_AbsentAppliesToGovernsEverything(t *testing.T) {
-	// The domain-blind default: an MCP that offers no precision gets the
-	// widest reading.
 	cs := ParseContextSchema(json.RawMessage(fsmcpV2Schema), 2)
 	f, _ := cs.Field(v1AllowedDirsField)
 	for _, name := range []string{"fs_read", "fs_bash", "anything_at_all"} {
@@ -167,8 +144,6 @@ func TestContextField_AbsentAppliesToGovernsEverything(t *testing.T) {
 }
 
 func TestMatchToolPattern_IsAnchoredAndShared(t *testing.T) {
-	// One matcher serves both applies_to and allowed_tools, so the anchoring
-	// is asserted once, here, on the matcher itself.
 	cases := []struct {
 		pattern, tool string
 		want          bool
@@ -194,8 +169,6 @@ func TestMatchToolPattern_IsAnchoredAndShared(t *testing.T) {
 }
 
 func TestToolAllowedByPatterns_MalformedPatternAdmitsNothing(t *testing.T) {
-	// The opposite fail-closed direction to ContextField.Governs, and the
-	// reason matchToolPattern returns the error instead of deciding.
 	if toolAllowedByPatterns([]string{"mail_[unterminated"}, "mail_send") {
 		t.Fatal("a malformed allowlist pattern admitted a tool")
 	}
@@ -208,10 +181,9 @@ func TestToolAllowedByPatterns_MalformedPatternAdmitsNothing(t *testing.T) {
 }
 
 func TestContextField_MalformedGlobGovernsEverything(t *testing.T) {
-	// The two readings of an uncompilable pattern are "governs nothing" and
-	// "governs everything". The second is fail-closed — more tools require a
-	// value, and a grant whose MCP publishes a broken pattern is refused
-	// rather than silently unscoped — so it is the one taken.
+	// "Governs everything" is the fail-closed reading of an uncompilable
+	// pattern: more tools require a value, so a grant whose MCP publishes a
+	// broken pattern is refused rather than silently unscoped.
 	f := ContextField{Name: "x", Scope: ContextScopeRestrict, AppliesTo: []string{"mail_[unterminated"}}
 	if !f.Governs("nothing_like_it") {
 		t.Fatal("a malformed glob failed open")
@@ -219,9 +191,9 @@ func TestContextField_MalformedGlobGovernsEverything(t *testing.T) {
 }
 
 func TestContextField_GovernsAllIsFalseForAnUnknownToolSurface(t *testing.T) {
-	// "This MCP exposes no tools" is what an MCP relay has never connected to
-	// looks like. Vacuous truth there would refuse a grant on the strength of
-	// missing information.
+	// An empty tool list is what an MCP relay has never connected to looks
+	// like; the vacuous-truth reading would grant on the strength of missing
+	// information, so GovernsAll must not take it.
 	f := ContextField{Name: "x", Scope: ContextScopeRestrict}
 	if f.GovernsAll(nil) {
 		t.Fatal("an empty tool list answered GovernsAll true")
@@ -305,21 +277,12 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 			t.Errorf("note %q missing %q", note, want)
 		}
 	}
-	// file_dirs governs neither of those tools and has no value here, so it
-	// must not appear.
 	if strings.Contains(note, "Directories") {
 		t.Errorf("note mentioned an ungoverned field: %q", note)
 	}
 	if n := scopeNoteFor(cs, values, "messages_send"); n != "" {
 		t.Errorf("an ungoverned tool got a note: %q", n)
 	}
-	// A grant with no values still gets a note, and this assertion used to say
-	// the opposite. Skipping a valueless field produced the worst note this
-	// mechanism can produce: on mail_save_attachment, which an access profile
-	// can never call, the client was told it was confined by mail_accounts and
-	// mail_mailboxes and never by file_dirs — the field that is the reason.
-	// A note that lists two of three restrictions and omits the disqualifying
-	// one is read as complete, so it is worse than no note at all.
 	n := scopeNoteFor(cs, nil, "mail_search")
 	for _, want := range []string{"mail_accounts", "mail_mailboxes", "refused"} {
 		if !strings.Contains(n, want) {
@@ -331,12 +294,6 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 	}
 }
 
-// discloseSchema is a v2 schema exercising all three disclose settings: an
-// array field left at the default (no "disclose" at all — macmcpSchema above
-// already pins that one byte-for-byte, so it is not repeated here), an array
-// field opting into "count", and a scalar (non-array) field opting into
-// "none". Both restrict fields govern the same tool so one note exercises
-// both settings together, the way a real client would see them.
 const discloseSchema = `{
   "mail_accounts": {
     "type": "array", "items": {"type": "string"},
@@ -352,9 +309,6 @@ const discloseSchema = `{
   }
 }`
 
-// TestScopeNoteFor_DiscloseCountAndNoneNameNoValue is issue #33 acceptance 3:
-// "count" and "none" must render notes that name no value, for array and
-// string fields alike.
 func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
 	cs := ParseContextSchema(json.RawMessage(discloseSchema), 2)
 	values := map[string]json.RawMessage{
@@ -374,9 +328,9 @@ func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
 		t.Errorf("note %q does not report disclose: \"none\" on the scalar field", note)
 	}
 
-	// "count" on a SCALAR field: there is no shape beyond "one value exists",
-	// which disclose: "none" already says, so it renders identically rather
-	// than disclosing a count ("1") that names nothing new.
+	// "count" on a scalar field has no shape beyond "one value exists", which
+	// disclose: "none" already says, so it renders identically rather than
+	// disclosing a count ("1") that names nothing new.
 	scalarCount := `{"primary_account":{"type":"string","description":"d","scope":"restrict","source":"operator","disclose":"count"}}`
 	cs2 := ParseContextSchema(json.RawMessage(scalarCount), 2)
 	note2 := scopeNoteFor(cs2, map[string]json.RawMessage{"primary_account": json.RawMessage(`"Bob"`)}, "mail_search")
@@ -388,11 +342,6 @@ func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
 	}
 }
 
-// TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose is issue #33
-// acceptance 4: the unset-value warning — a client's only signal that a tool
-// is dead on arrival — must render identically whatever disclose says, because
-// there is no value to withhold and making the warning itself optional would
-// trade a real leak for a silent one.
 func TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose(t *testing.T) {
 	const want = `Scope: Mail accounts this client may read from or send as — no value is set for "mail_accounts", so every call to this tool is refused.`
 	for _, disclose := range []string{"", `"value"`, `"count"`, `"none"`} {
@@ -413,9 +362,6 @@ func TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose(t *testing.T) {
 	}
 }
 
-// TestContextField_DisclosureDefaultsToValue is issue #33 acceptance 2: absent
-// disclose must render exactly as today, pinned directly against Disclosure()
-// rather than only by inspecting a rendered note.
 func TestContextField_DisclosureDefaultsToValue(t *testing.T) {
 	if got := (ContextField{}).Disclosure(); got != ContextDiscloseValue {
 		t.Errorf("a zero-value field disclosure = %q, want %q", got, ContextDiscloseValue)
@@ -443,16 +389,11 @@ func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *test
 		t.Errorf("a field the live schema DOES declare was dropped: %s", out)
 	}
 
-	// A v1 schema is passed through untouched: it has no Fields to check
-	// against, and its context blob is always fully replaced by
-	// SyncProjectToken, so there is nothing to filter.
 	v1 := ParseContextSchema(json.RawMessage(macmcpSchema), 0)
 	if got := filterKnownContextFields(base, v1); string(got) != string(base) {
 		t.Errorf("a v1 schema was filtered: got %s, want unchanged %s", got, base)
 	}
 
-	// Absent/empty/malformed input all pass through as-is rather than
-	// manufacturing an error on a path CallTool cannot recover from.
 	for _, raw := range []json.RawMessage{nil, json.RawMessage(``), json.RawMessage(`null`)} {
 		if got := filterKnownContextFields(raw, cs); string(got) != string(raw) {
 			t.Errorf("filterKnownContextFields(%q) = %q, want unchanged", raw, got)
@@ -461,8 +402,6 @@ func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *test
 }
 
 func TestAppendScopeNote_IsIdempotent(t *testing.T) {
-	// ListTools and ListSkillBuckets each annotate their own copy of the same
-	// live tool; the two must not double-append.
 	note := "Scope: accounts — Bob."
 	once := appendScopeNote("Search mail.", note)
 	twice := appendScopeNote(once, note)
@@ -477,16 +416,9 @@ func TestAppendScopeNote_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestNoDomainSpecificFieldNamesRemainInRelay is ADR-011's closing consequence
-// made checkable: "the only domain-specific string left in relay is the v1
-// allowed_dirs compatibility branch, kept for one release with a deprecation
-// line and a test asserting it is the last one."
-//
-// It reads STRING LITERALS out of the AST rather than grepping, so the many
-// comments explaining the history do not count and cannot be gamed by
-// rewording. fs_bash is the one other survivor and is deliberately named here
-// too, with its deferral, so that adding a third needs a deliberate edit to
-// this list.
+// Reads string literals out of the AST rather than grepping, so a comment
+// merely mentioning these field names does not count and cannot be gamed by
+// rewording.
 func TestNoDomainSpecificFieldNamesRemainInRelay(t *testing.T) {
 	allowed := map[string]struct {
 		file string

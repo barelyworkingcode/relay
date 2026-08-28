@@ -17,7 +17,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// ErrAuthRequired indicates the HTTP MCP server returned 401.
 var ErrAuthRequired = errors.New("authentication required (HTTP 401)")
 
 // httpOAuth holds runtime OAuth token state for an HTTP MCP connection.
@@ -44,7 +43,6 @@ func (o *httpOAuth) toOAuthState() *OAuthState {
 	}
 }
 
-// mcpSessionIDHeader is the header name for MCP session identification.
 const mcpSessionIDHeader = "Mcp-Session-Id"
 
 // maxSessionIDLen caps the Mcp-Session-Id value relay will store and echo back.
@@ -52,7 +50,6 @@ const mcpSessionIDHeader = "Mcp-Session-Id"
 // session token while bounding memory held per connection.
 const maxSessionIDLen = 1024
 
-// httpMcpConn implements McpConnection for Streamable HTTP transport.
 type httpMcpConn struct {
 	baseMcpConn
 	url        string
@@ -60,11 +57,10 @@ type httpMcpConn struct {
 	httpClient *http.Client
 	mu         sync.Mutex // protects sessionID and all oauth fields
 	tokenMu    sync.Mutex // serializes refresh operations (separate so non-refresh requests don't block on I/O)
-	closeOnce  sync.Once  // ensures Close is idempotent
+	closeOnce  sync.Once
 
 	oauth httpOAuth
 
-	// Callback to persist refreshed tokens. Injected by ExternalMcpManager.
 	onTokenRefresh func(oauth *OAuthState)
 }
 
@@ -75,7 +71,6 @@ type sessionSnapshot struct {
 	sessionID   string
 }
 
-// snapshot captures OAuth/session state under lock for use in HTTP requests.
 func (c *httpMcpConn) snapshot() sessionSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -113,7 +108,6 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	return conn
 }
 
-// tokenRefreshSnap holds values snapshotted under mu for a token refresh.
 type tokenRefreshSnap struct {
 	meta         *oauthMetadata
 	refreshToken string
@@ -123,8 +117,6 @@ type tokenRefreshSnap struct {
 	tokenExpiry  time.Time
 }
 
-// tokenRefreshSnapshot reads OAuth state under mu and returns whether a refresh
-// is needed. All lock/unlock is handled via defer.
 func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,8 +136,6 @@ func (c *httpMcpConn) tokenRefreshSnapshot() (tokenRefreshSnap, bool) {
 	}, true
 }
 
-// applyRefreshedToken writes refreshed OAuth state under mu and notifies the
-// persistence callback. All lock/unlock is handled via defer.
 func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthTokenResponse) {
 	c.mu.Lock()
 	c.oauth.meta = meta
@@ -221,8 +211,6 @@ func (c *httpMcpConn) refreshTokenIfNeeded() error {
 	return nil
 }
 
-// setHeaders applies common headers using pre-snapshotted session state,
-// avoiding the need to hold a lock during HTTP I/O.
 func (c *httpMcpConn) setHeaders(req *http.Request, snap sessionSnapshot) {
 	req.Header.Set("Content-Type", "application/json")
 	if snap.accessToken != "" {
@@ -243,7 +231,6 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	ctx, cancel := context.WithTimeout(ctx, MCPRequestTimeout)
 	defer cancel()
 
-	// Refresh token outside the request lock to avoid blocking other requests.
 	if err := c.refreshTokenIfNeeded(); err != nil {
 		return nil, err
 	}
@@ -448,11 +435,9 @@ func (c *httpMcpConn) doClose() {
 	resp.Body.Close()
 }
 
-// startHTTP connects to an HTTP MCP server and performs the initialize handshake.
 func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 
-	// Wire up token refresh to the manager's injected callback.
 	if m.onTokenRefresh != nil {
 		id := mcpCfg.ID
 		conn.onTokenRefresh = func(oauth *OAuthState) {
@@ -477,7 +462,6 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp)
 	return nil
 }
 
-// DiscoverHTTPMcp performs a one-shot HTTP handshake and tool listing.
 func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth *OAuthState) (*ExternalMcp, error) {
 	cfg := ExternalMcp{
 		ID:          id,

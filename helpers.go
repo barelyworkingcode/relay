@@ -11,7 +11,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// validateMcpURL checks that the URL has an http or https scheme.
 func validateMcpURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -26,7 +25,6 @@ func validateMcpURL(rawURL string) error {
 	return nil
 }
 
-// mergeEnv sets up a command's environment by merging env vars into the current environment.
 func mergeEnv(cmd *exec.Cmd, env map[string]string) {
 	if len(env) == 0 {
 		return
@@ -34,7 +32,6 @@ func mergeEnv(cmd *exec.Cmd, env map[string]string) {
 	cmd.Env = append(cmd.Environ(), envSlice(env)...)
 }
 
-// envSlice converts a map to KEY=VALUE slice entries.
 func envSlice(env map[string]string) []string {
 	out := make([]string, 0, len(env))
 	for k, v := range env {
@@ -43,9 +40,6 @@ func envSlice(env map[string]string) []string {
 	return out
 }
 
-// unmarshalIPC unmarshals a JSON-RPC message into the given type T.
-// Returns the parsed message and true on success, or nil and false on failure.
-// Logs a consistent debug message on unmarshal errors.
 func unmarshalIPC[T any](raw json.RawMessage, handler string) (*T, bool) {
 	var msg T
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -55,8 +49,6 @@ func unmarshalIPC[T any](raw json.RawMessage, handler string) (*T, bool) {
 	return &msg, true
 }
 
-// marshalForUI marshals a value to json.RawMessage for passing to UI events.
-// Logs and returns "null" on marshal failure rather than silently ignoring the error.
 func marshalForUI(v interface{}) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -66,22 +58,19 @@ func marshalForUI(v interface{}) json.RawMessage {
 	return json.RawMessage(data)
 }
 
-// mcpRPCError is the error every transport returns when an external MCP
-// answers with a JSON-RPC error object, carrying the CODE alongside the
-// rendered text.
+// mcpRPCError carries the JSON-RPC error CODE alongside the rendered text
+// because a caller can be required to act differently on different ones:
+// context/enumerate must tell -32601 ("this MCP does not implement
+// enumeration" — degrade permanently) from -32602 ("relay asked for a field
+// it should not have" — a relay bug, surface it) from everything else
+// ("could not answer right now" — offer a retry), and matching on the
+// message text is how the three quietly become one.
 //
-// The code has to survive the trip because a caller can be required to act
-// differently on different ones: context/enumerate must tell -32601 ("this MCP
-// does not implement enumeration" — degrade permanently) from -32602 ("relay
-// asked for a field it should not have" — a relay bug, surface it) from
-// everything else ("could not answer right now" — offer a retry), and doing
-// that by matching on the message text is how the three quietly become one.
-//
-// It is deliberately NOT jsonrpc.CodedError. That type means "this is the code
-// relay's own listener should answer its caller with" (bridge/frameconn.go
-// reads it that way), and an external MCP's -32001 is not relay's -32001 —
-// promoting one to the other would let an MCP dictate how relay's own access
-// denials read.
+// It is deliberately NOT jsonrpc.CodedError. That type means "this is the
+// code relay's own listener should answer its caller with"
+// (bridge/frameconn.go reads it that way), and an external MCP's -32001 is
+// not relay's -32001 — promoting one to the other would let an MCP dictate
+// how relay's own access denials read.
 type mcpRPCError struct {
 	Code    int
 	Message string
@@ -95,17 +84,12 @@ func (e *mcpRPCError) Error() string {
 	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 
-// formatJSONRPCError formats a JSON-RPC error response into a Go error.
-// Includes the Data field when present so diagnostic details from external
-// MCPs are not silently discarded. The text is unchanged from when this
-// returned a bare fmt.Errorf; what is new is that the code is recoverable with
-// errors.As (see mcpRPCError).
 func formatJSONRPCError(e *jsonrpc.Error) error {
 	return &mcpRPCError{Code: e.Code, Message: e.Message, Data: e.Data}
 }
 
-// formatBytes renders a byte count for display in the tray menu's aux column.
-// Output is kept short (≤ 7 chars) so the right-aligned column stays narrow.
+// formatBytes is kept to at most 7 chars so the tray menu's right-aligned
+// aux column stays narrow.
 func formatBytes(b uint64) string {
 	const (
 		kib = 1024
@@ -126,10 +110,9 @@ func formatBytes(b uint64) string {
 	}
 }
 
-// isSafeID reports whether id is safe to embed in a filesystem path. Service
-// IDs are joined into run/<id>.pid and logs/<id>.log, so a value with a path
-// separator or "." / ".." would escape those directories. Restricts to a
-// small filename-safe charset and rejects the relative-path names outright.
+// isSafeID guards against path traversal: IDs are joined into run/<id>.pid
+// and logs/<id>.log, so a value with a path separator or "." / ".." would
+// escape those directories.
 func isSafeID(id string) bool {
 	if id == "" || id == "." || id == ".." {
 		return false

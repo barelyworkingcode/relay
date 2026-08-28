@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// newTestSettings returns a *Settings with the given MCPs.
 func newTestSettings(t *testing.T, mcps []ExternalMcp) *Settings {
 	t.Helper()
 	if mcps == nil {
@@ -24,10 +19,6 @@ func newTestSettings(t *testing.T, mcps []ExternalMcp) *Settings {
 		Services:     []ServiceConfig{},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// AddExternalMcp / RemoveExternalMcp
-// ---------------------------------------------------------------------------
 
 func TestAddExternalMcp(t *testing.T) {
 	t.Run("adds MCP to slice", func(t *testing.T) {
@@ -67,10 +58,6 @@ func TestRemoveExternalMcp(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// UpdateExternalMcp
-// ---------------------------------------------------------------------------
-
 func TestUpdateExternalMcp(t *testing.T) {
 	t.Run("replaces config by ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
@@ -100,14 +87,9 @@ func TestUpdateExternalMcp(t *testing.T) {
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		// Should not panic.
 		s.UpdateExternalMcp(ExternalMcp{ID: "nonexistent", DisplayName: "Ghost"})
 	})
 }
-
-// ---------------------------------------------------------------------------
-// findMcpByID / findServiceByID
-// ---------------------------------------------------------------------------
 
 func TestFindMcpByID(t *testing.T) {
 	t.Run("finds existing MCP", func(t *testing.T) {
@@ -169,10 +151,6 @@ func TestFindServiceByID(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Service helpers
-// ---------------------------------------------------------------------------
-
 func TestAddRemoveService(t *testing.T) {
 	t.Run("add and remove", func(t *testing.T) {
 		s := newTestSettings(t, nil)
@@ -210,14 +188,9 @@ func TestUpdateService(t *testing.T) {
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		// Should not panic.
 		s.UpdateService(ServiceConfig{ID: "nonexistent"})
 	})
 }
-
-// ---------------------------------------------------------------------------
-// UpdateOAuthState
-// ---------------------------------------------------------------------------
 
 func TestUpdateOAuthState(t *testing.T) {
 	s := newTestSettings(t, nil)
@@ -234,13 +207,8 @@ func TestUpdateOAuthState(t *testing.T) {
 		t.Fatalf("expected ClientID 'cid', got %q", mcp.OAuthState.ClientID)
 	}
 
-	// No-op for unknown.
 	s.UpdateOAuthState("nonexistent", oauth)
 }
-
-// ---------------------------------------------------------------------------
-// AllExternalMcpIDs
-// ---------------------------------------------------------------------------
 
 func TestAllExternalMcpIDs(t *testing.T) {
 	s := newTestSettings(t, nil)
@@ -252,7 +220,6 @@ func TestAllExternalMcpIDs(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 IDs, got %d", len(ids))
 	}
-	// Order should match insertion order.
 	expected := []string{"b", "a", "c"}
 	for i, want := range expected {
 		if ids[i] != want {
@@ -260,10 +227,6 @@ func TestAllExternalMcpIDs(t *testing.T) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// ExternalMcp.IsHTTP
-// ---------------------------------------------------------------------------
 
 func TestIsHTTP(t *testing.T) {
 	t.Run("http transport", func(t *testing.T) {
@@ -286,10 +249,6 @@ func TestIsHTTP(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// defaultSettings
-// ---------------------------------------------------------------------------
-
 func TestDefaultSettings(t *testing.T) {
 	s := defaultSettings()
 	if s.Version != 1 {
@@ -305,12 +264,6 @@ func TestDefaultSettings(t *testing.T) {
 		t.Fatal("Projects should be non-nil empty slice")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Settings cache: Get, Reload, With
-// ---------------------------------------------------------------------------
-
-// These tests use NewSettingsStoreAt with a temp directory for full isolation.
 
 func TestSettingsCache(t *testing.T) {
 	newStore := func(t *testing.T) (*FileSettingsStore, string) {
@@ -457,10 +410,6 @@ func TestSettingsCache(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// deepCopySettings: map isolation
-// ---------------------------------------------------------------------------
-
 func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	original := &Settings{
 		Version: 1,
@@ -477,12 +426,10 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 
 	cp := deepCopySettings(original)
 
-	// Mutate every map and slice in the copy.
 	cp.ExternalMcps[0].Env["FOO"] = "changed"
 	cp.ExternalMcps[0].Env["NEW"] = "added"
 	cp.Services[0].Env["BAZ"] = "changed"
 
-	// Verify original is untouched.
 	if original.ExternalMcps[0].Env["FOO"] != "bar" {
 		t.Fatal("original ExternalMcp Env was corrupted")
 	}
@@ -494,9 +441,6 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	}
 }
 
-// TestDeepCopySettings_AllFieldsCovered uses mutation to verify that maps and
-// slices in Settings are properly deep-copied. This catches regressions when
-// new fields are added but deepCopySettings is not updated.
 func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
 	original := &Settings{
 		Version: 1,
@@ -512,14 +456,11 @@ func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
 
 	cp := deepCopySettings(original)
 
-	// Check top-level slices are different pointers.
 	checkSliceCopy(t, "ExternalMcps", original.ExternalMcps, cp.ExternalMcps)
 	checkSliceCopy(t, "Services", original.Services, cp.Services)
 
-	// Check nested maps in ExternalMcps.
 	checkMapCopy(t, "ExternalMcps[0].Env", original.ExternalMcps[0].Env, cp.ExternalMcps[0].Env)
 
-	// Check nested maps in Services.
 	checkMapCopy(t, "Services[0].Env", original.Services[0].Env, cp.Services[0].Env)
 }
 
@@ -538,7 +479,6 @@ func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K
 	if orig == nil {
 		return
 	}
-	// Mutate the copy and verify the original is unchanged.
 	origLen := len(orig)
 	var zeroK K
 	for k := range cp {
@@ -549,14 +489,9 @@ func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K
 	if len(orig) != origLen {
 		t.Errorf("deepCopySettings: %s shares map with original", name)
 	}
-	// Restore the deleted key (best effort).
 	var zeroV V
 	cp[zeroK] = zeroV
 }
-
-// ---------------------------------------------------------------------------
-// FileSettingsStore.load: JSON round-trip and normalization
-// ---------------------------------------------------------------------------
 
 func TestLoad(t *testing.T) {
 	newStore := func(t *testing.T) (*FileSettingsStore, string) {
@@ -613,10 +548,6 @@ func TestLoad(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// FileSettingsStore.save: atomic write
-// ---------------------------------------------------------------------------
-
 func TestSave(t *testing.T) {
 	newStore := func(t *testing.T) (*FileSettingsStore, string) {
 		t.Helper()
@@ -662,7 +593,6 @@ func TestSave(t *testing.T) {
 	})
 
 	t.Run("creates directory if missing", func(t *testing.T) {
-		// Use a subdirectory that doesn't exist yet within the temp dir.
 		base := t.TempDir()
 		dir := filepath.Join(base, "nested")
 		store := NewSettingsStoreAt(dir)
@@ -681,10 +611,6 @@ func TestSave(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// ensureAdminSecret
-// ---------------------------------------------------------------------------
 
 func TestEnsureAdminSecret(t *testing.T) {
 	t.Run("generates secret when empty", func(t *testing.T) {
@@ -707,10 +633,6 @@ func TestEnsureAdminSecret(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// JSON round-trip: Settings serialization
-// ---------------------------------------------------------------------------
 
 func TestSettingsJSONRoundTrip(t *testing.T) {
 	original := &Settings{
@@ -748,7 +670,6 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	// Spot-check key fields.
 	if restored.Version != 1 {
 		t.Fatalf("version: got %d, want 1", restored.Version)
 	}
@@ -765,10 +686,6 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("admin secret: got %q, want 'secret123'", restored.AdminSecret)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Edge cases
-// ---------------------------------------------------------------------------
 
 func TestEdgeCases(t *testing.T) {
 	t.Run("store path is under dir", func(t *testing.T) {
@@ -1019,10 +936,9 @@ func TestSchemaHasField_DetectsBothSchemaShapes(t *testing.T) {
 	}
 }
 
-// The regression that matters: the same filesystem-scoped MCP must be refused a
-// remote grant regardless of how it spelled its schema. Before the fix the
-// nested form was granted, which is the exact outcome ADR-009 decision 3 exists
-// to prevent.
+// The same filesystem-scoped MCP must be refused a remote grant regardless of
+// how it spelled its schema — the exact outcome ADR-009 decision 3 exists to
+// prevent.
 func TestValidateProjectGrants_RefusesFilesystemMcpInEitherSchemaShape(t *testing.T) {
 	shapes := map[string]string{
 		"flat":   `{"allowed_dirs":{"type":"array"}}`,

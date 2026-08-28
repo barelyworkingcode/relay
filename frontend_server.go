@@ -26,6 +26,147 @@ type FrontendServer struct {
 	socketPath string
 	server     *http.Server
 	listener   net.Listener
+	tcpLn      net.Listener
+	tcpServer  *http.Server
+
+	// routeDeps, token, authz and auditor let ListenLoopback build the TCP
+	// mux at call time, from the same ingredients NewFrontendServer used for
+	// the socket mux, without threading a second copy of NewFrontendServer's
+	// parameter list through it.
+	routeDeps frontendRouteDeps
+	token     string
+	authz     Authorizer
+	auditor   ControlAuditor
+}
+
+// EnvAPIListen opts the API into a loopback TCP listener beside the 0600 Unix
+// socket, so a browser can reach it. Absent means no TCP listener at all
+// (ADR-014): the socket stays the only door unless someone asks otherwise.
+const EnvAPIListen = "RELAY_API_LISTEN"
+
+// ErrNonLoopbackAPIListen refuses any bind that is not loopback. Classing
+// and scoping (ADR-015) narrow what a stolen or over-broad credential can
+// reach; neither is a transport authentication scheme, so reachability is
+// still the only boundary against a network attacker, and a typo must not
+// be the thing that removes it.
+var ErrNonLoopbackAPIListen = errors.New("api listen address must be loopback")
+
+func loopbackOnly(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", EnvAPIListen, err)
+	}
+	// An empty host means "all interfaces", which is the failure this guards.
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%w: %q", ErrNonLoopbackAPIListen, addr)
+	}
+	return nil
+}
+
+// ListenLoopback adds a second listener carrying its OWN route set, built
+// fresh from routeDeps for TransportTCP (ADR-015 decision 2): registerFrontendRoutes
+// runs ClassReachableOn against TransportTCP this time, so an execute-class
+// route — one where the caller supplies what runs — is never handed to this
+// mux at all, on any credential. The socket and TCP handlers still share
+// frontendBearerAuth and frontendRecover, so authentication and panic
+// handling cannot drift between the two doors even though their route sets
+// now deliberately do.
+func (s *FrontendServer) ListenLoopback(addr string) error {
+	if s == nil || addr == "" {
+		return nil
+	}
+	if err := loopbackOnly(addr); err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", addr, err)
+	}
+
+	tcpMux := http.NewServeMux()
+	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor}, s.routeDeps)
+
+	s.tcpLn = ln
+	s.tcpServer = &http.Server{
+		Handler:           frontendBearerAuth(s.token, frontendRecover(tcpMux)),
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       5 * time.Minute,
+	}
+	slog.Warn("frontend API bound to loopback TCP in addition to its socket",
+		"addr", addr)
+	return nil
+}
+
+// ServeLoopback blocks until Shutdown. No-op when ListenLoopback was not called.
+func (s *FrontendServer) ServeLoopback() error {
+	if s == nil || s.tcpLn == nil {
+		return nil
+	}
+	if err := s.tcpServer.Serve(s.tcpLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// frontendRouteDeps bundles what registerFrontendRoutes needs to build one
+// transport's route set. NewFrontendServer captures it once so ListenLoopback
+// can build the TCP mux later from the same ingredients, without a second
+// copy of NewFrontendServer's parameter list.
+type frontendRouteDeps struct {
+	store             SettingsStore
+	mcps              McpSurfaceProvider
+	tools             MCPToolsProvider
+	enum              ContextEnumerator
+	skillLister       SkillLister
+	onProjectsChanged ProjectsChangedFn
+	ops               *ServiceOps
+	enrolmentOps      *EnrolmentOps
+	auditOps          *AuditOps
+	mcpOps            *McpOps
+	enhanced          *EnhancedServiceRegistry
+}
+
+// registerFrontendRoutes builds the full relay-internal route set onto
+// rr.Mux for rr.Transport, then mounts the manifest-driven dispatcher as the
+// catch-all. Called once per transport (socket, and TCP when ListenLoopback
+// runs) from the two call sites in this file, so the two muxes are always
+// built by the same code and cannot drift apart.
+//
+// Every registrar takes rr itself and registers each route through
+// rr.Handle(class, ...): a route whose class is not reachable on rr.Transport
+// is never registered at all (ADR-015 decision 2), so calling all five
+// registrars unconditionally on every transport is safe — the per-route
+// class, not a call site here, decides what lands on TCP.
+func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
+	mux := rr.Mux
+	RegisterProjectRoutes(rr, deps.store, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
+	if deps.auditOps != nil {
+		RegisterAuditRoutes(rr, deps.auditOps)
+	}
+	if deps.ops != nil {
+		RegisterServiceRoutes(rr, deps.ops)
+	}
+	if deps.enrolmentOps != nil {
+		RegisterEnrolmentRoutes(rr, deps.enrolmentOps)
+	}
+	if deps.mcpOps != nil {
+		RegisterMcpRoutes(rr, deps.mcpOps)
+	}
+
+	// Catch-all dispatcher: any path not matched by a more specific handler
+	// (project routes above) is resolved against the manifest registry and
+	// reverse-proxied to the matching enhanced service. WS upgrades are
+	// handled by the same dispatcher (it detects them from the request).
+	dispatcher := NewFrontendDispatcher(deps.enhanced)
+
+	// Session creation is the one proxied route relay must inspect: the
+	// per-project model allowlist lives only in relay's settings, so it can
+	// only be enforced in front of the proxy. The guard wraps the catch-all
+	// dispatcher (rather than a single exact pattern) so trailing-slash and
+	// sibling create paths can't route around it; it self-classifies the
+	// request and forwards everything that isn't a session-create POST.
+	mux.Handle("/", newSessionModelGuard(deps.store, dispatcher))
 }
 
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.
@@ -43,11 +184,37 @@ type FrontendServer struct {
 // onProjectsChanged fires after every successful project mutation so the
 // tray Settings webview can rebuild its state; nil suppresses fan-out.
 //
+// ops is the shared ServiceOps core (ADR-014) — the same instance the
+// Services tab IPC handlers use, so a service started from curl and one
+// started from the tray go through identical validation and the same
+// Registry.
+//
+// enrolmentOps is ops's counterpart for the Remote Clients tab and the
+// `remote` block (ADR-014): the same instance ipc_enrolments.go's handlers
+// use, so an enrolment created from curl and one created from the tray share
+// the CA and the revocation hook.
+//
+// auditOps is ops's counterpart for the Tool Calls tab (ADR-014): the same
+// instance ipc_audit.go's handlers use, so a query run from curl sees
+// identical redaction to one run from the tray. Its embedded *AuditRecorder
+// is nil-safe and degrades to an empty result when auditing is off — nothing
+// here needs to special-case that.
+//
+// mcpOps is ops's counterpart for the MCP Servers tab (ADR-014), but only
+// for add and remove: ipc_mcps.go's authenticate and ipc_mcp_permissions.go's
+// reset-permissions have no route here and never will (McpOps explains why),
+// so this server only ever calls McpOps.Add and McpOps.Remove.
+//
 // The dispatcher is the single handler for every route not claimed by
-// relay-internal endpoints (project routes). It reads from the enhanced-
-// services registry to pick a target service per request — no hardcoded
-// per-service handlers live here.
-func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn) (*FrontendServer, error) {
+// relay-internal endpoints (project and service routes). It reads from the
+// enhanced-services registry to pick a target service per request — no
+// hardcoded per-service handlers live here.
+//
+// authz decides which credential may exercise which class (ADR-015); nil
+// allows everything, which is what the hermetic route tests want. auditor
+// records every authorization decision; nil is safe and simply records
+// nothing.
+func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, authz Authorizer, auditor ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -55,24 +222,24 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		return nil, errors.New("enhanced-services registry is nil")
 	}
 
-	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, mcps, tools, enum, skillLister, onProjectsChanged)
+	deps := frontendRouteDeps{
+		store:             store,
+		mcps:              mcps,
+		tools:             tools,
+		enum:              enum,
+		skillLister:       skillLister,
+		onProjectsChanged: onProjectsChanged,
+		ops:               ops,
+		enrolmentOps:      enrolmentOps,
+		auditOps:          auditOps,
+		mcpOps:            mcpOps,
+		enhanced:          enhanced,
+	}
 
-	// Catch-all dispatcher: any path not matched by a more specific handler
-	// (project routes above) is resolved against the manifest registry and
-	// reverse-proxied to the matching enhanced service. WS upgrades are
-	// handled by the same dispatcher (it detects them from the request).
-	dispatcher := NewFrontendDispatcher(enhanced)
+	socketMux := http.NewServeMux()
+	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor}, deps)
 
-	// Session creation is the one proxied route relay must inspect: the
-	// per-project model allowlist lives only in relay's settings, so it can
-	// only be enforced in front of the proxy. The guard wraps the catch-all
-	// dispatcher (rather than a single exact pattern) so trailing-slash and
-	// sibling create paths can't route around it; it self-classifies the
-	// request and forwards everything that isn't a session-create POST.
-	mux.Handle("/", newSessionModelGuard(store, dispatcher))
-
-	handler := frontendBearerAuth(frontend.Token, frontendRecover(mux))
+	handler := frontendBearerAuth(frontend.Token, frontendRecover(socketMux))
 
 	srv := &http.Server{
 		Handler: handler,
@@ -101,6 +268,10 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		socketPath: frontend.Socket,
 		server:     srv,
 		listener:   ln,
+		routeDeps:  deps,
+		token:      frontend.Token,
+		authz:      authz,
+		auditor:    auditor,
 	}, nil
 }
 
@@ -120,8 +291,19 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	if err := s.server.Shutdown(ctx); err != nil {
 		slog.Warn("frontend server did not drain cleanly", "error", err)
 	}
+	// The socket and TCP listeners are now served by two independent
+	// *http.Server values (they carry different route sets), so draining
+	// the socket's server no longer drains the loopback one for free.
+	if s.tcpServer != nil {
+		if err := s.tcpServer.Shutdown(ctx); err != nil {
+			slog.Warn("frontend loopback server did not drain cleanly", "error", err)
+		}
+	}
 	if s.listener != nil {
 		_ = s.listener.Close()
+	}
+	if s.tcpLn != nil {
+		_ = s.tcpLn.Close()
 	}
 	if s.socketPath != "" {
 		_ = os.Remove(s.socketPath)

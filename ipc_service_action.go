@@ -13,9 +13,8 @@ import (
 	"relaygo/bridge"
 )
 
-// pathPlaceholder matches `{key}` in an action's pathTemplate. Restricted
-// to identifier-shaped keys so a malformed manifest can't smuggle regex
-// metacharacters into the substitution step.
+// Restricted to identifier-shaped keys so a malformed manifest can't smuggle
+// regex metacharacters into the substitution step.
 var pathPlaceholder = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
 type ipcServiceActionMsg struct {
@@ -26,15 +25,10 @@ type ipcServiceActionMsg struct {
 
 const MsgServiceAction = "service_action"
 
-// ipcServiceAction dispatches an action declared in a service's manifest.
 // The manifest *is* the action whitelist: relay refuses anything not in
-// manifest.Actions for the named serviceId. forEach actions substitute
-// `{key}` placeholders from the row map; non-forEach actions require an
-// empty row.
-//
-// Security boundary: paths come from the service-declared manifest, never
-// from the UI. Only row *values* come from the UI, and they pass through
-// url.PathEscape before being spliced in.
+// manifest.Actions for the named serviceId. Paths come from the
+// service-declared manifest, never from the UI — only row *values* come from
+// the UI, and they pass through url.PathEscape before being spliced in.
 func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 	var msg ipcServiceActionMsg
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -88,20 +82,11 @@ func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 	})
 }
 
-// buildActionPath substitutes `{key}` placeholders in pathTemplate with
-// URL-escaped values from row.
-//
-// Rules:
-//   - Every placeholder in the template must have a matching key in row.
-//   - Row keys with no matching placeholder are ignored (forward-compatible
-//     when a service ships a new column the UI hasn't been updated for).
-//   - Values are url.PathEscape'd so a row value with slashes can't escape
-//     its segment. url.PathEscape does NOT escape "." though, so a bare "."
-//     or ".." value is rejected outright — otherwise it would survive as a
-//     live relative-path segment ("/api/x/.." → "/api/x").
-//   - When ForEach == "" the row map must be empty — otherwise the UI is
-//     dispatching a global action with surprising context and that's a bug
-//     we want to surface, not silently dispatch.
+// Row keys with no matching placeholder are ignored (forward-compatible when
+// a service ships a new column the UI hasn't been updated for). When
+// ForEach == "" the row map must be empty — otherwise the UI is dispatching
+// a global action with surprising context, and that's a bug we want to
+// surface rather than silently dispatch.
 func buildActionPath(action *bridge.ActionDecl, row map[string]json.RawMessage) (string, error) {
 	if action.ForEach == "" && len(row) > 0 {
 		return "", fmt.Errorf("action %q has no forEach but row was supplied", action.ID)
@@ -114,15 +99,13 @@ func buildActionPath(action *bridge.ActionDecl, row map[string]json.RawMessage) 
 			missing = append(missing, key)
 			return match
 		}
-		// Row values arrive as JSON. Strings are the common case (e.g. an
-		// alias); fall back to the raw literal for numbers/bools.
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			s = strings.TrimSpace(string(raw))
 		}
 		// url.PathEscape leaves "." unescaped, so "." / ".." would become a
-		// traversal segment. Reject them — a legitimate row key never resolves
-		// to a relative-path component.
+		// live traversal segment ("/api/x/.." -> "/api/x"). Reject them
+		// outright — a legitimate row key never resolves to one.
 		if s == "." || s == ".." {
 			invalid = append(invalid, key)
 			return match
@@ -147,9 +130,6 @@ func findAction(actions []bridge.ActionDecl, id string) *bridge.ActionDecl {
 	return nil
 }
 
-// emitActionResult builds the result envelope and emits it on the main
-// thread. ok==false paths additionally log a warn so failures surface in
-// the tray's log file, not just the WebView.
 func emitActionResult(ipc *IPCContext, msg ipcServiceActionMsg, ok bool, errStr string) {
 	if !ok {
 		slog.Warn("service action rejected",

@@ -12,9 +12,6 @@ import (
 	"relaygo/mcp"
 )
 
-// TestExternalConn_RouteProgressNotification proves the stdio reader dispatches
-// notifications/progress to the registered per-call handler by token, parses
-// the payload into a ProgressUpdate, and stops dispatching after unregister.
 func TestExternalConn_RouteProgressNotification(t *testing.T) {
 	c := &externalMcpConn{}
 	got := make(chan bridge.ProgressUpdate, 1)
@@ -39,18 +36,12 @@ func TestExternalConn_RouteProgressNotification(t *testing.T) {
 		t.Fatal("progress handler was not invoked")
 	}
 
-	// After unregister, the same notification must be a no-op (no panic, no send).
 	c.unregisterProgress("relay-prog-1")
 	c.routeNotification(line)
 
-	// A non-progress notification must be ignored.
 	c.registerProgress("relay-prog-2", func(json.RawMessage) { t.Fatal("must not fire") })
 	c.routeNotification([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}`))
 }
-
-// ---------------------------------------------------------------------------
-// mcpHandshake tests
-// ---------------------------------------------------------------------------
 
 func TestMcpHandshake_Success(t *testing.T) {
 	callCount := 0
@@ -93,7 +84,6 @@ func TestMcpHandshake_Success(t *testing.T) {
 	if result.ToolInfos[0].Category != "Fs" {
 		t.Errorf("expected category 'Fs', got %q", result.ToolInfos[0].Category)
 	}
-	// Verify notifications/initialized was sent.
 	if len(mock.notifications) != 1 || mock.notifications[0] != mcp.MethodInitialized {
 		t.Errorf("expected notifications/initialized, got %v", mock.notifications)
 	}
@@ -123,7 +113,6 @@ func TestMcpHandshake_InitializeFailure(t *testing.T) {
 	if err.Error() != expected {
 		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
-	// notifications/initialized should NOT have been sent since initialize failed.
 	if len(mock.notifications) != 0 {
 		t.Errorf("expected no notifications on initialize failure, got %v", mock.notifications)
 	}
@@ -154,7 +143,6 @@ func TestMcpHandshake_ToolsListFailure(t *testing.T) {
 	if err.Error() != expected {
 		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
-	// notifications/initialized should still have been sent (it fires before tools/list).
 	if len(mock.notifications) != 1 || mock.notifications[0] != mcp.MethodInitialized {
 		t.Errorf("expected notifications/initialized even on tools/list failure, got %v", mock.notifications)
 	}
@@ -189,10 +177,6 @@ func TestMcpHandshake_ContextSchemaExtracted(t *testing.T) {
 		t.Errorf("expected schema type 'object', got %v", schema["type"])
 	}
 }
-
-// ---------------------------------------------------------------------------
-// extractContextSchema tests
-// ---------------------------------------------------------------------------
 
 func TestExtractContextSchema(t *testing.T) {
 	tests := []struct {
@@ -238,10 +222,6 @@ func TestExtractContextSchema(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// toolCategory tests
-// ---------------------------------------------------------------------------
-
 func TestToolCategory(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -265,10 +245,6 @@ func TestToolCategory(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// ExternalMcpManager tests
-// ---------------------------------------------------------------------------
 
 func TestManager_ToolsUnknownID(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
@@ -368,7 +344,6 @@ func TestManager_Stop(t *testing.T) {
 
 func TestManager_StopNonexistent(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
-	// Should not panic.
 	mgr.Stop("does-not-exist")
 }
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-// Settings holds all persistent Relay configuration.
 type Settings struct {
 	Version      int             `json:"version"`
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
@@ -19,8 +18,7 @@ type Settings struct {
 	// Enrolments bind client certificates to the remote grants they may use
 	// (ADR-010 decision 2). omitempty, like Audit: an install that never
 	// enrols a remote client keeps a settings.json byte-identical to the one
-	// it had before this field existed, and no empty "enrolments": [] appears
-	// on every unrelated project edit. Note what is NOT here — there is no
+	// it had before this field existed. Note what is NOT here — there is no
 	// bearer token anywhere in this feature; the certificate is the identity.
 	Enrolments []Enrolment `json:"enrolments,omitempty"`
 
@@ -29,26 +27,25 @@ type Settings struct {
 	// settings.json migration.
 	Audit *AuditConfig `json:"audit,omitempty"`
 
-	// Remote configures the mTLS listener remote clients reach relay through
-	// (ADR-010 decision 9). Absent means NO LISTENER AT ALL — the opposite
-	// default to Audit above, and deliberately so: a missing audit block should
-	// keep an old install recording, while a missing remote block must never
-	// open a network socket. omitempty keeps every install that has not enabled
-	// one byte-identical to the one it had before this field existed.
+	// Remote configures the mTLS listener remote clients reach relay
+	// through (ADR-010 decision 9). Absent means NO LISTENER AT ALL — the
+	// opposite default to Audit above, and deliberately so: a missing audit
+	// block should keep an old install recording, while a missing remote
+	// block must never open a network socket.
 	Remote *RemoteConfig `json:"remote,omitempty"`
+
+	// APICredentials replace the single frontend bearer with credentials
+	// that each name their own capability classes (ADR-015 decision 3).
+	// omitempty, like Enrolments and Audit: an install that never mints one
+	// keeps a settings.json byte-identical to the one it had before this
+	// field existed.
+	APICredentials []APICredential `json:"api_credentials,omitempty"`
 }
 
-// ---------------------------------------------------------------------------
-// MCP CRUD — methods are small and cohesive with the Settings struct.
-// ---------------------------------------------------------------------------
-
-// AddExternalMcp adds an external MCP config. Does not save; use within store.With.
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
 	s.ExternalMcps = append(s.ExternalMcps, mcp)
 }
 
-// UpdateExternalMcp replaces an external MCP config by ID.
-// Does not save; use within store.With.
 func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 	_, idx := s.findMcpByID(cfg.ID)
 	if idx < 0 {
@@ -57,14 +54,10 @@ func (s *Settings) UpdateExternalMcp(cfg ExternalMcp) {
 	s.ExternalMcps[idx] = cfg
 }
 
-// RemoveExternalMcp removes an external MCP. Does not save; use within store.With.
 func (s *Settings) RemoveExternalMcp(id string) {
 	s.ExternalMcps = slices.DeleteFunc(s.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
 }
 
-// UpsertExternalMcp adds or updates an external MCP config.
-// Returns true if it updated an existing entry.
-// Does not save; use within store.With.
 func (s *Settings) UpsertExternalMcp(cfg ExternalMcp) bool {
 	if _, idx := s.findMcpByID(cfg.ID); idx >= 0 {
 		s.UpdateExternalMcp(cfg)
@@ -74,8 +67,6 @@ func (s *Settings) UpsertExternalMcp(cfg ExternalMcp) bool {
 	return false
 }
 
-// ResolveMcpID returns the ID of an MCP found by exact id or display name lookup.
-// Returns "" if not found.
 func (s *Settings) ResolveMcpID(id, name string) string {
 	if id != "" {
 		if _, idx := s.findMcpByID(id); idx >= 0 {
@@ -91,15 +82,12 @@ func (s *Settings) ResolveMcpID(id, name string) string {
 	return ""
 }
 
-// UpdateOAuthState updates the OAuth state for an HTTP MCP.
-// Does not save; use within store.With.
 func (s *Settings) UpdateOAuthState(mcpID string, oauth *OAuthState) {
 	if mcp, _ := s.findMcpByID(mcpID); mcp != nil {
 		mcp.OAuthState = oauth
 	}
 }
 
-// AllExternalMcpIDs returns the IDs of all configured external MCPs.
 func (s *Settings) AllExternalMcpIDs() []string {
 	ids := make([]string, 0, len(s.ExternalMcps))
 	for _, mcp := range s.ExternalMcps {
@@ -108,30 +96,20 @@ func (s *Settings) AllExternalMcpIDs() []string {
 	return ids
 }
 
-// ---------------------------------------------------------------------------
-// Service CRUD
-// ---------------------------------------------------------------------------
-
-// AddService adds a service config. Does not save; use within store.With.
 func (s *Settings) AddService(config ServiceConfig) {
 	s.Services = append(s.Services, config)
 }
 
-// RemoveService removes a service by ID. Does not save; use within store.With.
 func (s *Settings) RemoveService(id string) {
 	s.Services = slices.DeleteFunc(s.Services, func(svc ServiceConfig) bool { return svc.ID == id })
 }
 
-// UpdateService replaces a service config by ID. Does not save; use within store.With.
 func (s *Settings) UpdateService(config ServiceConfig) {
 	if _, idx := s.findServiceByID(config.ID); idx >= 0 {
 		s.Services[idx] = config
 	}
 }
 
-// UpsertService adds or updates a service config.
-// Returns true if it updated an existing entry.
-// Does not save; use within store.With.
 func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 	if _, idx := s.findServiceByID(cfg.ID); idx >= 0 {
 		s.Services[idx] = cfg
@@ -141,19 +119,17 @@ func (s *Settings) UpsertService(cfg ServiceConfig) bool {
 	return false
 }
 
-// SetServiceAutostart updates the autostart flag for a service by ID.
-// Does not save; use within store.With.
 func (s *Settings) SetServiceAutostart(id string, autostart bool) {
 	if svc, _ := s.findServiceByID(id); svc != nil {
 		svc.Autostart = autostart
 	}
 }
 
-// MergeServiceDefaults fills zero-value fields in cfg from the existing service
-// with the same ID. Useful when CLI flags only specify fields being changed.
-// Autostart is intentionally not merged: its zero value (false) is
-// indistinguishable from "user explicitly set false", so the CLI flag always wins.
-// Does not save; use within store.With.
+// MergeServiceDefaults fills zero-value fields in cfg from the existing
+// service with the same ID, for CLI flags that only specify fields being
+// changed. Autostart is intentionally not merged: its zero value (false) is
+// indistinguishable from "user explicitly set false", so the CLI flag
+// always wins.
 func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	existing, _ := s.findServiceByID(cfg.ID)
 	if existing == nil {
@@ -182,8 +158,6 @@ func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	}
 }
 
-// ResolveServiceID returns the ID of a service found by exact id or display name lookup.
-// Returns "" if not found.
 func (s *Settings) ResolveServiceID(id, name string) string {
 	if id != "" {
 		if _, idx := s.findServiceByID(id); idx >= 0 {
@@ -199,26 +173,14 @@ func (s *Settings) ResolveServiceID(id, name string) string {
 	return ""
 }
 
-// ---------------------------------------------------------------------------
-// Project CRUD
-// ---------------------------------------------------------------------------
-
-// AddProject adds a project and its associated token.
-// Does not save; use within store.With.
 func (s *Settings) AddProject(p Project) {
 	s.Projects = append(s.Projects, p)
 }
 
-// RemoveProject removes a project by ID.
-// Does not save; use within store.With.
 func (s *Settings) RemoveProject(id string) {
 	s.Projects = slices.DeleteFunc(s.Projects, func(p Project) bool { return p.ID == id })
 }
 
-// UpdateProjectMcps updates the allowed MCP IDs for a project and syncs
-// the associated token's permissions and context.
-// surfaces maps MCP IDs to their runtime schema + tool surface.
-// Does not save; use within store.With.
 func (s *Settings) UpdateProjectMcps(id string, mcpIDs []string, surfaces McpSurfaces) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -228,8 +190,6 @@ func (s *Settings) UpdateProjectMcps(id string, mcpIDs []string, surfaces McpSur
 	s.SyncProjectToken(proj, surfaces)
 }
 
-// UpdateProjectModels updates the allowed models for a project.
-// Does not save; use within store.With.
 func (s *Settings) UpdateProjectModels(id string, models []string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -238,8 +198,6 @@ func (s *Settings) UpdateProjectModels(id string, models []string) {
 	proj.AllowedModels = models
 }
 
-// UpdateProjectName updates a project's name.
-// Does not save; use within store.With.
 func (s *Settings) UpdateProjectName(id string, name string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -248,22 +206,17 @@ func (s *Settings) UpdateProjectName(id string, name string) {
 	proj.Name = name
 }
 
-// UpdateProjectPath updates a project's path and syncs token context.
-// surfaces maps MCP IDs to their runtime schema + tool surface.
-// Does not save; use within store.With.
 func (s *Settings) UpdateProjectPath(id string, path string, surfaces McpSurfaces) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
 	// Belt-and-braces: the real refusal is validateProjectShape at the call
-	// site (applyProjectUpdate validates the full candidate before any
-	// mutation runs), but this mutator is exported on Settings and nothing
-	// stops a future caller from invoking it directly without going through
-	// that guard. A remote project has no filesystem scope, so silently
-	// refuse rather than let one acquire a path no validation pass approved.
-	// Clearing an already-remote project's path back to "" is a no-op and
-	// stays allowed.
+	// site, but this mutator is exported on Settings and nothing stops a
+	// future caller from invoking it directly without that guard. A remote
+	// project has no filesystem scope, so silently refuse rather than let
+	// one acquire a path no validation pass approved. Clearing an
+	// already-remote project's path back to "" is a no-op and stays allowed.
 	if proj.IsRemote() && path != "" {
 		return
 	}
@@ -271,36 +224,28 @@ func (s *Settings) UpdateProjectPath(id string, path string, surfaces McpSurface
 	s.SyncProjectToken(proj, surfaces)
 }
 
-// UpdateProjectKind changes a project's kind. Does not save; use within
-// store.With. Like the other single-field Update* mutators it leaves shape
-// validation to the caller (applyProjectCreate / applyProjectUpdate, via
-// validateProjectShape) — with one exception, below.
 func (s *Settings) UpdateProjectKind(id string, kind ProjectKind) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
-	// See normalizeProjectKind: local always persists as "", never "local".
 	kind = normalizeProjectKind(kind)
-	// Belt-and-braces, exactly as UpdateProjectPath does it: the real refusal
-	// is ValidateProjectEnrolments at the call site, but this mutator is
-	// exported on Settings and nothing stops a future caller from invoking it
-	// directly. A remote→local conversion under a live enrolment strands that
-	// enrolment on a project whose whole shape it was never validated
-	// against, and the failure mode is a silent widening of what a remote
-	// client reaches — a host directory, its allowed_dirs context, cwd auth —
-	// rather than a loud error. Refuse silently here so a bypass of the
-	// validated path cannot produce it (ADR-010 decision 3).
+	// Belt-and-braces, exactly as UpdateProjectPath does it: the real
+	// refusal is ValidateProjectEnrolments at the call site, but this
+	// mutator is exported and nothing stops a future caller from invoking
+	// it directly. A remote→local conversion under a live enrolment strands
+	// that enrolment on a project whose shape it was never validated
+	// against — a silent widening of what a remote client reaches, rather
+	// than a loud error. Refuse silently here so a bypass of the validated
+	// path cannot produce it (ADR-010 decision 3).
 	if !kind.IsRemote() && proj.IsRemote() && len(s.EnrolmentsGrantingProject(id)) > 0 {
 		return
 	}
 	proj.Kind = kind
 }
 
-// UpdateProjectChatTemplates replaces a project's chat_templates list.
-// Templates are scoped to the project and have no token/context impact, so
-// no SyncProjectToken call is needed.
-// Does not save; use within store.With.
+// UpdateProjectChatTemplates: no SyncProjectToken call, because templates
+// have no token/context impact.
 func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplate) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -309,10 +254,8 @@ func (s *Settings) UpdateProjectChatTemplates(id string, templates []ChatTemplat
 	proj.ChatTemplates = templates
 }
 
-// UpdateProjectShellTemplates replaces a project's shell_templates list.
-// Project-scoped terminal launch templates have no token/context impact, so no
-// SyncProjectToken call is needed (same as chat templates).
-// Does not save; use within store.With.
+// UpdateProjectShellTemplates: no SyncProjectToken call, for the same reason
+// as UpdateProjectChatTemplates.
 func (s *Settings) UpdateProjectShellTemplates(id string, templates []ShellTemplate) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -321,11 +264,9 @@ func (s *Settings) UpdateProjectShellTemplates(id string, templates []ShellTempl
 	proj.ShellTemplates = templates
 }
 
-// UpdateProjectSessionFolders replaces a project's ordered session-folder
-// name list (Eve UI grouping metadata; relay never reads it). A nil/empty list
-// clears it so the serialized form stays minimal. Trims and de-duplicates
-// names case-sensitively, preserving first-seen order. Does not save; use
-// within store.With.
+// UpdateProjectSessionFolders trims and de-duplicates names
+// case-sensitively, preserving first-seen order. A nil/empty list clears
+// the field so the serialized form stays minimal.
 func (s *Settings) UpdateProjectSessionFolders(id string, folders []string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -352,8 +293,7 @@ func (s *Settings) UpdateProjectSessionFolders(id string, folders []string) {
 	proj.SessionFolders = cleaned
 }
 
-// UpdateProjectPermissionPolicy replaces a project's permission policy.
-// Pass nil to clear. Does not save; use within store.With.
+// UpdateProjectPermissionPolicy: pass nil to clear.
 func (s *Settings) UpdateProjectPermissionPolicy(id string, policy *PermissionPolicy) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -362,15 +302,9 @@ func (s *Settings) UpdateProjectPermissionPolicy(id string, policy *PermissionPo
 	proj.PermissionPolicy = policy
 }
 
-// RotateProjectToken generates fresh credentials for a project, replacing
-// both Token and TokenHash. Returns the new plaintext, or "" and false if
-// the project id is unknown.
-//
-// Rotation invalidates the old token at the very next AuthenticateProject
-// call: any Eve/relayLLM/CLI session still holding the old plaintext will
-// get an auth failure on its next request and must re-auth.
-//
-// Does not save; use within store.With.
+// RotateProjectToken invalidates the old token at the very next
+// AuthenticateProject call: any Eve/relayLLM/CLI session still holding the
+// old plaintext gets an auth failure on its next request and must re-auth.
 func (s *Settings) RotateProjectToken(id string) (plaintext string, found bool, err error) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -385,16 +319,10 @@ func (s *Settings) RotateProjectToken(id string) (plaintext string, found bool, 
 	return plaintext, true, nil
 }
 
-// UpdateProjectDisabledTools replaces the per-MCP disabled-tools slice for a
-// project. An empty (or nil) slice deletes the map key so the serialized form
-// stays minimal.
-//
-// Refuses MCPs that are not currently in the project's AllowedMcpIDs (and the
-// project is not wildcard) — disabling tools for an unallowed MCP would be a
-// no-op at runtime but a future allow-MCP change would silently inherit a
-// stale list. Returning early keeps the model honest.
-//
-// Does not save; use within store.With.
+// UpdateProjectDisabledTools refuses an MCP not currently in the project's
+// AllowedMcpIDs (unless wildcard): disabling tools for an unallowed MCP
+// would be a no-op at runtime but a future allow-MCP change would silently
+// inherit a stale list.
 func (s *Settings) UpdateProjectDisabledTools(id, mcpID string, disabled []string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -422,11 +350,10 @@ func (s *Settings) UpdateProjectDisabledTools(id, mcpID string, disabled []strin
 	proj.DisabledTools[mcpID] = cleaned
 }
 
-// UpdateProjectAllowedTools replaces a project's per-MCP tool allowlist
-// (ADR-011 decision 2b). Entries naming an MCP the project is not granted are
-// dropped rather than stored: a stale allowlist reads as a grant and is not
-// one, and SyncProjectToken already prunes them on every resync.
-// Does not save; use within store.With.
+// UpdateProjectAllowedTools (ADR-011 decision 2b) drops entries naming an
+// MCP the project is not granted rather than storing them: a stale
+// allowlist reads as a grant and is not one, and SyncProjectToken already
+// prunes them on every resync.
 func (s *Settings) UpdateProjectAllowedTools(id string, allowed map[string][]string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -461,20 +388,15 @@ func (s *Settings) UpdateProjectAllowedTools(id string, allowed map[string][]str
 	proj.AllowedTools = cleaned
 }
 
-// UpdateProjectAccess replaces a project's per-MCP operation mode (ADR-011
-// decision 2). Entries naming an MCP the project is not granted are dropped
-// rather than stored, exactly as UpdateProjectAllowedTools drops them: a mode
-// for an MCP this record cannot reach reads as an authority it does not have,
-// and SyncProjectToken prunes them on every resync anyway.
+// UpdateProjectAccess (ADR-011 decision 2) drops entries naming an MCP the
+// project is not granted, exactly as UpdateProjectAllowedTools does.
 //
 // An unrecognised mode is stored as given rather than dropped or corrected.
 // Dropping it would fall back to the DEFAULT, which for a local project is
-// write — a mutator silently widening a grant on the strength of a typo. What
-// StoredToken.AccessMode does with a value it does not recognise is read it as
-// read-only, so keeping it is the fail-closed direction; the loud refusal is
-// validateProjectPermissions, at the surfaces an operator actually types into.
-//
-// Does not save; use within store.With.
+// write — a mutator silently widening a grant on the strength of a typo.
+// StoredToken.AccessMode reads an unrecognised value as read-only, so
+// keeping it is the fail-closed direction; the loud refusal is
+// validateProjectPermissions, at the surface an operator actually types into.
 func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -498,20 +420,15 @@ func (s *Settings) UpdateProjectAccess(id string, access map[string]string) {
 	proj.Access = cleaned
 }
 
-// UpdateProjectAllowExternal replaces a project's per-MCP outbound grant
-// (ADR-011 decision 2c). Entries naming an MCP the project is not granted are
-// dropped, exactly as UpdateProjectAccess drops them.
+// UpdateProjectAllowExternal (ADR-011 decision 2c) drops entries naming an
+// MCP the project is not granted, exactly as UpdateProjectAccess.
 //
-// BOTH VALUES ARE STORED, including false. False is not "the same as absent"
-// even though it looks like it for a profile: the default is asymmetric
-// (StoredToken.ExternalAllowed), so for a LOCAL project absent means allowed
-// and an explicit false is the only way to say the opposite — a confined local
-// agent with no shell and no other network path is a real thing to want, and a
-// mutator that discarded the false would make it unsayable. An empty map still
-// clears the whole field, which is how an operator returns every MCP to its
-// default.
-//
-// Does not save; use within store.With.
+// BOTH VALUES ARE STORED, including false. False is not "the same as
+// absent" even though it looks like it for a profile: the default is
+// asymmetric (StoredToken.ExternalAllowed), so for a LOCAL project absent
+// means allowed and an explicit false is the only way to say the opposite —
+// a mutator that discarded the false would make that unsayable. An empty
+// map still clears the whole field, returning every MCP to its default.
 func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -536,24 +453,14 @@ func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) 
 }
 
 // UpdateProjectContext replaces a project's per-MCP context values — the
-// resource scope an operator sets (ADR-011 decisions 4 and 6). Until this
-// existed, Context was only ever DERIVED, by SyncProjectToken, and there was no
-// operator path to it at all (ADR-011 finding 6).
-//
-// The map an operator supplies replaces what was there, and then
-// SyncProjectToken runs so every source: "project_path" field is re-derived on
-// top of it. That ordering is what makes a wholesale replace safe: the operator
-// cannot set a derived field (validateProjectPermissions refuses it), so a
-// replace would otherwise DELETE one — and a project whose file_dirs silently
-// disappeared when its mail scope was edited would lose the two tools that
-// field governs, fail-closed and unexplained. mergeContextField, which
-// SyncProjectToken uses, puts each derived field back without touching the
-// operator's.
-//
-// surfaces is what that re-derivation needs; passing nil means no derivation,
-// which is the pre-ADR-011 contract for a caller with no live MCP manager.
-//
-// Does not save; use within store.With.
+// resource scope an operator sets (ADR-011 decisions 4 and 6) — and then
+// runs SyncProjectToken so every source: "project_path" field is
+// re-derived on top of it (mergeContextField puts each back without
+// touching the operator's). That ordering is what makes a wholesale
+// replace safe: the operator cannot set a derived field directly
+// (validateProjectPermissions refuses it), so a plain replace would
+// otherwise silently delete one. surfaces is what that re-derivation
+// needs; nil means no derivation.
 func (s *Settings) UpdateProjectContext(id string, values map[string]json.RawMessage, surfaces McpSurfaces) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -573,9 +480,6 @@ func (s *Settings) UpdateProjectContext(id string, values map[string]json.RawMes
 	s.SyncProjectToken(proj, surfaces)
 }
 
-// SetProjectGenerateSkill toggles the GenerateSkill flag. Extracted from the
-// HTTP route so the IPC path can reuse the same mutation without duplicating
-// the lookup. Does not save; use within store.With.
 func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -584,8 +488,6 @@ func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
 	proj.GenerateSkill = gen
 }
 
-// SetProjectAllowCwdAuth toggles the AllowCwdAuth flag. Does not save; use
-// within store.With.
 func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
@@ -594,44 +496,21 @@ func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
 	proj.AllowCwdAuth = allow
 }
 
-// SyncProjectToken updates the project's disabled tools and context to match
-// its current allowedMcpIDs and path. Permissions are derived at auth time
-// from AllowedMcpIDs, so they're not stored.
-//
-// surfaces maps MCP IDs to what relay knows about them at runtime (from
-// ExternalMcpManager). A nil map skips derivation entirely, which is the
-// pre-ADR-011 contract for a caller with no live MCP manager wired.
-//
-// The derivation is driven by the SCHEMA, not by a field name relay knows:
-// relay writes the project's path into every field declaring
-// source: "project_path" because the schema asked it to (ADR-011 decision 5).
-// The v1 branch below is the one exception and is scheduled for removal.
+// SyncProjectToken derives the project's disabled tools and context from
+// its current allowedMcpIDs and path, driven by the SCHEMA rather than by a
+// field name relay knows: it writes the project's path into every field
+// declaring source: "project_path" because the schema asked it to (ADR-011
+// decision 5). surfaces maps MCP IDs to what relay knows at runtime; a nil
+// map skips derivation for a caller with no live MCP manager wired.
 //
 // Deliberately NOT done here: pruning a stored field the live schema no
-// longer declares. macMCP renaming write_dirs to file_dirs is the concrete
-// case — a project synced under the old name keeps a "write_dirs" entry in
-// its stored context.macmcp blob forever, unreachable (nothing governs by
-// that name any more) but not deleted. Two reasons that is the right call
-// rather than a gap:
-//
-//   - surfaces is exactly as reliable as "is this MCP running right now".
-//     An MCP that is merely down — restarting, mid-upgrade, network-flaky if
-//     remote — reports no schema at all, which is bit-for-bit the same shape
-//     as "this schema now declares zero fields". Pruning on that signal would
-//     delete an operator's stored values because a process happened to be
-//     down at sync time, which is a worse failure than a harmless stale key:
-//     ADR-009's reasoning (see the remote-project guard a few lines below)
-//     applies here too.
-//   - it does not need doing here to be safe. A stale key cannot be set by an
-//     operator (validateProjectContextForMcp refuses any name the live schema
-//     does not currently declare, at write time), so the only way one exists
-//     is a schema that changed after the value was written — and it is inert:
-//     filterKnownContextFields drops any key CallTool's _meta injection does
-//     not find in the schema of the MCP it just confirmed is live, so a
-//     stale key is never sent to an MCP under its old name. It just sits in
-//     settings.json, harmlessly, until an operator re-saves that project's
-//     context (UpdateProjectContext replaces the blob) or removes the value
-//     by hand.
+// longer declares. A merely-down MCP reports no schema at all, which is
+// indistinguishable from "this schema now declares zero fields", so
+// pruning on that signal would delete an operator's values because a
+// process happened to be down at sync time — and it isn't needed for
+// safety anyway, since a stale key is inert (filterKnownContextFields
+// drops it at call time) and cannot be operator-set in the first place
+// (validateProjectContextForMcp refuses unknown names at write time).
 func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	if proj.Context == nil {
 		proj.Context = make(map[string]json.RawMessage)
@@ -639,12 +518,10 @@ func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	if proj.DisabledTools == nil {
 		proj.DisabledTools = make(map[string][]string)
 	}
-	// Resolve which MCP IDs to configure: all registered if wildcard.
 	mcpIDs := proj.AllowedMcpIDs
 	if isWildcard(mcpIDs) {
 		mcpIDs = s.AllExternalMcpIDs()
 	}
-	// Clean stale entries for MCPs no longer in the allowed set.
 	allowed := make(map[string]bool, len(mcpIDs))
 	for _, id := range mcpIDs {
 		allowed[id] = true
@@ -674,23 +551,13 @@ func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 			delete(proj.AllowExternal, id)
 		}
 	}
-	// Defence in depth: a remote project has no Path, and BOTH ways to handle
-	// that are unsafe — writing a path-derived field as [""] hands a downstream
-	// MCP an empty root to interpret (a Node MCP's path.resolve("") resolves to
-	// ITS OWN cwd, which can be far more permissive than intended), and omitting
-	// the field lets the MCP fall back to its own default, which may be
-	// unrestricted. Relay can't see how a given MCP interprets either, so
-	// remote projects skip this derivation entirely — never just when
-	// validation happens to catch it. ValidateProjectGrants is supposed to
-	// refuse granting an MCP whose whole tool surface needs a path to a remote
-	// project before this ever runs; this guard is what keeps a bypass of that
-	// check from turning into a silent scope widening instead of a loud one.
-	//
-	// Stated generically now (ADR-011 decision 5): NEVER derive a
-	// source: "project_path" field for a remote-kind record, unconditionally,
-	// before the loop. The reasoning is ADR-009's and is unchanged — the
-	// failure mode is a silent widening, and schemas are discovered at runtime,
-	// so an MCP can grow such a field after a grant was already validated.
+	// Defence in depth: a remote project has no Path, and both ways to
+	// handle that are unsafe (an empty-string root, or omitting the field
+	// and letting the MCP fall back to its own possibly-unrestricted
+	// default), so remote projects skip derivation entirely, unconditionally,
+	// rather than only when ValidateProjectGrants happens to catch it —
+	// this guard is what keeps a bypass of that check from silently
+	// widening scope instead of failing loudly (ADR-011 decision 5).
 	if proj.IsRemote() {
 		return
 	}
@@ -709,23 +576,17 @@ func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 				derived++
 			}
 			// DEFERRED (ADR-011): fs_bash auto-disable stays a hardcoded tool
-			// name here. Moving it into the schema as a default_disabled_tools
-			// declaration is the same ADR-006 violation as the old
-			// allowed_dirs branch, but it is not resource scoping, so it is
-			// explicitly out of ADR-011's scope. Keyed off "this MCP scopes
-			// something to the project path" rather than off the field's name,
-			// which is the most domain-blind form available without the schema
-			// change.
+			// name here, keyed off "this MCP scopes something to the project
+			// path" rather than off a field name — the most domain-blind
+			// form available without a schema change to carry it.
 			if derived > 0 {
 				s.disableToolByDefault(proj, mcpID, v1FsBashTool)
 			}
 			continue
 		}
 
-		// v1 compatibility, for one release. This is the last place in relay
-		// that knows a field name; see v1AllowedDirsField. An MCP that declares
-		// no contextSchemaVersion is handled exactly as it was before ADR-011,
-		// nested-schema tolerance (issue #17) included.
+		// v1 compatibility: the last place in relay that knows a field name
+		// directly; see v1AllowedDirsField.
 		if schemaHasField(surface.Schema, v1AllowedDirsField) {
 			ctx, _ := json.Marshal(map[string]interface{}{
 				v1AllowedDirsField: []string{proj.Path},
@@ -736,11 +597,9 @@ func (s *Settings) SyncProjectToken(proj *Project, surfaces McpSurfaces) {
 	}
 }
 
-// projectPathValue renders the project's path in the shape the field declared.
-// An array-typed field gets a one-element list, a string-typed one gets the
-// bare path. Anything else gets the list, which is what every path-scoped MCP
-// relay has met declares and the only shape that can carry more than one root
-// later.
+// projectPathValue: a string-typed field gets the bare path; anything else
+// (including array-typed) gets a one-element list, which is the only shape
+// that can carry more than one root later.
 func projectPathValue(f ContextField, path string) interface{} {
 	if f.Type == "string" {
 		return path
@@ -748,10 +607,9 @@ func projectPathValue(f ContextField, path string) interface{} {
 	return []string{path}
 }
 
-// mergeContextField sets one field inside an MCP's context blob, leaving every
-// other field alone. The old code replaced the whole blob, which was harmless
-// while relay derived exactly one field and destructive as soon as an operator
-// can set others beside it (ADR-011 decision 6).
+// mergeContextField sets one field inside an MCP's context blob, leaving
+// every other field alone — replacing the whole blob would destroy any
+// field an operator can set beside a derived one (ADR-011 decision 6).
 func mergeContextField(base json.RawMessage, name string, value json.RawMessage) json.RawMessage {
 	m := contextValues(base)
 	if m == nil {
@@ -765,41 +623,26 @@ func mergeContextField(base json.RawMessage, name string, value json.RawMessage)
 	return out
 }
 
-// disableToolByDefault adds a tool to a project's disabled list once.
 func (s *Settings) disableToolByDefault(proj *Project, mcpID, tool string) {
 	if !slices.Contains(proj.DisabledTools[mcpID], tool) {
 		proj.DisabledTools[mcpID] = append(proj.DisabledTools[mcpID], tool)
 	}
 }
 
-// ValidateProjectGrants refuses a grant that would leave an MCP with no usable
-// tools (ADR-011 decision 5).
+// ValidateProjectGrants refuses a grant that would leave an MCP with no
+// usable tools (ADR-011 decision 5): a remote-kind record has no Path, so
+// a source: "project_path" field cannot be supplied, and by ADR-011
+// decision 4 every tool that field governs then refuses. If the field's
+// applies_to covers every tool the MCP exposes, the grant buys nothing and
+// is refused; if it covers only some, the grant is permitted and precisely
+// those tools lose out.
 //
-// This replaces the old rule, which asked the wrong question: it refused a
-// remote project any MCP declaring the literal field "allowed_dirs", encoding
-// "filesystem" where it meant "derived from the project's path". The general
-// question is asked here instead.
-//
-// A remote-kind record has no Path, so a source: "project_path" field cannot be
-// supplied for one. By ADR-011 decision 4 every tool that field governs then
-// refuses. If the field's applies_to covers EVERY tool the MCP exposes, the
-// grant buys nothing and is refused, naming the MCP and why. If it covers only
-// some — macMCP, where only mail_save_attachment and mail_get_source are
-// governed — the grant is permitted and precisely those tools lose out. That
-// is ADR-011 finding 1's fix, arriving as a consequence of the model rather
-// than as a special case.
-//
-// Note what this is and is not. It is a coherence check an operator sees at
-// edit time, not the security boundary: the boundary is SyncProjectToken
-// refusing to derive the value (above) and CallTool refusing the call
-// (appRouter.CallTool's presence re-check). So where the information needed to
-// answer is missing — relay has never connected to the MCP, so it does not know
-// what tools it exposes — this permits, and the call-time check still denies.
-// Refusing on missing information would turn an MCP that is merely not running
-// into an un-grantable one.
-//
-// Local projects are exempt: a path-scoped MCP granted to a local project is
-// exactly the expected case, and SyncProjectToken fills in its real Path.
+// This is a coherence check an operator sees at edit time, not the
+// security boundary — that is SyncProjectToken (above) and CallTool's
+// presence re-check — so where the MCP's tool list is unknown (relay has
+// never connected to it), this permits, and the call-time check still
+// denies. Local projects are exempt: a path-scoped MCP granted to a local
+// project is the expected case.
 func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) error {
 	if !proj.IsRemote() {
 		return nil
@@ -819,9 +662,9 @@ func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) er
 			continue
 		}
 
-		// v1 compatibility, for one release: an MCP that declares
-		// allowed_dirs and no version is refused exactly as before, without
-		// consulting a tool list it has no way to qualify.
+		// v1 compatibility: an MCP that declares allowed_dirs and no
+		// version is refused outright, without consulting a tool list it
+		// has no way to qualify.
 		if schemaHasField(surface.Schema, v1AllowedDirsField) {
 			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares %s) and a remote project has no path to scope it to", mcpID, v1AllowedDirsField)
 		}
@@ -829,30 +672,18 @@ func (s *Settings) ValidateProjectGrants(proj *Project, surfaces McpSurfaces) er
 	return nil
 }
 
-// grantedToolNames narrows an MCP's live tool list to the ones this record may
-// actually call, by the same allowlist StoredToken.ToolAllowed applies at the
-// chokepoint.
+// grantedToolNames narrows an MCP's live tool list to the ones this record
+// may actually call (the same allowlist StoredToken.ToolAllowed applies at
+// the chokepoint), because asking ValidateProjectGrants's question against
+// the MCP's WHOLE surface is the wrong set: macMCP declares file_dirs
+// governing mail_save_attachment alone, so the answer over 47 tools is
+// always no, even for a grant of exactly that one tool that can call
+// nothing.
 //
-// ValidateProjectGrants asked its question — "does a project_path field govern
-// every tool" — against the MCP's WHOLE surface, which is the wrong set for a
-// record whose grant is an enumeration. macMCP declares file_dirs governing
-// mail_save_attachment alone, so the answer over 47 tools is always no; but
-// allowed_tools: {"macmcp": ["mail_save_attachment"]} is a grant of exactly
-// that one tool, it saves cleanly, and it can call nothing. The coherence check
-// an operator sees at edit time has to be asked about the grant they wrote.
-//
-// The tool list, not the allowlist patterns, is what is filtered: a pattern
-// that matches nothing the MCP exposes contributes no tool, which is the same
-// reading the chokepoint gives it.
-//
-// A grant that names NO tool of this MCP falls back to the whole surface, and
-// that is the fail-closed direction rather than a shortcut. Such a profile
-// holds nothing for a reason that has nothing to do with the scope — decision
-// 9b permits an incomplete profile, and granting an MCP before typing the tool
-// list is the ordinary order of work — so the question to ask is not "are the
-// zero tools you named all dead" (vacuously no, which would permit fsMCP and
-// lose the refusal decision 5 is built on) but "if you named any, would they
-// be". The widest answer to that is the MCP's own list.
+// A grant naming NO tool of this MCP falls back to the whole surface — the
+// fail-closed direction, not a shortcut, since an incomplete profile
+// (decision 9b) is the ordinary order of work and must not read as
+// vacuously safe.
 func grantedToolNames(proj *Project, mcpID string, all []string) []string {
 	tok := StoredToken{
 		ProjectKind:  proj.Kind,
@@ -870,25 +701,13 @@ func grantedToolNames(proj *Project, mcpID string, all []string) []string {
 	return out
 }
 
-// schemaHasField reports whether a context schema declares a given field, in
-// either shape an MCP might reasonably use.
-//
-// THIS IS THE V1 PATH ONLY. A v2 schema (contextSchemaVersion >= 2) is parsed
-// by ParseContextSchema and never reaches here; this exists because fsMCP as
-// shipped declares its context flat — {"allowed_dirs": {...}} — with no
-// version, while the ordinary JSON-Schema shape nests the same declaration
-// under "properties", and relay's own test fixtures use that form. Checking
-// only the flat shape made the answer depend on how an MCP happened to spell an
-// identical declaration.
-//
-// Getting that wrong fails OPEN, which is why both shapes are checked here
-// rather than a shape being mandated elsewhere. A false negative does not
-// merely skip a warning — the grant is allowed, the second defence then
-// correctly declines to derive a path-scoped field for a remote project, the
-// MCP receives no value at all, and an MCP that reads an absent allowlist as
-// "unrestricted" (fsMCP does) hands a client on another machine the whole host
-// filesystem. ADR-009 names that exact sequence as the thing this check exists
-// to prevent.
+// schemaHasField is the V1 PATH ONLY — a v2 schema (contextSchemaVersion
+// >= 2) never reaches here. It checks both the flat shape fsMCP ships and
+// the JSON-Schema shape nested under "properties", because checking only
+// one made the answer depend on how an MCP happened to spell the same
+// declaration. Getting that wrong fails OPEN: a false negative silently
+// permits a grant to an MCP that reads an absent allowlist as
+// "unrestricted" (ADR-009).
 func schemaHasField(schema json.RawMessage, field string) bool {
 	if len(schema) == 0 {
 		return false
@@ -900,9 +719,8 @@ func schemaHasField(schema json.RawMessage, field string) bool {
 	if _, ok := fields[field]; ok {
 		return true
 	}
-	// JSON-Schema form: the declarations live under "properties". Checked after
-	// the flat lookup so a schema that genuinely declares a field called
-	// "properties" is still matched by the flat rule first.
+	// Checked after the flat lookup so a schema that genuinely declares a
+	// field called "properties" is still matched by the flat rule first.
 	props, ok := fields["properties"]
 	if !ok {
 		return false
@@ -915,11 +733,6 @@ func schemaHasField(schema json.RawMessage, field string) bool {
 	return ok
 }
 
-// ---------------------------------------------------------------------------
-// Lookup helpers — eliminate repeated linear scans
-// ---------------------------------------------------------------------------
-
-// findMcpByID returns the MCP with the given ID and its index, or nil, -1.
 func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {
 	for i := range s.ExternalMcps {
 		if s.ExternalMcps[i].ID == id {
@@ -929,7 +742,6 @@ func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {
 	return nil, -1
 }
 
-// findServiceByID returns the service with the given ID and its index, or nil, -1.
 func (s *Settings) findServiceByID(id string) (*ServiceConfig, int) {
 	for i := range s.Services {
 		if s.Services[i].ID == id {
@@ -939,7 +751,6 @@ func (s *Settings) findServiceByID(id string) (*ServiceConfig, int) {
 	return nil, -1
 }
 
-// findProjectByID returns the project with the given ID and its index, or nil, -1.
 func (s *Settings) findProjectByID(id string) (*Project, int) {
 	for i := range s.Projects {
 		if s.Projects[i].ID == id {
@@ -949,10 +760,9 @@ func (s *Settings) findProjectByID(id string) (*Project, int) {
 	return nil, -1
 }
 
-// findProjectByTokenHash returns the project whose token matches the given hash.
-// Uses a constant-time compare for consistency with the admin/frontend token
-// checks — both sides are SHA-256 hashes, but matching the hardened path keeps
-// the auth-comparison policy uniform.
+// findProjectByTokenHash uses a constant-time compare for consistency with
+// the admin/frontend token checks — both sides are SHA-256 hashes, but
+// matching the hardened path keeps the auth-comparison policy uniform.
 func (s *Settings) findProjectByTokenHash(hash string) *Project {
 	want := []byte(hash)
 	for i := range s.Projects {
@@ -963,14 +773,10 @@ func (s *Settings) findProjectByTokenHash(hash string) *Project {
 	return nil
 }
 
-// isWildcard returns true if the list contains a single "*" entry,
-// meaning "allow all".
 func isWildcard(ids []string) bool {
 	return len(ids) == 1 && ids[0] == "*"
 }
 
-// AuthenticateProject validates a bearer token against project token hashes.
-// Returns a synthetic StoredToken with permissions derived from AllowedMcpIDs.
 func (s *Settings) AuthenticateProject(plaintext string) (*StoredToken, error) {
 	if plaintext == "" {
 		return nil, ErrNoToken
@@ -982,9 +788,8 @@ func (s *Settings) AuthenticateProject(plaintext string) (*StoredToken, error) {
 	return stored, nil
 }
 
-// AuthenticateProjectByHash finds a project by pre-computed token hash and
-// returns a synthetic StoredToken with derived permissions. Returns nil if
-// no project matches. Used by resolveAuth to avoid double-hashing.
+// AuthenticateProjectByHash lets resolveAuth pass a pre-computed hash
+// rather than double-hashing.
 func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	proj := s.findProjectByTokenHash(hash)
 	if proj == nil {
@@ -993,17 +798,15 @@ func (s *Settings) AuthenticateProjectByHash(hash string) *StoredToken {
 	return s.storedTokenForProject(proj, hash)
 }
 
-// AuthenticateProjectByPath resolves a caller's working directory to a project
-// that has opted into directory auth (AllowCwdAuth) and returns the same
-// synthetic StoredToken the token path would produce. Returns nil when dir is
-// empty, matches nothing, or matches only projects that have NOT opted in —
-// every failure mode is "no access", never "all access".
-//
-// The scope granted is identical to the project's token: opting in changes how
-// a caller is *identified*, never what the project is allowed to reach.
+// AuthenticateProjectByPath returns nil when dir is empty, matches nothing,
+// or matches only projects that have NOT opted into AllowCwdAuth — every
+// failure mode is "no access", never "all access". The scope granted is
+// identical to the project's token: opting in changes how a caller is
+// *identified*, never what the project is allowed to reach.
 //
 // Nested projects resolve to the most specific match (longest project path
-// containing dir), so a project nested inside another wins for its own subtree.
+// containing dir), so a project nested inside another wins for its own
+// subtree.
 func (s *Settings) AuthenticateProjectByPath(dir string) *StoredToken {
 	if dir == "" {
 		return nil
@@ -1012,9 +815,10 @@ func (s *Settings) AuthenticateProjectByPath(dir string) *StoredToken {
 	bestLen := -1
 	for i := range s.Projects {
 		p := &s.Projects[i]
-		// Check the opt-in first: a project that hasn't enabled directory auth
-		// must not even participate in the longest-match race, or it could
-		// shadow an opted-in parent and turn a valid grant into a denial.
+		// Check the opt-in first: a project that hasn't enabled directory
+		// auth must not even participate in the longest-match race, or it
+		// could shadow an opted-in parent and turn a valid grant into a
+		// denial.
 		if !p.AllowCwdAuth || p.Path == "" {
 			continue
 		}
@@ -1031,12 +835,11 @@ func (s *Settings) AuthenticateProjectByPath(dir string) *StoredToken {
 	return s.storedTokenForProject(best, best.TokenHash)
 }
 
-// storedTokenForProject builds the synthetic StoredToken view of a project:
-// permissions derived from AllowedMcpIDs, plus the project's disabled tools and
-// per-MCP context. Shared by every authentication path so a project's scope
-// cannot drift depending on how the caller was identified.
+// storedTokenForProject is shared by every authentication path so a
+// project's scope cannot drift depending on how the caller was identified.
 func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToken {
-	// Wildcard: nil permissions map — checkToolAccess treats missing keys as allowed.
+	// Wildcard: nil permissions map — checkToolAccess treats a missing key
+	// as allowed.
 	if isWildcard(proj.AllowedMcpIDs) {
 		return &StoredToken{
 			Name:          "project:" + proj.Name,

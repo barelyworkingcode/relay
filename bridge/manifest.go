@@ -7,141 +7,99 @@ import (
 )
 
 // Manifest declares how an enhanced service plugs into relay's front door
-// and settings UI. Carried over the bridge as the payload of a
-// ReqRegisterManifest. Intentionally minimal — see service-manifest-spec.md.
-//
-// Keep additions backward-compatible (new optional fields are fine; renaming
-// or removing fields breaks every implementor).
+// and settings UI (payload of ReqRegisterManifest; see service-manifest-spec.md).
+// Keep additions backward-compatible: renaming or removing a field breaks
+// every implementor.
 type Manifest struct {
-	// Routes are the HTTP path prefixes and exact paths the service serves.
-	// Relay's front-door dispatcher uses longest-prefix-match against this
-	// list to pick which service handles an inbound request. WebSocket paths
-	// (e.g. "/ws") are valid entries.
 	Routes []string `json:"routes"`
 
-	// Status declares the GET endpoint relay polls to render the service's
-	// status in the settings UI. Optional — services with no status surface
-	// can omit it.
 	Status *StatusDecl `json:"status,omitempty"`
 
-	// Actions are user-triggerable RPCs that surface as buttons in the
-	// settings UI. Optional.
 	Actions []ActionDecl `json:"actions,omitempty"`
 
-	// Config declares a single config file the service wants relay to expose
-	// for editing in the settings UI, plus the schema relay renders an editor
-	// from. Relay reads and writes the file directly from the tray process —
-	// the service hosts no endpoint for this. Optional.
 	Config *ConfigDecl `json:"config,omitempty"`
 }
 
-// StatusDecl is the read-only status endpoint relay polls for the service.
-// Response body is free-form JSON; the UI renders it generically.
 type StatusDecl struct {
 	Path string `json:"path"`
 }
 
-// ActionDecl is a single user-triggerable RPC. PathTemplate may contain
-// `{key}` placeholders that the UI substitutes from a row in the status
-// response (driving per-row action buttons in array-shaped status payloads).
 type ActionDecl struct {
 	ID           string `json:"id"`
 	Label        string `json:"label"`
 	Method       string `json:"method"`
 	PathTemplate string `json:"pathTemplate"`
-	// ForEach names a top-level array key in the service's status response.
-	// When set, the UI renders one button per row in that array and
-	// substitutes the row's keys into PathTemplate's {placeholders}.
-	// Empty = single global button with no substitution.
-	ForEach string `json:"forEach,omitempty"`
+	ForEach      string `json:"forEach,omitempty"`
 }
 
 // ConfigDecl declares one editable config file plus the schema relay uses to
-// render an editor for it. Carried in the Manifest at RegisterManifest time.
-// Relay reads and writes the file directly (the service hosts no endpoint),
-// treating the bytes as opaque text on the wire; Schema drives the settings-UI
-// form. The service is restarted to apply unless ApplyMode is "live".
-//
-// Path is validated here as absolute + no ".." segment (schema-level only).
-// Relay re-validates it against an allowed root and a regular-file check at use
-// time — a service-declared path is never trusted blindly, even though
-// RegisterManifest is service-token authenticated.
+// render an editor for it. Path is validated here as absolute + no ".."
+// (schema-level only) — relay re-validates against an allowed root and a
+// regular-file check at use time, since a service-declared path is never
+// trusted blindly even though registration is service-token authenticated.
 type ConfigDecl struct {
-	Path      string      `json:"path"`                // absolute path to the config file (required)
-	Format    string      `json:"format,omitempty"`    // "jsonc" (default) | "json"
-	Label     string      `json:"label,omitempty"`     // UI header, e.g. "settings.json"
-	Help      string      `json:"help,omitempty"`      // one-line description under the header
-	ApplyMode string      `json:"applyMode,omitempty"` // "restart" (default) | "live"
-	Schema    []FieldDecl `json:"schema"`              // top-level fields of the config object
+	Path      string      `json:"path"`
+	Format    string      `json:"format,omitempty"`
+	Label     string      `json:"label,omitempty"`
+	Help      string      `json:"help,omitempty"`
+	ApplyMode string      `json:"applyMode,omitempty"`
+	Schema    []FieldDecl `json:"schema"`
 }
 
-// FieldDecl describes one node in a config schema. Leaf types render a single
-// input; the recursive types (object/array/map) nest. The same declaration
-// drives both the form layout and the harvest/serialize back to JSON in the UI.
 type FieldDecl struct {
-	ID          string   `json:"id"`                    // JSON key in the enclosing object
-	Label       string   `json:"label,omitempty"`       // human-readable label
-	Type        string   `json:"type"`                  // see field types below
-	Help        string   `json:"help,omitempty"`        // help text under the input (replaces JSONC comments)
-	Placeholder string   `json:"placeholder,omitempty"` // input placeholder
-	Required    bool     `json:"required,omitempty"`    // required (non-empty) leaf
-	ReadOnly    bool     `json:"readOnly,omitempty"`    // rendered disabled
-	Secret      bool     `json:"secret,omitempty"`      // mask the input (e.g. apiKey)
-	Options     []string `json:"options,omitempty"`     // allowed values for type "select"
+	ID          string   `json:"id"`
+	Label       string   `json:"label,omitempty"`
+	Type        string   `json:"type"`
+	Help        string   `json:"help,omitempty"`
+	Placeholder string   `json:"placeholder,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	ReadOnly    bool     `json:"readOnly,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
+	Options     []string `json:"options,omitempty"`
 
-	// Recursive shapes — exactly one applies, selected by Type:
-	Fields   []FieldDecl `json:"fields,omitempty"`   // type "object": named child fields
-	Item     *FieldDecl  `json:"item,omitempty"`     // type "array"/"map": schema of each element/value
-	KeyLabel string      `json:"keyLabel,omitempty"` // type "map"/"keyValue": label for the user-chosen key
+	// Recursive shapes: exactly one of these applies, selected by Type.
+	Fields   []FieldDecl `json:"fields,omitempty"`
+	Item     *FieldDecl  `json:"item,omitempty"`
+	KeyLabel string      `json:"keyLabel,omitempty"`
 
-	// Rest applies only to a "keyValue" field declared inside an "object". When
-	// true the editor binds it to ALL of the parent object's keys except the
-	// other declared sibling fields (an "everything else" key/value editor —
-	// e.g. llama-server model flags, which sit as siblings of "alias"). Without
-	// Rest, a "keyValue" field owns its own nested object at its own key.
+	// Rest, on a "keyValue" field inside an "object", binds it to ALL of the
+	// parent's keys except the other declared sibling fields, instead of its
+	// own nested object.
 	Rest bool `json:"rest,omitempty"`
 }
 
-// Field types recognized by the config-schema renderer.
 const (
-	// Leaves.
-	FieldTypeText      = "text"      // single-line string
-	FieldTypeTextarea  = "textarea"  // multi-line string
-	FieldTypeBool      = "bool"      // checkbox / toggle
-	FieldTypeNumber    = "number"    // numeric input
-	FieldTypeSelect    = "select"    // dropdown over Options
-	FieldTypeSecret    = "secret"    // masked single-line string
-	FieldTypeStringArr = "string[]"  // textarea, one entry per line, stored as []string
-	FieldTypeStringMap = "stringMap" // textarea, KEY=VALUE per line, stored as map[string]string
-	FieldTypeKeyValue  = "keyValue"  // repeater of key/value rows; values typed (bool/number/string)
-	FieldTypeJSON      = "json"      // raw-JSON textarea — escape hatch for irregular sub-trees
+	FieldTypeText      = "text"
+	FieldTypeTextarea  = "textarea"
+	FieldTypeBool      = "bool"
+	FieldTypeNumber    = "number"
+	FieldTypeSelect    = "select"
+	FieldTypeSecret    = "secret"
+	FieldTypeStringArr = "string[]"
+	FieldTypeStringMap = "stringMap"
+	FieldTypeKeyValue  = "keyValue"
+	FieldTypeJSON      = "json"
 
-	// Recursive.
-	FieldTypeObject = "object" // fixed set of named child Fields
-	FieldTypeArray  = "array"  // repeatable list, each element typed by Item
-	FieldTypeMap    = "map"    // user-keyed collection, each value typed by Item
+	FieldTypeObject = "object"
+	FieldTypeArray  = "array"
+	FieldTypeMap    = "map"
 )
 
-// ConfigDecl.Format values.
 const (
 	ConfigFormatJSONC = "jsonc"
 	ConfigFormatJSON  = "json"
 )
 
-// ConfigDecl.ApplyMode values.
 const (
 	ConfigApplyRestart = "restart"
 	ConfigApplyLive    = "live"
 )
 
 // RegisterManifestRequest is the Arguments payload for a ReqRegisterManifest
-// bridge call. Sent by an enhanced service on startup, after its internal
-// listener is bound and ready to serve traffic.
-//
-// The service picks InternalSocket and InternalToken itself and tells relay
-// both — relay never dictates them. The bridge connection is already
-// authenticated with the service's MCP token, so relay trusts the declared
-// values as defense-in-depth on top of socket FS permissions.
+// call. The service picks InternalSocket and InternalToken itself; relay
+// trusts the declared values as defense-in-depth on top of socket FS
+// permissions, since the bridge connection is already service-token
+// authenticated.
 type RegisterManifestRequest struct {
 	ServiceID      string   `json:"serviceId"`
 	Manifest       Manifest `json:"manifest"`
@@ -149,10 +107,8 @@ type RegisterManifestRequest struct {
 	InternalToken  string   `json:"internalToken"`
 }
 
-// Validate checks the registration request: the service-declared internal
-// socket and token, plus the manifest itself. Conflict detection against
-// other registered manifests is the relay router's job — this only validates
-// the request in isolation.
+// Validate covers only the request in isolation; conflict detection against
+// other manifests is the router's job.
 func (r *RegisterManifestRequest) Validate() error {
 	if r.ServiceID == "" {
 		return fmt.Errorf("register_manifest: serviceId is empty")
@@ -166,9 +122,6 @@ func (r *RegisterManifestRequest) Validate() error {
 	return r.Manifest.Validate()
 }
 
-// Validate checks the manifest for schema-level errors. Conflict detection
-// against other registered manifests is the relay router's job — this only
-// validates the manifest in isolation.
 func (m *Manifest) Validate() error {
 	if len(m.Routes) == 0 {
 		return fmt.Errorf("manifest: routes is empty")
@@ -203,10 +156,8 @@ func (m *Manifest) Validate() error {
 		if a.Label == "" {
 			return fmt.Errorf("manifest: actions[%d] (%q): label is empty", i, a.ID)
 		}
-		// Normalize the verb in place so downstream HTTP dispatch (which uses
-		// action.Method verbatim) issues a canonical upper-case verb. A manifest
-		// declaring "get" must not reach the wire as a literal "get" that servers
-		// won't match.
+		// A manifest declaring "get" must reach the wire as "GET", or dispatch
+		// (which compares action.Method verbatim) won't match it.
 		method := strings.ToUpper(a.Method)
 		switch method {
 		case "GET", "POST", "PUT", "DELETE", "PATCH":
@@ -226,9 +177,6 @@ func (m *Manifest) Validate() error {
 	return nil
 }
 
-// validate checks a ConfigDecl's schema-level invariants. Filesystem checks
-// (regular file, allowed root, size) happen in relay at use time — a manifest
-// is validated in isolation.
 func (c *ConfigDecl) validate() error {
 	if c.Path == "" {
 		return fmt.Errorf("manifest: config.path is empty")
@@ -257,8 +205,6 @@ func (c *ConfigDecl) validate() error {
 	return validateFields("config.schema", c.Schema)
 }
 
-// validateFields recursively validates a list of sibling field declarations.
-// label is a dotted path used only in error messages.
 func validateFields(label string, fields []FieldDecl) error {
 	seen := make(map[string]bool, len(fields))
 	for i := range fields {
@@ -277,12 +223,10 @@ func validateFields(label string, fields []FieldDecl) error {
 	return nil
 }
 
-// validate checks one FieldDecl and recurses into object/array/map shapes.
 func (f *FieldDecl) validate(label string) error {
 	switch f.Type {
 	case FieldTypeText, FieldTypeTextarea, FieldTypeBool, FieldTypeNumber,
 		FieldTypeSecret, FieldTypeStringArr, FieldTypeStringMap, FieldTypeKeyValue, FieldTypeJSON:
-		// scalar / dynamic-map leaves — nothing further to validate
 	case FieldTypeSelect:
 		if len(f.Options) == 0 {
 			return fmt.Errorf("manifest: %s: select field requires options", label)

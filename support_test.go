@@ -1,10 +1,5 @@
 package main
 
-// Test support helpers — the canonical entry points for any test that
-// needs a sandboxed config dir, a wired router, an in-process bridge,
-// or a fake service. See docs/decisions/001-testing-strategy.md and
-// docs/decisions/002-test-seams.md.
-//
 // Headline rule: every test that touches settings, pidfiles, logs, or
 // the bridge socket MUST start with mkSandboxRelayHome(t). The
 // sandbox-leak guard in support_safety_test.go fails the suite if you
@@ -29,8 +24,6 @@ import (
 	"relaygo/bridge"
 )
 
-// repoRoot returns the absolute path to the repository root, derived from
-// this file's location. Stable across test working directories.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -40,24 +33,17 @@ func repoRoot(t *testing.T) string {
 	return filepath.Dir(file)
 }
 
-// fixtureRoot returns the path to test/fixtures/.
 func fixtureRoot(t *testing.T) string {
 	return filepath.Join(repoRoot(t), "test", "fixtures")
 }
 
-// mkSandboxRelayHome allocates a tempdir, populates it with a writable copy
-// of test/fixtures/relay-home/, points bridge.ConfigDir() at it, and
-// registers cleanup. Returns the sandbox directory.
-//
 // Always call this BEFORE any code path that reads or writes the
 // ConfigDir. The sandbox-leak guard (support_safety_test.go) catches
-// violations at suite scope, but per-test failures are easier to debug
-// when the sandbox is set up correctly from the start.
+// violations at suite scope.
 //
 // Uses /tmp instead of t.TempDir() because macOS limits Unix-socket paths
 // to 104 chars and bridge.SocketPath() lives inside ConfigDir — a typical
-// t.TempDir() path already exceeds the limit. /tmp-based names keep us
-// safe. Cleaned up at test exit.
+// t.TempDir() path already exceeds the limit.
 func mkSandboxRelayHome(t *testing.T) string {
 	t.Helper()
 	dir := mkShortTempDir(t, "relay-home-")
@@ -70,9 +56,6 @@ func mkSandboxRelayHome(t *testing.T) string {
 	return dir
 }
 
-// mkEmptySandboxRelayHome is the same as mkSandboxRelayHome but skips the
-// fixture copy. For tests that explicitly want to verify first-launch
-// behavior or construct settings programmatically.
 func mkEmptySandboxRelayHome(t *testing.T) string {
 	t.Helper()
 	dir := mkShortTempDir(t, "relay-home-empty-")
@@ -103,13 +86,6 @@ func mkShortTempDir(t *testing.T, prefix string) string {
 	return dir
 }
 
-// newSandboxRouter builds an appRouter wired against the sandbox fixture
-// install. Use when a test needs a router that thinks it's talking to a
-// fully-populated relay (3 projects, 3 MCPs, 2 services from the fixture
-// settings.json).
-//
-// Returns the router and the SettingsStore so tests can mutate state via
-// store.With and observe the effect through router calls.
 func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
 	t.Helper()
 	dir := mkSandboxRelayHome(t)
@@ -133,13 +109,6 @@ type fakeServiceReloader struct{}
 
 func (f *fakeServiceReloader) Reload(id string, cfg *ServiceConfig) error { return nil }
 
-// ---------------------------------------------------------------------------
-// FakeService — stub enhanced service for dispatcher tests
-// ---------------------------------------------------------------------------
-
-// FakeService is an in-process enhanced service: a Unix socket serving
-// HTTP, optionally registered with a manifest, that records inbound
-// requests for assertion.
 type FakeService struct {
 	t         *testing.T
 	serviceID string
@@ -155,16 +124,14 @@ type FakeService struct {
 }
 
 type fakeServiceRequest struct {
-	Method        string
-	Path          string
-	Query         url.Values
-	Headers       http.Header
-	Body          []byte
-	WasWebSocket  bool
+	Method       string
+	Path         string
+	Query        url.Values
+	Headers      http.Header
+	Body         []byte
+	WasWebSocket bool
 }
 
-// FakeServiceOptions configures a FakeService. ServiceID + Manifest are
-// required; Handler is optional (defaults to a 200/JSON echo).
 type FakeServiceOptions struct {
 	ServiceID string
 	Manifest  bridge.Manifest
@@ -172,14 +139,12 @@ type FakeServiceOptions struct {
 	Handler http.HandlerFunc
 }
 
-// NewFakeService starts a FakeService on a short Unix socket path with a
-// randomly-generated internal token. Does NOT register with relay — use
-// FakeService.Register or pass the value through your test bridge.
+// NewFakeService does NOT register with relay — use FakeService.Register or
+// pass the value through your test bridge.
 //
 // Sockets land in /tmp instead of t.TempDir() because macOS limits Unix
 // socket paths to 104 chars and t.TempDir() paths often exceed that on
-// dev machines. /tmp keeps us comfortably under the cap. Cleaned up on
-// test exit via t.Cleanup.
+// dev machines.
 func NewFakeService(t *testing.T, opts FakeServiceOptions) *FakeService {
 	t.Helper()
 	if opts.ServiceID == "" {
@@ -219,10 +184,10 @@ func NewFakeService(t *testing.T, opts FakeServiceOptions) *FakeService {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":       true,
-			"service":  opts.ServiceID,
-			"path":     r.URL.Path,
-			"method":   r.Method,
+			"ok":      true,
+			"service": opts.ServiceID,
+			"path":    r.URL.Path,
+			"method":  r.Method,
 		})
 	})
 
@@ -242,19 +207,14 @@ func NewFakeService(t *testing.T, opts FakeServiceOptions) *FakeService {
 	return fs
 }
 
-// Socket returns the Unix socket path the service listens on.
 func (f *FakeService) Socket() string { return f.socket }
 
-// Token returns the internal bearer token relay will inject when proxying.
 func (f *FakeService) Token() string { return f.token }
 
-// ServiceID returns the service identifier used in RegisterManifest.
 func (f *FakeService) ServiceID() string { return f.serviceID }
 
-// Manifest returns the declared manifest.
 func (f *FakeService) Manifest() bridge.Manifest { return f.manifest }
 
-// Requests returns a snapshot of recorded requests in arrival order.
 func (f *FakeService) Requests() []*fakeServiceRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -263,7 +223,6 @@ func (f *FakeService) Requests() []*fakeServiceRequest {
 	return out
 }
 
-// LastRequest returns the most-recent recorded request or nil.
 func (f *FakeService) LastRequest() *fakeServiceRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -273,8 +232,6 @@ func (f *FakeService) LastRequest() *fakeServiceRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-// Register sends a RegisterManifest call to relay via the given
-// service-authenticated bridge client.
 func (f *FakeService) Register(client *bridge.Client) error {
 	return client.RegisterManifest(bridge.RegisterManifestRequest{
 		ServiceID:      f.serviceID,
@@ -284,8 +241,6 @@ func (f *FakeService) Register(client *bridge.Client) error {
 	})
 }
 
-// NewFakeRelayLLMService is a specialization of NewFakeService preloaded
-// with the relayLLM manifest from test/fixtures/manifests/relayllm.json.
 // Drift-mitigation: relayLLM has its own test that asserts its actual
 // generated manifest equals this file.
 func NewFakeRelayLLMService(t *testing.T) *FakeService {
@@ -318,10 +273,6 @@ func loadManifestFixture(t *testing.T, name string) bridge.Manifest {
 	return m
 }
 
-// ---------------------------------------------------------------------------
-// Filesystem helpers
-// ---------------------------------------------------------------------------
-
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -345,9 +296,6 @@ func copyTree(src, dst string) error {
 	})
 }
 
-// substituteHomePlaceholder rewrites ${RELAY_HOME} → home in the named
-// file (idempotent — silently does nothing if the placeholder isn't
-// present). Mirrors what scripts/demo.sh does.
 func substituteHomePlaceholder(t *testing.T, path, home string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -366,11 +314,6 @@ func substituteHomePlaceholder(t *testing.T, path, home string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Assertion helpers
-// ---------------------------------------------------------------------------
-
-// assertNoErr fails the test with formatted context if err is non-nil.
 func assertNoErr(t *testing.T, err error, format string, args ...any) {
 	t.Helper()
 	if err != nil {
@@ -379,8 +322,6 @@ func assertNoErr(t *testing.T, err error, format string, args ...any) {
 	}
 }
 
-// assertManifestHasRoutes fails the test if any of the wanted routes are
-// missing from the manifest. Order- and extras-tolerant.
 func assertManifestHasRoutes(t *testing.T, m bridge.Manifest, want ...string) {
 	t.Helper()
 	have := make(map[string]bool, len(m.Routes))
@@ -398,8 +339,6 @@ func assertManifestHasRoutes(t *testing.T, m bridge.Manifest, want ...string) {
 	}
 }
 
-// dialUnixWithTimeout opens a Unix-socket connection with a short timeout.
-// Useful in service-readiness polls.
 func dialUnixWithTimeout(t *testing.T, sock string, timeout time.Duration) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -414,4 +353,3 @@ func dialUnixWithTimeout(t *testing.T, sock string, timeout time.Duration) net.C
 		time.Sleep(20 * time.Millisecond)
 	}
 }
-

@@ -7,20 +7,14 @@ import (
 )
 
 // An MCP with nothing to do with mail — different domain, different field
-// names, different shapes.
-//
-// This test exists because the rest of the suite could not have caught a
-// hardcoded field name. Both MCPs that declare a v2 schema (macMCP, and
-// cmd/testmcp which mirrors it) use mail_accounts / mail_mailboxes, so relay
-// could have grown a special case for one of those names and every other test
-// would still have passed. ADR-011 decision 3's whole claim is that relay
-// stores, injects, renders and refuses a scoping value without knowing what it
-// scopes; nothing was pinning that claim against a name relay has never seen.
+// names, different shapes. Every other v2 fixture in this suite (macMCP,
+// cmd/testmcp) happens to use mail_accounts / mail_mailboxes, so relay could
+// grow a hardcoded special case for one of those names and every other test
+// would still pass; this fixture is the one thing that would catch it.
 //
 // telemetry_tag is here on purpose: it is declared WITHOUT scope:"restrict",
-// so it must not appear among the restrict fields and must not be offered to an
-// operator. _meta is a general channel and a future MCP may pass a credential
-// through it (decision 7).
+// so it must not appear among the restrict fields and must not be offered to
+// an operator.
 const alienSchema = `{
   "s3_buckets":   {"type":"array","items":{"type":"string"},"description":"Buckets this client may read",
                    "scope":"restrict","source":"operator","applies_to":["s3_*"],"enumerable":true},
@@ -52,8 +46,6 @@ func TestParseContextSchema_AnAlienMcpNeedsNoMailKnowledge(t *testing.T) {
 		t.Errorf("project_path fields = %q, want %q", got, want)
 	}
 
-	// applies_to globs are resolved per tool, so a tool matched by one field's
-	// pattern and not another's is governed by exactly one.
 	var gov []string
 	for _, f := range cs.GoverningFields("s3_download") {
 		gov = append(gov, f.Name)
@@ -69,8 +61,6 @@ func TestParseContextSchema_AnAlienMcpNeedsNoMailKnowledge(t *testing.T) {
 		t.Errorf("GoverningFields(ec2_list) = %q, want %q (only aws_region matches ec2_*)", got, want)
 	}
 
-	// A value is validated against the declared fragment, for a field name
-	// relay has never seen.
 	f, ok := cs.Field("s3_buckets")
 	if !ok {
 		t.Fatal("s3_buckets not found")
@@ -96,7 +86,6 @@ func TestParseContextSchema_AnAlienMcpNeedsNoMailKnowledge(t *testing.T) {
 		t.Error("an empty string must be refused for a restrict field")
 	}
 
-	// What the editor is handed: every restrict field, and nothing else.
 	views := McpSurfaces{"alienmcp": {Schema: json.RawMessage(alienSchema), SchemaVersion: 2}}.ScopeFields()
 	got := views["alienmcp"]
 	if len(got) != 3 {

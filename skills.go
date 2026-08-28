@@ -21,30 +21,25 @@ import (
 // single-domain so the agent's lazy-load router (which only sees the
 // description, not the body) can match a user request to the right skill.
 //
-// Key is the human-readable group label (a server-supplied tool category, or
-// the owning MCP's display name when the server doesn't categorize). Slug is
-// the filesystem/skill-safe form; the on-disk dir is "relay-<Slug>".
+// Key is the human-readable group label; Slug is the filesystem/skill-safe
+// form, and the on-disk dir is "relay-<Slug>".
 type SkillBucket struct {
 	Key   string
 	Slug  string
 	Tools []mcp.Tool
 }
 
-// SkillLister resolves the tools visible to a given project token. Implemented
-// by *appRouter. Lives in skills.go so the regen path can be driven both
-// in-process (settings hooks) and via the bridge.
-//
+// SkillLister resolves the tools visible to a given project token.
 // ListTools is the flat wire contract consumed by the MCP proxy and must not
-// change shape. ListSkillBuckets is the skill-only view: it groups by category
-// (or owning MCP) — information that ListTools intentionally discards.
+// change shape. ListSkillBuckets is the skill-only view: it groups by
+// category (or owning MCP) — information ListTools intentionally discards.
 type SkillLister interface {
 	ListTools(ctx context.Context, token string) (json.RawMessage, error)
 	ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error)
 }
 
-// RegenMode controls when EmitSkills writes skill files. Values mirror the
-// wire constants in bridge.RegenSkills* so callers across the bridge use the
-// same vocabulary.
+// RegenMode values mirror the wire constants in bridge.RegenSkills* so
+// callers across the bridge use the same vocabulary.
 type RegenMode string
 
 const (
@@ -61,21 +56,14 @@ const skillFileName = "SKILL.md"
 // else under the skills root is user-authored and never touched.
 const relaySkillPrefix = "relay-"
 
-// isRelayManagedSkillDir reports whether a directory name (base, not full
-// path) is one relay generates and is therefore safe to overwrite or prune.
-// Covers both the per-bucket dirs ("relay-mail", "relay-comfyui", …) and the
-// legacy single dir ("relay") so the old layout migrates away automatically.
 func isRelayManagedSkillDir(name string) bool {
 	return name == "relay" || strings.HasPrefix(name, relaySkillPrefix)
 }
 
-// EmitSkills renders one SKILL.md per tool bucket under skillsRoot
-// (typically <project>/.claude/skills), reconciling the relay-managed dirs to
-// match the project's current tool surface: it writes/refreshes the desired
-// "relay-<slug>" dirs and prunes any stale relay-managed dir (including the
-// legacy "relay" dir) no longer in the set. The project's plaintext token is
-// used to query the live tool list and is NEVER written into a file. Returns
-// the absolute paths of the SKILL.md files that exist after the call.
+// EmitSkills reconciles the relay-managed skill dirs under skillsRoot
+// (typically <project>/.claude/skills) to match the project's current tool
+// surface. The project's plaintext token is used to query the live tool
+// list and is NEVER written into a file.
 func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoot string, mode RegenMode) ([]string, error) {
 	if proj.Token == "" {
 		return nil, fmt.Errorf("project %q has no token", proj.Name)
@@ -91,17 +79,14 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 
 	switch mode {
 	case RegenNever:
-		// No reads, no writes, no prunes.
 		return nil, nil
 	case RegenAlways, RegenSkipIfExists, "":
-		// ok
 	default:
 		return nil, fmt.Errorf("unknown regen mode %q", mode)
 	}
 	// SkipIfExists is non-destructive: create missing bucket skills, never
-	// overwrite an existing one, never prune. So a project that gains an MCP
-	// after first launch still gets that new bucket's skill, and the legacy
-	// "relay" dir is migrated only by RegenAlways.
+	// overwrite an existing one, never prune — the legacy "relay" dir is
+	// migrated only by RegenAlways.
 	skipExisting := mode == RegenSkipIfExists
 
 	buckets, err := lister.ListSkillBuckets(ctx, proj.Token)
@@ -115,10 +100,10 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 		if len(b.Tools) == 0 {
 			continue
 		}
-		// Defense-in-depth: b.Slug becomes a path component under root. Production
-		// slugs come from skillSlug ([a-z0-9-] only), but EmitSkills is exported,
-		// so guard against a caller supplying a slug with separators or "..",
-		// which would escape the skills dir on write/prune.
+		// Defense-in-depth: b.Slug becomes a path component under root, and
+		// EmitSkills is exported, so a caller-supplied slug with separators
+		// or ".." must be refused — it would escape the skills dir on
+		// write/prune.
 		if b.Slug == "" || strings.ContainsAny(b.Slug, `/\`) || strings.Contains(b.Slug, "..") {
 			slog.Warn("skills: skipping bucket with unsafe slug", "slug", b.Slug)
 			continue
@@ -137,12 +122,12 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 		target := filepath.Join(dir, skillFileName)
 		if skipExisting {
 			if _, err := os.Stat(target); err == nil {
-				written = append(written, target) // keep existing, don't overwrite
+				written = append(written, target)
 				continue
 			}
 		} else if cur, err := os.ReadFile(target); err == nil && bytes.Equal(cur, body) {
-			// Idempotent: skip the write when content is identical so file
-			// watchers don't wake on every PTY launch.
+			// Skip the write when content is identical so file watchers
+			// don't wake on every PTY launch.
 			written = append(written, target)
 			continue
 		}
@@ -155,8 +140,8 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 		written = append(written, target)
 	}
 
-	// Prune relay-managed dirs no longer desired (migrates the legacy "relay"
-	// dir away, drops dirs for removed MCPs/tools) — only under RegenAlways.
+	// Only under RegenAlways: migrates the legacy "relay" dir away and drops
+	// dirs for removed MCPs/tools.
 	if !skipExisting {
 		for _, name := range existing {
 			if _, ok := desired[name]; ok {
@@ -172,8 +157,7 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 	return written, nil
 }
 
-// relayManagedDirs returns the base names of the relay-managed skill dirs
-// directly under root. A missing root is not an error (returns empty).
+// relayManagedDirs: a missing root is not an error (returns empty).
 func relayManagedDirs(root string) ([]string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -191,9 +175,8 @@ func relayManagedDirs(root string) ([]string, error) {
 	return out, nil
 }
 
-// RemoveSkill prunes every relay-managed skill dir directly under skillsRoot.
-// It never removes skillsRoot itself or any user-authored skill dir. Safe to
-// call when skillsRoot does not exist.
+// RemoveSkill never removes skillsRoot itself or any user-authored skill
+// dir, and is safe to call when skillsRoot does not exist.
 func RemoveSkill(skillsRoot string) error {
 	if skillsRoot == "" {
 		return nil
@@ -215,26 +198,23 @@ func RemoveSkill(skillsRoot string) error {
 }
 
 // renderBucketSkillMd produces a SKILL.md body for one bucket. The token is
-// never included. The frontmatter description is synthesized from the bucket's
-// tools so the agent can route a matching request to this skill without the
-// user naming a tool.
+// never included.
 func renderBucketSkillMd(proj Project, bucket SkillBucket) string {
 	sorted := make([]mcp.Tool, len(bucket.Tools))
 	copy(sorted, bucket.Tools)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
-	// Absolute path of the running relay binary so the agent does not have to
-	// grep PATH (/Applications/Relay.app/... is not on PATH by default). Regen
-	// at each launch keeps this fresh across reinstalls/moves.
+	// Absolute path so the agent does not have to grep PATH
+	// (/Applications/Relay.app/... is not on PATH by default).
 	relayBin := resolveRelayBin()
 	name := relaySkillPrefix + bucket.Slug
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "---\n")
 	fmt.Fprintf(&b, "name: %s\n", name)
-	// Double-quote the description: it contains ": " (e.g. "(via the relay
-	// CLI): …") which an unquoted YAML scalar reads as a nested mapping. Strict
-	// parsers (Pi.dev) reject that; quoting makes it a plain string everywhere.
+	// Double-quoted deliberately: the description contains ": " (e.g. "(via
+	// the relay CLI): …"), which an unquoted YAML scalar reads as a nested
+	// mapping. Strict parsers (Pi.dev) reject that.
 	fmt.Fprintf(&b, "description: \"%s\"\n", synthesizeDescription(bucket.Key, sorted))
 	fmt.Fprintf(&b, "allowed-tools: Bash(%s mcp call *)\n", relayBin)
 	fmt.Fprintf(&b, "---\n\n")
@@ -260,17 +240,16 @@ func renderBucketSkillMd(proj Project, bucket SkillBucket) string {
 	return b.String()
 }
 
-// descMaxLen caps the synthesized frontmatter description. Long descriptions
+// descMaxLen caps the synthesized frontmatter description: long descriptions
 // dilute the lazy-load routing signal and waste the always-resident budget.
 const descMaxLen = 500
 
-// synthesizeDescription builds a capability-rich frontmatter description from a
-// bucket's tools — deterministic, no LLM (it runs on the PTY-launch hot path).
-// The agent only sees this string when deciding whether to load the skill, so
-// it must name concrete capabilities (the tool *bodies* are invisible until
-// after activation). For each tool it derives a short capability phrase from
-// the name and harvests any curated trigger list the tool author wrote into
-// the description ("…use whenever the user asks for an image, logo, …").
+// synthesizeDescription builds a capability-rich frontmatter description
+// deterministically — no LLM, since it runs on the PTY-launch hot path. The
+// agent only sees this string when deciding whether to load the skill, so it
+// must name concrete capabilities: it derives a short phrase from each tool's
+// name and harvests any curated trigger list the tool author wrote into the
+// description ("…use whenever the user asks for an image, logo, …").
 func synthesizeDescription(bucketKey string, tools []mcp.Tool) string {
 	sorted := make([]mcp.Tool, len(tools))
 	copy(sorted, tools)
@@ -284,10 +263,9 @@ func synthesizeDescription(bucketKey string, tools []mcp.Tool) string {
 			seen[strings.ToLower(p)] = true
 			caps = append(caps, p)
 		}
-		// Prefer a curated trigger clause the author wrote ("…use whenever the
-		// user asks for X"); otherwise fall back to the description's first
-		// clause, so every tool contributes routing keywords regardless of how
-		// its description is phrased (markers are a preference, not a gate).
+		// Fall back to the description's first clause so every tool
+		// contributes routing keywords regardless of phrasing — markers are
+		// a preference, not a gate.
 		snippet := extractTriggerKeywords(t.Description)
 		if snippet == "" {
 			snippet = firstClause(t.Description)
@@ -310,10 +288,9 @@ func synthesizeDescription(bucketKey string, tools []mcp.Tool) string {
 	}
 	b.WriteString(".")
 
-	// Trigger clause. Prefer the curated keyword lists harvested from tool
-	// descriptions; fall back to the capability phrases. "relates to <domain>
-	// — e.g. <list>" reads correctly whether the phrases are verbs ("send")
-	// or nouns ("current"), unlike "asks to <phrase>".
+	// "relates to <domain> — e.g. <list>" reads correctly whether the
+	// trigger phrases are verbs ("send") or nouns ("current"), unlike
+	// "asks to <phrase>".
 	trigger := strings.Join(dedupeFold(triggers), "; ")
 	if trigger == "" {
 		trigger = strings.Join(caps, ", ")
@@ -352,8 +329,8 @@ func nameToPhrase(name, bucketKey string) string {
 }
 
 // triggerMarkers are the phrasings tool authors use to introduce a curated
-// list of user-intent triggers. We harvest the clause that follows so the
-// skill's frontmatter inherits those keywords (e.g. "image, logo, picture").
+// list of user-intent triggers; the clause that follows is harvested into
+// the skill's frontmatter (e.g. "image, logo, picture").
 var triggerMarkers = []string{
 	"use whenever the user asks for ",
 	"use whenever the user asks to ",
@@ -364,9 +341,6 @@ var triggerMarkers = []string{
 	"use whenever ",
 }
 
-// extractTriggerKeywords pulls the trigger clause out of a tool description,
-// up to the end of that sentence. Returns "" when the description has no such
-// marker.
 func extractTriggerKeywords(desc string) string {
 	flat := oneLine(strings.TrimSpace(desc))
 	low := strings.ToLower(flat)
@@ -375,15 +349,14 @@ func extractTriggerKeywords(desc string) string {
 		if i < 0 {
 			continue
 		}
-		// The offset was found in the lowercased copy and cannot be applied to
-		// the original: strings.ToLower is not length-preserving in UTF-8. Most
-		// affected runes shrink (U+212A KELVIN SIGN, U+1E9E, U+2126, …) and two
-		// grow (U+023A, U+023E), so a byte offset from `low` either lands
-		// mid-clause in `flat` — silently harvesting the wrong routing keywords
-		// — or runs off the end and panics.
-		//
-		// ToLower maps one rune to exactly one rune, so RUNE indices survive
-		// even when byte lengths do not. Translate through the rune count.
+		// The byte offset was found in the lowercased copy and cannot be
+		// applied to `flat` directly: strings.ToLower is not
+		// length-preserving in UTF-8 (most affected runes shrink, e.g.
+		// U+212A KELVIN SIGN; a couple grow, e.g. U+023A), so a byte offset
+		// from `low` can land mid-clause in `flat` or run off the end.
+		// ToLower does map one rune to exactly one rune, so translate
+		// through the rune count instead, which survives even when the
+		// byte lengths don't.
 		rest := sliceAfterRunes(flat, utf8.RuneCountInString(low[:i+len(m)]))
 		if end := strings.IndexByte(rest, '.'); end >= 0 {
 			rest = rest[:end]
@@ -393,9 +366,7 @@ func extractTriggerKeywords(desc string) string {
 	return ""
 }
 
-// sliceAfterRunes returns s with its first n runes removed. Used to carry an
-// offset discovered in a case-folded copy back onto the original text, where
-// only the rune index is trustworthy.
+// sliceAfterRunes returns s with its first n runes removed.
 func sliceAfterRunes(s string, n int) string {
 	for i := range s {
 		if n == 0 {
@@ -406,10 +377,6 @@ func sliceAfterRunes(s string, n int) string {
 	return ""
 }
 
-// firstClause returns the leading clause of a description (up to the first
-// sentence/clause boundary), collapsed to one line and length-bounded. It is
-// the phrasing-agnostic fallback source of routing keywords when no curated
-// trigger marker is present.
 func firstClause(desc string) string {
 	flat := oneLine(strings.TrimSpace(desc))
 	if i := strings.IndexAny(flat, ".;\n"); i >= 0 {
@@ -427,7 +394,6 @@ func firstClause(desc string) string {
 	return flat
 }
 
-// dedupeFold removes case-insensitive duplicates, preserving first-seen order.
 func dedupeFold(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
@@ -442,8 +408,7 @@ func dedupeFold(in []string) []string {
 	return out
 }
 
-// skillSlug turns a bucket key into a filesystem/skill-name-safe slug. Empty
-// or all-punctuation keys fall back to "tools".
+// skillSlug: empty or all-punctuation keys fall back to "tools".
 func skillSlug(key string) string {
 	var b strings.Builder
 	prevDash := false
@@ -466,9 +431,8 @@ func skillSlug(key string) string {
 	return slug
 }
 
-// resolveRelayBin returns the absolute path of the running relay binary,
-// following symlinks. Falls back to the bare command name if anything fails
-// — agents can still find it via PATH if it happens to be there.
+// resolveRelayBin falls back to the bare command name if anything fails —
+// agents can still find it via PATH if it happens to be there.
 func resolveRelayBin() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -480,16 +444,14 @@ func resolveRelayBin() string {
 	return exe
 }
 
-// yamlEscape escapes a string for inclusion as a YAML scalar value in
-// frontmatter. Only handles characters that would break a single-line value.
 func yamlEscape(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
-	// Replace every remaining control character (newline, carriage return, tab,
-	// other C0, DEL) with a space. A double-quoted YAML scalar containing raw
-	// control chars is rejected by strict parsers (e.g. Pi.dev), which would
-	// drop the whole SKILL.md and silently hide that bucket's tools. Tool
-	// descriptions are harvested verbatim, so a stray \r or \t is plausible.
+	// A double-quoted YAML scalar containing a raw control character
+	// (newline, tab, other C0, DEL) is rejected by strict parsers (e.g.
+	// Pi.dev), which would drop the whole SKILL.md and silently hide that
+	// bucket's tools. Tool descriptions are harvested verbatim, so a stray
+	// \r or \t is plausible.
 	s = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return ' '
@@ -499,8 +461,6 @@ func yamlEscape(s string) string {
 	return s
 }
 
-// oneLine collapses internal newlines so a multi-line description renders as
-// a single line entry.
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")

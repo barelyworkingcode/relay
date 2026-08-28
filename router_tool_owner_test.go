@@ -1,20 +1,11 @@
 package main
 
-// Issue #35: a tool name is not unique across MCPs, and the id CallTool
-// resolves it to selects far more than a dispatch target — the `_meta`
-// resource scope, the disabled-tools list, the live schema the scope is
-// checked against, and the audit's mcp_id. Resolving the name against a Go map
-// therefore let the runtime's map seed choose which confinement a call ran
-// under.
-//
-// This fixture reaches the REAL ExternalMcpManager through setupRouter, which
-// inserts the connections from a map — so the enumeration order is Go's, fresh
-// on every run, and cannot be dictated from here. That is the right shape for
-// the property below (it must hold whatever order the runtime picks) and it is
-// why the call is repeated rather than run once: a single call against a map
-// that favours the first-inserted key ~7 times in 8 proves very little. The
-// order-controlled cases live in router_tool_collision_test.go, whose provider
-// keeps an ordered slice.
+// Deliberate: setupRouter inserts connections from a map, so enumeration
+// order is Go's and fresh on every run — the property below must hold
+// whatever order the runtime picks. The call is repeated rather than run
+// once because a single call against a map that favors the first-inserted
+// key ~7 times in 8 proves very little. Order-controlled cases live in
+// router_tool_collision_test.go, whose provider keeps an ordered slice.
 
 import (
 	"context"
@@ -26,9 +17,6 @@ import (
 	"relaygo/mcp"
 )
 
-// collidingRouter builds a router where mcp-a and mcp-b both expose fs_read
-// and each also has a tool only it owns. served receives the id of whichever
-// MCP was actually invoked.
 func collidingRouter(t *testing.T, perms map[string]Permission, order []string, served *string) *appRouter {
 	t.Helper()
 	mocks := map[string]*mockMcpConn{}

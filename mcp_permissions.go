@@ -11,17 +11,13 @@ import (
 	"time"
 )
 
-// TccResetTimeout caps the --check-permissions spawn so a buggy MCP can't
-// hang the IPC handler indefinitely. The MCP just reads TCC status and exits
-// near-instantly under normal conditions; this is a safety net.
+// Caps the --check-permissions spawn so a buggy MCP can't hang the IPC
+// handler indefinitely; the MCP reads TCC status and exits near-instantly
+// under normal conditions.
 const TccResetTimeout = 60 * time.Second
 
-// canonicalTccService maps short / aliased TCC service names to their
-// canonical lowercase form. Centralizing here means downstream code (the
-// tccutil reset loop, the Relay primer dispatch) can switch on canonical
-// names without re-doing alias resolution. Unknown names pass through
-// unchanged so a user-supplied service that we don't recognize still
-// reaches tccutil verbatim instead of being silently dropped.
+// Unknown names pass through unchanged so a user-supplied service we don't
+// recognize still reaches tccutil verbatim instead of being silently dropped.
 func canonicalTccService(name string) string {
 	switch strings.ToLower(name) {
 	case "calendar", "calendars":
@@ -49,8 +45,6 @@ func canonicalTccService(name string) string {
 	}
 }
 
-// parseTccServices parses a comma-separated list of TCC service names from
-// the --tcc-services CLI flag and returns canonical lowercase forms.
 func parseTccServices(raw string) []string {
 	if raw == "" {
 		return nil
@@ -68,9 +62,8 @@ func parseTccServices(raw string) []string {
 	return out
 }
 
-// tccutilServiceName maps canonical TCC service names to the spellings
-// tccutil(1) recognizes. Returns "" for canonical names that have no
-// tccutil mapping (e.g. "location" -- per-system, not per-app).
+// Returns "" for canonical names that have no tccutil mapping (e.g.
+// "location" -- per-system, not per-app).
 func tccutilServiceName(canonical string) string {
 	switch canonical {
 	case "calendar":
@@ -98,8 +91,6 @@ func tccutilServiceName(canonical string) string {
 	}
 }
 
-// ResetMcpPermissionsResult summarizes what ResetMcpPermissions did so the UI
-// can render a meaningful confirmation/error message.
 type ResetMcpPermissionsResult struct {
 	BundleID       string   `json:"bundle_id"`
 	ResetServices  []string `json:"reset_services"`
@@ -107,21 +98,9 @@ type ResetMcpPermissionsResult struct {
 	SpawnOutput    string   `json:"spawn_output"`
 }
 
-// ResetMcpPermissions performs the install-time TCC dance for an MCP:
-//   1. Resolve the MCP binary's bundle identifier by reading the .app's
-//      Info.plist (walks up from the command path to find Contents/Info.plist).
-//   2. Run `tccutil reset <Service> <bundleID>` for each declared TCC service.
-//   3. Fire Relay-side TCC primers (Calendar / Contacts / Reminders), which
-//      surface "Relay wants to access X" prompts from Relay's own process.
-//      Grants flow to the MCP via responsible-parent attribution at runtime.
-//      See mcp_permissions_darwin.go.
-//   4. Spawn the MCP binary with --check-permissions using the same
-//      exec.Command shape as external_mcp.go's normal stdio spawn so the
-//      post-state status report comes from the runtime attribution context.
-//
-// Wait-bound by TccResetTimeout. The MCP must support --check-permissions;
-// MCPs without protected APIs (e.g. fsMCP) should register without
-// --tcc-services so this isn't offered for them.
+// The MCP must support --check-permissions; MCPs without protected APIs
+// (e.g. fsMCP) should register without --tcc-services so this isn't offered
+// for them.
 func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 	if len(mcp.TccServices) == 0 {
 		return nil, fmt.Errorf("MCP %q declares no TCC services (--tcc-services not set at registration)", mcp.ID)
@@ -153,20 +132,16 @@ func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 		result.ResetServices = append(result.ResetServices, canonical)
 	}
 
-	// "Primer" pass: request matching grants from Relay's own process. macOS
-	// suppresses TCC prompts for background apps spawned by other background
-	// apps (the macmcp-via-relay-tray chain). Relay (/Applications-resident,
-	// activation-capable) can prompt successfully -- its grants then flow to
-	// the spawned MCP via TCC's responsible-parent attribution at runtime.
-	// Skipped if the platform doesn't expose primer functions (e.g. tests).
+	// macOS suppresses TCC prompts for background apps spawned by other
+	// background apps (the macmcp-via-relay-tray chain); Relay itself is
+	// /Applications-resident and activation-capable, so it can prompt on the
+	// MCP's behalf and the grant flows to the MCP via responsible-parent
+	// attribution at runtime.
 	primeRelayTccPermissions(mcp.TccServices, result)
 
-	// Spawn the MCP with --check-permissions so it prints its current TCC
-	// status (post-primer) into result.SpawnOutput for the UI summary.
-	// Using exec.Command directly (same shape as external_mcp.go's normal
-	// stdio spawn) means TCC attribution matches the runtime path. We do
-	// NOT use `open` -- that would reparent to launchd and break the
-	// responsible-parent chain the primer just established.
+	// exec.Command directly, not `open`: `open` would reparent the child to
+	// launchd and break the responsible-parent chain the primer just
+	// established.
 	cmd := exec.Command(mcp.Command, "--check-permissions")
 	mergeEnv(cmd, mcp.Env)
 
@@ -182,7 +157,6 @@ func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 
 	select {
 	case <-done:
-		// normal exit (success or non-zero); both are reportable
 	case <-time.After(TccResetTimeout):
 		_ = cmd.Process.Kill()
 		<-done
@@ -194,12 +168,6 @@ func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
 	return result, nil
 }
 
-// bundleIDFromCommand resolves the CFBundleIdentifier for an MCP binary.
-//
-// MCPs typically register a path like ~/.local/bin/macmcp — a symlink into
-// macmcp.app/Contents/MacOS/macmcp. After resolving symlinks, this walks up
-// looking for an Info.plist sibling of MacOS/ (i.e. Contents/Info.plist).
-// Returns an error if the binary isn't inside a .app bundle.
 func bundleIDFromCommand(command string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(command)
 	if err != nil {
@@ -222,9 +190,8 @@ func bundleIDFromCommand(command string) (string, error) {
 	return "", fmt.Errorf("no Info.plist found near %s (binary not in a .app bundle?)", resolved)
 }
 
-// readBundleIdentifier parses CFBundleIdentifier out of an Info.plist XML file.
-// Uses a minimal streaming parser to avoid pulling in a plist dependency for
-// this single field.
+// Minimal streaming parser to avoid pulling in a plist dependency for this
+// single field.
 func readBundleIdentifier(plistPath string) (string, error) {
 	data, err := os.ReadFile(plistPath)
 	if err != nil {

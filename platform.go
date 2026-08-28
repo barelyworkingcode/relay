@@ -1,6 +1,5 @@
 package main
 
-// Platform abstracts OS-specific UI operations (tray, settings window, etc.).
 type Platform interface {
 	Init()
 	Run()

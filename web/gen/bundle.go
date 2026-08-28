@@ -1,15 +1,8 @@
-// Command bundle compiles the settings UI: it bundles web/src/entry.js (and the
-// ES modules it imports) into a single IIFE via esbuild's Go API, then inlines
-// that bundle into web/shell.html at the <!--RELAY_BUNDLE--> marker, writing the
-// result to web/dist/settings.html.
-//
-// The WKWebView loads its document with `loadHTMLString:baseURL:nil`, which
-// cannot resolve relative <script src> URLs — so the bundle MUST be inlined,
-// not referenced. web/dist/settings.html is committed to the repo so a plain
-// `go build` (which //go:embed's it) works without first running this step;
-// build.sh re-runs it so installs always embed a fresh bundle.
-//
-// Run from the repo root: `go run ./web/gen`  (or `go generate ./...`).
+// The WKWebView loads the document via loadHTMLString:baseURL:nil, which
+// cannot resolve relative <script src> URLs, so the bundle must be inlined
+// rather than referenced. web/dist/settings.html is committed to the repo so
+// a plain `go build` (which //go:embed's it) still works without running
+// this generator.
 package main
 
 import (
@@ -63,8 +56,8 @@ func main() {
 		log.Fatalf("%s does not contain marker %q", shellPath, marker)
 	}
 
-	// Defensively neutralize any literal </script> in the JS so the inline script
-	// can't be terminated early by the HTML parser.
+	// Neutralize any literal </script> in the JS so the inline script can't be
+	// terminated early by the HTML parser.
 	js = strings.ReplaceAll(js, "</script", "<\\/script")
 	inline := "<script>\n" + js + "</script>"
 	out := strings.Replace(string(shell), marker, inline, 1)
@@ -81,7 +74,6 @@ func main() {
 	log.Printf("wrote %s (%d bytes, bundle %d bytes)", outPath, len(out), len(js))
 }
 
-// itoa is a tiny dependency-free int->string for log lines.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

@@ -13,9 +13,6 @@ import (
 	"time"
 )
 
-// fakeServiceServer is a Unix-socket HTTP server scripted to return canned
-// responses keyed by (method, path). Used to drive ServiceStatusClient
-// against a real loopback HTTP request without spinning up a real service.
 type fakeServiceServer struct {
 	t         *testing.T
 	socket    string
@@ -99,10 +96,6 @@ func (f *fakeServiceServer) handle(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.body)
 }
 
-// ---------------------------------------------------------------------------
-// GetStatus
-// ---------------------------------------------------------------------------
-
 func TestServiceStatusClient_GetStatus_HappyPath(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("GET", "/api/status", 200, `{"uptimeSeconds":42,"instances":[]}`)
@@ -121,8 +114,7 @@ func TestServiceStatusClient_GetStatus_HappyPath(t *testing.T) {
 		t.Errorf("uptimeSeconds: got %v", parsed["uptimeSeconds"])
 	}
 
-	// Confirm bearer token went out on the wire — this is the load-bearing
-	// reason the per-service internal token exists.
+	// This is the load-bearing reason the per-service internal token exists.
 	reqs := srv.recorded()
 	if len(reqs) != 1 {
 		t.Fatalf("want 1 request, got %d", len(reqs))
@@ -141,19 +133,16 @@ func TestServiceStatusClient_GetStatus_ErrorBodyPropagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on 5xx, got nil")
 	}
-	// Service name wrapping is the caller's responsibility (poller/dispatcher);
-	// the client surfaces the upstream status + body so callers can build a
-	// readable message.
+	// Service name wrapping is the caller's responsibility; the client only
+	// surfaces the upstream status + body.
 	if !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "500") {
 		t.Errorf("error should surface upstream status + body: %v", err)
 	}
 }
 
 func TestServiceStatusClient_GetStatus_BodyCapped(t *testing.T) {
-	// A buggy or hostile service streaming an unbounded body must not OOM the
-	// tray — the poller fans out to every service each tick. The client caps
-	// each read at maxStatusBodyBytes via io.LimitReader. Drop that reader and
-	// this test fails (got would exceed the cap).
+	// The client caps each read at maxStatusBodyBytes via io.LimitReader; drop
+	// that reader and this test fails (got would exceed the cap).
 	srv := newFakeServiceServer(t)
 	big := strings.Repeat("a", maxStatusBodyBytes+1024)
 	srv.script("GET", "/api/status", 200, big)
@@ -176,10 +165,6 @@ func TestServiceStatusClient_GetStatus_DialFailureIsError(t *testing.T) {
 		t.Fatal("expected dial error on missing socket, got nil")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// DoAction
-// ---------------------------------------------------------------------------
 
 func TestServiceStatusClient_DoAction_NoContentIsSuccess(t *testing.T) {
 	srv := newFakeServiceServer(t)

@@ -11,14 +11,9 @@ import (
 	"time"
 )
 
-// SampleRSSByRoot returns, for each root PID, the total resident memory (bytes)
-// of that process and all of its descendants. Services in relay are launched
-// via `/bin/sh -l -c '...'`, so the canonical PID is a shell wrapper and the
-// real workload lives one level down — summing the subtree is what matters.
-//
-// Implementation: one `ps -axo pid=,ppid=,rss=` call per invocation (~5 ms on
-// macOS), parsed in-process, then BFS from each root summing RSS. Returns an
-// empty map on failure rather than partial data.
+// Services in relay are launched via `/bin/sh -l -c '...'`, so the canonical
+// PID is a shell wrapper and the real workload lives one level down —
+// summing the subtree is what matters.
 func SampleRSSByRoot(rootPIDs []int) map[int]uint64 {
 	if len(rootPIDs) == 0 {
 		return map[int]uint64{}

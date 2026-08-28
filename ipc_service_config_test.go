@@ -11,12 +11,6 @@ import (
 	"relaygo/bridge"
 )
 
-// ---------------------------------------------------------------------------
-// Test doubles for the config editor handler
-// ---------------------------------------------------------------------------
-
-// fixedStore returns a fixed Settings so findServiceByID resolves a service's
-// WorkingDir (the config editor's allowed root).
 type fixedStore struct{ s *Settings }
 
 func (f fixedStore) EnsureInitialized() error      { return nil }
@@ -25,8 +19,6 @@ func (f fixedStore) Reload() *Settings             { return f.s }
 func (f fixedStore) ReloadIfChanged() *Settings    { return f.s }
 func (f fixedStore) With(fn func(*Settings)) error { fn(f.s); return nil }
 
-// recordingServiceManager records Reload calls and reports a configurable
-// IsRunning so the restart-on-save path can be asserted.
 type recordingServiceManager struct {
 	noopServiceManager
 	running   bool
@@ -39,8 +31,8 @@ func (m *recordingServiceManager) Reload(id string, _ *ServiceConfig) error {
 	return nil
 }
 
-// lastEventNamed returns the payload of the most recent event with the given
-// name. Same-package access to recordingUI (defined in ipc_service_action_test).
+// recordingUI is defined in ipc_service_action_test; this is a same-package
+// extension method on it.
 func (r *recordingUI) lastEventNamed(t *testing.T, name string) map[string]interface{} {
 	t.Helper()
 	r.mu.Lock()
@@ -69,9 +61,7 @@ func (r *recordingUI) hasEvent(name string) bool {
 	return false
 }
 
-// newConfigIPC wires an IPCContext for config-handler tests with the service's
-// WorkingDir set to workdir (the allowed root). GoFunc/DispatchToMain run inline
-// so emitted events are observable synchronously.
+// GoFunc runs inline, so emitted events are observable synchronously.
 func newConfigIPC(t *testing.T, reg *EnhancedServiceRegistry, mgr ServiceManager, serviceID, workdir string) (*IPCContext, *recordingUI) {
 	t.Helper()
 	ui := &recordingUI{}
@@ -105,10 +95,6 @@ func dispatchConfig(ipc *IPCContext, serviceID, op, text string) {
 	raw, _ := json.Marshal(msg)
 	ipcServiceConfig(ipc, raw)
 }
-
-// ---------------------------------------------------------------------------
-// get
-// ---------------------------------------------------------------------------
 
 func TestIPCServiceConfig_GetReturnsFileText(t *testing.T) {
 	mkSandboxRelayHome(t)
@@ -156,10 +142,6 @@ func TestIPCServiceConfig_RejectedForUnknownService(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// save
-// ---------------------------------------------------------------------------
-
 func TestIPCServiceConfig_SaveWritesAndRestarts(t *testing.T) {
 	mkSandboxRelayHome(t)
 	root := t.TempDir()
@@ -177,12 +159,10 @@ func TestIPCServiceConfig_SaveWritesAndRestarts(t *testing.T) {
 	if got := ui.lastEventNamed(t, "onServiceConfigResult"); got["ok"] != true {
 		t.Fatalf("save should succeed: %+v", got)
 	}
-	// File written verbatim.
 	onDisk, _ := os.ReadFile(cfg)
 	if string(onDisk) != edited {
 		t.Errorf("file not written:\n got  %q\n want %q", string(onDisk), edited)
 	}
-	// Restart triggered.
 	if len(mgr.reloadIDs) != 1 || mgr.reloadIDs[0] != "relayllm" {
 		t.Errorf("expected Reload(relayllm); got %v", mgr.reloadIDs)
 	}
@@ -204,13 +184,12 @@ func TestIPCServiceConfig_SaveMalformedLeavesFileUnchanged(t *testing.T) {
 	mgr := &recordingServiceManager{running: true}
 	ipc, ui := newConfigIPC(t, reg, mgr, "relayllm", root)
 
-	dispatchConfig(ipc, "relayllm", "save", `{"a":}`) // malformed
+	dispatchConfig(ipc, "relayllm", "save", `{"a":}`)
 
 	got := ui.lastEventNamed(t, "onServiceConfigResult")
 	if got["ok"] != false || !strings.Contains(got["error"].(string), "does not parse") {
 		t.Errorf("malformed save should be rejected, got %+v", got)
 	}
-	// Load-bearing: the file must be untouched.
 	onDisk, _ := os.ReadFile(cfg)
 	if string(onDisk) != original {
 		t.Errorf("file mutated on malformed save: got %q", string(onDisk))

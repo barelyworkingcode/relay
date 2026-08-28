@@ -1,11 +1,5 @@
 package main
 
-// Hermetic tests for the Projects-tab IPC handlers. Mirrors the HTTP route
-// coverage in project_routes_test.go: every handler proves it (a) emits the
-// right event, (b) persists through the SettingsStore, and (c) honors the
-// security boundaries documented on its mutator (see settings_projects_test.go
-// for the unit-level coverage of the underlying methods).
-
 import (
 	"context"
 	"encoding/json"
@@ -18,14 +12,10 @@ import (
 	"relaygo/mcp"
 )
 
-// fakeTools is an in-memory MCPToolsProvider for handler tests. The handler
-// surface is narrow — handlers either receive a tool list or get nil/empty —
-// so a map-backed stub is plenty.
 type fakeTools struct {
 	infos map[string][]ToolInfo
 	// surfaces is what mcpSurfacesFrom hands to the apply layer. Nil (the
-	// default) means SyncProjectToken skips scope derivation, which is what
-	// every test predating ADR-011's operator path wants; a test that
+	// default) means SyncProjectToken skips scope derivation; a test that
 	// exercises a v2 contextSchema sets it.
 	surfaces McpSurfaces
 }
@@ -37,9 +27,6 @@ func (f *fakeTools) ToolInfos(id string) []ToolInfo {
 	return f.infos[id]
 }
 
-// AllMcpSurfaces lets fakeTools also stand in as the McpSurfaceProvider that
-// mcpSurfacesFrom looks for. Returning nil causes SyncProjectToken to skip
-// scope derivation — fine for unit tests that don't exercise it.
 func (f *fakeTools) AllMcpSurfaces() McpSurfaces {
 	if f == nil {
 		return nil
@@ -47,8 +34,6 @@ func (f *fakeTools) AllMcpSurfaces() McpSurfaces {
 	return f.surfaces
 }
 
-// fakeSkillLister returns a fixed minimal tool list so EmitSkill can produce
-// a stable SKILL.md without spinning up a real router.
 type fakeSkillLister struct {
 	calls int
 	mu    sync.Mutex
@@ -58,8 +43,6 @@ func (f *fakeSkillLister) ListTools(_ context.Context, _ string) (json.RawMessag
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
-	// EmitSkill expects a JSON array of mcp.Tool. Return one so the rendered
-	// SKILL.md is non-empty (and so the test exercises the non-trivial path).
 	return json.RawMessage(`[{"name":"fs_read","description":"read a file"}]`), nil
 }
 
@@ -70,9 +53,6 @@ func (f *fakeSkillLister) ListSkillBuckets(_ context.Context, _ string) ([]Skill
 	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
-// newProjectsIPC stands up an IPCContext wired to a sandboxed store with two
-// MCPs registered. Returns the context, store, and the recording UI so tests
-// can assert on emitted events.
 func newProjectsIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI, *fakeSkillLister) {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
@@ -206,7 +186,6 @@ func TestIPCCreateProject_BadPermissionPolicyEmitsErrorAndRollsBack(t *testing.T
 	if _, ok := findEvent(ui, "onProjectError"); !ok {
 		t.Fatalf("expected onProjectError event")
 	}
-	// Roll-back: no projects persisted.
 	if len(store.Get().Projects) != 0 {
 		t.Errorf("project list not empty after rollback: %+v", store.Get().Projects)
 	}
@@ -274,7 +253,6 @@ func TestIPCRotateProjectToken_EmitsNewPlaintextAndInvalidatesOld(t *testing.T) 
 	if newPlain == "" || newPlain == oldPlain {
 		t.Fatalf("rotated plaintext is empty or unchanged")
 	}
-	// Security regression: old token no longer authenticates.
 	if _, err := store.Get().AuthenticateProject(oldPlain); err == nil {
 		t.Fatalf("old token still authenticates after rotation")
 	}
@@ -381,18 +359,10 @@ func TestIPCListMcpTools_NoToolsProviderEmitsEmptyList(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// End-to-end project lifecycle: create → SKILL.md written → delete → SKILL.md
-// removed. This is the workflow the user explicitly asked about in the
-// kickoff message; the test exercises every layer (IPC handler, settings
-// store, EmitSkill, RemoveSkill) without spawning any subprocesses.
-// ---------------------------------------------------------------------------
-
 func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T) {
 	ipc, store, ui, _ := newProjectsIPC(t)
 	projDir := t.TempDir()
 
-	// Create with generate_skill = true.
 	rawCreate := mustRaw(t, map[string]interface{}{
 		"name":            "Lifecycle",
 		"path":            projDir,
@@ -407,14 +377,11 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 	var created Project
 	_ = json.Unmarshal(args[0].(json.RawMessage), &created)
 
-	// SKILL.md should now exist under <path>/.claude/skills/relay-files/.
-	// fakeSkillLister buckets its single tool under the "Files" key.
 	skillPath := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
 	if _, err := readFileExists(skillPath); err != nil {
 		t.Fatalf("expected SKILL.md at %s after create: %v", skillPath, err)
 	}
 
-	// Delete the project; SKILL.md should be gone.
 	rawDelete := mustRaw(t, ipcIDMsg{ID: created.ID})
 	ipcRemoveProject(ipc, rawDelete)
 	if _, ok := findEvent(ui, "onProjectRemoved"); !ok {
@@ -428,7 +395,6 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 	}
 }
 
-// readFileExists is a tiny helper — returns non-nil error if the file is missing.
 func readFileExists(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }

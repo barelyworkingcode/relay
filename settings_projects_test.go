@@ -1,10 +1,5 @@
 package main
 
-// Tests for the project-management mutators added in support of the native
-// Projects tab: RotateProjectToken, UpdateProjectDisabledTools,
-// SetProjectGenerateSkill, plus the cross-cutting SyncProjectToken behavior
-// they rely on. All hermetic — see ADR-001 (docs/decisions/001-testing-strategy.md).
-
 import (
 	"encoding/json"
 	"reflect"
@@ -12,8 +7,6 @@ import (
 	"testing"
 )
 
-// newProjectsTestStore stands up a sandboxed SettingsStore with a couple of
-// MCPs registered, then returns the store ready for project mutations.
 func newProjectsTestStore(t *testing.T) SettingsStore {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
@@ -30,8 +23,8 @@ func newProjectsTestStore(t *testing.T) SettingsStore {
 	return store
 }
 
-// fsSchemas returns a schemas map where fsmcp declares allowed_dirs (the
-// trigger for filesystem auto-detection in SyncProjectToken).
+// fsSchemas declares fsmcp's allowed_dirs field, the trigger for filesystem
+// auto-detection in SyncProjectToken.
 func fsSchemas() McpSurfaces {
 	return McpSurfaces{
 		"fsmcp":  {Schema: json.RawMessage(`{"allowed_dirs": {"type": "array"}}`)},
@@ -85,7 +78,6 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 }
 
 func TestRotateProjectToken_OldTokenRejectedOnNextAuth(t *testing.T) {
-	// Security regression: a rotated token must NOT continue to authenticate.
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 	oldPlain := proj.Token
@@ -130,7 +122,8 @@ func TestUpdateProjectDisabledTools_ReplacesSlice(t *testing.T) {
 func TestUpdateProjectDisabledTools_EmptySliceDeletesKey(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
-	// fsmcp creation already disabled fs_bash; confirm it's there first.
+	// Creating an fsmcp project already auto-disables fs_bash, so DisabledTools
+	// is non-empty before this call.
 	store.With(func(s *Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "fsmcp", nil)
 	})
@@ -141,8 +134,6 @@ func TestUpdateProjectDisabledTools_EmptySliceDeletesKey(t *testing.T) {
 }
 
 func TestUpdateProjectDisabledTools_RefusesNotInAllowedMcps(t *testing.T) {
-	// Security regression: scoping tools for an unallowed MCP would leave a
-	// stale list ready to grant unintended access if the MCP is later added.
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 
@@ -204,15 +195,11 @@ func TestSetProjectGenerateSkill_TogglesFlag(t *testing.T) {
 }
 
 func TestSyncProjectToken_PreservesUserDisabledToolsAcrossMcpResync(t *testing.T) {
-	// Regression check: SyncProjectToken (run on every MCPs/path change) must
-	// not blow away a user-set tool-disable list for MCPs that are still
-	// allowed. It should only clean entries for MCPs that left the allow list.
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
 
 	store.With(func(s *Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript"})
-		// Now drop fsmcp, leave macmcp.
 		s.UpdateProjectMcps(proj.ID, []string{"macmcp"}, fsSchemas())
 	})
 	after, _ := store.Get().findProjectByID(proj.ID)
@@ -224,10 +211,10 @@ func TestSyncProjectToken_PreservesUserDisabledToolsAcrossMcpResync(t *testing.T
 	}
 }
 
+// Wildcard MCP membership and wildcard tool access are different things:
+// going from an explicit MCP set to wildcard must keep prior disable entries
+// for MCPs that are still registered.
 func TestSyncProjectToken_WildcardPreservesPriorDisabledTools(t *testing.T) {
-	// Going from explicit MCP set to wildcard should keep prior disable
-	// entries for MCPs that are still registered (wildcard MCP != wildcard
-	// tools).
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
 
@@ -241,10 +228,6 @@ func TestSyncProjectToken_WildcardPreservesPriorDisabledTools(t *testing.T) {
 	}
 }
 
-// TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled pins the
-// pre-remote behavior for LOCAL projects: this is one of the two existing
-// behaviors (see settings.go SyncProjectToken) that the remote defense-in-
-// depth guard must not disturb.
 func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.T) {
 	store := newProjectsTestStore(t)
 	dir := t.TempDir()
@@ -264,12 +247,10 @@ func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.
 	}
 }
 
-// TestSyncProjectToken_RemoteNeverWritesAllowedDirs proves defence (b): even
-// if validation is somehow bypassed, SyncProjectToken itself refuses to
-// derive allowed_dirs for a remote project. The Project is constructed
-// directly (not through CreateProjectWithTokenKind/ValidateProjectGrants) so
-// this test exercises SyncProjectToken's own guard in isolation, independent
-// of whether validation would have caught the same grant.
+// The Project is constructed directly rather than through
+// CreateProjectWithTokenKind/ValidateProjectGrants, so this test exercises
+// SyncProjectToken's own guard in isolation — independent of whether
+// validation would have caught the same grant.
 func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
 	store := newProjectsTestStore(t)
 	var proj Project

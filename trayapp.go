@@ -146,6 +146,23 @@ func runTrayApp() {
 	enhancedRegistry := NewEnhancedServiceRegistry(nil)
 	registry.Enhanced = enhancedRegistry
 
+	// serviceOps is the one core behind both the Services tab (via
+	// app.ipcCtx.Ops below) and RegisterServiceRoutes on the frontend server
+	// (ADR-014) — a service started from curl and one started from the tray
+	// share the same validation and the same Registry. OnChange may fire from
+	// an HTTP-server goroutine or an IPC GoFunc, so it hops to main before
+	// touching the WebView or rebuilding the NSMenu.
+	serviceOps := &ServiceOps{
+		Store:    store,
+		Registry: registry,
+		OnChange: func() {
+			app.platform.DispatchToMain(func() {
+				app.updateMenu()
+				app.pushServiceStatus()
+			})
+		},
+	}
+
 	app.ipcCtx = &IPCContext{
 		Ctx:                    ctx,
 		Store:                  store,
@@ -160,6 +177,7 @@ func runTrayApp() {
 		NotifyReloadMcp:        bridge.SendReloadMcp,
 		Tools:                  extMgr,
 		Enumerate:              extMgr,
+		Ops:                    serviceOps,
 	}
 
 	// Tool-call audit log. A failure here is logged and auditing stays off
@@ -190,6 +208,45 @@ func runTrayApp() {
 	// now that it exists so the Projects-tab "Regen Now" button can run.
 	app.ipcCtx.SkillLister = router
 	app.ipcCtx.Audit = audit
+
+	// auditOps is the one core behind both the Tool Calls tab (via
+	// app.ipcCtx.AuditOps) and RegisterAuditRoutes on the frontend server
+	// (ADR-014). Read-only, so unlike serviceOps/enrolmentOps it carries no
+	// OnChange — a query changes nothing another view needs to learn about.
+	auditOps := &AuditOps{Audit: audit}
+	app.ipcCtx.AuditOps = auditOps
+
+	// enrolmentOps is the one core behind both the Remote Clients tab (via
+	// app.ipcCtx.EnrolmentOps) and RegisterEnrolmentRoutes on the frontend
+	// server (ADR-014). pushFullSettings already carries enrolments and the
+	// remote block, so reusing it here is what keeps an open Settings window
+	// in sync with an enrolment created or revoked from curl.
+	enrolmentOps := &EnrolmentOps{
+		Store: store,
+		Audit: audit,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullSettings)
+		},
+	}
+	app.ipcCtx.EnrolmentOps = enrolmentOps
+
+	// mcpOps is the one core behind both the MCP Servers tab (via
+	// app.ipcCtx.McpOps) and RegisterMcpRoutes on the frontend server
+	// (ADR-014) -- an MCP added from curl and one added from the tray share
+	// the same SSRF guard, discovery, and reconcile. Only add/remove get an
+	// HTTP door; authenticate and reset-permissions stay IPC-only (McpOps
+	// doc comment explains why) and keep calling this same instance.
+	mcpOps := &McpOps{
+		Store:           store,
+		Ctx:             ctx,
+		NotifyReconcile: bridge.SendReconcile,
+		NotifyReloadMcp: bridge.SendReloadMcp,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullSettings)
+		},
+	}
+	app.ipcCtx.McpOps = mcpOps
+
 	// Live-tail the Tool Calls tab. Fires on the audit writer goroutine, so
 	// hop to main before touching the WebView.
 	audit.SetSink(func(ev AuditEvent) {
@@ -219,6 +276,16 @@ func runTrayApp() {
 		slog.Error("failed to provision frontend channel", "error", err)
 		os.Exit(1)
 	}
+	// Existing frontend consumers (Eve, relayScheduler) hold RELAY_FRONTEND_TOKEN;
+	// this mints or refreshes the read+configure credential that lets them keep
+	// authenticating unchanged (ADR-015 decision 3). Not fatal: a relay that
+	// fails this still starts, it just leaves those consumers to 401 until the
+	// next restart retries the migration.
+	if err := store.With(func(s *Settings) {
+		migrateFrontendTokenToCredential(s, frontendEndpoint.Token)
+	}); err != nil {
+		slog.Error("failed to migrate legacy frontend token to a credential", "error", err)
+	}
 	// onProjectsChanged refreshes the tray Settings webview when projects
 	// mutate via the HTTP API (Eve, scheduler, CLI). Local IPC mutations
 	// fire their own emit events; this fan-out keeps the in-tray Projects
@@ -231,7 +298,7 @@ func runTrayApp() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		}
 	}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, NewCredentialAuthorizer(store), audit)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -242,6 +309,20 @@ func runTrayApp() {
 			slog.Error("frontend server exited with error", "error", err)
 		}
 	})
+	if addr := os.Getenv(EnvAPIListen); addr != "" {
+		if err := frontend.ListenLoopback(addr); err != nil {
+			// Refused rather than downgraded to the socket alone: someone who
+			// asked for a TCP door and silently did not get one would debug
+			// the wrong thing.
+			slog.Error("failed to bind API listener", "error", err)
+			os.Exit(1)
+		}
+		app.goFunc(func() {
+			if err := frontend.ServeLoopback(); err != nil {
+				slog.Error("API listener exited with error", "error", err)
+			}
+		})
+	}
 
 	// Start external MCPs and autostart services before the bridge accepts
 	// connections, so tool lists and service status are populated when the

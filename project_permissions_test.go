@@ -1,20 +1,11 @@
 package main
 
-// ADR-011 decisions 2, 2b, 4 and 6: the whole permission set is operator-
-// settable, and every value is validated on save whichever surface produced
-// it. The constraint these tests exist for is the ADR's second: an editor
-// whose easiest failure is a confinement that does not confine is operability
-// DEFEATING security rather than trading against it. A refused value is a
-// value that never becomes a grant somebody trusts.
-
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// v2Surfaces is macMCP's worked example plus fsMCP's v1 declaration, which is
-// what a host running both looks like today.
 func v2Surfaces() McpSurfaces {
 	return McpSurfaces{
 		"macmcp": macmcpSurface(),
@@ -42,18 +33,12 @@ func wantRefusal(t *testing.T, err error, substrings ...string) {
 	}
 }
 
-// A value for a field the MCP does not declare is refused, and the refusal
-// says which fields DO exist — a refusal that says a name is wrong without
-// saying which are right is one an operator answers by guessing.
 func TestValidatePermissions_RefusesUndeclaredField(t *testing.T) {
 	proj := profileWithContext("macmcp", `{"mail_folders":["INBOX"]}`)
 	err := validateProjectPermissions(proj, v2Surfaces())
 	wantRefusal(t, err, "mail_folders", "macmcp", "mail_accounts", "mail_mailboxes")
 }
 
-// The declared fragment is a type contract, not decoration: a string where an
-// array was declared is refused rather than injected as something the MCP will
-// read as one entry or as nothing.
 func TestValidatePermissions_RefusesWrongType(t *testing.T) {
 	proj := profileWithContext("macmcp", `{"mail_accounts":"Bob"}`)
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts", "array")
@@ -62,9 +47,6 @@ func TestValidatePermissions_RefusesWrongType(t *testing.T) {
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts", "string")
 }
 
-// Empty is a refusal on all three sides (decision 4). "No restriction" is not
-// expressible as emptiness, so an empty list stored here would be a grant that
-// reads on screen as confined and refuses every call at runtime.
 func TestValidatePermissions_RefusesEmptyRestrictValue(t *testing.T) {
 	for _, blob := range []string{
 		`{"mail_accounts":[]}`,
@@ -77,10 +59,9 @@ func TestValidatePermissions_RefusesEmptyRestrictValue(t *testing.T) {
 	}
 }
 
-// A source: "project_path" field is relay's to derive. An operator setting one
-// is either confused about what the field is or is widening a bound relay
-// controls, and either way SyncProjectToken would overwrite it moments later —
-// a value that silently disappears is worse than a refusal.
+// SyncProjectToken re-derives a source: "project_path" field moments after any
+// save, so accepting an operator's value here would look like acceptance and
+// then silently discard it; refusing is louder than that.
 func TestValidatePermissions_RefusesOperatorSuppliedProjectPathField(t *testing.T) {
 	proj := &Project{
 		ID: "p1", Name: "Local", Path: "/tmp/x",
@@ -90,10 +71,9 @@ func TestValidatePermissions_RefusesOperatorSuppliedProjectPathField(t *testing.
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "file_dirs", "path", "cannot be set")
 }
 
-// The mode is a closed set. AccessMode already reads anything that is not
-// exactly "write" as read, so a stored typo is fail-closed — but a typo that
-// silently means read is a confinement the operator did not choose, and this
-// is the only place it can be said out loud.
+// AccessMode already reads anything but exactly "write" as read, so a stored
+// typo is fail-closed at call time — but reading silently as read is not what
+// the operator chose, and this validation is the only place that says so.
 func TestValidatePermissions_RefusesUnknownAccessMode(t *testing.T) {
 	proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		Access: map[string]string{"macmcp": "readwrite"}}
@@ -107,9 +87,9 @@ func TestValidatePermissions_RefusesUnknownAccessMode(t *testing.T) {
 	}
 }
 
-// A pattern that will not compile matches NO tool (toolAllowedByPatterns fails
-// closed), so an allowlist of nothing but a broken pattern grants nothing —
-// safe, and a terrible thing to discover from an agent that stopped working.
+// toolAllowedByPatterns already fails closed on an uncompilable pattern, so
+// this refusal exists for usability, not safety: a broken pattern should say
+// so at save time rather than silently stop an agent later.
 func TestValidatePermissions_RefusesUncompilablePattern(t *testing.T) {
 	proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools: map[string][]string{"macmcp": {"mail_[", "mail_*"}}}
@@ -121,21 +101,19 @@ func TestValidatePermissions_RefusesUncompilablePattern(t *testing.T) {
 	}
 }
 
-// A v1 MCP has no operator-settable context at all: SyncProjectToken's v1
-// branch REPLACES the whole blob with the derived allowed_dirs, so a value
-// stored here is one that vanishes at the next path or MCP edit.
+// SyncProjectToken's v1 branch REPLACES the whole context blob with the
+// derived allowed_dirs, so a value stored here would vanish at the next edit
+// rather than take effect.
 func TestValidatePermissions_RefusesContextForV1Schema(t *testing.T) {
 	proj := &Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"},
 		Context: map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":["/etc"]}`)}}
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "fsmcp", "v1")
 }
 
-// An MCP relay has never connected to cannot be checked, and is PERMITTED with
-// nothing but an emptiness check. Same stance as ValidateProjectGrants and for
-// the same reason: this is a coherence check an operator sees at edit time,
-// not the boundary. Refusing on missing information would make an MCP that is
-// merely not running unconfigurable, and CallTool's presence re-check still
-// denies.
+// An MCP relay has never connected to cannot be checked, so it is permitted
+// with nothing but an emptiness check: refusing on missing information would
+// make an MCP that is merely not running unconfigurable, and CallTool's own
+// presence re-check still denies it at the boundary.
 func TestValidatePermissions_PermitsUnknownMcpButNotAnEmptyValue(t *testing.T) {
 	proj := profileWithContext("whomcp", `{"anything":["a"]}`)
 	if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
@@ -145,15 +123,14 @@ func TestValidatePermissions_PermitsUnknownMcpButNotAnEmptyValue(t *testing.T) {
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "anything", "non-empty")
 }
 
-// A context blob that is not an object at all is refused rather than read as
-// "no fields" — contextValues answers nil for it, which every caller would
-// then treat as an absent scope.
+// contextValues answers nil for a non-object blob, which every caller would
+// then treat as an absent scope, so it is refused rather than read as "no
+// fields".
 func TestValidatePermissions_RefusesNonObjectContext(t *testing.T) {
 	proj := profileWithContext("macmcp", `["mail_accounts"]`)
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "macmcp", "object")
 }
 
-// The worked example from the ADR, accepted whole.
 func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 	proj := &Project{
 		ID: "prof_hermes_bob_inbox", Name: "Hermes — Bob INBOX (read-only)", Kind: ProjectKindRemote,
@@ -172,14 +149,6 @@ func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The mutators
-// ---------------------------------------------------------------------------
-
-// UpdateProjectContext replaces the operator's fields and RE-DERIVES the ones
-// relay owns. Without the re-derivation a local project's file_dirs would
-// disappear the first time someone edited its mail scope, and the two tools
-// that field governs would start refusing with nothing on screen to say why.
 func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 	s := &Settings{Version: 1}
 	surfaces := v2Surfaces()
@@ -205,9 +174,6 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 	}
 }
 
-// Entries for an MCP the record does not grant are dropped, exactly as
-// UpdateProjectAllowedTools drops them: a mode or a scope for an unreachable
-// MCP reads as an authority the record does not have.
 func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 	s := &Settings{Version: 1}
 	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
@@ -232,9 +198,9 @@ func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 	}
 }
 
-// An unrecognised mode is KEPT rather than dropped. Dropping it would fall
-// back to the default, which for a local project is write — a mutator silently
-// widening a grant on the strength of a typo.
+// Dropping an unrecognised mode would fall back to the default, which for a
+// local project is write — silently widening a grant on the strength of a
+// typo — so it is kept as-is instead.
 func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) {
 	s := &Settings{Version: 1}
 	proj, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, nil)
@@ -251,11 +217,9 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 	}
 }
 
-// The outbound grant is stored the same way the mode is, with one difference
-// that is the whole of ADR-011 decision 2c's asymmetry: an explicit FALSE is
-// kept, because for a local project — which defaults to allowed — it is the
-// only way to say the opposite, and a mutator that discarded it would make a
-// confined local agent unexpressible.
+// An explicit false is kept, not discarded: for a local project, which
+// defaults to allowed, it is the only way to say the opposite, and discarding
+// it would make a confined local agent unexpressible.
 func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *testing.T) {
 	s := &Settings{Version: 1}
 	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
@@ -264,7 +228,7 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 	}
 	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{
 		"macmcp": true,
-		"other":  true, // not granted
+		"other":  true,
 	})
 	got := s.Projects[0]
 	if !got.AllowExternal["macmcp"] {
@@ -281,7 +245,6 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 		t.Error("a dropped entry still reached the token")
 	}
 
-	// A local project storing an explicit false: kept, and it refuses.
 	local, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create local: %v", err)
@@ -295,8 +258,6 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 		t.Error("a stored refusal did not reach the token")
 	}
 
-	// An EMPTY map clears the field entirely, which is how every MCP goes back
-	// to its default — and a record that says nothing serializes nothing.
 	s.UpdateProjectAllowExternal(local.ID, nil)
 	stored, _ = s.findProjectByID(local.ID)
 	if stored.AllowExternal != nil {
@@ -313,8 +274,6 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 		t.Error("clearing the field did not return the local project to its default")
 	}
 
-	// And it is pruned when the MCP stops being granted at all, exactly as the
-	// mode and the tool allowlist are.
 	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": true})
 	s.UpdateProjectMcps(proj.ID, []string{}, v2Surfaces())
 	if _, ok := s.Projects[0].AllowExternal["macmcp"]; ok {
