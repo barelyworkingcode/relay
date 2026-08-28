@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,11 +165,16 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 
 // TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing pins ADR-015 decision
 // 2 end to end: POST /api/services and PUT /api/remote are execute-class,
-// so registerFrontendRoutes never hands them to the TCP mux at all. Each
-// assertion checks the side effect the real handler would have caused (a
-// persisted service record; a changed remote config) stayed absent, which
-// is what tells a genuine no-route 404 apart from a handler that ran,
-// refused, and happened to answer 404 on its own.
+// so registerFrontendRoutes never hands them to the TCP mux at all. Both
+// paths ARE registered on TCP under another method (GET /api/services, GET
+// /api/remote), so http.ServeMux answers 405 with an Allow header naming
+// what it does serve. That is the mux refusing before any handler, and the
+// only reason it is not a 404: the "/" catch-all is socket-only (ADR-016
+// decision 4), so nothing on this mux absorbs a near-miss. Each assertion also
+// checks the side effect the real handler would have caused (a persisted
+// service record; a changed remote config) stayed absent, which is what
+// tells the mux's refusal apart from a handler that ran, refused, and
+// happened to answer on its own.
 func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	dir := mkShortTempDir(t, "apie2e-tcp404-")
 	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
@@ -204,8 +210,11 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 		"display_name": "Phantom",
 		"command":      "/bin/true",
 	}, "tok")
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST /api/services on TCP must be a genuine 404, got %d: %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/services on TCP must be the mux's own refusal, got %d: %s", resp.StatusCode, body)
+	}
+	if allow := resp.Header.Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
+		t.Fatalf("Allow = %q; want http.ServeMux's own 405 naming only the methods it serves", allow)
 	}
 	if svc, _ := store.Get().findServiceByID("phantom"); svc != nil {
 		t.Fatal("POST /api/services must never have reached ServiceOps.Create on TCP")
@@ -219,8 +228,11 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 		"enabled": true,
 		"listen":  "127.0.0.1:9999",
 	}, "tok")
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("PUT /api/remote on TCP must be a genuine 404, got %d: %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /api/remote on TCP must be the mux's own refusal, got %d: %s", resp.StatusCode, body)
+	}
+	if allow := resp.Header.Get("Allow"); allow == "" || strings.Contains(allow, "PUT") {
+		t.Fatalf("Allow = %q; want http.ServeMux's own 405 naming only the methods it serves", allow)
 	}
 	after, err := enrolmentOps.RemoteConfig()
 	if err != nil {

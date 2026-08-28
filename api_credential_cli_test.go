@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -266,17 +267,20 @@ func TestACCGrantCredentialReachesRotateTokenAndEnrolments(t *testing.T) {
 }
 
 // TestACCExecuteCredentialIsSocketOnly holds ADR-015 decisions 2 and 3
-// together. The credential carries configure alongside execute deliberately:
-// the TCP catch-all is configure-class, so a credential without it would be
-// refused there by the class check and the 404 would prove nothing about
-// whether the route exists. With configure in hand the caller clears every
-// gate on the TCP mux, and the mux's own text/plain "no route" answer is then
-// the only thing left that can produce a 404.
+// together. The credential carries configure and proxy alongside execute
+// deliberately: with the widest class set relay will hand anything, the
+// caller clears every gate on the TCP mux, so what answers on TCP can only be
+// the mux itself and not an authorization refusal wearing a routing costume.
+//
+// That answer is a 405, not a 404, and the difference is the point: GET
+// /api/services IS registered on TCP, and the "/" catch-all is socket-only
+// (ADR-016 decision 4), so nothing there absorbs the POST. The Allow header
+// is http.ServeMux's signature and names only what TCP actually serves.
 func TestACCExecuteCredentialIsSocketOnly(t *testing.T) {
 	store := newCLISandboxStore(t)
 	srv := accNewServer(t, store, accLegacyToken)
 
-	token := accMint(t, store, "acc-executor", "execute", "configure")
+	token := accMint(t, store, "acc-executor", "execute", "configure", "proxy")
 
 	resp, body := srv.socket(t, "POST", "/api/services", token,
 		map[string]any{"display_name": "acc-worker", "command": "/bin/true"})
@@ -286,8 +290,11 @@ func TestACCExecuteCredentialIsSocketOnly(t *testing.T) {
 
 	resp, body = srv.tcp(t, "POST", "/api/services", token,
 		map[string]any{"display_name": "acc-phantom", "command": "/bin/true"})
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("execute credential on TCP: status = %d, want 404; body=%s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("execute credential on TCP: status = %d, want 405 from http.ServeMux; body=%s", resp.StatusCode, body)
+	}
+	if allow := resp.Header.Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
+		t.Fatalf("Allow = %q; want http.ServeMux's own 405 naming only the methods TCP serves", allow)
 	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 		t.Fatalf("Content-Type = %q says a handler answered; the route must be absent from the TCP mux", resp.Header.Get("Content-Type"))
@@ -300,27 +307,42 @@ func TestACCExecuteCredentialIsSocketOnly(t *testing.T) {
 // TestACCReadOnlyCredentialCannotReachTheProxiedSurface is the widening this
 // work had to avoid: once the outer gate admits more than one credential, an
 // unclassed catch-all would hand every proxied service route to a read-only
-// caller. The legacy credential's 404 is the control — it proves the path
-// really does route to the dispatcher, so the read-only 403 is a refusal and
-// not a missing mount.
+// caller. The legacy credential's socket answer is the control — it proves
+// the path really does route to the dispatcher, so the read-only 403 beside
+// it is a refusal and not a missing mount.
+//
+// Over TCP the mount is gone for EVERYONE (ADR-016 decision 4), so the same
+// two credentials must both get a 404 there — and the legacy credential's is
+// the one that matters, since it holds proxy and is refused by routing alone.
 func TestACCReadOnlyCredentialCannotReachTheProxiedSurface(t *testing.T) {
 	store := newCLISandboxStore(t)
 	srv := accNewServer(t, store, accLegacyToken)
 
 	readOnly := accMint(t, store, "acc-reader", "read")
 
+	const dispatcherAnswer = "no service registered for this path"
 	for _, path := range []string{"/api/sessions", "/api/terminals/1/input", "/ws"} {
 		t.Run(path, func(t *testing.T) {
 			resp, body := srv.socket(t, "POST", path, readOnly, map[string]any{})
 			accAssertForbidden(t, resp, body, "read-only credential on the proxied catch-all")
 
-			resp, body = srv.tcp(t, "POST", path, readOnly, map[string]any{})
-			accAssertForbidden(t, resp, body, "read-only credential on the proxied catch-all over TCP")
-
 			resp, body = srv.socket(t, "POST", path, accLegacyToken, map[string]any{})
 			accAssertReached(t, resp, body, "legacy credential on the proxied catch-all")
-			if resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("legacy credential on %s: status = %d, want the dispatcher's 404 (no service registered); body=%s", path, resp.StatusCode, body)
+			if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), dispatcherAnswer) {
+				t.Fatalf("legacy credential on %s: status = %d body=%s; want the dispatcher's own 404 (no service registered)", path, resp.StatusCode, body)
+			}
+
+			for _, tc := range []struct{ name, token string }{
+				{"read-only", readOnly},
+				{"legacy (holds proxy)", accLegacyToken},
+			} {
+				resp, body = srv.tcp(t, "POST", path, tc.token, map[string]any{})
+				if resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("%s credential on %s over TCP: status = %d, want 404; body=%s", tc.name, path, resp.StatusCode, body)
+				}
+				if strings.Contains(string(body), dispatcherAnswer) {
+					t.Fatalf("%s credential on %s over TCP reached the dispatcher: body=%s", tc.name, path, body)
+				}
 			}
 		})
 	}
@@ -526,5 +548,231 @@ func TestACCMintReturnsAPlaintextThatIsNeverStored(t *testing.T) {
 	assertNoErr(t, err, "marshal settings")
 	if bytes.Contains(raw, []byte(plaintext)) {
 		t.Fatal("the plaintext token was persisted into settings.json")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The proxy class and credential expiry (ADR-016 decisions 4 and 3)
+// ---------------------------------------------------------------------------
+
+func TestACCMintAcceptsTheProxyClass(t *testing.T) {
+	store := newCLISandboxStore(t)
+	cred, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-proxier", Classes: []string{"proxy"}})
+	assertNoErr(t, err, "mint --class proxy")
+	if !cred.Grants(ClassProxy) {
+		t.Fatalf("classes = %v; the credential is inert despite being accepted", cred.Classes)
+	}
+	if cred.Grants(ClassConfigure) || cred.Grants(ClassExecute) {
+		t.Fatalf("classes = %v; proxy must not imply any other class", cred.Classes)
+	}
+
+	stored := store.Get().APICredentials
+	if len(stored) != 1 || !stored[0].Grants(ClassProxy) {
+		t.Fatalf("the proxy class did not survive the write: %+v", stored)
+	}
+}
+
+// The refusal message is the only place an operator learns the vocabulary,
+// so it is asserted against capabilityClasses itself rather than a literal
+// list -- a sixth class added without touching the message would fail here.
+func TestACCMintRefusalNamesEveryValidClass(t *testing.T) {
+	store := newCLISandboxStore(t)
+
+	_, _, unknownErr := mintAPICredential(store, credentialMintRequest{Name: "acc-bad", Classes: []string{"terminal"}})
+	if unknownErr == nil {
+		t.Fatal("an unknown class was accepted")
+	}
+	_, _, emptyErr := mintAPICredential(store, credentialMintRequest{Name: "acc-bad", Classes: nil})
+	if emptyErr == nil {
+		t.Fatal("an empty class set was accepted")
+	}
+
+	for _, err := range []error{unknownErr, emptyErr} {
+		for _, class := range capabilityClasses {
+			if !strings.Contains(err.Error(), string(class)) {
+				t.Fatalf("error %q does not name the valid class %q", err, class)
+			}
+		}
+	}
+	if len(store.Get().APICredentials) != 0 {
+		t.Fatal("a refused mint still wrote a credential")
+	}
+}
+
+func TestACCMintTTLSetsAnExpiry(t *testing.T) {
+	store := newCLISandboxStore(t)
+
+	forever, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-forever", Classes: []string{"read"}})
+	assertNoErr(t, err, "mint with no ttl")
+	if forever.Expires != "" {
+		t.Fatalf("Expires = %q with no --ttl; absent must mean never", forever.Expires)
+	}
+
+	before := time.Now()
+	short, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-short", Classes: []string{"read"}, TTL: 12 * time.Hour})
+	assertNoErr(t, err, "mint with a ttl")
+	at, err := time.Parse(time.RFC3339, short.Expires)
+	assertNoErr(t, err, "parse Expires %q", short.Expires)
+	if at.Before(before.Add(12*time.Hour-time.Minute)) || at.After(time.Now().Add(12*time.Hour+time.Minute)) {
+		t.Fatalf("Expires = %q is not ~12h from now", short.Expires)
+	}
+	if short.Expired(time.Now()) {
+		t.Fatal("a credential minted for 12h is already expired")
+	}
+}
+
+func TestACCMintRefusesANegativeTTL(t *testing.T) {
+	store := newCLISandboxStore(t)
+	_, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-negative", Classes: []string{"read"}, TTL: -time.Hour})
+	if err == nil {
+		t.Fatal("a negative ttl was accepted; it would silently mint a credential that never expires")
+	}
+	if len(store.Get().APICredentials) != 0 {
+		t.Fatal("a refused mint still wrote a credential")
+	}
+}
+
+// TestACCExpiredCredentialIs401ExactlyLikeAnUnknownOne is the oracle check
+// through the real composed stack: frontendCredentialAuth resolves the
+// bearer before any handler, so an expired credential must be refused there
+// with a byte-identical answer to one that was never minted.
+func TestACCExpiredCredentialIs401ExactlyLikeAnUnknownOne(t *testing.T) {
+	store := newCLISandboxStore(t)
+	srv := accNewServer(t, store, accLegacyToken)
+
+	cred, plaintext, err := mintAPICredential(store, credentialMintRequest{Name: "acc-expiring", Classes: []string{"read"}, TTL: time.Hour})
+	assertNoErr(t, err, "mint")
+
+	resp, body := srv.socket(t, "GET", "/api/services", plaintext, nil)
+	accAssertReached(t, resp, body, "a live credential before its expiry")
+
+	// Backdate rather than sleep: the stored record is what the gate reads.
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.FindAPICredential(cred.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	}), "backdate the credential")
+
+	expiredResp, expiredBody := srv.socket(t, "GET", "/api/services", plaintext, nil)
+	unknownResp, unknownBody := srv.socket(t, "GET", "/api/services", "acc-never-minted", nil)
+	if expiredResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an expired credential: status = %d, want 401; body=%s", expiredResp.StatusCode, expiredBody)
+	}
+	if expiredResp.StatusCode != unknownResp.StatusCode || string(expiredBody) != string(unknownBody) {
+		t.Fatalf("expired (%d %q) and unknown (%d %q) are distinguishable; that is an oracle for which credentials exist",
+			expiredResp.StatusCode, expiredBody, unknownResp.StatusCode, unknownBody)
+	}
+
+	if store.Get().FindAPICredential(cred.ID) == nil {
+		t.Fatal("the refusal deleted the record; reaping is lazy and happens on the next mint")
+	}
+}
+
+func TestACCMintReapsExpiredCredentials(t *testing.T) {
+	store := newCLISandboxStore(t)
+
+	live, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-live", Classes: []string{"read"}, TTL: time.Hour})
+	assertNoErr(t, err, "mint live")
+	forever, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-forever", Classes: []string{"read"}})
+	assertNoErr(t, err, "mint forever")
+	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
+	assertNoErr(t, err, "mint dead")
+
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	}), "backdate")
+
+	if store.Get().FindAPICredential(dead.ID) == nil {
+		t.Fatal("nothing may sweep the expired record before the next mint")
+	}
+
+	_, _, err = mintAPICredential(store, credentialMintRequest{Name: "acc-trigger", Classes: []string{"read"}})
+	assertNoErr(t, err, "mint trigger")
+
+	s := store.Get()
+	if s.FindAPICredential(dead.ID) != nil {
+		t.Fatal("the mint did not reap the expired credential")
+	}
+	for _, keep := range []string{live.ID, forever.ID} {
+		if s.FindAPICredential(keep) == nil {
+			t.Fatalf("the reap swept %q, which has not expired", keep)
+		}
+	}
+}
+
+// accCapture runs fn with os.Stdout redirected and returns what it printed.
+// The redirect must be in place before fn runs: newTabWriter resolves
+// os.Stdout at call time, not at package init.
+func accCapture(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	assertNoErr(t, err, "os.Pipe")
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+	assertNoErr(t, w.Close(), "close pipe writer")
+	out := <-done
+	_ = r.Close()
+	return out
+}
+
+func TestACCListHidesExpiredUnlessAsked(t *testing.T) {
+	store := newCLISandboxStore(t)
+
+	forever, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-forever", Classes: []string{"read"}})
+	assertNoErr(t, err, "mint forever")
+	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
+	assertNoErr(t, err, "mint dead")
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	}), "backdate")
+
+	plain := accCapture(t, func() { credentialList(store, nil) })
+	if !strings.Contains(plain, "EXPIRES") {
+		t.Fatalf("`credential list` has no EXPIRES column:\n%s", plain)
+	}
+	if !strings.Contains(plain, forever.ID) {
+		t.Fatalf("`credential list` hid a live credential:\n%s", plain)
+	}
+	if !strings.Contains(plain, "never") {
+		t.Fatalf("a credential with no expiry must read as never, not as a blank cell:\n%s", plain)
+	}
+	if strings.Contains(plain, dead.ID) {
+		t.Fatalf("`credential list` showed an expired credential without --include-expired:\n%s", plain)
+	}
+
+	withExpired := accCapture(t, func() { credentialList(store, []string{"--include-expired"}) })
+	if !strings.Contains(withExpired, dead.ID) {
+		t.Fatalf("--include-expired did not show the expired credential:\n%s", withExpired)
+	}
+	if !strings.Contains(withExpired, "(expired)") {
+		t.Fatalf("--include-expired did not mark the expired credential as expired:\n%s", withExpired)
+	}
+	if !strings.Contains(withExpired, forever.ID) {
+		t.Fatalf("--include-expired dropped the live credentials:\n%s", withExpired)
+	}
+}
+
+func TestACCListSaysSoWhenEveryCredentialHasExpired(t *testing.T) {
+	store := newCLISandboxStore(t)
+	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
+	assertNoErr(t, err, "mint")
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	}), "backdate")
+
+	out := accCapture(t, func() { credentialList(store, nil) })
+	if strings.Contains(out, dead.ID) {
+		t.Fatalf("an expired credential was listed by default:\n%s", out)
+	}
+	if !strings.Contains(out, "--include-expired") {
+		t.Fatalf("a listing emptied by expiry must say where the records went:\n%s", out)
 	}
 }

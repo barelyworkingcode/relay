@@ -1,8 +1,11 @@
 package main
 
 // Tests for ADR-015 decision 2: an execute-class route must be ABSENT from
-// the TCP mux -- a genuine "no route registered" 404, never a handler that
-// ran and refused. Exercises the real wiring (NewFrontendServer +
+// the TCP mux -- the mux's own refusal, never a handler that ran and
+// refused. That refusal takes two shapes, because the "/" catch-all is
+// socket-only (ClassProxy, ADR-016 decision 4) and absorbs nothing here: a
+// text/plain 404 where no pattern claims the path, and a 405 where a pattern
+// claims it under another method. Exercises the real wiring (NewFrontendServer +
 // ListenLoopback + a real TCP/Unix listener + real HTTP requests), which is
 // what distinguishes this file from capability_test.go's coverage of
 // RouteRegistrar.Handle and ClassReachableOn in isolation -- that file
@@ -128,6 +131,12 @@ type teRoute struct {
 // in this file without a live MCP binary or a stdio handshake to wait out.
 const teNonexistentMcpCommand = "/nonexistent/does-not-exist-binary-zzz"
 
+// teDispatcherNoService is the body FrontendDispatcher writes when no
+// enhanced service claims a path. Reaching it is proof the catch-all is
+// mounted, which http.ServeMux's own 404 -- same status, same text/plain --
+// cannot be told from any other way.
+const teDispatcherNoService = "no service registered for this path"
+
 // teRouteTable reproduces every route relay registers, in the order the
 // production files declare them. This is deliberately exhaustive rather than
 // a sample: the property under test (execute absent from TCP, everything
@@ -232,23 +241,61 @@ func (ts *teServer) doSocket(t *testing.T, r teRoute) (*http.Response, []byte) {
 	return teDo(t, ts.sockHTTP, r.method, "http://unix"+r.path, ts.token, r.body)
 }
 
-// teIsRouted distinguishes a genuine "no route registered" 404 (mux-level,
-// produced by http.NotFound: Content-Type text/plain) from a handler that
-// ran and answered 404 for a missing resource (writeJSON: Content-Type
-// application/json). Any non-404 status necessarily means some pattern
-// matched and its handler ran.
+// teIsRouted reports whether some handler ran. Three answers are the mux
+// refusing before any handler: a genuine "no route registered" 404
+// (http.NotFound, Content-Type text/plain), the same 404 from a handler that
+// ran and answered for a missing resource (writeJSON, Content-Type
+// application/json -- routed), and a 405.
+//
+// The 405 arm exists because the TCP mux has no catch-all: ClassProxy is
+// socket-only (ADR-016 decision 4), so nothing there absorbs a near-miss and
+// http.ServeMux answers with its own 405 -- no handler, no dispatcher,
+// nothing registered under that method. A catch-all on this mux would turn
+// that same request into a dispatched one, which is why the distinction is
+// worth making here rather than lumping every non-404 in as routed.
 func teIsRouted(resp *http.Response) bool {
-	if resp.StatusCode != http.StatusNotFound {
-		return true
+	switch resp.StatusCode {
+	case http.StatusMethodNotAllowed:
+		return false
+	case http.StatusNotFound:
+		return strings.Contains(resp.Header.Get("Content-Type"), "application/json")
 	}
-	return strings.Contains(resp.Header.Get("Content-Type"), "application/json")
+	return true
+}
+
+// teAssertMuxRefused asserts http.ServeMux itself refused the request before
+// any relay handler ran, in either of the two shapes that means: a
+// text/plain 404 when no pattern claims the path, or a 405 with an Allow
+// header when a pattern claims the path under a different method. A JSON
+// body is the thing being ruled out -- that would be a relay handler
+// answering.
+func teAssertMuxRefused(t *testing.T, resp *http.Response, body []byte) {
+	t.Helper()
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+	case http.StatusMethodNotAllowed:
+		if resp.Header.Get("Allow") == "" {
+			t.Fatalf("405 carries no Allow header, so it is not http.ServeMux's own refusal; body=%s", body)
+		}
+	default:
+		t.Fatalf("status = %d, want 404 (no pattern registered) or 405 (ServeMux refusing the method); body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q looks like a handler answered rather than the mux refusing; body=%s", resp.Header.Get("Content-Type"), body)
+	}
 }
 
 // TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan proves POST
 // /api/services on the TCP listener is not merely refused: the response
-// carries the mux's own "no route" signature (not a JSON body from
+// carries the mux's own refusal signature (not a JSON body from
 // service_routes.go), nothing was persisted, and ServiceOps' OnChange -- a
 // counter only the successful tail of Create touches -- never fired.
+//
+// It also proves the fact that turns this route's answer from a 404 into a
+// 405: the "/" catch-all is absent from the TCP mux altogether, so nothing
+// is left there to absorb a near-miss. A path only the catch-all could ever
+// claim gets a text/plain 404 on TCP and reaches the dispatcher on the
+// socket, from the same server (ADR-016 decision 4).
 func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	store := newCLISandboxStore(t)
 	ts := teNewServer(t, store, nil)
@@ -258,12 +305,7 @@ func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	resp, body := ts.doTCP(t, teRoute{"POST", "/api/services", ClassExecute,
 		map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}})
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
-	}
-	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
-	}
+	teAssertMuxRefused(t, resp, body)
 	if ts.counters.serviceChanges != 0 {
 		t.Fatalf("ServiceOps.OnChange fired %d times; the handler must never have run", ts.counters.serviceChanges)
 	}
@@ -273,8 +315,23 @@ func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	}
 	for _, svc := range after {
 		if svc.DisplayName == "te-phantom-service" {
-			t.Fatal("the phantom service was persisted despite a 404")
+			t.Fatal("the phantom service was persisted despite the mux refusing")
 		}
+	}
+
+	// Both answers are a text/plain 404, so the BODY is what tells them
+	// apart: the dispatcher names itself, and http.ServeMux's NotFoundHandler
+	// says "404 page not found".
+	catchAllOnly := teRoute{"POST", "/api/sessions", ClassProxy, map[string]any{}}
+	resp, body = ts.doSocket(t, catchAllOnly)
+	if !strings.Contains(string(body), teDispatcherNoService) {
+		t.Fatalf("POST /api/sessions on the socket: status=%d body=%s; want the dispatcher's own answer, or the TCP check below proves nothing",
+			resp.StatusCode, body)
+	}
+	resp, body = ts.doTCP(t, catchAllOnly)
+	if resp.StatusCode != http.StatusNotFound || strings.Contains(string(body), teDispatcherNoService) {
+		t.Fatalf("POST /api/sessions on TCP: status=%d body=%s; the catch-all must be absent from the TCP mux entirely",
+			resp.StatusCode, body)
 	}
 }
 
@@ -286,12 +343,7 @@ func TestTCPServiceUpdate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/services/svc1", ClassExecute,
 		map[string]any{"display_name": "svc1", "command": "/bin/false"}})
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
-	}
-	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
-	}
+	teAssertMuxRefused(t, resp, body)
 	if ts.counters.serviceChanges != 0 {
 		t.Fatalf("ServiceOps.OnChange fired %d times; the handler must never have run", ts.counters.serviceChanges)
 	}
@@ -310,12 +362,7 @@ func TestTCPMcpCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	resp, body := ts.doTCP(t, teRoute{"POST", "/api/mcps", ClassExecute,
 		map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}})
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
-	}
-	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
-	}
+	teAssertMuxRefused(t, resp, body)
 	if ts.counters.mcpChanges != 0 {
 		t.Fatalf("McpOps.OnChange fired %d times; the handler must never have run", ts.counters.mcpChanges)
 	}
@@ -333,12 +380,7 @@ func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/remote", ClassExecute,
 		map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}})
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
-	}
-	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
-	}
+	teAssertMuxRefused(t, resp, body)
 	if ts.counters.enrolmentChanges != 0 {
 		t.Fatalf("EnrolmentOps.OnChange fired %d times; the handler must never have run", ts.counters.enrolmentChanges)
 	}
@@ -375,12 +417,7 @@ func TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute(t *testing.
 	for _, r := range teExecuteRoutes(ids) {
 		t.Run(r.method+" "+r.path, func(t *testing.T) {
 			resp, body := ts.doTCP(t, r)
-			if resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 even though the presented credential is authorized for ClassExecute", resp.StatusCode)
-			}
-			if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-				t.Fatalf("Content-Type = %q suggests a handler answered rather than the route being absent; body=%s", resp.Header.Get("Content-Type"), body)
-			}
+			teAssertMuxRefused(t, resp, body)
 		})
 	}
 }

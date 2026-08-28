@@ -163,13 +163,14 @@ func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
 	// sibling create paths can't route around it; it self-classifies the
 	// request and forwards everything that isn't a session-create POST.
 	//
-	// This is subtle: the catch-all also absorbs a method that no specific
-	// pattern claims on this transport — POST /api/services on TCP matches
-	// "/" rather than 405-ing — so leaving it unclassed would hand every
-	// proxied service route, and those near-misses, to any credential that
-	// cleared the outer gate. ADR-015 §"The proxied surface" has the
-	// argument for configure.
-	rr.Handle(ClassConfigure, "/", newSessionModelGuard(deps.store, dispatcher))
+	// ClassProxy, not ClassConfigure: what this mount reaches is whatever a
+	// manifest declares — relayLLM's sessions, terminals and /ws included —
+	// which relay cannot see and therefore cannot class as configuration.
+	// The class is socket-only, so this registration is also the reason the
+	// TCP mux has no catch-all: a near-miss like POST /api/services there is
+	// a 405 from http.ServeMux rather than a proxied request (ADR-016
+	// decision 4).
+	rr.Handle(ClassProxy, "/", newSessionModelGuard(deps.store, dispatcher))
 }
 
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.

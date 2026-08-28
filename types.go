@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 )
 
 type Permission string
@@ -363,6 +364,29 @@ type APICredential struct {
 	Hash    string            `json:"hash"`
 	Classes []CapabilityClass `json:"classes"`
 	Created string            `json:"created,omitempty"`
+	// Expires is RFC3339 and ABSENT MEANS NEVER, so every record written
+	// before this field existed round-trips unchanged — the same zero-value
+	// discipline Project.Kind follows (ADR-016 decision 3).
+	Expires string `json:"expires,omitempty"`
+}
+
+// Expired reports whether c may no longer authenticate at now. The instant
+// named by Expires is already past it, matching how a deadline reads
+// everywhere else.
+//
+// This is deliberate: an Expires that will not parse reads as EXPIRED, not
+// as absent. Absent is a value relay writes on purpose and means never;
+// unparseable is a value relay cannot evaluate, and the only safe answer to
+// a lifetime it cannot read is that the lifetime is over.
+func (c APICredential) Expired(now time.Time) bool {
+	if c.Expires == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, c.Expires)
+	if err != nil {
+		return true
+	}
+	return !now.Before(at)
 }
 
 // Grants reports whether the credential holds class. A nil or empty
