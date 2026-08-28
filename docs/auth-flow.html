@@ -73,6 +73,7 @@
   th, td { text-align: left; vertical-align: top; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
   th { font-weight: 600; white-space: nowrap; }
   td code { overflow-wrap: anywhere; }
+  table.classes td:first-child, table.classes td:first-child code { white-space: nowrap; overflow-wrap: normal; }
 
   .note {
     background: var(--panel); border-left: 3px solid var(--rule);
@@ -477,7 +478,7 @@ login code: ec4cffd80839…
 appears on. There are five.</p>
 
 <div class="scroll">
-<table>
+<table class="classes">
 <thead><tr><th>Class</th><th>Blast radius</th><th>Routes</th></tr></thead>
 <tbody>
 <tr>

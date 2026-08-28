@@ -149,7 +149,14 @@ longer blocked on the class model, which exists, but on the view holding a
 credential narrower than the one relay hands its own services. It should still
 not be documented as a supported deployment.
 
-### 6. The proxied surface is `configure`, and the catch-all is a route like any other
+### 6. The proxied surface is classed, and the catch-all is a route like any other
+
+**Superseded in part by [ADR-016](016-interactive-login-and-the-view-credential.md)
+decision 4:** the class is now `proxy`, not `configure`, and it is socket-only.
+The argument below is why the catch-all had to carry a class at all, and it
+still holds; `configure` was the strongest class available before `proxy`
+existed, and it left a `configure` credential able to reach a route that starts
+a terminal.
 
 `registerFrontendRoutes` mounts the enhanced-service dispatcher on `/`. That
 catch-all was registered outside the registrar and therefore carried no class,
