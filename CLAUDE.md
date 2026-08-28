@@ -55,6 +55,12 @@ enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
+login_ops.go, login_cmd.go   Bootstrap-code mint/consume + the `relay login` CLI (ADR-016 decision 2)
+webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, no library
+webauthn_cbor.go         Strict CBOR reader that refuses more than it accepts
+webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
+login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
+login_document.go        The self-contained login page, served under a strict CSP
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
@@ -62,7 +68,8 @@ external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpCon
 wire_json.go             Verbatim JSON encoding for the outbound JSON-RPC frame (ADR-013)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
-frontend_server.go       Front-door HTTP server; project routes local, rest falls through
+frontend_server.go       Front-door HTTP server; project routes local, rest falls through;
+                         composes the public login mux in front of frontendCredentialAuth
 frontend_dispatcher.go   Manifest-driven HTTP + WS dispatcher (longest-prefix match)
 frontend_model_guard.go  Enforces a project's allowed_models before relayLLM sees the request
 relay_llm_channel.go     Provisions the frontend socket + bearer token (filename legacy; contents are the generic FrontendChannel)

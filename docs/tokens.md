@@ -182,6 +182,48 @@ tokens needs a credential of its own:
 The same applies to `POST /api/enrolments` and `DELETE /api/enrolments/{id}`,
 and to the four `execute` routes on the socket.
 
+### The login credential
+
+An interactive login at `http://localhost:PORT/relay/login` mints an ordinary
+control-plane credential — not a sixth kind of token. There stays exactly one
+thing the API authenticates and one place an operator revokes (ADR-016
+decision 3).
+
+| | |
+|---|---|
+| **Classes** | `read` + `configure`, and nothing else. Never `grant`: a view that can rotate a project token is a view whose compromise issues credentials. Never `execute`, which is unroutable on TCP anyway — stating it on the credential means the refusal survives someone later serving the view over the socket. Never `proxy`, which is what makes `configure` mean what it says: the browser view cannot reach a session, a terminal or `/ws`. |
+| **Lifetime** | Twelve hours, written as `expires`. A first value, expected to be wrong; what matters is that expiry exists and that `relay audit --event control_decision` can show whether it is being hit. |
+| **Storage** | SHA-256 in `settings.json`, like every other credential. Expired records are reaped inside the same `store.With` as the next login. |
+| **Naming** | One record per login, named for the ceremony that produced it (`login <abbreviated credential id> <timestamp>`), so `ControlDecision.CredID` attributes a browser session rather than a role. This is what makes "sign this browser out" a real operation. |
+
+**It is returned once, in the response body of
+`POST /relay/login/verify`, and the page holds it in memory and nowhere
+else.** Not `localStorage`, which every script the page loads can read and
+which survives a restart. Not a cookie: a cookie is ambient authority, sent
+by the browser on any request any page causes, which would hand a CSRF
+surface to the one credential a page can reach — and relay refuses ambient
+authority consistently everywhere else. The token lives in a closure and is
+sent as `Authorization: Bearer`, so **a reload runs the ceremony again**. On
+a machine with no platform authenticator that makes every reload a physical
+act, and that cost is the one this model chooses over persistence.
+
+**The class set is a ceiling, not a measurement.** It is narrowed by running
+the view against it and taking the distinct (method, path, class) tuples it
+actually reached from the audit log — never widened by one.
+
+**The routes that mint it are the only unauthenticated surface relay serves**,
+and they exist only when `RELAY_API_LISTEN` is bound. A WebAuthn ceremony is
+verified against the origin of the listener relay actually bound
+(`http://localhost:PORT`, derived at bind time, never from a header or a
+setting), so with no TCP listener there is no origin, and the routes are
+registered nowhere rather than registered against a placeholder. They live in
+a separate mux consulted before `frontendCredentialAuth` holding exactly
+three patterns — `GET /relay/login`, `POST /relay/login/challenge`,
+`POST /relay/login/verify` — rather than as an exemption inside the
+authenticated mux, which would be the second-gate defect ADR-015 already had
+to fix once. `/relay/` is reserved: a service manifest claiming it is refused
+at registration.
+
 ## The login bootstrap code is not a credential
 
 `relay login enrol` prints a code, but it is **not** a sixth entry in this

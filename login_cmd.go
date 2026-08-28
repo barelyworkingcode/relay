@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -80,8 +81,11 @@ func loginEnrol(store SettingsStore) {
 	fmt.Printf("login code: %s\n", plaintext)
 	fmt.Printf("  expires:   %s (valid for %s, single use)\n", expires, bootstrapCodeTTL)
 	fmt.Println("  this code registers a passkey — it is NOT a password and is never accepted in place of one")
-	if addr := os.Getenv(EnvAPIListen); addr != "" {
-		fmt.Printf("  open http://%s/relay/login and enter it to register a passkey\n", addr)
+	// The host is rewritten to localhost rather than printed as bound: an RP
+	// ID must be a domain, so a passkey registered at http://127.0.0.1:PORT
+	// cannot exist at all (ADR-016 decision 1).
+	if _, port, err := net.SplitHostPort(os.Getenv(EnvAPIListen)); err == nil && port != "" {
+		fmt.Printf("  open http://%s:%s/relay/login and enter it to register a passkey\n", webauthnRPID, port)
 	} else {
 		fmt.Println("  open the relay login page (http://localhost:<RELAY_API_LISTEN port>/relay/login) and enter it to register a passkey")
 	}

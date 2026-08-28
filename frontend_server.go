@@ -27,6 +27,11 @@ type FrontendServer struct {
 	tcpLn      net.Listener
 	tcpServer  *http.Server
 
+	// loginOrigin is the origin ListenLoopback derived from the address it
+	// actually bound, and the one every WebAuthn ceremony is checked
+	// against. Empty means no TCP listener and therefore no login routes.
+	loginOrigin string
+
 	// routeDeps, authz and auditor let ListenLoopback build the TCP mux at
 	// call time, from the same ingredients NewFrontendServer used for the
 	// socket mux, without threading a second copy of NewFrontendServer's
@@ -84,15 +89,55 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	tcpMux := http.NewServeMux()
 	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor}, s.routeDeps)
 
+	// The origin comes from the address the kernel actually gave this
+	// listener, never from a constant or a request header — an ephemeral
+	// bind resolves its port only here. The host is localhost rather than
+	// the bound IP because an RP ID must be a domain: http://127.0.0.1:PORT
+	// cannot carry a WebAuthn ceremony at all (ADR-016 decision 1), so the
+	// bind address stays what it is and the URL the owner types is part of
+	// the design.
+	port := ln.Addr().(*net.TCPAddr).Port
+	s.loginOrigin = fmt.Sprintf("http://%s:%d", webauthnRPID, port)
+	publicMux, err := s.newLoginMuxFor(s.loginOrigin)
+	if err != nil {
+		_ = ln.Close()
+		s.loginOrigin = ""
+		return err
+	}
+
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendCredentialAuth(s.routeDeps.store, frontendRecover(tcpMux)),
+		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, frontendRecover(tcpMux))),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
 	slog.Warn("frontend API bound to loopback TCP in addition to its socket",
 		"addr", addr)
 	return nil
+}
+
+// newLoginMuxFor builds the one mux that is served with no credential at
+// all. It exists only here, and only for a bound TCP listener, because a
+// WebAuthn ceremony is verified against an origin and a Unix socket has
+// none: with no listener bound there is nothing the login routes could check
+// an assertion against, so they are not registered anywhere rather than
+// registered against a placeholder (the same rule RouteRegistrar.Handle
+// follows for an unreachable class).
+func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
+	verifier, err := NewWebAuthnVerifier(origin, webauthnRPID)
+	if err != nil {
+		return nil, fmt.Errorf("login routes: %w", err)
+	}
+	return newLoginMux(newLoginRoutes(s.routeDeps.store, verifier, s.auditor)), nil
+}
+
+// LoginOrigin reports the origin the login ceremony is bound to, or ""
+// when no TCP listener is bound and there are therefore no login routes.
+func (s *FrontendServer) LoginOrigin() string {
+	if s == nil {
+		return ""
+	}
+	return s.loginOrigin
 }
 
 // ServeLoopback blocks until Shutdown. No-op when ListenLoopback was not called.
@@ -245,7 +290,12 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor}, deps)
 
-	handler := frontendCredentialAuth(store, frontendRecover(socketMux))
+	// The socket door is composed through the same function the loopback one
+	// is, with an empty public set: a browser cannot reach a Unix socket and
+	// a socket has no origin, so there is no ceremony to serve here and the
+	// public mux is nil rather than populated. Composing it anyway is what
+	// keeps the two doors' shape identical.
+	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, frontendRecover(socketMux)))
 
 	srv := &http.Server{
 		Handler: handler,
