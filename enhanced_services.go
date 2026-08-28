@@ -174,8 +174,21 @@ func (r *EnhancedServiceRegistry) LookupByPath(path string) *EnhancedService {
 }
 
 // checkRouteConflictsLocked flags any duplicate route string between two
-// distinct serviceIDs. Caller must hold r.mu.Lock().
+// distinct serviceIDs, and refuses relay's own reserved prefix outright.
+// Caller must hold r.mu.Lock().
+//
+// The reserved check runs against relay's patterns, not against another
+// service's: /relay/ carries the unauthenticated login ceremony, and a
+// manifest that could claim it would put a service in front of the one door
+// relay serves with no credential (ADR-016 decision 4). This closes only the
+// /relay/ half of issue #50 — the general problem, that a service can claim
+// any other path relay serves, is still open.
 func (r *EnhancedServiceRegistry) checkRouteConflictsLocked(serviceID string, routes []string) error {
+	for _, route := range routes {
+		if route == strings.TrimSuffix(relayReservedPrefix, "/") || strings.HasPrefix(route, relayReservedPrefix) {
+			return fmt.Errorf("manifest registry: route %q is reserved to relay (%s)", route, relayReservedPrefix)
+		}
+	}
 	for otherID, other := range r.services {
 		if otherID == serviceID {
 			continue
