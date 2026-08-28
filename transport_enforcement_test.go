@@ -1,0 +1,462 @@
+package main
+
+// Tests for ADR-015 decision 2: an execute-class route must be ABSENT from
+// the TCP mux -- a genuine "no route registered" 404, never a handler that
+// ran and refused. Exercises the real wiring (NewFrontendServer +
+// ListenLoopback + a real TCP/Unix listener + real HTTP requests), which is
+// what distinguishes this file from capability_test.go's coverage of
+// RouteRegistrar.Handle and ClassReachableOn in isolation -- that file
+// already pins the fail-closed matrix (unknown class, known class on an
+// unknown transport) so this file does not repeat it.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// teCounters are flipped only by an ops method's success path (each Create /
+// Update / SetRemoteConfig calls notify() after it persists), so they are an
+// independent witness to "the real handler body ran" that does not rely on
+// reading the HTTP response back.
+type teCounters struct {
+	serviceChanges   int
+	mcpChanges       int
+	enrolmentChanges int
+}
+
+type teServer struct {
+	srv      *FrontendServer
+	store    SettingsStore
+	counters *teCounters
+	token    string
+	tcpBase  string
+	sockHTTP *http.Client
+}
+
+// teNewServer wires a real FrontendServer -- real ServiceOps/EnrolmentOps/
+// AuditOps/McpOps over store, a real 0600 Unix socket, and a real loopback
+// TCP listener via ListenLoopback -- so a test here exercises
+// registerFrontendRoutes exactly as frontend_server.go calls it, not a
+// synthetic mux. authz is passed straight to NewFrontendServer; nil (like
+// frontend_server_test.go's hermetic tests) isolates the transport-routing
+// property under test from ADR-015's separate credential-classing layer.
+// store is a parameter rather than built internally so a caller can mint a
+// credential against it (via NewCredentialAuthorizer) before or after the
+// server exists.
+func teNewServer(t *testing.T, store SettingsStore, authz Authorizer) *teServer {
+	t.Helper()
+	counters := &teCounters{}
+
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, OnChange: func() { counters.serviceChanges++ }}
+	enrolOps := &EnrolmentOps{Store: store, OnChange: func() { counters.enrolmentChanges++ }}
+	auditOps := &AuditOps{}
+	mcpOps := &McpOps{Store: store, Ctx: context.Background(), OnChange: func() { counters.mcpChanges++ }}
+	extMgr := NewExternalMcpManager(nil)
+	enhanced := NewEnhancedServiceRegistry(nil)
+
+	const token = "te-frontend-token"
+	sockDir := mkShortTempDir(t, "te-fe-")
+	srv, err := NewFrontendServer(
+		store, extMgr, extMgr, extMgr,
+		Endpoint{Socket: filepath.Join(sockDir, "frontend.sock"), Token: token},
+		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, authz, nil,
+	)
+	assertNoErr(t, err, "NewFrontendServer")
+	go func() { _ = srv.Serve() }()
+	assertNoErr(t, srv.ListenLoopback("127.0.0.1:0"), "ListenLoopback")
+	go func() { _ = srv.ServeLoopback() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+	_ = dialUnixWithTimeout(t, srv.socketPath, 2*time.Second).Close()
+
+	return &teServer{
+		srv:      srv,
+		store:    store,
+		counters: counters,
+		token:    token,
+		tcpBase:  "http://" + srv.tcpLn.Addr().String(),
+		sockHTTP: dialFrontendHTTP(srv.socketPath),
+	}
+}
+
+// teFixtureIDs names the seeded records every route in teRouteTable expects
+// to find. Seeded directly against the store (never through the execute
+// HTTP routes themselves, which is the property under test) so fixture setup
+// can never be confused with the behavior being verified.
+type teFixtureIDs struct {
+	projID     string
+	projDelID  string
+	newProjDir string
+}
+
+func teSeed(t *testing.T, store SettingsStore) teFixtureIDs {
+	t.Helper()
+	proj := mkStoreProject(t, store, ProjectKindLocal, "te-proj1", t.TempDir())
+	projDel := mkStoreProject(t, store, ProjectKindLocal, "te-proj-del", t.TempDir())
+
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.UpsertService(ServiceConfig{ID: "svc1", DisplayName: "svc1", Command: "/bin/true"})
+		s.UpsertService(ServiceConfig{ID: "svc-del", DisplayName: "svc-del", Command: "/bin/true"})
+		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "mcp1", Command: "/bin/true"})
+		s.AddEnrolment(Enrolment{ClientID: "enr1", Fingerprint: "fp-enr1"})
+		s.AddEnrolment(Enrolment{ClientID: "enr-del", Fingerprint: "fp-enr-del"})
+	}), "seed fixtures")
+
+	return teFixtureIDs{projID: proj.ID, projDelID: projDel.ID, newProjDir: t.TempDir()}
+}
+
+type teRoute struct {
+	method string
+	path   string
+	class  CapabilityClass
+	body   any
+}
+
+// teNonexistentMcpCommand never spawns a real process: exec itself fails
+// before any pipe is opened (the same command TestMcpRoutes_CreateDiscoveryFailureMaps502
+// uses), so a "reachable" check on POST /api/mcps can run on a real listener
+// in this file without a live MCP binary or a stdio handshake to wait out.
+const teNonexistentMcpCommand = "/nonexistent/does-not-exist-binary-zzz"
+
+// teRouteTable reproduces every route relay registers, in the order the
+// production files declare them. This is deliberately exhaustive rather than
+// a sample: the property under test (execute absent from TCP, everything
+// else present on both) is a claim about the WHOLE table, and a table that
+// silently drifted from the real route set would let a fifth execute route
+// slip onto TCP undetected.
+func teRouteTable(ids teFixtureIDs) []teRoute {
+	return []teRoute{
+		// service_routes.go
+		{"GET", "/api/services", ClassRead, nil},
+		{"GET", "/api/services/svc1", ClassRead, nil},
+		{"POST", "/api/services", ClassExecute, map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}},
+		{"PUT", "/api/services/svc1", ClassExecute, map[string]any{"display_name": "svc1", "command": "/bin/false"}},
+		{"DELETE", "/api/services/svc-del", ClassConfigure, nil},
+		{"POST", "/api/services/svc1/start", ClassConfigure, nil},
+		{"POST", "/api/services/svc1/stop", ClassConfigure, nil},
+		{"PUT", "/api/services/svc1/autostart", ClassConfigure, map[string]any{"autostart": true}},
+
+		// enrolment_routes.go
+		{"GET", "/api/enrolments", ClassRead, nil},
+		{"GET", "/api/enrolments/enr1", ClassRead, nil},
+		{"POST", "/api/enrolments", ClassGrant, map[string]any{"client_id": "te-new-enrolment"}},
+		{"DELETE", "/api/enrolments/enr-del", ClassGrant, nil},
+		{"GET", "/api/remote", ClassRead, nil},
+		{"PUT", "/api/remote", ClassExecute, map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}},
+
+		// mcp_routes.go
+		{"POST", "/api/mcps", ClassExecute, map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}},
+		{"DELETE", "/api/mcps/mcp1", ClassConfigure, nil},
+
+		// project_routes.go
+		{"GET", "/api/projects", ClassRead, nil},
+		{"GET", "/api/projects/" + ids.projID, ClassRead, nil},
+		{"GET", "/api/mcps", ClassRead, nil},
+		{"GET", "/api/mcps/mcp1/scope_fields", ClassRead, nil},
+		{"GET", "/api/mcps/mcp1/tools", ClassRead, nil},
+		{"POST", "/api/mcps/mcp1/enumerate", ClassRead, map[string]any{"field": "x"}},
+		{"POST", "/api/projects", ClassConfigure, map[string]any{"name": "te-new-project", "path": ids.newProjDir}},
+		{"PUT", "/api/projects/" + ids.projID, ClassConfigure, map[string]any{}},
+		{"DELETE", "/api/projects/" + ids.projDelID, ClassConfigure, nil},
+		{"POST", "/api/projects/" + ids.projID + "/regen_skill", ClassConfigure, nil},
+		{"POST", "/api/projects/" + ids.projID + "/rotate_token", ClassGrant, nil},
+
+		// audit_routes.go
+		{"GET", "/api/audit", ClassRead, nil},
+		{"GET", "/api/audit/log", ClassRead, nil},
+		{"POST", "/api/audit/export", ClassConfigure, map[string]any{}},
+	}
+}
+
+func teExecuteRoutes(ids teFixtureIDs) []teRoute {
+	var out []teRoute
+	for _, r := range teRouteTable(ids) {
+		if r.class == ClassExecute {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func teNonExecuteRoutes(ids teFixtureIDs) []teRoute {
+	var out []teRoute
+	for _, r := range teRouteTable(ids) {
+		if r.class != ClassExecute {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func teDo(t *testing.T, client *http.Client, method, url, token string, body any) (*http.Response, []byte) {
+	t.Helper()
+	var r io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		assertNoErr(t, err, "marshal body")
+		r = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequest(method, url, r)
+	assertNoErr(t, err, "new request")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	assertNoErr(t, err, "%s %s", method, url)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	assertNoErr(t, err, "read body")
+	return resp, raw
+}
+
+func (ts *teServer) doTCP(t *testing.T, r teRoute) (*http.Response, []byte) {
+	t.Helper()
+	return teDo(t, http.DefaultClient, r.method, ts.tcpBase+r.path, ts.token, r.body)
+}
+
+func (ts *teServer) doSocket(t *testing.T, r teRoute) (*http.Response, []byte) {
+	t.Helper()
+	return teDo(t, ts.sockHTTP, r.method, "http://unix"+r.path, ts.token, r.body)
+}
+
+// teIsRouted distinguishes a genuine "no route registered" 404 (mux-level,
+// produced by http.NotFound: Content-Type text/plain) from a handler that
+// ran and answered 404 for a missing resource (writeJSON: Content-Type
+// application/json). Any non-404 status necessarily means some pattern
+// matched and its handler ran.
+func teIsRouted(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusNotFound {
+		return true
+	}
+	return strings.Contains(resp.Header.Get("Content-Type"), "application/json")
+}
+
+// TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan proves POST
+// /api/services on the TCP listener is not merely refused: the response
+// carries the mux's own "no route" signature (not a JSON body from
+// service_routes.go), nothing was persisted, and ServiceOps' OnChange -- a
+// counter only the successful tail of Create touches -- never fired.
+func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	teSeed(t, store)
+	before := store.Get().Services
+
+	resp, body := ts.doTCP(t, teRoute{"POST", "/api/services", ClassExecute,
+		map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}})
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
+	}
+	if ts.counters.serviceChanges != 0 {
+		t.Fatalf("ServiceOps.OnChange fired %d times; the handler must never have run", ts.counters.serviceChanges)
+	}
+	after := store.Get().Services
+	if len(after) != len(before) {
+		t.Fatalf("service count changed %d -> %d; POST /api/services must not have reached ServiceOps.Create", len(before), len(after))
+	}
+	for _, svc := range after {
+		if svc.DisplayName == "te-phantom-service" {
+			t.Fatal("the phantom service was persisted despite a 404")
+		}
+	}
+}
+
+func TestTCPServiceUpdate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	teSeed(t, store)
+
+	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/services/svc1", ClassExecute,
+		map[string]any{"display_name": "svc1", "command": "/bin/false"}})
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
+	}
+	if ts.counters.serviceChanges != 0 {
+		t.Fatalf("ServiceOps.OnChange fired %d times; the handler must never have run", ts.counters.serviceChanges)
+	}
+	svc, _ := store.Get().findServiceByID("svc1")
+	if svc == nil || svc.Command != "/bin/true" {
+		t.Fatalf("svc1.Command = %+v; PUT must never have reached ServiceOps.Update", svc)
+	}
+}
+
+func TestTCPMcpCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	teSeed(t, store)
+	before := store.Get().ExternalMcps
+
+	resp, body := ts.doTCP(t, teRoute{"POST", "/api/mcps", ClassExecute,
+		map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}})
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
+	}
+	if ts.counters.mcpChanges != 0 {
+		t.Fatalf("McpOps.OnChange fired %d times; the handler must never have run", ts.counters.mcpChanges)
+	}
+	after := store.Get().ExternalMcps
+	if len(after) != len(before) {
+		t.Fatalf("mcp count changed %d -> %d; POST /api/mcps must not have reached McpOps.Add", len(before), len(after))
+	}
+}
+
+func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	teSeed(t, store)
+
+	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/remote", ClassExecute,
+		map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}})
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no route registered)", resp.StatusCode)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q looks like a handler answered, not a missing route; body=%s", resp.Header.Get("Content-Type"), body)
+	}
+	if ts.counters.enrolmentChanges != 0 {
+		t.Fatalf("EnrolmentOps.OnChange fired %d times; the handler must never have run", ts.counters.enrolmentChanges)
+	}
+	if cfg := store.Get().Remote; cfg != nil {
+		t.Fatalf("remote config = %+v, want nil; PUT /api/remote must not have reached EnrolmentOps.SetRemoteConfig", cfg)
+	}
+}
+
+// TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute is the
+// strongest available proof that decision 2 is a routing property and not an
+// authorization refusal in disguise: it wires the REAL credentialAuthorizer
+// and mints a credential carrying ClassExecute (among all four classes),
+// hashed to the SAME bearer this test sends -- mirroring how
+// migrateFrontendTokenToCredential lets one token satisfy both
+// frontendBearerAuth and the credential authorizer in production. If
+// ADR-015 decision 2 were a policy check inside the handler instead of an
+// absent registration, this credential would sail through it, so a 404 here
+// can only mean the pattern was never handed to the TCP mux at all.
+func TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, NewCredentialAuthorizer(store))
+	ids := teSeed(t, store)
+
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.AddAPICredential(APICredential{
+			ID:      "te-all-classes-cred",
+			Name:    "te-all-classes-cred",
+			Hash:    hashToken(ts.token),
+			Classes: []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute},
+			Created: time.Now().UTC().Format(time.RFC3339),
+		})
+	}), "seed all-classes credential")
+
+	for _, r := range teExecuteRoutes(ids) {
+		t.Run(r.method+" "+r.path, func(t *testing.T) {
+			resp, body := ts.doTCP(t, r)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 even though the presented credential is authorized for ClassExecute", resp.StatusCode)
+			}
+			if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+				t.Fatalf("Content-Type = %q suggests a handler answered rather than the route being absent; body=%s", resp.Header.Get("Content-Type"), body)
+			}
+		})
+	}
+}
+
+func TestTCPNonExecuteRoutes_AreReachable(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	ids := teSeed(t, store)
+
+	for _, r := range teNonExecuteRoutes(ids) {
+		t.Run(r.method+" "+r.path, func(t *testing.T) {
+			resp, body := ts.doTCP(t, r)
+			if !teIsRouted(resp) {
+				t.Fatalf("class %s route not reachable on TCP: status=%d content-type=%q body=%s",
+					r.class, resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			}
+		})
+	}
+}
+
+func TestSocketRoutes_AllRoutesAreReachable(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ts := teNewServer(t, store, nil)
+	ids := teSeed(t, store)
+
+	for _, r := range teRouteTable(ids) {
+		t.Run(r.method+" "+r.path, func(t *testing.T) {
+			resp, body := ts.doSocket(t, r)
+			if !teIsRouted(resp) {
+				t.Fatalf("class %s route not reachable on the socket: status=%d content-type=%q body=%s",
+					r.class, resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			}
+		})
+	}
+}
+
+// TestRouteSetDivergence_TCPEqualsSocketMinusExecuteRoutes drives the FULL
+// table against two independently seeded servers -- one probed only over
+// TCP, one only over the socket, so neither run's mutations (deletes,
+// creates) can contaminate the other's routing verdict -- and asserts the
+// only place the two transports disagree is on the four execute routes,
+// where TCP must be unrouted and the socket must be routed. Every other
+// route must agree exactly. http.ServeMux exposes no API to enumerate its
+// registered patterns, so comparing outcomes across the full table is the
+// available substitute for diffing the two mux's pattern sets directly.
+func TestRouteSetDivergence_TCPEqualsSocketMinusExecuteRoutes(t *testing.T) {
+	tcpStore := newCLISandboxStore(t)
+	tcpServer := teNewServer(t, tcpStore, nil)
+	tcpIDs := teSeed(t, tcpStore)
+
+	sockStore := newCLISandboxStore(t)
+	sockServer := teNewServer(t, sockStore, nil)
+	sockIDs := teSeed(t, sockStore)
+
+	tcpTable := teRouteTable(tcpIDs)
+	sockTable := teRouteTable(sockIDs)
+	if len(tcpTable) != len(sockTable) {
+		t.Fatalf("route tables diverged in length: %d vs %d", len(tcpTable), len(sockTable))
+	}
+
+	for i := range tcpTable {
+		r := tcpTable[i] // method/path/class identical between the two tables; only seeded ids vary
+		tcpResp, tcpBody := tcpServer.doTCP(t, tcpTable[i])
+		sockResp, sockBody := sockServer.doSocket(t, sockTable[i])
+		tcpRouted := teIsRouted(tcpResp)
+		sockRouted := teIsRouted(sockResp)
+
+		if !sockRouted {
+			t.Fatalf("%s %s: not reachable on the socket at all (status=%d body=%s); the divergence check requires a socket baseline",
+				r.method, r.path, sockResp.StatusCode, sockBody)
+		}
+
+		wantTCPRouted := r.class != ClassExecute
+		if tcpRouted != wantTCPRouted {
+			t.Fatalf("%s %s (class %s): TCP routed=%v, want %v (tcp status=%d body=%s)",
+				r.method, r.path, r.class, tcpRouted, wantTCPRouted, tcpResp.StatusCode, tcpBody)
+		}
+	}
+}
