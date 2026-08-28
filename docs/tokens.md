@@ -182,6 +182,39 @@ tokens needs a credential of its own:
 The same applies to `POST /api/enrolments` and `DELETE /api/enrolments/{id}`,
 and to the four `execute` routes on the socket.
 
+## The login bootstrap code is not a credential
+
+`relay login enrol` prints a code, but it is **not** a sixth entry in this
+document's inventory and must never be listed alongside the five
+control-plane classes above. It authorises exactly one thing: registering a
+passkey. It is never accepted in place of an assertion, so it cannot become
+a password, and it never authenticates a request to relay's API on its own
+(ADR-016 decision 2).
+
+    relay login enrol
+    relay login list
+    relay login revoke --id ID
+
+- **What it authorises.** Nothing beyond `POST /relay/login/verify` in
+  registration mode. It does not read, configure, grant, execute or proxy
+  anything, and it is refused the instant it has done its one job.
+- **Lifetime.** Two minutes, single use. `relay login enrol` replaces any
+  existing code rather than accumulating one — there is at most one anchor
+  live at a time. Only its SHA-256 is stored, in `Settings.LoginBootstrap`;
+  the plaintext is printed once and is not recoverable.
+- **Refusal is uniform.** An absent record, an expired one, and a wrong
+  guess are refused identically, for the same oracle reason `expires`
+  handling is on `APICredential`: a distinguishable answer would tell an
+  unprivileged caller whether registration is currently anchored at all.
+- **A passkey is revoked with `relay login revoke --id ID`, never by
+  deleting `settings.json`.** Deleting the file loses every project and
+  credential along with it, and — because the file's absence is what would
+  otherwise re-arm self-registration under trust-on-first-use — this is
+  exactly the reason ADR-016 decision 2 refuses TOFU as the anchor in the
+  first place. `relay login list` shows every registered passkey's name,
+  abbreviated credential id, creation time and last-used signature counter,
+  never its public key.
+
 ## The settings file has more than one writer
 
 Every credential in this document except the ephemeral ones lives in one file,

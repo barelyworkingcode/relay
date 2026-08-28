@@ -398,6 +398,38 @@ func (c APICredential) Grants(class CapabilityClass) bool {
 	return slices.Contains(c.Classes, class)
 }
 
+// LoginBootstrap anchors passkey registration to a process already running
+// as the owning user (ADR-016 decision 2). Only the code's SHA-256 is
+// stored, never the code itself, matching every other credential in this
+// file; there is at most one at a time, so minting a new one replaces
+// whatever was there.
+type LoginBootstrap struct {
+	Hash    string `json:"hash"`
+	Expires string `json:"expires"`
+}
+
+// Passkey is one registered WebAuthn credential (ADR-016 decisions 2 and 7).
+// Only public material is stored: X and Y are the COSE ES256 public key's
+// coordinates, never a private key, which never leaves the authenticator.
+type Passkey struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	X    []byte `json:"x"`
+	Y    []byte `json:"y"`
+	// SignCount is the authenticator's signature counter as of the last
+	// accepted assertion (or registration, initially).
+	SignCount uint32 `json:"sign_count"`
+	// CounterSupported is fixed at registration: a registration reporting
+	// counter 0 means this authenticator does not implement counters at
+	// all, which is the ordinary case for a synced passkey. Recording that
+	// fact per credential, rather than re-deriving it per assertion, is
+	// what keeps a later legitimate assertion of 0 from being mistaken for
+	// a cloned-authenticator replay (ADR-016 decision 7, point 10).
+	CounterSupported bool   `json:"counter_supported"`
+	UserHandle       string `json:"user_handle,omitempty"`
+	Created          string `json:"created,omitempty"`
+}
+
 // IsRemote is the one place this comparison is written — see the comment on
 // Project.Kind for why the zero value must always read as local. Every
 // holder of a Kind (a Project, a StoredToken) asks here rather than
