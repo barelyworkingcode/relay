@@ -1,6 +1,7 @@
 # ADR-015: The Control Plane Is Classed by Blast Radius, and Transport Is Part of the Grant
 
-**Status:** Proposed
+**Status:** Accepted. Decisions 1, 2, 3 and 6 are implemented and tested;
+decision 4 is not.
 **Date:** 2026-08-28
 
 ## Context
@@ -10,10 +11,10 @@ was deferring authorization and that the deferral was the risk. This ADR pays
 that debt. Nothing here is a new discovery — the migration made an existing
 weakness reachable in a new way, which is exactly when it has to be settled.
 
-Every route on the frontend server is gated by one credential:
-`RELAY_FRONTEND_TOKEN`, checked by `frontendBearerAuth`. It is a single bearer
-that grants everything, minted once per install, injected into every frontend
-consumer. That was adequate when the API served Eve's project dialog and
+Every route on the frontend server was gated by one credential:
+`RELAY_FRONTEND_TOKEN`, checked by a single-value bearer gate (since replaced
+by `frontendCredentialAuth`, per decision 3). It is a single bearer that grants
+everything, minted once per install, injected into every frontend consumer. That was adequate when the API served Eve's project dialog and
 session creation. It is not adequate now, because the same token reaches:
 
 | route | what a holder can do |
@@ -126,13 +127,56 @@ caller in the system because it shares relay's address space. That trust was a
 property of the transport, not of the view, and ADR-014 removed the transport.
 The trust has to go with it.
 
-### 5. `RELAY_API_LISTEN` stays a devbox convenience until this lands
+### 5. `RELAY_API_LISTEN` stays a devbox convenience until decision 4 lands
 
 ADR-014 introduced an opt-in loopback TCP bind, absent by default, and called
-it a devbox convenience pending this ADR. It remains exactly that. When
-decisions 1–4 are implemented, the bind becomes a supported deployment; until
-then it is a development affordance and should not be documented as anything
-else.
+it a devbox convenience pending this ADR. Decisions 1, 2, 3 and 6 are now
+implemented: every route carries a class, `execute` is absent from the TCP mux
+rather than refused on it, and the single bearer has been *replaced* by classed
+credentials — `frontendCredentialAuth` resolves any bearer against
+`Settings.APICredentials`, and `RouteRegistrar`'s per-route check is what
+decides. `relay credential mint|list|revoke` issues them.
+
+Decision 4 is not implemented. Nothing yet issues the settings view its own
+narrow credential: the view still authenticates with `RELAY_FRONTEND_TOKEN`,
+which the migration records as one `read`+`configure` credential shared with
+every other frontend consumer. The client this ADR singles out as the most
+exposed is therefore still not the least privileged, and that is the gap
+between what is built and what was decided.
+
+So the bind stays a development affordance. What has changed is why: it is no
+longer blocked on the class model, which exists, but on the view holding a
+credential narrower than the one relay hands its own services. It should still
+not be documented as a supported deployment.
+
+### 6. The proxied surface is `configure`, and the catch-all is a route like any other
+
+`registerFrontendRoutes` mounts the enhanced-service dispatcher on `/`. That
+catch-all was registered outside the registrar and therefore carried no class,
+which was survivable only while exactly one bearer existed. The moment decision
+3 admits more than one credential, an unclassed catch-all hands every proxied
+service route — sessions, terminals, `/ws`, everything a manifest registers —
+to any credential that cleared the outer gate, including a `read`-only one.
+That is a widening, and shipping decision 3 without closing it would have made
+the class model actively misleading: an operator minting `read` would get
+strictly more than `read`.
+
+It is `configure`. Three things settle it:
+
+- Today's legacy credential holds `configure`, so Eve and relayScheduler are
+  unaffected by the classing.
+- A minted `read`-only credential becomes strictly *less* able than today's
+  single bearer, which is the direction this ADR is supposed to move in.
+- The proxied surface becomes audited, since every `rr.Handle` route produces a
+  `ControlDecision`. An unclassed mount produced none.
+
+This does **not** settle whether a proxied route that starts a terminal is
+really `execute` under decision 1's own test — the caller does supply what
+runs — and a `configure` classing on the catch-all is a floor, not a verdict.
+That question is open as issue #50 and is deliberately not answered here:
+answering it needs the manifest to describe per-route blast radius, which is a
+protocol change, and the choice between "class the mount" and "class what the
+mount reaches" should not be made as a side effect of fixing an outer gate.
 
 ## Consequences
 

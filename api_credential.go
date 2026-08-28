@@ -126,21 +126,27 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 		return false
 	}
 	hash := hashToken(frontendToken)
+	classes := []CapabilityClass{ClassRead, ClassConfigure}
 	for i := range s.APICredentials {
 		if s.APICredentials[i].Name != legacyFrontendCredentialName {
 			continue
 		}
-		if s.APICredentials[i].Hash == hash {
+		if s.APICredentials[i].Hash == hash && slices.Equal(s.APICredentials[i].Classes, classes) {
 			return false
 		}
+		// Classes are overwritten, not merged: this record is owned by the
+		// migration, so a wider class set found on it did not come from a
+		// decision made here, and honouring one would let an edited
+		// settings.json hand RELAY_FRONTEND_TOKEN a class ADR-015 refuses it.
 		s.APICredentials[i].Hash = hash
+		s.APICredentials[i].Classes = classes
 		return true
 	}
 	s.AddAPICredential(APICredential{
 		ID:      uuid.New().String(),
 		Name:    legacyFrontendCredentialName,
 		Hash:    hash,
-		Classes: []CapabilityClass{ClassRead, ClassConfigure},
+		Classes: classes,
 		Created: time.Now().UTC().Format(time.RFC3339),
 	})
 	return true
@@ -156,11 +162,10 @@ func NewCredentialAuthorizer(store SettingsStore) *credentialAuthorizer {
 	return &credentialAuthorizer{store: store}
 }
 
-// bearerToken extracts the token the same way frontendBearerAuth
-// (frontend_server.go) does — same prefix, same trim — so the two bearer
-// surfaces cannot silently diverge on what counts as a well-formed header.
-// frontendBearerAuth has no extracted function to call directly, so this
-// mirrors its shape rather than sharing code with it.
+// bearerToken is the one place a well-formed Authorization header is
+// defined. frontendCredentialAuth (frontend_server.go) and Authorize below
+// both call it, so the outer gate and the per-route class check cannot
+// diverge on what counts as a bearer.
 func bearerToken(r *http.Request) (string, bool) {
 	header := r.Header.Get("Authorization")
 	const prefix = "Bearer "

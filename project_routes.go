@@ -349,10 +349,11 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 	//
 	// It sits on the same mux as every other project route, which is the
 	// guard: the frontend socket is 0600 and every request through it is
-	// bearer-checked by frontendBearerAuth. Enumeration is disclosure — the
-	// list of every mail account on this machine — so it belongs behind the
-	// same admin boundary and nowhere near the remote listener, whose dispatch
-	// table is ListTools and CallTool and gains nothing here.
+	// resolved to a credential by frontendCredentialAuth. Enumeration is
+	// disclosure — the list of every mail account on this machine — so it
+	// belongs behind the same admin boundary and nowhere near the remote
+	// listener, whose dispatch table is ListTools and CallTool and gains
+	// nothing here.
 	// read, not configure: it discloses real values and changes nothing
 	// (ADR-015 decision 1), even though the HTTP verb is POST.
 	rr.Handle(ClassRead, "POST /api/mcps/{id}/enumerate", func(w http.ResponseWriter, r *http.Request) {

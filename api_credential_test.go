@@ -388,3 +388,31 @@ func TestAPICredential_AddRemoveFind(t *testing.T) {
 		t.Fatal("removing an unknown id reported success")
 	}
 }
+
+func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.T) {
+	s := &Settings{APICredentials: []APICredential{{
+		ID:      "hand-written",
+		Name:    legacyFrontendCredentialName,
+		Hash:    hashToken("tok"),
+		Classes: []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute},
+	}}}
+
+	if !migrateFrontendTokenToCredential(s, "tok") {
+		t.Fatal("migration reported no change against a record carrying classes it does not own")
+	}
+
+	got := s.APICredentials[0]
+	for _, class := range []CapabilityClass{ClassGrant, ClassExecute} {
+		if got.Grants(class) {
+			t.Errorf("legacy credential still grants %q after migration", class)
+		}
+	}
+	for _, class := range []CapabilityClass{ClassRead, ClassConfigure} {
+		if !got.Grants(class) {
+			t.Errorf("legacy credential lost %q", class)
+		}
+	}
+	if migrateFrontendTokenToCredential(s, "tok") {
+		t.Error("migration is not idempotent once the record is correct")
+	}
+}
