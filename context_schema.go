@@ -9,133 +9,69 @@ import (
 	"strings"
 )
 
-// ---------------------------------------------------------------------------
-// The context-schema vocabulary (ADR-011 decision 3)
-// ---------------------------------------------------------------------------
-//
-// Relay must store, inject, render and refuse a scoping value without knowing
-// what it scopes. That is possible only because a v2 contextSchema describes
-// each field's ROLE IN THE PERMISSION MODEL rather than its meaning:
-//
-//	scope       "restrict"                      this field narrows access
-//	source      "operator" | "project_path"     who supplies the value
-//	applies_to  []string of tool-name globs     which tools it governs
-//	enumerable  bool                            the MCP can list valid values
-//	depends_on  []string of field names         enumeration ordering
-//
-// Relay learns "this field restricts access, an operator sets it, and it
-// governs mail_*". It never learns what a mailbox is. Every field name is an
-// opaque map key from relay's side, start to finish. The rejected alternative
-// is a registry inside relay mapping known field names to known handling —
-// which is what schemaHasField(…, "allowed_dirs") is today in miniature, and
-// it does not survive a second MCP.
+// A field name is an opaque map key to relay, start to finish: the vocabulary
+// describes each field's role in the permission model, never its meaning, so
+// there is deliberately no registry mapping known names to known handling.
+// Vocabulary reference: docs/context-schema.md. Rationale: ADR-011 decision 3.
 
-// contextSchemaV2 is the first contextSchemaVersion that carries those
-// keywords. An absent or lower version means v1 and is handled exactly as it
-// was before ADR-011 — the literal allowed_dirs branch, for one release.
+// contextSchemaV2 is the first version carrying the v2 keywords; absent or
+// lower means v1, handled by the allowed_dirs compatibility branch.
 const contextSchemaV2 = 2
 
-// Keyword values. Each is a small closed set; anything else is ignored rather
-// than guessed at, because a keyword relay does not understand must not be
-// able to widen anything.
 const (
-	// ContextScopeRestrict marks a field that narrows access. Its absence
-	// means an ordinary context value relay injects and otherwise ignores.
-	//
-	// There is deliberately no "absent" keyword letting an MCP say a missing
-	// value means unrestricted: a field that says it restricts and then
-	// defaults open is not a restriction, and relay could never verify the
-	// claim either way. scope: "restrict" MEANS fail closed.
+	// ContextScopeRestrict: there is no "absent" keyword for unrestricted
+	// (ADR-011 decision 4) -- scope: "restrict" MEANS fail closed.
 	ContextScopeRestrict = "restrict"
 
-	// ContextSourceOperator — an operator sets the value explicitly. Local
-	// and remote alike; nothing about a mail account depends on the caller
-	// having a filesystem.
 	ContextSourceOperator = "operator"
 
-	// ContextSourceProjectPath — relay derives the value from Project.Path.
-	// An access profile (a remote-kind record) has no path, so such a field
-	// is ABSENT for one, and by decision 4 the tools it governs refuse.
+	// ContextSourceProjectPath: absent for an access profile (no path), so
+	// by decision 4 the tools it governs refuse.
 	ContextSourceProjectPath = "project_path"
 
-	// ContextDiscloseValue renders a set field's value in the scope note, as
-	// relay has always done. It is the default when disclose is absent, and
-	// absent-means-value is the only reading that leaves every schema written
-	// before this keyword existed rendering byte-for-byte as it always has
-	// (issue #33) — an MCP that has never heard of "disclose" must not find
-	// its scope note has quietly changed shape.
+	// ContextDiscloseValue is the default when disclose is absent.
 	ContextDiscloseValue = "value"
 
-	// ContextDiscloseCount renders a set field's SHAPE — how many entries an
-	// array carries — and never its content. It exists for a field whose
-	// value is itself reconnaissance: fsMCP's allowed_dirs is host topology
-	// (an absolute path names an account and a directory layout), while
-	// "confined to 2" is exactly what a client needs to reason about a
-	// refusal without being handed the two paths.
+	// ContextDiscloseCount renders a set field's SHAPE, never its content
+	// (docs/context-schema.md).
 	ContextDiscloseCount = "count"
 
-	// ContextDiscloseNone renders only that a set field governs the tool,
-	// with no shape and no content at all. It is the answer for a field where
-	// even the count is informative — "confined to 1 recipient" narrows a
-	// guess to one identity as surely as naming it would — so an MCP that
-	// wants the note to say nothing beyond "this is confined and it is set"
-	// needs a third setting, not a smaller number from "count".
 	ContextDiscloseNone = "none"
 )
 
-// v1AllowedDirsField is the ONE domain-specific field name left anywhere in
-// relay, and it is here so that fact is checkable: TestNoDomainSpecificFieldNames
-// asserts the literal appears in exactly one non-test Go source. It exists only
-// for the v1 compatibility branch — an MCP that declares no contextSchemaVersion,
-// which is fsMCP as shipped today — and is scheduled for removal one release
-// after every MCP relay serves declares v2.
-//
-// Under v2 the same MCP declares the same field with source: "project_path",
-// and relay derives it because the SCHEMA asked for it, not because relay
-// recognised the name.
+// v1AllowedDirsField is the ONE domain-specific name left in relay
+// (TestNoDomainSpecificFieldNames asserts it); v2 derives it instead.
 const v1AllowedDirsField = "allowed_dirs"
 
-// v1FsBashTool is the second domain-specific string, and it is DEFERRED
-// rather than fixed: ADR-011 names moving this into the schema (as a
-// default_disabled_tools declaration) as out of scope, because it is the same
-// ADR-006 violation but it is not resource scoping. Until then relay keeps
-// auto-disabling this one tool for filesystem-scoped MCPs, exactly as before.
+// v1FsBashTool is the second domain-specific string, deliberately deferred
+// rather than fixed (ADR-011: out of scope, not resource scoping).
 const v1FsBashTool = "fs_bash"
 
-// ContextField is one declared field of a v2 contextSchema: the ordinary
-// JSON-Schema-ish fragment relay needs to validate a value, plus the ADR-011
-// keywords that tell relay what the field is FOR.
+// ContextField is one declared field of a v2 contextSchema: a JSON-Schema-
+// ish validation fragment plus the ADR-011 keywords for what it's FOR.
 type ContextField struct {
-	// Name is the map key the field was declared under. It is opaque to
-	// relay and is what gets written into _meta.
+	// Name is the map key the field was declared under; opaque to relay.
 	Name string `json:"-"`
 
-	// The value-shape fragment. A deliberate JSON-Schema SUBSET: array-of-string
-	// and string are what the model needs, and a full implementation would be a
-	// second validator to keep correct for no gain (see ValidateValue).
+	// A deliberate JSON-Schema SUBSET: array-of-string and string are what
+	// the model needs, and a full implementation would be a second
+	// validator to keep correct for no gain (see ValidateValue).
 	Type        string          `json:"type,omitempty"`
 	Items       json.RawMessage `json:"items,omitempty"`
 	Description string          `json:"description,omitempty"`
 
-	// The permission-model keywords.
 	Scope      string   `json:"scope,omitempty"`
 	Source     string   `json:"source,omitempty"`
 	AppliesTo  []string `json:"applies_to,omitempty"`
 	Enumerable bool     `json:"enumerable,omitempty"`
 	DependsOn  []string `json:"depends_on,omitempty"`
 
-	// Disclose governs what the CLIENT-FACING scope note (scopeNoteFor) says
-	// about a SET value, and nothing else: it does not touch enforcement, the
-	// audit log, or any operator surface, all of which keep seeing the real
-	// value regardless. Absent means ContextDiscloseValue — see that constant
-	// for why "value" has to be the reading of absence.
+	// Disclose governs only the CLIENT-FACING scope note; every other
+	// surface always sees the real value.
 	Disclose string `json:"disclose,omitempty"`
 }
 
-// The keyword keys of a field fragment, in the spelling docs/context-schema.md
-// defines. They are constants so the exactness below is one value each rather
-// than a string literal someone later "tidies", which is the same reason
-// mcpReadOnlyHintKey and mcpOpenWorldHintKey are constants.
+// The keyword keys, spelled as docs/context-schema.md defines.
 const (
 	ctxKeyType        = "type"
 	ctxKeyItems       = "items"
@@ -148,9 +84,8 @@ const (
 	ctxKeyDisclose    = "disclose"
 )
 
-// contextKeywordBySpelling maps a keyword's lower-cased form back to the one
-// spelling that is the keyword, so a NEAR MISS can be told from a key relay
-// simply does not know.
+// contextKeywordBySpelling maps a lower-cased keyword back to its one true
+// spelling, so a near miss can be told from an unknown key.
 var contextKeywordBySpelling = func() map[string]string {
 	out := map[string]string{}
 	for _, k := range []string{
@@ -163,33 +98,8 @@ var contextKeywordBySpelling = func() map[string]string {
 	return out
 }()
 
-// UnmarshalJSON decodes one field fragment by reading each keyword out of a
-// map UNDER ITS EXACT KEY, rather than letting encoding/json match the struct's
-// fields.
-//
-// This is readOnlyHintTrue's discipline applied where it was missing, and the
-// reason it is needed here is the same: encoding/json matches struct fields
-// CASE-INSENSITIVELY, so a plain decode of this struct accepted
-// {"Scope":"restrict"} as a restriction — a key no schema document defines —
-// while {"scope":"RESTRICT"} silently was not one. Two spellings a reviewer
-// reading an MCP's published schema would read identically, decided opposite
-// ways, with no signal either time.
-//
-// The direction that matters is NOT the same as the annotation hints', and
-// that is why "read it exactly" is not the whole rule here. A near-miss
-// readOnlyHint that relay ignores DENIES, so ignoring it is safe. A near-miss
-// `scope` that relay ignores means relay stops requiring a value for a field
-// the MCP believes is a restriction, stops governing the tools it names, and
-// (through filterKnownContextFields, which drops any key the parsed schema no
-// longer declares) strips the operator's value off the wire. Silence is the
-// fail-OPEN direction on this side.
-//
-// So the rule is: an EXACT keyword is read, a key or value relay has never
-// heard of is ignored exactly as decision 3 says it must be, and a NEAR MISS
-// of a keyword — differing only in case — is an error. An error here makes the
-// whole schema unusable (see ContextSchema.Malformed), which is loud, closed,
-// and the only answer that does not require relay to guess which of two
-// readings an MCP author meant.
+// UnmarshalJSON reads keywords under their EXACT key. Unlike
+// readOnlyHintTrue, a near-miss here is an ERROR: it fails OPEN otherwise.
 func (f *ContextField) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -227,19 +137,14 @@ func (f *ContextField) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
-	// Items is carried through as raw bytes: itemType() is the only reader and
-	// it decodes defensively, so a fragment relay does not model is a shape it
-	// declines to describe rather than a schema it refuses.
+	// Items is carried as raw bytes; itemType() decodes it defensively, so
+	// an unmodeled shape is declined rather than refused.
 	if v, ok := raw[ctxKeyItems]; ok && string(v) != "null" {
 		f.Items = v
 	}
 
-	// A keyword VALUE gets the same treatment its key does. An unrecognised
-	// value is ignored — decision 3's "anything else is ignored rather than
-	// guessed at", which is what lets a later vocabulary land without breaking
-	// this one — but a value that differs from a keyword only in case is a typo
-	// of THIS vocabulary, not a member of a future one, and reading it as
-	// "no scope" is the fail-open answer.
+	// A value differing from a keyword only in case is refused the same as
+	// a near-miss key above; an unrecognised value is ignored per decision 3.
 	if err := nearMissValue(ctxKeyScope, f.Scope, ContextScopeRestrict); err != nil {
 		return err
 	}
@@ -261,29 +166,18 @@ func nearMissValue(key, got string, want ...string) error {
 	return nil
 }
 
-// Restricts reports whether this field narrows access.
 func (f ContextField) Restricts() bool { return f.Scope == ContextScopeRestrict }
 
-// FromProjectPath reports whether relay derives this field's value from the
-// project's path.
 func (f ContextField) FromProjectPath() bool { return f.Source == ContextSourceProjectPath }
 
-// FromOperator reports whether an operator supplies this field's value.
-// A restrict-field with no declared source is treated as operator-supplied:
-// that is the reading that leaves the value un-derivable by relay, which is
-// the safe one — relay inventing a value for a field it does not understand
-// is the failure this whole mechanism exists to prevent.
+// FromOperator: a restrict-field with no declared source is treated as
+// operator-supplied -- the reading relay cannot invent a value for.
 func (f ContextField) FromOperator() bool {
 	return f.Source == ContextSourceOperator || (f.Source == "" && f.Restricts())
 }
 
-// Disclosure reports what scopeNoteFor may say about this field's SET value.
-// An absent or unrecognised disclose reads as ContextDiscloseValue, by the
-// same rule ContextField.Restricts applies to scope: decision 3's "anything
-// else is ignored" already means a value that is neither "count" nor "none"
-// collapses to the default via this equality check — there is no separate
-// branch for "unknown", because a second one would be a second place for the
-// same rule to drift from the first.
+// Disclosure reads absent or unrecognised as ContextDiscloseValue -- no
+// separate "unknown" branch, so the rule cannot drift between two places.
 func (f ContextField) Disclosure() string {
 	switch f.Disclose {
 	case ContextDiscloseCount, ContextDiscloseNone:
@@ -293,30 +187,8 @@ func (f ContextField) Disclosure() string {
 	}
 }
 
-// Governs reports whether this field's applies_to selects the named tool.
-//
-// An ABSENT or empty applies_to governs every tool the MCP exposes. That is
-// the domain-blind default: an MCP that offers no precision gets the widest
-// reading, and one that offers precision gets exactly what it declared.
-//
-// A malformed glob governs everything too. path.Match rejects e.g. an
-// unterminated character class, and the two readings of that are "governs
-// nothing" and "governs everything" — the second is the fail-closed one
-// (more tools require a value, and a grant whose MCP publishes a broken
-// pattern is refused rather than silently unscoped), so it is the one taken.
-//
-// An EMPTY entry governs everything for exactly that reason, and it used to be
-// skipped. applies_to: [""] therefore made a field that declares itself a
-// restriction govern no tool at all, while still being reported as declared
-// everywhere an operator or a client looks — a restriction that restricts
-// nothing, which is the one thing scope: "restrict" is documented to be unable
-// to mean (see ContextScopeRestrict: there is deliberately no keyword letting
-// an MCP say a missing value is unrestricted, and a spelling that achieves it
-// by accident is the same hole through a side door). "" names no tool, exactly
-// as an unparseable pattern does, so it takes the same reading; and because
-// one entry governing everything makes the whole list govern everything, a
-// stray "" beside a real "mail_*" widens the restriction rather than voiding
-// the list.
+// Governs: absent/empty applies_to, a malformed glob, and an empty ""
+// entry all govern EVERYTHING, the fail-closed reading (ADR-011).
 func (f ContextField) Governs(toolName string) bool {
 	if len(f.AppliesTo) == 0 {
 		return true
@@ -336,41 +208,15 @@ func (f ContextField) Governs(toolName string) bool {
 	return false
 }
 
-// matchToolPattern is THE tool-name matcher. Both places that select tools by
-// pattern go through it — a context field's applies_to (which tools a scope
-// governs) and an access profile's allowed_tools (which tools it may call) —
-// because two matchers with slightly different anchoring is how "mail_* does
-// not admit xmail_send" ends up true in one place and false in the other.
-//
-// It is path.Match, which is ANCHORED: the pattern must match the whole name.
-// So "mail_*" matches "mail_send" and not "xmail_send", and a pattern with no
-// metacharacter is an exact match. Tool names contain no "/", so path.Match's
-// one separator rule never comes into play.
-//
-// The error is returned rather than swallowed because the two callers must
-// fail closed in OPPOSITE directions, and only they know which way that is: an
-// unparseable applies_to governs everything (more tools need a value), an
-// unparseable allowed_tools entry admits nothing.
+// matchToolPattern is THE tool-name matcher, shared so applies_to and
+// allowed_tools cannot diverge; the error is returned since the two
+// callers fail closed in OPPOSITE directions.
 func matchToolPattern(pattern, toolName string) (bool, error) {
 	return path.Match(pattern, toolName)
 }
 
-// toolAllowedByPatterns reports whether any pattern in the list selects the
-// tool. An unparseable pattern selects nothing — the fail-closed direction for
-// an allowlist, and the opposite of ContextField.Governs, which is the
-// fail-closed direction for a restriction.
-//
-// An OVER-BROAD pattern selects nothing either, and that is enforcement
-// agreeing with validation rather than trusting it. validateToolPattern
-// refuses one on save, but a record that acquired one by a route validation
-// did not cover — a hand-edited settings.json, a restored backup, a migration
-// that predates the rule — must not thereby hold every tool its MCPs expose.
-// A grant is only as good as the weakest way into the file that holds it.
-//
-// Note the deliberate asymmetry with the denylist in checkToolAccess, which is
-// honoured wherever it came from: ignoring a denylist is the direction that
-// widens, and ignoring an over-broad allowlist entry is the direction that
-// narrows. Both rules are "prefer the smaller grant"; they only look opposite.
+// toolAllowedByPatterns: an unparseable or over-broad pattern selects
+// nothing, the opposite of ContextField.Governs.
 func toolAllowedByPatterns(patterns []string, toolName string) bool {
 	for _, pattern := range patterns {
 		if pattern == "" {
@@ -386,65 +232,16 @@ func toolAllowedByPatterns(patterns []string, toolName string) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// What makes a tool pattern too broad to be an allowlist entry
-// ---------------------------------------------------------------------------
-//
-// ADR-011 decision 2b refuses a bare "*" in allowed_tools, because registering
-// a tool tomorrow would silently widen a grant made today. That refusal used
-// to be a literal string compare against "*" while the matcher underneath was
-// path.Match — and a tool name contains no "/", so "**", "?*", "*_*", "[a-z]*"
-// and "*e*" all match EVERY tool of an MCP and none of them is the string "*".
-// Measured: a read-only "mail" profile written with allowed_tools ["**"] held
-// 26 tools across 11 of macMCP's domains, web_fetch among them, which restores
-// the whole outbound channel decision 2b exists to remove.
-//
-// So the refusal cannot be a list of spellings — the next spelling slips
-// through the same way. It has to be a property of the MATCHER, asked as: does
-// this pattern select tools by NAME, or by SHAPE? Two questions answer that,
-// and a pattern is refused if either does:
-//
-//  1. Does it require any literal character at all? A pattern built only from
-//     "*", "?" and character classes constrains nothing about a name — it is a
-//     statement about length and alphabet, and every tool name satisfies it.
-//     "*", "**", "?*" and "[a-z]*" all fail here.
-//
-//  2. Does it match a name that is not a tool? A pattern whose literal content
-//     is one or two ordinary characters ("*_*", "*e*") is naming a substring
-//     every plausible identifier carries, which is selection by shape wearing
-//     a letter as a disguise. Probing it against names no MCP exposes is what
-//     tells the two apart, and it needs no knowledge of the MCP's tool list —
-//     which relay does not have at validation time and must not depend on
-//     anyway, since the whole point is the tool that does not exist yet.
-//
-// What survives is what an operator actually means: "mail_*", "mail_search",
-// "capture_screen*". What does not is anything that would still match after
-// the MCP grows a domain.
-
-// toolPatternProbes are names no MCP exposes. They are deliberately not
-// plausible tool names and deliberately wide — every letter of both cases,
-// every digit, and the separators identifiers use — so that a pattern whose
-// only literal content is an ordinary character or two matches one of them.
-//
-// The alphabet runs in order on purpose: no real tool-name fragment ("mail",
-// "list", "get", "send") appears as a substring of it, so a pattern naming a
-// real fragment is not caught by accident. They contain no "/" because a tool
-// name contains none and path.Match's separator rule must stay out of this.
+// toolPatternProbes are synthetic names no MCP exposes, so a pattern
+// whose only literal content is an ordinary character or two matches one.
 var toolPatternProbes = []string{
 	"zqx_abcdefghijklmnopqrstuvwxyz_0123456789",
 	"ZQX-ABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789",
-	// One character, so "?" and "?*" are answered too.
 	"z",
 }
 
-// overBroadToolPattern reports whether a pattern selects tools by shape rather
-// than by name, and returns the reason in the voice a refusal can use.
-//
-// It is only ever asked about an ALLOWLIST entry. A context field's applies_to
-// runs through the same matcher and is deliberately NOT filtered by this: a
-// field that governs everything is a restriction that applies to everything,
-// which is the fail-closed reading there (see ContextField.Governs). The same
-// pattern is over-broad in one list and exactly right in the other.
+// overBroadToolPattern: a pattern selects by shape, not name (ADR-011
+// decision 2b), if it needs no literal character, or matches a probe.
 func overBroadToolPattern(pattern string) (string, bool) {
 	if toolPatternLiteral(pattern) == "" {
 		return "it requires no literal character at all, so it selects every tool the MCP has by shape rather than naming any", true
@@ -457,16 +254,8 @@ func overBroadToolPattern(pattern string) (string, bool) {
 	return "", false
 }
 
-// toolPatternLiteral returns the characters a pattern requires literally, with
-// the wildcards, the character classes and path.Match's backslash escapes
-// removed. A character class contributes nothing: it constrains which
-// characters may appear at a position, never that any particular one does.
-//
-// The class scanner mirrors path.Match's own — "^" negates, and a "]" in the
-// first position is a member rather than the terminator — so that what this
-// reads as a class is what the matcher reads as a class. An unterminated class
-// runs to the end of the pattern here; such a pattern does not compile and is
-// refused before this answer is used for anything.
+// toolPatternLiteral strips wildcards and classes; the class scanner
+// mirrors path.Match's own rules so what this reads as a class matches it.
 func toolPatternLiteral(pattern string) string {
 	var lit strings.Builder
 	for i := 0; i < len(pattern); {
@@ -502,14 +291,8 @@ func toolPatternLiteral(pattern string) string {
 	return lit.String()
 }
 
-// GovernsAll reports whether this field governs every tool in the given list.
-// This is the question ADR-011 decision 5 turns grant validation into: a field
-// whose value cannot be supplied makes every tool it governs refuse, so a
-// field that governs all of them leaves the MCP with nothing usable.
-//
-// An empty tool list answers false, not true. "This MCP exposes no tools" is
-// what an MCP relay has never connected to looks like, and vacuous truth there
-// would refuse a grant on the strength of missing information.
+// GovernsAll is ADR-011 decision 5's question. An empty tool list answers
+// false, not vacuously true (an MCP relay never connected to).
 func (f ContextField) GovernsAll(toolNames []string) bool {
 	if len(toolNames) == 0 {
 		return false
@@ -522,7 +305,6 @@ func (f ContextField) GovernsAll(toolNames []string) bool {
 	return true
 }
 
-// itemType returns the declared type of an array's elements, or "".
 func (f ContextField) itemType() string {
 	if len(f.Items) == 0 {
 		return ""
@@ -536,14 +318,8 @@ func (f ContextField) itemType() string {
 	return items.Type
 }
 
-// ValidateValue checks a candidate value against the declared fragment.
-//
-// This is a JSON-Schema SUBSET on purpose — array-of-string and string are the
-// shapes the model needs, and everything else is accepted as long as it is
-// present and non-empty. What it will never do is accept an EMPTY value for a
-// restrict-field: ADR-011 decision 4 makes absent and empty both refusals on
-// all three sides, so "no restriction" is not expressible as emptiness and a
-// stored [] would be a grant that reads as confined and is not.
+// ValidateValue never accepts an EMPTY value for a restrict-field
+// (ADR-011 decision 4): a stored [] cannot read as "no restriction".
 func (f ContextField) ValidateValue(raw json.RawMessage) error {
 	trimmed := strings.TrimSpace(string(raw))
 	if len(trimmed) == 0 || trimmed == "null" {
@@ -584,20 +360,16 @@ func (f ContextField) ValidateValue(raw json.RawMessage) error {
 		return nil
 	}
 
-	// No declared type, or one outside the subset. Presence is still required;
-	// an empty container still is not presence.
+	// No declared type, or one outside the subset: presence is still
+	// required, and an empty container is still not presence.
 	if trimmed == "[]" || trimmed == "{}" || trimmed == `""` {
 		return fmt.Errorf("%s: a non-empty value is required", f.Name)
 	}
 	return nil
 }
 
-// ContextSchema is a parsed contextSchema declaration.
-//
-// Fields is populated only for v2. A v1 schema keeps its Raw form and is read
-// through schemaHasField, which is what "handled exactly as today" means: no
-// v2 rule can fire on a declaration that never opted into the vocabulary, even
-// if it happens to carry a key spelled like one of the keywords.
+// ContextSchema is a parsed contextSchema declaration. Fields is populated
+// only for v2; a v1 schema keeps its Raw form (read via schemaHasField).
 type ContextSchema struct {
 	Version int
 	Raw     json.RawMessage
@@ -605,64 +377,28 @@ type ContextSchema struct {
 	Fields []ContextField
 	byName map[string]ContextField
 
-	// Malformed names every declaration relay could not read, one entry per
-	// field, each already carrying its reason. A non-empty list makes the
-	// whole schema UNUSABLE rather than partially applied — see Usable.
+	// Malformed names every declaration relay could not read. Non-empty
+	// makes the whole schema UNUSABLE rather than partially applied.
 	Malformed []string
 }
 
-// Usable reports whether relay can act on this declaration at all.
-//
-// It is false when any field fragment failed to decode, and the consequence is
-// deliberately total: relay refuses every call to that MCP and lists none of
-// its tools, for every grant.
-//
-// The alternative — what this used to do — was to drop the field that would
-// not parse and apply the rest, silently. That is fail-open twice over for the
-// one kind of field that matters. A restrict field relay does not hold is a
-// field relay does not REQUIRE A VALUE FOR (checkScopePresence never asks about
-// it) and does not GOVERN A TOOL BY (Governs is never consulted), and
-// filterKnownContextFields then drops the operator's stored value on the way to
-// the wire because the parsed schema no longer declares that name. One type
-// slip in one fragment — `"applies_to": "mail_*"` written as a string — and
-// relay stops enforcing a confinement, strips the value that expressed it, and
-// says nothing to anybody: not to the operator, not to the client, not to the
-// MCP author who made the typo.
-//
-// The whole schema rather than the one field, because a fragment relay could
-// not read is a fragment relay cannot bound: the field it failed on may have
-// been the one governing everything, and "apply the parts I understood" is a
-// claim about the parts it did not. This is the same reading ParseContextSchema
-// gives a malformed glob and ContextField.Governs gives an empty applies_to —
-// when the declaration is unreadable, take the widest restriction, not the
-// narrowest.
-//
-// It bites a local project too, and that is not an oversight: the signal an MCP
-// author needs is one they cannot miss, and a rule that only fired for remote
-// grants would let a broken declaration sit unnoticed on a developer's own
-// machine until the day it was granted to a client. checkScopePresence declines
-// the local/remote asymmetry for the same reason and says so at length.
+// Usable is false when any field fragment failed to decode; the refusal is
+// total (whole MCP, every grant, local projects included) -- ADR-011.
 func (cs ContextSchema) Usable() bool { return len(cs.Malformed) == 0 }
 
-// MalformedReason renders what could not be read, for a refusal and for the log
-// line finalizeConnection writes when the schema arrives.
 func (cs ContextSchema) MalformedReason() string {
 	return strings.Join(cs.Malformed, "; ")
 }
 
-// V2 reports whether this schema declared the ADR-011 vocabulary.
 func (cs ContextSchema) V2() bool { return cs.Version >= contextSchemaV2 }
 
-// Field returns the named field.
 func (cs ContextSchema) Field(name string) (ContextField, bool) {
 	f, ok := cs.byName[name]
 	return f, ok
 }
 
-// RestrictFields returns every field declaring scope: "restrict", in name
-// order. Name order rather than declaration order because a JSON object has no
-// declaration order to preserve, and a stable one is what keeps a scope note
-// and an audit line from reshuffling between two identical calls.
+// RestrictFields returns fields in NAME order, not declaration order, so a
+// scope note or audit line does not reshuffle between identical calls.
 func (cs ContextSchema) RestrictFields() []ContextField {
 	out := make([]ContextField, 0, len(cs.Fields))
 	for _, f := range cs.Fields {
@@ -673,7 +409,6 @@ func (cs ContextSchema) RestrictFields() []ContextField {
 	return out
 }
 
-// GoverningFields returns every restrict-field that governs the named tool.
 func (cs ContextSchema) GoverningFields(toolName string) []ContextField {
 	out := make([]ContextField, 0, len(cs.Fields))
 	for _, f := range cs.RestrictFields() {
@@ -684,8 +419,6 @@ func (cs ContextSchema) GoverningFields(toolName string) []ContextField {
 	return out
 }
 
-// ProjectPathFields returns every restrict-field relay derives from the
-// project's path.
 func (cs ContextSchema) ProjectPathFields() []ContextField {
 	out := make([]ContextField, 0, len(cs.Fields))
 	for _, f := range cs.RestrictFields() {
@@ -696,31 +429,8 @@ func (cs ContextSchema) ProjectPathFields() []ContextField {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// The two questions that have to be asked of a v1 schema as well (ADR-011
-// decisions 4, 5 and 7)
-// ---------------------------------------------------------------------------
-//
-// ContextSchema.Fields is populated for v2 ONLY, deliberately: no v2 rule may
-// fire on a declaration that never opted into the vocabulary. That invariant is
-// right and is pinned by a test — but it left v1 with no call-time defence at
-// all and no audit record, because every consumer spelled its own `!cs.V2()`
-// early return and stopped there.
-//
-// The two rules below are the ones that must not stop there, and each is
-// written once for both versions rather than twice. Everything else about v1
-// is unchanged.
-
-// v1DerivedField is v1's allowed_dirs said in the v2 vocabulary: a restriction
-// whose value relay derives from the project's path, governing every tool
-// (v1 has no applies_to, so there is nothing to narrow it with).
-//
-// This is not the "registry of known field names" decision 3 rejects. It is the
-// v1 compatibility branch that already exists — see v1AllowedDirsField, which
-// is the one domain-specific name left in relay and is scheduled for removal —
-// expressed so that the rules below can be written once instead of once per
-// version. Under v2 the same MCP declares the same field with
-// source: "project_path" and none of this is consulted.
+// v1DerivedField is v1's allowed_dirs in the v2 vocabulary -- the existing
+// compatibility branch, not the field-name registry decision 3 rejects.
 var v1DerivedField = ContextField{
 	Name:   v1AllowedDirsField,
 	Type:   "array",
@@ -728,12 +438,8 @@ var v1DerivedField = ContextField{
 	Source: ContextSourceProjectPath,
 }
 
-// derivedScopeFields returns every restrict field whose value relay DERIVES
-// from the record rather than an operator supplying it.
-//
-// A record with no path cannot have one derived for it, which is what makes
-// this the question "can this grant ever satisfy that field" rather than "has
-// it yet" — see unsatisfiableScopeField.
+// derivedScopeFields returns restrict fields relay DERIVES rather than an
+// operator supplying -- "can this ever be satisfied", not "has it yet".
 func derivedScopeFields(cs ContextSchema) []ContextField {
 	if cs.V2() {
 		return cs.ProjectPathFields()
@@ -744,29 +450,9 @@ func derivedScopeFields(cs ContextSchema) []ContextField {
 	return nil
 }
 
-// unsatisfiableScopeField returns a restrict field governing toolName whose
-// value can NEVER be supplied for this record's kind, and is the difference
-// between the two shapes of "this tool has no scope value".
-//
-//   - Not set YET — an operator field on a record that could hold one. The tool
-//     stays listed and the call is refused loudly, because a `denied` naming
-//     the missing field is more diagnostic to an operator than silent absence.
-//   - Can NEVER be set — a source: "project_path" field on an access profile,
-//     which has no path. SyncProjectToken will not derive one, the editor
-//     refuses one typed by hand, and there is no configuration under which the
-//     tool works. A client must not be shown a capability it cannot have.
-//
-// It answers only for a remote-kind record: a local project has a path, so
-// SyncProjectToken derives the value and the field is always satisfiable.
-//
-// It is also the second defence decision 5 asks for, in the direction the
-// first one cannot cover. SyncProjectToken never DERIVES such a value for a
-// remote record — but nothing removes one written into settings.json by hand,
-// and for a v1 MCP nothing at call time looked at it either: the value was
-// injected and honoured. Refusing here is not "strip the value and let the
-// presence check deny", because for v1 an absent allowed_dirs is exactly what
-// fsMCP reads as UNRESTRICTED, which is ADR-009's original finding. The call
-// is refused; nothing goes on the wire.
+// unsatisfiableScopeField: a value that can NEVER be supplied, distinct
+// from "not set yet". Remote-kind only; v1's absent allowed_dirs is
+// UNRESTRICTED to fsMCP.
 func unsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (ContextField, bool) {
 	if !isRemote {
 		return ContextField{}, false
@@ -779,14 +465,8 @@ func unsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (
 	return ContextField{}, false
 }
 
-// auditedScopeFields returns the fields whose injected values belong on an
-// audit record: every declared restriction under v2, and v1's derived field.
-//
-// ADR-011 decision 7's property is that the log answers what was attempted with
-// what authority, and for a v1 MCP that answer used to be `scope: null` on
-// every record — including a call relay had confined with a value it injected
-// itself. "This MCP has no scope concept" and "this call carried one" were the
-// same line.
+// auditedScopeFields returns fields whose injected values belong on an
+// audit record: every v2 restriction, or v1's derived field.
 func auditedScopeFields(cs ContextSchema) []ContextField {
 	if cs.V2() {
 		return cs.RestrictFields()
@@ -794,8 +474,6 @@ func auditedScopeFields(cs ContextSchema) []ContextField {
 	return derivedScopeFields(cs)
 }
 
-// OperatorFields returns every restrict-field an operator must supply. Phase-2
-// operator surfaces (the editor, the enumeration picker) work from this list.
 func (cs ContextSchema) OperatorFields() []ContextField {
 	out := make([]ContextField, 0, len(cs.Fields))
 	for _, f := range cs.RestrictFields() {
@@ -806,17 +484,8 @@ func (cs ContextSchema) OperatorFields() []ContextField {
 	return out
 }
 
-// ParseContextSchema turns a raw contextSchema plus its declared version into
-// the parsed form.
-//
-// The shape is fixed as the FLAT form — {fieldName: {fragment}} — and
-// documented (docs/context-schema.md), because issue #17 showed the ambiguity
-// between that and the nested JSON-Schema form is live and its failure
-// direction is fail-open. The nested form is still tolerated here, but only as
-// a rescue: it is consulted when the flat reading found no restrict-field at
-// all, and only adopted when the nested one does. Missing a restrict-field is
-// the failure that matters — the grant is then permitted and nothing is
-// enforced — so the tolerance runs in the fail-closed direction only.
+// ParseContextSchema parses the FLAT form (docs/context-schema.md); the
+// nested JSON-Schema form is tolerated only as a rescue.
 func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {
 	cs := ContextSchema{Version: version, Raw: raw}
 	if len(raw) == 0 || !cs.V2() {
@@ -833,13 +502,9 @@ func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {
 		if nested, ok := top["properties"]; ok {
 			var props map[string]json.RawMessage
 			if err := json.Unmarshal(nested, &props); err == nil {
-				// The rescue is adopted when the nested reading finds a
-				// restriction the flat one missed — and ALSO when the nested
-				// reading found a fragment it could not read. The second is
-				// the fail-closed half: a nested document whose one restrict
-				// field is the malformed one presents, from out here, as a
-				// document with no restrictions at all, which is exactly the
-				// silence Usable exists to break.
+				// Adopted also when it found a fragment it could NOT read:
+				// otherwise the malformed restrict field looks like no
+				// restriction at all.
 				alt, altBad := parseContextFields(props)
 				if anyRestricts(alt) || len(altBad) > 0 {
 					fields = alt
@@ -858,22 +523,8 @@ func ParseContextSchema(raw json.RawMessage, version int) ContextSchema {
 	return cs
 }
 
-// parseContextFields decodes each entry of a schema object into a field, and
-// returns alongside them the entries it could NOT decode.
-//
-// The two failures have to be told apart, and telling them apart is the whole
-// of the function:
-//
-//   - A fragment that is not a JSON object at all declares nothing relay could
-//     act on. That is a sibling key of a nested JSON-Schema document — the
-//     `"type": "object"` beside `"properties"` — and skipping it is what makes
-//     ParseContextSchema's nested tolerance work at all. Not an error.
-//   - A fragment that IS an object and still would not decode is a declaration
-//     relay could not read: a type slip inside it (`"applies_to": "mail_*"`),
-//     or a keyword spelled a case off (ContextField.UnmarshalJSON). Silently
-//     dropping one of those is how relay stops enforcing a restriction, and
-//     strips its value, with nobody told. It is reported, and Usable turns the
-//     report into a refusal.
+// parseContextFields: a non-object fragment is skipped, not reported --
+// that silence is what makes the nested tolerance above work.
 func parseContextFields(obj map[string]json.RawMessage) (fields []ContextField, malformed []string) {
 	names := make([]string, 0, len(obj))
 	for name := range obj {
@@ -897,10 +548,8 @@ func parseContextFields(obj map[string]json.RawMessage) (fields []ContextField, 
 	return out, malformed
 }
 
-// isJSONObject reports whether raw is a JSON object, by its first
-// non-whitespace byte. json.Valid is not consulted: an object that is
-// malformed INSIDE must reach the decode above so its reason can be reported,
-// and this question is only ever "is this shaped like a declaration".
+// isJSONObject checks only the first non-whitespace byte; an object
+// malformed INSIDE must still reach the decode above to report its reason.
 func isJSONObject(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return strings.HasPrefix(trimmed, "{")
@@ -915,14 +564,8 @@ func anyRestricts(fields []ContextField) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// Context values
-// ---------------------------------------------------------------------------
-
-// contextValues decodes a project's per-MCP context blob into its fields.
-// A blob that is absent, null, or not an object yields an empty map rather
-// than an error: every caller's next question is "is there a value for field
-// X", and the answer for all three is no.
+// contextValues yields an empty map, not an error, for an absent, null, or
+// non-object blob.
 func contextValues(raw json.RawMessage) map[string]json.RawMessage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
@@ -934,22 +577,8 @@ func contextValues(raw json.RawMessage) map[string]json.RawMessage {
 	return m
 }
 
-// filterKnownContextFields drops any key from a stored context blob that cs
-// — the MCP's LIVE schema — does not currently declare, so a value stored
-// under a field name an MCP has since renamed or dropped is never injected
-// into _meta under that stale name. This is the call-time half of the stale-
-// key problem SyncProjectToken's doc comment describes: relay does not
-// rewrite settings.json when a schema changes underneath a stored grant
-// (doing that from a possibly-empty live schema would be indistinguishable
-// from an MCP that is merely down declaring nothing, and would delete an
-// operator's values on the strength of that), so the safe place to enforce
-// "no unknown key reaches the wire" is here, against the schema of an MCP
-// CallTool has already confirmed is live.
-//
-// Restricted to v2: a v1 schema's context blob is always exactly
-// {v1AllowedDirsField: [...]}, fully replaced by SyncProjectToken on every
-// resync, so there is no drift to filter and nothing else can be stored there
-// (validateProjectContextForMcp refuses it).
+// filterKnownContextFields drops any stored key the MCP's LIVE schema no
+// longer declares. v2 only: a v1 blob is always fully replaced.
 func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMessage {
 	if !cs.V2() {
 		return base
@@ -971,57 +600,18 @@ func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMe
 	return out
 }
 
-// unplaceableContextFields names every field this grant SETS a value for that
-// the MCP's LIVE schema does not declare, in name order. Issue #42.
+// Names every field this grant SETS a value for that the MCP's LIVE schema no
+// longer declares. Dropping such a key on the way to the wire and dispatching
+// anyway would assert a confinement in the profile without delivering it, so
+// this refuses instead — the same answer Usable gives for a schema relay
+// cannot read (ADR-011).
 //
-// It is the question filterKnownContextFields answers silently and in the
-// wrong direction. That function drops such a key on the way to the wire —
-// correctly, because a stale name handed to an MCP that has since given a NEW
-// field the OLD name is worse than nothing — and relay then DISPATCHED THE
-// CALL ANYWAY, unconfined, recording `scope=(none declared)`: the reassuring
-// one of two very different facts. In the reproduction the only thing that
-// stopped an unconfined filesystem call was fsMCP's own fail-closed rule.
-// Relay did not enforce the operator's grant; the MCP happened to refuse on
-// its own behalf, and relay cannot assume the next MCP does.
-//
-// The rule this restores is the one relay already applies to a schema it
-// cannot READ (ContextSchema.Usable): a scope relay cannot understand is not a
-// scope it can enforce, so every call to that MCP is refused for every grant.
-// A scope the operator WROTE that relay cannot PLACE is the same condition
-// from the other end and gets the same answer. Dropping it is not the
-// conservative option — it is relay asserting a confinement in the profile,
-// not delivering it, and reporting the omission in language that reads like
-// "there was nothing to apply".
-//
-// Only a SET value counts. An empty one (`[]`, `null`, `""`) is absent
-// everywhere else in this model — hasScopeValue, checkScopePresence, the UI —
-// and a leftover empty key asserts no confinement anybody could fail to
-// deliver.
-//
-// It asks the question of EVERY stored key, not only of ones that were
-// restrictions when they were written, because relay cannot tell the
-// difference once the declaration is gone: the field it can no longer place
-// may have been the one governing everything. That is the same reading Usable
-// gives a fragment that would not decode, and the same one Governs gives an
-// empty applies_to — when the declaration is unreadable, take the widest
-// restriction rather than the narrowest.
-//
-// V2 ONLY, and that is not an oversight — it is the exact scope of the defect.
-// The failure is DROP-AND-DISPATCH, and only the v2 branch drops:
-// filterKnownContextFields returns a v1 blob verbatim, so under a v1 or absent
-// declaration the operator's value goes out on the wire under the name they
-// wrote it. It may or may not be honoured there, but that has always been the
-// MCP's half of the bargain (ADR-011: "the MCP enforces it; relay cannot
-// verify it") and is a different question from relay removing a value and
-// dispatching anyway. Widening this to v1 would also break the promise the
-// version exists to keep — "handled exactly as it was before ADR-011" — for
-// every MCP that ships no contextSchema at all.
-//
-// A v2 schema that decodes to NO fields is caught here, which is the case
-// worth naming: {"contextSchemaVersion": 2, "contextSchema": {}} from an MCP
-// that failed to build its declaration presents to ParseContextSchema as a
-// perfectly valid schema declaring nothing, under which every scope-presence
-// check passes and every stored key is stripped. It is now a refusal.
+// Only a SET value counts; an empty one asserts no confinement. Every stored
+// key is asked, not only those that were restrictions when written, because
+// once the declaration is gone relay cannot tell which it was. V2 only: a v1
+// blob is forwarded verbatim, which is the MCP's half of the bargain. A v2
+// schema that decodes to no fields lands here too, since it would otherwise
+// pass every scope-presence check while stripping every stored key.
 func unplaceableContextFields(cs ContextSchema, values map[string]json.RawMessage) []string {
 	if !cs.V2() {
 		return nil
@@ -1040,8 +630,6 @@ func unplaceableContextFields(cs ContextSchema, values map[string]json.RawMessag
 	return out
 }
 
-// quoteNames renders a list of field names for a refusal message, quoted so a
-// name with a space or an empty one is still visible as a name.
 func quoteNames(names []string) string {
 	quoted := make([]string, 0, len(names))
 	for _, n := range names {
@@ -1050,12 +638,8 @@ func quoteNames(names []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// hasScopeValue reports whether the context blob carries a usable value for
-// the field — present, non-null, and non-empty, which is the whole of what
-// decision 4 requires relay to check at call time. It deliberately does NOT
-// re-run ValidateValue: a type mismatch is the operator surface's problem to
-// refuse on save, whereas emptiness is the one that has to be caught here
-// because a schema can grow a field after a grant was already written.
+// hasScopeValue does NOT re-run ValidateValue -- emptiness must be caught
+// here since a schema can grow a field after a grant was written.
 func hasScopeValue(values map[string]json.RawMessage, name string) bool {
 	raw, ok := values[name]
 	if !ok {
@@ -1069,92 +653,40 @@ func hasScopeValue(values map[string]json.RawMessage, name string) bool {
 	return true
 }
 
-// ---------------------------------------------------------------------------
-// What relay knows about a live MCP
-// ---------------------------------------------------------------------------
-
-// McpSurface is everything relay knows at runtime about one MCP that bears on
-// permission derivation: the contextSchema it declared at handshake, that
-// schema's version, and the tools it currently exposes.
-//
-// The three travel together because every question ADR-011 asks needs at
-// least two of them. "Would this grant leave the MCP with no usable tools"
-// (decision 5) needs the schema AND the tool list; "is this a v1 schema"
-// needs the schema AND the version. Passing them as three parallel maps is
-// how the versions and the tool list would end up plumbed to some call sites
-// and not others.
+// McpSurface is everything relay knows at runtime about one MCP bearing on
+// permission derivation.
 type McpSurface struct {
 	Schema        json.RawMessage
 	SchemaVersion int
 	Tools         []string
 
-	// Root is the resolved --root relay spawned this MCP with, if any
-	// (fsMCP v3 integration, R2). It is not part of Schema and never travels
-	// through ParseContextSchema: an MCP with no contextSchema at all — v3
-	// fsMCP publishes none — still has a Root here, because relay knows it
-	// from its own spawn configuration rather than from anything the MCP
-	// declared.
+	// Root is the resolved --root relay spawned this MCP with, if any --
+	// from relay's own spawn config, not from anything the MCP declared.
 	Root string
 }
 
-// McpSurfaces maps MCP id to its surface. A nil map, or a missing entry,
-// means relay has not connected to that MCP and knows nothing about it —
-// which every consumer here treats as "no schema", matching the pre-ADR-011
-// contract that a nil schemas map skips derivation rather than failing closed.
+// McpSurfaces: a nil map or missing entry means relay has not connected --
+// treated as "no schema" everywhere.
 type McpSurfaces map[string]McpSurface
 
-// Schema returns the parsed context schema for an MCP.
 func (m McpSurfaces) Schema(mcpID string) ContextSchema {
 	s := m[mcpID]
 	return ParseContextSchema(s.Schema, s.SchemaVersion)
 }
 
-// ToolNames returns the tool names an MCP currently exposes.
 func (m McpSurfaces) ToolNames(mcpID string) []string { return m[mcpID].Tools }
 
-// ---------------------------------------------------------------------------
-// The scope note (ADR-011 decision 8)
-// ---------------------------------------------------------------------------
-
-// scopeNotePrefix marks a note relay appended, so appending is idempotent.
-// ListTools and ListSkillBuckets each build their own copy of a tool from the
-// same live list, and the skill renderer reads the second — the two must not
-// double-append, and the cheapest way to guarantee that is to make the second
-// append a no-op rather than to reason about who calls whom.
+// scopeNotePrefix marks a note relay appended, so ListTools and
+// ListSkillBuckets rebuilding the same tool must not double-append.
 const scopeNotePrefix = "Scope: "
 
-// scopeValueWithheld is what a SET field's scope note says under disclose:
-// "none", and what disclose: "count" falls back to for a scalar field, whose
-// only shape fact ("one value exists") "none" already states. One constant
-// for both keeps the two spots that must say nothing beyond "it is set" from
-// drifting to two different phrasings of the same guarantee.
+// scopeValueWithheld is shared by disclose: "none" and by disclose:
+// "count" on a scalar, so the two cannot drift apart in phrasing.
 const scopeValueWithheld = "set, value withheld"
 
-// scopeNoteFor builds the one-sentence note describing how a tool is confined,
-// from the schema field's OWN description and the operator's value. Returns ""
-// only when the tool is governed by nothing at all.
-//
-// A client is told its own limits through ListTools because renderBucketSkillMd
-// — the obvious place — is the wrong ONLY place: access profiles have no
-// skills (validateProjectShape refuses GenerateSkill), so the agent this
-// feature exists for would never see it.
-//
-// EVERY governing field is named, including one with no value. Skipping those
-// — which is what this did — produced the worst kind of note: a tool that
-// CallTool refuses unconditionally, described to the client as confined by the
-// two fields that do have values and never by the third, which is the field
-// that is the reason. A note that lists two of three restrictions and omits the
-// disqualifying one is worse than no note, because it is read as complete.
-// Decision 8 exists so a client is told its own limits; a limit stated as an
-// absence is still the limit.
-//
-// A SET field's value is rendered according to its disclose keyword (issue
-// #33) — but the unset branch just above is not: "no value is set for X, so
-// every call to this tool is refused" is unconditional on disclose, at every
-// setting. There is no value there to leak, and this line is the client's
-// only warning that the tool is dead on arrival; making it optional would
-// trade the one real disclosure risk here (a set value's content) for a
-// silent one (a dead tool that looks alive).
+// scopeNoteFor: EVERY governing field is named, including one with no
+// value -- omitting the one that disqualifies the tool would read as
+// complete when it is not (decision 8); the unset message ignores disclose.
 func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName string) string {
 	if !cs.V2() {
 		return ""
@@ -1177,26 +709,9 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 	return scopeNotePrefix + strings.Join(parts, "; ") + "."
 }
 
-// renderScopeDisclosure renders a SET field's value for the scope note
-// according to its disclose keyword. It is the only caller that branches on
-// Disclosure() — hasScopeValue, the audit log, `_meta` injection and every
-// operator surface read the real value regardless, because disclose is
-// specifically and only about what the note handed to a REMOTE CLIENT says.
-//
-// One fact outranks disclose, at every setting: that the value reaches a
-// filesystem root (issue #41). "Confined to 1 value" is true of
-// /Users/me/project and equally true of "/", and a client told the second is
-// told something false about its own limits by a mechanism whose stated
-// purpose is to say what its limits are. Announcing it costs nothing the
-// client does not learn the moment it lists the root — which is the test the
-// disclose keyword exists to apply, and this passes it.
-//
-// A HOME directory does not get the same treatment here, deliberately. It is
-// genuinely confined, so "confined to 1 value" is not false; and naming it
-// would disclose host topology (that the sandbox is somebody's home) to the
-// one audience disclose exists to withhold topology from. It is loud on every
-// OPERATOR surface instead, which is where the question "did I mean to grant
-// that?" is asked.
+// renderScopeDisclosure: a value reaching a filesystem ROOT is named
+// regardless of disclose. A HOME directory gets the opposite treatment
+// deliberately -- naming it discloses host topology.
 func renderScopeDisclosure(f ContextField, raw json.RawMessage) string {
 	unrestricted := scopeValueBreadth(raw) == scopeBreadthRoot
 	switch f.Disclosure() {
@@ -1218,14 +733,8 @@ func renderScopeDisclosure(f ContextField, raw json.RawMessage) string {
 	}
 }
 
-// renderScopeCount describes a scope value's SHAPE — how many entries an
-// array carries — without describing any entry. A scalar has no shape beyond
-// "one value exists", which is exactly what disclose: "none" already says, so
-// it renders identically to that setting rather than inventing a count ("1")
-// that would name nothing an operator did not already get from "none". This
-// keeps the promise of acceptance 3 — count and none both name no value, for
-// array and string fields alike — without a fork in what "count" means per
-// type.
+// renderScopeCount describes a value's SHAPE (entry count), never its
+// content. A scalar renders identically to disclose: "none".
 func renderScopeCount(raw json.RawMessage) string {
 	var list []string
 	if err := json.Unmarshal(raw, &list); err == nil {
@@ -1238,9 +747,8 @@ func renderScopeCount(raw json.RawMessage) string {
 	return scopeValueWithheld
 }
 
-// renderScopeValue prints a scope value for a human reading a tool
-// description. Arrays of strings become "a, b"; anything else is its compact
-// JSON, which is honest about a shape relay does not model.
+// renderScopeValue prints arrays of strings as "a, b"; anything else falls
+// back to its compact JSON, honest about a shape relay does not model.
 func renderScopeValue(raw json.RawMessage) string {
 	var list []string
 	if err := json.Unmarshal(raw, &list); err == nil && len(list) > 0 {
@@ -1253,7 +761,6 @@ func renderScopeValue(raw json.RawMessage) string {
 	return strings.TrimSpace(string(raw))
 }
 
-// appendScopeNote adds the note to a description if it is not already there.
 func appendScopeNote(desc, note string) string {
 	if note == "" || strings.Contains(desc, note) {
 		return desc
@@ -1264,34 +771,9 @@ func appendScopeNote(desc, note string) string {
 	return desc + " " + note
 }
 
-// ---------------------------------------------------------------------------
-// The operator's view of a schema (ADR-011 decision 6)
-// ---------------------------------------------------------------------------
-
-// ScopeFieldView is one declared scope: "restrict" field, projected for an
-// operator surface: the Settings UI's per-MCP permission panel, and the same
-// panel eve renders over the HTTP routes.
-//
-// It carries ONLY restrict fields. The panel is a permission editor, and an
-// ordinary context value (a field with no `scope`) is something relay injects
-// and otherwise ignores — showing it beside the values that decide what a
-// client may reach would put two different things under one heading.
-//
-// Source is NORMALISED here rather than passed through: ContextField.FromOperator
-// reads an absent source as operator-supplied, and that rule must be applied in
-// exactly one place. A surface that re-derived it from a raw "" would be a
-// second copy of the rule, free to disagree the day it changes.
-//
-// It carries no Disclose (issue #33), deliberately: disclose governs what a
-// REMOTE CLIENT'S scope note says about a value it does not otherwise see.
-// The operator editing this panel already sees and sets the real value
-// unconditionally — this projection has never carried a value at all, only
-// the metadata the input form needs (type, description, source, …) — so
-// disclose has nothing to redact here and no operator question to answer.
-// Surfacing it anyway would tell an operator staring at a text box something
-// true about a different surface, which is a way for a reviewer to misread
-// this panel as the place that decides what a value is set TO, rather than
-// what is said ABOUT it elsewhere.
+// ScopeFieldView projects one restrict field for the Settings UI's
+// permission panel; Source is normalised here so FromOperator's rule
+// lives in one place. No Disclose: the operator sees the real value.
 type ScopeFieldView struct {
 	Name        string   `json:"name"`
 	Type        string   `json:"type,omitempty"`
@@ -1303,8 +785,6 @@ type ScopeFieldView struct {
 	DependsOn   []string `json:"depends_on,omitempty"`
 }
 
-// ScopeFieldViews projects a schema's restrict fields for an operator surface,
-// in the same name order RestrictFields uses.
 func (cs ContextSchema) ScopeFieldViews() []ScopeFieldView {
 	fields := cs.RestrictFields()
 	out := make([]ScopeFieldView, 0, len(fields))
@@ -1327,11 +807,8 @@ func (cs ContextSchema) ScopeFieldViews() []ScopeFieldView {
 	return out
 }
 
-// ScopeFields returns the operator-facing scope fields for every MCP relay
-// knows about, keyed by MCP id. An MCP that declares none gets an empty slice
-// rather than a missing key, so a UI can tell "this MCP scopes nothing" from
-// "relay has never heard of this MCP" — the second is the case where a panel
-// must say it cannot show the fields rather than that there are none.
+// ScopeFields returns an empty slice, not a missing key, for an MCP that
+// declares none, so a UI can tell that from "never heard of this MCP".
 func (m McpSurfaces) ScopeFields() map[string][]ScopeFieldView {
 	out := make(map[string][]ScopeFieldView, len(m))
 	for id := range m {

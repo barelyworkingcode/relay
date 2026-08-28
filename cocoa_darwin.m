@@ -5,15 +5,11 @@
 #include "cocoa_darwin.h"
 #include <stdlib.h>
 
-// Go callback declarations (implemented in cocoa_darwin.go with //export)
 extern void goOnMenuClick(int itemID);
 extern void goOnSettingsIpc(const char* msg);
 extern void goOnSettingsClose(void);
 extern void goOnAppTerminate(void);
 
-// ---------------------------------------------------------------------------
-// IPC handler for WKWebView -> Go
-// ---------------------------------------------------------------------------
 @interface IpcHandler : NSObject <WKScriptMessageHandler>
 @end
 
@@ -25,9 +21,6 @@ extern void goOnAppTerminate(void);
 }
 @end
 
-// ---------------------------------------------------------------------------
-// Settings window delegate
-// ---------------------------------------------------------------------------
 @interface SettingsWindowController : NSObject <NSWindowDelegate, WKUIDelegate>
 @property (strong) NSWindow *window;
 @property (strong) WKWebView *webView;
@@ -49,11 +42,9 @@ static SettingsWindowController *settingsCtrl = nil;
     settingsCtrl = nil;
 }
 
-// WKWebView suppresses window.alert / confirm / prompt by default; the host
-// must implement these WKUIDelegate methods or the calls silently no-op,
-// which means existing Settings-UI confirm() guards (delete project, rotate
-// token, reset MCP permissions) all run as if the user clicked "Cancel".
-// We wire them to plain NSAlert so they behave as the JS expects.
+// WKWebView answers window.alert/confirm/prompt with a silent no-op unless
+// the host implements these. Without them every confirm() guard in the
+// settings UI runs as if the user had clicked "Cancel".
 
 - (void)webView:(WKWebView *)webView
     runJavaScriptAlertPanelWithMessage:(NSString *)message
@@ -101,22 +92,15 @@ static SettingsWindowController *settingsCtrl = nil;
 }
 @end
 
-// ---------------------------------------------------------------------------
-// App delegate
-// ---------------------------------------------------------------------------
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
 @end
 
 @implementation AppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    // No dock icon, no activation -- handled by LSUIElement in Info.plist
-    //
-    // Disable macOS text substitutions inside any text field we host.
-    // WKWebView text inputs inherit these from NSTextInputContext, and the
-    // dash substitution silently turns command-line args like
-    // "--dangerously-skip-permissions" into "—dangerously-skip-permissions"
-    // (em dash), breaking flag parsing for spawned binaries.
+// WKWebView text inputs inherit NSTextInputContext's substitutions, and dash
+// substitution rewrites "--dangerously-skip-permissions" with an em dash,
+// breaking flag parsing for binaries spawned from here.
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         @"NSAutomaticDashSubstitutionEnabled":     @NO,
         @"NSAutomaticQuoteSubstitutionEnabled":    @NO,
@@ -131,14 +115,8 @@ static SettingsWindowController *settingsCtrl = nil;
 }
 @end
 
-// ---------------------------------------------------------------------------
-// Statics
-// ---------------------------------------------------------------------------
 static AppDelegate *appDelegate = nil;
 
-// ---------------------------------------------------------------------------
-// Menu action target
-// ---------------------------------------------------------------------------
 @interface MenuTarget : NSObject
 - (void)menuItemClicked:(NSMenuItem *)sender;
 @end
@@ -152,9 +130,6 @@ static MenuTarget *menuTarget = nil;
 }
 @end
 
-// ---------------------------------------------------------------------------
-// Toggle row view — draws hover highlight like native menu items
-// ---------------------------------------------------------------------------
 @interface ToggleRowView : NSView
 @end
 
@@ -174,7 +149,6 @@ static MenuTarget *menuTarget = nil;
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
-    // Remove stale tracking areas
     for (NSTrackingArea *area in self.trackingAreas) {
         [self removeTrackingArea:area];
     }
@@ -195,9 +169,6 @@ static MenuTarget *menuTarget = nil;
 - (void)mouseUp:(NSEvent *)event      { /* absorb so menu stays open */ }
 @end
 
-// ---------------------------------------------------------------------------
-// Custom toggle switch — draws a pill-shaped on/off control
-// ---------------------------------------------------------------------------
 @interface ToggleSwitch : NSControl
 @property (nonatomic) BOOL on;
 @end
@@ -215,7 +186,6 @@ static MenuTarget *menuTarget = nil;
     CGFloat h = bounds.size.height;
     CGFloat r = h / 2.0;
 
-    // Track
     NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:bounds
                                                           xRadius:r yRadius:r];
     if (self.on) {
@@ -225,7 +195,6 @@ static MenuTarget *menuTarget = nil;
     }
     [track fill];
 
-    // Knob
     CGFloat inset = 2.0;
     CGFloat knobD = h - inset * 2;
     CGFloat knobX = self.on ? (bounds.size.width - knobD - inset) : inset;
@@ -241,9 +210,6 @@ static MenuTarget *menuTarget = nil;
 
 @end
 
-// ---------------------------------------------------------------------------
-// Toggle action target
-// ---------------------------------------------------------------------------
 @interface ToggleTarget : NSObject
 - (void)toggleChanged:(ToggleSwitch *)sender;
 @end
@@ -257,9 +223,6 @@ static ToggleTarget *toggleTarget = nil;
 }
 @end
 
-// ---------------------------------------------------------------------------
-// Label click target (URL service labels)
-// ---------------------------------------------------------------------------
 @interface LabelClickTarget : NSObject
 - (void)labelClicked:(NSButton *)sender;
 @end
@@ -276,9 +239,6 @@ static LabelClickTarget *labelClickTarget = nil;
 }
 @end
 
-// ---------------------------------------------------------------------------
-// cocoa_init_app  -- create NSApplication, delegate, menu target, edit menu
-// ---------------------------------------------------------------------------
 void cocoa_init_app(void) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -290,7 +250,6 @@ void cocoa_init_app(void) {
     toggleTarget = [[ToggleTarget alloc] init];
     labelClickTarget = [[LabelClickTarget alloc] init];
 
-    // Set up Edit menu so Cmd+C/V/X/A work in WKWebView
     NSMenu *mainMenu = [[NSMenu alloc] init];
     NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
@@ -306,21 +265,14 @@ void cocoa_init_app(void) {
     [NSApp setMainMenu:mainMenu];
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_run_app  -- enter the Cocoa run loop (blocks)
-// ---------------------------------------------------------------------------
 void cocoa_run_app(void) {
     [NSApp run];
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_setup_tray
-// ---------------------------------------------------------------------------
 void cocoa_setup_tray(const unsigned char* iconRGBA, int width, int height) {
     NSStatusBar *bar = [NSStatusBar systemStatusBar];
     appDelegate.statusItem = [bar statusItemWithLength:NSVariableStatusItemLength];
 
-    // Convert RGBA data to NSImage
     NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL
                       pixelsWide:width
@@ -343,14 +295,10 @@ void cocoa_setup_tray(const unsigned char* iconRGBA, int width, int height) {
     appDelegate.statusItem.button.image = image;
     appDelegate.statusItem.button.toolTip = @"Relay";
 
-    // Create empty menu (will be populated by cocoa_update_menu)
     NSMenu *menu = [[NSMenu alloc] init];
     appDelegate.statusItem.menu = menu;
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_update_menu
-// ---------------------------------------------------------------------------
 void cocoa_update_menu(const char* menuJSON) {
     NSString *jsonStr = [NSString stringWithUTF8String:menuJSON];
     NSData *data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
@@ -387,7 +335,6 @@ void cocoa_update_menu(const char* menuJSON) {
             ToggleRowView *rowView = [[ToggleRowView alloc] initWithFrame:
                 NSMakeRect(0, 0, viewWidth, viewHeight)];
 
-            // Custom toggle switch
             CGFloat swW = 36.0, swH = 20.0;
             ToggleSwitch *toggle = [[ToggleSwitch alloc] initWithFrame:
                 NSMakeRect(hPad, round((viewHeight - swH) / 2.0), swW, swH)];
@@ -399,7 +346,7 @@ void cocoa_update_menu(const char* menuJSON) {
 
             CGFloat labelX = NSMaxX(toggle.frame) + switchLabelGap;
 
-            // Tabular digits so the aux value doesn't kern as it changes.
+        // Tabular digits so the aux value doesn't kern as it changes.
             CGFloat labelRightBound = viewWidth - hPad;
             if (aux.length > 0) {
                 NSTextField *auxLabel = [NSTextField labelWithString:aux];
@@ -419,7 +366,6 @@ void cocoa_update_menu(const char* menuJSON) {
             CGFloat maxLabelWidth = labelRightBound - labelX;
 
             if (url && url.length > 0) {
-                // Clickable label for URL services
                 NSButton *btn = [NSButton buttonWithTitle:title
                                                    target:labelClickTarget
                                                    action:@selector(labelClicked:)];
@@ -438,7 +384,6 @@ void cocoa_update_menu(const char* menuJSON) {
                 btn.frame = btnFrame;
                 [rowView addSubview:btn];
             } else {
-                // Plain label for non-URL services
                 NSTextField *label = [NSTextField labelWithString:title];
                 label.font = menuFont;
                 label.textColor = [NSColor labelColor];
@@ -463,7 +408,6 @@ void cocoa_update_menu(const char* menuJSON) {
             continue;
         }
 
-        // Standard menu item (Settings, Exit, etc.)
         NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:title
                                                     action:@selector(menuItemClicked:)
                                              keyEquivalent:@""];
@@ -474,9 +418,6 @@ void cocoa_update_menu(const char* menuJSON) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_open_settings
-// ---------------------------------------------------------------------------
 void cocoa_open_settings(const char* html) {
     if (settingsCtrl && settingsCtrl.window) {
         [settingsCtrl.window makeKeyAndOrderFront:nil];
@@ -500,7 +441,6 @@ void cocoa_open_settings(const char* html) {
     settingsCtrl.window = window;
     window.delegate = settingsCtrl;
 
-    // WKWebView with IPC handler
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
     WKUserContentController *uc = [[WKUserContentController alloc] init];
     settingsCtrl.ipcHandler = [[IpcHandler alloc] init];
@@ -509,17 +449,12 @@ void cocoa_open_settings(const char* html) {
 
     WKWebView *webView = [[WKWebView alloc] initWithFrame:window.contentView.bounds configuration:config];
     webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    // SettingsWindowController implements WKUIDelegate so JS alert / confirm /
-    // prompt actually surface as NSAlert sheets (default is silent no-op).
     webView.UIDelegate = settingsCtrl;
     settingsCtrl.webView = webView;
 
-    // The settings page follows the system light/dark appearance via CSS
-    // (color-scheme + prefers-color-scheme). We deliberately do NOT pin
-    // webView.appearance — leaving it nil lets the view inherit the window's
-    // effectiveAppearance, which tracks the system. underPageBackgroundColor is
-    // the adaptive backdrop painted before/around the HTML, so opening settings
-    // on a dark system no longer flashes the default white WKWebView background.
+    // Left nil deliberately: an unpinned appearance inherits the window's
+    // effectiveAppearance, which tracks the system. underPageBackgroundColor
+    // is the adaptive backdrop, so a dark system gets no white flash.
     if (@available(macOS 12.0, *)) {
         webView.underPageBackgroundColor = [NSColor windowBackgroundColor];
     }
@@ -533,26 +468,17 @@ void cocoa_open_settings(const char* html) {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_settings_eval_js
-// ---------------------------------------------------------------------------
 void cocoa_settings_eval_js(const char* js) {
     if (!settingsCtrl || !settingsCtrl.webView) return;
     NSString *script = [NSString stringWithUTF8String:js];
     [settingsCtrl.webView evaluateJavaScript:script completionHandler:nil];
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_open_url
-// ---------------------------------------------------------------------------
 void cocoa_open_url(const char* url) {
     NSString *urlStr = [NSString stringWithUTF8String:url];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:urlStr]];
 }
 
-// ---------------------------------------------------------------------------
-// cocoa_dispatch_main_callback
-// ---------------------------------------------------------------------------
 extern void goDispatchCallback(uintptr_t ctx);
 
 void cocoa_dispatch_main_callback(uintptr_t ctx) {
@@ -561,30 +487,20 @@ void cocoa_dispatch_main_callback(uintptr_t ctx) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// TCC permission primers
-// ---------------------------------------------------------------------------
-// macOS suppresses TCC prompts for background apps spawned by other background
-// apps (the macmcp-from-relay-tray chain). To work around this, Relay itself
-// requests Calendar/Contacts/Reminders access from its own /Applications-resident
-// process. The prompt fires labeled "Relay wants to access X", the user grants
-// it once, and macMCP (spawned as a relay subprocess) inherits via TCC's
-// responsible-parent attribution.
+// macOS suppresses TCC prompts for a background app spawned by another
+// background app, so Relay requests these from its own bundle and the MCPs
+// it spawns inherit the grant by responsible-parent attribution.
 //
-// IMPORTANT: these block the calling thread (typically a Go goroutine via cgo),
-// NOT the main thread. The completion handlers fire on an arbitrary queue and
-// signal the semaphore. Main thread must keep running NSApp's event loop so
-// the prompt UI actually renders -- which is fine because cocoa_run_app is
-// already there blocking on [NSApp run].
+// These block the CALLING thread, not the main one: completion handlers fire
+// on an arbitrary queue and signal the semaphore, while the main thread must
+// stay in [NSApp run] for the prompt to render at all.
 
 static int wait_for_completion(dispatch_semaphore_t sem, int timeoutSec) {
     dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutSec * NSEC_PER_SEC);
     return dispatch_semaphore_wait(sem, deadline) == 0 ? 1 : 0;
 }
 
-// Saved activation policy; restored by cocoa_end_foreground_activation.
-// Guarded by being called only from main thread (via dispatch_sync below),
-// so no atomicity needed.
+// Only ever touched from the main thread via dispatch_sync, hence unguarded.
 static NSApplicationActivationPolicy gSavedPolicy = NSApplicationActivationPolicyAccessory;
 
 void cocoa_begin_foreground_activation(void) {
@@ -662,4 +578,3 @@ int cocoa_request_tcc_contacts(int timeoutSec) {
     if (!wait_for_completion(sem, timeoutSec)) return 0;
     return ok ? 1 : 0;
 }
-

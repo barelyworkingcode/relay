@@ -45,13 +45,9 @@ func TestBatchDigest_DetectsStatusChange(t *testing.T) {
 	}
 }
 
-// The poller iterates every registered service and emits a snapshot per
-// service — including ones with no status declaration, so the UI can show
-// "registered but no status" without inventing service IDs out of band.
 func TestPollServiceStatuses_MultiService_IncludesStatuslessEntries(t *testing.T) {
 	reg := NewEnhancedServiceRegistry(nil)
 
-	// svc-a has a status endpoint that returns JSON.
 	srvA := newFakeServiceServer(t)
 	srvA.script("GET", "/api/status", 200, `{"uptimeSeconds":10}`)
 	mfA := bridge.Manifest{
@@ -62,16 +58,12 @@ func TestPollServiceStatuses_MultiService_IncludesStatuslessEntries(t *testing.T
 		t.Fatalf("register svc-a: %v", err)
 	}
 
-	// svc-b is registered but declares no status. Should still appear in
-	// the batch as OK with nil status.
 	srvB := newFakeServiceServer(t)
 	mfB := bridge.Manifest{Routes: []string{"/api/b/"}}
 	if err := reg.RegisterManifest("svc-b", srvB.socket, "tok-b", mfB); err != nil {
 		t.Fatalf("register svc-b: %v", err)
 	}
 
-	// svc-c declares status but returns 5xx. Should appear with OK=false
-	// and an Error string — UI renders this as the "error" badge.
 	srvC := newFakeServiceServer(t)
 	srvC.script("GET", "/api/status", 503, `{"error":"unavailable"}`)
 	mfC := bridge.Manifest{
@@ -126,9 +118,6 @@ func TestPollServiceStatuses_NilRegistry_IsSafe(t *testing.T) {
 	}
 }
 
-// Manifest is carried in the batch so the UI can render action layouts
-// without a separate manifest-list IPC roundtrip. The poller must
-// faithfully attach what the registry holds.
 func TestPollServiceStatuses_BatchCarriesManifest(t *testing.T) {
 	reg := NewEnhancedServiceRegistry(nil)
 	srv := newFakeServiceServer(t)

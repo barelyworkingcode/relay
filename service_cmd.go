@@ -84,9 +84,8 @@ func serviceUnregister(store SettingsStore, args []string) {
 	warnNotifyFailure(bridge.SendReloadService(resolvedID, adminSecret))
 }
 
-// serviceRestart triggers an in-place Stop+Start of a service via the bridge.
-// Sends the same ReloadService message that an upsert sends, which the tray
-// already implements as Stop → Start. Without a running tray this is a no-op
+// serviceRestart sends the same ReloadService message an upsert sends; the
+// tray implements it as Stop → Start. Without a running tray this is a no-op
 // (the warning surfaces via warnNotifyFailure).
 func serviceRestart(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service restart", flag.ExitOnError)

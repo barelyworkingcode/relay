@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// mergeEnv
-// ---------------------------------------------------------------------------
-
 func TestMergeEnv_EmptyMapIsNoop(t *testing.T) {
 	cmd := exec.Command("true")
 	mergeEnv(cmd, nil)
@@ -32,7 +28,6 @@ func TestMergeEnv_MergesWithOsEnviron(t *testing.T) {
 		t.Fatal("expected cmd.Env to be set")
 	}
 
-	// cmd.Env should contain the existing environment plus our new var.
 	osEnvLen := len(os.Environ())
 	if len(cmd.Env) < osEnvLen+1 {
 		t.Errorf("expected at least %d env vars, got %d", osEnvLen+1, len(cmd.Env))
@@ -49,10 +44,6 @@ func TestMergeEnv_MergesWithOsEnviron(t *testing.T) {
 		t.Error("merged env does not contain TEST_KEY_RELAY=test_value")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// slugify
-// ---------------------------------------------------------------------------
 
 func TestSlugify(t *testing.T) {
 	tests := []struct {
@@ -78,10 +69,6 @@ func TestSlugify(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// validateMcpURL
-// ---------------------------------------------------------------------------
 
 func TestValidateMcpURL_ValidHTTP(t *testing.T) {
 	if err := validateMcpURL("http://example.com/mcp"); err != nil {

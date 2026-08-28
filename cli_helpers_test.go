@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// resolveID
-// ---------------------------------------------------------------------------
-
 func TestResolveID_ReturnsIDWhenGiven(t *testing.T) {
 	got := resolveID("my-id", "My Name")
 	if got != "my-id" {
@@ -29,10 +25,6 @@ func TestResolveID_BothEmptyReturnsEmpty(t *testing.T) {
 		t.Errorf("resolveID(\"\", \"\") = %q, want %q", got, "")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// parseEnvPairs
-// ---------------------------------------------------------------------------
 
 func TestParseEnvPairs_NilInput(t *testing.T) {
 	env, err := parseEnvPairs(nil)

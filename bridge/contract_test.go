@@ -12,25 +12,11 @@ import (
 	"time"
 )
 
-// Contract tests for the bridge wire protocol.
-//
-// These exercise the REAL BridgeServer with a stub ToolRouter, dialing a
-// REAL Client over a per-test Unix socket. Catches accidental wire-format
-// breaks that unit tests of either side alone would miss — every external
-// consumer (relayLLM, scheduler, eve, the relay MCP subprocess) decodes
-// the same JSON shape, so a field rename here cascades silently.
-//
-// Sockets live in /tmp because macOS Unix-socket paths are capped at 104
-// chars and t.TempDir() paths often exceed that.
-
-// stubRouter implements ToolRouter with scripted responses recorded for
-// later assertion. Every method records its arguments and returns
-// whatever the test scripted via the public Set* hooks.
 type stubRouter struct {
 	mu sync.Mutex
 
 	listToolsTokens   []string
-	listToolsCwds     []string // caller-asserted cwd, as seen through the request context
+	listToolsCwds     []string
 	listToolsResponse json.RawMessage
 	listToolsErr      error
 
@@ -39,8 +25,8 @@ type stubRouter struct {
 	callToolToks     []string
 	callToolResp     json.RawMessage
 	callToolErr      error
-	callToolProgress []ProgressUpdate // emitted via the ctx sink before the result
-	callToolProgDly  time.Duration    // sleep before each progress frame (idle-deadline tests)
+	callToolProgress []ProgressUpdate
+	callToolProgDly  time.Duration
 
 	validateAdminToks []string
 	validateAdminErr  error
@@ -171,8 +157,8 @@ func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestReq
 	return s.registerErr
 }
 
-// startTestBridge spins up a BridgeServer on a short /tmp socket path
-// against the given router. Returns the socket path and a cleanup func.
+// startTestBridge uses /tmp directly, not t.TempDir(): macOS caps a
+// Unix-socket path at 104 chars, which t.TempDir() paths often exceed.
 func startTestBridge(t *testing.T, router ToolRouter) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "br")
@@ -203,7 +189,6 @@ func startTestBridge(t *testing.T, router ToolRouter) string {
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() { srv.Close() })
 
-	// Wait for the socket to be dialable.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		c, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
@@ -236,8 +221,6 @@ func TestContract_ListTools(t *testing.T) {
 	}
 }
 
-// A tokenless client asserts its working directory so relay can fall back to
-// directory auth; the server hands it to the router through the request context.
 func TestContract_TokenlessSendsCwd(t *testing.T) {
 	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
 	sock := startTestBridge(t, router)
@@ -254,8 +237,7 @@ func TestContract_TokenlessSendsCwd(t *testing.T) {
 	}
 }
 
-// With a token, no cwd reaches the router even if the wire carries one — the
-// directory must never be able to re-scope an authenticated call.
+// A directory must never be able to re-scope an authenticated call.
 func TestContract_TokenSuppressesCwd(t *testing.T) {
 	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
 	sock := startTestBridge(t, router)
@@ -271,7 +253,6 @@ func TestContract_TokenSuppressesCwd(t *testing.T) {
 	}
 }
 
-// NewClient captures a cwd only when it has no token to present.
 func TestNewClient_CwdOnlyWhenTokenless(t *testing.T) {
 	if c := NewClient(""); c.cwd == "" {
 		t.Error("tokenless client should capture its working directory")
@@ -330,7 +311,6 @@ func TestContract_CallToolStreamsProgress(t *testing.T) {
 		t.Fatalf("progress frames out of order or malformed: %+v", got)
 	}
 
-	// Plain CallTool must still work (progress frames silently discarded).
 	result2, err := c.CallTool("generate_image", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -341,7 +321,7 @@ func TestContract_CallToolStreamsProgress(t *testing.T) {
 }
 
 func TestContract_RegisterManifest(t *testing.T) {
-	router := &stubRouter{} // ValidateAdmin returns nil — service-token check is in routermod
+	router := &stubRouter{}
 	sock := startTestBridge(t, router)
 	c := &Client{sockPath: sock, token: "svc-token"}
 
@@ -364,14 +344,10 @@ func TestContract_RegisterManifest(t *testing.T) {
 }
 
 func TestContract_RegisterManifest_RejectsInvalidPayload(t *testing.T) {
-	// Validation happens server-side via Manifest.Validate before reaching
-	// the router. Verify a bad payload yields an error response without
-	// invoking the router.
 	router := &stubRouter{}
 	sock := startTestBridge(t, router)
 	c := &Client{sockPath: sock, token: "svc-token"}
 
-	// Missing serviceID — should fail Validate().
 	err := c.RegisterManifest(RegisterManifestRequest{
 		Manifest:       Manifest{Routes: []string{"/api/foo"}},
 		InternalSocket: "/tmp/foo.sock",
@@ -478,8 +454,6 @@ func TestContract_ResolveProjectTemplate(t *testing.T) {
 }
 
 func TestContract_ResolveProjectTemplate_MissingArguments(t *testing.T) {
-	// The handler must reject a request with no Arguments before invoking the
-	// router — guards the empty-payload branch in handleResolveProjectTemplate.
 	router := &stubRouter{}
 	sock := startTestBridge(t, router)
 
@@ -496,7 +470,6 @@ func TestContract_ResolveProjectTemplate_MissingArguments(t *testing.T) {
 }
 
 func TestContract_AdminGated_RejectsBadToken(t *testing.T) {
-	// ValidateAdmin returns an error → bridge must reject before invoking handler.
 	router := &stubRouter{validateAdminErr: errString("not-admin")}
 	sock := startTestBridge(t, router)
 
@@ -513,7 +486,6 @@ func TestContract_AdminGated_RejectsBadToken(t *testing.T) {
 }
 
 func TestContract_AdminGated_AcceptsGoodToken(t *testing.T) {
-	// ValidateAdmin returns nil → handler runs.
 	router := &stubRouter{}
 	sock := startTestBridge(t, router)
 
@@ -529,9 +501,6 @@ func TestContract_AdminGated_AcceptsGoodToken(t *testing.T) {
 	}
 }
 
-// sendRaw writes one request and reads one response over a fresh
-// connection. Bypasses Client so tests can exercise admin-gated calls
-// without depending on bridge.SocketPath().
 func sendRaw(t *testing.T, sockPath string, req BridgeRequest) BridgeResponse {
 	t.Helper()
 	conn, err := net.Dial("unix", sockPath)
@@ -608,11 +577,11 @@ func TestContract_RejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-// CR-15: the bridge round-trip deadline must reset on every received frame so
-// it behaves as an inactivity timeout, not a hard cap. Five progress frames
-// arrive 80ms apart (~400ms total) — longer than bridgeTimeout — but each lands
-// within the idle window. With a fixed deadline the call would die after the
-// third frame; with the per-frame reset it completes.
+// The round-trip deadline must reset on every received frame so it behaves as
+// an inactivity timeout, not a hard cap: five progress frames arrive 80ms
+// apart (~400ms total, longer than bridgeTimeout) but each lands within the
+// idle window. With a fixed deadline the call would die after the third
+// frame.
 func TestContract_StreamingResetsIdleDeadline(t *testing.T) {
 	old := bridgeTimeout
 	bridgeTimeout = 200 * time.Millisecond
@@ -643,8 +612,6 @@ func TestContract_StreamingResetsIdleDeadline(t *testing.T) {
 	}
 }
 
-// CR-16: a failed ReloadService must surface as an error response, not a bogus
-// RespOK. A CLI `relay service restart` of a broken/missing service should fail.
 func TestContract_ReloadService_SurfacesError(t *testing.T) {
 	router := &stubRouter{reloadServiceErr: errString("service crashed on reload")}
 	sock := startTestBridge(t, router)
@@ -671,7 +638,6 @@ func TestContract_ReloadService_OKOnSuccess(t *testing.T) {
 	}
 }
 
-// CR-16: same contract for ReloadExternalMcp.
 func TestContract_ReloadExternalMcp_SurfacesError(t *testing.T) {
 	router := &stubRouter{reloadMcpErr: errString("mcp failed to start")}
 	sock := startTestBridge(t, router)
@@ -685,7 +651,6 @@ func TestContract_ReloadExternalMcp_SurfacesError(t *testing.T) {
 	}
 }
 
-// errString is a small constant-error helper.
 type errString string
 
 func (e errString) Error() string { return string(e) }

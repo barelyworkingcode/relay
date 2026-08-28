@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// TestRotatingWriter_RotatesAtCap verifies that crossing the size cap renames
-// the current file to ".1" and starts a fresh one, keeping the current file at
-// or below the cap while preserving the older lines in the backup.
 func TestRotatingWriter_RotatesAtCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "svc.log")
 	w, err := openRotatingLogSized(path, 64)
@@ -39,8 +36,6 @@ func TestRotatingWriter_RotatesAtCap(t *testing.T) {
 	}
 }
 
-// TestRotatingWriter_OversizedSingleWrite confirms a single record larger than
-// the cap is written rather than triggering an endless rotate loop.
 func TestRotatingWriter_OversizedSingleWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.log")
 	w, err := openRotatingLogSized(path, 8)
@@ -56,14 +51,11 @@ func TestRotatingWriter_OversizedSingleWrite(t *testing.T) {
 	}
 }
 
-// TestRotatingWriter_ConcurrentWritesAreSafe backs the "safe for concurrent
-// use" claim in the doc comment: slog writes relay.log from many goroutines.
-// A small cap forces frequent rotation under contention so the rotate path
-// (close → rename → reopen) is exercised concurrently. Run under -race to catch
-// a dropped or mis-scoped lock; every Write must also report its full length.
+// Small cap forces frequent rotation under contention, exercising the rotate
+// path (close → rename → reopen) concurrently. Run under -race.
 func TestRotatingWriter_ConcurrentWritesAreSafe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "concurrent.log")
-	w, err := openRotatingLogSized(path, 4096) // small cap → many rotations under load
+	w, err := openRotatingLogSized(path, 4096)
 	if err != nil {
 		t.Fatalf("openRotatingLogSized: %v", err)
 	}
@@ -135,14 +127,11 @@ func TestRotatingWriter_KeepsMultipleGenerations(t *testing.T) {
 		}
 	}
 
-	// The 4th generation is beyond the retention bound and must not exist.
 	if _, err := os.Stat(path + ".4"); !os.IsNotExist(err) {
 		t.Errorf("generation .4 exists despite a retention of 3")
 	}
 }
 
-// The default rotator keeps exactly one backup, unchanged by the generations
-// support.
 func TestRotatingWriter_DefaultKeepsOneGeneration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "relay.log")

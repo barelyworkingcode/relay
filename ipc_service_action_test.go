@@ -10,12 +10,6 @@ import (
 	"relaygo/bridge"
 )
 
-// ---------------------------------------------------------------------------
-// IPC dispatcher — end-to-end whitelist enforcement
-// ---------------------------------------------------------------------------
-
-// recordingUI captures every settings event emitted during a test run so
-// assertions don't depend on platform UI plumbing.
 type recordingUI struct {
 	mu     sync.Mutex
 	events []struct {
@@ -50,9 +44,8 @@ func (r *recordingUI) lastResult(t *testing.T) map[string]interface{} {
 	return nil
 }
 
-// stubPlatform is a minimal Platform impl — only DispatchToMain is used by
-// the dispatcher (via dispatchEmit). Inline-runs the closure so test
-// assertions can observe results synchronously.
+// DispatchToMain inline-runs the closure so test assertions can observe
+// results synchronously, without a real main-thread dispatch loop.
 type stubPlatform struct{}
 
 func (stubPlatform) Init()                           {}
@@ -73,15 +66,13 @@ func newDispatcherIPC(t *testing.T, enhanced *EnhancedServiceRegistry) (*IPCCont
 		Platform:               stubPlatform{},
 		Enhanced:               enhanced,
 		PushServiceStatusBatch: func() {},
-		// GoFunc runs inline so the test observes the action result
-		// without needing a goroutine wait or a tracked WaitGroup.
+		// Inline, not a real goroutine, so the test observes the action
+		// result without a wait or a tracked WaitGroup.
 		GoFunc: func(fn func()) { fn() },
 	}
 	return ipc, ui
 }
 
-// The manifest IS the whitelist. An action ID not declared by the named
-// service must be rejected before any HTTP dispatch happens.
 func TestIPCServiceAction_RejectsUnknownAction(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	reg := NewEnhancedServiceRegistry(nil)
@@ -101,14 +92,13 @@ func TestIPCServiceAction_RejectsUnknownAction(t *testing.T) {
 	if !strings.Contains(got["error"].(string), "destroy") {
 		t.Errorf("error should name the action: %+v", got)
 	}
-	// No HTTP call should have reached the upstream — the rejection
-	// happens before dispatch.
+	// The manifest IS the whitelist: rejection happens before dispatch, so no
+	// HTTP call should have reached the upstream.
 	if reqs := srv.recorded(); len(reqs) != 0 {
 		t.Errorf("expected zero upstream requests on rejected action, got %d", len(reqs))
 	}
 }
 
-// Unknown service ID is also rejected pre-dispatch.
 func TestIPCServiceAction_RejectsUnknownService(t *testing.T) {
 	reg := NewEnhancedServiceRegistry(nil)
 	ipc, ui := newDispatcherIPC(t, reg)
@@ -120,8 +110,6 @@ func TestIPCServiceAction_RejectsUnknownService(t *testing.T) {
 	}
 }
 
-// Happy path: declared action with a forEach placeholder dispatches the
-// correct method + substituted path, and the result fires onto the UI.
 func TestIPCServiceAction_HappyPathDispatchesAndReports(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("DELETE", "/api/x/abc", 204, "")
@@ -152,11 +140,8 @@ func TestIPCServiceAction_HappyPathDispatchesAndReports(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// buildActionPath — the placeholder-substitution + URL-escaping core. This is
-// the security boundary between UI-supplied row data and the path that
-// actually gets dispatched.
-// ---------------------------------------------------------------------------
+// buildActionPath is the security boundary between UI-supplied row data and
+// the path that actually gets dispatched.
 
 func TestBuildActionPath_ForEachSubstitutesRowKey(t *testing.T) {
 	action := &bridge.ActionDecl{
@@ -176,8 +161,8 @@ func TestBuildActionPath_ForEachSubstitutesRowKey(t *testing.T) {
 	}
 }
 
+// A row value containing a slash must not break out of its path segment.
 func TestBuildActionPath_URLEscapesValue(t *testing.T) {
-	// A row value containing a slash must not break out of its path segment.
 	action := &bridge.ActionDecl{
 		ID:           "stop-llama",
 		PathTemplate: "/api/llama/instances/{alias}",
@@ -194,11 +179,11 @@ func TestBuildActionPath_URLEscapesValue(t *testing.T) {
 	}
 }
 
+// Only the exact "." and ".." segments are illegal (covered by
+// TestSec_PathTemplate_RejectsDotDotSegment); a value that merely contains
+// dots (a version, a filename) must pass through unescaped, guarding against
+// an over-broad anti-traversal fix.
 func TestBuildActionPath_AllowsDottedNonTraversalValue(t *testing.T) {
-	// Only the exact "." and ".." segments are illegal (that rejection is
-	// covered by TestSec_PathTemplate_RejectsDotDotSegment) — a value that
-	// merely contains dots (a version, a filename) must pass through unescaped.
-	// This guards against an over-broad anti-traversal fix.
 	action := &bridge.ActionDecl{
 		ID:           "stop-llama",
 		PathTemplate: "/api/llama/instances/{alias}",
@@ -229,10 +214,9 @@ func TestBuildActionPath_MissingRowKeyRejected(t *testing.T) {
 	}
 }
 
+// A no-forEach action that somehow gets a row is a UI bug — surfaced as an
+// error rather than silently dispatched with surprising context.
 func TestBuildActionPath_GlobalActionRejectsRow(t *testing.T) {
-	// A no-forEach action that somehow gets a row is a UI bug — we surface
-	// it as an error rather than silently dispatching a global action with
-	// surprising context.
 	action := &bridge.ActionDecl{
 		ID:           "reload",
 		PathTemplate: "/api/reload",
@@ -257,8 +241,6 @@ func TestBuildActionPath_GlobalActionPassesThroughCleanly(t *testing.T) {
 	}
 }
 
-// findAction is part of the dispatch whitelist — only declared actions
-// match, by exact ID.
 func TestFindAction_OnlyMatchesByID(t *testing.T) {
 	actions := []bridge.ActionDecl{
 		{ID: "stop-llama"},

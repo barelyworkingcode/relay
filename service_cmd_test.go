@@ -1,11 +1,7 @@
 package main
 
-// CLI-level coverage for `relay service register`, focused on the security-
-// relevant --no-frontend-creds plumbing (previously only the frontendCredsEnabled
-// predicate was tested, never the CLI flag that sets it). serviceRegister takes
-// an injectable SettingsStore, so we drive it against a sandbox store and read
-// the persisted config back. The trailing SendReloadService notify fails
-// harmlessly (no tray running) via warnNotifyFailure.
+// The trailing SendReloadService notify fails harmlessly (no tray running)
+// via warnNotifyFailure.
 
 import "testing"
 

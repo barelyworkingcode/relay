@@ -8,7 +8,6 @@ import (
 	"relaygo/bridge"
 )
 
-// remoteProjectRouter returns a router whose settings hold one remote project.
 // The project is built directly rather than through the create path so these
 // guards are proven independently of validation — the whole point of a second
 // line of defence is that it holds when the first one didn't run.
@@ -65,8 +64,6 @@ func TestResolvePtyEnv_RefusesRemoteProjectViaLegacyPath(t *testing.T) {
 	}
 }
 
-// A local project must still resolve normally — the guard must not have
-// tightened the everyday path.
 func TestResolvePtyEnv_LocalProjectStillResolves(t *testing.T) {
 	dir := t.TempDir()
 	s := makeSettings(nil, nil, nil)

@@ -12,10 +12,7 @@ import (
 )
 
 // TestMain enforces the headline rule from ADR-001: no test may mutate the
-// real user config directory (~/Library/Application Support/relay/). We
-// snapshot the real ConfigDir's mtime before the suite runs and verify it
-// hasn't changed after. If the directory doesn't exist, we record absence
-// and require it to still not exist after.
+// real user config directory (~/Library/Application Support/relay/).
 //
 // This catches three classes of bug at the suite level:
 //   - A new test forgot to call mkSandboxRelayHome(t).
@@ -49,8 +46,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// dirSnapshot fingerprints a directory tree's mtime + entry set. Cheap
-// enough to take twice per test run; precise enough to catch any write.
 type dirSnapshot struct {
 	rootMtime time.Time
 	entries   map[string]time.Time
@@ -75,8 +70,6 @@ func (s dirSnapshot) equal(other dirSnapshot) bool {
 	return true
 }
 
-// diff lists the per-entry differences between two snapshots in a
-// human-readable form. Empty string means equal.
 func (s dirSnapshot) diff(other dirSnapshot) string {
 	var b []byte
 	for path, mt := range s.entries {
@@ -98,14 +91,6 @@ func (s dirSnapshot) diff(other dirSnapshot) string {
 	return string(b)
 }
 
-// snapshotDir returns (snapshot, true) if dir exists, (zero, false) otherwise.
-// Recursive but bounded — the real relay ConfigDir on a dev machine has
-// O(10s) of files; on CI it doesn't exist, in which case beforeOK=false.
-//
-// IGNORED paths: anything inside logs/ or run/ subdirs (a running tray app
-// continuously appends to log files and rotates pidfiles — these mutate
-// during the test run even without test contamination). What matters for
-// safety is settings.json and the top-level entry set.
 func snapshotDir(dir string) (dirSnapshot, bool) {
 	info, err := os.Stat(dir)
 	if err != nil {

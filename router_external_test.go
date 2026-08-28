@@ -1,17 +1,5 @@
 package main
 
-// ADR-011 decision 2c: the second axis relay can decide by itself — does this
-// tool reach outside the host. It is orthogonal to the mode rather than a
-// value of it, so the cases that matter are the ones where the two axes
-// disagree: a read-only tool that reaches the network (web_fetch) and a
-// mutating tool that does not (mail_create_draft).
-//
-// The polarity is inverted from readOnlyHint and this file is where that is
-// pinned. MCP defaults openWorldHint to TRUE, so absent, null, malformed and a
-// case variant all mean "open-world" and all deny; only an explicit boolean
-// false under the specification's own spelling admits a tool to a grant that
-// has not been given allow_external.
-
 import (
 	"context"
 	"encoding/json"
@@ -21,10 +9,6 @@ import (
 
 	"relaygo/mcp"
 )
-
-// ---------------------------------------------------------------------------
-// The hint itself
-// ---------------------------------------------------------------------------
 
 func TestOpenWorldHint_OnlyAnExplicitFalseSaysAToolStaysOnThisHost(t *testing.T) {
 	cases := []struct {
@@ -63,17 +47,16 @@ func TestOpenWorldHint_OnlyAnExplicitFalseSaysAToolStaysOnThisHost(t *testing.T)
 			}
 		})
 	}
-	// A definition relay could not find is open-world: a grant must not be
-	// widened by relay's own ignorance of what it is about to call.
+	// nil (a tool definition relay could not find) is open-world too: a grant
+	// must not be widened by relay's own ignorance of what it is about to call.
 	if !toolIsOpenWorld(nil) {
 		t.Error("toolIsOpenWorld(nil) said a tool relay cannot see stays on this host")
 	}
 }
 
-// The inversion stated as an assertion rather than as a comment, because the
-// two functions look like each other and the tidy that merges them is exactly
-// what this catches: the SAME blob must answer "not read-only" and
-// "open-world", and both answers deny.
+// readOnlyHintTrue and toolIsOpenWorld look like each other; a tidy that
+// merged them would lose that the SAME blob must answer "not read-only" and
+// "open-world", both by denying.
 func TestHints_SilenceDeniesOnBothAxesInOppositeSpellings(t *testing.T) {
 	silent := mcp.Tool{Name: "t"}
 	if readOnlyHintTrue(&silent) {
@@ -84,10 +67,6 @@ func TestHints_SilenceDeniesOnBothAxesInOppositeSpellings(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The grant
-// ---------------------------------------------------------------------------
-
 func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
 	var nilTok *StoredToken
 	if nilTok.ExternalAllowed("macmcp") {
@@ -97,31 +76,19 @@ func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
 	if tok.ExternalAllowed("macmcp") {
 		t.Error("an explicit false did not refuse")
 	}
-	// Per MCP, not per token: granting one outbound channel is not granting
-	// every MCP's, and refusing one is not refusing every MCP's.
 	if !tok.ExternalAllowed("other") {
 		t.Error("an explicit true was not honoured")
 	}
-	// The explicit false has to survive on a LOCAL record, where it is the only
-	// way to say the opposite of the default. That is the confined local agent
-	// with no shell — an unusual case, but the reason the field is a
-	// map[string]bool and not a set of allowed MCP ids.
+	// AllowExternal is a map[string]bool rather than a set of allowed ids so a
+	// LOCAL record — allowed by default — can still store an explicit false.
 	local := &StoredToken{AllowExternal: map[string]bool{"macmcp": false}}
 	if local.ExternalAllowed("macmcp") {
 		t.Error("a local project could not refuse its own outbound channel")
 	}
 }
 
-// The asymmetry AccessMode has, and it is the SAME asymmetry rather than a
-// coincidence: a remote client has no network path off this host except
-// through relay, so an outbound tool is new capability for it; a local
-// project's agent runs as the user with a shell and already has one, so
-// refusing it there protects nothing and costs every tool of every MCP that
-// has not annotated openWorldHint.
-//
-// The name says "no asymmetry" inverted on purpose: the first draft of this
-// decision claimed there was none, and the property is pinned here rather than
-// deleted so the claim cannot quietly come back.
+// The name states "no asymmetry" so the claim cannot quietly disappear if
+// this test is ever renamed or merged away.
 func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecision(t *testing.T) {
 	if (&StoredToken{ProjectKind: ProjectKindRemote}).ExternalAllowed("macmcp") {
 		t.Error("an access profile defaulted to allowing external access")
@@ -133,8 +100,6 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 		}
 	}
 
-	// Through the router, both directions. A LOCAL project reaches the
-	// outbound tools with nothing granted...
 	r := newProfileRouter(t, profileOpts{})
 	got := listedToolNames(t, r)
 	for _, outbound := range []string{"web_fetch", "mail_send"} {
@@ -146,8 +111,6 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 		}
 	}
 
-	// ...and says so explicitly when it wants the profile's behaviour, which
-	// has to be expressible even though it is not the default.
 	r = newProfileRouter(t, profileOpts{allowExternal: map[string]bool{"macmcp": false}})
 	got = listedToolNames(t, r)
 	if slices.Contains(got, "web_fetch") {
@@ -157,8 +120,6 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 		t.Errorf("refusing the outbound channel took a LOCAL tool with it: %v", got)
 	}
 
-	// A PROFILE is the mirror: refused with nothing said, allowed only when
-	// something is.
 	r = newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*"}},
@@ -175,13 +136,6 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The two axes crossing, which is the reason this is not a third mode
-// ---------------------------------------------------------------------------
-
-// web_fetch's shape: readOnlyHint true and openWorldHint true. The mode admits
-// it — it is honestly read-only — and it is still refused, which is the
-// outbound channel a read-only profile held before this decision.
 func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
@@ -199,7 +153,6 @@ func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.
 	if !strings.Contains(err.Error(), "reaches outside this host") {
 		t.Errorf("the refusal did not name the layer that made it: %v", err)
 	}
-	// The mode is not what refused it, and the grant is what admits it.
 	r = newProfileRouter(t, profileOpts{
 		kind:          ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"web_*"}},
@@ -210,9 +163,6 @@ func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.
 	}
 }
 
-// mail_create_draft's shape: readOnlyHint false and openWorldHint false. This
-// is the request the feature exists for — an agent that composes a draft a
-// human reviews and sends — and it must work with no outbound grant at all.
 func TestMutatingAndLocal_IsAdmittedToAWriteProfileWithoutTheGrant(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
@@ -225,19 +175,11 @@ func TestMutatingAndLocal_IsAdmittedToAWriteProfileWithoutTheGrant(t *testing.T)
 	if _, err := r.CallTool(context.Background(), "mail_create_draft", json.RawMessage(`{}`), testToken); err != nil {
 		t.Fatalf("draft-but-not-send could not draft: %v", err)
 	}
-	// And the whole point of it: the same profile cannot send.
 	if _, err := r.CallTool(context.Background(), "mail_send", json.RawMessage(`{}`), testToken); err == nil {
 		t.Fatal("draft-but-not-send sent mail")
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The list paths, which must filter exactly as the call path does
-// ---------------------------------------------------------------------------
-
-// A tool a caller cannot call must not be advertised to it: a listing that
-// showed one would have an agent spend a call discovering a refusal, and it is
-// the surface an access profile is told its own limits through (decision 8).
 func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 	tools := []mcp.Tool{
 		{Name: "mail_search", Category: "Mail", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)},
@@ -253,9 +195,8 @@ func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 	if got := listedToolNames(t, r); strings.Join(got, ",") != "mail_search" {
 		t.Fatalf("ListTools served %v, want only the tool that stays on this host", got)
 	}
-	// ListSkillBuckets is a second implementation of the same membership and
-	// has drifted from ListTools before. A tool relay will refuse must not
-	// reach a generated SKILL.md either.
+	// ListSkillBuckets is a second implementation of the same membership test:
+	// a tool relay will refuse must not reach a generated SKILL.md either.
 	buckets, err := r.ListSkillBuckets(context.Background(), testToken)
 	if err != nil {
 		t.Fatalf("ListSkillBuckets: %v", err)
@@ -272,14 +213,9 @@ func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The audit record
-// ---------------------------------------------------------------------------
-
-// The grant in force goes on the record beside the mode, and the FALSE is the
-// value that matters: it is the resting state and the one a refusal on this
-// layer was decided by. A bool that vanished when false would make "the grant
-// was not given" and "nobody recorded a grant" the same absent key.
+// AllowExternal is a *bool: a plain bool that omitted itself when false would
+// make "the grant was refused" and "nobody recorded a grant" the same absent
+// key.
 func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
@@ -309,8 +245,6 @@ func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing
 	if events[1].Outcome != AuditOutcomeDenied {
 		t.Errorf("the refusal was recorded as %q", events[1].Outcome)
 	}
-	// It is on the wire shape too, not only in the struct: `relay audit` and
-	// anything grepping the file read the JSON.
 	line, err := json.Marshal(events[1])
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
@@ -319,7 +253,6 @@ func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing
 		t.Fatalf("the refused grant is not on the audit line: %s", line)
 	}
 
-	// And a grant that WAS given is recorded as given.
 	r = newProfileRouter(t, profileOpts{
 		kind:          ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"web_*"}},

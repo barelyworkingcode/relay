@@ -12,48 +12,19 @@ import (
 	"relaygo/bridge"
 )
 
-// Enrolment lifecycle: creation (host-side operator act), grant validation,
-// persistence in settings.json, bundle emission, and revocation. ADR-010
-// decisions 2, 3 and 8. The listener that consumes all of this lives
-// elsewhere; nothing here opens a socket.
-
-// Conservative per-enrolment defaults. There is no meaningful global default —
-// an agent that checks mail hourly and one that answers interactive questions
-// have nothing in common — so these are a starting point to be tuned per
-// enrolment, not a considered ceiling. The first values will be wrong; the
-// audit log's `throttled` outcome is distinguishable precisely so tuning is
-// driven by evidence rather than by guessing twice (ADR-010 decision 7).
-//
-// Retuned once from evidence, for a single-user host (a person running one or
-// two agents against their own machine, not a fleet):
-//   - An hour, not a minute, is the natural unit for an agent that checks or
-//     triages mail. A 60-second window makes a burst of legitimate paging —
-//     opening ten messages back to back — look like an attack.
-//   - 120 calls/hour is 2/minute sustained: comfortable for real work, and
-//     still a rate at which draining a mailbox takes days, not minutes.
-//   - The byte cap has to scale with the window or this would be a 60x
-//     TIGHTENING dressed up as a loosening: 8 MiB per 60s is 480 MiB/hour of
-//     headroom already. 64 MiB/hour is roughly nine of the largest messages
-//     this fixture holds (~7 MB each), or thousands of metadata-only calls —
-//     enough for real work including attachments, while a bulk drain still
-//     takes days and stays loud in the audit log.
-//
-// These are still ADR-010 decision 7's "first values will be wrong, tune from
-// evidence" numbers — tuned once, not derived. Say so here rather than let the
-// next reader assume they were computed from something and re-derive (or
-// "optimise") them.
+// Conservative per-enrolment defaults, tuned once from evidence for a
+// single-user host rather than derived from anything — do not "optimise"
+// them without new evidence. The byte cap scales with the window
+// deliberately: a fixed cap would silently tighten if the window changed.
 const (
 	defaultEnrolmentWindowSeconds  = 3600
 	defaultEnrolmentMaxCalls       = 120
 	defaultEnrolmentMaxResultBytes = 64 << 20 // 64 MiB per window
 )
 
-// enrolmentBundleDir is the config-dir subdirectory holding emitted bundles,
-// one directory per client id.
 const enrolmentBundleDir = "enrolments"
 
-// normalizeEnrolmentBudget fills unset fields with the conservative defaults.
-// Zero never means "unlimited" — see the EnrolmentBudget doc comment.
+// normalizeEnrolmentBudget: zero never means "unlimited".
 func normalizeEnrolmentBudget(b EnrolmentBudget) EnrolmentBudget {
 	if b.WindowSeconds <= 0 {
 		b.WindowSeconds = defaultEnrolmentWindowSeconds
@@ -67,27 +38,15 @@ func normalizeEnrolmentBudget(b EnrolmentBudget) EnrolmentBudget {
 	return b
 }
 
-// ---------------------------------------------------------------------------
-// Enrolment CRUD — mirrors the Project CRUD in settings.go: plain mutators
-// that do not save, called within store.With.
-// ---------------------------------------------------------------------------
-
-// AddEnrolment appends an enrolment. Validate with ValidateEnrolment first —
-// this mutator applies unconditionally, like the Project mutators.
-// Does not save; use within store.With.
+// AddEnrolment applies unconditionally; validate with ValidateEnrolment
+// first. Does not save; use within store.With.
 func (s *Settings) AddEnrolment(e Enrolment) {
 	e.Budget = normalizeEnrolmentBudget(e.Budget)
 	s.Enrolments = append(s.Enrolments, e)
 }
 
-// RemoveEnrolment deletes the enrolment with the given client id and returns
-// it, so the caller can hand its fingerprint to CloseRevokedEnrolment (the
-// record is the only place that fingerprint is still written down). Returns
-// false if no enrolment has that id.
-//
-// Deleting the enrolment is the whole of revocation on the persistence side:
-// nothing about the certificate itself changes, and no project is touched.
-// Does not save; use within store.With.
+// RemoveEnrolment returns the deleted enrolment so the caller can hand its
+// fingerprint to CloseRevokedEnrolment. Does not save; use within store.With.
 func (s *Settings) RemoveEnrolment(clientID string) (Enrolment, bool) {
 	e, idx := s.findEnrolmentByClientID(clientID)
 	if idx < 0 {
@@ -98,9 +57,6 @@ func (s *Settings) RemoveEnrolment(clientID string) (Enrolment, bool) {
 	return removed, true
 }
 
-// UpdateEnrolmentGrants replaces an enrolment's grant list. Validate the
-// resulting list with ValidateEnrolmentGrants first. Does not save; use within
-// store.With.
 func (s *Settings) UpdateEnrolmentGrants(clientID string, projectIDs []string) {
 	e, idx := s.findEnrolmentByClientID(clientID)
 	if idx < 0 {
@@ -109,14 +65,8 @@ func (s *Settings) UpdateEnrolmentGrants(clientID string, projectIDs []string) {
 	e.ProjectIDs = projectIDs
 }
 
-// FindEnrolmentByFingerprint resolves a presented client certificate to an
-// enrolment. This is the listener's entry point: RemoteServer fingerprints the
-// peer certificate (FingerprintCert) and calls this before reading a request,
-// closing the connection when it returns nil so an unenrolled caller cannot
-// probe for valid grants.
-//
-// Matching is on the full fingerprint string, exact — see FingerprintDER for
-// why a prefix match would be the wrong shape here.
+// FindEnrolmentByFingerprint matches exact on the full fingerprint string —
+// see FingerprintDER for why a prefix match would be the wrong shape here.
 func (s *Settings) FindEnrolmentByFingerprint(fingerprint string) *Enrolment {
 	if fingerprint == "" {
 		return nil
@@ -129,14 +79,11 @@ func (s *Settings) FindEnrolmentByFingerprint(fingerprint string) *Enrolment {
 	return nil
 }
 
-// FindEnrolment returns the enrolment with the given client id, or nil.
 func (s *Settings) FindEnrolment(clientID string) *Enrolment {
 	e, _ := s.findEnrolmentByClientID(clientID)
 	return e
 }
 
-// findEnrolmentByClientID returns the enrolment with the given client id and
-// its index, or nil, -1. Mirrors findProjectByID.
 func (s *Settings) findEnrolmentByClientID(clientID string) (*Enrolment, int) {
 	for i := range s.Enrolments {
 		if s.Enrolments[i].ClientID == clientID {
@@ -146,10 +93,6 @@ func (s *Settings) findEnrolmentByClientID(clientID string) (*Enrolment, int) {
 	return nil, -1
 }
 
-// EnrolmentsGrantingProject returns the client ids of every enrolment holding
-// a grant for projectID. Feeds the conversion refusal below, and gives the
-// Settings UI the "which clients can reach this project" answer — a credential
-// you cannot see is one you will not revoke (ADR-010 decision 8).
 func (s *Settings) EnrolmentsGrantingProject(projectID string) []string {
 	var ids []string
 	for i := range s.Enrolments {
@@ -160,22 +103,14 @@ func (s *Settings) EnrolmentsGrantingProject(projectID string) []string {
 	return ids
 }
 
-// ---------------------------------------------------------------------------
-// Validation — ADR-010 decision 3, enforced at the two points this file owns.
-// The third point (call time, in the router) belongs to the listener.
-// ---------------------------------------------------------------------------
-
-// ValidateEnrolment checks a candidate enrolment's shape and uniqueness
-// against the current settings, then its grants. Call before AddEnrolment,
-// inside the same store.With, so two concurrent creates cannot both pass.
+// ValidateEnrolment: call before AddEnrolment, inside the same store.With,
+// so two concurrent creates cannot both pass.
 func (s *Settings) ValidateEnrolment(e *Enrolment) error {
 	if e.ClientID == "" {
 		return fmt.Errorf("enrolment client id is required")
 	}
-	// The client id names the bundle directory under <config>/enrolments/ and
-	// is the certificate's Common Name, so the same filename-safe restriction
-	// service ids carry applies: a value with a path separator or ".." would
-	// escape the bundle directory.
+	// Client id names the bundle directory: a path separator or ".." would
+	// escape it.
 	if !isSafeID(e.ClientID) {
 		return fmt.Errorf("enrolment client id %q is invalid: use only letters, digits, '.', '_', '-' (no path separators)", e.ClientID)
 	}
@@ -186,9 +121,7 @@ func (s *Settings) ValidateEnrolment(e *Enrolment) error {
 		return fmt.Errorf("enrolment %q has no certificate fingerprint: the certificate IS the identity, so an enrolment without one could never resolve a connection", e.ClientID)
 	}
 	// A second enrolment on the same certificate would make identity
-	// ambiguous at exactly the point relay resolves it, and the two rows
-	// would diverge in grants — the resolved authority would then depend on
-	// scan order. Refuse rather than pick.
+	// ambiguous at resolution time. Refuse rather than pick.
 	if other := s.FindEnrolmentByFingerprint(e.Fingerprint); other != nil {
 		return fmt.Errorf("certificate %s is already enrolled as %q", e.Fingerprint, other.ClientID)
 	}
@@ -196,19 +129,14 @@ func (s *Settings) ValidateEnrolment(e *Enrolment) error {
 }
 
 // ValidateEnrolmentGrants refuses an enrolment whose grants do not all name
-// remote-kind projects (ADR-010 decision 3, point 1).
+// remote-kind projects: without this, a grant naming a local project would
+// hand a remote client that project's full host-directory tool surface,
+// bypassing every scope restriction by pointing at the wrong project rather
+// than defeating any of them.
 //
-// Without this rule, every protection ADR-009 built — no filesystem scope, no
-// wildcard grants, no sessions, no PTY — would be bypassed by POINTING AT THE
-// WRONG PROJECT rather than by defeating any of them: a grant naming a local
-// project would hand a remote client that project's full host-directory tool
-// surface, `allowed_dirs` and all.
-//
-// Tests IsRemote(), never Kind == ProjectKindLocal: the zero value is local,
-// so an equality check invites a future bug where an unset field reads as
-// remote (see the Project.Kind comment). An unknown project id is refused too
-// — a grant relay cannot resolve is not a grant to keep, and silently
-// dropping it would let a later project reusing that id inherit the grant.
+// Tests IsRemote(), never Kind == ProjectKindLocal: the zero value is
+// local, so an equality check invites a future bug where an unset field
+// reads as remote.
 func (s *Settings) ValidateEnrolmentGrants(e *Enrolment) error {
 	for _, id := range e.ProjectIDs {
 		proj, _ := s.findProjectByID(id)
@@ -223,20 +151,8 @@ func (s *Settings) ValidateEnrolmentGrants(e *Enrolment) error {
 }
 
 // ValidateProjectEnrolments refuses converting a project remote→local while
-// any enrolment still grants it (ADR-010 decision 3, point 2), naming the
-// offending enrolments so the operator knows what to revoke or re-grant.
-//
-// This mirrors the constrained conversion ADR-009 already applies in the other
-// direction (ValidateProjectGrants, refusing local→remote while a
-// filesystem-scoped MCP is granted): the project model refuses an edit that
-// would strand a credential rather than allowing it and cleaning up
-// afterwards. Cleaning up afterwards would mean silently dropping grants from
-// records the operator never touched — the same silent widening/narrowing of
-// scope both ADRs refuse to do.
-//
-// A remote project is unaffected, and so is a local project no enrolment
-// mentions, so the common case costs one loop over a list that is empty on
-// every install that has never enrolled a client.
+// any enrolment still grants it, rather than silently dropping grants from
+// records the operator never touched.
 func (s *Settings) ValidateProjectEnrolments(proj *Project) error {
 	if proj.IsRemote() {
 		return nil
@@ -248,40 +164,22 @@ func (s *Settings) ValidateProjectEnrolments(proj *Project) error {
 	return fmt.Errorf("access profile %q cannot become a local project while enrolled clients grant it: %s — revoke those enrolments or drop the grant first", proj.ID, strings.Join(holders, ", "))
 }
 
-// ---------------------------------------------------------------------------
-// Revocation hook — the seam RemoteServer fills in.
-// ---------------------------------------------------------------------------
-
-// EnrolmentRevocationHook is called after an enrolment is deleted, with the
-// deleted client id and its full certificate fingerprint.
-//
-// Revocation must CLOSE LIVE CONNECTIONS, not merely take effect on the next
-// one: the wire protocol holds persistent connections in a scanner loop, so a
-// compromised agent that never reconnects would keep working indefinitely
-// (ADR-010 decision 8). Deleting the record is all this package does; severing
-// the socket is the listener's job, and this is where it registers to do it.
+// EnrolmentRevocationHook closes live connections holding a revoked
+// certificate; deleting the settings record alone would let a compromised
+// agent in a persistent scanner loop keep working indefinitely.
 type EnrolmentRevocationHook func(clientID, fingerprint string)
 
 var (
 	revocationMu   sync.Mutex
 	revocationHook EnrolmentRevocationHook
-	// revocationOwner is whoever installed the hook currently in place. There
-	// is exactly one hook for the process, and the listener that owns it is
-	// rebuilt whenever `remote.listen` changes — so teardown has to be able to
-	// ask "is this still MINE?" before clearing. Without that, the ordinary
-	// rebind order (bind the new listener, THEN close the old one) has the old
-	// server's Close() silently uninstall the LIVE server's hook, and
-	// revocation stops severing connections while every test that only looks
-	// at the record still passes. Compared by interface identity, so the
-	// caller passes the pointer it registered with.
+	// revocationOwner, compared by interface identity: the listener owning
+	// the hook is rebuilt on every rebind, so teardown must ask "is this
+	// still MINE?" before clearing — otherwise the ordinary rebind order
+	// (bind new, then close old) has the old server silently uninstall the
+	// LIVE server's hook.
 	revocationOwner any
 )
 
-// SetEnrolmentRevocationHookFor installs the callback invoked by
-// CloseRevokedEnrolment, on behalf of owner. RemoteServer calls this once per
-// listener with a closure that closes every live connection presenting the
-// given fingerprint; installing replaces whatever was there, because the newest
-// listener is by definition the one holding the live connections.
 func SetEnrolmentRevocationHookFor(owner any, fn EnrolmentRevocationHook) {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
@@ -289,12 +187,10 @@ func SetEnrolmentRevocationHookFor(owner any, fn EnrolmentRevocationHook) {
 	revocationOwner = owner
 }
 
-// ClearEnrolmentRevocationHookFor uninstalls the hook ONLY if owner still owns
-// it, and reports whether it did. This is the compare-and-clear a torn-down
-// listener must use: during a rebind the replacement has already installed its
-// own hook, and clearing unconditionally there would leave revocation unable to
-// sever a live connection — a security regression invisible to any test that
-// checks only that the enrolment record is gone.
+// ClearEnrolmentRevocationHookFor is the compare-and-clear a torn-down
+// listener must use: during a rebind the replacement has already installed
+// its own hook, and clearing unconditionally here would leave revocation
+// unable to sever a live connection.
 func ClearEnrolmentRevocationHookFor(owner any) bool {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
@@ -306,18 +202,10 @@ func ClearEnrolmentRevocationHookFor(owner any) bool {
 	return true
 }
 
-// SetEnrolmentRevocationHook is the unowned form: it installs (or with nil,
-// clears) the hook without claiming ownership. Kept for callers that have no
-// rebind story — a CLI process has no listener to notify at all, which is why
-// the no-hook case is a supported state rather than an error.
 func SetEnrolmentRevocationHook(fn EnrolmentRevocationHook) {
 	SetEnrolmentRevocationHookFor(nil, fn)
 }
 
-// enrolmentRevocationHookOwner reports which object owns the installed hook, or
-// nil when none does. A test seam: "the hook is installed exactly once and
-// points at the live listener" is otherwise unobservable, and it is precisely
-// the property a reconcile can break quietly.
 func enrolmentRevocationHookOwner() any {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
@@ -327,11 +215,6 @@ func enrolmentRevocationHookOwner() any {
 	return revocationOwner
 }
 
-// CloseRevokedEnrolment notifies the installed hook that an enrolment is gone.
-// Safe to call with no hook installed: a revocation performed from the CLI
-// while the tray is not running has no live connections to sever, and one
-// performed while it IS running still needs the tray's own listener to be told
-// — see the note in revokeEnrolment about that gap.
 func CloseRevokedEnrolment(clientID, fingerprint string) {
 	revocationMu.Lock()
 	hook := revocationHook
@@ -341,21 +224,12 @@ func CloseRevokedEnrolment(clientID, fingerprint string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Creation — the host-side operator act.
-// ---------------------------------------------------------------------------
-
-// enrolmentRequest is the transport-agnostic body for creating an enrolment,
-// in the shape of projectCreateFields: the CLI fills it today, a Settings-UI
-// IPC handler could fill it tomorrow without duplicating the orchestration.
 type enrolmentRequest struct {
 	ClientID   string
 	ProjectIDs []string
 	Budget     EnrolmentBudget
 }
 
-// enrolmentBundle is what an operator copies to the client machine: the paths
-// of the emitted files plus the persisted record.
 type enrolmentBundle struct {
 	Enrolment  Enrolment
 	Dir        string
@@ -364,20 +238,14 @@ type enrolmentBundle struct {
 	CACertPath string
 }
 
-// createEnrolment is the whole enrolment act: ensure the CA exists, sign a
-// client certificate, persist the record, and emit the bundle.
+// createEnrolment has no self-service path and no bootstrap token,
+// deliberately: an endpoint reachable by presenting a secret would
+// reintroduce a replayable credential at the point where the result is a
+// new identity, not a single call.
 //
-// There is no self-service enrolment and no bootstrap token, deliberately. An
-// enrolment endpoint reachable by presenting a secret would reintroduce
-// precisely the replayable credential decision 2 removed, and would do it at
-// the one point in the system where the result is a NEW IDENTITY rather than a
-// single call. Creating an enrolment is a host-side act or it is nothing.
-//
-// Ordering matters: validation happens inside store.With, so two concurrent
-// creates cannot both claim a client id, and a rejected request has written
-// nothing anywhere — the signed key exists only in memory until the record is
-// safely persisted. The bundle is written last, for the same reason: a key on
-// disk that no enrolment references is a credential nobody knows to revoke.
+// Validation happens inside store.With so two concurrent creates cannot
+// both claim a client id. The bundle is written last: a key on disk that no
+// enrolment references is a credential nobody knows to revoke.
 func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
 	ca, err := LoadOrCreateCA()
 	if err != nil {
@@ -409,68 +277,50 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 		return nil, fmt.Errorf("failed to save settings: %w", err)
 	}
 	if validationErr != nil {
-		return nil, validationErr
+		return nil, invalidEnrolment(validationErr.Error())
 	}
 
 	bundle, err := writeEnrolmentBundle(enrolment, keyPEM, certPEM, ca.CertPEM())
 	if err != nil {
-		return nil, err
+		// The settings mutation above already committed: the enrolment
+		// record exists and is a real, usable grant even though its bundle
+		// failed to reach disk. Returning a bare error here would tell every
+		// caller "nothing happened," which is false — errEnrolmentBundle is
+		// what lets a caller hand back the record that landed instead of
+		// silently orphaning it.
+		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
 	}
 	return bundle, nil
 }
 
-// ---------------------------------------------------------------------------
-// Update — retuning a budget or regranting profiles WITHOUT touching the
-// certificate.
-// ---------------------------------------------------------------------------
-
-// enrolmentBudgetUpdate carries only the budget fields an update actually
-// names. Each is a pointer rather than a plain value because zero is
-// meaningful on EnrolmentBudget itself (it means "use the default", per
-// normalizeEnrolmentBudget) — a zero-check here could not tell "the caller
-// left this alone" from "the caller asked to reset this to the default"
-// apart. nil means the former; a pointer to 0 means the latter.
+// enrolmentBudgetUpdate: each field is a pointer because zero is meaningful
+// on EnrolmentBudget itself ("use the default"), so a plain zero value
+// could not distinguish "left alone" from "reset to default". nil means the
+// former; a pointer to 0 means the latter.
 type enrolmentBudgetUpdate struct {
 	WindowSeconds  *int
 	MaxCalls       *int
 	MaxResultBytes *int64
 }
 
-// enrolmentUpdateRequest is the transport-agnostic body for `relay enrol
-// update`, mirroring enrolmentRequest's role for create.
-//
-// ProjectIDs is a pointer to a slice, not a bare slice, for the same reason
-// the budget fields are pointers: nil means "leave the grants alone", and a
-// non-nil-but-empty slice means "replace them with nothing" — a real,
-// deliberate action (withdrawing every profile without revoking the
-// certificate), not the zero value of "field not supplied".
+// enrolmentUpdateRequest: ProjectIDs is a pointer to a slice for the same
+// reason the budget fields are pointers — nil means "leave the grants
+// alone", non-nil-but-empty means "replace them with nothing".
 type enrolmentUpdateRequest struct {
 	ClientID   string
 	ProjectIDs *[]string
 	Budget     enrolmentBudgetUpdate
 }
 
-// updateEnrolment changes an existing enrolment's budget and/or grants
-// without touching its certificate or fingerprint.
+// updateEnrolment changes budget and/or grants without touching the
+// certificate: revoke+recreate reissues it, and rotating a credential and
+// retuning a limit are different operations.
 //
-// This exists because revoke+recreate — the only way to change a budget
-// before this — reissues the certificate. Rotating a credential and retuning
-// a limit are different operations, and forcing them together defeats the
-// whole reason ADR-010 separates the enrolment (identity) from the profile
-// (authority): an operator who only wants to raise a call cap should not have
-// to hand out a new key to do it.
-//
-// Only the fields req actually names change; everything else — ClientID,
-// Fingerprint, CreatedAt, and any budget/grant field left nil/unset — is
-// carried over untouched. Grants are only re-validated when req.ProjectIDs is
-// non-nil: a budget-only update must succeed even for an enrolment whose
-// existing grant already names a profile that has since been deleted
-// (docs/access-profiles.md's "dangling grant", #23) — re-validating grants
-// nobody asked to change would turn an unrelated budget edit into a refusal.
-//
-// Returns the enrolment before and after the change (both zero on error), so
-// the caller can report the actual effect — before -> after — rather than a
-// bare "ok".
+// Grants are only re-validated when req.ProjectIDs is non-nil: a
+// budget-only update must succeed even when the existing grant already
+// names a profile since deleted (docs/access-profiles.md's "dangling
+// grant") — re-validating grants nobody asked to change would turn an
+// unrelated budget edit into a refusal.
 func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, after Enrolment, err error) {
 	var validationErr error
 	saveErr := store.With(func(s *Settings) {
@@ -483,7 +333,7 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 
 		// Build the candidate on a copy first: validation must see the
 		// post-update shape, and a rejected update must leave the stored
-		// record byte-for-byte as it was, not partially applied.
+		// record byte-for-byte as it was.
 		candidate := *e
 		if req.Budget.WindowSeconds != nil {
 			candidate.Budget.WindowSeconds = *req.Budget.WindowSeconds
@@ -527,15 +377,15 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 // That is the weakest step in this design and it is deliberate: a CSR flow,
 // where the client generates its key and only a signing request crosses the
 // gap, never exposes the key at all, and is the obvious upgrade if these
-// machines ever stop being the same person's (ADR-010 decision 8). Until then
-// the mitigation is that the key sits in a 0600 file under a 0700 directory
-// inside the config dir, and the operator is expected to move rather than copy
-// it.
+// machines ever stop being the same person's. Until then the mitigation is
+// that the key sits in a 0600 file under a 0700 directory, and the operator
+// is expected to move rather than copy it.
 func writeEnrolmentBundle(e Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmentBundle, error) {
 	dir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, e.ClientID)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create bundle dir: %w", err)
-	}
+	// b is built and returned even on failure below: the settings record for
+	// e already exists by the time this runs (createEnrolment writes it
+	// first), so a caller handling a write failure still needs the record
+	// and the directory it was trying to reach.
 	b := &enrolmentBundle{
 		Enrolment:  e,
 		Dir:        dir,
@@ -543,13 +393,16 @@ func writeEnrolmentBundle(e Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmen
 		CertPath:   filepath.Join(dir, "client.crt"),
 		CACertPath: filepath.Join(dir, "ca.crt"),
 	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return b, fmt.Errorf("create bundle dir: %w", err)
+	}
 	for path, data := range map[string][]byte{
 		b.KeyPath:    keyPEM,
 		b.CertPath:   certPEM,
 		b.CACertPath: caPEM,
 	} {
 		if err := atomicWriteFile(path, data, 0600); err != nil {
-			return nil, fmt.Errorf("write %s: %w", filepath.Base(path), err)
+			return b, fmt.Errorf("write %s: %w", filepath.Base(path), err)
 		}
 	}
 	return b, nil
@@ -557,17 +410,11 @@ func writeEnrolmentBundle(e Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmen
 
 // revokeEnrolment deletes an enrolment, notifies the revocation hook so the
 // listener can sever live connections, and removes the emitted bundle.
-// Returns the deleted record so the caller can report the fingerprint that no
-// longer resolves.
-//
 // Deleting the record cuts the client without disturbing any project, and
 // leaves the certificate itself untouched — there is nothing to un-sign.
-// Revocation, not expiry, is the control (decision 8), so this is the only
-// mechanism there is.
 func revokeEnrolment(store SettingsStore, clientID string) (Enrolment, error) {
-	// Resolution and removal happen inside one With() call, matching
-	// resolveAndRemove's reason for doing the same: no TOCTOU window between
-	// reading the record and deleting it.
+	// Resolution and removal happen inside one With() call: no TOCTOU
+	// window between reading the record and deleting it.
 	var removed Enrolment
 	var found bool
 	if err := store.With(func(s *Settings) {
@@ -576,29 +423,25 @@ func revokeEnrolment(store SettingsStore, clientID string) (Enrolment, error) {
 		return Enrolment{}, fmt.Errorf("failed to save settings: %w", err)
 	}
 	if !found {
-		return Enrolment{}, fmt.Errorf("no enrolment found with client id %q", clientID)
+		return Enrolment{}, fmt.Errorf("%w: %q", errEnrolmentNotFound, clientID)
 	}
 	// Severing live connections is the half of revocation the record cannot
-	// do: taking effect on the next connection is not enough, because the
-	// wire protocol holds persistent connections in a scanner loop and a
-	// compromised agent that never reconnects would keep working. In a CLI
-	// process no hook is installed and this is a no-op, so what a CLI
-	// revocation buys is narrower and worth stating exactly: the running tray's
-	// listener re-resolves the enrolment from the FILE on every request
-	// (RemoteServer.resolveGrant via freshSettings), so the very next call on
-	// an already-open socket is refused — but the socket itself stays open
-	// until that client tries something. Closing it outright still needs the
-	// process that owns the connection table, which is why the hook exists.
+	// do. In a CLI process no hook is installed and this is a no-op: what a
+	// CLI-only revocation buys is narrower than it looks, since the running
+	// tray's listener re-resolves the enrolment from the FILE on every
+	// request, so the very next call on an already-open socket is refused —
+	// but the socket itself stays open until that client tries something.
+	// Closing it outright needs the process that owns the connection table,
+	// which is why the hook exists.
 	CloseRevokedEnrolment(removed.ClientID, removed.Fingerprint)
 	removeEnrolmentBundle(removed.ClientID)
 	return removed, nil
 }
 
-// removeEnrolmentBundle deletes an emitted bundle directory. Best-effort: the
-// operator may well have moved the bundle to the client and deleted it here,
-// and a revocation must not fail because the copy on the host is already gone.
-// Revocation's teeth are the deleted record and the closed connection, not
-// this.
+// removeEnrolmentBundle is best-effort: the operator may have already moved
+// the bundle to the client and deleted it here, and a revocation must not
+// fail because the host's copy is already gone. Revocation's teeth are the
+// deleted record and the closed connection, not this.
 func removeEnrolmentBundle(clientID string) {
 	if !isSafeID(clientID) {
 		return // never join an unvalidated id into a path we then remove

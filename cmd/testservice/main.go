@@ -1,21 +1,8 @@
-// Command testservice is a minimal relay-enhanced service used by the
-// hermetic test suite to exercise the real service spawn path
-// (env-var injection, pidfile, log file, reaper) without mocking
-// exec.Command.
-//
-// On start it reads RELAY_BRIDGE_SOCKET and RELAY_SERVICE_ID, optionally
-// dials the bridge to register a manifest (if --register is set), then
-// serves a stub HTTP listener on an internal Unix socket until SIGTERM.
+// Command testservice is a real spawnable binary (not a mock) that the
+// hermetic test suite uses to exercise relay's real service spawn path —
+// env-var injection, pidfile, log file, reaper — without mocking exec.Command.
 //
 // Built on demand by TestMain in service_registry_test.go.
-//
-// Usage (intended for tests only, but the flags are documented for
-// debugging):
-//
-//	testservice                    # block on SIGTERM, no manifest registration
-//	testservice --register         # register a stub manifest first
-//	testservice --status-after Ns  # exit after N seconds (life-cycle tests)
-//	testservice --dump-env PATH    # write os.Environ() to PATH, then continue
 package main
 
 import (
@@ -42,10 +29,8 @@ func main() {
 	dumpEnv := flag.String("dump-env", "", "write os.Environ() (one VAR=value per line) to this file, then continue")
 	flag.Parse()
 
-	// Dump the inherited environment so a test can assert exactly which
-	// credentials relay injected at spawn time (e.g. that the front-door
-	// bearer is absent from a backend's env). Written before any work so the
-	// test can poll for the file regardless of --register/--status-after.
+	// Written before any work so a test can poll for the file regardless of
+	// --register/--status-after.
 	if *dumpEnv != "" {
 		if err := os.WriteFile(*dumpEnv, []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
 			log.Fatalf("dump-env: %v", err)
@@ -54,9 +39,9 @@ func main() {
 
 	serviceID := os.Getenv(bridge.EnvServiceID)
 	bridgeSock := os.Getenv(bridge.EnvBridgeSocket)
-	mcpToken := os.Getenv(bridge.EnvServiceToken) // service-grade token, injected by service_registry
+	mcpToken := os.Getenv(bridge.EnvServiceToken)
 	if mcpToken == "" {
-		mcpToken = os.Getenv(bridge.EnvServiceTokenLegacy) // transition fallback
+		mcpToken = os.Getenv(bridge.EnvServiceTokenLegacy) // fallback for callers using the legacy env var name
 	}
 
 	if serviceID == "" {
@@ -64,8 +49,7 @@ func main() {
 	}
 	log.Printf("testservice %s starting (bridge=%s)", serviceID, bridgeSock)
 
-	// Bind our own internal socket in a per-pid tempdir so concurrent test
-	// runs don't collide.
+	// Per-pid tempdir so concurrent test runs don't collide.
 	internalDir, err := os.MkdirTemp("", "testservice-")
 	if err != nil {
 		log.Fatalf("mkdtemp: %v", err)
@@ -107,9 +91,9 @@ func main() {
 		if mcpToken == "" {
 			log.Fatal("testservice: --register requires RELAY_SERVICE_TOKEN")
 		}
-		// The shared bridge.Client uses bridge.SocketPath() (derived from
-		// ConfigDir) but services receive RELAY_BRIDGE_SOCKET explicitly —
-		// our parent might be running a non-default ConfigDir. Dial directly.
+		// Dial bridgeSock directly rather than going through bridge.Client:
+		// bridge.SocketPath() derives from ConfigDir, but our parent might be
+		// running a non-default one, so it wouldn't find the same socket.
 		if err := sendRegisterManifest(bridgeSock, mcpToken, bridge.RegisterManifestRequest{
 			ServiceID: serviceID,
 			Manifest: bridge.Manifest{
@@ -130,7 +114,6 @@ func main() {
 		return
 	}
 
-	// Block on SIGTERM / SIGINT.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	<-sigs
@@ -141,10 +124,6 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
-// sendRegisterManifest writes a RegisterManifest request directly to the
-// bridge socket. Mirrors what bridge.Client.RegisterManifest does, but
-// against an arbitrary socket path passed at runtime (via env var) instead
-// of bridge.SocketPath().
 func sendRegisterManifest(sockPath, token string, req bridge.RegisterManifestRequest) error {
 	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
 	if err != nil {

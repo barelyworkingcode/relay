@@ -16,7 +16,6 @@ import (
 	"time"
 )
 
-// oauthMetadata holds discovered OAuth 2.1 authorization server metadata.
 type oauthMetadata struct {
 	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
 	TokenEndpoint                 string   `json:"token_endpoint"`
@@ -26,20 +25,17 @@ type oauthMetadata struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// protectedResourceMetadata holds the PRM document (RFC 9728).
 type protectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
 	AuthorizationServers []string `json:"authorization_servers,omitempty"`
 	ScopesSupported      []string `json:"scopes_supported,omitempty"`
 }
 
-// oauthDiscoveryResult holds the results of the full OAuth discovery chain.
 type oauthDiscoveryResult struct {
 	Metadata *oauthMetadata
 	Scope    string // space-separated scopes from PRM
 }
 
-// oauthTokenResponse is the response from the token endpoint.
 type oauthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -47,13 +43,11 @@ type oauthTokenResponse struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-// oauthRegistrationResponse is the response from dynamic client registration.
 type oauthRegistrationResponse struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret,omitempty"`
 }
 
-// pkceParams holds PKCE code verifier and challenge.
 type pkceParams struct {
 	Verifier  string
 	Challenge string
@@ -113,8 +107,6 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// probeForResourceMetadata sends a request to the MCP URL and extracts the
-// resource_metadata URL from the 401 WWW-Authenticate header.
 func probeForResourceMetadata(mcpURL string) string {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	req, err := http.NewRequest("POST", mcpURL, strings.NewReader(body))
@@ -140,7 +132,6 @@ func probeForResourceMetadata(mcpURL string) string {
 	return parseResourceMetadataURL(resp.Header.Get("WWW-Authenticate"))
 }
 
-// parseResourceMetadataURL extracts resource_metadata="<url>" from a WWW-Authenticate header.
 func parseResourceMetadataURL(wwwAuth string) string {
 	if wwwAuth == "" {
 		return ""
@@ -159,7 +150,6 @@ func parseResourceMetadataURL(wwwAuth string) string {
 	return rest[:end]
 }
 
-// fetchProtectedResourceMetadata fetches a PRM document (RFC 9728).
 func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, error) {
 	if err := validateOAuthDiscoveryURL(prmURL); err != nil {
 		return nil, err
@@ -181,7 +171,6 @@ func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, 
 	return &prm, nil
 }
 
-// tryFetchOAuthMetadata tries to GET and parse an OAuth AS metadata document.
 func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
 	if err := validateOAuthDiscoveryURL(metadataURL); err != nil {
 		slog.Debug("oauth: skipping invalid metadata URL", "url", metadataURL, "error", err)
@@ -206,12 +195,6 @@ func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
 	return &meta
 }
 
-// discoverOAuth discovers the OAuth authorization server metadata
-// following the MCP spec (2025-03-26) discovery chain:
-//  1. Probe MCP URL for 401 -> WWW-Authenticate resource_metadata
-//  2. Fetch PRM -> get authorization_servers + scopes_supported
-//  3. Fetch AS metadata (path-aware, then non-path-aware)
-//  4. Fallback to guessing from MCP base URL
 func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 	parsed, err := url.Parse(mcpURL)
 	if err != nil {
@@ -220,10 +203,8 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 
 	mcpBase := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 
-	// Step 1: Probe for Protected Resource Metadata URL.
 	resourceMetaURL := probeForResourceMetadata(mcpURL)
 
-	// Step 2: Follow PRM -> authorization server chain.
 	var authServerBase string
 	var scope string
 	if resourceMetaURL != "" {
@@ -246,8 +227,6 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		}
 	}
 
-	// Step 3: Try to fetch AS metadata.
-	// Try from the authorization server if we found one, otherwise from the MCP host.
 	var searchBases []string
 	if authServerBase != "" {
 		searchBases = append(searchBases, authServerBase)
@@ -255,7 +234,6 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 	searchBases = append(searchBases, mcpBase)
 
 	for _, base := range searchBases {
-		// Path-aware: /.well-known/oauth-authorization-server<mcpPath>
 		if parsed.Path != "" && parsed.Path != "/" {
 			pathAware := base + "/.well-known/oauth-authorization-server" + parsed.Path
 			if meta := tryFetchOAuthMetadata(pathAware); meta != nil {
@@ -264,7 +242,6 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 			}
 		}
 
-		// Non-path-aware: /.well-known/oauth-authorization-server
 		nonPathAware := base + "/.well-known/oauth-authorization-server"
 		if meta := tryFetchOAuthMetadata(nonPathAware); meta != nil {
 			slog.Info("oauth: discovered metadata", "url", nonPathAware)
@@ -272,7 +249,6 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 		}
 	}
 
-	// Step 4: Fallback -- construct default endpoints.
 	fallback := mcpBase
 	if authServerBase != "" {
 		fallback = authServerBase
@@ -291,7 +267,6 @@ func discoverOAuth(mcpURL string) (*oauthDiscoveryResult, error) {
 	}, nil
 }
 
-// dynamicClientRegister attempts RFC 7591 dynamic client registration.
 func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oauthRegistrationResponse, error) {
 	if meta.RegistrationEndpoint == "" {
 		return nil, fmt.Errorf("server has no registration endpoint; manual client registration required")
@@ -339,7 +314,6 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	return &regResp, nil
 }
 
-// generatePKCE creates a PKCE code verifier and S256 challenge.
 func generatePKCE() (*pkceParams, error) {
 	verifierBytes := make([]byte, 32)
 	if _, err := rand.Read(verifierBytes); err != nil {
@@ -353,7 +327,6 @@ func generatePKCE() (*pkceParams, error) {
 	return &pkceParams{Verifier: verifier, Challenge: challenge}, nil
 }
 
-// generateState creates a random state parameter.
 func generateState() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -362,8 +335,6 @@ func generateState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// oauthCallbackServer manages the local HTTP server that receives the OAuth
-// authorization callback. It owns the listener, server, and result channels.
 type oauthCallbackServer struct {
 	listener net.Listener
 	server   *http.Server
@@ -372,8 +343,6 @@ type oauthCallbackServer struct {
 	done     chan struct{} // closed when Serve goroutine exits
 }
 
-// newOAuthCallbackServer starts a local callback server for the OAuth redirect.
-// Returns the server and the redirect URI that should be registered with the AS.
 func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -451,8 +420,6 @@ func newOAuthCallbackServer(expectedState string) (*oauthCallbackServer, string,
 	return srv, redirectURI, nil
 }
 
-// WaitForCode blocks until an authorization code is received, an error occurs,
-// or the timeout expires.
 func (s *oauthCallbackServer) WaitForCode(timeout time.Duration) (string, error) {
 	select {
 	case code := <-s.codeCh:
@@ -464,21 +431,12 @@ func (s *oauthCallbackServer) WaitForCode(timeout time.Duration) (string, error)
 	}
 }
 
-// Close shuts down the callback server, waits for the Serve goroutine to exit,
-// and releases all resources. Safe to call multiple times.
+// Safe to call multiple times.
 func (s *oauthCallbackServer) Close() {
 	s.server.Close()
 	<-s.done // wait for Serve goroutine to exit
 }
 
-// startOAuthFlow orchestrates the full OAuth 2.1 flow:
-//  1. Discover metadata (PRM chain + path-aware well-known)
-//  2. Start local callback server
-//  3. Dynamic client registration
-//  4. Generate PKCE + state
-//  5. Open browser to authorization URL
-//  6. Wait for callback
-//  7. Exchange code for tokens
 func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error) {
 	discovery, err := discoverOAuth(mcpURL)
 	if err != nil {
@@ -486,7 +444,6 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	}
 	meta := discovery.Metadata
 
-	// PKCE + state (no cleanup needed on failure).
 	pkce, err := generatePKCE()
 	if err != nil {
 		return nil, err
@@ -496,20 +453,17 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 		return nil, err
 	}
 
-	// Start local callback server.
 	srv, redirectURI, err := newOAuthCallbackServer(state)
 	if err != nil {
 		return nil, err
 	}
 	defer srv.Close()
 
-	// Dynamic client registration.
 	reg, err := dynamicClientRegister(meta, redirectURI, discovery.Scope)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build authorization URL.
 	authURL, err := url.Parse(meta.AuthorizationEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid authorization endpoint: %w", err)
@@ -529,14 +483,12 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	slog.Info("oauth: opening browser for authorization")
 	openBrowser(authURL.String())
 
-	// Wait for callback or timeout.
 	code, err := srv.WaitForCode(OAuthCallbackTimeout)
 	if err != nil {
 		return nil, err
 	}
 	slog.Info("oauth: received authorization code")
 
-	// Exchange code for tokens.
 	tokenResp, err := exchangeCode(meta, code, pkce.Verifier, redirectURI, reg.ClientID, reg.ClientSecret)
 	if err != nil {
 		return nil, err
@@ -555,8 +507,6 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 	return oauthState, nil
 }
 
-// postTokenEndpoint POSTs form data to the token endpoint and decodes the response.
-// Shared by exchangeCode and refreshAccessToken.
 func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oauthTokenResponse, error) {
 	if err := validateOAuthDiscoveryURL(meta.TokenEndpoint); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
@@ -582,7 +532,6 @@ func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oa
 	return &tokenResp, nil
 }
 
-// exchangeCode exchanges an authorization code for tokens.
 func exchangeCode(meta *oauthMetadata, code, verifier, redirectURI, clientID, clientSecret string) (*oauthTokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
@@ -597,7 +546,6 @@ func exchangeCode(meta *oauthMetadata, code, verifier, redirectURI, clientID, cl
 	return postTokenEndpoint(meta, data, "token exchange")
 }
 
-// refreshAccessToken uses a refresh token to obtain a new access token.
 func refreshAccessToken(meta *oauthMetadata, refreshToken, clientID, clientSecret string) (*oauthTokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"refresh_token"},

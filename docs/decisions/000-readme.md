@@ -59,13 +59,32 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   — in one critical section, so a callable MCP with no schema is
   unrepresentable; an over-long frame fails its own call and the stream
   resyncs; and a child's death, recovery, and abandonment become audit rows.
-- [012 — Relay forwards a call's arguments, it does not re-serialise
+- [013 — Relay forwards a call's arguments, it does not re-serialise
   them](013-relay-forwards-arguments-verbatim.md): tool arguments travel as
   `json.RawMessage` from the wire to the MCP and into the audit log. Relay
   validates and authorises a call without decoding its payload, because a round
   trip through Go values substitutes U+FFFD for a lone surrogate, sorts keys,
   drops duplicates and reformats numbers — and because a log that paraphrases
   what a client sent is not ground truth.
+
+- [014 — Every capability is an HTTP capability, and the view is just a
+  client](014-every-capability-is-an-http-capability.md): the IPC dispatch
+  table holds 27 commands and HTTP answers 9, so starting a service, revoking
+  an enrolment and querying the audit log are reachable only from a mouse. One
+  core per capability, envelopes that decode/call/encode and nothing else,
+  commands that answer their caller, and events demoted to change
+  notifications. Authorization is deferred and named as the risk; any listener
+  beyond the 0600 socket is opt-in and absent by default.
+- [015 — The control plane is classed by blast radius, and transport is part of
+  the grant](015-control-plane-authorization.md): pays ADR-014's deferred
+  authorization debt. Four capability classes (`read` / `configure` / `grant` /
+  `execute`) where the line for `execute` is **who chose what runs**, not
+  whether a process starts; `execute` routes are never registered on a TCP
+  listener at all rather than gated behind a check, imitating ADR-010's
+  two-entry dispatch table; a credential names its classes and an absent set
+  grants nothing; and the settings view becomes the LEAST privileged client
+  because a browser-held credential is the most exposed. `PeerPID` is
+  explicitly refused as an authorization input.
 
 ## Format
 

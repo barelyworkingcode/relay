@@ -2,21 +2,6 @@
 
 package main
 
-// Live integration test for relay ↔ relayLLM. Spawns the REAL
-// ../relayLLM binary via the service registry, waits for its
-// manifest registration over the bridge, and queries /api/models
-// end-to-end against the spawned process.
-//
-// Skipped unless `-tags=live`. Skips gracefully (instead of failing)
-// when ../relayLLM/relayLLM isn't built — keeps the live tier usable
-// for partial check-ins.
-//
-// When to run:
-//   - After any change that touches relay's bridge dispatch, frontend
-//     dispatcher, or service spawn lifecycle.
-//   - After any change in ../relayLLM that touches manifest
-//     registration, internal socket binding, or the /api/status shape.
-
 import (
 	"context"
 	"net"
@@ -47,7 +32,6 @@ func TestLive_RelayLLM_RegistersAndServesStatus(t *testing.T) {
 	}
 	t.Cleanup(func() { reg.Stop(cfg.ID) })
 
-	// Wait for manifest registration.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if enhanced.Get(cfg.ID) != nil {
@@ -61,8 +45,6 @@ func TestLive_RelayLLM_RegistersAndServesStatus(t *testing.T) {
 	}
 	t.Logf("relayLLM registered with %d routes", len(rec.Manifest.Routes))
 
-	// Dial the relayLLM internal socket directly to make sure /api/status
-	// responds with something parseable. Mirrors what relay would do.
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -86,10 +68,6 @@ func TestLive_RelayLLM_RegistersAndServesStatus(t *testing.T) {
 }
 
 func TestLive_RelayLLM_ManifestMatchesFixture(t *testing.T) {
-	// Drift detector: if relayLLM's real manifest diverges from the
-	// hermetic fixture, the default-tier integration tests are testing
-	// fiction. Fail loudly so the fixture (or relayLLM) gets fixed in
-	// lockstep.
 	binPath := findRelayLLMBinary(t)
 	if binPath == "" {
 		t.Skip("../relayLLM/relayLLM not built")
@@ -146,9 +124,6 @@ func TestLive_RelayLLM_ManifestMatchesFixture(t *testing.T) {
 	}
 }
 
-// findRelayLLMBinary returns the path to the built relayLLM binary, or
-// empty if it can't be located. Walks a small set of candidate paths so
-// the test is robust against different build layouts.
 func findRelayLLMBinary(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
@@ -164,4 +139,3 @@ func findRelayLLMBinary(t *testing.T) string {
 	}
 	return ""
 }
-

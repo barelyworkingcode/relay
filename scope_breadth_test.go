@@ -1,21 +1,12 @@
 package main
 
-// Issue #41: a grant of "/" rendered identically to a one-folder grant on the
-// verification step the operator guide points at first.
-//
-// The headline regression is TestScopeNote_AFilesystemRootIsNotConfinedToOneValue,
-// which is written against nothing but ParseContextSchema and scopeNoteFor —
-// both unchanged in signature — so it compiles and FAILS on main.
-
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// fsmcpCountSchema is fsMCP's declaration as it exists after issue #33: the
-// value is host topology, so the client's scope note gets the count and not
-// the paths.
+// disclose: count because allowed_dirs' value is host topology.
 const fsmcpCountSchema = `{
   "allowed_dirs": {
     "type": "array", "items": {"type": "string"},
@@ -36,14 +27,8 @@ func noteFor(t *testing.T, schema, value string) string {
 	}, "fs_read")
 }
 
-// TestScopeNote_AFilesystemRootIsNotConfinedToOneValue is issue #41's headline
-// comparison, and the whole of it: on main these two calls return the SAME
-// string.
-//
-// `disclose: "count"` was a correct fix for a real disclosure. What it missed
-// is that a count is not a measure of confinement — "1 value" is true of
-// /Users/me/project and equally true of "/", and the first verification step
-// relay's own operator guide names could therefore not fail.
+// Deliberate: a count is not a measure of confinement — "1 value" is true of
+// /Users/me/project and equally true of "/".
 func TestScopeNote_AFilesystemRootIsNotConfinedToOneValue(t *testing.T) {
 	root := noteFor(t, fsmcpCountSchema, `["/"]`)
 	folder := noteFor(t, fsmcpCountSchema, `["/Users/me/project"]`)
@@ -57,18 +42,15 @@ func TestScopeNote_AFilesystemRootIsNotConfinedToOneValue(t *testing.T) {
 	if !strings.Contains(root, "unrestricted") {
 		t.Errorf("the note does not say the grant is unrestricted: %q", root)
 	}
-	// The bounded grant is unchanged, byte for byte. Issue #41 is explicit
-	// that the client-side rendering must not be weakened to fix an
-	// operator-side problem: the count is still all a confined client gets.
+	// Deliberate: the bounded grant's client-facing note is unchanged — fixing
+	// the operator-side problem must not weaken client disclosure.
 	if folder != `Scope: Directories this client may read, search and modify within — confined to 1 value.` {
 		t.Errorf("the bounded grant's note changed: %q", folder)
 	}
 }
 
-// TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting pins the rule
-// that the finding is not a disclosure. A client learns it is at a filesystem
-// root the moment it lists one, so withholding it buys nothing and costs the
-// client the one fact about its own limits that matters.
+// Deliberate: a client learns it's at a filesystem root the moment it lists
+// one, so withholding that fact buys nothing.
 func TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting(t *testing.T) {
 	for _, disclose := range []string{`"value"`, `"count"`, `"none"`} {
 		schema := `{"allowed_dirs":{"type":"array","description":"Dirs","scope":"restrict","source":"operator","disclose":` + disclose + `}}`
@@ -87,12 +69,9 @@ func TestScopeNote_AnUnrestrictedValueOutranksEveryDiscloseSetting(t *testing.T)
 	}
 }
 
-// TestScopeNote_AHomeDirectoryStaysCountedForTheClient is the deliberate half
-// of the split. A home directory IS confined, so "confined to 1 value" is not
-// false; and naming it would tell a remote client the sandbox is somebody's
-// home, which is exactly the topology `disclose` exists to withhold. It is
-// loud on every OPERATOR surface instead — see TestScopeBreadth_Classification
-// and the `relay grant` and Settings tests.
+// Deliberate: a home directory IS confined (not false to say "1 value"), and
+// naming it to a remote client would disclose topology the operator never
+// chose to reveal. It's loud on operator surfaces instead.
 func TestScopeNote_AHomeDirectoryStaysCountedForTheClient(t *testing.T) {
 	note := noteFor(t, fsmcpCountSchema, `["/Users/admin"]`)
 	if !strings.Contains(note, "confined to 1 value") {
@@ -130,10 +109,8 @@ func TestScopeBreadth_Classification(t *testing.T) {
 	}
 }
 
-// TestScopeBreadth_AListIsAUnion pins the direction of the answer for a
-// multi-entry value: ["/Users/me/proj", "/"] reaches everything, and a
-// rendering that reported the first entry would describe the confinement the
-// operator meant rather than the one in force.
+// Subtle: a multi-entry value is a union — reporting just the first entry
+// would describe the confinement the operator meant, not the one in force.
 func TestScopeBreadth_AListIsAUnion(t *testing.T) {
 	if got := scopeValueBreadth(json.RawMessage(`["/Users/me/proj","/"]`)); got != scopeBreadthRoot {
 		t.Errorf("a list containing the filesystem root read as %q", got)
@@ -147,10 +124,8 @@ func TestScopeBreadth_AListIsAUnion(t *testing.T) {
 	}
 }
 
-// TestAuditAuthorityLine_NamesAnUnrestrictedScope: `relay audit --authority`
-// is the surface issue #41 names as already truthful, and it stays truthful —
-// the coordinates are still printed. The warning is appended beside them,
-// because the operator is entitled to both.
+// The coordinates stay printed; the warning is appended beside them — the
+// operator is entitled to both.
 func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 	allowExternal := false
 	line, ok := auditAuthorityLine(AuditEvent{
@@ -178,10 +153,6 @@ func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// `relay grant` — the operator-side check the guide now points at
-// ---------------------------------------------------------------------------
-
 func TestGrantView_ShowsTheRealValueAndFlagsTheRoot(t *testing.T) {
 	s := &Settings{
 		Version:      1,
@@ -199,8 +170,8 @@ func TestGrantView_ShowsTheRealValueAndFlagsTheRoot(t *testing.T) {
 	printGrantViews(&out, []grantView{newGrantView(s, profile)})
 	got := out.String()
 
-	// The coordinates, in full, whatever the field's disclose says. This is
-	// the operator's own machine and their own grant.
+	// disclose never governs the operator surface — this is the operator's own
+	// machine and their own grant.
 	if !strings.Contains(got, `allowed_dirs = ["/"]`) {
 		t.Errorf("the operator surface did not print the real value:\n%s", got)
 	}

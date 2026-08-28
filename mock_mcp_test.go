@@ -8,14 +8,13 @@ import (
 	"relaygo/mcp"
 )
 
-// mockMcpConn implements McpConnection for testing.
 type mockMcpConn struct {
 	sendRequestFunc    func(ctx context.Context, method string, params interface{}) (json.RawMessage, error)
 	sendNotificationFn func(method string)
 	closeFn            func()
 	tools              []mcp.Tool
 	config             ExternalMcp
-	notifications      []string // track received notifications
+	notifications      []string
 	closed             bool
 }
 
@@ -47,10 +46,9 @@ func (m *mockMcpConn) GetConfig() ExternalMcp    { return m.config }
 // decodedToolParams renders the tools/call params a mock connection was handed
 // as decoded Go values, for tests that want to assert on `_meta`.
 //
-// Production hands SendRequest a map[string]json.RawMessage and every member of
-// it is bytes, because relay forwards a caller's arguments rather than
-// re-encoding them (ADR-012). A test that wants a Go map has to do the decode
-// itself, and that is the point: nothing on the call path does it any more.
+// Production never decodes call params — relay forwards a caller's arguments
+// as bytes rather than re-encoding them — so there is no shared decode path
+// to call into; a test that wants a Go map has to do this itself.
 func decodedToolParams(params interface{}) map[string]interface{} {
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -63,20 +61,12 @@ func decodedToolParams(params interface{}) map[string]interface{} {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers — reduce lock/unlock boilerplate in router and manager tests
-// ---------------------------------------------------------------------------
-
-// addMockConn registers a mock connection in the manager under lock.
-// Eliminates the repeated mgr.mu.Lock() / mgr.conns[id] = mock / mgr.mu.Unlock() pattern.
 func addMockConn(mgr *ExternalMcpManager, id string, mock *mockMcpConn) {
 	mgr.mu.Lock()
 	mgr.conns[id] = mock
 	mgr.mu.Unlock()
 }
 
-// addMockSchema registers a context schema and its declared version for an MCP
-// under lock, which is what a real handshake does in finalizeConnection.
 func addMockSchema(mgr *ExternalMcpManager, id, schema string, version int) {
 	mgr.mu.Lock()
 	mgr.schemas[id] = json.RawMessage(schema)
@@ -84,8 +74,6 @@ func addMockSchema(mgr *ExternalMcpManager, id, schema string, version int) {
 	mgr.mu.Unlock()
 }
 
-// newMockConn creates a mockMcpConn with the given ID and tools.
-// Optionally accepts a sendRequestFunc for tool call interception.
 func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, string, interface{}) (json.RawMessage, error)) *mockMcpConn {
 	return &mockMcpConn{
 		tools:           tools,
@@ -94,17 +82,13 @@ func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, strin
 	}
 }
 
-// simpleTools creates a []mcp.Tool from a list of tool names, with NO
-// annotations — which under ADR-011 decision 2 means "mutating", because an
-// absent readOnlyHint is not a claim that a tool is safe, and under decision 2c
-// means "open-world", because MCP's default for openWorldHint is true and
-// silence there is not a claim of containment either.
-//
-// Both silences are usable in a LOCAL project's fixture, and that is the point
-// rather than an accident: a local project defaults to write and to allowed,
-// so an unannotated tool is exactly the ordinary tool such a project calls all
-// day. A remote-profile fixture has to say what it means on both axes — see
-// macmcpToolSurface, which does.
+// simpleTools creates a []mcp.Tool from a list of tool names, with no
+// annotations at all: an absent readOnlyHint is not a claim of safety, and an
+// absent openWorldHint is not a claim of containment, so this reads as
+// "mutating" and "open-world" rather than as an unset default. That's usable
+// in a LOCAL project's fixture, where it's exactly the ordinary tool such a
+// project calls all day — a remote-profile fixture has to say what it means
+// on both axes instead (see macmcpToolSurface).
 func simpleTools(names ...string) []mcp.Tool {
 	tools := make([]mcp.Tool, len(names))
 	for i, name := range names {
@@ -113,9 +97,9 @@ func simpleTools(names ...string) []mcp.Tool {
 	return tools
 }
 
-// localTools is simpleTools plus the claim that these tools stay on this host:
-// openWorldHint: false, still silent on readOnlyHint. For a fixture that has to
-// be callable from a PROFILE without an outbound grant.
+// localTools is simpleTools plus openWorldHint: false, still silent on
+// readOnlyHint — for a fixture that must be callable from a profile with no
+// outbound grant.
 func localTools(names ...string) []mcp.Tool {
 	tools := simpleTools(names...)
 	for i := range tools {
@@ -124,8 +108,6 @@ func localTools(names ...string) []mcp.Tool {
 	return tools
 }
 
-// openWorldTools declares the opposite: tools that reach outside the host,
-// which is web_fetch's shape and mail_send's.
 func openWorldTools(names ...string) []mcp.Tool {
 	tools := simpleTools(names...)
 	for i := range tools {
@@ -135,15 +117,10 @@ func openWorldTools(names ...string) []mcp.Tool {
 }
 
 // readOnlyTools is simpleTools with both hints declared honestly: read-only
-// and staying on this host. Deliberately a SEPARATE helper rather than a
-// default on simpleTools: the whole of decision 2 is that an unannotated tool
-// is refused to a read-only grant, so a helper that quietly annotated
-// everything would make that untestable by making it unreachable.
-//
-// It carries openWorldHint too because its only consumer is a remote-profile
-// fixture, and a profile defaults to refusing an open-world tool (decision 2c)
-// — so a tool annotated on one axis only would be unreachable there for a
-// reason that has nothing to do with what the test is measuring.
+// and staying on this host. Deliberately a separate helper rather than a
+// default on simpleTools: an unannotated tool being refused to a read-only
+// grant is exactly what several tests measure, so a helper that quietly
+// annotated everything would make that case unreachable.
 func readOnlyTools(names ...string) []mcp.Tool {
 	tools := simpleTools(names...)
 	for i := range tools {

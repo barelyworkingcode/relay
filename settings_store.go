@@ -15,7 +15,6 @@ import (
 	"relaygo/bridge"
 )
 
-// SettingsStore abstracts settings persistence for testability.
 type SettingsStore interface {
 	EnsureInitialized() error
 	Get() *Settings
@@ -24,31 +23,23 @@ type SettingsStore interface {
 	With(fn func(*Settings)) error
 }
 
-// Compile-time interface assertion.
 var _ SettingsStore = (*FileSettingsStore)(nil)
 
-// FileSettingsStore implements SettingsStore backed by a JSON file on disk.
-// Create with NewSettingsStore and inject into components that need settings access.
 type FileSettingsStore struct {
 	mu          sync.Mutex
 	cache       *Settings
 	lastModTime int64
-	dir         string // config directory (injected for testability)
+	dir         string // injected for testability, rather than calling bridge.ConfigDir() directly
 }
 
-// NewSettingsStore creates a new file-backed settings store using the default
-// platform config directory.
 func NewSettingsStore() *FileSettingsStore {
 	return &FileSettingsStore{dir: bridge.ConfigDir()}
 }
 
-// NewSettingsStoreAt creates a file-backed settings store rooted at dir.
-// Useful for testing without touching the real config directory.
 func NewSettingsStoreAt(dir string) *FileSettingsStore {
 	return &FileSettingsStore{dir: dir}
 }
 
-// path returns the full path to settings.json.
 func (ss *FileSettingsStore) path() string {
 	return filepath.Join(ss.dir, "settings.json")
 }
@@ -64,9 +55,7 @@ func defaultSettings() *Settings {
 	}
 }
 
-// load reads settings from disk. Caller must hold the mutex.
-// Returns default settings on missing file (expected on first launch) but
-// logs a warning on any other I/O or parse error for observability.
+// load: caller must hold the mutex.
 //
 // JSONC comments (// and /* */) are stripped before parsing so users can
 // hand-edit settings.json with comment blocks to toggle sections. Comments
@@ -88,22 +77,18 @@ func (ss *FileSettingsStore) load() *Settings {
 	return &s
 }
 
-// ensureSlice replaces a nil slice with an empty one of the same type.
 func ensureSlice[T any](s *[]T) {
 	if *s == nil {
 		*s = []T{}
 	}
 }
 
-// ensureMap replaces a nil map with an empty one of the same types.
 func ensureMap[K comparable, V any](m *map[K]V) {
 	if *m == nil {
 		*m = map[K]V{}
 	}
 }
 
-// normalize ensures all slices are non-nil (for JSON serialization) and
-// back-fills default values for fields added in later versions.
 func (s *Settings) normalize() {
 	if s.Version == 0 {
 		s.Version = currentSettingsVersion
@@ -125,10 +110,9 @@ func (s *Settings) normalize() {
 	}
 }
 
-// atomicWriteFile writes data to path durably: write + fsync a temp file in the
-// same directory, rename it over the target, then fsync the directory so the
-// rename survives a crash. os.Rename is atomic for visibility but NOT durable
-// on its own. perm sets the file mode (preserved through the rename).
+// atomicWriteFile writes + fsyncs a temp file, renames it over the target,
+// then fsyncs the directory so the rename survives a crash: os.Rename is
+// atomic for visibility but NOT durable on its own.
 //
 // Shared by settings persistence and the service-config editor
 // (service_config_file.go) so both go through one tested durability path.
@@ -164,8 +148,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// save writes settings to disk atomically via temp file + rename.
-// Caller must hold the mutex.
+// save: caller must hold the mutex.
 func (ss *FileSettingsStore) save(s *Settings) error {
 	if err := os.MkdirAll(ss.dir, 0700); err != nil {
 		return fmt.Errorf("create settings dir: %w", err)
@@ -186,7 +169,6 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	return nil
 }
 
-// ensureAdminSecret generates an AdminSecret if one is not already set.
 func ensureAdminSecret(s *Settings) error {
 	if s.AdminSecret != "" {
 		return nil
@@ -199,13 +181,13 @@ func ensureAdminSecret(s *Settings) error {
 	return nil
 }
 
-// deepCopySettings returns a deep copy via JSON round-trip. This is correct by
-// construction — new fields are automatically included without manual updates.
-// Performance is irrelevant here: settings are small and copies are infrequent.
-// Panics on marshal/unmarshal failure — Settings is a known JSON-safe struct,
-// so failure indicates a programming error (e.g., adding an unmarshalable field).
-// Panicking is safer than the previous fallback to a shallow copy, which shared
-// underlying slices and maps and could silently corrupt state.
+// deepCopySettings goes through a JSON round-trip rather than a shallow
+// struct copy, deliberately: a shallow copy shares underlying slices and
+// maps and can silently corrupt state across callers. It panics on
+// marshal/unmarshal failure rather than returning an error — Settings is a
+// known JSON-safe struct, so failure here means a programming error (e.g. an
+// unmarshalable field was added), not a runtime condition callers should
+// handle.
 func deepCopySettings(s *Settings) *Settings {
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -218,8 +200,6 @@ func deepCopySettings(s *Settings) *Settings {
 	return &cp
 }
 
-// EnsureInitialized loads settings from disk, generates an admin secret if
-// missing, and saves. Call once at startup before using the store.
 func (ss *FileSettingsStore) EnsureInitialized() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -237,10 +217,6 @@ func (ss *FileSettingsStore) EnsureInitialized() error {
 	}
 	return nil
 }
-
-// ---------------------------------------------------------------------------
-// FileSettingsStore methods
-// ---------------------------------------------------------------------------
 
 // freshSettings returns settings that reflect the FILE, not whatever snapshot
 // this process happened to load earlier.
@@ -266,8 +242,7 @@ func freshSettings(store SettingsStore) *Settings {
 	return store.Get()
 }
 
-// Get returns a deep copy of the cached settings (or reads from disk on first
-// call). The returned *Settings is safe for concurrent read and mutation.
+// Get returns a deep copy, safe for concurrent read and mutation.
 func (ss *FileSettingsStore) Get() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -277,7 +252,6 @@ func (ss *FileSettingsStore) Get() *Settings {
 	return deepCopySettings(ss.cache)
 }
 
-// Reload always reads from disk and updates the cache.
 func (ss *FileSettingsStore) Reload() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -286,11 +260,11 @@ func (ss *FileSettingsStore) Reload() *Settings {
 	return deepCopySettings(s)
 }
 
-// ReloadIfChanged checks the settings file modtime and reloads only if it changed.
-// Returns the new settings if reloaded, or nil if unchanged.
-// Both stat and reload happen under the lock to eliminate any TOCTOU window
-// between checking the modtime and updating the cache. The stat targets a
-// local file so holding the lock during I/O is negligible.
+// ReloadIfChanged returns the new settings if the file's modtime moved, or
+// nil if unchanged. Both stat and reload happen under the lock, deliberately,
+// to eliminate a TOCTOU window between checking the modtime and updating the
+// cache — the stat targets a local file, so holding the lock during I/O is
+// negligible.
 func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -313,11 +287,10 @@ func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
 	return deepCopySettings(s)
 }
 
-// With atomically mutates the cached settings and saves to disk.
-// Uses the in-memory cache (deep-copied) rather than re-reading from disk,
-// since the cache is authoritative under the mutex. Updates modtime on
-// success so ReloadIfChanged() won't redundantly re-read what we just wrote.
-// The admin secret must already exist (call EnsureInitialized at startup).
+// With mutates a deep copy of the in-memory cache rather than re-reading
+// from disk, since the cache is authoritative under the mutex, and updates
+// lastModTime on success so ReloadIfChanged won't redundantly re-read what
+// was just written. Requires EnsureInitialized to have run first.
 func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -336,5 +309,3 @@ func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 	}
 	return nil
 }
-
-

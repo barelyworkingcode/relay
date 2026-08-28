@@ -8,19 +8,16 @@ import (
 	"time"
 )
 
-// Client connects to the bridge Unix socket to list and call tools.
 type Client struct {
 	sockPath string
 	token    string
 	cwd      string // sent only when token is empty; see BridgeRequest.Cwd
 }
 
-// NewClient creates a Client that will authenticate with the given token.
-//
-// With no token, the client falls back to directory auth: it sends its working
-// directory, which relay resolves against projects that opted in via
-// AllowCwdAuth. The cwd is captured once at construction (the process doesn't
-// chdir between calls) and is never sent alongside a token, so an authenticated
+// NewClient falls back to directory auth when token is empty: it sends its
+// working directory, which relay resolves against projects that opted in via
+// AllowCwdAuth. The cwd is captured once here (the process doesn't chdir
+// between calls) and is never sent alongside a token, so an authenticated
 // call can't be re-scoped by the directory it happens to run from.
 func NewClient(token string) *Client {
 	c := &Client{
@@ -33,7 +30,6 @@ func NewClient(token string) *Client {
 	return c
 }
 
-// checkError returns an error if the bridge response is an error response.
 func checkError(resp *BridgeResponse) error {
 	if resp.Type == RespError {
 		return fmt.Errorf("bridge error (code %d): %s", resp.Code, resp.Message)
@@ -41,7 +37,6 @@ func checkError(resp *BridgeResponse) error {
 	return nil
 }
 
-// ListTools sends a ListTools request and returns the raw JSON tool array.
 func (c *Client) ListTools() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
 		Type:  ReqListTools,
@@ -57,15 +52,12 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 	return resp.Tools, nil
 }
 
-// CallTool sends a CallTool request and returns the raw JSON result,
-// discarding any progress frames. Opens a fresh connection per call.
 func (c *Client) CallTool(name string, args json.RawMessage) (json.RawMessage, error) {
 	return c.CallToolStreaming(name, args, nil)
 }
 
-// CallToolStreaming is CallTool with progress: onProgress is invoked for each
-// RespProgress frame received before the terminal result. A nil onProgress
-// behaves exactly like CallTool. Opens a fresh connection per call.
+// CallToolStreaming invokes onProgress for each RespProgress frame received
+// before the terminal response; a nil onProgress behaves like CallTool.
 func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress func(ProgressUpdate)) (json.RawMessage, error) {
 	resp, err := c.sendStreaming(BridgeRequest{
 		Type:      ReqCallTool,
@@ -83,7 +75,6 @@ func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress
 	return resp.Result, nil
 }
 
-// ListProjects sends a ListProjects request and returns the raw JSON project array.
 func (c *Client) ListProjects() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
 		Type:  ReqListProjects,
@@ -98,7 +89,6 @@ func (c *Client) ListProjects() (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
-// GetProject sends a GetProject request and returns the raw JSON project.
 func (c *Client) GetProject(id string) (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
 		Type:      ReqGetProject,
@@ -114,9 +104,8 @@ func (c *Client) GetProject(id string) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
-// ResolvePtyEnv asks relay for the env bundle (project-scoped token + working
-// dir) needed to spawn a project-scoped PTY. Service-token authentication
-// required. Skill generation is owned by relay and is not driven by this call.
+// ResolvePtyEnv requires service-token authentication. Skill generation is
+// owned by relay and is not driven by this call.
 func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	args, err := json.Marshal(req)
 	if err != nil {
@@ -140,9 +129,8 @@ func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	return out, nil
 }
 
-// ResolveProjectTemplate asks relay for a project-scoped shell (terminal) launch
-// template definition by (ProjectID, TemplateID). Service-token authentication
-// required. The response carries only the template definition — never a token.
+// ResolveProjectTemplate requires service-token authentication. The response
+// carries only the template definition — never a token.
 func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplateResponse, error) {
 	args, err := json.Marshal(req)
 	if err != nil {
@@ -166,9 +154,8 @@ func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplate
 	return out, nil
 }
 
-// RegisterManifest tells relay where to reach this service and what it
-// exposes. Called on startup after the service has picked + bound its
-// own internal socket. Service-token authentication required.
+// RegisterManifest is called on startup after the service has picked + bound
+// its own internal socket. Service-token authentication required.
 // Re-registration with the same serviceID replaces the prior record.
 func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	args, err := json.Marshal(req)
@@ -186,7 +173,6 @@ func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	return checkError(resp)
 }
 
-// sendAdmin sends an admin request to the bridge and returns any error.
 func sendAdmin(reqType, name, token string) error {
 	c := NewClient(token)
 	resp, err := c.send(BridgeRequest{
@@ -200,39 +186,28 @@ func sendAdmin(reqType, name, token string) error {
 	return checkError(resp)
 }
 
-// SendReconcile sends a ReconcileExternalMcps request with admin authentication.
 func SendReconcile(token string) error {
 	return sendAdmin(ReqReconcileExternalMcps, "", token)
 }
 
-// SendReloadMcp sends a ReloadExternalMcp request for the given MCP ID.
 func SendReloadMcp(id, token string) error {
 	return sendAdmin(ReqReloadExternalMcp, id, token)
 }
 
-// SendReloadService sends a ReloadService request for the given service ID.
 func SendReloadService(id, token string) error {
 	return sendAdmin(ReqReloadService, id, token)
 }
 
-// bridgeTimeout bounds inactivity on a bridge round-trip: it caps connect +
-// write + time-to-first-frame, and is reset on every frame received during a
-// streaming call (see sendStreaming) so it acts as an idle timeout rather than
-// a hard cap. Tool calls can take minutes (LLM inference, long-running tools)
-// and stream progress throughout, so this is generous. A var (not const) so
+// bridgeTimeout bounds inactivity, not total call time: it is reset on every
+// frame received during a streaming call (see sendStreaming), so a tool that
+// legitimately streams progress for minutes stays alive. A var (not const) so
 // tests can shorten it to exercise the idle-reset behavior deterministically.
 var bridgeTimeout = 10 * time.Minute
 
-// send opens a connection, writes the request, reads one terminal response,
-// and closes. Equivalent to sendStreaming with no progress handler.
 func (c *Client) send(req BridgeRequest) (*BridgeResponse, error) {
 	return c.sendStreaming(req, nil)
 }
 
-// sendStreaming opens a connection, writes the request, then reads frames
-// until a terminal (non-progress) response. Each RespProgress frame is passed
-// to onProgress (if non-nil) and reading continues. Sets a deadline so a call
-// can't hang indefinitely if the tray app is unresponsive.
 func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate)) (*BridgeResponse, error) {
 	conn, err := net.Dial("unix", c.sockPath)
 	if err != nil {
@@ -256,11 +231,9 @@ func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate
 
 	scanner := NewScanner(conn)
 	for scanner.Scan() {
-		// Reset the deadline on every received frame so bridgeTimeout acts as an
-		// inactivity timeout rather than a hard cap. A tool that legitimately
-		// streams progress for longer than bridgeTimeout stays alive as long as
-		// it keeps producing frames; a silent or hung peer is still cut off after
-		// bridgeTimeout of no output.
+		// Reset on every frame so bridgeTimeout is an inactivity timeout, not a
+		// hard cap: a hung peer is still cut off, but a legitimately long call
+		// stays alive as long as it keeps producing frames.
 		if err := conn.SetDeadline(time.Now().Add(bridgeTimeout)); err != nil {
 			return nil, fmt.Errorf("reset deadline: %w", err)
 		}

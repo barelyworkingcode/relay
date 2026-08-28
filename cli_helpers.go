@@ -10,7 +10,6 @@ import (
 	"relaygo/bridge"
 )
 
-// stringSlice implements flag.Value for repeated string flags.
 type stringSlice []string
 
 func (s *stringSlice) String() string { return fmt.Sprintf("%v", *s) }
@@ -19,7 +18,6 @@ func (s *stringSlice) Set(val string) error {
 	return nil
 }
 
-// resolveID returns id if non-empty, otherwise slugifies name.
 func resolveID(id, name string) string {
 	if id != "" {
 		return id
@@ -27,7 +25,6 @@ func resolveID(id, name string) string {
 	return slugify(name)
 }
 
-// parseEnvPairs parses KEY=VALUE pairs into a map.
 func parseEnvPairs(pairs []string) (map[string]string, error) {
 	if len(pairs) == 0 {
 		return nil, nil
@@ -43,12 +40,6 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
-// ---------------------------------------------------------------------------
-// Shared register helpers — eliminates duplicate flag/validation/upsert logic
-// between mcp_cmd.go and service_cmd.go.
-// ---------------------------------------------------------------------------
-
-// registerOpts holds flag values common to both mcp and service registration.
 type registerOpts struct {
 	Name     string
 	ID       string
@@ -56,7 +47,6 @@ type registerOpts struct {
 	EnvPairs stringSlice
 }
 
-// addRegisterFlags adds the common --name, --id, --args, --env flags to a flag set.
 func addRegisterFlags(fs *flag.FlagSet, opts *registerOpts) {
 	fs.StringVar(&opts.Name, "name", "", "display name (required)")
 	fs.StringVar(&opts.ID, "id", "", "override generated ID")
@@ -64,8 +54,6 @@ func addRegisterFlags(fs *flag.FlagSet, opts *registerOpts) {
 	fs.Var(&opts.EnvPairs, "env", "environment KEY=VALUE (repeatable)")
 }
 
-// resolveIDAndEnv validates name, resolves the ID, and parses env pairs.
-// Exits on validation failure.
 func (opts *registerOpts) resolveIDAndEnv() (id string, env map[string]string) {
 	if opts.Name == "" {
 		exitError("--name is required")
@@ -82,9 +70,8 @@ func (opts *registerOpts) resolveIDAndEnv() (id string, env map[string]string) {
 	return
 }
 
-// upsertAndPrint atomically upserts an entity via store.With, extracts the
-// admin secret, and prints the result. Returns whether it was an update and the secret.
-// If toolCount >= 0, the tool count is included in the output message.
+// upsertAndPrint prints a tool count in the output message when toolCount
+// >= 0; a negative value means "omit" rather than "zero".
 func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Settings) bool, toolCount int) (updated bool, adminSecret string) {
 	if err := store.With(func(s *Settings) {
 		adminSecret = s.AdminSecret
@@ -104,21 +91,17 @@ func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Setti
 	return
 }
 
-// exitError prints an error message to stderr and exits with code 1.
 func exitError(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(1)
 }
 
-// warnNotifyFailure prints a non-fatal warning when a bridge notification fails.
 func warnNotifyFailure(err error) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not notify tray app: %v\n", err)
 	}
 }
 
-// notifyMcpChange sends the appropriate bridge message after an MCP upsert.
-// Updated MCPs get a targeted reload; new MCPs trigger a full reconcile.
 func notifyMcpChange(updated bool, id, adminSecret string) {
 	if updated {
 		warnNotifyFailure(bridge.SendReloadMcp(id, adminSecret))
@@ -127,17 +110,11 @@ func notifyMcpChange(updated bool, id, adminSecret string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Shared CLI subcommand framework
-// ---------------------------------------------------------------------------
-
-// cliSubcommand describes a named subcommand for a CLI verb (mcp, service).
 type cliSubcommand struct {
 	Name string
 	Run  func(args []string)
 }
 
-// runSubcommands dispatches to the matching subcommand or prints usage and exits.
 func runSubcommands(verb string, commands []cliSubcommand, args []string) {
 	if len(args) == 0 {
 		printSubcommandUsage(verb, commands)
@@ -161,10 +138,8 @@ func printSubcommandUsage(verb string, commands []cliSubcommand) {
 	}
 }
 
-// resolveAndRemove resolves an entity by id/name, removes it via store.With, and
-// prints the result. Returns the resolved ID and admin secret, or exits with an
-// error if not found. Resolution and removal happen inside the same With() call
-// to avoid a TOCTOU race between Get() and With().
+// resolveAndRemove resolves and removes inside the same store.With() call,
+// deliberately, to avoid a TOCTOU race between a separate Get() and With().
 func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn func(*Settings, string, string) string, removeFn func(*Settings, string)) (string, string) {
 	if id == "" && name == "" {
 		exitError("--id or --name is required")
@@ -195,7 +170,6 @@ func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn fu
 	return resolvedID, adminSecret
 }
 
-// newTabWriter returns a tabwriter configured for CLI list output.
 func newTabWriter() *tabwriter.Writer {
 	return tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 }

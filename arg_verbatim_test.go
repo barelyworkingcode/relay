@@ -2,15 +2,6 @@
 
 package main
 
-// Relay forwards a caller's tool arguments; it does not re-serialise them
-// (ADR-012, issue #40).
-//
-// The tests that matter here run against the REAL cmd/testmcp stdio child,
-// because the property is about what a separate process receives on its stdin
-// and no in-process mock can establish that. testmcp answers an unrecognised
-// method by echoing the params it was given, so `tools/call` comes back as the
-// exact bytes the child parsed off the wire.
-
 import (
 	"context"
 	"encoding/json"
@@ -18,26 +9,20 @@ import (
 	"testing"
 )
 
-// loneSurrogateArgs is issue #40's payload: `\ud800` is a legal JSON escape
-// and an ILLEGAL UTF-16 code point on its own, so decoding it into a Go string
-// substitutes U+FFFD and there is no way back. fsMCP refuses to write one; the
-// bug was that relay silently repaired it first, so the refusal never fired.
+// `\ud800` is a legal JSON escape and an ILLEGAL UTF-16 code point on its own,
+// so decoding it into a Go string substitutes U+FFFD and there is no way back.
 const loneSurrogateArgs = `{"file_path":"/d0/modes/surrogate.txt","content":"a\ud800b"}`
 
-// replacementUTF8 is U+FFFD as it appears in a JSON document once a Go string
-// carrying it has been re-encoded.
 const replacementUTF8 = "�"
 
-// addConn registers any McpConnection under lock — including a real stdio one,
-// which addMockConn's *mockMcpConn parameter cannot take.
+// addConn accepts any McpConnection, including a real stdio one — addMockConn's
+// *mockMcpConn parameter cannot.
 func addConn(mgr *ExternalMcpManager, id string, conn McpConnection) {
 	mgr.mu.Lock()
 	mgr.conns[id] = conn
 	mgr.mu.Unlock()
 }
 
-// echoedArguments pulls the `arguments` member back out of testmcp's echo of
-// the tools/call params.
 func echoedArguments(t *testing.T, result json.RawMessage) json.RawMessage {
 	t.Helper()
 	var echoed struct {
@@ -50,10 +35,9 @@ func echoedArguments(t *testing.T, result json.RawMessage) json.RawMessage {
 	return echoed.Arguments
 }
 
-// A lone surrogate must arrive at the MCP as the caller wrote it. On main this
-// fails with `a�b`: ExternalMcpManager.CallTool decoded the arguments into
-// an interface{} and re-encoded them, and encoding/json substitutes U+FFFD for
-// an unpaired surrogate on the way in.
+// A lone surrogate must arrive at the MCP as the caller wrote it: decoding
+// arguments into an interface{} and re-encoding them substitutes U+FFFD for an
+// unpaired surrogate on the way in.
 func TestCallTool_LoneSurrogateReachesTheMcpVerbatim(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addConn(mgr, "fsmcp", newTestMcpConn(t))
@@ -73,10 +57,9 @@ func TestCallTool_LoneSurrogateReachesTheMcpVerbatim(t *testing.T) {
 	}
 }
 
-// The surrogate is one instance of a general property, and the general property
-// is the fix: what relay puts on the wire is json.Compact of what the caller
-// sent, byte for byte. Every member below is something a decode/re-encode round
-// trip silently rewrites.
+// What relay puts on the wire is json.Compact of what the caller sent, byte
+// for byte; every case below is something a decode/re-encode round trip would
+// silently rewrite.
 func TestCallTool_ArgumentBytesAreForwardedVerbatim(t *testing.T) {
 	cases := []struct {
 		name string
@@ -122,8 +105,6 @@ func TestCallTool_ArgumentBytesAreForwardedVerbatim(t *testing.T) {
 	}
 }
 
-// Invalid JSON is still refused rather than forwarded: relay does not decode
-// the arguments, but it does not stop checking that they are arguments.
 func TestCallTool_StillRefusesArgumentsThatAreNotJSON(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addConn(mgr, "peer", newTestMcpConn(t))
@@ -138,14 +119,6 @@ func TestCallTool_StillRefusesArgumentsThatAreNotJSON(t *testing.T) {
 	}
 }
 
-// The whole call path, end to end, with the audit recorder attached: the bytes
-// the MCP received and the bytes the audit log recorded must be the same bytes,
-// and both must be the caller's.
-//
-// This is the half of issue #40 that outlives the substitution itself. The
-// audit log is the operator's ground truth; on main it recorded the ALREADY
-// SUBSTITUTED value, so reconstructing the event from the log put the
-// corruption on the client's side of a boundary it had not crossed.
 func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 	s := makeSettings(map[string]Permission{"fsmcp": PermOn}, nil, nil)
 	mgr := NewExternalMcpManager(nil)
@@ -180,12 +153,6 @@ func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The redactor, directly
-// ---------------------------------------------------------------------------
-
-// redactArgs is where the audit's copy of the defect lived. It must now rewrite
-// exactly one thing — a credential-like value — and copy the rest through.
 func TestRedactArgs_CopiesEverythingItIsNotRedacting(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"lone surrogate survives", `{"content":"a\ud800b"}`, `{"content":"a\ud800b"}`},
@@ -212,8 +179,6 @@ func TestRedactArgs_CopiesEverythingItIsNotRedacting(t *testing.T) {
 	}
 }
 
-// Copying the bytes through must not have cost the redaction, which is the only
-// reason this function decodes anything at all.
 func TestRedactArgs_StillReplacesCredentialValues(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"top level", `{"api_key":"sk-1","path":"/tmp"}`, `{"api_key":"[redacted]","path":"/tmp"}`},
@@ -231,17 +196,12 @@ func TestRedactArgs_StillReplacesCredentialValues(t *testing.T) {
 		})
 	}
 
-	// The operator's extra keys still apply.
 	got, _, _ := redactArgs(json.RawMessage(`{"mailbox":"INBOX"}`), 4096, []string{"mailbox"})
 	if string(got) != `{"mailbox":"[redacted]"}` {
 		t.Errorf("extra redact key ignored: %s", got)
 	}
 }
 
-// The bound is what makes "store the caller's bytes" affordable: arguments are
-// unbounded (a file write carries its whole content) and the log is append-only.
-// Over the cap the record degrades to a truncated JSON string, and it still
-// parses — every line in the log must.
 func TestRedactArgs_StaysBoundedAndParseable(t *testing.T) {
 	big := `{"content":"` + strings.Repeat("x", 5000) + `"}`
 	got, size, truncated := redactArgs(json.RawMessage(big), 128, nil)
@@ -259,26 +219,20 @@ func TestRedactArgs_StaysBoundedAndParseable(t *testing.T) {
 		t.Fatalf("a truncated record must still be a valid JSON string, got %s: %v", got, err)
 	}
 
-	// Arguments that are not JSON at all are still recorded as attempted.
 	got, _, _ = redactArgs(json.RawMessage(`{"broken":`), 4096, nil)
 	if err := json.Unmarshal(got, &s); err != nil || s != `{"broken":` {
 		t.Errorf("malformed arguments = %s, want them recorded verbatim as a JSON string", got)
 	}
 }
 
-// The one rewrite relay cannot suppress, pinned so it is a measured exception
-// rather than an oversight: Go's encoder spells a raw U+2028/U+2029 inside a
-// json.RawMessage as `\u2028`/`\u2029` even with SetEscapeHTML(false).
-//
-// It is not the bug this file exists for. `\u2028` decodes to U+2028 and to
-// nothing else, so no receiving MCP can tell the difference and nothing is
-// lost — which is exactly the line ADR-012 draws: relay may not change what a
-// document MEANS, and does not claim to preserve how it was spelled.
+// Go's encoder spells a raw U+2028/U+2029 inside a json.RawMessage as
+// `\u2028`/`\u2029` even with SetEscapeHTML(false). `\u2028` decodes to U+2028
+// and to nothing else, so relay has not changed what the document means, only
+// how it was spelled.
 func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addConn(mgr, "peer", newTestMcpConn(t))
 
-	// Written with Go escapes so the two invisible characters are visible here.
 	args := json.RawMessage("{\"s\":\"a\u2028b\u2029c\"}")
 	res, err := mgr.CallTool(context.Background(), "peer", "probe", args, nil)
 	if err != nil {
@@ -289,7 +243,6 @@ func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
 	if string(got) != `{"s":"a\u2028b\u2029c"}` {
 		t.Errorf("unexpected wire form: %s", got)
 	}
-	// The property that actually matters: same document either way.
 	var sent, arrived struct {
 		S string `json:"s"`
 	}
@@ -304,10 +257,6 @@ func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
 	}
 }
 
-// Shapes the byte walk has to get right that a decode/re-encode never had to
-// think about: an empty object, an escape inside a KEY, and nesting inside an
-// array. Every result must still parse, because docs/audit-log.md promises
-// every line of the log does.
 func TestRedactArgs_EdgeShapesStillParse(t *testing.T) {
 	for _, in := range []string{
 		`{}`,

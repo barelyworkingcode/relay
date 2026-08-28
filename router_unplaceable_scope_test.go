@@ -1,16 +1,5 @@
 package main
 
-// Issue #42: a profile's scope value for a field the MCP's live contextSchema
-// does not declare was silently dropped, the call dispatched unconfined, and
-// the audit recorded `scope=(none declared)` — the reassuring one of two very
-// different facts.
-//
-// TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace is written against nothing
-// but the router and the audit reader, so it compiles and FAILS on main: there
-// the call succeeds, _meta reaches the MCP with allowed_dirs stripped, and the
-// only thing that would have stopped an unconfined filesystem call is fsMCP's
-// own fail-closed rule.
-
 import (
 	"context"
 	"encoding/json"
@@ -18,15 +7,10 @@ import (
 	"testing"
 )
 
-// quietV2Schema is a v2 declaration that scopes NOTHING. It is what relay
-// holds after any of the reachable paths issue #42 lists: an MCP whose schema
-// legitimately changed, a downgrade, a rebuild, a different binary at the same
-// path, or a schema that failed to publish.
+// What relay holds when an MCP's schema changed, downgraded, rebuilt under a
+// different binary, or failed to publish.
 const quietV2Schema = `{}`
 
-// unplaceableScopeRouter grants macmcp to an access profile whose stored scope
-// names a field the live schema does not declare, and captures whatever
-// reaches the MCP.
 func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *json.RawMessage) *appRouter {
 	t.Helper()
 	capture := func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
@@ -56,15 +40,9 @@ func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *
 	return newTestRouter(t, s, mgr)
 }
 
-// TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace is the reproduction.
-//
-// Relay already denies every call to an MCP that "publishes a context schema
-// relay cannot read", because a scope it cannot understand is not one it can
-// enforce. A scope the operator WROTE that relay cannot place is the same
-// condition and gets the same answer. Do not rely on the MCP's own
-// fail-closed behaviour: fsMCP happens to have one, relay cannot assume the
-// next MCP does, and layer 5's whole point is that relay knows what it handed
-// over.
+// Deliberate: a scope the operator wrote that relay cannot place in the live
+// schema gets the same fail-closed answer as a schema relay cannot read —
+// relay must not rely on the MCP's own fail-closed behavior.
 func TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace(t *testing.T) {
 	var reached json.RawMessage
 	r := unplaceableScopeRouter(t, quietV2Schema, 2, &reached)
@@ -75,9 +53,6 @@ func TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace(t *testing.T) {
 	if err == nil {
 		t.Fatal("a call whose operator-configured scope relay could not place was dispatched")
 	}
-	// The message has to name the field and the MCP, so an operator sees
-	// "your profile scopes allowed_dirs and this MCP no longer declares it"
-	// rather than a generic error.
 	if !strings.Contains(err.Error(), "allowed_dirs") || !strings.Contains(err.Error(), "macmcp") {
 		t.Errorf("the refusal names neither the field nor the MCP: %v", err)
 	}
@@ -94,8 +69,6 @@ func TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace(t *testing.T) {
 	}
 }
 
-// TestCallTool_APlaceableScopeIsUnaffected is the control: the same grant
-// against a schema that still declares the field runs exactly as before.
 func TestCallTool_APlaceableScopeIsUnaffected(t *testing.T) {
 	const declares = `{
 	  "allowed_dirs": {"type":"array","description":"Dirs","scope":"restrict","source":"operator"}
@@ -110,10 +83,9 @@ func TestCallTool_APlaceableScopeIsUnaffected(t *testing.T) {
 	}
 }
 
-// TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope: an empty value is
-// absent everywhere else in this model (hasScopeValue, checkScopePresence, the
-// UI), and a leftover empty key asserts no confinement anybody could fail to
-// deliver. Denying on one would turn a harmless remnant into an outage.
+// Subtle: an empty value is absent everywhere else in this model
+// (hasScopeValue, checkScopePresence, the UI) — denying here would turn a
+// harmless remnant into an outage.
 func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
 		proj := Project{
@@ -142,13 +114,9 @@ func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	}
 }
 
-// TestCallTool_AV1SchemaIsUnaffectedByThePlacementCheck pins the boundary of
-// the fix, which is also the boundary of the defect. The failure is
-// DROP-AND-DISPATCH, and only the v2 branch drops: filterKnownContextFields
-// returns a v1 blob verbatim, so the operator's value goes out on the wire
-// under the name they wrote it. Widening the refusal to v1 would break the
-// promise the version exists to keep — "handled exactly as it was before
-// ADR-011" — for every MCP that ships no contextSchema at all.
+// Deliberate: only the v2 branch drops (filterKnownContextFields returns a v1
+// blob verbatim) — widening the refusal to v1 would break the "handled
+// exactly as before ADR-011" promise for MCPs with no contextSchema.
 func TestCallTool_AV1SchemaIsUnaffectedByThePlacementCheck(t *testing.T) {
 	var reached json.RawMessage
 	r := unplaceableScopeRouter(t, "", 0, &reached)
@@ -160,11 +128,8 @@ func TestCallTool_AV1SchemaIsUnaffectedByThePlacementCheck(t *testing.T) {
 	}
 }
 
-// TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared is the second
-// half of issue #42's requirement. `scope=(none declared)` is true of "this
-// MCP declares no scope fields at all" and was ALSO what an unconfined
-// dispatch produced. Those must not share a string, and the second must be
-// loud.
+// Deliberate: "scope=(none declared)" must not also be what an unconfined
+// dispatch produces — those are different facts and must not share a string.
 func TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared(t *testing.T) {
 	var reached json.RawMessage
 	r := unplaceableScopeRouter(t, quietV2Schema, 2, &reached)
@@ -190,9 +155,8 @@ func TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared(t *testing.T) {
 		t.Errorf("the authority line is not loud about the unapplied scope: %q", line)
 	}
 
-	// An MCP that genuinely scopes nothing, with a grant that sets nothing,
-	// keeps the quiet string — the two facts must stay distinguishable in
-	// both directions.
+	// The reverse direction: a genuinely scope-nothing MCP keeps the quiet
+	// string.
 	quiet, _ := auditAuthorityLine(AuditEvent{Access: AccessRead, AllowExternal: new(bool)})
 	if !strings.Contains(quiet, "(none declared)") {
 		t.Errorf("an MCP with no scope concept lost its own rendering: %q", quiet)
@@ -202,12 +166,9 @@ func TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared(t *testing.T) {
 	}
 }
 
-// TestListTools_WithholdsToolsWhoseGrantCarriesAnUnplaceableScope keeps the
-// listing honest with dispatch. CallTool refuses every tool of this MCP under
-// this grant unconditionally, and a listing that advertised them would write
-// an uncallable tool into `relayremote list` and into a generated SKILL.md —
-// the same invariant "ListTools stops advertising tools CallTool always
-// denies" established for the schema-unusable case.
+// Same invariant as the schema-unusable case: ListTools must not advertise a
+// tool CallTool refuses unconditionally — it would write an uncallable tool
+// into relayremote list and a generated SKILL.md.
 func TestListTools_WithholdsToolsWhoseGrantCarriesAnUnplaceableScope(t *testing.T) {
 	var reached json.RawMessage
 	r := unplaceableScopeRouter(t, quietV2Schema, 2, &reached)

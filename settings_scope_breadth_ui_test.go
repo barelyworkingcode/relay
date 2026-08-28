@@ -1,11 +1,5 @@
 package main
 
-// Issue #41 on the operator's screen. The profile card already printed the
-// real value — and "/" is one character, rendered inline beside everything
-// else, which is exactly how an over-broad grant survived review. These tests
-// are about whether the screen says what the grant reaches, not only what it
-// is set to.
-
 import (
 	"strconv"
 	"strings"
@@ -14,7 +8,6 @@ import (
 	"github.com/dop251/goja"
 )
 
-// mustRun evaluates a statement for its side effect.
 func mustRun(t *testing.T, vm *goja.Runtime, src string) {
 	t.Helper()
 	if _, err := vm.RunString(src); err != nil {
@@ -22,10 +15,8 @@ func mustRun(t *testing.T, vm *goja.Runtime, src string) {
 	}
 }
 
-// jsQuote renders a Go string as a JS string literal.
 func jsQuote(s string) string { return strconv.Quote(s) }
 
-// fsScopeFieldsFixture is fsMCP's declaration as ScopeFieldView projects it.
 const fsScopeFieldsFixture = `{
 	fsmcp: [
 		{name:'allowed_dirs', type:'array', item_type:'string', description:'Directories this client may read, search and modify within', source:'operator'}
@@ -34,8 +25,6 @@ const fsScopeFieldsFixture = `{
 
 const fsMcpsFixture = `[{id:'fsmcp', display_name:'fsMCP'}]`
 
-// breadthProjectsFixture is issue #41's comparison as two rows: the probe
-// profile that read /etc/passwd, and a correctly scoped one beside it.
 const breadthProjectsFixture = `[
 	{id:'p_root', name:'Probe', kind:'remote', path:'', allowed_mcp_ids:['fsmcp'], allowed_models:[],
 	 allowed_tools:{fsmcp:['fs_*']}, access:{fsmcp:'write'},
@@ -70,16 +59,12 @@ func seedBreadthVM(t *testing.T, editingID string) *goja.Runtime {
 	return vm
 }
 
-// TestProjectList_AFilesystemRootIsNotJustAValue is the card half of issue
-// #41. On main every one of these three rows renders its value inline and
-// nothing else, so the row for a grant of "/" and the row for a grant of one
-// project folder differ by six characters in a monospace span.
 func TestProjectList_AFilesystemRootIsNotJustAValue(t *testing.T) {
 	vm := seedBreadthVM(t, "")
 	html := evalString(t, vm, `window.renderProjects()`)
 
-	// The coordinates stay. `disclose` governs what reaches the CLIENT and
-	// must never govern what relay shows the person who typed the grant.
+	// `disclose` governs what reaches the client and must never govern what
+	// relay shows the person who typed the grant, so the coordinates stay.
 	if !strings.Contains(html, "allowed_dirs: /Users/admin/source/project") {
 		t.Errorf("the card stopped printing the real value:\n%s", html)
 	}
@@ -89,15 +74,11 @@ func TestProjectList_AFilesystemRootIsNotJustAValue(t *testing.T) {
 	if !strings.Contains(html, "allowed_dirs is a whole home directory") {
 		t.Errorf("a grant of a home directory carries no warning:\n%s", html)
 	}
-	// Exactly two warnings: the bounded row must not acquire one.
 	if n := strings.Count(html, "proj-auth-unrestricted"); n != 2 {
 		t.Errorf("expected 2 breadth warnings across three rows, got %d:\n%s", n, html)
 	}
 }
 
-// TestProjectEditor_WarnsWhileTheValueIsBeingTyped puts the finding where the
-// decision is made. The list row catches a grant on review; this catches it
-// before it is saved.
 func TestProjectEditor_WarnsWhileTheValueIsBeingTyped(t *testing.T) {
 	vm := seedBreadthVM(t, "p_root")
 	html := evalString(t, vm, `window.renderProjectForm()`)
@@ -114,12 +95,9 @@ func TestProjectEditor_WarnsWhileTheValueIsBeingTyped(t *testing.T) {
 	}
 }
 
-// TestSaveProject_AsksBeforeStoringAFilesystemRoot is issue #41's priority 3.
-// fsMCP documents `--allowed-dir /` as a deliberate opt-out that must be
-// spelled out explicitly; on a CLI, typing it IS the spelling out, and in a
-// text box it is not. This is the UI's equivalent — a confirmation, never a
-// refusal, because a grant of "/" is legal and an operator who means it can
-// mean it.
+// This is a confirmation, never a refusal: a grant of "/" is legal, and an
+// operator who means it can mean it — the dialog only makes sure typing it
+// into a text box is as deliberate as typing `--allowed-dir /` on a CLI.
 func TestSaveProject_AsksBeforeStoringAFilesystemRoot(t *testing.T) {
 	t.Run("declining stops the save", func(t *testing.T) {
 		vm := seedBreadthVM(t, "p_root")
@@ -159,10 +137,10 @@ func TestSaveProject_AsksBeforeStoringAFilesystemRoot(t *testing.T) {
 	})
 }
 
-// TestScopeBreadthJs_MirrorsGo pins the two implementations against each
-// other. They are separate on purpose — one runs in Go and one in a WKWebView
-// — and a rule that disagreed between them would show an operator a warning
-// the CLI does not, or the reverse.
+// The Go and JS implementations are separate on purpose — one runs in Go and
+// one in a WKWebView — so this pins them against each other: a rule that
+// disagreed between them would show an operator a warning the CLI does not,
+// or the reverse.
 func TestScopeBreadthJs_MirrorsGo(t *testing.T) {
 	vm := newAppVM(t)
 	for _, entry := range []string{

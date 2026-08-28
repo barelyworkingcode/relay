@@ -14,10 +14,6 @@ import (
 	"relaygo/mcp"
 )
 
-// stubLister returns a fixed tool list regardless of token. Used so skill
-// tests don't need a live bridge. ListSkillBuckets groups by tool category,
-// falling back to a single "Tools" bucket (the stub has no owning-MCP names —
-// the DisplayName fallback is exercised by TestAppRouter_ListSkillBuckets).
 type stubLister struct {
 	tools []mcp.Tool
 	err   error
@@ -54,7 +50,6 @@ func (s stubLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBucket
 	return buckets, nil
 }
 
-// writeSkillDir creates root/name/SKILL.md with the given body.
 func writeSkillDir(t *testing.T, root, name, body string) {
 	t.Helper()
 	dir := filepath.Join(root, name)
@@ -74,10 +69,6 @@ func dirExists(t *testing.T, path string) bool {
 	}
 	return info.IsDir()
 }
-
-// ---------------------------------------------------------------------------
-// renderBucketSkillMd
-// ---------------------------------------------------------------------------
 
 func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
 	proj := Project{Name: "tbo", Token: "secret-plaintext-token-do-not-leak"}
@@ -100,7 +91,6 @@ func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
 	if !strings.Contains(out, "name: relay-files") {
 		t.Fatalf("expected the skill name frontmatter; got:\n%s", out)
 	}
-	// allowed-tools should scope to the resolved relay binary + "mcp call *".
 	if !strings.Contains(out, "mcp call *)") || !strings.Contains(out, "allowed-tools: Bash(") {
 		t.Fatalf("expected allowed-tools to scope to `mcp call *`; got:\n%s", out)
 	}
@@ -111,10 +101,6 @@ func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
 		t.Fatalf("expected the resolved relay binary path to be documented; got:\n%s", out)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// synthesizeDescription — the routing signal
-// ---------------------------------------------------------------------------
 
 func TestSynthesizeDescription_CapabilityKeywords(t *testing.T) {
 	imageDesc := "Generate an image from a text description using a local Stable Diffusion model via ComfyUI. Returns JSON. Use whenever the user asks for an image, illustration, picture, logo, or visual asset."
@@ -131,16 +117,11 @@ func TestSynthesizeDescription_CapabilityKeywords(t *testing.T) {
 		{Name: "mail_send", Description: "Send an email"},
 		{Name: "mail_list_messages", Description: "List messages in a mailbox"},
 	})
-	// Leading "mail" token is dropped because it duplicates the bucket.
 	if !strings.Contains(mail, "send") || !strings.Contains(mail, "list messages") {
 		t.Errorf("mail description missing capability phrases; got:\n%s", mail)
 	}
 }
 
-// TestRenderBucketSkillMd_DescriptionIsYAMLQuoted guards the bug where the
-// synthesized description (which contains "(via the relay CLI): " — a colon +
-// space) was emitted unquoted and read by strict YAML parsers (Pi.dev) as a
-// nested mapping, breaking skill loading.
 func TestRenderBucketSkillMd_DescriptionIsYAMLQuoted(t *testing.T) {
 	bucket := SkillBucket{Key: "Weather", Slug: "weather", Tools: []mcp.Tool{
 		{Name: "weather_current", Description: "Get the current weather for a location."},
@@ -184,10 +165,6 @@ func TestSynthesizeDescription_RespectsLengthCap(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// skillSlug
-// ---------------------------------------------------------------------------
-
 func TestSkillSlug(t *testing.T) {
 	cases := map[string]string{
 		"Mail":             "mail",
@@ -216,10 +193,6 @@ func TestNameToPhrase(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// EmitSkills — per-bucket write + set-based reconcile
-// ---------------------------------------------------------------------------
 
 func imageAndMailLister() stubLister {
 	return stubLister{tools: []mcp.Tool{
@@ -263,7 +236,6 @@ func TestEmitSkills_DescriptionContainsCapabilityKeywords(t *testing.T) {
 		t.Fatalf("EmitSkills: %v", err)
 	}
 	img, _ := os.ReadFile(filepath.Join(root, "relay-image", "SKILL.md"))
-	// The frontmatter description (the routing signal) must name "image".
 	front := string(img)
 	descLine := ""
 	for _, line := range strings.Split(front, "\n") {
@@ -380,7 +352,6 @@ func TestEmitSkills_RegenNever(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay-mail", "preexisting")
 	proj := Project{Name: "p1", Token: "tok"}
-	// An erroring lister proves RegenNever never reaches ListSkillBuckets.
 	lister := stubLister{err: errors.New("must not be called")}
 
 	paths, err := EmitSkills(context.Background(), lister, proj, root, RegenNever)
@@ -397,9 +368,6 @@ func TestEmitSkills_RegenNever(t *testing.T) {
 
 func TestEmitSkills_SkipIfExists_CreatesMissingButPreservesExisting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	// Pre-existing relay-mail (with hand-edited content) AND a stale relay-old
-	// that's no longer desired. SkipIfExists must preserve the existing one,
-	// create the newly-desired relay-image, and NOT prune the stale dir.
 	writeSkillDir(t, root, "relay-mail", "OLD")
 	writeSkillDir(t, root, "relay-old", "stale")
 	proj := Project{Name: "p1", Token: "tok"}
@@ -435,10 +403,6 @@ func TestEmitSkills_SkipIfExists_GeneratesWhenEmpty(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// RemoveSkill
-// ---------------------------------------------------------------------------
-
 func TestRemoveSkill_RemovesAllRelayDirsOnly(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay", "x")
@@ -467,10 +431,6 @@ func TestRemoveSkill_NonExistentRoot(t *testing.T) {
 		t.Fatalf("RemoveSkill on missing root should be a no-op, got %v", err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// appRouter.ListSkillBuckets — bucketing + access filtering
-// ---------------------------------------------------------------------------
 
 func TestAppRouter_ListSkillBuckets(t *testing.T) {
 	r := setupRouter(t,
@@ -501,7 +461,6 @@ func TestAppRouter_ListSkillBuckets(t *testing.T) {
 		byKey[b.Key] = b
 	}
 
-	// Category-supplied tool buckets under its category.
 	mail, ok := byKey["Mail"]
 	if !ok {
 		t.Fatalf("expected a Mail bucket; got keys %v", keysOf(byKey))
@@ -513,12 +472,10 @@ func TestAppRouter_ListSkillBuckets(t *testing.T) {
 		t.Errorf("disabled mail_archive should be excluded; got %v", toolNames(mail.Tools))
 	}
 
-	// Uncategorized tool buckets under its owning MCP's display name.
 	if _, ok := byKey["mcp-b"]; !ok {
 		t.Errorf("expected uncategorized tool to bucket under MCP display name; got keys %v", keysOf(byKey))
 	}
 
-	// Denied MCP's tools are absent entirely.
 	for _, b := range buckets {
 		for _, tool := range b.Tools {
 			if tool.Name == "secret_tool" {
@@ -551,13 +508,11 @@ func TestExtractTriggerKeywords_SurvivesNonASCII(t *testing.T) {
 		{"plain ascii", "Use this whenever the user asks about invoices.", "the user asks about invoices"},
 		// Non-ASCII is written with explicit escapes: these runes are the whole
 		// point of the test and must not depend on how a file was transcribed.
-		// U+023A and U+023E GROW when lowercased (2 bytes -> 3) and panicked.
+		// U+023A and U+023E grow when lowercased (2 bytes -> 3).
 		{"growing rune U+023A", "\u023Ause whenever x.", "x"},
 		{"growing rune U+023E", "\u023Euse whenever x.", "x"},
 		{"several growing runes", "\u023A\u023A\u023Ause whenever x.", "x"},
-		// U+212A KELVIN SIGN SHRINKS (3 bytes -> 1). Three of them dragged the
-		// offset 6 bytes left, so this returned "s for an invoice" — the tail of
-		// the marker itself, silently wrong rather than loud.
+		// U+212A KELVIN SIGN shrinks (3 bytes -> 1).
 		{"shrinking rune U+212A", "\u212A\u212A\u212Ause whenever the user asks for an invoice.", "an invoice"},
 		{"shrinking rune U+1E9E", "\u1E9Euse whenever mail arrives.", "mail arrives"},
 		{"emoji before the marker", "\U0001F4E7use whenever mail arrives.", "mail arrives"},

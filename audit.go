@@ -18,57 +18,46 @@ import (
 	"github.com/google/uuid"
 )
 
-// ---------------------------------------------------------------------------
-// Event model
-// ---------------------------------------------------------------------------
-
-// Audit event kinds. CallTool is the one that matters for security review;
-// the list kinds record what tool surface a credential was shown.
+// CallTool is the one that matters for security review; the list kinds
+// record what tool surface a credential was shown.
 const (
 	AuditEventCallTool   = "call_tool"
 	AuditEventListTools  = "list_tools"
 	AuditEventListSkills = "list_skills"
 
 	// McpDown and McpUp are not calls. They record that an external MCP's
-	// child process died and that it came back (ADR-012), and they are the one
-	// deliberate widening of ADR-008's remit from "what a credential
-	// attempted" to "what relay could serve at all".
-	//
-	// They are here rather than in the app log because of what this file is
-	// for. An operator is told the audit log is the ground truth for anything
-	// relay gates, and a dead MCP is the state in which every gated call fails
-	// for a reason that has nothing to do with the grant. Without these rows
-	// the log shows a run of `error` outcomes and no cause, and the only other
-	// signal is the client's own `read response: EOF` — which is the report
-	// this project's docs say to trust last (issue #39, defect 3).
+	// child process died and that it came back (ADR-012) — a deliberate
+	// widening of ADR-008's remit from "what a credential attempted" to "what
+	// relay could serve at all". They belong in THIS log, not the app log,
+	// because a dead MCP is the state in which every gated call fails for a
+	// reason that has nothing to do with the grant, and without these rows the
+	// log shows a run of `error` outcomes with no cause.
 	AuditEventMcpDown = "mcp_down"
 	AuditEventMcpUp   = "mcp_up"
+
+	// ControlDecision is a control-plane authorization outcome, ALLOWED and
+	// REFUSED alike, given the same standing as a tool-call denial (ADR-015).
+	// Built by audit_control.go, never by router instrumentation.
+	AuditEventControlDecision = "control_decision"
 )
 
-// Audit outcomes. Denied and Unauthorized are deliberately distinct: the first
-// means a known credential was refused a tool it may not use, the second means
-// the credential itself did not resolve. They call for different responses.
+// Denied means a known credential was refused a tool it may not use;
+// Unauthorized means the credential itself did not resolve — they call for
+// different responses.
 //
-// Error and ToolError are distinct for the same reason. Error means the call
-// did not complete — the transport failed, or the bridge could not reach the
-// MCP. ToolError means the call completed and the MCP answered "no": it
-// returned a normal result carrying isError, which is how a server reports an
-// application-level refusal such as a path outside allowed_dirs. Both are
-// failures, but only the second tells you a boundary was probed and held.
+// Error means the call did not complete (transport failure, MCP unreachable);
+// ToolError means the call completed and the MCP answered "no" via a normal
+// result carrying isError, e.g. a path outside allowed_dirs. Only the second
+// tells you a boundary was probed and held.
 //
-// Throttled is distinct from both, and from ToolError. It means the grant was
-// legitimate and the tool was allowed, and the *pattern of use* was refused — a
-// rate or volume budget on the enrolment was exceeded (ADR-010 decision 7).
-// That is precisely what exfiltration looks like from the host's side, which is
-// why it must not be flattened into denied.
+// Throttled means the grant was legitimate and the tool was allowed, but the
+// *pattern of use* was refused — a rate or volume budget on the enrolment was
+// exceeded (ADR-010 decision 7). That is what exfiltration looks like from the
+// host's side, so it must not be flattened into denied.
 //
-// Pending is the outcome-so-far of an intent record, whose result is by
-// definition not known yet (see AuditPhaseIntent). It is a real value rather
-// than an empty string because "outcome" is a non-omitempty on-disk field that
-// every consumer already reads: the CLI table, the UI pill, and the --outcome
-// filter would each render or match "" as nothing at all, whereas "pending"
-// names the state truthfully and is what an alert on orphaned intents selects
-// on.
+// Pending is a real value rather than an empty string because "outcome" is a
+// non-omitempty on-disk field every consumer already reads (CLI table, UI
+// pill, --outcome filter); "" would render as nothing at all.
 const (
 	AuditOutcomeOK           = "ok"
 	AuditOutcomeError        = "error"
@@ -79,23 +68,19 @@ const (
 	AuditOutcomePending      = "pending"
 )
 
-// Record phases. A local call is one record and carries no phase at all, which
-// keeps every line written before ADR-010 — and every line written for a local
-// caller after it — exactly the shape ADR-008 specified.
-//
-// A remote call is two records sharing one event id: an intent written and
-// flushed before the MCP is invoked, and a completion written when the call
-// returns. Correlate them by id.
+// A local call is one record and carries no phase at all, keeping every line
+// written for a local caller the shape ADR-008 specified. A remote call is
+// two records sharing one event id — an intent written and flushed before the
+// MCP is invoked, and a completion written when the call returns.
 const (
 	AuditPhaseIntent     = "intent"
 	AuditPhaseCompletion = "completion"
 )
 
-// Actor kinds. Remote is a distinct value rather than a reuse of Project so
-// that "show me everything any VM did" is a first-class filter rather than an
-// inference from which fields happen to be populated — a remote caller is
-// remote *and* acting as a project grant, and both facts are recorded
-// (ADR-010 decision 6).
+// Remote is a distinct value rather than a reuse of Project so that "show me
+// everything any VM did" is a first-class filter — a remote caller is remote
+// *and* acting as a project grant, and both facts are recorded (ADR-010
+// decision 6).
 const (
 	AuditActorProject = "project"
 	AuditActorService = "service"
@@ -103,14 +88,16 @@ const (
 	AuditActorUnknown = "unknown"
 
 	// Relay is the actor on a record relay wrote about itself rather than
-	// about a caller — today only the mcp_down / mcp_up supervision rows. It
-	// is a distinct kind so `--kind relay` selects them as a set, and so no
-	// consumer has to read an absent project id as "we could not tell who this
-	// was" when the answer is "nobody: this was relay".
+	// about a caller (today only the mcp_down / mcp_up rows), so `--kind
+	// relay` selects them as a set.
 	AuditActorRelay = "relay"
+
+	// Control is the credential that reached the frontend control plane
+	// (ADR-015) — a distinct actor kind from Project/Service/Remote because
+	// it names a capability-classed credential, not a tool caller.
+	AuditActorControl = "control"
 )
 
-// Auth methods, mirroring resolveAuth's branches.
 const (
 	AuditAuthToken   = "token"
 	AuditAuthCwd     = "cwd"
@@ -119,10 +106,9 @@ const (
 	AuditAuthNone    = "none"
 )
 
-// AuditActor identifies who made a call. Every field is derived from relay's
-// own resolution (the authenticated StoredToken) or from the kernel (the peer
-// pid) — never from a value the caller supplied, with the single exception of
-// Cwd, which is caller-asserted and only present for directory auth.
+// Every field is derived from relay's own resolution or the kernel — never
+// from a value the caller supplied, except Cwd, which is caller-asserted and
+// only present for directory auth.
 type AuditActor struct {
 	Kind        string `json:"kind"`
 	ProjectID   string `json:"project_id,omitempty"`
@@ -130,26 +116,27 @@ type AuditActor struct {
 	Auth        string `json:"auth"`
 	Cwd         string `json:"cwd,omitempty"`
 
-	// PID / Proc / Parent describe a local caller and are omitted entirely for
-	// a remote one rather than zero-filled: they are omitempty, so an absent
-	// field reads as "not applicable" instead of "unknown".
+	// Omitempty so an absent field reads as "not applicable" instead of
+	// "unknown" for a remote caller.
 	PID    int    `json:"pid,omitempty"`
 	Proc   string `json:"proc,omitempty"`
 	Parent string `json:"parent,omitempty"`
 
-	// ClientID, Fingerprint and RemoteAddr are the remote equivalent, all three
-	// derived from the TLS connection and never asserted by the caller. The
-	// fingerprint is recorded in full and alongside the resolved client id
-	// rather than instead of it: that is what keeps a revoked device's history
-	// legible, by answering which *key* made a call after the enrolment naming
-	// that key has been deleted (ADR-010 decision 6).
+	// Fingerprint is recorded alongside the resolved client id rather than
+	// instead of it: that keeps a revoked device's history legible, answering
+	// which *key* made a call after the enrolment naming it is deleted
+	// (ADR-010 decision 6).
 	ClientID    string `json:"client_id,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	RemoteAddr  string `json:"remote_addr,omitempty"`
+
+	// CredID identifies the control-plane credential (ADR-015). Deliberately
+	// never the token or its hash — ControlDecision has no such field to
+	// leak, and this must stay that way.
+	CredID string `json:"cred_id,omitempty"`
 }
 
-// AuditEvent is one record in the tool-call log, serialized as a single JSONL
-// line. Field names are the on-disk contract: external tooling greps this file.
+// Field names are the on-disk contract: external tooling greps this file.
 type AuditEvent struct {
 	ID    string     `json:"id"`
 	TS    time.Time  `json:"ts"`
@@ -157,18 +144,17 @@ type AuditEvent struct {
 	Event string     `json:"event"`
 	Actor AuditActor `json:"actor"`
 
-	// Phase is empty for the single record a local call produces, and is
-	// "intent" or "completion" for the two records a remote call produces,
-	// which share this event's ID. Absent-means-single is what keeps the local
-	// on-disk shape unchanged.
+	// Empty for the single record a local call produces; "intent" or
+	// "completion" for the two records (sharing this ID) a remote call
+	// produces.
 	Phase string `json:"phase,omitempty"`
 
 	McpID string `json:"mcp_id,omitempty"`
 	Tool  string `json:"tool,omitempty"`
 
-	// Args is the redacted, size-capped call arguments. When ArgsTruncated is
-	// set it holds a JSON *string* containing the truncated prefix rather than
-	// the original object, so the line stays valid JSON either way.
+	// When ArgsTruncated is set, Args holds a JSON *string* containing the
+	// truncated prefix rather than the original object, so the line stays
+	// valid JSON either way.
 	Args          json.RawMessage `json:"args,omitempty"`
 	ArgsBytes     int             `json:"args_bytes,omitempty"`
 	ArgsTruncated bool            `json:"args_truncated,omitempty"`
@@ -181,115 +167,94 @@ type AuditEvent struct {
 	ResultPreview string `json:"result_preview,omitempty"`
 
 	// Access and Scope record the AUTHORITY the call ran with, not just the
-	// grant it ran under (ADR-011 decision 7). ADR-008's property is that the
-	// log answers what was attempted with what authority, and the authority is
-	// the grant PLUS the mode PLUS the injected scope. A record carrying the
-	// tool and the args but not these cannot answer "was this call confined?"
-	// once an operator has since edited the profile, and re-reading
-	// settings.json at query time answers a different question.
+	// grant it ran under (ADR-011 decision 7): the grant PLUS the mode PLUS
+	// the injected scope. Re-reading settings.json at query time would answer
+	// a different question once an operator has since edited the profile.
 	//
 	// Scope carries ONLY the fields the MCP declared as scope: "restrict",
 	// never the whole per-MCP context map — _meta is a general channel and a
-	// future MCP may pass an API key through it, so logging it wholesale would
-	// make this file the place credentials go to be archived (see
-	// scopeFromMeta). Both are set on the single record a local call produces
-	// and on the INTENT record of a remote one, which is the record written
-	// before the MCP runs.
+	// future MCP may pass an API key through it, so logging it wholesale
+	// would make this file the place credentials go to be archived.
 	Access string `json:"access,omitempty"`
 
-	// Scope is deliberately NOT omitempty. A nil map and an empty, non-nil map
-	// are different facts on the wire — nil means this MCP declares no
+	// Deliberately NOT omitempty. A nil map and an empty, non-nil map are
+	// different facts on the wire — nil means this MCP declares no
 	// scope: "restrict" field at all, an empty map means it does and this
 	// call's grant supplied no value for it (itself the finding on a `denied`
-	// record; ADR-011 decision 4) — and json's omitempty treats both as
-	// "empty" for a map, which would erase the distinction the moment it hit
-	// disk. Encoding/json renders a nil map as `null` and a non-nil empty one
-	// as `{}`, which is exactly the three-way split (absent / declared-empty /
-	// populated) this field needs and gets for free by keeping the tag plain.
+	// record; ADR-011 decision 4) — and omitempty treats both as "empty" for
+	// a map, erasing the distinction. encoding/json renders a nil map as
+	// `null` and a non-nil empty one as `{}`, giving the three-way split
+	// (absent / declared-empty / populated) this field needs for free.
 	Scope map[string]json.RawMessage `json:"scope"`
 
-	// ScopeUnplaced names every field the GRANT set a value for that the MCP's
-	// live schema does not declare, so relay could not place it and refused
-	// the call (issue #42).
+	// Names every field the GRANT set a value for that the MCP's live schema
+	// does not declare, so relay could not place it and refused the call.
 	//
-	// It is a field of its own rather than a fourth reading of Scope because
-	// Scope's three readings are all about what the MCP declares, and this is
-	// about what the OPERATOR declared. Folding it in would have meant
-	// `scope: null` — "this MCP declares no scope field at all" — doing double
-	// duty for "this MCP declares none of the fields your profile set", which
-	// is the exact conflation that let an unconfined dispatch read, in the
-	// log, as an MCP that was never scoped in the first place.
-	//
-	// A record carrying it is always a `denied`, and the two travel together:
-	// the names are what makes the denial actionable ("your profile scopes
-	// allowed_dirs and this MCP no longer declares it") rather than generic.
+	// A field of its own rather than a fourth reading of Scope: Scope's
+	// readings are about what the MCP declares, this is about what the
+	// OPERATOR declared. Folding it into `scope: null` would conflate "this
+	// MCP declares no scope field" with "this MCP declares none of the
+	// fields your profile set" — the conflation that let an unconfined
+	// dispatch read, in the log, as an MCP that was never scoped at all.
 	ScopeUnplaced []string `json:"scope_unplaced,omitempty"`
 
-	// McpRoot is the resolved --root directory relay spawned this MCP with,
-	// when relay spawned it with one (fsMCP v3 integration, R2). It is a
-	// DIFFERENT fact from Scope and must not be read as filling in for it:
-	// Scope is what the MCP itself declared through a v2 contextSchema and
-	// injected via _meta, and fsMCP v3 publishes no contextSchema at all, so
-	// Scope stays nil — "(none declared)" — on every one of its calls, and
-	// that stays true. McpRoot is something relay knows independently,
-	// because it wrote the spawn arguments, and it is what lets an operator
-	// answer "which directory did this touch" when the MCP itself has
-	// nothing to say about scope. Empty means relay did not spawn this MCP
-	// with a --root argument.
+	// The resolved --root directory relay spawned this MCP with, when it did
+	// (fsMCP v3 integration, R2). A DIFFERENT fact from Scope and must not be
+	// read as filling in for it: fsMCP v3 publishes no contextSchema at all,
+	// so Scope stays nil — "(none declared)" — on every one of its calls, and
+	// that stays true. Empty means relay did not spawn this MCP with --root.
 	McpRoot string `json:"mcp_root,omitempty"`
 
-	// AllowExternal is the other half of the authority relay decided by
-	// itself (ADR-011 decision 2c): whether this grant could call a tool that
-	// reaches outside the host. Recorded beside Access for the same reason
-	// Access is recorded — "was this call confined?" is not answerable from a
-	// record that omits half of what confined it, and re-reading settings.json
-	// at query time answers a different question.
+	// The other half of the authority relay decided by itself (ADR-011
+	// decision 2c): whether this grant could call a tool reaching outside the
+	// host.
 	//
-	// A POINTER, unlike Access, because the value that matters most here is
-	// the FALSE one: that is the resting state, the one a read-only profile
-	// has, and the one a `denied` on this layer was decided by. With a plain
-	// bool and omitempty, "the grant was not given" and "nobody recorded the
-	// grant" would be the same absent key — and the second is a real state
-	// (service tokens bypass every check in checkToolAccess, and list events
-	// carry no MCP at all). Nil means not recorded; false means refused by
-	// default.
+	// A POINTER, unlike Access, because the value that matters most is the
+	// FALSE one: the resting state, the one a read-only profile has. With a
+	// plain bool and omitempty, "the grant was not given" and "nobody
+	// recorded the grant" would be the same absent key — and the second is a
+	// real state (service tokens bypass every check in checkToolAccess, and
+	// list events carry no MCP at all). Nil means not recorded; false means
+	// refused by default.
 	AllowExternal *bool `json:"allow_external,omitempty"`
 
-	// ScopeViolation marks a tool_error the MCP labelled as a scope refusal
-	// (see scopeViolationMarker). It is a FIELD and not an outcome on purpose:
-	// ADR-008 already places this case — tool_error means the call completed
-	// and the MCP answered no, i.e. a boundary was probed and held. `throttled`
-	// earned its own slot in ADR-010 because a budget refusal is a decision
-	// RELAY makes with relay's numbers; a scope violation is made inside the
-	// MCP and relay is only relaying it. Promoting it would inflate a small
-	// enum that --outcome, the CLI table and the UI pill all key on, in
-	// exchange for a signal a boolean gives alerting just as well. A `denied`
-	// from the mode or presence check is a different thing and is already
-	// correctly `denied`, because relay decided it.
+	// Marks a tool_error the MCP labelled as a scope refusal (see
+	// scopeViolationMarker). A FIELD and not an outcome on purpose: ADR-008
+	// already places this case (tool_error = boundary probed and held), and a
+	// scope violation is decided inside the MCP, not by relay, unlike
+	// `throttled` (ADR-010), which relay decides with relay's own numbers.
 	ScopeViolation bool `json:"scope_violation,omitempty"`
 
-	// ToolCount is set on list events: how many tools the credential could see.
 	ToolCount int `json:"tool_count,omitempty"`
 
-	// Supervision is set ONLY on the mcp_down / mcp_up events and names the
-	// transition: down, restarted, or abandoned (the McpHealth* constants).
-	//
-	// A field of its own rather than a reuse of Error, because two of the three
-	// are not errors — `restarted` is the good news — and Error means "this
-	// record failed" on every other line in the file. Error is still set
-	// beside it when there is a cause to name, which is what makes
-	// `down: read response: EOF` one legible sentence in the table.
+	// Set ONLY on mcp_down / mcp_up events, naming the transition: down,
+	// restarted, or abandoned (the McpHealth* constants). A field of its own
+	// rather than a reuse of Error because two of the three are not errors —
+	// `restarted` is the good news. Error is still set beside it when there
+	// is a cause to name, making `down: read response: EOF` one sentence.
 	Supervision string `json:"supervision,omitempty"`
+
+	// Set only on control_decision events (ADR-015): the route an
+	// authorization decision was about. Reason for a refusal rides in Error,
+	// same as every other outcome this log records.
+	//
+	// Class and Transport are plain strings rather than capability.go's
+	// CapabilityClass/Transport types — this file's on-disk shape does not
+	// depend on the authorization package's types.
+	Method    string `json:"method,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Class     string `json:"class,omitempty"`
+	Transport string `json:"transport,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-// AuditConfig is the optional "audit" block in settings.json. Booleans are
-// pointers so an absent block, an absent field, and an explicit false are all
-// distinguishable — absent means "use the default", which for Enabled is true.
-// Zero-valued ints likewise mean "default"; call resolve() before use.
+// Booleans are pointers so an absent block, an absent field, and an explicit
+// false are all distinguishable — absent means "use the default", which for
+// Enabled is true. Zero-valued ints likewise mean "default"; call resolve()
+// before use.
 type AuditConfig struct {
 	Enabled               *bool    `json:"enabled,omitempty"`
 	LogArgs               *bool    `json:"log_args,omitempty"`
@@ -302,28 +267,25 @@ type AuditConfig struct {
 	RedactKeys            []string `json:"redact_keys,omitempty"`
 }
 
-// Audit defaults. Results are metadata-only by default (preview 0) because a
-// tool result carries file contents, mail bodies, and calendar entries — the
-// audit log should not quietly become the most sensitive file on the machine.
-// List events default off: skill regeneration lists the tool surface for every
-// project on every MCP reconcile, which would bury the calls that matter.
+// Results are metadata-only by default (preview 0): a tool result carries
+// file contents, mail bodies, and calendar entries, and the audit log should
+// not quietly become the most sensitive file on the machine. List events
+// default off: skill regeneration lists the tool surface for every project on
+// every MCP reconcile, which would bury the calls that matter.
 const (
 	auditDefaultMaxArgBytes  = 4096
 	auditDefaultRingSize     = 1000
 	auditDefaultMaxFileBytes = 32 << 20
 	auditDefaultGenerations  = 5
 
-	// auditQueueSize bounds the handoff between tool calls and the writer
-	// goroutine. Past this, events are dropped and counted rather than made to
-	// wait: the audit sink must never be able to stall a tool call.
+	// Past this, events are dropped and counted rather than made to wait: the
+	// audit sink must never be able to stall a tool call.
 	auditQueueSize = 512
 
-	// auditTailBudget caps how far back a disk-backed query reads. Bounded work
-	// per query regardless of how large the log has grown.
+	// Bounds work per query regardless of how large the log has grown.
 	auditTailBudget = 8 << 20
 )
 
-// resolvedAuditConfig is AuditConfig with every default applied.
 type resolvedAuditConfig struct {
 	Enabled               bool
 	LogArgs               bool
@@ -350,9 +312,8 @@ func intOr(v, def int) int {
 	return v
 }
 
-// resolve applies defaults. A nil receiver resolves to the full default set, so
-// settings.json written before this feature existed behaves as if auditing was
-// always on.
+// A nil receiver resolves to the full default set, so settings.json written
+// before this feature existed behaves as if auditing was always on.
 func (c *AuditConfig) resolve() resolvedAuditConfig {
 	if c == nil {
 		c = &AuditConfig{}
@@ -374,50 +335,35 @@ func (c *AuditConfig) resolve() resolvedAuditConfig {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Redaction
-// ---------------------------------------------------------------------------
-
-// auditRedactedValue replaces any value whose key looks like a credential.
 const auditRedactedValue = "[redacted]"
 
-// auditSensitiveKeys are matched as case-insensitive substrings of an argument
-// key. Substring rather than exact match so "mcp_token", "X-Api-Key", and
-// "userPassword" are all caught without enumerating every spelling. Bare
-// "session" is deliberately absent: session ids are routinely load-bearing for
-// debugging and are not secrets, while "session_token" is already covered by
-// "token".
+// Matched as case-insensitive substrings of an argument key, so "mcp_token",
+// "X-Api-Key", and "userPassword" are all caught without enumerating every
+// spelling. Bare "session" is deliberately absent: session ids are routinely
+// load-bearing for debugging and are not secrets, while "session_token" is
+// already covered by "token".
 var auditSensitiveKeys = []string{
 	"token", "secret", "password", "passwd", "apikey", "api_key", "api-key",
 	"authorization", "credential", "privatekey", "private_key", "cookie",
 	"bearer", "passphrase",
 }
 
-// auditRedactedJSON is auditRedactedValue as the JSON scalar that replaces a
-// credential-like value in the stored record.
 var auditRedactedJSON = json.RawMessage(`"` + auditRedactedValue + `"`)
 
-// redactRaw walks JSON *as bytes*, replacing values under credential-like keys
-// and copying everything else through untouched. It never decodes a value into
-// a Go interface{}.
+// Walks JSON *as bytes* and never decodes a value into a Go interface{}
+// (ADR-012). The predecessor decoded into interface{}, redacted, and
+// re-encoded — which meant the record was Go's paraphrase of what the caller
+// sent rather than the caller's own bytes: an unpaired UTF-16 surrogate came
+// back as U+FFFD, object keys came back sorted, duplicate keys came back as
+// one, numbers came back in Go's float formatting.
 //
-// That is the whole point (ADR-012). The predecessor decoded the arguments into
-// interface{}, redacted, and re-encoded — which meant the record was not what
-// the caller sent but Go's paraphrase of it: an unpaired UTF-16 surrogate came
-// back as U+FFFD, object keys came back sorted, duplicate keys came back as one,
-// and a number came back in Go's float formatting. The audit log is the
-// operator's ground truth for what a client did; a paraphrase that reads as a
-// verbatim quote is worse than no record, because reconstructing issue #40 from
-// the log put the corruption on the client's side of the boundary.
-//
-// It is deliberately total rather than fallible: anything it cannot walk (which
-// after the json.Compact in redactArgs means nothing that is valid JSON) is
-// returned unchanged, so a shape this function did not anticipate is recorded
-// verbatim rather than dropped. Redaction is the one thing it must not skip,
-// and an object is the only shape that can carry a key to redact by — so the
-// object walk is the only branch that can fail closed, and it does: a walk that
-// errors mid-way falls back to the un-redacted bytes only when no key was
-// sensitive, and otherwise to the whole value replaced.
+// It is deliberately total rather than fallible: anything it cannot walk
+// (after the json.Compact in redactArgs, nothing that is valid JSON) is
+// returned unchanged rather than dropped. An object is the only shape that
+// can carry a key to redact by, so the object walk is the only branch that
+// can fail closed: a walk that errors mid-way falls back to the un-redacted
+// bytes only when no key was sensitive, and otherwise to the whole value
+// replaced.
 func redactRaw(raw json.RawMessage, extra []string) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -440,16 +386,16 @@ func redactRaw(raw json.RawMessage, extra []string) json.RawMessage {
 		}
 		return append(out, ']')
 	default:
-		// A string, number, boolean or null: nothing to redact and nothing to
-		// rewrite. These bytes are exactly what the caller sent.
+		// A string, number, boolean or null: these bytes are exactly what the
+		// caller sent.
 		return raw
 	}
 }
 
-// redactRawObject rebuilds a JSON object from its own bytes: each key is copied
-// from the source rather than re-encoded from the decoded Go string, so key
-// order, duplicate keys and any escape a key contains all survive. The decoded
-// key is used only to ASK whether the key looks like a credential.
+// Rebuilds a JSON object from its own bytes: each key is copied from the
+// source rather than re-encoded from the decoded Go string, so key order,
+// duplicate keys and any escape a key contains all survive. The decoded key
+// is used only to ASK whether the key looks like a credential.
 func redactRawObject(raw json.RawMessage, extra []string) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if _, err := dec.Token(); err != nil { // the opening brace
@@ -478,7 +424,7 @@ func redactRawObject(raw json.RawMessage, extra []string) json.RawMessage {
 		if len(rawKey) == 0 {
 			// Unreachable on compacted input — only a brace or a comma
 			// separates a value from the next key — but an empty key would
-			// emit `{:v}`, and docs/audit-log.md promises every line parses.
+			// emit `{:v}`, and every line in this log must stay parseable.
 			return redactRawFallback(raw, sawSensitive)
 		}
 		if !first {
@@ -500,10 +446,9 @@ func redactRawObject(raw json.RawMessage, extra []string) json.RawMessage {
 	return append(out, '}')
 }
 
-// redactRawFallback answers the only question a half-walked object leaves: has
-// a credential already been seen inside it? If so the partial output cannot be
-// trusted to hold the rest, and the whole value is replaced. If not, nothing in
-// it needed redacting and the original bytes are the most faithful record.
+// Answers the only question a half-walked object leaves: has a credential
+// already been seen inside it? If so the partial output cannot be trusted to
+// hold the rest, and the whole value is replaced.
 func redactRawFallback(raw json.RawMessage, sawSensitive bool) json.RawMessage {
 	if sawSensitive {
 		return auditRedactedJSON
@@ -511,10 +456,8 @@ func redactRawFallback(raw json.RawMessage, sawSensitive bool) json.RawMessage {
 	return raw
 }
 
-// rawKeyBytes returns the source bytes of an object key. from is the decoder's
-// offset before the key token (the end of the previous token, so a brace or a
-// comma) and to is the offset just past its closing quote; the key itself is
-// everything from the first quote at or after from.
+// from is the decoder's offset before the key token (a brace or a comma) and
+// to is just past the key's closing quote.
 func rawKeyBytes(raw json.RawMessage, from, to int64) json.RawMessage {
 	i := int(from)
 	for i < int(to) && raw[i] != '"' {
@@ -538,31 +481,24 @@ func isSensitiveKey(key string, extra []string) bool {
 	return false
 }
 
-// redactArgs returns the arguments ready for storage: credential-like values
-// replaced, then capped at maxBytes. Over the cap, the result is a JSON string
-// holding the truncated prefix (truncated=true) rather than a malformed object,
-// so every line in the log parses.
-//
-// Arguments that aren't valid JSON are stored as a capped string too: the point
-// is a faithful record of what was attempted, including malformed attempts.
+// Over the cap, the result is a JSON string holding the truncated prefix
+// (truncated=true) rather than a malformed object, so every line parses.
+// Arguments that aren't valid JSON are stored as a capped string too, for a
+// faithful record of what was attempted, including malformed attempts.
 //
 // Under the cap, what is stored is the caller's own bytes with credential
 // values replaced — not a re-encoding of them (ADR-012). json.Compact is the
 // only rewrite: it strips insignificant whitespace and leaves every string,
-// every escape and every number's spelling exactly as the caller wrote it, so
-// the recorded arguments and the arguments the MCP received are the same bytes.
-// The cap is what keeps that affordable; arguments are unbounded (a file write
-// carries its whole content) and the log is append-only, so the record is
-// bounded first and faithful within that bound, in that order.
+// escape and number spelling exactly as the caller wrote it, so the recorded
+// arguments and the arguments the MCP received are the same bytes.
 func redactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.RawMessage, size int, truncated bool) {
 	if len(raw) == 0 {
 		return nil, 0, false
 	}
 	size = len(raw)
 
-	// Compact both validates and normalises the whitespace the walk below
-	// assumes away. It does not decode: a lone surrogate escape is still six
-	// bytes of ASCII on the other side of it.
+	// Compact both validates and normalises whitespace; it does not decode, so
+	// a lone surrogate escape is still six bytes of ASCII on the other side.
 	var buf bytes.Buffer
 	if err := json.Compact(&buf, raw); err != nil {
 		return capAsString(string(raw), maxBytes)
@@ -574,8 +510,7 @@ func redactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.Raw
 	return capAsString(string(encoded), maxBytes)
 }
 
-// capAsString truncates s to maxBytes (on a rune boundary) and encodes it as a
-// JSON string.
+// Truncates on a rune boundary.
 func capAsString(s string, maxBytes int) (json.RawMessage, int, bool) {
 	size := len(s)
 	if len(s) > maxBytes {
@@ -588,7 +523,6 @@ func capAsString(s string, maxBytes int) (json.RawMessage, int, bool) {
 	return encoded, size, size > maxBytes
 }
 
-// truncateRunes cuts s to at most n bytes without splitting a multi-byte rune.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -599,16 +533,10 @@ func truncateRunes(s string, n int) string {
 	return s[:n]
 }
 
-// utf8StartByte reports whether b begins a UTF-8 sequence (i.e. is not a
-// continuation byte).
 func utf8StartByte(b byte) bool { return b&0xC0 != 0x80 }
 
-// ---------------------------------------------------------------------------
-// Ring buffer
-// ---------------------------------------------------------------------------
-
-// auditRing is a fixed-size circular buffer of the most recent events. It backs
-// the settings UI's first paint and live tail without re-reading the log file.
+// A fixed-size circular buffer of the most recent events. Backs the settings
+// UI's first paint and live tail without re-reading the log file.
 type auditRing struct {
 	mu   sync.RWMutex
 	buf  []AuditEvent
@@ -630,7 +558,7 @@ func (r *auditRing) add(ev AuditEvent) {
 	}
 }
 
-// snapshot returns the buffered events newest-first.
+// Returns the buffered events newest-first.
 func (r *auditRing) snapshot() []AuditEvent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -647,16 +575,12 @@ func (r *auditRing) snapshot() []AuditEvent {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// Recorder
-// ---------------------------------------------------------------------------
-
-// AuditRecorder receives events from the router and persists them. Writes are
-// handed to a single goroutine over a bounded channel so a slow or full disk
-// can never delay a tool call; on overflow the event is dropped and counted.
+// Writes are handed to a single goroutine over a bounded channel so a slow or
+// full disk can never delay a tool call; on overflow the event is dropped and
+// counted.
 //
-// A nil *AuditRecorder is a valid no-op recorder: every method tolerates it, so
-// callers (and tests) never have to branch on whether auditing is configured.
+// A nil *AuditRecorder is a valid no-op recorder: every method tolerates it,
+// so callers never have to branch on whether auditing is configured.
 type AuditRecorder struct {
 	cfg  resolvedAuditConfig
 	path string
@@ -670,8 +594,8 @@ type AuditRecorder struct {
 	dropped atomic.Uint64
 	wrote   atomic.Uint64
 
-	// sink receives each recorded event for live UI push. Guarded by sinkMu
-	// because the settings window can attach and detach at any time.
+	// Guarded by sinkMu because the settings window can attach and detach at
+	// any time.
 	sinkMu sync.RWMutex
 	sink   func(AuditEvent)
 
@@ -679,8 +603,8 @@ type AuditRecorder struct {
 	done      chan struct{}
 }
 
-// NewAuditRecorder starts a recorder writing JSONL to path. A disabled config
-// returns nil, which every call site treats as "auditing off".
+// A disabled config returns nil, which every call site treats as
+// "auditing off".
 func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 	resolved := cfg.resolve()
 	if !resolved.Enabled {
@@ -694,7 +618,7 @@ func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
 
-	// Lowercase the operator-supplied keys once rather than per call.
+	// Lowercase once rather than per call.
 	extra := make([]string, 0, len(resolved.RedactKeys))
 	for _, k := range resolved.RedactKeys {
 		extra = append(extra, strings.ToLower(strings.TrimSpace(k)))
@@ -715,13 +639,10 @@ func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 	return r, nil
 }
 
-// Enabled reports whether events should be built at all. Nil-safe.
 func (r *AuditRecorder) Enabled() bool { return r != nil && r.cfg.Enabled }
 
-// LogLists reports whether list_tools / list_skills events are recorded.
 func (r *AuditRecorder) LogLists() bool { return r != nil && r.cfg.LogLists }
 
-// Path returns the audit log file path (empty when auditing is off).
 func (r *AuditRecorder) Path() string {
 	if r == nil {
 		return ""
@@ -729,7 +650,6 @@ func (r *AuditRecorder) Path() string {
 	return r.path
 }
 
-// Dropped returns how many events were discarded because the queue was full.
 // Surfaced in the UI: a nonzero count means the log is incomplete, and an
 // incomplete audit log that looks complete is worse than no audit log.
 func (r *AuditRecorder) Dropped() uint64 {
@@ -739,8 +659,7 @@ func (r *AuditRecorder) Dropped() uint64 {
 	return r.dropped.Load()
 }
 
-// SetSink registers a callback invoked for every recorded event, used for live
-// push to an open settings window. Pass nil to detach.
+// Pass nil to detach.
 func (r *AuditRecorder) SetSink(fn func(AuditEvent)) {
 	if r == nil {
 		return
@@ -750,29 +669,27 @@ func (r *AuditRecorder) SetSink(fn func(AuditEvent)) {
 	r.sinkMu.Unlock()
 }
 
-// auditDurableWrite is a synchronous write request handed to the writer
-// goroutine. The reply channel is buffered so the writer never blocks on a
-// caller that has given up waiting.
+// The reply channel is buffered so the writer never blocks on a caller that
+// has given up waiting.
 type auditDurableWrite struct {
 	ev    AuditEvent
 	reply chan error
 }
 
-// errAuditUnavailable is returned by RecordDurable when there is no live sink
-// to write to. It is an error rather than a silent success because the only
-// caller is the fail-closed path: "I could not record this" and "I recorded
-// this" must never be indistinguishable there.
+// An error rather than a silent success because the only caller is the
+// fail-closed path: "I could not record this" and "I recorded this" must
+// never be indistinguishable there.
 var errAuditUnavailable = errors.New("audit recorder unavailable")
 
-// RecordDurable writes an event and blocks until it is on disk, returning any
-// error rather than swallowing it. This is the fail-closed half of the sink,
-// used for a remote caller's intent record (ADR-010 decision 5): the call is
-// refused when this fails, so the caller has to be able to tell.
+// Blocks until the event is on disk, returning any error rather than
+// swallowing it. This is the fail-closed half of the sink, used for a remote
+// caller's intent record (ADR-010 decision 5): the call is refused when this
+// fails.
 //
-// It does not use the bounded queue. The queue exists so that a slow sink can
-// never delay a *local* tool call, and delaying the call is exactly the point
-// here — but the file still belongs to the writer goroutine, so the event is
-// handed over rather than written from the caller's goroutine.
+// Does not use the bounded queue: that exists so a slow sink can never delay
+// a *local* tool call, and delaying the call is exactly the point here — but
+// the file still belongs to the writer goroutine, so the event is handed over
+// rather than written from the caller's goroutine.
 func (r *AuditRecorder) RecordDurable(ev AuditEvent) error {
 	if r == nil || !r.cfg.Enabled {
 		return errAuditUnavailable
@@ -791,8 +708,7 @@ func (r *AuditRecorder) RecordDurable(ev AuditEvent) error {
 	}
 }
 
-// Record enqueues an event. Never blocks: a full queue drops the event and
-// increments the drop counter.
+// Never blocks: a full queue drops the event and increments the drop counter.
 func (r *AuditRecorder) Record(ev AuditEvent) {
 	if r == nil || !r.cfg.Enabled {
 		return
@@ -801,14 +717,14 @@ func (r *AuditRecorder) Record(ev AuditEvent) {
 	case r.ch <- ev:
 	default:
 		if n := r.dropped.Add(1); n == 1 {
-			// Warn once on the first drop; the counter carries the rest.
+			// Warn once; the counter carries the rest.
 			slog.Warn("audit log queue full, dropping events", "path", r.path)
 		}
 	}
 }
 
-// run owns the file and the ring. Single goroutine, so neither needs
-// write-side locking beyond the ring's own (readers come from the UI thread).
+// Single goroutine, so neither the file nor the ring needs write-side locking
+// beyond the ring's own (readers come from the UI thread).
 func (r *AuditRecorder) run() {
 	defer close(r.done)
 	enc := json.NewEncoder(r.w)
@@ -823,9 +739,9 @@ func (r *AuditRecorder) run() {
 			req.reply <- r.writeDurable(enc, req.ev)
 		case ack := <-r.flushCh:
 			// select gives no ordering guarantee between the two channels, so
-			// drain everything already queued before acknowledging. By the time
-			// a flush request lands, every event enqueued before it is sitting
-			// in r.ch, which makes "drain to empty" exactly Flush's contract.
+			// drain everything already queued before acknowledging: by the
+			// time a flush request lands, every event enqueued before it is
+			// sitting in r.ch.
 			for {
 				select {
 				case ev := <-r.ch:
@@ -840,7 +756,6 @@ func (r *AuditRecorder) run() {
 	}
 }
 
-// write persists one event and fans it out to the live UI sink.
 func (r *AuditRecorder) write(enc *json.Encoder, ev AuditEvent) {
 	r.ring.add(ev)
 	if err := enc.Encode(ev); err != nil {
@@ -856,14 +771,9 @@ func (r *AuditRecorder) write(enc *json.Encoder, ev AuditEvent) {
 	}
 }
 
-// writeDurable persists one event synchronously and reports whether it made it
-// to stable storage.
-//
 // Unlike write, the ring and the live UI sink are updated only *after* the
-// bytes are down. A record relay refused to stand behind must not show up in
-// the Tool Calls tab as though it had been logged — that would recreate, in the
-// one place that is supposed to be fail-closed, exactly the "incomplete log
-// that looks complete" ADR-008 called worse than no log at all.
+// bytes are down: a record relay refused to stand behind must not show up in
+// the Tool Calls tab as though it had been logged.
 func (r *AuditRecorder) writeDurable(enc *json.Encoder, ev AuditEvent) error {
 	if err := enc.Encode(ev); err != nil {
 		slog.Warn("audit durable write failed", "path", r.path, "error", err)
@@ -885,10 +795,9 @@ func (r *AuditRecorder) writeDurable(enc *json.Encoder, ev AuditEvent) error {
 	return nil
 }
 
-// auditSyncer is the durable half of the log sink. rotatingWriter implements
-// it; an in-memory writer used by a test may not, and a sink with no notion of
-// stable storage is not something to refuse a tool call over — the bytes still
-// reached it.
+// rotatingWriter implements this; an in-memory writer used by a test may not,
+// and a sink with no notion of stable storage is not something to refuse a
+// tool call over — the bytes still reached it.
 type auditSyncer interface{ Sync() error }
 
 func syncAuditWriter(w io.Writer) error {
@@ -899,7 +808,7 @@ func syncAuditWriter(w io.Writer) error {
 	return s.Sync()
 }
 
-// Close drains the queue and closes the file. Safe to call more than once.
+// Safe to call more than once.
 func (r *AuditRecorder) Close() {
 	if r == nil {
 		return
@@ -911,7 +820,6 @@ func (r *AuditRecorder) Close() {
 	})
 }
 
-// Wrote returns how many events have been persisted this run.
 func (r *AuditRecorder) Wrote() uint64 {
 	if r == nil {
 		return 0
@@ -919,7 +827,6 @@ func (r *AuditRecorder) Wrote() uint64 {
 	return r.wrote.Load()
 }
 
-// Flush blocks until every event enqueued before the call has been written.
 // Mainly a test seam, but also used before an export so the file on disk
 // includes everything the UI has already shown. Returns immediately if the
 // recorder is closed rather than blocking forever on a dead writer.
@@ -939,38 +846,28 @@ func (r *AuditRecorder) Flush() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Query
-// ---------------------------------------------------------------------------
-
-// auditOutcomeScopeViolation is not a stored outcome (see ScopeViolation's own
-// doc comment for why ADR-011 decision 7 keeps it a field) but is accepted as
-// a value of AuditQuery.Outcome anyway: it is what a security review reaches
-// for first, right beside "denied", and asking it to remember that this one
-// query has to be phrased differently is the sort of gap that gets found by
-// noticing three months of scope probes went unfiltered. matches() special-
-// cases it rather than storing a taxonomy in ScopeViolation's own outcome.
+// ScopeViolation is a field, not a stored outcome (ADR-011 decision 7), but is
+// accepted as a value of AuditQuery.Outcome anyway: it is what a security
+// review reaches for first, right beside "denied". matches() special-cases it
+// rather than storing a taxonomy in ScopeViolation's own outcome.
 const auditOutcomeScopeViolation = "scope_violation"
 
-// AuditQuery filters recorded events. Empty fields don't filter.
+// Empty fields don't filter.
 type AuditQuery struct {
 	ProjectID string `json:"project_id,omitempty"`
 	McpID     string `json:"mcp_id,omitempty"`
-	// Outcome matches ev.Outcome verbatim, EXCEPT for the value
-	// "scope_violation": that is not a stored outcome (see
-	// auditOutcomeScopeViolation), so it instead matches any record with
-	// ev.ScopeViolation set, whatever its actual outcome (in practice always
-	// tool_error today).
+	// Matches ev.Outcome verbatim, EXCEPT "scope_violation" (see
+	// auditOutcomeScopeViolation), which instead matches any record with
+	// ev.ScopeViolation set, whatever its actual outcome.
 	Outcome string `json:"outcome,omitempty"`
 	Event   string `json:"event,omitempty"`
-	// Kind filters on the actor kind, which is how "everything any VM did"
-	// (kind=remote) is asked as one question rather than reconstructed from
-	// which actor fields happen to be set.
+	// Filters on the actor kind, which is how "everything any VM did"
+	// (kind=remote) is asked as one question.
 	Kind  string `json:"kind,omitempty"`
 	Text  string `json:"text,omitempty"` // substring over tool, args, error, project name
 	Limit int    `json:"limit,omitempty"`
-	// Deep searches the log file rather than the in-memory ring, for history
-	// older than the ring holds. Bounded by auditTailBudget.
+	// Searches the log file rather than the in-memory ring, for history older
+	// than the ring holds. Bounded by auditTailBudget.
 	Deep bool `json:"deep,omitempty"`
 }
 
@@ -999,6 +896,7 @@ func (q AuditQuery) matches(ev *AuditEvent) bool {
 		hay := strings.ToLower(strings.Join([]string{
 			ev.Tool, ev.McpID, ev.Error, ev.Actor.ProjectName,
 			ev.Actor.Proc, ev.Actor.Parent, string(ev.Args),
+			ev.Method, ev.Path, ev.Class, ev.Transport, ev.Actor.CredID,
 		}, "\x00"))
 		if !strings.Contains(hay, needle) {
 			return false
@@ -1007,8 +905,8 @@ func (q AuditQuery) matches(ev *AuditEvent) bool {
 	return true
 }
 
-// Query returns matching events, newest first. Reads the in-memory ring unless
-// q.Deep is set, in which case it scans the tail of the log file.
+// Reads the in-memory ring unless q.Deep is set, in which case it scans the
+// tail of the log file.
 func (r *AuditRecorder) Query(q AuditQuery) []AuditEvent {
 	if r == nil {
 		return []AuditEvent{}
@@ -1034,9 +932,8 @@ func (r *AuditRecorder) Query(q AuditQuery) []AuditEvent {
 	return out
 }
 
-// readAuditTail reads at most budget bytes from the end of the JSONL log and
-// returns the events newest-first. A partial first line (the seek lands
-// mid-record) is skipped. Unparseable lines are skipped rather than failing the
+// Reads at most budget bytes from the end of the JSONL log and returns the
+// events newest-first. Unparseable lines are skipped rather than failing the
 // whole query — a truncated tail should still be readable.
 func readAuditTail(path string, budget int64) []AuditEvent {
 	f, err := os.Open(path)
@@ -1086,10 +983,9 @@ func readAuditTail(path string, budget int64) []AuditEvent {
 	return events
 }
 
-// startAuditRecorder builds the recorder from settings, logging and returning
-// nil on any failure. Auditing is observability, not an authorization control,
-// so a broken sink degrades to "no audit log" rather than taking relay down —
-// the Tool Calls tab makes the disabled state visible instead of pretending.
+// Auditing is observability, not an authorization control, so a broken sink
+// degrades to "no audit log" rather than taking relay down — the Tool Calls
+// tab makes the disabled state visible instead of pretending.
 func startAuditRecorder(s *Settings) *AuditRecorder {
 	path, err := auditLogPath()
 	if err != nil {
@@ -1111,7 +1007,6 @@ func startAuditRecorder(s *Settings) *AuditRecorder {
 	return rec
 }
 
-// auditLogPath returns the audit log location under the relay config dir.
 func auditLogPath() (string, error) {
 	dir, err := serviceLogDir()
 	if err != nil {
@@ -1120,16 +1015,15 @@ func auditLogPath() (string, error) {
 	return filepath.Join(dir, "audit", "toolcalls.jsonl"), nil
 }
 
-// newAuditScanner reads JSONL records. The buffer is sized for the largest
-// record the caps allow (redacted args plus an optional result preview) with
-// generous headroom, so an oversized line is skipped rather than truncating the
-// rest of the scan.
+// The buffer is sized for the largest record the caps allow (redacted args
+// plus an optional result preview) with generous headroom, so an oversized
+// line is skipped rather than truncating the rest of the scan.
 func newAuditScanner(r io.Reader) *bufio.Scanner {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 64*1024), 4<<20)
 	return s
 }
 
-// newAuditID returns a unique event id. Separate function so tests can reason
-// about it without reaching for uuid directly.
+// Separate function so tests can reason about it without reaching for uuid
+// directly.
 func newAuditID() string { return uuid.NewString() }

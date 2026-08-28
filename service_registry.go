@@ -13,7 +13,6 @@ import (
 	"relaygo/bridge"
 )
 
-// ServiceManager abstracts service lifecycle operations for testability.
 type ServiceManager interface {
 	Start(config *ServiceConfig) error
 	Stop(id string)
@@ -28,46 +27,28 @@ type ServiceManager interface {
 	CloseFrontendChannel()
 }
 
-// Compile-time interface assertions.
 var _ ServiceManager = (*ServiceRegistry)(nil)
 
-// serviceProcess bundles a running process with its log file for cleanup.
 type serviceProcess struct {
 	cmd       *exec.Cmd
 	logFile   *rotatingWriter
-	done      chan struct{} // closed when cmd.Wait() returns
-	tokenHash string        // in-memory service token hash (empty if none)
+	done      chan struct{}
+	tokenHash string
 }
 
-// ServiceRegistry manages background service child processes.
 type ServiceRegistry struct {
 	mu        sync.Mutex
 	processes map[string]*serviceProcess
 
-	// TokenStore holds ephemeral in-memory tokens for managed services.
-	// Set during initialization, before any services are started.
-	TokenStore *serviceTokenStore
-
-	// FrontendChannel issues the frontend socket+token the front door
-	// listens on. Set during initialization, before any services start.
+	// TokenStore, FrontendChannel, Enhanced, and OnProcessExit are all set
+	// once during initialization, before any services are started, so
+	// concurrent reads from reaper goroutines need no lock of their own.
+	TokenStore      *serviceTokenStore
 	FrontendChannel *FrontendChannel
-
-	// Enhanced holds the runtime state of relay-enhanced services
-	// (per-service internal sockets, registered manifests). The bridge
-	// handler writes via RegisterManifest when a service sends its
-	// manifest; Forget is called on exit. Read by the front-door
-	// dispatcher.
-	Enhanced *EnhancedServiceRegistry
-
-	// OnProcessExit is called from the reaper goroutine after a managed
-	// process exits. Set once during initialization, before any services
-	// are started, so concurrent reads from reaper goroutines are safe.
-	// Enables event-driven UI updates (e.g., tray menu status dots)
-	// without polling for process state changes.
-	OnProcessExit func()
+	Enhanced        *EnhancedServiceRegistry
+	OnProcessExit   func()
 }
 
-// NewServiceRegistry creates an empty registry.
 func NewServiceRegistry() *ServiceRegistry {
 	return &ServiceRegistry{
 		processes: make(map[string]*serviceProcess),
@@ -82,8 +63,8 @@ func serviceLogDir() (string, error) {
 	return dir, nil
 }
 
-// Start spawns a service through the platform shell so the user's profile is available.
-// Stdout and stderr go to a log file.
+// Start spawns the service through the platform shell so the user's profile
+// (PATH, env) is loaded.
 func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("invalid service config: %w", err)
@@ -98,7 +79,6 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	cmd := buildCommand(config)
 
-	// Generate an ephemeral service token and inject Relay MCP env vars.
 	var tokenHash string
 	if r.TokenStore != nil {
 		rawToken, err := generateRandomHex(32)
@@ -121,12 +101,9 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		})
 	}
 
-	// Frontend creds go ONLY to frontend consumers (services that dial relay's
-	// front door, i.e. eve). Backends never dial it, so injecting the front-door
-	// bearer into them is a holdover from when relayLLM hosted the frontend
-	// channel — and it leaks into shells a backend spawns. frontendCredsEnabled
-	// defaults to true (backward-compatible) so only services explicitly opted
-	// out (frontend_consumer:false) are skipped.
+	// Frontend creds (RELAY_FRONTEND_SOCKET/TOKEN) go only to frontend
+	// consumers (e.g. eve); backends never dial the front door, and handing
+	// them the bearer would leak it into any process they spawn.
 	if r.FrontendChannel != nil && frontendCredsEnabled(config) {
 		endpoint, err := r.FrontendChannel.Ensure()
 		if err != nil {
@@ -139,7 +116,6 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		EnvServiceID:    config.ID,
 	})
 
-	// Clean up the service token on any error path before the process starts.
 	committed := false
 	defer func() {
 		if !committed && tokenHash != "" {
@@ -152,9 +128,9 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		return err
 	}
 	logPath := filepath.Join(logDir, config.ID+".log")
-	// Size-capped rotating log: assigning an io.Writer (not *os.File) makes Go
-	// pump the child's merged stdout+stderr through one copy goroutine, which
-	// cmd.Wait awaits before the reaper closes the writer below.
+	// Assigning an io.Writer (not *os.File) makes Go pump the child's merged
+	// stdout+stderr through one copy goroutine, which cmd.Wait awaits before
+	// the reaper closes the writer below.
 	logFile, err := openRotatingLog(logPath)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
@@ -169,9 +145,7 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	}
 	committed = true
 
-	// Record the process group leader so a future tray session can reclaim
-	// this child if we are SIGKILLed before the reaper runs. Best-effort —
-	// pidfile failure must not abort a successful spawn.
+	// Best-effort: pidfile failure must not abort a successful spawn.
 	if err := writePidFile(config.ID, cmd.Process.Pid); err != nil {
 		slog.Warn("write pidfile failed", "id", config.ID, "error", err)
 	}
@@ -183,10 +157,8 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		tokenHash: tokenHash,
 	}
 
-	// Reap the process in the background so ProcessState is populated
-	// and we can detect exit via the done channel. Defers run LIFO:
-	// logFile.Close → close(done) → OnProcessExit, ensuring the done
-	// channel is closed before the exit callback reads process state.
+	// Defers run LIFO: logFile.Close -> close(done) -> OnProcessExit,
+	// ensuring done is closed before the exit callback reads process state.
 	serviceID := config.ID
 	go func() {
 		defer func() {
@@ -196,16 +168,10 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		}()
 		defer close(proc.done)
 		defer logFile.Close()
-		// Pidfile removal pairs with writePidFile above; on clean exit we
-		// leave nothing for the next session to reclaim.
 		defer removePidFile(serviceID)
-		// Clean up ephemeral token on exit.
 		if proc.tokenHash != "" && r.TokenStore != nil {
 			defer r.TokenStore.Remove(proc.tokenHash)
 		}
-		// Forget any manifest registration so the dispatcher stops trying
-		// to route to a dead socket. Safe no-op for generic services that
-		// never registered.
 		if r.Enhanced != nil {
 			defer r.Enhanced.Forget(serviceID)
 		}
@@ -218,21 +184,13 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	return nil
 }
 
-// frontendCredsEnabled reports whether a service should receive relay's
-// front-door creds (RELAY_FRONTEND_SOCKET/TOKEN). Only frontend consumers (eve)
-// need them; backends never dial the front door, and handing them the bearer
-// just lets it leak into any process they spawn. Defaults to true when unset
-// (nil) so existing registrations keep working; a backend opts out with an
-// explicit frontend_consumer:false (`service register --no-frontend-creds`).
 func frontendCredsEnabled(cfg *ServiceConfig) bool {
 	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
 }
 
-// generateRandomHex returns a random hex string of n random bytes, or an error
-// if the system CSPRNG fails. Returning the error (rather than panicking) keeps
-// a one-in-a-billion rand failure from taking down the whole tray — the caller
-// fails only the operation that needed the token. Never returns a partial/zero
-// token: a token derived from a failed read would be predictable.
+// generateRandomHex returns a random hex string, or an error rather than a
+// zero/partial token if the CSPRNG read fails -- a token derived from a
+// failed read would be predictable.
 func generateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -241,9 +199,9 @@ func generateRandomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// Stop kills a service process and waits for it to exit.
-// The process remains in the map while stopping so IsRunning returns true,
-// preventing duplicate spawns from concurrent Start calls.
+// Stop kills a service and waits for it to exit. The process stays in the
+// map while stopping so IsRunning returns true, preventing a concurrent
+// Start from spawning a duplicate.
 func (r *ServiceRegistry) Stop(id string) {
 	r.mu.Lock()
 	proc, ok := r.processes[id]
@@ -262,23 +220,19 @@ func (r *ServiceRegistry) Stop(id string) {
 	}
 }
 
-// Reload restarts a service with new config. Stops the service if running,
-// then starts it. Stop is a no-op for non-running services.
 func (r *ServiceRegistry) Reload(id string, cfg *ServiceConfig) error {
 	r.Stop(id)
 	return r.Start(cfg)
 }
 
-// IsRunning checks whether a service process is still alive.
 func (r *ServiceRegistry) IsRunning(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.isRunningLocked(id)
 }
 
-// isRunningLocked checks whether a process is still alive. If the process has
-// exited, it is removed from the map as a side effect (reaping).
-// Caller must hold r.mu.
+// isRunningLocked also reaps: an exited process is removed from the map as
+// a side effect. Caller must hold r.mu.
 func (r *ServiceRegistry) isRunningLocked(id string) bool {
 	proc, ok := r.processes[id]
 	if !ok {
@@ -294,16 +248,12 @@ func (r *ServiceRegistry) isRunningLocked(id string) bool {
 }
 
 // ReclaimOrphans terminates leftover service processes from a previous tray
-// session. Reads one pidfile per service written at spawn time by Start,
-// verifies the pid still belongs to that service (BSD `ps` lookup to defeat
-// pid recycling), then SIGTERMs the process group like StopAll would. Stale
-// pidfiles are silently removed.
-//
-// Why: when the tray is SIGKILLed, panics, or is force-quit, the reaper
-// goroutine in Start cannot run and child processes are reparented to
-// launchd (PPID 1). They keep listening on their bound ports, so the next
-// autostart attempt fails with "address already in use". Calling this
-// immediately before StartAllAutostart restores a clean baseline.
+// session: if the tray was SIGKILLed or force-quit, Start's reaper goroutine
+// never ran, so children were reparented to launchd (PPID 1) and are still
+// holding their listen ports, which fails the next autostart with "address
+// already in use". Reads each service's pidfile, confirms the pid still
+// belongs to that service (ps lookup, to defeat pid recycling), then SIGTERMs
+// the process group. Stale pidfiles are silently removed.
 func (r *ServiceRegistry) ReclaimOrphans(configs []ServiceConfig) {
 	for i := range configs {
 		cfg := &configs[i]
@@ -323,7 +273,6 @@ func (r *ServiceRegistry) ReclaimOrphans(configs []ServiceConfig) {
 	}
 }
 
-// StartAllAutostart starts all services with autostart enabled.
 func (r *ServiceRegistry) StartAllAutostart(configs []ServiceConfig) {
 	for i := range configs {
 		if configs[i].Autostart {
@@ -334,8 +283,8 @@ func (r *ServiceRegistry) StartAllAutostart(configs []ServiceConfig) {
 	}
 }
 
-// StopAll kills all running service processes concurrently to avoid one
-// slow-to-stop service blocking the shutdown of others.
+// StopAll stops every running service concurrently so one slow shutdown
+// doesn't block the others.
 func (r *ServiceRegistry) StopAll() {
 	r.mu.Lock()
 	procs := make(map[string]*serviceProcess, len(r.processes))
@@ -355,7 +304,6 @@ func (r *ServiceRegistry) StopAll() {
 	}
 	wg.Wait()
 
-	// Clean up after all processes are dead.
 	r.mu.Lock()
 	for id, proc := range procs {
 		if r.processes[id] == proc {
@@ -365,7 +313,6 @@ func (r *ServiceRegistry) StopAll() {
 	r.mu.Unlock()
 }
 
-// RunningIDs returns the IDs of all currently running services.
 func (r *ServiceRegistry) RunningIDs() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -378,9 +325,6 @@ func (r *ServiceRegistry) RunningIDs() []string {
 	return ids
 }
 
-// PIDsByServiceID returns the OS PID of each currently-running service. Dead
-// entries are reaped (via isRunningLocked) and entries with no spawned Process
-// handle are skipped. Used by the tray menu to sample subtree memory.
 func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -397,20 +341,16 @@ func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
 	return out
 }
 
-// CloseFrontendChannel unlinks the frontend Unix socket if one was
-// provisioned. Safe to call multiple times.
 func (r *ServiceRegistry) CloseFrontendChannel() {
 	if r.FrontendChannel != nil {
 		r.FrontendChannel.Close()
 	}
 }
 
-// CleanupDead removes dead processes from the registry.
 func (r *ServiceRegistry) CleanupDead() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Collect dead IDs first to avoid deleting from the map during iteration.
 	var dead []string
 	for id, proc := range r.processes {
 		select {

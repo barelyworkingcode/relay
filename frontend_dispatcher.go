@@ -12,28 +12,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// FrontendDispatcher routes inbound front-door HTTP and WebSocket requests
-// to the appropriate enhanced service, using longest-prefix-match against
-// every registered manifest's routes. The single handler covers both
-// protocols — WS upgrades are detected from the request headers.
-//
-// Per request, it reverse-proxies to the resolved service's internal Unix
-// socket, stripping any inbound Authorization header and injecting the
-// service-declared internal token. Trust boundaries remain distinct:
-//   - frontend token authenticates Eve/Scheduler → relay
-//   - internal token authenticates relay → enhanced service
+// Trust boundaries stay distinct end to end: the frontend token authenticates
+// Eve/Scheduler to relay, and a separate internal token (injected per
+// service, never the caller's) authenticates relay to the enhanced service.
 type FrontendDispatcher struct {
 	registry *EnhancedServiceRegistry
 }
 
-// NewFrontendDispatcher returns a dispatcher reading from the given registry.
-// The registry is the only mutable state; the dispatcher itself is
-// immutable + reentrant.
 func NewFrontendDispatcher(registry *EnhancedServiceRegistry) *FrontendDispatcher {
 	return &FrontendDispatcher{registry: registry}
 }
 
-// ServeHTTP routes one request. 404 if no manifest claims the path.
 func (d *FrontendDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	svc := d.registry.LookupByPath(r.URL.Path)
 	if svc == nil {
@@ -45,29 +34,20 @@ func (d *FrontendDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.proxyWS(svc, w, r)
 		return
 	}
-	// proxy is built once at register time; it owns a connection-pooling
-	// transport, so the per-request cost here is one map lookup + ServeHTTP.
 	svc.proxy.ServeHTTP(w, r)
 }
 
-// dispatcherWSUpgrader is permissive: the frontend listener is a Unix
-// socket, so only same-host processes can reach it, and bearer auth has
-// already validated by the time the dispatcher runs.
+// Permissive by design: the frontend listener is a Unix socket, so only
+// same-host processes can reach it, and bearer auth has already run by the
+// time the dispatcher sees the request.
 var dispatcherWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// WebSocket keepalive parameters. The proxy pings each peer every wsPingPeriod
-// and requires a pong (or any frame) within wsPongWait, otherwise the read
-// deadline trips and both conns are torn down. Without this, a peer that dies
-// without sending a close frame (network partition, hung process) would never
-// unblock the read pump, leaking both conns and their goroutines.
-//
-// The keepalive windows are held as atomics (not plain vars) so a test can
-// shorten them to exercise the half-open-reaping path without racing the live
-// proxy goroutines that read them on every pong/tick. Production sets them once
-// at init. Invariant: wsPingPeriod < wsPongWait so a pong can arrive before the
-// read deadline.
+// wsPongWait/wsPingPeriod are atomics rather than plain vars so a test can
+// shorten them to exercise the half-open-reaping path without racing the
+// live proxy goroutines that read them on every pong/tick. Invariant:
+// wsPingPeriod < wsPongWait, so a pong can arrive before the read deadline.
 var (
 	wsPongWaitNanos   atomic.Int64
 	wsPingPeriodNanos atomic.Int64
@@ -83,9 +63,6 @@ func wsPingPeriod() time.Duration { return time.Duration(wsPingPeriodNanos.Load(
 
 const wsWriteWait = 10 * time.Second
 
-// proxyWS upgrades the client connection and bidirectionally forwards
-// messages to the resolved service's WebSocket endpoint over its internal
-// socket.
 func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter, r *http.Request) {
 	dialer := &websocket.Dialer{
 		NetDial: func(_, _ string) (net.Conn, error) {
@@ -129,8 +106,8 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 		})
 	}
 
-	// Pingers keep each half-connection observably alive; they exit when done
-	// closes. Not part of the WaitGroup — the data pumps own teardown.
+	// Pingers are not part of the WaitGroup below: the data pumps own
+	// teardown, and pingers just exit when done closes.
 	go pingDispatchedWS(clientConn, done, closeBoth)
 	go pingDispatchedWS(upstreamConn, done, closeBoth)
 
@@ -139,16 +116,13 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 	go forwardDispatchedWS(clientConn, upstreamConn, &wg, closeBoth)
 	go forwardDispatchedWS(upstreamConn, clientConn, &wg, closeBoth)
 	wg.Wait()
-	closeBoth() // ensure done is closed so the pingers exit even on a clean close
+	closeBoth() // redundant once.Do call as a safety net so the pingers always exit
 }
 
-// forwardDispatchedWS pumps messages from src to dst until either side
-// closes. The 32KB buffer is reused across messages to avoid per-message
-// allocation on streaming token traffic.
-//
-// An idle read deadline on src, extended by every pong and every data frame,
-// turns a half-open peer (no close frame, no traffic) into a read error so the
-// pump can tear down instead of blocking forever in NextReader.
+// The 32KB buffer is reused across messages to avoid per-message allocation
+// on streaming token traffic. The read deadline on src is extended by every
+// pong AND every data frame, so a half-open peer (no close frame, no
+// traffic) becomes a read error instead of blocking NextReader forever.
 func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth func()) {
 	defer wg.Done()
 	defer closeBoth()
@@ -164,7 +138,7 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 		if err != nil {
 			return
 		}
-		// Inbound traffic also proves liveness — extend the deadline.
+		// Inbound data frames also prove liveness, not just pongs.
 		_ = src.SetReadDeadline(time.Now().Add(wsPongWait()))
 		writer, err := dst.NextWriter(msgType)
 		if err != nil {
@@ -180,10 +154,8 @@ func forwardDispatchedWS(src, dst *websocket.Conn, wg *sync.WaitGroup, closeBoth
 	}
 }
 
-// pingDispatchedWS sends a periodic ping so a silent-but-alive peer keeps the
-// read deadline fresh, and so a dead peer is detected promptly when the ping
-// write fails. WriteControl is safe to call concurrently with the single data
-// writer (gorilla guarantees this), so no write lock is needed.
+// WriteControl is safe to call concurrently with the single data writer
+// (gorilla guarantees this), so no write lock is needed here.
 func pingDispatchedWS(conn *websocket.Conn, done <-chan struct{}, closeBoth func()) {
 	ticker := time.NewTicker(wsPingPeriod())
 	defer ticker.Stop()

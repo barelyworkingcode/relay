@@ -15,8 +15,6 @@ import (
 	"relaygo/mcp"
 )
 
-// schemaProviderFunc adapts a plain function to ContextSchemasProvider
-// so the tests can reuse the existing testSchemas() helper.
 type schemaProviderFunc func() McpSurfaces
 
 func (f schemaProviderFunc) AllMcpSurfaces() McpSurfaces { return f() }
@@ -34,18 +32,14 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 		}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
 	return httptest.NewServer(mux), store
 }
 
-// mcpToolsProviderFunc adapts a plain function so tests can supply tool
-// info via a literal map without spinning up an ExternalMcpManager.
 type mcpToolsProviderFunc func(id string) []ToolInfo
 
 func (f mcpToolsProviderFunc) ToolInfos(id string) []ToolInfo { return f(id) }
 
-// fixedTokenLister returns a constant JSON tools array so EmitSkill can
-// produce a SKILL.md without spawning real MCP processes.
 type fixedTokenLister struct{}
 
 func (fixedTokenLister) ListTools(_ context.Context, _ string) (json.RawMessage, error) {
@@ -56,9 +50,6 @@ func (fixedTokenLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBu
 	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
-// newProjectRoutesServerFull wires the extra dependencies (MCPToolsProvider,
-// SkillLister, onChange) so tests can exercise the rotate_token /
-// regen_skill / list_mcp_tools routes.
 func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, onChange func()) (*httptest.Server, SettingsStore) {
 	t.Helper()
 	store := NewSettingsStoreAt(t.TempDir())
@@ -72,7 +63,7 @@ func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister Ski
 		}
 	})
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(mux, store, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
 	return httptest.NewServer(mux), store
 }
 
@@ -136,9 +127,8 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	if created.ID == "" {
 		t.Fatalf("expected id to be populated, got %+v", created)
 	}
-	// The frontend response must NOT carry the secret token: projectView strips
-	// Token/TokenHash from every eve-facing project response (rotate_token is the
-	// sole exception).
+	// projectView strips Token/TokenHash from every eve-facing project
+	// response; rotate_token is the sole exception.
 	if created.Token != "" || created.TokenHash != "" {
 		t.Fatalf("frontend create response leaked token/token_hash: %+v", created)
 	}
@@ -152,7 +142,6 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 		t.Errorf("template bool flags not round-tripped on create: %+v", created.ChatTemplates[0])
 	}
 
-	// GET single
 	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get: status %d, body %s", resp.StatusCode, body)
@@ -165,7 +154,6 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 		t.Errorf("id mismatch: got %s, want %s", fetched.ID, created.ID)
 	}
 
-	// GET list
 	resp, body = doJSON(t, "GET", srv.URL+"/api/projects", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list: status %d, body %s", resp.StatusCode, body)
@@ -184,7 +172,6 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	defer srv.Close()
 
 	tmpDir := t.TempDir()
-	// Create with a project-scoped shell template.
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
 		"name":           "Shells",
 		"path":           tmpDir,
@@ -206,7 +193,6 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
-	// projectView must expose shell_templates (and still strip the token).
 	if created.Token != "" || created.TokenHash != "" {
 		t.Fatalf("create response leaked token: %+v", created)
 	}
@@ -217,8 +203,8 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 		t.Errorf("shell template args not round-tripped: %+v", created.ShellTemplates[0])
 	}
 
-	// A rename (no shell_templates field) must LEAVE the list unchanged — the
-	// absent-vs-empty contract: nil pointer in projectUpdateFields = no change.
+	// projectUpdateFields uses a nil pointer for "no change": omitting
+	// shell_templates from the patch must leave the list untouched.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"name": "Shells-Renamed",
 	})
@@ -233,7 +219,8 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 		t.Errorf("rename wiped shell templates (absent != clear): %+v", renamed.ShellTemplates)
 	}
 
-	// An explicit empty array CLEARS the list (set pointer to empty slice).
+	// An explicit empty array, by contrast, sets the pointer to an empty
+	// slice and clears the list.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"shell_templates": []map[string]interface{}{},
 	})
@@ -282,8 +269,6 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 	}
 	originalToken := created.Token
 
-	// Patch only the name; everything else must be preserved including the
-	// inline token (rotating tokens on every PUT would break Eve sessions).
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"name": "Beta-Renamed",
 	})
@@ -307,7 +292,6 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 		t.Errorf("allowed_mcp_ids dropped on rename: %+v", renamed.AllowedMcpIDs)
 	}
 
-	// Patch the templates list — exercises the new UpdateProjectChatTemplates mutator.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"chat_templates": []map[string]interface{}{
 			{
@@ -353,8 +337,7 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 	defer srv.Close()
 
 	tmpDir := t.TempDir()
-	// Create with an initial folder list (with a blank + a duplicate to prove
-	// the mutator trims and de-dupes).
+	// A blank entry and a duplicate prove the mutator trims and de-dupes.
 	_, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
 		"name":            "Folders",
 		"path":            tmpDir,
@@ -368,7 +351,6 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 		t.Fatalf("session_folders not cleaned/round-tripped on create: %+v", got)
 	}
 
-	// Patch the folder list; other fields must be preserved.
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"session_folders": []string{"Archive"},
 	})
@@ -386,7 +368,6 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 		t.Errorf("path dropped on folder update: %q", updated.Path)
 	}
 
-	// An absent session_folders field must leave the list unchanged (patch semantics).
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"name": "Folders-Renamed",
 	})
@@ -401,7 +382,6 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 		t.Errorf("session_folders should persist when omitted from patch: %+v", renamed.SessionFolders)
 	}
 
-	// An explicit empty list clears the folders (distinct from omitting the field).
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"session_folders": []string{},
 	})
@@ -447,13 +427,13 @@ func TestProjectRoutes_Delete(t *testing.T) {
 		t.Fatalf("expected 204, got %d", resp.StatusCode)
 	}
 
-	// Subsequent GET should 404.
 	resp, _ = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 after delete, got %d", resp.StatusCode)
 	}
 
-	// Second delete is also 404 (idempotent failure mode, not a 204).
+	// A second delete is a 404, not a repeat 204 — deleting an already-deleted
+	// project is an error, not a no-op success.
 	resp, _ = doJSON(t, "DELETE", srv.URL+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 on second delete, got %d", resp.StatusCode)
@@ -466,7 +446,6 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Create with policy.
 	_, body := doJSON(t, "POST", srv.URL+"/api/projects", map[string]interface{}{
 		"name": "PolicyProj",
 		"path": tmpDir,
@@ -490,7 +469,6 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 		t.Errorf("allowed_tools round-trip: %+v", created.PermissionPolicy.AllowedTools)
 	}
 
-	// Update policy via PUT.
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"permission_policy": map[string]interface{}{
 			"default_mode":  "default",
@@ -511,7 +489,6 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 		t.Errorf("denied_tools should have been cleared: %+v", updated.PermissionPolicy.DeniedTools)
 	}
 
-	// Empty policy struct clears the policy.
 	resp, _ = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"permission_policy": map[string]interface{}{},
 	})
@@ -525,7 +502,6 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 		t.Errorf("policy not cleared by empty struct: %+v", after.PermissionPolicy)
 	}
 
-	// Invalid mode rejected.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"permission_policy": map[string]interface{}{
 			"default_mode": "totallyMadeUp",
@@ -551,7 +527,6 @@ func TestProjectRoutes_ListMcps(t *testing.T) {
 	if len(mcps) != 2 {
 		t.Fatalf("expected 2 mcps, got %d (%+v)", len(mcps), mcps)
 	}
-	// Verify the picker fields are present and OAuth-y fields are absent.
 	for _, m := range mcps {
 		if m["id"] == "" || m["display_name"] == "" {
 			t.Errorf("missing id or display_name in mcp entry: %+v", m)
@@ -736,10 +711,6 @@ func TestProjectRoutes_OnChangeFires(t *testing.T) {
 	}
 }
 
-// TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials guards the picker
-// response surface against drift — if someone later "helpfully" includes the
-// full ExternalMcp struct in /api/mcps/{id}/tools, OAuth tokens and stdio
-// envs would leak into the project editor UI.
 func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
 	provider := mcpToolsProviderFunc(func(id string) []ToolInfo {
 		return []ToolInfo{{Name: "fs_read", Description: "read"}}
@@ -751,7 +722,6 @@ func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	// Decode into a generic shape so we can assert no surprise keys exist.
 	var generic []map[string]interface{}
 	if err := json.Unmarshal(body, &generic); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -766,11 +736,6 @@ func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
 	}
 }
 
-// TestProjectRoutes_FullLifecycle exercises the HTTP API the way Eve does:
-// create a project with generate_skill=true, verify SKILL.md lands on disk,
-// rotate the token, delete the project, verify SKILL.md is gone. Mirrors
-// TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile but through
-// the HTTP layer Eve consumes today.
 func TestProjectRoutes_FullLifecycle(t *testing.T) {
 	srv, store := newProjectRoutesServerFull(t, nil, fixedTokenLister{}, nil)
 	defer srv.Close()
@@ -786,15 +751,16 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	// fixedTokenLister buckets its single tool under the "Files" key → relay-files.
+	// fixedTokenLister buckets its single tool under the "Files" key, which
+	// slugs to the "relay-files" directory below.
 	skillFile := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
 	if _, err := os.Stat(skillFile); err != nil {
 		t.Fatalf("SKILL.md not created at %s: %v", skillFile, err)
 	}
 
-	// Confirm content doesn't leak the token. The frontend create response no
-	// longer carries the token (projectView strips it), so read the real
-	// plaintext from the store to make this a meaningful check.
+	// created.Token is stripped by projectView, so read the real plaintext
+	// from the store — otherwise this check would compare against an empty
+	// string and pass vacuously.
 	stored, _ := store.Get().findProjectByID(created.ID)
 	if stored == nil || stored.Token == "" {
 		t.Fatalf("expected a stored project token to check against")
@@ -807,13 +773,11 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 		t.Errorf("SKILL.md leaks the project token (%d bytes) — content: %s", len(stored.Token), skillContent)
 	}
 
-	// Rotate the token via HTTP.
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/rotate_token", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rotate: %d body %s", resp.StatusCode, body)
 	}
 
-	// Delete project; SKILL.md must be cleaned up.
 	resp, _ = doJSON(t, "DELETE", srv.URL+"/api/projects/"+created.ID, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: %d", resp.StatusCode)

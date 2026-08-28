@@ -29,10 +29,10 @@ func runMcpExec(args []string) {
 		// Transition: accept the legacy env name from an un-migrated spawner.
 		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
 	}
-	// No token is no longer fatal: the bridge falls back to directory auth,
-	// which succeeds when the cwd is inside a project that enabled it. Relay
-	// decides — the CLI can't know which projects opted in, so it asks and
-	// reports whatever the bridge says (tokenlessHint expands the denial).
+	// An empty token is not fatal: the bridge falls back to directory auth for
+	// projects that opted in. The CLI can't know which projects opted in, so
+	// it defers to the bridge and reports whatever it says (tokenlessHint
+	// expands the denial).
 	if !*list && *tool == "" {
 		fmt.Fprintln(os.Stderr, "error: must specify --list or --tool")
 		os.Exit(1)
@@ -56,8 +56,7 @@ func runMcpExec(args []string) {
 		}
 
 		if *schema {
-			// Emit full tool definitions (including input schemas) as pretty JSON.
-			// Skill generators consume this to render parameter docs.
+			// Skill generators consume this full-schema form to render parameter docs.
 			out, err := json.MarshalIndent(tools, "", "  ")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error encoding tools: %v\n", err)
@@ -119,9 +118,9 @@ func runMcpExec(args []string) {
 	}
 }
 
-// tokenlessHint prints the two ways to get authenticated, but only after a
-// failure on a run that supplied no token at all — a bad-token failure is a
-// different problem and shouldn't be answered with directory-auth advice.
+// tokenlessHint only fires after a failure on a run that supplied no token at
+// all — a bad-token failure is a different problem and shouldn't be answered
+// with directory-auth advice.
 func tokenlessHint(tokenless bool) {
 	if !tokenless {
 		return
@@ -131,12 +130,9 @@ func tokenlessHint(tokenless bool) {
 	fmt.Fprintln(os.Stderr, "  or enable Settings UI → Projects → Directory Auth for the project containing this directory")
 }
 
-// resolveToolArgs determines the tool-arguments JSON from the mutually-exclusive
-// --args-file (a path, or "-" for stdin) and inline --args flags. The file/stdin
-// form is the shell-quoting-safe path that generated SKILL.md files rely on for
-// prompts containing quotes, apostrophes ("Van Gogh's"), or parentheses.
-// Returns (nil, nil) when no arguments are supplied; an error on conflicting
-// flags, an unreadable source, or invalid JSON.
+// resolveToolArgs: the --args-file/stdin form exists because it's the
+// shell-quoting-safe path generated SKILL.md files rely on for prompts
+// containing quotes, apostrophes ("Van Gogh's"), or parentheses.
 func resolveToolArgs(argsFile, toolArgs string, stdin io.Reader) (json.RawMessage, error) {
 	if argsFile != "" && toolArgs != "" {
 		return nil, fmt.Errorf("pass either --args or --args-file, not both")

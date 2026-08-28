@@ -2,11 +2,9 @@
 
 package main
 
-// Integration test for ServiceRegistry. Exercises the real spawn path
-// (env-var injection, pidfile write, service-token registration,
-// manifest registration on bridge) using the in-tree cmd/testservice
-// binary — no exec.Command mocks. Per ADR-002, the spawn surface is
-// too security-sensitive to fake.
+// Deliberate: exercises the real spawn path via cmd/testservice, no
+// exec.Command mocks — ADR-002 treats the spawn surface as too
+// security-sensitive to fake.
 
 import (
 	"context"
@@ -22,9 +20,6 @@ import (
 	"relaygo/bridge"
 )
 
-// waitFor polls cond until it returns true or timeout elapses, failing the
-// test with msg on timeout. Keeps the spawn-lifecycle tests free of repeated
-// deadline loops.
 func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -37,8 +32,6 @@ func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) 
 	t.Fatalf("timed out waiting for %s", msg)
 }
 
-// readDumpedEnv parses a `VAR=value` per-line file written by
-// `testservice --dump-env` into a map.
 func readDumpedEnv(t *testing.T, path string) map[string]string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -62,9 +55,6 @@ var (
 	testserviceBinErr  error
 )
 
-// buildTestServiceBinary compiles cmd/testservice into a per-test-run
-// tempdir and returns the binary path. The build is cached so multiple
-// service-registry tests in one suite share the artifact.
 func buildTestServiceBinary(t *testing.T) string {
 	t.Helper()
 	testserviceBinOnce.Do(func() {
@@ -88,11 +78,9 @@ func buildTestServiceBinary(t *testing.T) string {
 	return testserviceBinPath
 }
 
-// startSandboxBridge brings up a real BridgeServer on the sandbox's
-// SocketPath and returns a wired (router, registry) pair. The router's
-// embedded serviceTokens is shared with the registry via pointer — same
-// wiring as trayapp.go production setup, so token registrations made by
-// the registry are visible to the router's auth check.
+// serviceTokens is shared with the registry by pointer — same wiring as
+// trayapp.go — so registry token registrations are visible to the router's
+// auth check.
 func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRouter, *ServiceRegistry) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
@@ -120,7 +108,6 @@ func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRo
 		reg.StopAll()
 		srv.Close()
 	})
-	// Wait for socket to be dialable.
 	_ = dialUnixWithTimeout(t, bridge.SocketPath(), 2*time.Second).Close()
 	return router, reg
 }
@@ -141,12 +128,10 @@ func TestServiceRegistry_Spawn_InjectsBridgeEnvAndPidfile(t *testing.T) {
 	}
 	t.Cleanup(func() { reg.Stop(cfg.ID) })
 
-	// Process is running.
 	if !reg.IsRunning(cfg.ID) {
 		t.Fatal("service should be running immediately after Start")
 	}
 
-	// Pidfile was written under the sandboxed ConfigDir.
 	pid, err := readPidFile(cfg.ID)
 	if err != nil {
 		t.Fatalf("readPidFile: %v", err)
@@ -156,7 +141,6 @@ func TestServiceRegistry_Spawn_InjectsBridgeEnvAndPidfile(t *testing.T) {
 		t.Fatalf("pidfile (%d) does not match process pid (%d)", pid, pids[cfg.ID])
 	}
 
-	// A service token was registered.
 	if n := router.serviceTokens.Len(); n != 1 {
 		t.Fatalf("expected one service token, got %d", n)
 	}
@@ -178,8 +162,6 @@ func TestServiceRegistry_Spawn_RegistersManifest(t *testing.T) {
 	}
 	t.Cleanup(func() { reg.Stop(cfg.ID) })
 
-	// Wait for manifest registration. The child runs `go build` of itself
-	// → register → block; even on slow CI that should be <5s.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if enhanced.Get(cfg.ID) != nil {
@@ -215,12 +197,10 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 	}
 	reg.Stop(cfg.ID)
 
-	// Process map is cleaned.
 	if reg.IsRunning(cfg.ID) {
 		t.Fatal("IsRunning should return false after Stop")
 	}
 
-	// Service token was removed when the process exited.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if router.serviceTokens.Len() == 0 {
@@ -232,20 +212,12 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 		t.Fatalf("service token not cleaned up; have %d", n)
 	}
 
-	// Pidfile was removed.
 	_, err := readPidFile(cfg.ID)
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		_ = err
 	}
 }
 
-// TestServiceRegistry_Reload_RestartsInPlace exercises the real restart path
-// (Stop → Start) that `relay service restart`, the tray toggle, and config-save
-// all drive through Reload. Every other test substitutes a no-op reloader, so
-// this is the only coverage that the in-place restart actually tears down the
-// old process/token/manifest and stands up a fresh one. A regression in Stop's
-// "delete only if same proc" guard, the token rollover, or the manifest
-// re-registration would otherwise pass the suite silently.
 func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	enhanced := NewEnhancedServiceRegistry(nil)
@@ -262,9 +234,8 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 	}
 	t.Cleanup(func() { reg.Stop(cfg.ID) })
 
-	// Capture the first generation's identity: pid + internal socket. The
-	// child binds a fresh per-pid socket on every spawn, so the socket path
-	// is a reliable discriminator between generations.
+	// Socket path discriminates generations: the child binds a fresh per-pid
+	// socket on every spawn.
 	waitFor(t, 5*time.Second, "first manifest registration", func() bool {
 		return enhanced.Get(cfg.ID) != nil
 	})
@@ -277,12 +248,10 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 		t.Fatalf("before reload want exactly 1 service token, got %d", n)
 	}
 
-	// Restart in place.
 	if err := reg.Reload(cfg.ID, cfg); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	// New process is running under a different pid.
 	if !reg.IsRunning(cfg.ID) {
 		t.Fatal("service not running after Reload")
 	}
@@ -294,32 +263,25 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 		t.Fatalf("Reload reused pid %d; expected a freshly spawned process", firstPID)
 	}
 
-	// Stop tears down the old token before Start registers the new one, so the
-	// count must stay at exactly 1 — never 0 (old leaked away) or 2 (old not
-	// cleaned up).
+	// Stop tears down the old token before Start registers the new one —
+	// count must stay exactly 1, never 0 (leaked) or 2 (not cleaned up).
 	if n := router.serviceTokens.Len(); n != 1 {
 		t.Fatalf("after reload want exactly 1 service token, got %d", n)
 	}
 
-	// The new generation re-registers its manifest on a fresh internal socket.
 	waitFor(t, 5*time.Second, "manifest re-registration after reload", func() bool {
 		rec := enhanced.Get(cfg.ID)
 		return rec != nil && rec.InternalSocket != firstSocket
 	})
 }
 
-// TestServiceRegistry_Spawn_FrontendCredsIsolation pins the security boundary
-// documented in CLAUDE.md: relay's front-door bearer (RELAY_FRONTEND_*) must
-// reach frontend consumers (eve) but NEVER a backend — otherwise it leaks into
-// any shell the backend spawns. Previously this was only covered at the
-// frontendCredsEnabled predicate level; here we assert it at the actual spawn
-// line by reading the child's real injected environment.
+// Deliberate: the front-door bearer must never reach a backend — it would
+// leak into any shell the backend spawns.
 func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	// Wire a real frontend channel so creds *could* be injected.
 	reg.FrontendChannel = NewFrontendChannel()
 	t.Cleanup(reg.CloseFrontendChannel)
 	endpoint, err := reg.FrontendChannel.Ensure()
@@ -337,7 +299,7 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 		DisplayName:      "Backend",
 		Command:          binPath,
 		Args:             []string{"--dump-env", backendEnvFile},
-		FrontendConsumer: &falseVal, // opt out
+		FrontendConsumer: &falseVal,
 	}
 	if err := reg.Start(backend); err != nil {
 		t.Fatalf("Start backend: %v", err)
@@ -368,7 +330,6 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	backendEnv := readDumpedEnv(t, backendEnvFile)
 	frontendEnv := readDumpedEnv(t, frontendEnvFile)
 
-	// Backend: front-door bearer absent; backend creds present.
 	if _, ok := backendEnv[EnvFrontendToken]; ok {
 		t.Errorf("backend leaked %s into its environment", EnvFrontendToken)
 	}
@@ -385,7 +346,6 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 		t.Errorf("backend %s = %q, want %q", EnvServiceID, got, backend.ID)
 	}
 
-	// Frontend consumer: receives the exact injected bearer + socket.
 	if got := frontendEnv[EnvFrontendToken]; got != endpoint.Token {
 		t.Errorf("frontend %s = %q, want injected token", EnvFrontendToken, got)
 	}
@@ -394,9 +354,6 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	}
 }
 
-// TestServiceRegistry_StartAllAutostart_OnlyStartsEnabled verifies the boot-time
-// filter: services flagged autostart start, the rest don't. A regression that
-// inverts the predicate or starts everything would otherwise go unnoticed.
 func TestServiceRegistry_StartAllAutostart_OnlyStartsEnabled(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	enhanced := NewEnhancedServiceRegistry(nil)
@@ -445,7 +402,6 @@ func TestServiceRegistry_OnProcessExit_FiresAfterExit(t *testing.T) {
 
 	select {
 	case <-exited:
-		// OK
 	case <-time.After(3 * time.Second):
 		t.Fatal("OnProcessExit never fired after service self-exit")
 	}

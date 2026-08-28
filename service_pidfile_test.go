@@ -11,10 +11,9 @@ import (
 	"time"
 )
 
-// withTempConfigDir reroutes bridge.ConfigDir() to a per-test directory by
-// pointing HOME at t.TempDir(). os.UserConfigDir on darwin/linux derives the
-// config dir from HOME, so the pidfile helpers land in the temp tree and
-// don't pollute the user's real ~/Library/Application Support/relay.
+// os.UserConfigDir on darwin/linux derives the config dir from HOME, so
+// pointing HOME at t.TempDir() reroutes bridge.ConfigDir() into the temp tree
+// and keeps the pidfile helpers off the user's real config directory.
 func withTempConfigDir(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
@@ -48,10 +47,10 @@ func TestPidFile_RoundTrip(t *testing.T) {
 }
 
 // spawnSleeper starts a `sleep` process in its own process group, mirroring
-// how ServiceRegistry.Start spawns services. Returns the cmd (so callers can
-// Wait() it after SIGTERM — in production launchd reaps orphans, but in
-// tests we own the child and zombies linger until reaped) and a cleanup
-// that hard-kills it if the test fails before the reclaim runs.
+// how ServiceRegistry.Start spawns services. In production launchd reaps a
+// killed orphan; in a test we own the child, so the returned cmd must still
+// be Wait()ed after a kill or the zombie lingers. The cleanup hard-kills it
+// if the test fails before that reclaim runs.
 func spawnSleeper(t *testing.T) (*exec.Cmd, func()) {
 	t.Helper()
 	cmd := exec.Command("sleep", "120")
@@ -82,7 +81,6 @@ func TestReclaimOrphans_KillsMatchingOrphan(t *testing.T) {
 	r.ReclaimOrphans([]ServiceConfig{{ID: "sleeper", Command: "sleep"}})
 
 	// Reap the now-terminated child so kill(pid, 0) below sees ESRCH.
-	// In production launchd does this automatically once the tray exits.
 	state, err := cmd.Process.Wait()
 	if err != nil {
 		t.Fatalf("wait sleeper: %v", err)
@@ -102,10 +100,9 @@ func TestReclaimOrphans_KillsMatchingOrphan(t *testing.T) {
 func TestReclaimOrphans_SkipsPidRecyclingMismatch(t *testing.T) {
 	withTempConfigDir(t)
 
-	// Spawn a real sleeper; its command line will contain "sleep", not
-	// "totally-different-binary". The mismatch should cause ReclaimOrphans
-	// to leave the process alone — guarding against killing a recycled pid
-	// that happens to match an old service's recorded pid.
+	// The command mismatch ("sleep" vs "totally-different-binary") guards
+	// against killing a recycled pid that happens to match an old service's
+	// recorded pid.
 	cmd, cleanup := spawnSleeper(t)
 	defer cleanup()
 	pid := cmd.Process.Pid
@@ -150,8 +147,6 @@ func TestReclaimOrphans_StalePidfile(t *testing.T) {
 	}
 }
 
-// Quick sanity that readPidFile returns 0 for an absent file and is not
-// fooled by garbage content.
 func TestReadPidFile_EdgeCases(t *testing.T) {
 	withTempConfigDir(t)
 

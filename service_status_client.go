@@ -10,32 +10,22 @@ import (
 	"time"
 )
 
-// ServiceStatusClient calls one enhanced service's HTTP API over its
-// internal Unix socket. Constructed per-service from the registry's
-// (InternalSocket, InternalToken) pair declared at manifest registration —
-// no service-specific knowledge.
-//
-// Used by the status poller (status path → JSON snapshot) and the action
-// dispatcher (manifest-declared method + path → fire-and-forget call).
 type ServiceStatusClient struct {
 	socket string
 	token  string
 	http   *http.Client
 }
 
-// statusFetchTimeout caps each /api/status poll. 5s is generous for a
-// loopback Unix socket; a service that can't answer in that time renders
-// as "offline" in the inspector.
+// statusFetchTimeout caps each /api/status poll; a service that can't answer
+// in time renders as "offline" in the inspector.
 const statusFetchTimeout = 5 * time.Second
 
 // maxStatusBodyBytes bounds how much of a service response we buffer. The
-// timeout caps how long a read takes, not how many bytes — a buggy service
+// timeout caps how long a read takes, not how many bytes -- a buggy service
 // streaming an unbounded body would otherwise OOM the tray, and the poller
-// fans out to every service each tick. 10 MiB is far above any real status
-// or resource payload.
+// fans out to every service each tick.
 const maxStatusBodyBytes = 10 << 20
 
-// NewServiceStatusClient binds to one service's internal endpoint.
 func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
 	return &ServiceStatusClient{
 		socket: socket,
@@ -48,24 +38,19 @@ func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
 }
 
 // GetStatus fetches the JSON body of a service's manifest-declared status
-// path. Relay stays payload-agnostic — the bytes flow straight through to
+// path. Relay stays payload-agnostic -- the bytes flow straight through to
 // the settings UI's generic renderer.
 func (c *ServiceStatusClient) GetStatus(ctx context.Context, path string) (json.RawMessage, error) {
 	return c.do(ctx, http.MethodGet, path, nil)
 }
 
-// DoAction fires a manifest-declared action. Returns the response body
-// (empty on 204) so the UI can surface server-side messages on the rare
-// action that returns one. Errors are returned for 4xx/5xx as well as
-// transport failures.
 func (c *ServiceStatusClient) DoAction(ctx context.Context, method, path string) (json.RawMessage, error) {
 	return c.do(ctx, method, path, nil)
 }
 
-// CloseIdleConnections releases this client's pooled connections. Callers that
-// build a client per use (the status poller fans out one per service per tick,
-// the action dispatcher one per action) must call this when done, or each
-// keep-alive Unix-socket conn (plus its reader goroutine + FD) lingers until GC.
+// CloseIdleConnections must be called by callers that build a client per use
+// (the status poller fans out one per service per tick), or each keep-alive
+// Unix-socket conn -- plus its reader goroutine and FD -- lingers until GC.
 func (c *ServiceStatusClient) CloseIdleConnections() {
 	c.http.CloseIdleConnections()
 }

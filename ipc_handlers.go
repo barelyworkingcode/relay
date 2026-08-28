@@ -166,6 +166,24 @@ type IPCContext struct {
 	// Audit backs the Tool Calls tab. Nil when auditing is off; every method
 	// on the recorder is nil-safe, so handlers don't guard on it.
 	Audit *AuditRecorder
+	// Ops is the shared core behind both the Services tab and
+	// RegisterServiceRoutes (ADR-014) — the IPC handlers in ipc_services.go
+	// are thin adapters over it.
+	Ops *ServiceOps
+	// EnrolmentOps is Ops's counterpart for the Remote Clients tab and
+	// RegisterEnrolmentRoutes (ADR-014) — ipc_enrolments.go's handlers are
+	// thin adapters over it too.
+	EnrolmentOps *EnrolmentOps
+	// AuditOps is Ops's counterpart for the Tool Calls tab and
+	// RegisterAuditRoutes (ADR-014) — ipc_audit.go's handlers are thin
+	// adapters over it too.
+	AuditOps *AuditOps
+	// McpOps is Ops's counterpart for the MCPs tab and RegisterMcpRoutes
+	// (ADR-014) — ipc_mcps.go's and ipc_mcp_permissions.go's handlers are
+	// thin adapters over it too. Unlike Ops and EnrolmentOps, two of its
+	// four IPC commands (authenticate, reset-permissions) have no HTTP
+	// counterpart; see McpOps for why.
+	McpOps *McpOps
 }
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends

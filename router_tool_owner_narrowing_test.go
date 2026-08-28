@@ -1,15 +1,8 @@
 package main
 
-// Follow-up to issue #35's fix. Resolving a colliding tool name by the MCP
-// grant ALONE refused more than it had to: an MCP the grant allows, but on
-// which this particular tool is denied by the operator's own allowlist or
-// denylist, was still counted as a collider. The grant had already said which
-// server should serve the name and relay called it ambiguous anyway.
-//
-// These pin the narrowed rule and, just as importantly, its two edges: the
-// annotation-derived layers must NOT narrow (an MCP would then be able to
-// route calls to itself by editing its own hints), and two MCPs that both
-// genuinely allow the name are still refused.
+// Deliberate: annotation-derived layers (readOnlyHint) must not narrow the
+// route — an MCP could otherwise capture a colliding name by editing its own
+// hints.
 
 import (
 	"context"
@@ -21,9 +14,6 @@ import (
 	"relaygo/mcp"
 )
 
-// narrowingRouter builds a router over two colliding MCPs plus a third that
-// shares nothing, with the project spelled out field by field so each test can
-// say exactly which operator layer is doing the narrowing.
 func narrowingRouter(t *testing.T, order []string, proj Project, tools map[string][]mcp.Tool) (*appRouter, *collidingProvider) {
 	t.Helper()
 	if tools == nil {
@@ -53,8 +43,6 @@ func narrowingRouter(t *testing.T, order []string, proj Project, tools map[strin
 	}, tp
 }
 
-// A denylist entry on one collider leaves exactly one MCP able to serve the
-// name, so there is nothing left to be ambiguous about.
 func TestCallTool_DisabledToolOnOneColliderIsNotAmbiguous(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
@@ -73,10 +61,8 @@ func TestCallTool_DisabledToolOnOneColliderIsNotAmbiguous(t *testing.T) {
 	}
 }
 
-// Same for an allowlist that names the tool on one collider only. This is the
-// sharpest case on a remote profile, where an ABSENT allowed_tools entry means
-// no tools at all: fs-a can serve nothing under this grant, yet before the
-// narrowing it still made the name uncallable.
+// Subtle: an absent allowed_tools entry means no tools at all for a remote
+// profile — fs-a can serve nothing under this grant.
 func TestCallTool_AllowedToolsOnOneColliderIsNotAmbiguous(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
@@ -97,14 +83,10 @@ func TestCallTool_AllowedToolsOnOneColliderIsNotAmbiguous(t *testing.T) {
 	}
 }
 
-// THE EDGE THAT MATTERS. The access mode refuses a mutating tool under a read
-// grant, but it decides that from the MCP's OWN readOnlyHint. If routing
-// narrowed by it, an MCP could make itself the only candidate for a name by
-// annotating a tool read-only, and capture a call meant for another server.
-// So a collider the mode would refuse is still a collider, and the call is
-// refused rather than routed to the survivor.
+// Deliberate: access mode is derived from the MCP's own readOnlyHint, so it
+// must not narrow routing — otherwise an MCP could capture a name meant for
+// another server by self-annotating read-only.
 func TestCallTool_AnnotationDerivedLayersDoNotNarrowTheRoute(t *testing.T) {
-	// fs-a's copy is read-only, fs-b's is not; the grant is read-only on both.
 	tools := map[string][]mcp.Tool{
 		collisionMcpA: readOnlyTools(collidingTool),
 		collisionMcpB: simpleTools(collidingTool),
@@ -130,8 +112,6 @@ func TestCallTool_AnnotationDerivedLayersDoNotNarrowTheRoute(t *testing.T) {
 	}
 }
 
-// Both MCPs genuinely allow the name: still refused, still naming both. The
-// narrowing must not have turned the ambiguity rule off.
 func TestCallTool_TwoCollidersBothAllowedIsStillRefused(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
@@ -155,9 +135,8 @@ func TestCallTool_TwoCollidersBothAllowedIsStillRefused(t *testing.T) {
 	}
 }
 
-// A connection relay holds no configuration for must not be a candidate: the
-// deny-set is built by walking settings.ExternalMcps, so an unregistered MCP
-// gets no PermOff entry and would otherwise read as granted to every token.
+// Subtle: the deny-set is built by walking settings.ExternalMcps, so an
+// unregistered MCP gets no PermOff entry — omission is not the same as denial.
 func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 	const ghost = "ghost"
 	tools := map[string][]mcp.Tool{
@@ -204,9 +183,6 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 	})
 }
 
-// The listing and dispatch must agree. A name CallTool refuses outright must
-// not be advertised by tools/list or written into a SKILL.md, and a name the
-// operator's layers have narrowed to one MCP must still be advertised.
 func TestListing_AgreesWithCallToolOnCollidingNames(t *testing.T) {
 	count := func(t *testing.T, r *appRouter, name string) (int, int) {
 		t.Helper()
@@ -273,12 +249,6 @@ func TestListing_AgreesWithCallToolOnCollidingNames(t *testing.T) {
 	})
 }
 
-// A mutation audit of the #35 tests found two things nothing anywhere pinned:
-// the ambiguity refusal could name one of the colliders as the record's
-// mcp_id, or record no error text at all, and every test still passed. Both
-// matter for the same reason issue #35 does — an audit line that names an MCP
-// which did not serve the call undermines the rule the whole stack rests on,
-// and the error text is the ONLY place the colliding ids are recorded.
 func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
@@ -311,8 +281,7 @@ func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testi
 			if ev.Outcome != AuditOutcomeDenied {
 				t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
 			}
-			// Naming either collider here would be the audit blaming an MCP
-			// that never ran, which is the failure mode issue #35 is about.
+			// Naming either collider would blame an MCP that never ran.
 			if ev.McpID != "" {
 				t.Errorf("mcp_id = %q on a refusal no MCP served", ev.McpID)
 			}

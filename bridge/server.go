@@ -12,7 +12,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// BridgeServer listens on a Unix socket and routes requests via a ToolRouter.
 type BridgeServer struct {
 	router   ToolRouter
 	listener net.Listener
@@ -20,15 +19,18 @@ type BridgeServer struct {
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	// closed gates wg.Add against a concurrent wg.Wait. Adding to a WaitGroup
+	// whose counter has reached zero while Wait is running is a race, and
+	// closing the listener does not prevent it: Accept can return a connection
+	// just before StopAccepting runs.
+	mu     sync.Mutex
+	closed bool
 }
 
-// NewBridgeServer creates a BridgeServer bound to the default socket path.
-// The provided context is used as the parent for all per-connection contexts,
-// enabling graceful cancellation of in-flight requests during shutdown.
 func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
 	sockPath := SocketPath()
 
-	// Remove stale socket file.
 	_ = os.Remove(sockPath)
 
 	listener, err := net.Listen("unix", sockPath)
@@ -52,40 +54,51 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 	}, nil
 }
 
-// Serve accepts connections and handles them. Blocks until the listener is closed.
 func (s *BridgeServer) Serve() error {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			// Listener was closed.
 			return err
 		}
-		s.wg.Add(1)
+		if !s.trackConn() {
+			conn.Close()
+			return net.ErrClosed
+		}
 		go s.handleConn(conn)
 	}
 }
 
-// StopAccepting stops the server from accepting new connections and cancels
-// all in-flight request contexts. Existing handlers continue running until
-// they return or notice their context is cancelled. This is the first phase
-// of a two-phase shutdown: call StopAccepting early to prevent new work,
-// then call Close after backends are torn down to drain remaining handlers.
+func (s *BridgeServer) trackConn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.wg.Add(1)
+	return true
+}
+
+// StopAccepting is the first phase of a two-phase shutdown: it stops taking
+// new connections and cancels in-flight request contexts, but existing
+// handlers keep running until they return or notice cancellation. Call Close
+// after backends are torn down to drain the rest.
 func (s *BridgeServer) StopAccepting() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+
 	s.cancel()
 	_ = s.listener.Close()
 }
 
-// Close completes server shutdown: waits for all connection handlers to finish
-// and removes the socket file. If StopAccepting was already called, this only
-// drains and cleans up. Safe to call without a prior StopAccepting — it will
-// stop accepting as part of the close.
+// Close waits for all connection handlers to finish and removes the socket
+// file. Safe to call without a prior StopAccepting.
 func (s *BridgeServer) Close() {
 	s.StopAccepting()
 	s.wg.Wait()
 	_ = os.Remove(s.sockPath)
 }
 
-// bridgeError creates an error BridgeResponse with the given code and message.
 func bridgeError(code int, msg string) BridgeResponse {
 	return ErrorResponse(code, msg)
 }
@@ -99,22 +112,20 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 		}
 	}()
 
-	// Per-connection context — cancelled when the connection or server closes.
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
-	// Resolve the peer pid once per connection rather than per request: it can't
-	// change for the life of the socket, and the getsockopt is pure overhead on
-	// every subsequent frame. Audit attribution only.
+	// Resolved once per connection, not per request: it can't change for the
+	// life of the socket, and the getsockopt is pure overhead on every
+	// subsequent frame. Audit attribution only.
 	ctx = WithCallerPID(ctx, PeerPID(conn))
 
-	// Close the connection when the server (or this handler) is cancelled so a
-	// handler blocked in scanner.Scan() unblocks promptly at shutdown. Without
-	// this, StopAccepting() only cancels the context and closes the *listener* —
-	// an in-flight Scan() keeps waiting for the peer to disconnect, so Close()'s
-	// wg.Wait() can deadlock against a managed service that holds a persistent
-	// bridge connection and isn't killed until later in the teardown. The
-	// goroutine always exits because `defer cancel()` fires on return.
+	// Close the connection when this context is cancelled so a handler
+	// blocked in scanner.Scan() unblocks promptly at shutdown. Without this,
+	// StopAccepting() only cancels the context and closes the *listener* — an
+	// in-flight Scan() keeps waiting for the peer to disconnect, and Close()'s
+	// wg.Wait() can deadlock against a managed service holding a persistent
+	// bridge connection that isn't killed until later in teardown.
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
@@ -126,13 +137,11 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	NewFrameConn(conn, "bridge", 0).Serve(ctx, s.handleRequest)
 }
 
-// bridgeHandler defines a handler for a bridge request type.
 type bridgeHandler struct {
 	requireAdmin bool
 	handle       func(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse
 }
 
-// bridgeHandlers maps request types to their handlers.
 var bridgeHandlers = map[string]bridgeHandler{
 	ReqListTools:              {handle: handleListTools},
 	ReqCallTool:               {handle: handleCallTool},
@@ -164,9 +173,8 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 		}
 	}
 
-	// Carry the caller-asserted cwd so the router can fall back to directory
-	// auth when no token was supplied. Ignored by every handler that doesn't
-	// authenticate a project.
+	// Directory auth is a fallback for a tokenless caller; every handler that
+	// doesn't authenticate a project ignores it.
 	if req.Token == "" {
 		ctx = WithCallerCwd(ctx, req.Cwd)
 	}
@@ -190,9 +198,6 @@ func handleCallTool(ctx context.Context, req *BridgeRequest, router ToolRouter) 
 	return BridgeResponse{Type: RespResult, Result: result}
 }
 
-// classifyErrorCode extracts a JSON-RPC error code from the error chain.
-// Router methods wrap auth/permission errors with jsonrpc.CodedError so the
-// bridge can classify them without fragile string matching.
 func classifyErrorCode(err error) int {
 	return ErrorCode(err)
 }

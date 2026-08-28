@@ -13,11 +13,6 @@ import (
 	"relaygo/bridge"
 )
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// newTestAudit returns a recorder writing into a temp dir, closed on cleanup.
 func newTestAudit(t *testing.T, cfg *AuditConfig) *AuditRecorder {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit", "toolcalls.jsonl")
@@ -31,7 +26,6 @@ func newTestAudit(t *testing.T, cfg *AuditConfig) *AuditRecorder {
 	return rec
 }
 
-// auditedRouter is setupRouter plus an attached recorder.
 func auditedRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, mocks map[string]*mockMcpConn, cfg *AuditConfig) (*appRouter, *AuditRecorder) {
 	t.Helper()
 	r := setupRouter(t, perms, disabled, nil, mocks)
@@ -40,7 +34,6 @@ func auditedRouter(t *testing.T, perms map[string]Permission, disabled map[strin
 	return r, rec
 }
 
-// readLoggedEvents flushes and parses every event written to the log file.
 func readLoggedEvents(t *testing.T, rec *AuditRecorder) []AuditEvent {
 	t.Helper()
 	rec.Flush()
@@ -70,10 +63,6 @@ func onlyEvent(t *testing.T, events []AuditEvent) AuditEvent {
 	return events[0]
 }
 
-// ---------------------------------------------------------------------------
-// Router instrumentation
-// ---------------------------------------------------------------------------
-
 func TestAudit_RecordsSuccessfulCall(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{"content":[{"type":"text","text":"hi"}]}`))
 	r, rec := auditedRouter(t,
@@ -95,7 +84,6 @@ func TestAudit_RecordsSuccessfulCall(t *testing.T) {
 	if ev.Tool != "read_file" || ev.McpID != "fsmcp" {
 		t.Errorf("tool/mcp = %q/%q, want read_file/fsmcp", ev.Tool, ev.McpID)
 	}
-	// The project id must come from relay's own auth resolution, not the caller.
 	if ev.Actor.ProjectID != "test-project" || ev.Actor.ProjectName != "test" {
 		t.Errorf("actor project = %q/%q, want test-project/test", ev.Actor.ProjectID, ev.Actor.ProjectName)
 	}
@@ -113,8 +101,6 @@ func TestAudit_RecordsSuccessfulCall(t *testing.T) {
 	}
 }
 
-// A refused call is the record a security review is actually looking for, so
-// it must be logged just as reliably as a successful one.
 func TestAudit_RecordsDeniedCall(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file", "fs_bash"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
@@ -158,8 +144,8 @@ func TestAudit_RecordsUnauthorizedCall(t *testing.T) {
 	if ev.Actor.Kind != AuditActorUnknown {
 		t.Errorf("actor kind = %q, want unknown", ev.Actor.Kind)
 	}
-	// A credential was presented, it just didn't resolve. That distinction is
-	// the point of recording the attempt at all.
+	// A credential was presented but did not resolve, which is why Auth is
+	// still recorded as "token" even though the outcome is unauthorized.
 	if ev.Actor.Auth != AuditAuthToken {
 		t.Errorf("actor auth = %q, want token", ev.Actor.Auth)
 	}
@@ -181,13 +167,11 @@ func TestAudit_RecordsUnknownTool(t *testing.T) {
 	}
 }
 
-// Directory auth has no deliberate credential hand-off to point at, so the log
-// is its only audit trail — it must record both the method and the directory.
 func TestAudit_RecordsDirectoryAuth(t *testing.T) {
 	dir := t.TempDir()
 
-	// Opt the project into directory auth and root it at a real directory
-	// before the router is built: the store hands out settings by value.
+	// The store hands out settings by value, so the project must be opted
+	// into directory auth before the router is built from it.
 	settings := makeSettings(map[string]Permission{"fsmcp": PermOn}, nil, nil)
 	settings.Projects[0].Path = dir
 	settings.Projects[0].AllowCwdAuth = true
@@ -215,8 +199,6 @@ func TestAudit_RecordsDirectoryAuth(t *testing.T) {
 	}
 }
 
-// A tool that fails inside the protocol returns a normal result with
-// isError set; without the probe it would be logged as a plain success.
 func TestAudit_RecordsProtocolLevelToolError(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"),
 		okHandler(`{"isError":true,"content":[{"type":"text","text":"no such file"}]}`))
@@ -232,19 +214,12 @@ func TestAudit_RecordsProtocolLevelToolError(t *testing.T) {
 	if !ev.ResultIsError {
 		t.Error("result_is_error = false, want true for an isError result")
 	}
-	// The flag alone is not enough: the outcome is what `relay audit --outcome`
-	// and the Tool Calls filter select on, so a refusal recorded as "ok" is
-	// invisible to every query an operator would actually run.
 	if ev.Outcome != AuditOutcomeToolError {
 		t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeToolError)
 	}
 }
 
-// An in-protocol refusal must be reachable by the query an operator runs, not
-// merely recoverable by post-processing raw JSONL for result_is_error.
 func TestAudit_ToolErrorIsFilterable(t *testing.T) {
-	// Branch on the tool named in the request params: read_file refuses
-	// in-protocol, list_dir succeeds, so one call of each lands in the log.
 	mock := newMockConn("fsmcp", simpleTools("read_file", "list_dir"),
 		func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
 			raw, err := json.Marshal(params)
@@ -267,7 +242,7 @@ func TestAudit_ToolErrorIsFilterable(t *testing.T) {
 		t.Fatalf("CallTool(read_file): %v", err)
 	}
 
-	// Record is asynchronous; drain the queue before querying the ring.
+	// Record is asynchronous; drain the queue before querying.
 	rec.Flush()
 
 	got := rec.Query(AuditQuery{Outcome: AuditOutcomeToolError})
@@ -278,14 +253,11 @@ func TestAudit_ToolErrorIsFilterable(t *testing.T) {
 		t.Errorf("matched tool = %q, want read_file", got[0].Tool)
 	}
 
-	// The successful call must not be swept up by the new outcome.
 	if ok := rec.Query(AuditQuery{Outcome: AuditOutcomeOK}); len(ok) != 1 || ok[0].Tool != "list_dir" {
 		t.Errorf("outcome=ok matched %v, want exactly list_dir", ok)
 	}
 }
 
-// List events are off by default: skill regeneration lists the tool surface for
-// every project on every reconcile, which would bury the calls that matter.
 func TestAudit_ListEventsOffByDefault(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), nil)
 	r, rec := auditedRouter(t,
@@ -322,8 +294,6 @@ func TestAudit_ListEventsWhenEnabled(t *testing.T) {
 	}
 }
 
-// A router with no recorder must behave exactly as it did before auditing
-// existed — the nil-safe helpers are what make the instrumentation free.
 func TestAudit_NilRecorderIsInert(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`))
 	r := setupRouter(t, map[string]Permission{"fsmcp": PermOn}, nil, nil,
@@ -349,10 +319,6 @@ func TestAudit_DisabledConfigYieldsNoRecorder(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Redaction and truncation
-// ---------------------------------------------------------------------------
-
 func TestRedactArgs_RedactsCredentialKeys(t *testing.T) {
 	in := json.RawMessage(`{
 		"path": "/tmp/x",
@@ -370,7 +336,6 @@ func TestRedactArgs_RedactsCredentialKeys(t *testing.T) {
 			t.Errorf("redacted output still contains %q: %s", secret, s)
 		}
 	}
-	// Non-credential values must survive, or the log stops being useful.
 	if !strings.Contains(s, "/tmp/x") || !strings.Contains(s, `"keep":1`) {
 		t.Errorf("redaction removed non-credential values: %s", s)
 	}
@@ -399,7 +364,6 @@ func TestRedactArgs_TruncatesOversizedArgs(t *testing.T) {
 	if size != len(big) {
 		t.Errorf("recorded size = %d, want the original %d", size, len(big))
 	}
-	// Truncated or not, every line in the log must parse.
 	var v interface{}
 	if err := json.Unmarshal(out, &v); err != nil {
 		t.Fatalf("truncated args are not valid JSON: %v (%s)", err, out)
@@ -430,10 +394,6 @@ func TestTruncateRunes_DoesNotSplitMultibyte(t *testing.T) {
 		t.Error("truncated string does not encode as valid JSON")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Ring, queue, and query
-// ---------------------------------------------------------------------------
 
 func TestAuditRing_EvictsOldestAndReturnsNewestFirst(t *testing.T) {
 	ring := newAuditRing(3)
@@ -490,13 +450,6 @@ func TestAuditQuery_FiltersRing(t *testing.T) {
 	}
 }
 
-// "scope_violation" is not a stored outcome (ADR-011 decision 7 keeps it a
-// field, not a fourth thing next to denied/tool_error), but --outcome and the
-// Tool Calls dropdown both accept it as a query value anyway: it is the query
-// a security review reaches for right beside "denied", and it should not have
-// a different shape. It must select on the FIELD, leaving the ordinary
-// "tool_error" query matching every tool_error whether or not it was a scope
-// violation.
 func TestAuditQuery_ScopeViolationFiltersOnTheFieldNotTheOutcome(t *testing.T) {
 	rec := newTestAudit(t, nil)
 	rec.Record(AuditEvent{ID: "1", Event: AuditEventCallTool, Tool: "mail_get_email",
@@ -518,8 +471,6 @@ func TestAuditQuery_ScopeViolationFiltersOnTheFieldNotTheOutcome(t *testing.T) {
 	}
 }
 
-// The deep path answers from the file, so it still works for history the ring
-// has already evicted.
 func TestAuditQuery_DeepReadsBeyondTheRing(t *testing.T) {
 	rec := newTestAudit(t, &AuditConfig{RingSize: 2})
 	for _, id := range []string{"1", "2", "3", "4"} {
@@ -536,8 +487,6 @@ func TestAuditQuery_DeepReadsBeyondTheRing(t *testing.T) {
 	}
 }
 
-// The sink must never be able to stall a tool call: past the queue bound,
-// events are dropped and counted rather than made to wait.
 func TestAuditRecorder_DropsRatherThanBlocks(t *testing.T) {
 	rec := newTestAudit(t, nil)
 	// Wedge the writer goroutine so the queue can actually fill.
@@ -575,19 +524,12 @@ func TestAuditRecorder_ConcurrentRecord(t *testing.T) {
 	}
 	wg.Wait()
 	rec.Flush()
-	// Concurrent readers must not race the writer.
 	_ = rec.Query(AuditQuery{Limit: 10})
 	if rec.Wrote()+rec.Dropped() != 160 {
 		t.Errorf("wrote %d + dropped %d != 160", rec.Wrote(), rec.Dropped())
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Config defaults
-// ---------------------------------------------------------------------------
-
-// An install predating this feature has no audit block at all and must start
-// logging without a settings.json migration.
 func TestAuditConfig_NilResolvesToEnabledDefaults(t *testing.T) {
 	var cfg *AuditConfig
 	got := cfg.resolve()
@@ -660,13 +602,6 @@ func TestAudit_ResultPreviewOptIn(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// End-to-end over a real bridge socket
-// ---------------------------------------------------------------------------
-
-// The caller attribution is only worth anything if it survives the real
-// transport: the pid is read off the socket by the bridge server, not passed in
-// by the caller, so it can only be verified end to end.
 func TestAudit_CallerIdentityOverBridge(t *testing.T) {
 	dir := mkSandboxRelayHome(t)
 	store := NewSettingsStoreAt(dir)
