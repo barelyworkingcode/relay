@@ -85,6 +85,12 @@ func mintLoginBootstrap(store SettingsStore) (string, string, error) {
 	return plaintext, expires, nil
 }
 
+// errPasskeyNotFound is what tells revokePasskey's refusal from a save that was
+// attempted and failed: withDeclinable returns both as one error, and the two
+// want different operator responses. Its text carries the whole message, so the
+// wrap below reads as one sentence.
+var errPasskeyNotFound = errors.New("no passkey found")
+
 // revokePasskey resolves and removes inside one store.With, matching
 // revokeAPICredential: a separate Get() then With() is a TOCTOU window on a
 // file two processes write.
@@ -95,21 +101,21 @@ func revokePasskey(store SettingsStore, id string) (Passkey, error) {
 	}
 
 	var removed Passkey
-	var found bool
-	if err := store.With(func(s *Settings) {
+	notFound := fmt.Errorf("%w with id %q", errPasskeyNotFound, id)
+	if err := withDeclinable(store, func(s *Settings) error {
 		for i := range s.Passkeys {
 			if s.Passkeys[i].ID == id {
 				removed = s.Passkeys[i]
-				found = true
 				s.Passkeys = slices.Delete(s.Passkeys, i, i+1)
-				return
+				return nil
 			}
 		}
+		return notFound
 	}); err != nil {
+		if errors.Is(err, errPasskeyNotFound) {
+			return Passkey{}, err
+		}
 		return Passkey{}, fmt.Errorf("save settings: %w", err)
-	}
-	if !found {
-		return Passkey{}, fmt.Errorf("no passkey found with id %q", id)
 	}
 	return removed, nil
 }

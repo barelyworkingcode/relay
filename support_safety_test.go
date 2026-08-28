@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,12 +35,12 @@ func TestMain(m *testing.M) {
 	after, afterOK := snapshotDir(realDir)
 
 	if beforeOK != afterOK {
-		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir existence changed during test run\n  path: %s\n  before: existed=%v  after: existed=%v\n  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, beforeOK, afterOK)
+		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir existence changed during test run\n  path: %s\n  before: existed=%v  after: existed=%v\n  %s\n  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, beforeOK, afterOK, runningRelayNote(realDir))
 		os.Exit(1)
 	}
 	if beforeOK && !before.equal(after) {
 		diff := before.diff(after)
-		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir was modified during test run\n  path: %s\n  before: %s\n  after:  %s\n%s  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, before, after, diff)
+		fmt.Fprintf(os.Stderr, "\n\nSANDBOX VIOLATION: real ConfigDir was modified during test run\n  path: %s\n  before: %s\n  after:  %s\n%s  %s\n  fix: ensure every test calls mkSandboxRelayHome(t) before touching settings/pidfiles/logs/sockets\n\n", realDir, before, after, diff, runningRelayNote(realDir))
 		os.Exit(1)
 	}
 
@@ -141,4 +142,54 @@ func shouldIgnoreForSafetySnapshot(root, path string) bool {
 		return true
 	}
 	return false
+}
+
+// runningRelayNote names a live tray app as a possible cause of a sandbox
+// violation.
+//
+// This is deliberate: a running relay legitimately rewrites settings.json on
+// its own schedule, which otherwise reads identically to a real sandbox
+// escape and sends the reader hunting for a test bug that does not exist.
+// The comparison above stays exactly as strict either way — this only makes
+// its failure explain itself.
+//
+// This is subtle: the dial can only narrow the message from "possible" to
+// "confirmed", never suppress it — a socket that fails to answer (relay not
+// running, or any other reason) still leaves the generic line in place.
+func runningRelayNote(configDir string) string {
+	generic := "possible cause: a running relay writes to this directory on its own schedule (e.g. settings.json), unrelated to the code under test — stop relay and rerun"
+	conn, err := net.DialTimeout("unix", filepath.Join(configDir, "relay.sock"), 200*time.Millisecond)
+	if err != nil {
+		return generic
+	}
+	conn.Close()
+	return "likely cause: a relay instance is running right now (its bridge socket answered) and writes to this directory on its own schedule — stop it and rerun"
+}
+
+// TestRunningRelayNote_NoSocketNamesGenericPossibleCause covers the message
+// alone, not TestMain: no relay.sock in dir means nothing answered the dial,
+// so the guard's failure output must still name a running relay as a
+// possible cause rather than saying nothing about it.
+func TestRunningRelayNote_NoSocketNamesGenericPossibleCause(t *testing.T) {
+	got := runningRelayNote(t.TempDir())
+	if !strings.Contains(got, "possible cause") || !strings.Contains(got, "running relay") {
+		t.Fatalf("note = %q, want it to name a running relay as a possible cause", got)
+	}
+}
+
+// TestRunningRelayNote_LiveSocketNamesRelayAsLikelyCause is the bonus half:
+// a real listener on relay.sock narrows the message from "possible" to
+// "confirmed", which is the only direction the dial is allowed to move it.
+func TestRunningRelayNote_LiveSocketNamesRelayAsLikelyCause(t *testing.T) {
+	dir := mkShortTempDir(t, "running-relay-note") // net.Listen needs sun_path under 104 chars
+	ln, err := net.Listen("unix", filepath.Join(dir, "relay.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	got := runningRelayNote(dir)
+	if !strings.Contains(got, "likely cause") || !strings.Contains(got, "running right now") {
+		t.Fatalf("note = %q, want it to name a running relay as the likely, confirmed cause", got)
+	}
 }

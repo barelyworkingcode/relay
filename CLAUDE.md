@@ -303,7 +303,8 @@ declarations, no service-ID hardcoding anywhere in relay. Full spec:
 ## Security
 
 The five-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
-brokering rationale: ADR-007):
+the flow end to end, with worked examples:
+[`docs/auth-flow.html`](docs/auth-flow.html); brokering rationale: ADR-007):
 
 - **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Plaintext + SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
 - **Service token** (`RELAY_SERVICE_TOKEN`) — ephemeral, in-memory, full bridge access; lets a service authenticate its own bridge calls. **Never injected into a spawned child** — if a project token can't be resolved, the child gets no token (fail closed).
@@ -482,7 +483,10 @@ a recent Go toolchain (see `go.mod`) and macOS.
 `bridge.ConfigDir()` to a per-test temp dir under `/tmp` (via `mkShortTempDir`,
 which sidesteps the 104-char Unix-socket path limit) populated from
 `test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite
-if anything in the real ConfigDir changes during a run.
+if anything in the real ConfigDir changes during a run. The suite expects
+relay stopped: a running instance legitimately rewrites `settings.json` there
+on its own schedule and will trip this guard for a reason that has nothing to
+do with the code under test.
 
 ### Three tiers
 

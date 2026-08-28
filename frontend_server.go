@@ -365,6 +365,8 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	}
 }
 
+var errFrontendTokenAlreadyCredential = errors.New("frontend token is already recorded as a credential")
+
 // ensureFrontendTokenIsCredential makes RELAY_FRONTEND_TOKEN reach the API
 // the only way anything reaches it: as a credential.
 //
@@ -385,9 +387,18 @@ func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
 	if freshSettings(store).AuthenticateAPICredential(token) != nil {
 		return
 	}
-	if err := store.With(func(s *Settings) {
-		migrateFrontendTokenToCredential(s, token)
-	}); err != nil {
+	// This is subtle: the migration's own bool is the decline. The pre-check
+	// above resolves through freshSettings and the reload inside the write
+	// resolves again, so another process migrating in the gap is the case that
+	// reaches here with nothing left to do — and a save there would rewrite
+	// settings.json for no change on every relay start that lost that race.
+	err := withDeclinable(store, func(s *Settings) error {
+		if !migrateFrontendTokenToCredential(s, token) {
+			return errFrontendTokenAlreadyCredential
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errFrontendTokenAlreadyCredential) {
 		slog.Error("frontend: could not migrate the frontend token to a credential", "error", err)
 	}
 }

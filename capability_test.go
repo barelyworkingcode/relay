@@ -340,3 +340,79 @@ func TestRouteRegistrar_Handle_AuditsAllowedAndRefused(t *testing.T) {
 		}
 	})
 }
+
+// TestControlAuditorOrNil_NilRecorderBecomesNilInterface: a *AuditRecorder
+// that is nil (auditing off) must convert to a ControlAuditor that also
+// compares equal to nil, so RouteRegistrar's "Auditor == nil" guard actually
+// fires. Boxing rec directly instead — `var _ ControlAuditor = rec` — passes
+// this check trivially because a nil pointer wrapped in an interface is a
+// non-nil interface value; only the explicit nil-check inside the helper
+// closes that gap.
+func TestControlAuditorOrNil_NilRecorderBecomesNilInterface(t *testing.T) {
+	var rec *AuditRecorder // nil: what startAuditRecorder returns when auditing is off
+	got := controlAuditorOrNil(rec)
+	if got != nil {
+		t.Fatalf("controlAuditorOrNil(nil) = %#v, want a true nil ControlAuditor", got)
+	}
+}
+
+// nilUnsafeAuditor models a ControlAuditor implementation that, unlike
+// AuditRecorder, does not defend its own methods against a nil receiver.
+// This is deliberate: today's guards hold only because AuditRecorder happens
+// to be nil-receiver safe (RecordDecision opens with Enabled(), which checks
+// r != nil) — a second implementation without that habit turns a boxed typed
+// nil into a panic instead of a no-op.
+type nilUnsafeAuditor struct{ tag string }
+
+func (n *nilUnsafeAuditor) RecordDecision(d ControlDecision) {
+	_ = n.tag // dereferences the receiver; panics if n is nil
+}
+
+// TestRouteRegistrar_TypedNilConcreteAuditorPanicsOnRecordDecision proves
+// the other half of the same defect: rr.Auditor == nil is written against
+// the interface, so a caller that boxes a typed nil pointer directly (the
+// pattern controlAuditorOrNil exists to replace) is NOT caught by that
+// guard, and recordDecision reaches a nil-unsafe implementation's method.
+func TestRouteRegistrar_TypedNilConcreteAuditorPanicsOnRecordDecision(t *testing.T) {
+	var n *nilUnsafeAuditor // nil, boxed directly rather than through controlAuditorOrNil
+	rr := &RouteRegistrar{Auditor: n}
+
+	if rr.Auditor == nil {
+		t.Fatal("setup invariant broke: a typed nil boxed directly into the interface field must compare non-nil")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected recordDecision to reach the nil-unsafe auditor and panic; the guard did not catch the typed nil")
+		}
+	}()
+	rr.recordDecision(req, ClassRead, "", true, "")
+}
+
+// TestRouteRegistrar_NoAuditorViaHelperRecordsNothingAndDoesNotPanic is the
+// production-shape counterpart: wiring Auditor through controlAuditorOrNil
+// the way trayapp.go now does must leave the guard live, so a real
+// *AuditRecorder that is nil never reaches RecordDecision at all.
+func TestRouteRegistrar_NoAuditorViaHelperRecordsNothingAndDoesNotPanic(t *testing.T) {
+	var rec *AuditRecorder // nil: auditing off
+	mux := http.NewServeMux()
+	rr := &RouteRegistrar{
+		Mux:       mux,
+		Transport: TransportSocket,
+		Auditor:   controlAuditorOrNil(rec),
+	}
+	rr.Handle(ClassRead, "GET /api/x", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/x")
+	assertNoErr(t, err, "GET")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no panic in recordDecision)", resp.StatusCode)
+	}
+}

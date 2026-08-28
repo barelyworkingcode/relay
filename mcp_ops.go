@@ -61,6 +61,20 @@ type McpOps struct {
 	NotifyReconcile func(secret string) error
 	NotifyReloadMcp func(id, secret string) error
 	OnChange        func()
+	// StartFlow overrides the OAuth ceremony StartOAuth runs. Nil is the
+	// production wiring; it is a field because the real one performs network
+	// discovery, opens a browser and blocks on a callback listener, and the
+	// property StartOAuth has to be held to — that a record deleted while all
+	// that was happening is not resurrected by the persist — is otherwise
+	// unreachable without standing up an OAuth server to make it happen in.
+	StartFlow func(mcpURL string, openURL func(string)) (*OAuthState, error)
+}
+
+func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*OAuthState, error) {
+	if o.StartFlow != nil {
+		return o.StartFlow(mcpURL, openURL)
+	}
+	return startOAuthFlow(mcpURL, openURL)
 }
 
 func (o *McpOps) notify() {
@@ -167,19 +181,18 @@ func (o *McpOps) persist(cfg ExternalMcp) error {
 
 func (o *McpOps) Remove(id string) error {
 	var secret string
-	found := false
-	if err := o.Store.With(func(s *Settings) {
+	if err := withDeclinable(o.Store, func(s *Settings) error {
 		if _, idx := s.findMcpByID(id); idx < 0 {
-			return
+			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
-		found = true
 		s.RemoveExternalMcp(id)
 		secret = s.AdminSecret
+		return nil
 	}); err != nil {
+		if errors.Is(err, errMcpNotFound) {
+			return err
+		}
 		return fmt.Errorf("save mcp: %w", err)
-	}
-	if !found {
-		return fmt.Errorf("%w: %s", errMcpNotFound, id)
 	}
 	o.notify()
 	if o.NotifyReconcile != nil {
@@ -207,16 +220,28 @@ func (o *McpOps) StartOAuth(id string, openURL func(string)) (*OAuthState, error
 		return nil, invalidMcp("only HTTP MCPs support OAuth")
 	}
 
-	oauth, err := startOAuthFlow(mcp.URL, openURL)
+	oauth, err := o.startFlow(mcp.URL, openURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// This is subtle: the id is resolved AGAIN here, inside the write. The
+	// ceremony above runs network discovery and blocks on a browser callback,
+	// so a removal that landed meanwhile would otherwise have UpdateOAuthState
+	// silently match nothing and this method report a persisted OAuth state
+	// that never landed — and, worse, rewrite settings.json to say so.
 	var secret string
-	if err := o.Store.With(func(s *Settings) {
+	if err := withDeclinable(o.Store, func(s *Settings) error {
+		if _, idx := s.findMcpByID(id); idx < 0 {
+			return fmt.Errorf("%w: %s", errMcpNotFound, id)
+		}
 		s.UpdateOAuthState(id, oauth)
 		secret = s.AdminSecret
+		return nil
 	}); err != nil {
+		if errors.Is(err, errMcpNotFound) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("save mcp: %w", err)
 	}
 	o.notify()

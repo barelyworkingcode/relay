@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -268,16 +269,17 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 	}
 
 	var validationErr error
-	if err := store.With(func(s *Settings) {
+	if err := withDeclinable(store, func(s *Settings) error {
 		if validationErr = s.ValidateEnrolment(&enrolment); validationErr != nil {
-			return // no-op write; nothing is added
+			return validationErr
 		}
 		s.AddEnrolment(enrolment)
+		return nil
 	}); err != nil {
+		if validationErr != nil {
+			return nil, invalidEnrolment(validationErr.Error())
+		}
 		return nil, fmt.Errorf("failed to save settings: %w", err)
-	}
-	if validationErr != nil {
-		return nil, invalidEnrolment(validationErr.Error())
 	}
 
 	bundle, err := writeEnrolmentBundle(enrolment, keyPEM, certPEM, ca.CertPEM())
@@ -323,11 +325,11 @@ type enrolmentUpdateRequest struct {
 // unrelated budget edit into a refusal.
 func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, after Enrolment, err error) {
 	var validationErr error
-	saveErr := store.With(func(s *Settings) {
+	saveErr := withDeclinable(store, func(s *Settings) error {
 		e, idx := s.findEnrolmentByClientID(req.ClientID)
 		if idx < 0 {
 			validationErr = fmt.Errorf("no enrolment found with client id %q", req.ClientID)
-			return
+			return validationErr
 		}
 		before = *e
 
@@ -350,7 +352,7 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 			candidate.ProjectIDs = *req.ProjectIDs
 			if gerr := s.ValidateEnrolmentGrants(&candidate); gerr != nil {
 				validationErr = gerr
-				return // no-op write; the stored record is untouched
+				return gerr
 			}
 		}
 
@@ -359,12 +361,13 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 			e.ProjectIDs = candidate.ProjectIDs
 		}
 		after = *e
+		return nil
 	})
 	if saveErr != nil {
+		if validationErr != nil {
+			return Enrolment{}, Enrolment{}, validationErr
+		}
 		return Enrolment{}, Enrolment{}, fmt.Errorf("failed to save settings: %w", saveErr)
-	}
-	if validationErr != nil {
-		return Enrolment{}, Enrolment{}, validationErr
 	}
 	return before, after, nil
 }
@@ -416,14 +419,17 @@ func revokeEnrolment(store SettingsStore, clientID string) (Enrolment, error) {
 	// Resolution and removal happen inside one With() call: no TOCTOU
 	// window between reading the record and deleting it.
 	var removed Enrolment
-	var found bool
-	if err := store.With(func(s *Settings) {
-		removed, found = s.RemoveEnrolment(clientID)
+	if err := withDeclinable(store, func(s *Settings) error {
+		var found bool
+		if removed, found = s.RemoveEnrolment(clientID); !found {
+			return fmt.Errorf("%w: %q", errEnrolmentNotFound, clientID)
+		}
+		return nil
 	}); err != nil {
+		if errors.Is(err, errEnrolmentNotFound) {
+			return Enrolment{}, err
+		}
 		return Enrolment{}, fmt.Errorf("failed to save settings: %w", err)
-	}
-	if !found {
-		return Enrolment{}, fmt.Errorf("%w: %q", errEnrolmentNotFound, clientID)
 	}
 	// Severing live connections is the half of revocation the record cannot
 	// do. In a CLI process no hook is installed and this is a no-op: what a

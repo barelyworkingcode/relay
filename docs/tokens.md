@@ -390,7 +390,13 @@ an error: a non-nil return declines the write outright — nothing is saved, the
 file is left byte for byte as it was, and the error comes back unchanged so
 `errors.Is` still reaches the callback's own sentinel. `With` is now that
 method with a callback that can only succeed, so both go through one lock and
-one save path, and the 23 existing call sites are unaffected.
+one save path, and the remaining `With` call sites are unaffected.
+
+`withDeclinable(store, fn)` reaches that behaviour through the
+`DeclinableSettingsStore` interface, and falls back for a store that cannot
+decline — the fallback still writes, and rolls the refused mutation back so a
+refusal cannot persist half of what it refused. Only a store implementing the
+interface can promise the file was not touched at all.
 
 This is not tidiness. `POST /relay/login/verify` is unauthenticated by design
 (ADR-016 decision 5), and a registration refused for want of a bootstrap code
@@ -402,9 +408,38 @@ most expensive to lose is a freshly minted credential whose plaintext was
 printed once. The interface stays as it was: declining is a second, narrow
 interface (`DeclinableSettingsStore`), because widening `SettingsStore` would
 oblige every implementation to grow a method most of them have no file to
-honour it with. The four ops cores that still write on a not-found
-(`ServiceOps.Update`/`Remove`/`SetAutostart`, `McpOps.Remove`) are a
-smaller version of the same thing and are not yet converted.
+honour it with.
+
+**Every ops core that resolves a record inside the write now declines when it
+finds nothing.** `ServiceOps.Update`/`Remove`/`SetAutostart`, `McpOps.Remove`,
+`McpOps.StartOAuth`, `revokePasskey`, `createEnrolment`, `updateEnrolment`,
+`revokeEnrolment` and the frontend-token migration each used to run the save
+anyway — a full rewrite of `settings.json` to record that nothing had changed,
+reachable from every HTTP and IPC door by naming an id that does not exist.
+None of them is the unauthenticated surface the login routes are, so the cost is
+the lost-write one rather than the flood one; it is the same cost.
+
+Two contracts survive that conversion unchanged, and both are why the refusal is
+a *sentinel* rather than a bare error:
+
+- **"Committed, side effect failed" stays distinguishable from "nothing
+  persisted."** `errServiceProcess` and `errEnrolmentBundle` are raised *after*
+  the write returned nil, and still hand back the record that landed.
+- **A genuine save failure still reads as a save failure.** The decline and the
+  refusal over an unreadable file both come back as the single error
+  `withDeclinable` returns, so each caller separates them with `errors.Is`
+  against its own not-found sentinel and wraps everything else as `save …`. HTTP
+  status and IPC shape are chosen from that sentinel, so neither moved.
+
+**`McpOps.StartOAuth` is the widest of these windows** (issue #52). It resolves
+the MCP, then runs OAuth discovery, opens a browser and blocks on a callback
+listener, and only then persists — so a removal landing in the middle was
+reported as a persisted OAuth state that never landed. The record is resolved
+again inside the write. `ServiceOps.Start` is the other half of #52 and is
+**not** closed: it acts on the process registry rather than on settings, so
+there is no `store.With` to move the check into, and closing it needs
+synchronisation spanning two resources plus care around `Stop`, which
+deliberately stops a service settings no longer names.
 
 **The staging file has a unique name, which stops tearing and nothing else.**
 `atomicWriteFile` used to stage through a fixed `<path>.tmp` opened `O_TRUNC`,
@@ -503,6 +538,31 @@ The boundary is the same one the deletion rule draws: an **absent** file is
 still written. A fresh install starts, `EnsureInitialized` creates
 settings.json, and a store holding settings that nothing has persisted yet
 still saves them.
+
+**A stat that fails closes reads too, not only writes.** Setting `readErr` is
+what refuses the next write; on its own it left the cache and the return
+untouched, so an authorization decision resolving through `freshSettings` kept
+answering from a copy older than the failure — stale rather than closed, and the
+only degraded state of the file that behaved that way. The store now re-reads
+there and lets `load()` decide `readErr` itself, which resolves to the file
+rather than to the stat's guess in the case where the two disagree. The boundary
+is the deletion rule's: a file this store has **never** seen is left alone,
+because a first start holds settings nothing has written out yet. Reaching this
+at all needs the config *directory* to become unusable, where `atomicWriteFile`
+fails anyway; what it buys is that the file's degraded states now all give the
+same answer.
+
+**A record is normalized before it is written, not only after it is read.**
+`normalize()` fills a nil slice or map with an empty one so every record spells
+"empty" the same way. It ran on `load()` and not on what a `With` callback
+produced, so a record appended by a mutation reached disk with `"args": null`
+beside records spelling the same emptiness `[]`. A round trip through `load()`
+repairs it, so nothing in-process ever noticed — but `relay audit`,
+`relay grant` and a hand-edit read the **file**, and a file whose records
+disagree about how emptiness is spelled invites the reader to conclude the two
+spellings mean different things. `normalize()` is idempotent and only ever
+replaces nil with empty, so nothing it touches can be a value an operator
+chose.
 
 ## Directory auth (`allow_cwd_auth`)
 

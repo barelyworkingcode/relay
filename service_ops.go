@@ -116,18 +116,16 @@ func (o *ServiceOps) Update(id string, f serviceFields) (ServiceConfig, error) {
 
 	// IsRunning is sampled before the commit, same as the config merge below;
 	// what makes this race-safe is not when wasRunning is read but that a
-	// stale true never reaches Reload, because found gates that below and is
-	// decided atomically with the write.
+	// stale true never reaches Reload, because the callback below resolves the
+	// id atomically with the write and declines when it is gone.
 	wasRunning := o.Registry.IsRunning(id)
 
 	var config ServiceConfig
-	found := false
-	if err := o.Store.With(func(s *Settings) {
+	if err := withDeclinable(o.Store, func(s *Settings) error {
 		existing, idx := s.findServiceByID(id)
 		if idx < 0 {
-			return // no-op write; the id is gone as of this commit
+			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
-		found = true
 		config = f.toConfig(id)
 		// FrontendConsumer is set by `service register --no-frontend-creds`, never
 		// by an edit form, and UpdateService replaces the whole record. Dropping it
@@ -135,11 +133,12 @@ func (o *ServiceOps) Update(id string, f serviceFields) (ServiceConfig, error) {
 		// that opted out.
 		config.FrontendConsumer = existing.FrontendConsumer
 		s.UpdateService(config)
+		return nil
 	}); err != nil {
+		if errors.Is(err, errServiceNotFound) {
+			return ServiceConfig{}, err
+		}
 		return ServiceConfig{}, fmt.Errorf("save service: %w", err)
-	}
-	if !found {
-		return ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 
 	var reloadErr error
@@ -154,18 +153,17 @@ func (o *ServiceOps) Update(id string, f serviceFields) (ServiceConfig, error) {
 }
 
 func (o *ServiceOps) Remove(id string) error {
-	found := false
-	if err := o.Store.With(func(s *Settings) {
+	if err := withDeclinable(o.Store, func(s *Settings) error {
 		if _, idx := s.findServiceByID(id); idx < 0 {
-			return
+			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
-		found = true
 		s.RemoveService(id)
+		return nil
 	}); err != nil {
+		if errors.Is(err, errServiceNotFound) {
+			return err
+		}
 		return fmt.Errorf("save service: %w", err)
-	}
-	if !found {
-		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 	o.Registry.Stop(id)
 	o.notify()
@@ -173,18 +171,17 @@ func (o *ServiceOps) Remove(id string) error {
 }
 
 func (o *ServiceOps) SetAutostart(id string, on bool) error {
-	found := false
-	if err := o.Store.With(func(s *Settings) {
+	if err := withDeclinable(o.Store, func(s *Settings) error {
 		if _, idx := s.findServiceByID(id); idx < 0 {
-			return
+			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
-		found = true
 		s.SetServiceAutostart(id, on)
+		return nil
 	}); err != nil {
+		if errors.Is(err, errServiceNotFound) {
+			return err
+		}
 		return fmt.Errorf("save service: %w", err)
-	}
-	if !found {
-		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 	o.notify()
 	return nil
