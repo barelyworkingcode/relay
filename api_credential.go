@@ -69,35 +69,81 @@ func (s *Settings) findAPICredentialByHash(hash string) *APICredential {
 }
 
 // AuthenticateAPICredential resolves a bearer token to the credential that
-// minted it. An empty token and a token matching nothing are deliberately
-// indistinguishable to the caller — that distinction is exactly what a
-// timing or error-message oracle would want.
+// minted it. An empty token, a token matching nothing, and a token matching
+// an EXPIRED credential are deliberately indistinguishable to the caller —
+// those distinctions are exactly what a timing or error-message oracle would
+// want, and "this credential existed once" is a fact a bearer relay refuses
+// should not be able to establish (ADR-016 decision 3).
+//
+// Expiry is enforced here rather than at reaping time: reaping is lazy, so
+// an expired record outlives its lifetime on disk by design and only this
+// check stands between it and a request.
 func (s *Settings) AuthenticateAPICredential(plaintext string) *APICredential {
 	if plaintext == "" {
 		return nil
 	}
-	return s.findAPICredentialByHash(hashToken(plaintext))
+	cred := s.findAPICredentialByHash(hashToken(plaintext))
+	if cred == nil || cred.Expired(time.Now()) {
+		return nil
+	}
+	return cred
 }
 
-// Mint creates a new credential, appends it to s, and returns the record
+// Mint creates a credential that never expires. Does not save; use within
+// store.With.
+func (s *Settings) Mint(name string, classes []CapabilityClass) (APICredential, string, error) {
+	return s.MintFor(name, classes, 0)
+}
+
+// MintFor creates a new credential, appends it to s, and returns the record
 // alongside the PLAINTEXT token. The plaintext exists only in this return
 // value and is never stored or reconstructable from the record afterward —
 // the caller (an IPC/CLI/HTTP handler) is responsible for handing it to the
 // operator exactly once. Does not save; use within store.With.
-func (s *Settings) Mint(name string, classes []CapabilityClass) (APICredential, string, error) {
+//
+// This is deliberate: a ttl of zero or less means NO EXPIRY, not an already
+// dead credential. Absent is the compatible value for the field (see
+// APICredential.Expires), so a caller that has no lifetime to state must
+// land on it rather than mint something inert; a caller that means "now" has
+// no reason to mint at all. Callers that take a lifetime from an operator
+// refuse a negative one at the point of entry instead.
+func (s *Settings) MintFor(name string, classes []CapabilityClass, ttl time.Duration) (APICredential, string, error) {
 	plaintext, err := generateRandomHex(32)
 	if err != nil {
 		return APICredential{}, "", err
 	}
+	now := time.Now().UTC()
 	cred := APICredential{
 		ID:      uuid.New().String(),
 		Name:    name,
 		Hash:    hashToken(plaintext),
 		Classes: classes,
-		Created: time.Now().UTC().Format(time.RFC3339),
+		Created: now.Format(time.RFC3339),
+	}
+	if ttl > 0 {
+		cred.Expires = now.Add(ttl).Format(time.RFC3339)
 	}
 	s.AddAPICredential(cred)
 	return cred, plaintext, nil
+}
+
+// reapExpiredAPICredentials deletes every credential whose lifetime has run
+// out and reports whether it deleted any. Does not save; use within
+// store.With, and only alongside a mutation that was already going to write
+// — never on a timer. A background goroutine rewriting settings.json on a
+// schedule is a writer nothing asked for, against a file that already has
+// more writers than it wants (ADR-016 decision 3).
+//
+// Reaping is housekeeping, not enforcement: an expired credential stops
+// authenticating the moment it expires (AuthenticateAPICredential), whether
+// or not anything has swept it yet.
+func reapExpiredAPICredentials(s *Settings) bool {
+	now := time.Now()
+	before := len(s.APICredentials)
+	s.APICredentials = slices.DeleteFunc(s.APICredentials, func(c APICredential) bool {
+		return c.Expired(now)
+	})
+	return len(s.APICredentials) != before
 }
 
 // legacyFrontendCredentialName marks the single credential
@@ -105,14 +151,20 @@ func (s *Settings) Mint(name string, classes []CapabilityClass) (APICredential, 
 // place instead of accumulating one per call.
 const legacyFrontendCredentialName = "legacy-frontend-token"
 
-// migrateFrontendTokenToCredential mints or refreshes the read+configure
-// credential that lets an existing frontend consumer (Eve, relayScheduler)
-// keep authenticating with RELAY_FRONTEND_TOKEN unchanged (ADR-015 decision
-// 3). It grants exactly ClassRead and ClassConfigure — never ClassGrant or
+// migrateFrontendTokenToCredential mints or refreshes the
+// read+configure+proxy credential that lets an existing frontend consumer
+// (Eve, relayScheduler) keep authenticating with RELAY_FRONTEND_TOKEN
+// unchanged (ADR-015 decision 3, ADR-016 decision 4). It grants
+// exactly ClassRead, ClassConfigure and ClassProxy — never ClassGrant or
 // ClassExecute — which is a deliberate narrowing: creating an enrolment,
 // registering an MCP, or writing a service's command stops being reachable
 // with the legacy token, and any consumer that needs those must mint its own
 // credential naming them explicitly.
+//
+// ClassProxy is what keeps those consumers reaching the proxied surface,
+// which registers under that class. The surface is not ClassExecute for the
+// reason ADR-016 decision 4 gives: execute would also hand the legacy token
+// POST /api/mcps and PUT /api/services/{id}.
 //
 // This is deliberate, not merely idiomatic: FrontendChannel.Ensure mints a
 // fresh random frontendToken every process start, so "idempotent" cannot
@@ -126,7 +178,7 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 		return false
 	}
 	hash := hashToken(frontendToken)
-	classes := []CapabilityClass{ClassRead, ClassConfigure}
+	classes := []CapabilityClass{ClassRead, ClassConfigure, ClassProxy}
 	for i := range s.APICredentials {
 		if s.APICredentials[i].Name != legacyFrontendCredentialName {
 			continue

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var allClasses = []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute}
@@ -226,7 +227,7 @@ func TestCredentialAuthorizer_Authorize_EmptyClassesRefusedForEveryClass(t *test
 // Migration
 // ---------------------------------------------------------------------------
 
-func TestMigrateFrontendTokenToCredential_GrantsExactlyReadAndConfigure(t *testing.T) {
+func TestMigrateFrontendTokenToCredential_GrantsExactlyReadConfigureAndProxy(t *testing.T) {
 	s := &Settings{}
 	if changed := migrateFrontendTokenToCredential(s, "legacy-plaintext-token"); !changed {
 		t.Fatal("first migration call reported no change")
@@ -238,11 +239,51 @@ func TestMigrateFrontendTokenToCredential_GrantsExactlyReadAndConfigure(t *testi
 	if cred.Grants(ClassGrant) || cred.Grants(ClassExecute) {
 		t.Fatalf("migrated credential must not hold grant or execute: %+v", cred.Classes)
 	}
-	if !cred.Grants(ClassRead) || !cred.Grants(ClassConfigure) {
-		t.Fatalf("migrated credential must hold read and configure: %+v", cred.Classes)
+	if !cred.Grants(ClassRead) || !cred.Grants(ClassConfigure) || !cred.Grants(ClassProxy) {
+		t.Fatalf("migrated credential must hold read, configure and proxy: %+v", cred.Classes)
 	}
-	if len(cred.Classes) != 2 {
+	if len(cred.Classes) != 3 {
 		t.Fatalf("migrated credential holds extra classes: %+v", cred.Classes)
+	}
+}
+
+// TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace
+// is the upgrade path a running install takes on its next start after
+// ADR-016 decision 4: settings.json already holds the record ADR-015 wrote,
+// carrying read+configure, and nothing rewrites it except this function
+// noticing the class set moved. Without the upgrade Eve keeps its token and
+// loses the proxied surface.
+func TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace(t *testing.T) {
+	const token = "legacy-token-written-before-adr-016"
+	const id = "legacy-id-from-disk"
+	const created = "2026-01-01T00:00:00Z"
+	s := &Settings{APICredentials: []APICredential{{
+		ID:      id,
+		Name:    legacyFrontendCredentialName,
+		Hash:    hashToken(token),
+		Classes: []CapabilityClass{ClassRead, ClassConfigure},
+		Created: created,
+	}}}
+
+	if !migrateFrontendTokenToCredential(s, token) {
+		t.Fatal("a stored legacy record holding only read+configure was left alone; Eve would 403 on every proxied route")
+	}
+	if len(s.APICredentials) != 1 {
+		t.Fatalf("the upgrade minted a second record instead of upgrading in place: %+v", s.APICredentials)
+	}
+	got := s.APICredentials[0]
+	if got.ID != id || got.Created != created {
+		t.Fatalf("the upgrade replaced the record's identity rather than its class set: %+v", got)
+	}
+	if !got.Grants(ClassProxy) {
+		t.Fatalf("the upgrade did not add proxy: %+v", got.Classes)
+	}
+	if s.AuthenticateAPICredential(token) == nil {
+		t.Fatal("the token in the upgraded record stopped authenticating")
+	}
+
+	if migrateFrontendTokenToCredential(s, token) {
+		t.Error("the upgrade is not idempotent, so every start rewrites settings.json")
 	}
 }
 
@@ -414,5 +455,214 @@ func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.
 	}
 	if migrateFrontendTokenToCredential(s, "tok") {
 		t.Error("migration is not idempotent once the record is correct")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Expiry (ADR-016 decision 3)
+// ---------------------------------------------------------------------------
+
+func TestAPICredential_Expired_AbsentExpiresMeansNever(t *testing.T) {
+	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []CapabilityClass{ClassRead}}
+	for _, when := range []time.Time{
+		time.Unix(0, 0),
+		time.Now(),
+		time.Now().Add(100 * 365 * 24 * time.Hour),
+	} {
+		if cred.Expired(when) {
+			t.Fatalf("a credential with no Expires read as expired at %s; absent must mean never", when.UTC().Format(time.RFC3339))
+		}
+	}
+}
+
+func TestAPICredential_Expired_BoundaryAndBothSides(t *testing.T) {
+	at := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	cred := APICredential{ID: "c1", Expires: at.Format(time.RFC3339)}
+
+	if cred.Expired(at.Add(-time.Second)) {
+		t.Fatal("a credential expired one second before its own expiry")
+	}
+	if !cred.Expired(at) {
+		t.Fatal("the instant named by Expires must already be past the lifetime")
+	}
+	if !cred.Expired(at.Add(time.Second)) {
+		t.Fatal("a credential outlived its expiry")
+	}
+}
+
+// An Expires relay cannot parse is not the same case as an absent one:
+// absent is a value relay writes deliberately, unparseable is a lifetime
+// relay cannot evaluate. Reading it as "never" would make a corrupt or
+// hand-edited timestamp the way to mint an immortal credential.
+func TestAPICredential_Expired_UnparseableFailsClosed(t *testing.T) {
+	for _, bad := range []string{
+		"not-a-timestamp",
+		"2026-08-28",
+		"28/08/2026 12:00:00",
+		"1756382400",
+		" ",
+		"2026-13-45T99:99:99Z",
+	} {
+		cred := APICredential{ID: "c1", Expires: bad}
+		if !cred.Expired(time.Now()) {
+			t.Fatalf("Expires = %q read as still live; an unreadable lifetime must fail closed", bad)
+		}
+	}
+}
+
+func TestAPICredential_ExpiresRoundTripsThroughSettingsJSON(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := NewSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+
+	var minted APICredential
+	assertNoErr(t, store.With(func(s *Settings) {
+		var err error
+		minted, _, err = s.MintFor("hermes-login", []CapabilityClass{ClassRead}, 12*time.Hour)
+		assertNoErr(t, err, "MintFor")
+	}), "store.With")
+
+	if minted.Expires == "" {
+		t.Fatal("MintFor with a ttl produced a credential with no expiry")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	assertNoErr(t, err, "read settings.json")
+	var onDisk Settings
+	assertNoErr(t, json.Unmarshal(raw, &onDisk), "parse settings.json")
+	if len(onDisk.APICredentials) != 1 {
+		t.Fatalf("want 1 credential on disk, got %+v", onDisk.APICredentials)
+	}
+	if got := onDisk.APICredentials[0].Expires; got != minted.Expires {
+		t.Fatalf("Expires round-tripped as %q, want %q", got, minted.Expires)
+	}
+	if onDisk.APICredentials[0].Expired(time.Now()) {
+		t.Fatal("a credential minted with a 12h ttl is already expired after a round trip")
+	}
+}
+
+// The compatibility half of "absent means never": a record written before
+// this field existed must come back with no expiry key at all, not with a
+// zero timestamp that Expired would then have to interpret.
+func TestAPICredential_ExpiresOmittedWhenNoTTL(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := NewSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+
+	assertNoErr(t, store.With(func(s *Settings) {
+		_, _, err := s.Mint("no-ttl", []CapabilityClass{ClassRead})
+		assertNoErr(t, err, "Mint")
+	}), "store.With")
+
+	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	assertNoErr(t, err, "read settings.json")
+	if strings.Contains(string(raw), "expires") {
+		t.Fatalf("settings.json carries an expires key for a credential minted with no ttl:\n%s", raw)
+	}
+
+	var onDisk Settings
+	assertNoErr(t, json.Unmarshal(raw, &onDisk), "parse settings.json")
+	if onDisk.APICredentials[0].Expired(time.Now()) {
+		t.Fatal("a credential minted with no ttl came back expired")
+	}
+}
+
+// TestAPICredential_ExpiredIsRefusedExactlyLikeAnUnknownOne is the oracle
+// check. Every observable an authenticating caller has must be identical
+// between "this token expired" and "this token never existed": the returned
+// credential, and the absence of any other signal. The live credential
+// beside them is the control -- it proves the store is answering at all.
+func TestAPICredential_ExpiredIsRefusedExactlyLikeAnUnknownOne(t *testing.T) {
+	s := &Settings{}
+
+	live, livePlain, err := s.MintFor("live", []CapabilityClass{ClassRead}, time.Hour)
+	assertNoErr(t, err, "MintFor live")
+	expired, expiredPlain, err := s.MintFor("expired", []CapabilityClass{ClassRead}, time.Hour)
+	assertNoErr(t, err, "MintFor expired")
+
+	// Backdate rather than sleep: the record is what authentication reads.
+	for i := range s.APICredentials {
+		if s.APICredentials[i].ID == expired.ID {
+			s.APICredentials[i].Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+		}
+	}
+
+	if got := s.AuthenticateAPICredential(livePlain); got == nil || got.ID != live.ID {
+		t.Fatalf("the live credential does not authenticate: %+v", got)
+	}
+
+	fromExpired := s.AuthenticateAPICredential(expiredPlain)
+	fromUnknown := s.AuthenticateAPICredential("never-minted-anywhere")
+	fromEmpty := s.AuthenticateAPICredential("")
+	if fromExpired != nil {
+		t.Fatalf("an expired credential authenticated: %+v", fromExpired)
+	}
+	if fromExpired != fromUnknown || fromExpired != fromEmpty {
+		t.Fatalf("expired=%v unknown=%v empty=%v; the three must be indistinguishable", fromExpired, fromUnknown, fromEmpty)
+	}
+
+	// It is still ON DISK -- refusal is enforcement, not a side effect of
+	// reaping -- and FindAPICredential still resolves it, so an operator
+	// surface can show what is about to be swept.
+	if s.FindAPICredential(expired.ID) == nil {
+		t.Fatal("authentication deleted the expired record; reaping is lazy and separate")
+	}
+}
+
+func TestAPICredential_UnparseableExpiresIsRefusedAtAuthentication(t *testing.T) {
+	s := &Settings{}
+	_, plaintext, err := s.MintFor("corrupt", []CapabilityClass{ClassRead}, time.Hour)
+	assertNoErr(t, err, "MintFor")
+	s.APICredentials[0].Expires = "whenever"
+
+	if got := s.AuthenticateAPICredential(plaintext); got != nil {
+		t.Fatalf("a credential with an unreadable expiry authenticated: %+v", got)
+	}
+}
+
+func TestReapExpiredAPICredentials_RemovesOnlyTheExpired(t *testing.T) {
+	s := &Settings{}
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	s.AddAPICredential(APICredential{ID: "never", Name: "never", Hash: hashToken("a")})
+	s.AddAPICredential(APICredential{ID: "live", Name: "live", Hash: hashToken("b"), Expires: future})
+	s.AddAPICredential(APICredential{ID: "dead", Name: "dead", Hash: hashToken("c"), Expires: past})
+	s.AddAPICredential(APICredential{ID: "corrupt", Name: "corrupt", Hash: hashToken("d"), Expires: "not-a-time"})
+
+	if !reapExpiredAPICredentials(s) {
+		t.Fatal("reaping reported nothing removed with two expired records present")
+	}
+	for _, id := range []string{"never", "live"} {
+		if s.FindAPICredential(id) == nil {
+			t.Fatalf("reaping removed %q, which has not expired", id)
+		}
+	}
+	for _, id := range []string{"dead", "corrupt"} {
+		if s.FindAPICredential(id) != nil {
+			t.Fatalf("reaping left %q behind", id)
+		}
+	}
+
+	if reapExpiredAPICredentials(s) {
+		t.Fatal("a second reap over a clean set reported a change, which would rewrite settings.json for nothing")
+	}
+}
+
+// The legacy credential carries no expiry, so reaping must never touch it --
+// sweeping it would 401 Eve and relayScheduler until the next relay start.
+func TestReapExpiredAPICredentials_LeavesTheLegacyCredentialAlone(t *testing.T) {
+	s := &Settings{}
+	const frontendToken = "reap-legacy-token"
+	migrateFrontendTokenToCredential(s, frontendToken)
+	s.AddAPICredential(APICredential{ID: "dead", Hash: hashToken("x"), Expires: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)})
+
+	reapExpiredAPICredentials(s)
+
+	if s.AuthenticateAPICredential(frontendToken) == nil {
+		t.Fatal("reaping swept the legacy frontend credential")
+	}
+	if len(s.APICredentials) != 1 {
+		t.Fatalf("want only the legacy credential left, got %+v", s.APICredentials)
 	}
 }

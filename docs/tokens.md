@@ -8,8 +8,8 @@ for the project-token brokering model.
 |---|---|---|---|---|
 | **Project token** | env `RELAY_PROJECT_TOKEN` *(legacy: `RELAY_TOKEN`)* | The security boundary for MCP tool access — identifies the project for a tool call; relay injects the authenticated `project_id` into `_meta`. Injected into project shells / LLM CLIs / the `relay mcp` child. | **Scoped.** Permissions derived at auth time from the project's `allowed_mcp_ids` + `disabled_tools`. | Long-lived. Plaintext (`Token`) + SHA-256 (`TokenHash`) stored inline in the project in `settings.json` (0600). Rotatable via the `rotate_token` HTTP route / `rotate_project_token` IPC. |
 | **Service token** | env `RELAY_SERVICE_TOKEN` *(legacy: `RELAY_MCP_TOKEN`)* | Authenticates a spawned service (e.g. relayLLM) to relay's **bridge** for broker/admin ops: `ResolvePtyEnv`, `RegisterManifest`, `ListProjects`/`GetProject`. | **Full, unfiltered bridge access** — bypasses all per-project tool filtering (router treats `Name=="service"` as god-mode). | Ephemeral, in-memory, minted per service spawn (`service_registry.go`). Never persisted. **Never injected into a child shell.** |
-| **Frontend token** | env `RELAY_FRONTEND_TOKEN` | Authenticates frontend consumers (eve) to relay's front-door Unix socket. | Whatever the credential it migrates to holds — `read`+`configure` today, never `grant` or `execute`. Checked on every HTTP + WS before dispatch. Defense-in-depth atop the 0600 socket. No credentials at all fails **closed**. | Minted by relay per process (crypto/rand, 32-byte hex); handed to frontend consumers via env at spawn. Recorded as a control-plane credential named `legacy-frontend-token` on every start. |
-| **Control-plane credential** | `settings.json` field `api_credentials`; minted by `relay credential mint` | Authenticates a caller to relay's control-plane HTTP API (the frontend socket and, if bound, `RELAY_API_LISTEN`). Replaces the single frontend bearer as the API's authenticator (ADR-015). | **Classed.** Carries an explicit set of `read` / `configure` / `grant` / `execute`; an absent set grants nothing. `execute` is socket-only. | Long-lived. SHA-256 only in `settings.json` (0600) — the plaintext is printed once by `relay credential mint` and is not recoverable. Revoke with `relay credential revoke --id ID`. |
+| **Frontend token** | env `RELAY_FRONTEND_TOKEN` | Authenticates frontend consumers (eve) to relay's front-door Unix socket. | Whatever the credential it migrates to holds — `read`+`configure`+`proxy` today, never `grant` or `execute`. Checked on every HTTP + WS before dispatch. Defense-in-depth atop the 0600 socket. No credentials at all fails **closed**. | Minted by relay per process (crypto/rand, 32-byte hex); handed to frontend consumers via env at spawn. Recorded as a control-plane credential named `legacy-frontend-token` on every start. |
+| **Control-plane credential** | `settings.json` field `api_credentials`; minted by `relay credential mint` | Authenticates a caller to relay's control-plane HTTP API (the frontend socket and, if bound, `RELAY_API_LISTEN`). Replaces the single frontend bearer as the API's authenticator (ADR-015). | **Classed.** Carries an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; an absent set grants nothing. `execute` and `proxy` are socket-only. | Long-lived by default; `relay credential mint --ttl 12h` gives one an expiry. SHA-256 only in `settings.json` (0600) — the plaintext is printed once by `relay credential mint` and is not recoverable. Revoke with `relay credential revoke --id ID`. |
 | **Enhanced-service internal bearer** | declared via `RegisterManifest` (per service) | Secures the internal socket between relay's dispatcher and an enhanced service (relayLLM, relayScheduler). Relay strips inbound `Authorization` and injects this token when proxying front-door traffic onward. | That service's internal endpoint only. Distinct from frontend creds. | Each service picks its own socket + token; told to relay at manifest registration. |
 | **Admin secret** | `settings.json` field `admin_secret` | Gates admin-only bridge ops: `ReconcileExternalMcps`, `ReloadExternalMcp`, `ReloadService`. | Administrative control-plane. | Auto-generated on first run; constant-time compared via `ValidateAdmin` at the bridge layer. |
 | **OAuth 2.1 tokens** | per HTTP MCP (`oauth.go`) | Authenticate relay to **upstream** HTTP MCP servers (PKCE, dynamic registration, auto-refresh). | The upstream provider, not relay's own boundary. | Access + refresh tokens stored per-MCP (`OAuthState` in `settings.json`). |
@@ -45,29 +45,50 @@ They were briefly conflated, with the outer check admitting exactly one token,
 which made every credential except that one unusable — the class model existed
 and could not be reached.
 
-### The four classes and what each reaches
+### The five classes and what each reaches
 
 | class | what it means | routes |
 |---|---|---|
 | `read` | discloses configuration or history | `GET /api/projects`, `/api/projects/{id}`, `/api/services`, `/api/services/{id}`, `/api/enrolments`, `/api/enrolments/{id}`, `/api/remote`, `/api/mcps`, `/api/mcps/{id}/tools`, `/api/mcps/{id}/scope_fields`, `/api/audit`, `/api/audit/log`; `POST /api/mcps/{id}/enumerate` (a POST that discloses and changes nothing) |
-| `configure` | changes relay's own state | `POST`/`PUT`/`DELETE /api/projects…`, `POST /api/projects/{id}/regen_skill`, `DELETE /api/services/{id}`, `POST /api/services/{id}/start`\|`stop`, `PUT /api/services/{id}/autostart`, `DELETE /api/mcps/{id}`, `POST /api/audit/export`, **and the `/` catch-all that proxies to enhanced services** |
+| `configure` | changes relay's own state | `POST`/`PUT`/`DELETE /api/projects…`, `POST /api/projects/{id}/regen_skill`, `DELETE /api/services/{id}`, `POST /api/services/{id}/start`\|`stop`, `PUT /api/services/{id}/autostart`, `DELETE /api/mcps/{id}`, `POST /api/audit/export` |
 | `grant` | issues or revokes a credential another party holds | `POST /api/enrolments`, `DELETE /api/enrolments/{id}`, **`POST /api/projects/{id}/rotate_token`** |
 | `execute` | the *caller* supplies what runs or what is exposed | `POST /api/mcps`, `POST /api/services`, `PUT /api/services/{id}`, `PUT /api/remote` |
+| `proxy` | reaches a surface relay has **not** classified | the `/` catch-all — every route an enhanced service registers via its manifest, `/ws` included |
 
 An absent or empty class set grants **nothing** — never "everything", never
 "read". A credential minted by a tool that predates the class model is inert.
 
 **`execute` is socket-only.** Those four routes are not registered on the
-loopback TCP mux at all, so a caller there gets a genuine no-route 404 however
+loopback TCP mux at all, so a caller there gets the mux's own refusal however
 its credential is classed (ADR-015 decision 2). The class still exists on the
 credential so the socket path can tell a consumer that needs it from one that
 does not.
 
-**The proxied surface is `configure`.** The `/` catch-all — every route an
-enhanced service registers via its manifest, `/ws` included — is registered
-under `configure`, so a `read`-only credential cannot reach relayLLM sessions
-or terminals through it. Whether a proxied route that starts a terminal is
-really `execute` is open as issue #50.
+**The proxied surface is `proxy`, and `proxy` is socket-only too** (ADR-016
+decision 4). The `/` catch-all is the one mount whose blast radius relay
+cannot see: what it reaches is whatever a manifest declares, which is why it
+is named as unclassified rather than called configuration. Three consequences
+follow.
+
+- A route that starts a terminal is not reachable from the loopback TCP bind,
+  which is the browser-facing door. That is issue #50's guarantee restored.
+- `configure` stops silently meaning "and also every route relayLLM
+  registers". A hand-minted `configure` credential that reached relayLLM
+  through the catch-all is strictly less able than it was and must be
+  re-minted naming `proxy`.
+- Eve and relayScheduler are unaffected: they dial the frontend **socket**,
+  and the legacy-token migration grants `proxy` alongside `read`+`configure`.
+
+`proxy` is a class rather than `execute` because `execute` would also hand the
+legacy token `POST /api/mcps` and `PUT /api/services/{id}` — the two things
+the migration exists to withhold. Classing per route is the real answer and
+needs the manifest to describe blast radius, which is a protocol change across
+repositories and is still deferred.
+
+**A near-miss on TCP is now a 405.** With no catch-all on the loopback mux to
+absorb it, `POST /api/services` there is `http.ServeMux` refusing a method it
+has no pattern for, rather than a proxied request. No handler runs either way;
+the status is the only thing that moved.
 
 ### Minting
 
@@ -76,7 +97,7 @@ really `execute` is open as issue #50.
     relay credential revoke --id 5d6dad87-4a31-40f6-88f8-9193adcba554
 
 `--class` is repeatable, like `relay enrol create --grant`. An unrecognized
-class is a hard error naming all four, and an empty class set is refused at the
+class is a hard error naming all five, and an empty class set is refused at the
 CLI: `Grants` treating an absent set as nothing is the correct *runtime*
 default, but minting one is an operator mistake worth catching at the point of
 entry rather than discovering as a credential that silently reaches nothing.
@@ -96,6 +117,46 @@ below: a credential's plaintext is printed once and is unrecoverable, so a
 minted credential that a later write erases leaves the operator holding a token
 that 401s with nothing on any surface saying why.
 
+### Expiry
+
+A credential minted with no `--ttl` never expires, and **an absent `expires`
+field means exactly that** — every record written before the field existed
+round-trips unchanged, the same zero-value discipline `Project.Kind` follows.
+
+    relay credential mint --name browser-login --class read --ttl 12h
+    relay credential list                    # hides expired records
+    relay credential list --include-expired  # shows what the next mint will reap
+
+Four rules, and each exists for a reason worth stating.
+
+- **An `expires` relay cannot parse reads as expired.** Absent is a value
+  relay writes on purpose; unparseable is a lifetime relay cannot evaluate,
+  and the only safe answer to that is that the lifetime is over. A corrupt or
+  hand-edited timestamp must not be the way to mint an immortal credential.
+- **An expired credential is refused *identically* to an unknown one.** Same
+  401, same body, same nil from `AuthenticateAPICredential`. A distinguishable
+  answer is an oracle for which credentials exist.
+- **Reaping is lazy — on the next mint, inside the same `store.With`, never on
+  a timer.** A background goroutine rewriting `settings.json` on a schedule is
+  a writer nothing asked for, against a file that already has more writers
+  than it wants (see below). Reaping is housekeeping, not enforcement: a
+  credential stops authenticating the moment it expires, swept or not.
+- **`list` hides expired records by default.** One credential per interactive
+  login (ADR-016 decision 3) means `api_credentials` stops being a short
+  human-curated list; `--include-expired` is how an operator sees what is
+  about to go.
+
+**This is not a reversal of the enrolment trade.** `enrolment_ca.go` chose
+revocation over expiry for client certificates deliberately, because a short
+certificate lifetime needs an authenticated renewal path, and any credential
+replayable to obtain a fresh certificate reintroduces a bearer secret at the
+one point where the result is a *new identity*. That argument does not
+transfer here and the two conclusions do not conflict: an enrolment is
+long-lived by design and revoked, while a login credential is short-lived by
+design and its renewal path is *another ceremony* — an unforgeable
+user-presence act rather than a replayable secret. Expiry is affordable
+exactly where revocation was the only option.
+
 `legacy-frontend-token` is reserved: the migration below rewrites that record's
 hash on every relay start, so an operator-minted credential under that name
 would be silently clobbered. Both `mint` and `revoke` refuse it.
@@ -104,8 +165,10 @@ would be silently clobbered. Both `mint` and `revoke` refuse it.
 
 `RELAY_FRONTEND_TOKEN` still works, unchanged, for every consumer relay injects
 it into. It works *as a credential*: on every start relay records it as
-`legacy-frontend-token` holding exactly `read`+`configure`. There is no second
-authentication path for it.
+`legacy-frontend-token` holding exactly `read`+`configure`+`proxy`. There is no
+second authentication path for it. An install whose record predates `proxy` is
+upgraded in place on the next start — same id, same created date, wider class
+set — because the migration owns that record's class set outright.
 
 That is a **narrowing**, and it has a consequence worth stating plainly: a
 consumer that needs `grant` or `execute` over HTTP must now mint its own

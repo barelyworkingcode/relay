@@ -86,6 +86,27 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   because a browser-held credential is the most exposed. `PeerPID` is
   explicitly refused as an authorization input.
 
+- [016 — A login is a ceremony anchored on the host, and the view holds a
+  credential of its own](016-interactive-login-and-the-view-credential.md):
+  implements ADR-015 decision 4. A human authenticates with a **passkey**, not
+  a password, because a password would put an offline-guessable, reused secret
+  in `settings.json` and is phishable by the one surface this opens — a page in
+  the owner's browser. Registering one is a **host-side operator act** anchored
+  by a short-lived code from `relay login enrol`, for ADR-010 decision 8's
+  reason: trust-on-first-use would let any tab claim the machine, and would
+  silently re-arm every time `settings.json` is deleted. The ceremony yields a
+  **short-lived credential, one per login, held in memory and never in
+  `localStorage` and never in a cookie**, carrying `read`+`configure` and
+  nothing else. A fifth class, **`proxy`**, splits the enhanced-service
+  catch-all out of `configure` and is socket-only, which is what makes the
+  view's class set genuinely small and what answers issue #50. The 0600 socket
+  keeps authenticating: relay already distinguishes among same-user processes
+  (`--no-frontend-creds`), and 0600 is already spent justifying `execute`.
+  **No WebAuthn library** — ES256 only, `none` attestation only, one origin,
+  one RP ID, no resident keys, no extensions — and every assertion check is
+  enumerated, including what happens when a signature counter does not
+  increase.
+
 ## Format
 
 Each ADR carries **Status** + **Date** in its header, then **Context**,

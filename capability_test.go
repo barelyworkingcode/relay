@@ -55,6 +55,9 @@ func TestClassReachableOn(t *testing.T) {
 		{ClassGrant, TransportTCP, true},
 		{ClassExecute, TransportSocket, true},
 		{ClassExecute, TransportTCP, false},
+		{ClassProxy, TransportSocket, true},
+		{ClassProxy, TransportTCP, false},
+		{ClassProxy, Transport("bogus"), false},
 		{CapabilityClass("bogus"), TransportSocket, false},
 		{CapabilityClass("bogus"), TransportTCP, false},
 		{CapabilityClass(""), TransportSocket, false},
@@ -90,6 +93,61 @@ func TestRouteRegistrar_Handle_ExecuteAbsentOnTCP(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("handler body ran; the route must never have been registered on this transport")
+	}
+}
+
+// TestRouteRegistrar_Handle_ProxyAbsentOnTCP is the same claim as the
+// execute case above, for the class that carries relay's ONE catch-all
+// pattern. A pattern registered at "/" is the one registration whose absence
+// cannot be seen by probing a path -- every path answers something either
+// way -- so it is asserted here against a mux with nothing else on it, where
+// a reachable catch-all is the only thing that could produce a 200.
+func TestRouteRegistrar_Handle_ProxyAbsentOnTCP(t *testing.T) {
+	var ran bool
+	mux := http.NewServeMux()
+	rr := &RouteRegistrar{Mux: mux, Transport: TransportTCP}
+	rr.Handle(ClassProxy, "/", func(w http.ResponseWriter, _ *http.Request) {
+		ran = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for _, path := range []string{"/", "/api/sessions", "/ws"} {
+		resp, err := http.Post(srv.URL+path, "application/json", nil)
+		assertNoErr(t, err, "POST %s", path)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("proxy catch-all on TCP: POST %s = %d, want 404 (no route registered)", path, resp.StatusCode)
+		}
+	}
+	if ran {
+		t.Fatal("the catch-all handler ran; ClassProxy must never be registered on TCP")
+	}
+}
+
+func TestRouteRegistrar_Handle_ProxyServedOnSocket(t *testing.T) {
+	var ran bool
+	mux := http.NewServeMux()
+	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket}
+	rr.Handle(ClassProxy, "/", func(w http.ResponseWriter, _ *http.Request) {
+		ran = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/sessions", "application/json", nil)
+	assertNoErr(t, err, "POST")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy catch-all on the socket: status = %d, want 200", resp.StatusCode)
+	}
+	if !ran {
+		t.Fatal("the catch-all handler did not run on the transport it must be reachable on")
 	}
 }
 

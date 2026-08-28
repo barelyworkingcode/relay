@@ -13,14 +13,17 @@ package main
 // minted credential.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type ceFakeAuthorizer struct {
@@ -151,8 +154,11 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 	if legacy.Hash != hashToken(lastToken) {
 		t.Fatal("legacy credential's hash does not match the LATEST restart's token")
 	}
-	if len(legacy.Classes) != 2 || !legacy.Grants(ClassRead) || !legacy.Grants(ClassConfigure) {
+	if len(legacy.Classes) != 3 || !legacy.Grants(ClassRead) || !legacy.Grants(ClassConfigure) || !legacy.Grants(ClassProxy) {
 		t.Fatalf("legacy credential's classes drifted across restarts: %+v", legacy.Classes)
+	}
+	if legacy.Grants(ClassGrant) || legacy.Grants(ClassExecute) {
+		t.Fatalf("legacy credential picked up a class the migration must never carry: %+v", legacy.Classes)
 	}
 
 	for i := 0; i < restarts-1; i++ {
@@ -209,6 +215,49 @@ func TestCredentialEnforcement_MigratedCredential_DeniedGrantAndExecute_ThroughR
 			}
 		})
 	}
+}
+
+// TestCredentialEnforcement_ProxyClassGatesTheProxiedSurface is what ADR-016
+// decision 4 buys: a configure credential stops silently meaning "and also
+// every route relayLLM registers". Run through the real composed stack
+// (accNewServer, api_credential_cli_test.go) rather than a synthetic mux,
+// because the claim is about the class registerFrontendRoutes actually
+// mounts "/" under, not about Grants.
+//
+// The dispatcher's own 404 body is the evidence the proxy credential got
+// through: http.ServeMux answers a missing route with the same status and
+// the same text/plain, so only the body tells the catch-all's answer from
+// the mux's.
+func TestCredentialEnforcement_ProxyClassGatesTheProxiedSurface(t *testing.T) {
+	store := newCLISandboxStore(t)
+	srv := accNewServer(t, store, accLegacyToken)
+
+	configureOnly := accMint(t, store, "ce-configurer", "read", "configure")
+	proxyOnly := accMint(t, store, "ce-proxier", "proxy")
+
+	const dispatcherAnswer = "no service registered for this path"
+	for _, path := range []string{"/api/sessions", "/api/terminals/1/input", "/ws"} {
+		t.Run(path, func(t *testing.T) {
+			resp, body := srv.socket(t, "POST", path, configureOnly, map[string]any{})
+			accAssertForbidden(t, resp, body, "configure-only credential on the proxied catch-all")
+			if strings.Contains(string(body), dispatcherAnswer) {
+				t.Fatalf("configure-only credential reached the dispatcher on %s: body=%s", path, body)
+			}
+
+			resp, body = srv.socket(t, "POST", path, proxyOnly, map[string]any{})
+			accAssertReached(t, resp, body, "proxy credential on the proxied catch-all")
+			if !strings.Contains(string(body), dispatcherAnswer) {
+				t.Fatalf("proxy credential on %s: status = %d body=%s; want the dispatcher's own answer", path, resp.StatusCode, body)
+			}
+		})
+	}
+
+	// The control in both directions: the configure credential is not a
+	// blanket refusal, and the proxy credential is not a superset.
+	resp, body := srv.socket(t, "POST", "/api/projects", configureOnly, map[string]any{"name": "ce-proj", "path": t.TempDir()})
+	accAssertReached(t, resp, body, "configure credential on a configure-class route")
+	resp, body = srv.socket(t, "GET", "/api/services", proxyOnly, nil)
+	accAssertForbidden(t, resp, body, "proxy credential on a read-class route")
 }
 
 func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t *testing.T) {
@@ -269,5 +318,71 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 	refused := aud.decisions[1]
 	if refused.Allowed || refused.CredID != cred.ID {
 		t.Fatalf("refused decision = %+v, want Allowed=false CredID=%q", refused, cred.ID)
+	}
+}
+
+// TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit is the
+// compatibility claim ADR-016 decision 4 rests on, made against a real
+// enhanced service rather than against the dispatcher's 404. Eve holds
+// RELAY_FRONTEND_TOKEN and dials the frontend SOCKET, so a socket-only
+// ClassProxy must leave it reaching exactly what it reached before -- proven
+// by the upstream service recording the request, not by the status alone.
+//
+// The TCP half is the other side of the same decision, and it is a change:
+// the proxied surface is gone from the loopback bind for every credential,
+// Eve's included.
+func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
+	store := newCLISandboxStore(t)
+	const eveToken = "ce-eve-frontend-token"
+
+	registry := NewEnhancedServiceRegistry(nil)
+	fake := NewFakeService(t, FakeServiceOptions{ServiceID: "ce-svc", Manifest: newManifest("/api/a/")})
+	assertNoErr(t, registry.RegisterManifest(fake.ServiceID(), fake.Socket(), fake.Token(), fake.Manifest()), "register manifest")
+
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
+	extMgr := NewExternalMcpManager(nil)
+	dir := mkShortTempDir(t, "ce-eve-")
+	srv, err := NewFrontendServer(
+		store, extMgr, extMgr, extMgr,
+		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: eveToken},
+		registry, nil, nil, ops, &EnrolmentOps{Store: store}, &AuditOps{}, &McpOps{Store: store, Ctx: context.Background()},
+		NewCredentialAuthorizer(store), nil,
+	)
+	assertNoErr(t, err, "NewFrontendServer")
+	go func() { _ = srv.Serve() }()
+	assertNoErr(t, srv.ListenLoopback("127.0.0.1:0"), "ListenLoopback")
+	go func() { _ = srv.ServeLoopback() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+
+	sockClient := dialFrontendHTTP(srv.socketPath)
+	req, err := http.NewRequest("POST", "http://unix/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
+	assertNoErr(t, err, "new socket request")
+	req.Header.Set("Authorization", "Bearer "+eveToken)
+	resp, err := sockClient.Do(req)
+	assertNoErr(t, err, "POST over the frontend socket")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("RELAY_FRONTEND_TOKEN on a proxied route over the socket: status = %d, want 200", resp.StatusCode)
+	}
+	if got := fake.LastRequest(); got == nil || got.Path != "/api/a/echo" {
+		t.Fatalf("the enhanced service never saw Eve's request: %+v", got)
+	}
+
+	before := len(fake.Requests())
+	req, err = http.NewRequest("POST", "http://"+srv.tcpLn.Addr().String()+"/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
+	assertNoErr(t, err, "new tcp request")
+	req.Header.Set("Authorization", "Bearer "+eveToken)
+	resp, err = http.DefaultClient.Do(req)
+	assertNoErr(t, err, "POST over loopback TCP")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a proxied route over loopback TCP: status = %d, want 404 (the mount is socket-only)", resp.StatusCode)
+	}
+	if after := len(fake.Requests()); after != before {
+		t.Fatalf("the enhanced service saw %d requests over TCP; the proxied surface must be absent there", after-before)
 	}
 }

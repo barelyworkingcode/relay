@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,7 +253,12 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	}
 
 	// execute: POST /api/services is never registered on TCP at all
-	// (ADR-015 decision 2) — a correct bearer cannot reach it either.
+	// (ADR-015 decision 2) — a correct bearer cannot reach it either. The
+	// mux answers 405 rather than 404 because GET /api/services IS
+	// registered on that same path and nothing else claims the method: the
+	// "/" catch-all is socket-only (ADR-016 decision 4) and absorbs nothing
+	// here. Either way no handler ran, which the Allow header and the
+	// unchanged store below both attest.
 	req, _ = http.NewRequest("POST", base+"/api/services", bytes.NewBufferString(`{"display_name":"phantom","command":"/bin/true"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = http.DefaultClient.Do(req)
@@ -260,8 +266,14 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 		t.Fatalf("POST: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("an execute route must be absent from the TCP mux, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Allow") == "" {
+		t.Fatal("the 405 carries no Allow header, so it is not http.ServeMux's own refusal")
+	}
+	if strings.Contains(resp.Header.Get("Allow"), "POST") {
+		t.Fatalf("Allow = %q names POST, so some pattern claims it on TCP", resp.Header.Get("Allow"))
 	}
 	if svc, _ := store.Get().findServiceByID("phantom"); svc != nil {
 		t.Fatal("the execute route must never have reached ServiceOps.Create on TCP")

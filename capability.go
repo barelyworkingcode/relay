@@ -14,6 +14,13 @@ const (
 	ClassConfigure CapabilityClass = "configure"
 	ClassGrant     CapabilityClass = "grant"
 	ClassExecute   CapabilityClass = "execute"
+	// ClassProxy shares ClassExecute's socket-only arm in ClassReachableOn,
+	// and that grouping is deliberate rather than a copy-paste slip: what
+	// this class reaches is whatever an enhanced service's manifest
+	// declares, which relay cannot see and therefore cannot bound. Widening
+	// it to TCP would put a route that starts a terminal behind a browser
+	// door (ADR-016 decision 4).
+	ClassProxy CapabilityClass = "proxy"
 )
 
 // Transport names which listener a request arrived on.
@@ -53,7 +60,7 @@ type ControlDecision struct {
 // than universal.
 func ClassReachableOn(c CapabilityClass, t Transport) bool {
 	switch c {
-	case ClassExecute:
+	case ClassExecute, ClassProxy:
 		return t == TransportSocket
 	case ClassRead, ClassConfigure, ClassGrant:
 		return t == TransportSocket || t == TransportTCP
