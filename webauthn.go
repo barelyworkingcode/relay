@@ -382,6 +382,28 @@ func (v *WebAuthnVerifier) IssueChallenge(ceremony WebAuthnCeremony) ([]byte, er
 	return v.challenges.Issue(ceremony)
 }
 
+// CeremonyCompleted is the limiter's success signal for a registration, and
+// the caller owns it: it says the ceremony completed end to end, including
+// everything the verifier is deliberately blind to.
+//
+// CeremonyRefused is the other half — a ceremony this verifier accepted and
+// the caller then refused, which is the only way a bootstrap-code guess is
+// counted at all.
+func (v *WebAuthnVerifier) CeremonyCompleted() { v.limiter.recordSuccess() }
+
+func (v *WebAuthnVerifier) CeremonyRefused() { v.limiter.recordFailure() }
+
+// VerifyRegistration is pure: it knows nothing about the bootstrap code that
+// anchors registration (ADR-016 decision 2), which is checked by the caller
+// afterwards.
+//
+// This is deliberate: a verified registration therefore does NOT clear the
+// limiter, and only CeremonyCompleted does. Clearing here made a registration
+// carrying no code at all — which costs an unauthenticated caller nothing but
+// a key of its own — a failure to the route and a success to the limiter,
+// wiping `failures` and `nextAllowed` for every other ceremony. A caller that
+// forgets to confirm leaves the count standing, which is the direction this
+// has to fail.
 func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (result *WebAuthnRegistrationResult, err error) {
 	if retry, ok := v.limiter.allow(); !ok {
 		return nil, &webauthnRateLimitedError{RetryAfter: retry}
@@ -389,9 +411,7 @@ func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (res
 	defer func() {
 		if err != nil {
 			v.limiter.recordFailure()
-			return
 		}
-		v.limiter.recordSuccess()
 	}()
 
 	if len(in.Existing) >= MaxRegisteredPasskeys {
@@ -432,6 +452,11 @@ func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (res
 	}, nil
 }
 
+// VerifyAssertion clears the limiter on its own, unlike VerifyRegistration.
+// This is deliberate and is not an oversight of the asymmetry: an assertion
+// carries no anchor for a caller to check afterwards, so a ceremony this
+// function accepts is a ceremony that completed. The caller confirms it too,
+// so the signal keeps working if that ever stops being true.
 func (v *WebAuthnVerifier) VerifyAssertion(in WebAuthnAssertionInput) (result *WebAuthnAssertionResult, err error) {
 	if retry, ok := v.limiter.allow(); !ok {
 		return nil, &webauthnRateLimitedError{RetryAfter: retry}

@@ -26,6 +26,40 @@ type SettingsStore interface {
 
 var _ SettingsStore = (*FileSettingsStore)(nil)
 
+// DeclinableSettingsStore is the write a callback can refuse.
+//
+// This is deliberate: it is a second, narrow interface rather than a method on
+// SettingsStore. Refusing a write is a property of a store that has a file to
+// leave untouched, and widening SettingsStore would oblige every implementation
+// of it to grow a method that means nothing to most of them.
+type DeclinableSettingsStore interface {
+	WithDeclinable(fn func(s *Settings) error) error
+}
+
+// withDeclinable saves fn's mutation only when fn returns nil, whatever store
+// it is handed.
+//
+// This is subtle: a store that cannot decline still RUNS fn and still saves, so
+// a refusal that mutated s on its way out has to be rolled back here or the
+// refusal would persist half of what it refused. Such a store still writes;
+// only DeclinableSettingsStore can promise the file was not touched at all.
+func withDeclinable(store SettingsStore, fn func(s *Settings) error) error {
+	if d, ok := store.(DeclinableSettingsStore); ok {
+		return d.WithDeclinable(fn)
+	}
+	var refusal error
+	saveErr := store.With(func(s *Settings) {
+		before := deepCopySettings(s)
+		if refusal = fn(s); refusal != nil {
+			*s = *before
+		}
+	})
+	if refusal != nil {
+		return refusal
+	}
+	return saveErr
+}
+
 type FileSettingsStore struct {
 	mu          sync.Mutex
 	cache       *Settings
@@ -164,11 +198,30 @@ func (s *Settings) normalize() {
 //
 // Shared by settings persistence and the service-config editor
 // (service_config_file.go) so both go through one tested durability path.
+//
+// This is deliberate: the staging file gets a unique name in the target's own
+// directory rather than the fixed `<path>.tmp` it used to. relay is not one
+// process (docs/tokens.md), and a fixed name with O_TRUNC let two writers open
+// the SAME staging file — one truncating the other's half-written bytes, then
+// both renaming it over the target, which is how a settings.json ending `}}`
+// reaches disk and takes the control plane out of service. Same directory so
+// the rename stays within one filesystem, and therefore atomic.
+//
+// A unique name stops the tearing. It does NOT make a cross-process
+// read-modify-write atomic: that stays last-writer-wins, exactly as
+// FileSettingsStore.With documents.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmp := f.Name()
+	// os.CreateTemp fixes its own 0600 regardless of what the caller asked
+	// for, so perm is applied here rather than at open.
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
@@ -413,6 +466,29 @@ func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
 // plus one change — every other record silently gone, with a nil error
 // reporting success.
 func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
+	return ss.WithDeclinable(func(s *Settings) error {
+		fn(s)
+		return nil
+	})
+}
+
+// WithDeclinable is With with one addition: a callback that returns an error
+// declines the write outright. Nothing is saved, settings.json is left byte for
+// byte as it was, and the error is returned unchanged so errors.Is and
+// errors.As still reach the callback's own sentinel.
+//
+// The distinction is not cosmetic. With saves whatever its callback leaves
+// behind, including nothing at all, so a callback that decides its change must
+// not happen still rewrites the file. On the login routes — the one
+// unauthenticated surface relay serves — that handed anything able to reach the
+// port a settings writer it holds no credential for, at whatever rate it cared
+// to send. Every such write is also a chance to lose a concurrent writer's
+// change, because a cross-process read-modify-write here is last-writer-wins
+// (docs/tokens.md, "The settings file has more than one writer").
+//
+// A refusal that MUTATED s before returning still writes nothing: the mutation
+// lives on a deep copy this method discards.
+func (ss *FileSettingsStore) WithDeclinable(fn func(s *Settings) error) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.reloadIfChangedLocked()
@@ -424,7 +500,9 @@ func (ss *FileSettingsStore) With(fn func(s *Settings)) error {
 		return err
 	}
 	s := deepCopySettings(ss.cache)
-	fn(s)
+	if err := fn(s); err != nil {
+		return err
+	}
 	if err := ss.save(s); err != nil {
 		slog.Error("failed to save settings", "error", err)
 		return err

@@ -60,6 +60,15 @@ type App struct {
 	// redraw churn while the menu is open.
 	lastMenuJSON string
 
+	// loginOps backs the tray's login-code item and the Passkeys tab; it is
+	// the same core `relay login` runs through.
+	loginOps *LoginOps
+
+	// pendingLoginCode is a just-minted bootstrap code waiting for the first
+	// paint of a Settings window that is not open yet. Main-thread only, like
+	// lastMenuJSON and svcMenuMap.
+	pendingLoginCode *loginCodeView
+
 	// lastStatusBatchDigest fingerprints the most recently emitted service-
 	// status batch (FetchedAt zeroed). Identical batches across ticks are
 	// suppressed so the inspector's WebView doesn't re-render every 2s for
@@ -80,9 +89,10 @@ func (a *App) goFunc(fn func()) {
 
 // Menu item IDs.
 const (
-	menuIDSettings = 2
-	menuIDExit     = 3
-	menuIDSvcBase  = 100 // service items start here
+	menuIDSettings  = 2
+	menuIDExit      = 3
+	menuIDLoginCode = 4
+	menuIDSvcBase   = 100 // service items start here
 )
 
 func runTrayApp() {
@@ -229,6 +239,21 @@ func runTrayApp() {
 		},
 	}
 	app.ipcCtx.EnrolmentOps = enrolmentOps
+
+	// loginOps is the one core behind the tray's login-code item, the
+	// Passkeys tab and `relay login` (ADR-016). It gets no HTTP door: passkey
+	// registration is a host-side act, and a route for it would be the
+	// self-service enrolment ADR-010 decision 8 refuses. pushFullSettings
+	// carries passkeys and live sessions, so reusing it here is what keeps an
+	// open window in sync with a revoke made from a terminal.
+	loginOps := &LoginOps{
+		Store: store,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullSettings)
+		},
+	}
+	app.loginOps = loginOps
+	app.ipcCtx.LoginOps = loginOps
 
 	// mcpOps is the one core behind both the MCP Servers tab (via
 	// app.ipcCtx.McpOps) and RegisterMcpRoutes on the frontend server
@@ -535,6 +560,7 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 
 	items = append(items,
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true},
+		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Exit", ID: menuIDExit, Enabled: true},
 	)
@@ -560,6 +586,9 @@ func (a *App) onMenuClick(itemID int) {
 	case itemID == menuIDSettings:
 		a.openSettingsWindow()
 
+	case itemID == menuIDLoginCode:
+		a.showLoginCode()
+
 	case itemID == menuIDExit:
 		a.cleanup()
 		os.Exit(0)
@@ -567,6 +596,31 @@ func (a *App) onMenuClick(itemID int) {
 	case itemID >= menuIDSvcBase:
 		a.toggleService(itemID)
 	}
+}
+
+// showLoginCode mints a bootstrap code and puts it in front of the operator
+// in the Settings window. That window is the only surface this app has for
+// showing anything — relay is LSUIElement, so there is no dock icon and no
+// main window, and the one other menu item with something to show opens it
+// too.
+//
+// This is subtle: cocoa_settings_eval_js drops a script when no WebView
+// exists yet, and OpenSettings loads its document asynchronously, so a window
+// that is not up can only be told through its first paint. One that IS up is
+// never reloaded by OpenSettings, so for that one the emit is the only
+// channel. Hence the two arms rather than a single call.
+func (a *App) showLoginCode() {
+	view, err := a.loginOps.MintBootstrap()
+	if err != nil {
+		slog.Error("failed to mint a login code from the tray", "error", err)
+		view = loginCodeView{Error: err.Error()}
+	}
+	if a.settingsOpen.Load() {
+		a.emitSettingsEvent("onLoginCodeMinted", view)
+	} else {
+		a.pendingLoginCode = &view
+	}
+	a.openSettingsWindow()
 }
 
 func (a *App) toggleService(menuItemID int) {

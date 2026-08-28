@@ -194,7 +194,8 @@ decision 3).
 | **Classes** | `read` + `configure`, and nothing else. Never `grant`: a view that can rotate a project token is a view whose compromise issues credentials. Never `execute`, which is unroutable on TCP anyway — stating it on the credential means the refusal survives someone later serving the view over the socket. Never `proxy`, which is what makes `configure` mean what it says: the browser view cannot reach a session, a terminal or `/ws`. |
 | **Lifetime** | Twelve hours, written as `expires`. A first value, expected to be wrong; what matters is that expiry exists and that `relay audit --event control_decision` can show whether it is being hit. |
 | **Storage** | SHA-256 in `settings.json`, like every other credential. Expired records are reaped inside the same `store.With` as the next login. |
-| **Naming** | One record per login, named for the ceremony that produced it (`login <abbreviated credential id> <timestamp>`), so `ControlDecision.CredID` attributes a browser session rather than a role. This is what makes "sign this browser out" a real operation. |
+| **Naming** | One record per login, named for the ceremony that produced it (`login <abbreviated credential id> <timestamp>`), so `ControlDecision.CredID` attributes a browser session rather than a role. That prefix is `loginCredentialPrefix`, and it is what the sign-out gate reads. |
+| **Signing out** | Revoking that one record. Two doors, one operation: `relay credential revoke --id ID`, or **Settings → Passkeys → Signed-in Browsers → Sign out**. The Settings door refuses anything that is not a login credential, inside the same `store.With` as the delete — a WebView must not be able to revoke a credential an operator minted for a script, and `legacy-frontend-token` is refused there as it is everywhere. |
 
 **It is returned once, in the response body of
 `POST /relay/login/verify`, and the page holds it in memory and nowhere
@@ -223,6 +224,62 @@ three patterns — `GET /relay/login`, `POST /relay/login/challenge`,
 authenticated mux, which would be the second-gate defect ADR-015 already had
 to fix once. `/relay/` is reserved: a service manifest claiming it is refused
 at registration.
+
+### What the unauthenticated surface records, and what it still costs
+
+`relay audit` is ground truth for anything relay gates, so every outcome of a
+ceremony is a `control_decision` record on `POST /relay/login/verify`: a login
+that minted a credential (allowed, `cred_id` naming the record it minted, which
+is what makes a browser session attributable), a registration that landed
+(allowed, `cred_id` naming the abbreviated passkey id), and each refusal —
+a bad bootstrap code, an unknown credential id, a rejected assertion, the
+cloned-authenticator counter signal. `class` is empty on all of them, because
+these routes are not registered through `RouteRegistrar` and there is no class
+that means "none".
+
+Three things are deliberately kept out of those records.
+
+- **Anything secret.** No token, no stored hash, no bootstrap code. The reason
+  a refusal records the *sentinel* rather than the error's full text is the
+  code: a decode failure quotes the body it choked on, and the body of a
+  registration is where a caller's guess at the anchor lives. The counter
+  refusal is the one exception, and its detail is relay's own — a stored
+  credential id and two stored counters — which ADR-016 decision 7 point 10
+  requires by name. It is capped like `path` and `method` are.
+- **Refusals from before a ceremony was attempted** — a malformed body, an
+  unknown ceremony name. They are reachable at line rate by anything that can
+  open a socket and say nothing about a login.
+- **A refusal the ceremony limiter itself produced.** It is the one refusal an
+  unauthenticated caller can provoke as fast as it can send, and recording it
+  would be the audit-log amplification the control-plane caps exist to prevent.
+  The failures that caused the throttle are each recorded.
+
+**What the ceremony limiter counts.** Failed verifications are counted and
+delayed (ADR-016 decision 7 point 12), and the count is cleared only by a
+ceremony that completed *including the parts the verifier cannot see*. The
+verifier is pure and knows nothing about the bootstrap code, so a registration
+it accepts and the route then refuses is charged as a failure by the route, and
+`VerifyRegistration` no longer clears anything on its own. Without that split,
+a registration carrying no code — which costs an unauthenticated caller only a
+key of its own — was a failure to the route and a *success* to the limiter, so
+the attacker chose whether the throttle applied to their own failed assertions.
+A caller that forgets to confirm leaves the count standing: the signal fails
+closed.
+
+**A challenge flood is a denial of service relay bounds but cannot prevent.**
+`POST /relay/login/challenge` allocates an entry in a fixed table (64, 60 s,
+single use) and is unauthenticated by construction; on a loopback bind every
+request arrives from the same address, so there is no identity to reserve a
+slot against. A flood that keeps issuing as entries expire therefore keeps the
+owner refused for as long as it runs — not for the one TTL a refusal costs
+otherwise. Evicting instead of refusing does not fix it: it converts a visible
+refusal into a ceremony that fails later, and the owner's entry is displaced
+within milliseconds anyway. What is bounded is what it costs relay — a fixed
+table, no disk, no goroutine, and the table cannot be grown past its bound —
+and the condition is no longer silent: a full table warns once per TTL, which
+is the difference between an operator seeing "login is broken" and seeing that
+something is hammering the login route. The CLI is the recovery path, as it is
+for every other login failure.
 
 ## The login bootstrap code is not a credential
 
@@ -255,7 +312,24 @@ a password, and it never authenticates a request to relay's API on its own
   exactly the reason ADR-016 decision 2 refuses TOFU as the anchor in the
   first place. `relay login list` shows every registered passkey's name,
   abbreviated credential id, creation time and last-used signature counter,
-  never its public key.
+  never its public key; **Settings → Passkeys** shows the same fields and the
+  same omission.
+- **Revoking a passkey does not sign anybody out.** The passkey and the
+  credentials it has minted are separate records with separate lifetimes: the
+  revoke stops the *next* login, and a browser that signed in beforehand keeps
+  working until its credential expires — up to twelve hours. Ending that is a
+  credential revoke, above. Both operator surfaces say so at the point of the
+  act rather than leaving it to be discovered.
+
+**A second presentation of the code, not a second anchor.** The tray's
+**Show Login Code...** item mints through the same `mintBootstrapCode` inside
+the same `store.With` `relay login enrol` uses, and shows the result in the
+Settings window — relay is `LSUIElement`, so that window is the only surface
+the tray has. ADR-016 decision 2 accepts it as a presentation and refuses it as
+*the* source: the tray menu is unreachable over SSH and from the hermetic tier,
+and a capability reachable only from a mouse is a capability half-built. The
+"replaces rather than accumulates" rule is unchanged and is stated on screen —
+opening the item twice leaves exactly one code working, the second.
 
 ## The settings file has more than one writer
 
@@ -304,6 +378,47 @@ Two consequences worth stating rather than discovering:
   matters; the durability half is already handled (`atomicWriteFile` fsyncs the
   temp file, renames, and fsyncs the directory, so a crash cannot leave a
   half-written or zero-length settings.json behind).
+
+Two rules follow from that, and both are about writes that should never have
+happened at all.
+
+**A callback may decline the write, and a refusal must.**
+`FileSettingsStore.With` saves whatever its callback leaves behind, *including
+nothing*, so a callback that decides its change must not happen still rewrites
+settings.json. `WithDeclinable` is the same method with a callback that returns
+an error: a non-nil return declines the write outright — nothing is saved, the
+file is left byte for byte as it was, and the error comes back unchanged so
+`errors.Is` still reaches the callback's own sentinel. `With` is now that
+method with a callback that can only succeed, so both go through one lock and
+one save path, and the 23 existing call sites are unaffected.
+
+This is not tidiness. `POST /relay/login/verify` is unauthenticated by design
+(ADR-016 decision 5), and a registration refused for want of a bootstrap code
+used to run the save anyway — which handed anything able to reach
+`RELAY_API_LISTEN`, with no code, no credential and no passkey, a trigger on
+relay's settings writer at whatever rate it cared to send. Every one of those
+writes is also a chance to lose a concurrent writer's change, and the change
+most expensive to lose is a freshly minted credential whose plaintext was
+printed once. The interface stays as it was: declining is a second, narrow
+interface (`DeclinableSettingsStore`), because widening `SettingsStore` would
+oblige every implementation to grow a method most of them have no file to
+honour it with. The four ops cores that still write on a not-found
+(`ServiceOps.Update`/`Remove`/`SetAutostart`, `McpOps.Remove`) are a
+smaller version of the same thing and are not yet converted.
+
+**The staging file has a unique name, which stops tearing and nothing else.**
+`atomicWriteFile` used to stage through a fixed `<path>.tmp` opened `O_TRUNC`,
+so two writers opened the *same* file: one truncated the other's half-written
+bytes, and either could rename the mixture over the target. That is how a
+settings.json ending `}}` gets onto disk, at which point every read fails
+closed, `With` refuses to save and `EnsureInitialized` refuses to repair — the
+control plane is out of service until a human intervenes. Staging through
+`os.CreateTemp` in the target's own directory means no two writers ever share a
+staging file. It does **not** make a cross-process read-modify-write atomic:
+that remains last-writer-wins, exactly as stated above. The cost is that a
+process killed between create and rename leaves a uniquely named `*.tmp` behind
+rather than reusing one slot; nothing reads those files, and no sweeper was
+added because a timer rewriting this directory is the writer nobody asked for.
 
 ## No settings file means no credentials
 

@@ -14,7 +14,12 @@ import (
 
 func (a *App) openSettingsWindow() {
 	s := a.store.Get()
-	html := renderSettingsHTML(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields())
+	// Consumed here so a code minted for THIS open never survives into the
+	// next one: it is single use and two minutes old at best, and a stale one
+	// reappearing would read as a code that still works.
+	code := a.pendingLoginCode
+	a.pendingLoginCode = nil
+	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code)
 	a.platform.OpenSettings(html)
 	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
@@ -87,6 +92,12 @@ func (a *App) pushFullSettings() {
 		// same "remote is off" for the operator as one switched off on purpose.
 		"enrolments": s.Enrolments,
 		"remote":     remoteConfigViewOf(s, a.audit.Enabled()),
+		// Passkeys and live login sessions ride along for the enrolments'
+		// reason: a credential you cannot see is one you will not revoke, and
+		// both change from outside this window — `relay login enrol|revoke`
+		// in a terminal, and a browser completing the ceremony.
+		"passkeys":       a.loginOps.Passkeys(),
+		"login_sessions": a.loginOps.Sessions(),
 	})
 }
 
@@ -178,6 +189,12 @@ type IPCContext struct {
 	// RegisterAuditRoutes (ADR-014) — ipc_audit.go's handlers are thin
 	// adapters over it too.
 	AuditOps *AuditOps
+	// LoginOps is Ops's counterpart for the Passkeys tab (ADR-016) —
+	// ipc_login.go's handlers are thin adapters over it. Unlike the others
+	// it has no HTTP door at all: registering and revoking a passkey is a
+	// host-side act, and giving it a route would be the self-service
+	// enrolment ADR-010 decision 8 and ADR-016 decision 2 both refuse.
+	LoginOps *LoginOps
 	// McpOps is Ops's counterpart for the MCPs tab and RegisterMcpRoutes
 	// (ADR-014) — ipc_mcps.go's and ipc_mcp_permissions.go's handlers are
 	// thin adapters over it too. Unlike Ops and EnrolmentOps, two of its
@@ -344,6 +361,11 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgCreateEnrolment:    ipcCreateEnrolment,
 	MsgRevokeEnrolment:    ipcRevokeEnrolment,
 	MsgUpdateRemoteConfig: ipcUpdateRemoteConfig,
+
+	// Passkeys (ipc_login.go)
+	MsgListPasskeys:  ipcListPasskeys,
+	MsgRevokePasskey: ipcRevokePasskey,
+	MsgSignOutLogin:  ipcSignOutLogin,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
