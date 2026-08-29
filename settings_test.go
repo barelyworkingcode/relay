@@ -410,7 +410,7 @@ func TestSettingsCache(t *testing.T) {
 	})
 }
 
-func TestDeepCopySettings_MapIsolation(t *testing.T) {
+func TestSettingsClone_MapIsolation(t *testing.T) {
 	original := &Settings{
 		Version: 1,
 		ExternalMcps: []ExternalMcp{{
@@ -424,7 +424,7 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 		}},
 	}
 
-	cp := deepCopySettings(original)
+	cp := original.Clone()
 
 	cp.ExternalMcps[0].Env["FOO"] = "changed"
 	cp.ExternalMcps[0].Env["NEW"] = "added"
@@ -441,7 +441,7 @@ func TestDeepCopySettings_MapIsolation(t *testing.T) {
 	}
 }
 
-func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
+func TestSettingsClone_AllFieldsCovered(t *testing.T) {
 	original := &Settings{
 		Version: 1,
 		ExternalMcps: []ExternalMcp{{
@@ -454,7 +454,7 @@ func TestDeepCopySettings_AllFieldsCovered(t *testing.T) {
 		}},
 	}
 
-	cp := deepCopySettings(original)
+	cp := original.Clone()
 
 	checkSliceCopy(t, "ExternalMcps", original.ExternalMcps, cp.ExternalMcps)
 	checkSliceCopy(t, "Services", original.Services, cp.Services)
@@ -470,7 +470,7 @@ func checkSliceCopy[T any](t *testing.T, name string, orig, cp []T) {
 		return
 	}
 	if &orig[0] == &cp[0] {
-		t.Errorf("deepCopySettings: %s shares backing array with original", name)
+		t.Errorf("Clone: %s shares backing array with original", name)
 	}
 }
 
@@ -487,7 +487,7 @@ func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K
 	}
 	delete(cp, zeroK)
 	if len(orig) != origLen {
-		t.Errorf("deepCopySettings: %s shares map with original", name)
+		t.Errorf("Clone: %s shares map with original", name)
 	}
 	var zeroV V
 	cp[zeroK] = zeroV
