@@ -873,10 +873,10 @@ an argument to an operation without adding it here is a hole.
 | `enrolment.revoke` | `EnrolmentOps.Revoke` | `client_id` (string) |
 | `login.bootstrap.mint` | `LoginOps.MintBootstrap` | *(no arguments — digest over an empty field list)* |
 | `login.passkey.revoke` | `LoginOps.RevokePasskey` | `id` (string) |
-| `mcp.register` | `McpOps.Add` | `display_name`, `transport`, `url`, `command` (strings), `args` (sequence), `env` (map), `tcc_services` (set) |
+| `mcp.register` | `McpOps.Add` | `id`, `display_name`, `transport`, `url`, `command` (strings), `args` (sequence), `env` (map), `tcc_services` (set) |
 | `mcp.unregister` | `McpOps.Remove` | `id` (string) |
 | `mcp.oauth.start` | `McpOps.StartOAuth` | `id` (string) |
-| `service.register` | `ServiceOps.Create` / `Update` | `id`, `display_name`, `command`, `working_dir`, `url` (strings), `args` (sequence), `env` (map), `autostart` (bool), `frontend_consumer` (bool, absent-aware) |
+| `service.register` | `ServiceOps.Create` / `Update` | `id`, `display_name`, `command` (strings), `working_dir`, `url` (strings, absent-aware), `args` (sequence, absent-aware), `env` (map, absent-aware), `autostart` (bool, absent-aware), `frontend_consumer` (bool, absent-aware) |
 | `service.unregister` | `ServiceOps.Remove` | `id` (string) |
 | `project.rotate_token` | `ProjectOps.RotateToken` | `project_id` (string) |
 | `project.grant` | `ProjectOps.Create` / `Update` | `project_id` (string, absent on create), `allowed_mcp_ids` (set, absent-aware), `allowed_tools` (map of set, absent-aware), `access` (map, absent-aware), `context` (map of raw JSON, absent-aware), `allow_external` (map of bool, absent-aware), `allow_cwd_auth` (bool, absent-aware), `kind` (string), `path` (string) |
@@ -904,6 +904,25 @@ Notes on the boundaries of that table, each of which is a decision:
 - **The `proxy` catch-all is not gated** and stays a named hole (§2).
 - **`service.restart` is not gated.** It changes no settings; it restarts what
   is already configured, and the edit that configured it was gated.
+- **`id` is digested for both `mcp.register` and `service.register`.** Both
+  operations resolve id from an operator-supplied `--id`, falling back to
+  `slugify(display_name)` only when it is absent, and both write the record
+  at that id (`McpOps.Add` upserts by id; `ServiceOps.Create`/`Update`
+  dispatch on whether it already exists). A digest that omitted id would let
+  a grant approved for one id be redeemed against a request that resolves to
+  a different one — the same record-substitution the nonce's argument
+  binding exists to close for every other field. The `localizedReason` shown
+  in the prompt names id for the same reason: id, not `display_name`, decides
+  which record is written.
+- **`service.register`'s absent-aware fields cover `ServiceOps.Update`, not
+  only `Create`.** An update that leaves `working_dir`, `url`, `autostart`,
+  `args`, `env` or `frontend_consumer` out of the request keeps the stored
+  value; only a field the request actually sets is applied, at whatever value
+  it names — including a boolean's zero value, so `autostart: false` sent
+  explicitly still turns it off. The presence bit is part of what the digest
+  binds to precisely so that "leave `autostart` alone" and "set `autostart`
+  to `false`" — two different acts on the stored record — cannot share a
+  grant.
 
 ### 6.5 The provider
 

@@ -30,15 +30,30 @@ func invalidService(reason string) error {
 	return &serviceValidationError{reason: reason}
 }
 
-// JSON tags match ipcServiceMsg's because the settings UI's JS depends on them.
+// JSON tags match ipcServiceMsg's because the settings UI's JS depends on
+// them, except ID (the CLI's own field: the Settings window edits a record
+// in place and passes id out of band, never re-derives it) and the four
+// pointer fields below.
+//
+// WorkingDir, URL and Autostart are pointers for the same reason
+// FrontendConsumer already is: on Update, nil means "leave whatever is
+// already stored alone" so a CLI flag the operator did not repeat is not
+// read as "clear this." A door that always represents the record's complete
+// state (the Settings window, a well-behaved HTTP client) sets all three on
+// every request, present or not, exactly as it always could; only a request
+// that genuinely omits a field -- the CLI flag left off the command line --
+// gets the preserving nil. Args and Env need no such change: encoding/json
+// already leaves a slice or map nil when its key is absent, which is the
+// same absent-vs-empty distinction the pointer gives the scalar fields.
 type serviceFields struct {
+	ID          string            `json:"id,omitempty"`
 	DisplayName string            `json:"display_name"`
 	Command     string            `json:"command"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	Autostart   bool              `json:"autostart"`
-	URL         string            `json:"url,omitempty"`
+	WorkingDir  *string           `json:"working_dir,omitempty"`
+	Autostart   *bool             `json:"autostart,omitempty"`
+	URL         *string           `json:"url,omitempty"`
 	// FrontendConsumer is a pointer for the same reason projectUpdateFields'
 	// pointers are: nil means "leave whatever is already stored alone" (an
 	// edit form that never mentions it must not silently re-enable
@@ -47,33 +62,78 @@ type serviceFields struct {
 	FrontendConsumer *bool `json:"frontend_consumer,omitempty"`
 }
 
+// resolvedID is the id Create/Update commit under: the caller's explicit
+// choice when given, slugify(DisplayName) otherwise -- the same fallback
+// every other door (HTTP, IPC) always used.
+func (f serviceFields) resolvedID() string {
+	if f.ID != "" {
+		return f.ID
+	}
+	return slugify(f.DisplayName)
+}
+
+// toConfig applies Create's own semantics: a pointer field left nil (the
+// flag never given) becomes its zero value, same as before these fields
+// were pointers. Update's absent-preserves-existing behaviour is layered on
+// top of this in ServiceOps.Update, not here -- toConfig alone cannot know
+// what "existing" is.
 func (f serviceFields) toConfig(id string) ServiceConfig {
+	var workingDir string
+	if f.WorkingDir != nil {
+		workingDir = *f.WorkingDir
+	}
+	var url string
+	if f.URL != nil {
+		url = *f.URL
+	}
+	var autostart bool
+	if f.Autostart != nil {
+		autostart = *f.Autostart
+	}
 	return ServiceConfig{
 		ID:               id,
 		DisplayName:      f.DisplayName,
 		Command:          f.Command,
 		Args:             f.Args,
 		Env:              secretMapFromPlain(f.Env),
-		WorkingDir:       f.WorkingDir,
-		Autostart:        f.Autostart,
-		URL:              f.URL,
+		WorkingDir:       workingDir,
+		Autostart:        autostart,
+		URL:              url,
 		FrontendConsumer: f.FrontendConsumer,
 	}
 }
 
 // presenceDigest binds a service.register grant to exactly the record being
 // registered or updated (§6.4), id included so a grant answered for one
-// service id cannot be spent on another.
+// service id cannot be spent on another. Every field that Update treats as
+// absent-preserves-existing (working_dir, url, autostart, args, env,
+// frontend_consumer) is absent-aware here too, on the same footing as
+// frontend_consumer already was: the presence bit is itself part of what a
+// grant binds to, so a request that leaves a field alone and one that sets
+// it to that field's zero value produce different digests, and a grant
+// approved for one can never be redeemed for the other.
 func (f serviceFields) presenceDigest(id string) presence.Digest {
 	b := presence.NewDigestBuilder("service.register").
 		StringField("id", true, id).
 		StringField("display_name", true, f.DisplayName).
-		StringField("command", true, f.Command).
-		StringField("working_dir", true, f.WorkingDir).
-		StringField("url", true, f.URL).
-		StringSeqField("args", true, f.Args).
-		StringMapField("env", true, f.Env).
-		BoolField("autostart", true, f.Autostart)
+		StringField("command", true, f.Command)
+	if f.WorkingDir != nil {
+		b.StringField("working_dir", true, *f.WorkingDir)
+	} else {
+		b.StringField("working_dir", false, "")
+	}
+	if f.URL != nil {
+		b.StringField("url", true, *f.URL)
+	} else {
+		b.StringField("url", false, "")
+	}
+	b.StringSeqField("args", f.Args != nil, f.Args)
+	b.StringMapField("env", f.Env != nil, f.Env)
+	if f.Autostart != nil {
+		b.BoolField("autostart", true, *f.Autostart)
+	} else {
+		b.BoolField("autostart", false, false)
+	}
 	if f.FrontendConsumer != nil {
 		b.BoolField("frontend_consumer", true, *f.FrontendConsumer)
 	} else {
@@ -122,7 +182,7 @@ func (o *ServiceOps) Get(id string) (ServiceConfig, error) {
 }
 
 func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (ServiceConfig, error) {
-	id := slugify(f.DisplayName)
+	id := f.resolvedID()
 	if id == "" {
 		return ServiceConfig{}, invalidService("display name is required")
 	}
@@ -134,7 +194,7 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 		return ServiceConfig{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
-		fmt.Sprintf("register a service that runs %s", f.Command))
+		fmt.Sprintf("register the service %q (%s) that runs %s", f.DisplayName, id, f.Command))
 	if err != nil {
 		return ServiceConfig{}, err
 	}
@@ -188,12 +248,29 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
 		config = f.toConfig(id)
-		// FrontendConsumer stays whatever the request says when the request
-		// says anything (toConfig already carried it through); an edit form
-		// that omits the field leaves the existing value alone rather than
-		// clearing it, which is what f.FrontendConsumer == nil already means.
+		// Every pointer/nil-able field on serviceFields means the same thing
+		// on Update: the request didn't mention it, so the stored value
+		// carries forward unchanged rather than being reset to that field's
+		// zero value. FrontendConsumer already worked this way; the rest
+		// (added to close the same hole for --workdir, --url, --autostart,
+		// --env and --args) follow it exactly.
 		if f.FrontendConsumer == nil {
 			config.FrontendConsumer = existing.FrontendConsumer
+		}
+		if f.WorkingDir == nil {
+			config.WorkingDir = existing.WorkingDir
+		}
+		if f.URL == nil {
+			config.URL = existing.URL
+		}
+		if f.Autostart == nil {
+			config.Autostart = existing.Autostart
+		}
+		if f.Args == nil {
+			config.Args = existing.Args
+		}
+		if f.Env == nil {
+			config.Env = existing.Env
 		}
 		s.UpdateService(config)
 		return nil

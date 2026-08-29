@@ -50,6 +50,7 @@ func mcpRegister(store SettingsStore, args []string) {
 		exitError("%v", err)
 	}
 	fields := mcpFields{
+		ID:          opts.ID,
 		DisplayName: opts.Name,
 		Transport:   *transport,
 		URL:         *mcpURL,
