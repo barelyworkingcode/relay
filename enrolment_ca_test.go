@@ -30,10 +30,10 @@ func parseCertPEM(t *testing.T, certPEM []byte) *x509.Certificate {
 func TestLoadOrCreateCA_ReusesPersistedCA(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 
-	first, err := LoadOrCreateCA()
+	first, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "first LoadOrCreateCA")
 
-	for _, name := range []string{caKeyFile, caCertFile} {
+	for _, name := range []string{caKeySealedFile, caCertFile} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		assertNoErr(t, err, "stat %s", name)
 		if perm := info.Mode().Perm(); perm != 0600 {
@@ -41,7 +41,7 @@ func TestLoadOrCreateCA_ReusesPersistedCA(t *testing.T) {
 		}
 	}
 
-	second, err := LoadOrCreateCA()
+	second, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "second LoadOrCreateCA")
 	if !bytes.Equal(first.CertPEM(), second.CertPEM()) {
 		t.Fatal("second LoadOrCreateCA returned a different CA certificate — the persisted CA was not reused")
@@ -64,7 +64,7 @@ func TestLoadOrCreateCA_ReusesPersistedCA(t *testing.T) {
 // certificate is usable for client auth and nothing else.
 func TestIssueClientCert_BindsClientIDAndClientAuth(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 
 	keyPEM, certPEM, fingerprint, err := ca.IssueClientCert("hermes-mail")
@@ -100,7 +100,7 @@ func TestIssueClientCert_BindsClientIDAndClientAuth(t *testing.T) {
 // log keeps after an enrolment is deleted, so they are never truncated.
 func TestFingerprint_IsFullLengthSHA256(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 
 	_, _, fpA, err := ca.IssueClientCert("hermes-mail")
@@ -128,7 +128,7 @@ func TestFingerprint_IsFullLengthSHA256(t *testing.T) {
 // ca.crt in its bundle; issuing one is the CA's job, not the listener's.
 func TestIssueServerCert_VerifiesAgainstCAForLoopback(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 
 	tlsCert, err := ca.IssueServerCert()

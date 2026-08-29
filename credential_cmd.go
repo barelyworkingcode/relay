@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"slices"
@@ -10,11 +10,11 @@ import (
 )
 
 // Control-plane credentials are minted on the host, by the user who owns the
-// config dir; nothing in this file is reachable over a socket. It runs in a
-// separate process from the tray, so every read and write goes through the
-// store rather than a cached settings view — Authorize reads through
-// freshSettings, which is what makes a credential minted here authenticate on
-// its very next request.
+// config dir. Mint and revoke are brokered (ADR-017 decision 2): this
+// process holds no sealer and cannot write settings.json itself (§5.4), so
+// it dials the running tray over admin_op and lets CredentialOps — the same
+// core the gate lives in — do the work. `list` is unaffected: it reads
+// settings.json directly and keeps working with the tray stopped.
 func runCredentialCommand(args []string) {
 	store := NewSettingsStore()
 	runSubcommands("credential", []cliSubcommand{
@@ -61,100 +61,19 @@ func parseCapabilityClasses(raw []string) ([]CapabilityClass, error) {
 }
 
 type credentialMintRequest struct {
-	Name    string
-	Classes []string
+	Name    string   `json:"name"`
+	Classes []string `json:"classes"`
 	// TTL zero means the credential never expires, matching
 	// Settings.MintFor. A negative value is an operator mistake and is
 	// refused rather than silently read as "never".
-	TTL time.Duration
+	TTL time.Duration `json:"ttl"`
 }
 
-// mintAPICredential returns the PLAINTEXT token alongside the record. It is
-// the only moment that value exists; nothing stores it and no later call can
-// reconstruct it from the record.
-func mintAPICredential(store SettingsStore, req credentialMintRequest) (APICredential, string, error) {
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return APICredential{}, "", errors.New("a credential name is required")
-	}
-	if name == legacyFrontendCredentialName {
-		return APICredential{}, "", errReservedCredentialName
-	}
-	classes, err := parseCapabilityClasses(req.Classes)
-	if err != nil {
-		return APICredential{}, "", err
-	}
-	if req.TTL < 0 {
-		return APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
-	}
-
-	var cred APICredential
-	var plaintext string
-	var mintErr error
-	// Reaped in the same store.With as the mint, which is the whole of the
-	// reaping schedule: this is a write that was happening anyway, so
-	// sweeping here costs nothing and needs no timer.
-	if err := store.With(func(s *Settings) {
-		reapExpiredAPICredentials(s)
-		cred, plaintext, mintErr = s.MintFor(name, classes, req.TTL)
-	}); err != nil {
-		return APICredential{}, "", fmt.Errorf("save settings: %w", err)
-	}
-	if mintErr != nil {
-		return APICredential{}, "", mintErr
-	}
-	return cred, plaintext, nil
-}
-
-func revokeAPICredential(store SettingsStore, id string) (APICredential, error) {
-	return revokeAPICredentialIf(store, id, nil)
-}
-
-// revokeAPICredentialIf revokes by id, refusing whatever `permitted` rejects
-// on top of the reserved-name refusal every caller gets.
-//
-// The extra gate runs inside this store.With rather than as a lookup in the
-// caller for the reason the resolve and the remove already share one: a
-// separate Get() then With() is a TOCTOU window on a file two processes
-// write, and a gate on the far side of that window is a gate that can be
-// stepped around.
-func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICredential) error) (APICredential, error) {
-	if strings.TrimSpace(id) == "" {
-		return APICredential{}, errors.New("a credential id is required")
-	}
-
-	var removed APICredential
-	var found bool
-	var refusal error
-	if err := store.With(func(s *Settings) {
-		cred := s.FindAPICredential(id)
-		if cred == nil {
-			return
-		}
-		found = true
-		if cred.Name == legacyFrontendCredentialName {
-			refusal = errReservedCredentialName
-			return
-		}
-		if permitted != nil {
-			if err := permitted(*cred); err != nil {
-				refusal = err
-				return
-			}
-		}
-		removed, _ = s.RemoveAPICredential(id)
-	}); err != nil {
-		return APICredential{}, fmt.Errorf("save settings: %w", err)
-	}
-	if !found {
-		return APICredential{}, fmt.Errorf("no credential found with id %q", id)
-	}
-	if refusal != nil {
-		return APICredential{}, refusal
-	}
-	return removed, nil
-}
-
+// credentialMint parses the flags, dials the service, and prints what
+// CredentialOps.Mint hands back. Validation (name required, class vocabulary,
+// non-negative TTL) lives in the core now, not here: the request travels to
+// the tray unchecked and Mint is what refuses it, the same as every other
+// brokered command.
 func credentialMint(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("credential mint", flag.ExitOnError)
 	name := fs.String("name", "", "human-readable name for this credential (required)")
@@ -163,31 +82,26 @@ func credentialMint(store SettingsStore, args []string) {
 	fs.Var(&classes, "class", "capability class this credential may exercise (repeatable): "+formatClasses(capabilityClasses))
 	fs.Parse(args)
 
-	aud, closeAud := cliIssuanceAuditor(store)
-	defer closeAud()
-
-	cred, plaintext, err := mintAPICredential(store, credentialMintRequest{Name: *name, Classes: []string(classes), TTL: *ttl})
+	client := requireService("relay credential mint")
+	req, err := json.Marshal(credentialMintRequest{Name: *name, Classes: []string(classes), TTL: *ttl})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if err := recordIssuance(aud, CredentialIssuance{
-		Credential: auditCredentialAPI,
-		Subject:    cred.ID,
-		Name:       cred.Name,
-		Grants:     classStrings(cred.Classes),
-		Via:        auditViaCLI,
-	}); err != nil {
-		refuseUnrecordedIssuance(err,
-			fmt.Sprintf("credential %q (%s) was minted", cred.Name, cred.ID),
-			fmt.Sprintf("relay credential revoke --id %s", cred.ID))
+	raw, err := client.AdminOp("credential.mint", req)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var result credentialMintResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		exitError("parse response: %v", err)
 	}
 
-	fmt.Printf("minted credential %q\n", cred.Name)
-	fmt.Printf("  id:      %s\n", cred.ID)
-	fmt.Printf("  classes: %s\n", formatClasses(cred.Classes))
-	fmt.Printf("  created: %s\n", cred.Created)
-	fmt.Printf("  expires: %s\n", formatCredentialExpiry(cred, time.Now()))
-	fmt.Printf("  token:   %s\n", plaintext)
+	fmt.Printf("minted credential %q\n", result.Credential.Name)
+	fmt.Printf("  id:      %s\n", result.Credential.ID)
+	fmt.Printf("  classes: %s\n", formatClasses(result.Credential.Classes))
+	fmt.Printf("  created: %s\n", result.Credential.Created)
+	fmt.Printf("  expires: %s\n", formatCredentialExpiry(result.Credential, time.Now()))
+	fmt.Printf("  token:   %s\n", result.Token)
 	fmt.Println("  this token is shown ONCE and is not recoverable — only its SHA-256 is stored")
 	fmt.Println("  present it as: Authorization: Bearer <token>")
 }
@@ -248,22 +162,18 @@ func credentialRevoke(store SettingsStore, args []string) {
 	id := fs.String("id", "", "id of the credential to revoke (required)")
 	fs.Parse(args)
 
-	aud, closeAud := cliIssuanceAuditor(store)
-	defer closeAud()
-
-	removed, err := revokeAPICredential(store, *id)
+	client := requireService("relay credential revoke")
+	req, err := json.Marshal(credentialRevokeRequest{ID: *id})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if err := recordIssuance(aud, CredentialIssuance{
-		Revoked:    true,
-		Credential: auditCredentialAPI,
-		Subject:    removed.ID,
-		Name:       removed.Name,
-		Grants:     classStrings(removed.Classes),
-		Via:        auditViaCLI,
-	}); err != nil {
-		warnUnrecordedRevocation(err, fmt.Sprintf("credential %q (%s) was revoked", removed.Name, removed.ID))
+	raw, err := client.AdminOp("credential.revoke", req)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var removed APICredential
+	if err := json.Unmarshal(raw, &removed); err != nil {
+		exitError("parse response: %v", err)
 	}
 
 	fmt.Printf("revoked credential %q\n", removed.ID)

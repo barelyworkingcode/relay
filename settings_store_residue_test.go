@@ -2,20 +2,11 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
-
-func ssrMarshal(t *testing.T, s *Settings) []byte {
-	t.Helper()
-	out, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("marshal settings: %v", err)
-	}
-	return out
-}
 
 // A stat that fails must close READS as well as writes. readErr alone refuses
 // only the next write; leaving the cache and the return in place lets an
@@ -31,7 +22,7 @@ func ssrMarshal(t *testing.T, s *Settings) []byte {
 func TestSettingsStore_AFailedStatClosesReadsRatherThanServingTheOldCache(t *testing.T) {
 	home := mkEmptySandboxRelayHome(t)
 	dir := filepath.Join(home, "cfg")
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -79,11 +70,11 @@ func TestSettingsStore_AFailedStatOnAFileNeverSeenReportsNoChange(t *testing.T) 
 		t.Fatalf("replace config dir with a file: %v", err)
 	}
 
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if got := store.ReloadIfChanged(); got != nil {
 		t.Fatalf("a settings.json this store never saw must report no change, got %+v", got)
 	}
-	if err := store.With(func(s *Settings) { s.AdminSecret = "x" }); err == nil {
+	if err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("x") }); err == nil {
 		t.Fatal("With must still refuse over a path it could not read")
 	}
 }
@@ -95,7 +86,7 @@ func TestSettingsStore_AFailedStatOnAFileNeverSeenReportsNoChange(t *testing.T) 
 // but `relay audit`, `relay grant` and a hand-edit read the file.
 func TestSettingsStore_ACallbacksRecordIsNormalizedBeforeItReachesDisk(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -121,8 +112,8 @@ func TestSettingsNormalizeIsIdempotentAndDestroysNothing(t *testing.T) {
 	populated := func() *Settings {
 		return &Settings{
 			ExternalMcps: []ExternalMcp{
-				{ID: "empty", Args: []string{}, Env: map[string]string{}},
-				{ID: "full", Args: []string{"--root", "/tmp"}, Env: map[string]string{"K": "V"}},
+				{ID: "empty", Args: []string{}, Env: map[string]Secret{}},
+				{ID: "full", Args: []string{"--root", "/tmp"}, Env: secretMapFromPlain(map[string]string{"K": "V"})},
 			},
 			Services: []ServiceConfig{{ID: "svc", Args: []string{"serve"}}},
 			Projects: []Project{{ID: "p", AllowedMcpIDs: []string{"empty"}, AllowedModels: []string{}}},
@@ -134,9 +125,13 @@ func TestSettingsNormalizeIsIdempotentAndDestroysNothing(t *testing.T) {
 	twice := populated()
 	twice.normalize()
 	twice.normalize()
-	onceJSON, twiceJSON := ssrMarshal(t, once), ssrMarshal(t, twice)
-	if !bytes.Equal(onceJSON, twiceJSON) {
-		t.Fatalf("normalize is not idempotent:\n once %s\n twice %s", onceJSON, twiceJSON)
+	// Compared as Go values, not marshalled JSON: sealAllSecrets draws a
+	// fresh random nonce on every call (by design, §4.5), so two
+	// independently sealed copies of the identical plaintext never produce
+	// byte-identical ciphertext — that would be a nonce-reuse bug, not an
+	// idempotency failure.
+	if !reflect.DeepEqual(once, twice) {
+		t.Fatalf("normalize is not idempotent:\n once %+v\n twice %+v", once, twice)
 	}
 
 	if got := once.ExternalMcps[0].Args; got == nil || len(got) != 0 {
@@ -145,7 +140,7 @@ func TestSettingsNormalizeIsIdempotentAndDestroysNothing(t *testing.T) {
 	if got := once.ExternalMcps[1].Args; len(got) != 2 || got[0] != "--root" || got[1] != "/tmp" {
 		t.Errorf("a populated args became %#v", got)
 	}
-	if got := once.ExternalMcps[1].Env["K"]; got != "V" {
+	if got, ok := once.ExternalMcps[1].Env["K"].Reveal(); !ok || got != "V" {
 		t.Errorf("a populated env became %#v", once.ExternalMcps[1].Env)
 	}
 	if got := once.Projects[0].AllowedMcpIDs; len(got) != 1 || got[0] != "empty" {

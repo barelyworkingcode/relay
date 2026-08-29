@@ -59,7 +59,7 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 		AllowedMcpIDs: mcpIDs,
 		AllowedModels: models,
 		ChatTemplates: templates,
-		Token:         plaintext,
+		Token:         NewSecret(plaintext),
 		TokenHash:     hash,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}

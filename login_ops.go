@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"relaygo/presence"
 )
 
 // bootstrapCodeTTL matches the anchor's whole job: short enough that the
@@ -44,9 +47,9 @@ func mintBootstrapCode(s *Settings) (string, error) {
 // consumeBootstrapCode verifies plaintext against the stored anchor and, on
 // success, deletes it so it cannot be replayed. It takes *Settings rather
 // than a store so a caller can resolve and delete inside one store.With —
-// the same TOCTOU reasoning docs/tokens.md gives for resolveAndRemove:
-// reading the record in one call and deleting it in another would race a
-// second process minting or consuming between the two.
+// the same TOCTOU reasoning docs/tokens.md gives throughout: reading the
+// record in one call and deleting it in another would race a second
+// process minting or consuming between the two.
 func consumeBootstrapCode(s *Settings, plaintext string) error {
 	b := s.LoginBootstrap
 	if b == nil {
@@ -214,7 +217,11 @@ type LoginOps struct {
 	// Audit records the issuance and revocation this core performs. Nil-safe
 	// like every AuditRecorder method; nil reads as "auditing is off", which
 	// records nothing and refuses nothing.
-	Audit    *AuditRecorder
+	Audit *AuditRecorder
+	// Gate is the presence check MintBootstrap and RevokePasskey demand
+	// before they touch the store (ADR-017 decisions 3 and 4). A nil Gate
+	// refuses both rather than allowing either — see requireGate.
+	Gate     *presence.Gate
 	OnChange func()
 }
 
@@ -233,9 +240,21 @@ func (o *LoginOps) notify() {
 	}
 }
 
-func (o *LoginOps) MintBootstrap() (loginCodeView, error) {
+// via names the door this mint came from (auditViaTray for the menu item,
+// auditViaCLI for `relay login enrol` since S6 brokers it over admin_op) —
+// a parameter rather than a hardcoded auditViaTray, now that the tray's own
+// menu item is no longer this method's only caller.
+func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView, error) {
 	if o == nil {
 		return loginCodeView{}, errLoginOpsUnavailable
+	}
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return loginCodeView{}, err
+	}
+	grant, err := requireGate(o.Gate, ctx, "login.bootstrap.mint",
+		presence.NewDigestBuilder("login.bootstrap.mint").Build(), "mint a login bootstrap code")
+	if err != nil {
+		return loginCodeView{}, err
 	}
 	plaintext, expires, err := mintLoginBootstrap(o.Store)
 	if err != nil {
@@ -245,7 +264,7 @@ func (o *LoginOps) MintBootstrap() (loginCodeView, error) {
 	// this value IS the moment the code exists, so returning it is the
 	// disclosure, and refusing before it happens is what makes the refusal
 	// real. The unshown anchor expires on its own.
-	if err := recordBootstrapIssued(o.auditor(), expires, auditViaTray); err != nil {
+	if err := recordBootstrapIssued(o.auditor(), expires, via, grant.ID()); err != nil {
 		return loginCodeView{}, fmt.Errorf("a login code was minted but could not be recorded in the audit log, so it was not shown: %w", err)
 	}
 	o.notify()
@@ -311,9 +330,17 @@ func (o *LoginOps) Sessions() []loginSessionView {
 	return loginSessionViews(o.Store.Get(), time.Now())
 }
 
-func (o *LoginOps) RevokePasskey(id string) (Passkey, error) {
+func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (Passkey, error) {
 	if o == nil {
 		return Passkey{}, errLoginOpsUnavailable
+	}
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return Passkey{}, err
+	}
+	grant, err := requireGate(o.Gate, ctx, "login.passkey.revoke",
+		singleStringDigest("login.passkey.revoke", "id", id), fmt.Sprintf("revoke the passkey %q", id))
+	if err != nil {
+		return Passkey{}, err
 	}
 	removed, err := revokePasskey(o.Store, id)
 	if err != nil {
@@ -322,7 +349,7 @@ func (o *LoginOps) RevokePasskey(id string) (Passkey, error) {
 	// Reported and not refused: the passkey is already gone, and a revocation
 	// narrows — see warnUnrecordedRevocation for why that direction is
 	// fail-open where issuance is not.
-	if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC); err != nil {
+	if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC, grant.ID()); err != nil {
 		slog.Error("passkey revoked but not recorded in the audit log", "id", abbreviatePasskeyID(removed.ID), "error", err)
 	}
 	o.notify()

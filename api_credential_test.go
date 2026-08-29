@@ -79,7 +79,7 @@ func TestAPICredential_Grants_TrueFalsePerClass(t *testing.T) {
 
 func TestMint_ReturnsPlaintextOnceAndStoresOnlyTheHash(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	var cred APICredential
@@ -366,7 +366,7 @@ func TestMigrateFrontendTokenToCredential_EmptyTokenIsNoOp(t *testing.T) {
 // before this field existed, exactly like Enrolments and Audit.
 func TestSettings_APICredentialsOmittedWhenNoneMinted(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
@@ -384,7 +384,7 @@ func TestSettings_APICredentialsOmittedWhenNoneMinted(t *testing.T) {
 
 func TestSettings_APICredentialsRoundTripsAfterMint(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	assertNoErr(t, store.With(func(s *Settings) {
@@ -512,7 +512,7 @@ func TestAPICredential_Expired_UnparseableFailsClosed(t *testing.T) {
 
 func TestAPICredential_ExpiresRoundTripsThroughSettingsJSON(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	var minted APICredential
@@ -546,7 +546,7 @@ func TestAPICredential_ExpiresRoundTripsThroughSettingsJSON(t *testing.T) {
 // zero timestamp that Expired would then have to interpret.
 func TestAPICredential_ExpiresOmittedWhenNoTTL(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	assertNoErr(t, store.With(func(s *Settings) {

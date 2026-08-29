@@ -43,12 +43,19 @@ func ipcRevokePasskey(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	removed, err := ctx.LoginOps.RevokePasskey(msg.ID)
-	if err != nil {
-		ctx.UI.EmitEvent("onPasskeyError", err.Error())
-		return
-	}
-	ctx.UI.EmitEvent("onPasskeyRevoked", removed.ID, removed.Name)
+	// Off the main thread: RevokePasskey is gated (login.passkey.revoke,
+	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes.
+	ctx.GoFunc(func() {
+		removed, err := ctx.LoginOps.RevokePasskey(ctx.Ctx, msg.ID)
+		if err != nil {
+			dispatchEmit(ctx, "onPasskeyError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onPasskeyRevoked", removed.ID, removed.Name)
+	})
 }
 
 func ipcSignOutLogin(ctx *IPCContext, raw json.RawMessage) {

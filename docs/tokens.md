@@ -6,13 +6,13 @@ for the project-token brokering model.
 
 | Token | Where it's named | Purpose | Privilege / scope | Lifecycle & storage |
 |---|---|---|---|---|
-| **Project token** | env `RELAY_PROJECT_TOKEN` *(legacy: `RELAY_TOKEN`)* | The security boundary for MCP tool access — identifies the project for a tool call; relay injects the authenticated `project_id` into `_meta`. Injected into project shells / LLM CLIs / the `relay mcp` child. | **Scoped.** Permissions derived at auth time from the project's `allowed_mcp_ids` + `disabled_tools`. | Long-lived. Plaintext (`Token`) + SHA-256 (`TokenHash`) stored inline in the project in `settings.json` (0600). Rotatable via the `rotate_token` HTTP route / `rotate_project_token` IPC. |
+| **Project token** | env `RELAY_PROJECT_TOKEN` *(legacy: `RELAY_TOKEN`)* | The security boundary for MCP tool access — identifies the project for a tool call; relay injects the authenticated `project_id` into `_meta`. Injected into project shells / LLM CLIs / the `relay mcp` child. | **Scoped.** Permissions derived at auth time from the project's `allowed_mcp_ids` + `disabled_tools`. | Long-lived. Sealed on disk (AES-256-GCM, keyed from the login keychain) alongside a clear SHA-256 (`TokenHash`) — see [`docs/sealed-config.md`](sealed-config.md). Rotatable via the `rotate_token` HTTP route / `rotate_project_token` IPC, both of which now go through the running service and a presence prompt (ADR-017 decision 3): rotation issues the security boundary itself. |
 | **Service token** | env `RELAY_SERVICE_TOKEN` *(legacy: `RELAY_MCP_TOKEN`)* | Authenticates a spawned service (e.g. relayLLM) to relay's **bridge** for broker/admin ops: `ResolvePtyEnv`, `RegisterManifest`, `ListProjects`/`GetProject`. | **Full, unfiltered bridge access** — bypasses all per-project tool filtering (router treats `Name=="service"` as god-mode). | Ephemeral, in-memory, minted per service spawn (`service_registry.go`). Never persisted. **Never injected into a child shell.** |
 | **Frontend token** | env `RELAY_FRONTEND_TOKEN` | Authenticates frontend consumers (eve) to relay's front-door Unix socket. | Whatever the credential it migrates to holds — `read`+`configure`+`proxy` today, never `grant` or `execute`. Checked on every HTTP + WS before dispatch. Defense-in-depth atop the 0600 socket. No credentials at all fails **closed**. | Minted by relay per process (crypto/rand, 32-byte hex); handed to frontend consumers via env at spawn. Recorded as a control-plane credential named `legacy-frontend-token` on every start. |
 | **Control-plane credential** | `settings.json` field `api_credentials`; minted by `relay credential mint` | Authenticates a caller to relay's control-plane HTTP API (the frontend socket and, if bound, `RELAY_API_LISTEN`). Replaces the single frontend bearer as the API's authenticator (ADR-015). | **Classed.** Carries an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; an absent set grants nothing. `execute` and `proxy` are socket-only. | Long-lived by default; `relay credential mint --ttl 12h` gives one an expiry. SHA-256 only in `settings.json` (0600) — the plaintext is printed once by `relay credential mint` and is not recoverable. Revoke with `relay credential revoke --id ID`. |
 | **Enhanced-service internal bearer** | declared via `RegisterManifest` (per service) | Secures the internal socket between relay's dispatcher and an enhanced service (relayLLM, relayScheduler). Relay strips inbound `Authorization` and injects this token when proxying front-door traffic onward. | That service's internal endpoint only. Distinct from frontend creds. | Each service picks its own socket + token; told to relay at manifest registration. |
-| **Admin secret** | `settings.json` field `admin_secret` | Gates admin-only bridge ops: `ReconcileExternalMcps`, `ReloadExternalMcp`, `ReloadService`. | Administrative control-plane. | Auto-generated on first run; constant-time compared via `ValidateAdmin` at the bridge layer. |
-| **OAuth 2.1 tokens** | per HTTP MCP (`oauth.go`) | Authenticate relay to **upstream** HTTP MCP servers (PKCE, dynamic registration, auto-refresh). | The upstream provider, not relay's own boundary. | Access + refresh tokens stored per-MCP (`OAuthState` in `settings.json`). |
+| **Admin secret** | `settings.json` field `admin_secret` | Gates admin-only bridge ops: `ReconcileExternalMcps`, `ReloadExternalMcp`, `ReloadService`. | Administrative control-plane. | Auto-generated on first run; constant-time compared via `ValidateAdmin` at the bridge layer. Sealed on disk; only the tray, which holds the keychain key, ever reads it back (see [`docs/sealed-config.md`](sealed-config.md)). |
+| **OAuth 2.1 tokens** | per HTTP MCP (`oauth.go`) | Authenticate relay to **upstream** HTTP MCP servers (PKCE, dynamic registration, auto-refresh). | The upstream provider, not relay's own boundary. | Access token, refresh token and client secret stored per-MCP (`OAuthState` in `settings.json`), sealed on disk; `client_id` and `token_expiry` stay clear. |
 | **eve session token** | `eve_session` (browser localStorage) | Authenticates a human/browser user to **eve itself** — *not* a relay credential; listed to disambiguate. | eve's own app auth. | Independent of relay. |
 
 Notes:
@@ -26,6 +26,14 @@ Notes:
 - Legacy env names `RELAY_TOKEN` / `RELAY_MCP_TOKEN` are accepted as transition
   fallbacks for one release, to be removed once relay + relayLLM have both shipped
   the rename.
+- **Every plaintext this table lists as sealed lives only in relay's own
+  memory and in an AES-256-GCM envelope on disk, keyed from the login
+  keychain.** A verifier — `token_hash`, a credential's `hash`, a passkey's
+  public key coordinates, a certificate fingerprint — is never sealed: relay
+  authenticates against those directly and never needs the plaintext to do
+  it. The reasoning, the field list, and what a sealed file still leaks on
+  purpose (every name, path, command and scope value) are in
+  [`docs/sealed-config.md`](sealed-config.md).
 
 ## Control-plane credentials (ADR-015)
 
@@ -106,16 +114,25 @@ The plaintext is printed **once** and is not recoverable — only its SHA-256 is
 stored. Lose it and the remedy is to revoke and mint again. `relay credential
 list` never prints the hash and never prints the plaintext.
 
-The CLI runs in a separate process from the tray and writes through
-`store.With`; `Authorize` reads through `freshSettings`, so a credential minted
-here authenticates on the API's very next request, with no restart and no poll
-interval — the same guarantee `relay enrol create` gets (issue #21).
+`relay credential mint` runs in a separate process from the tray, but no
+longer writes `settings.json` itself: it asks the running tray to mint over
+the bridge socket (`admin_op`, ADR-017 decision 2), which demands a
+LocalAuthentication presence check — one login-password prompt per mint —
+before the tray commits anything (see
+[`docs/presence-gate.md`](presence-gate.md)). With relay stopped, the command
+refuses by its own name rather than falling back to a direct write. Once it
+does commit, `Authorize` reads through `freshSettings`, so a credential minted
+this way authenticates on the API's very next request, with no restart and no
+poll interval — the same guarantee `relay enrol create` gets (issue #21).
 
-That guarantee has a write half, and it is the half that is easy to lose. See
-[The settings file has more than one writer](#the-settings-file-has-more-than-one-writer)
-below: a credential's plaintext is printed once and is unrecoverable, so a
-minted credential that a later write erases leaves the operator holding a token
-that 401s with nothing on any surface saying why.
+That guarantee used to have a write half that was easy to lose, back when the
+CLI held its own write path into `settings.json`. See
+[settings.json has one writer and several goroutines](#settingsjson-has-one-writer-and-several-goroutines)
+below: the tray is now the only process that ever writes the file, so the
+remaining way to lose a freshly minted credential's plaintext is a hand-edit
+landing in the same instant — a credential's plaintext is printed once and is
+unrecoverable regardless, so the remedy either way is to revoke and mint
+again.
 
 ### Expiry
 
@@ -322,41 +339,71 @@ a password, and it never authenticates a request to relay's API on its own
   act rather than leaving it to be discovered.
 
 **A second presentation of the code, not a second anchor.** The tray's
-**Show Login Code...** item mints through the same `mintBootstrapCode` inside
-the same `store.With` `relay login enrol` uses, and shows the result in the
-Settings window — relay is `LSUIElement`, so that window is the only surface
-the tray has. ADR-016 decision 2 accepts it as a presentation and refuses it as
-*the* source: the tray menu is unreachable over SSH and from the hermetic tier,
-and a capability reachable only from a mouse is a capability half-built. The
+**Show Login Code...** item and `relay login enrol` both reach the same gated
+core method, `LoginOps.MintBootstrap`, and show the result in the Settings
+window — relay is `LSUIElement`, so that window is the only surface the tray
+has. ADR-016 decision 2 accepts the menu item as a presentation and refuses it
+as *the* source: a capability reachable only from a mouse is a capability
+half-built, which is why `relay login enrol` stays as the second door. The
 "replaces rather than accumulates" rule is unchanged and is stated on screen —
 opening the item twice leaves exactly one code working, the second.
 
-## The settings file has more than one writer
+**Both doors now demand presence, and both refuse the same way over SSH.**
+Minting a bootstrap code is itself a gated operation (ADR-017 decision 3):
+`LoginOps.MintBootstrap` requires a login-password presence check before it
+mints, whichever door reached it. A session that cannot display that prompt —
+an SSH connection, in particular — refuses immediately rather than queuing,
+for `relay login enrol` exactly as it does for the tray's own menu item. That
+sharpens the reason the CLI form was kept in ADR-016 decision 2 ("the tray
+menu is unreachable over SSH") into a cost the ADR did not anticipate: the
+CLI form no longer reaches where the menu does not, either. A fully headless
+install therefore has no working bootstrap path at all — no way to register a
+passkey and no way to mint a credential to work around it — and there is no
+mitigation for this, by decision (ADR-017 implementation spec §9.8, §3.2).
+`relay login revoke` is gated too (it destroys a login identity) and refuses
+the same way over SSH; only the read half, `relay login list`, is unaffected.
 
-Every credential in this document except the ephemeral ones lives in one file,
-`settings.json`, and **relay is not one process**. The tray holds it open for
-the life of the app; `relay credential mint`, `relay enrol create`,
-`relay service register` and `relay mcp register` each write it from a process
-that exits seconds later. Two rules follow, and they are separate rules
-answering opposite directions of the same fact.
+## settings.json has one writer, and several goroutines
 
-**Reads go through `freshSettings`, never `store.Get()`.** `Get()` answers from
-an in-memory cache that only a mutation made by this process and the tray's 2 s
-poll refresh, which is fine for a menu and wrong for an authorization decision.
-`freshSettings` resolves through `ReloadIfChanged`, which stats the file and
-re-reads only when it moved — so a record another process just wrote is
-authoritative on the very next request. Cost is one stat per decision.
+Every credential in this document except the ephemeral ones lives in one
+file, `settings.json`, and the tray is now its only writer. Minting a
+credential, creating or updating an enrolment, registering an MCP or a
+service, and rotating a project token all used to run as a separate CLI
+process that opened `settings.json` and wrote it directly; they now ask the
+running tray to do it over the bridge socket instead (`admin_op`, ADR-017
+decision 2 — see [`docs/sealed-config.md`](sealed-config.md) for why: the
+tray is the only process holding the keychain key that unseals the file's
+sealed fields, so it has to be the only process writing them). A CLI process
+that still exits seconds later now reports what the tray decided rather than
+deciding anything itself.
 
-**Writes reload before they apply.** `FileSettingsStore.With` re-reads the file
-under the same lock before running its callback, using the same
+That retires the *inter-process* race this section used to describe, not
+concurrency itself. Within the one process that now holds the file, HTTP
+handlers, IPC handlers, bridge handlers, the OAuth refresh callback and the
+status poller all mutate settings from their own goroutines, and single-process
+execution does not serialize them for free. Everything below is the
+discipline that window still needs — narrowed from "another process" to
+"another goroutine," with a hand-edit while the tray is running as the one
+remaining way a second *process* can still touch the file at all.
+
+**Reads go through `freshSettings`, never `store.Get()`.** `Get()` answers
+from an in-memory cache that only a mutation made by this process and the
+tray's 2 s poll refresh, which is fine for a menu and wrong for an
+authorization decision. `freshSettings` resolves through `ReloadIfChanged`,
+which stats the file and re-reads only when it moved — so a hand-edit, or a
+write this same process just committed on another goroutine, is authoritative
+on the very next request. Cost is one stat per decision.
+
+**Writes reload before they apply.** `FileSettingsStore.With` re-reads the
+file under the same lock before running its callback, using the same
 stat-then-read-only-if-moved machinery, so a mutation is always derived from
 what is on disk rather than from a cache that could be a whole poll interval
-old. Without that, a tray whose cache predated a CLI's write would serialize
-its own stale view back over the top and silently destroy the record — worst
-for a credential, whose plaintext was printed once and cannot be reissued.
-Within a single process the mutex alone would be enough; it is the second
-process that makes the reload necessary. A reload that could not read the file
-does not fall back to defaults and save those: the write is refused, per
+old. Without that, a request whose cached view predated another goroutine's
+very recent write — or a hand-edit — would serialize its own stale view back
+over the top and silently destroy the record, worst for a credential whose
+plaintext was printed once and cannot be reissued. A reload that could not
+read the file does not fall back to defaults and save those: the write is
+refused, per
 [An unreadable file is unknown, not empty](#an-unreadable-file-is-unknown-not-empty).
 
 Two consequences worth stating rather than discovering:
@@ -366,18 +413,23 @@ Two consequences worth stating rather than discovering:
   the time the callback runs. This is why every ops core (`service_ops.go`,
   `enrolment_ops.go`, `mcp_ops.go`) resolves the record it is about to change
   *inside* the callback and reports "not found" from a flag set there —
-  resolving outside and mutating inside is a TOCTOU window on a file two
-  processes write.
-- **It is still last-writer-wins.** The reload closes the window between the
-  tray's cached view and the file; it does not make read-modify-write atomic
-  against another process writing in the gap between the reload and the save.
-  Nothing in relay takes a lock across processes on this file. The remaining
-  window is the duration of one callback plus one `atomicWriteFile`, against a
-  writer that must land inside it — a different order of magnitude from a 2 s
-  poll interval, and not zero. A cross-process lock is the fix if that ever
-  matters; the durability half is already handled (`atomicWriteFile` fsyncs the
-  temp file, renames, and fsyncs the directory, so a crash cannot leave a
-  half-written or zero-length settings.json behind).
+  resolving outside and mutating inside is a TOCTOU window that used to run
+  between two processes and now runs between two goroutines in one, which is
+  a smaller window and not a closed one: an HTTP handler, an IPC handler and
+  the status poller can still all reach the same `With` concurrently.
+- **It is still last-writer-wins, narrowed to a hand-edit.** The reload closes
+  the window between a caller's cached view and the file; it does not make
+  read-modify-write atomic against a write that lands in the gap between the
+  reload and the save. The mutex around `With` already serializes every
+  in-process caller against every other, so the only writer left that can
+  land in that gap is a human editing `settings.json` by hand while the tray
+  is running. A cross-process advisory lock — the fix this section used to
+  point to for the CLI-versus-tray case — is no longer needed for anything
+  relay does on its own; it would only ever help against a hand-edit racing a
+  save, a window narrow enough that nobody has asked for one. The durability
+  half is unrelated and unchanged: `atomicWriteFile` fsyncs the temp file,
+  renames, and fsyncs the directory, so a crash cannot leave a half-written or
+  zero-length settings.json behind.
 
 Two rules follow from that, and both are about writes that should never have
 happened at all.
@@ -474,6 +526,21 @@ every proxied service.
 A write may not draw the same conclusion, and that is the whole of
 [An unreadable file is unknown, not empty](#an-unreadable-file-is-unknown-not-empty)
 below.
+
+**Deleting `settings.json` alone still resolves this the same way it always
+did** — relay comes up with nothing, the sealing key already in the login
+keychain survives untouched, and a fresh, empty settings.json is sealed under
+that same key on next start. That is a full loss of everything the deleted
+file named, which is the point of using it as a lock-out.
+
+It is a **different** case from a settings.json that names a `sealed_key_id`
+the keychain no longer holds, or holds under a different id — deleting the
+file does not repair that, because the mismatch was never about the file.
+Recovering from *that* state is the sealed-store's own break-glass path: the
+tray's **Reset Sealed Store…** item, behind a presence prompt, deletes
+`settings.json` **and** the keychain item **and** the CA files together and
+starts over. There is deliberately no CLI equivalent and no offline recovery
+code — see [`docs/sealed-config.md`](sealed-config.md#break-glass-and-why-there-is-no-offline-recovery-code).
 
 Two boundaries on that:
 
@@ -594,10 +661,21 @@ project's path is authenticated as that project. Default is off, per project.
   the directory. A nested project that has *not* opted in does not shadow an
   opted-in parent.
 - **The cwd is asserted, not attested** — the client sends its own
-  `os.Getwd()`. That is deliberate: `settings.json` is 0600 and already holds
-  every project token in plaintext, so anything that could lie about its cwd can
-  already read the token it would be forging. This is not a boundary against
-  another user; it is a convenience for the local user.
+  `os.Getwd()` as a plain field on the request (`BridgeRequest.Cwd`), not a
+  kernel-attested value, so nothing stops a caller from naming a directory it
+  is not actually running in. Before sealing, that cost an attacker nothing
+  extra: `settings.json` was 0600 and held every project token in plaintext,
+  so anything able to lie about its cwd could already read the token it would
+  be forging instead — attestation would have closed a door that was already
+  open. Sealing (`docs/sealed-config.md`) narrows that equivalence: a
+  project's plaintext token is no longer readable by an arbitrary local
+  process, only by the tray holding the keychain key, so a caller that can
+  send an arbitrary cwd now reaches something a plaintext-reading attacker no
+  longer can. This is still not a boundary against another user — it remains
+  a same-user convenience, off by default and opt-in per project — but it now
+  leans more than it used to on the assumption that a caller invoking the
+  bridge from a project's own directory is legitimate, and that assumption is
+  not revisited by ADR-017.
 - **What it costs.** The deliberate hand-off. With a token, a process holds a
   project's tools because something gave it the credential; with this flag, any
   process running as the user gets them by standing in the directory. Grants are

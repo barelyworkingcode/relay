@@ -196,6 +196,21 @@ type appRouter struct {
 	// unbudgeted router by omission.
 	budgets       enrolmentBudgets
 	serviceTokens serviceTokenStore
+
+	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
+	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
+	// (trayapp.go constructs each once and wires it here too), so a mutation
+	// brokered over admin_op carries the same Gate, the same nonce table and
+	// the same OnChange as one made from curl or the Settings window — never
+	// a second, parallel copy. A nil field here refuses by name
+	// (admin_ops.go's requireXxxOps) rather than panicking three calls deep
+	// inside a core, which is what a test appRouter that forgot to wire one
+	// gets instead of a crash.
+	credentialOps *CredentialOps
+	enrolmentOps  *EnrolmentOps
+	loginOps      *LoginOps
+	mcpOps        *McpOps
+	serviceOps    *ServiceOps
 }
 
 const serviceTokenName = "service"
@@ -862,7 +877,10 @@ func (v scopeView) annotate(t *mcp.Tool) {
 
 func (r *appRouter) ValidateAdmin(token string) error {
 	s := r.store.Get()
-	if len(token) == 0 || subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminSecret)) != 1 {
+	// A degraded sealed store (§5.6) has no admin_secret to compare
+	// against, so this fails closed exactly like an empty token would.
+	adminSecret, ok := s.AdminSecret.Reveal()
+	if len(token) == 0 || !ok || subtle.ConstantTimeCompare([]byte(token), []byte(adminSecret)) != 1 {
 		return fmt.Errorf("admin authentication failed")
 	}
 	return nil
@@ -929,11 +947,17 @@ func (r *appRouter) requireServiceToken(token, op string) error {
 	return nil
 }
 
+// ListProjects and GetProject answer through projectToView/projectsToView —
+// the same allow-list the eve-facing HTTP routes project through
+// (project_dto.go) — rather than marshalling the raw Project. Marshalling
+// Project directly would hand any service-token holder every project's
+// plaintext token: ResolvePtyEnv below is the sole plaintext-token egress
+// over the bridge, and no other bridge response may carry one.
 func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
 	if err := r.requireServiceToken(token, "ListProjects"); err != nil {
 		return nil, err
 	}
-	return json.Marshal(r.store.Get().Projects)
+	return json.Marshal(projectsToView(r.store.Get().Projects))
 }
 
 func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
@@ -944,7 +968,7 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 	if proj == nil {
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
 	}
-	return json.Marshal(proj)
+	return json.Marshal(projectToView(*proj))
 }
 
 // ResolvePtyEnv returns the env bundle (project-scoped token + working dir)
@@ -983,8 +1007,14 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		}
 	}
 
+	relayToken, ok := proj.Token.Reveal()
+	if !ok {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError,
+			fmt.Errorf("project %q has no token: the sealed store may be unavailable", proj.ID))
+	}
+
 	return bridge.PtyEnvResponse{
-		RelayToken: proj.Token,
+		RelayToken: relayToken,
 		WorkingDir: proj.Path,
 	}, nil
 }
@@ -1188,4 +1218,16 @@ func (r *appRouter) RegisterManifest(_ context.Context, req bridge.RegisterManif
 		"routes", req.Manifest.Routes,
 		"actions", len(req.Manifest.Actions))
 	return nil
+}
+
+// AdminOp resolves name against adminOps and runs it. An op absent from the
+// table is refused the same way an unknown bridge request type is — there is
+// no default handler to fall back to, by construction, since the table's
+// entire point is to name only what a later step has deliberately wired in.
+func (r *appRouter) AdminOp(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	op, ok := adminOps[name]
+	if !ok {
+		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("unknown admin operation: %q", name))
+	}
+	return op(ctx, r, args)
 }

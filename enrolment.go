@@ -248,7 +248,7 @@ type enrolmentBundle struct {
 // both claim a client id. The bundle is written last: a key on disk that no
 // enrolment references is a credential nobody knows to revoke.
 func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, err
 	}
@@ -300,18 +300,21 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 // could not distinguish "left alone" from "reset to default". nil means the
 // former; a pointer to 0 means the latter.
 type enrolmentBudgetUpdate struct {
-	WindowSeconds  *int
-	MaxCalls       *int
-	MaxResultBytes *int64
+	WindowSeconds  *int   `json:"window_seconds,omitempty"`
+	MaxCalls       *int   `json:"max_calls,omitempty"`
+	MaxResultBytes *int64 `json:"max_result_bytes,omitempty"`
 }
 
 // enrolmentUpdateRequest: ProjectIDs is a pointer to a slice for the same
 // reason the budget fields are pointers — nil means "leave the grants
-// alone", non-nil-but-empty means "replace them with nothing".
+// alone", non-nil-but-empty means "replace them with nothing". JSON tags
+// are what let this travel as an admin_op payload (ADR-017 implementation
+// spec S6): `relay enrol update` is its only caller and builds one directly
+// from flags, so there is no separate wire type to keep in sync.
 type enrolmentUpdateRequest struct {
-	ClientID   string
-	ProjectIDs *[]string
-	Budget     enrolmentBudgetUpdate
+	ClientID   string                `json:"client_id"`
+	ProjectIDs *[]string             `json:"project_ids,omitempty"`
+	Budget     enrolmentBudgetUpdate `json:"budget"`
 }
 
 // updateEnrolment changes budget and/or grants without touching the

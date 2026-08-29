@@ -114,7 +114,7 @@ func TestConsumeBootstrapCode_WrongCodeDoesNotConsumeTheRealOne(t *testing.T) {
 // applied here).
 func TestMintBootstrapCode_CrossProcessConsumable(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	storeA := NewSettingsStoreAt(dir)
+	storeA := sealedSettingsStoreAt(dir)
 	assertNoErr(t, storeA.EnsureInitialized(), "EnsureInitialized")
 
 	var plaintext string
@@ -125,7 +125,7 @@ func TestMintBootstrapCode_CrossProcessConsumable(t *testing.T) {
 	})
 	assertNoErr(t, err, "store A mint")
 
-	storeB := NewSettingsStoreAt(dir)
+	storeB := sealedSettingsStoreAt(dir)
 	err = storeB.With(func(s *Settings) {
 		if cErr := consumeBootstrapCode(s, plaintext); cErr != nil {
 			t.Fatalf("cross-process consume: %v", cErr)
@@ -133,7 +133,7 @@ func TestMintBootstrapCode_CrossProcessConsumable(t *testing.T) {
 	})
 	assertNoErr(t, err, "store B consume")
 
-	storeC := NewSettingsStoreAt(dir)
+	storeC := sealedSettingsStoreAt(dir)
 	if storeC.Get().LoginBootstrap != nil {
 		t.Fatalf("bootstrap record survived consumption on disk")
 	}

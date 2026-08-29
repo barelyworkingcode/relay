@@ -44,9 +44,10 @@ type accServer struct {
 func accNewServer(t *testing.T, store SettingsStore, frontendToken string) *accServer {
 	t.Helper()
 
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
-	enrolOps := &EnrolmentOps{Store: store}
-	mcpOps := &McpOps{Store: store, Ctx: context.Background()}
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	enrolOps := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
+	mcpOps := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	extMgr := NewExternalMcpManager(nil)
 
 	dir := mkShortTempDir(t, "acc-fe-")
@@ -54,7 +55,7 @@ func accNewServer(t *testing.T, store SettingsStore, frontendToken string) *accS
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: frontendToken},
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		ops, enrolOps, &AuditOps{}, mcpOps,
+		ops, enrolOps, &AuditOps{}, mcpOps, projOps,
 		NewCredentialAuthorizer(store), nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
@@ -381,13 +382,15 @@ func TestACCNoCredentialsAtAllRejectsEverything(t *testing.T) {
 func TestACCCredentialMintedByASeparateProcessAuthenticatesImmediately(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 
-	trayStore := NewSettingsStoreAt(dir)
+	trayStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, trayStore.EnsureInitialized(), "EnsureInitialized")
 	srv := accNewServer(t, trayStore, accLegacyToken)
 
-	// A second store over the same dir stands in for `relay credential mint`
-	// running in its own process.
-	cliStore := NewSettingsStoreAt(dir)
+	// A second store over the same dir stands in for a second process
+	// minting a credential — sealed, like the tray, since a CLI-shaped
+	// store (no sealer) now refuses every write by design (§5.4); brokering
+	// `relay credential mint` itself over admin_op is a later step.
+	cliStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, cliStore.EnsureInitialized(), "EnsureInitialized (cli)")
 	cred, plaintext, err := mintAPICredential(cliStore, credentialMintRequest{Name: "acc-cli", Classes: []string{"read"}})
 	assertNoErr(t, err, "mint from the CLI process")

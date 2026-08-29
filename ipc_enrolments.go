@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 )
 
 const (
@@ -74,31 +73,38 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	created, err := ctx.EnrolmentOps.Create(enrolmentFields{
+	fields := enrolmentFields{
 		ClientID:   msg.ClientID,
 		ProjectIDs: msg.ProjectIDs,
 		Budget:     msg.Budget,
+	}
+
+	// Off the main thread: EnrolmentOps.Create is gated (enrolment.create,
+	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes.
+	ctx.GoFunc(func() {
+		// EnrolmentOps.Create now records the issuance itself (and undoes
+		// the create if that recording fails) so it can attach the
+		// presence_id the gate minted.
+		created, err := ctx.EnrolmentOps.Create(ctx.Ctx, fields, auditViaIPC, "")
+		// Only errEnrolmentBundle means the record landed; every other
+		// error means nothing was persisted, and announcing a row for it
+		// would add a credential-less enrolment to the list.
+		if err != nil && !errors.Is(err, errEnrolmentBundle) {
+			dispatchEmit(ctx, "onEnrolmentError", err.Error())
+			return
+		}
+		ctx.Platform.DispatchToMain(func() {
+			if err != nil {
+				ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment created but %v", err))
+			}
+			ctx.UI.EmitEvent("onEnrolmentCreated",
+				marshalForUI(created.Enrolment),
+				marshalForUI(enrolmentBundleView{Dir: created.Dir}))
+		})
 	})
-	// Only errEnrolmentBundle means the record landed; every other error
-	// means nothing was persisted, and announcing a row for it would add a
-	// credential-less enrolment to the list.
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
-		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
-		return
-	}
-	if err != nil {
-		ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment created but %v", err))
-	}
-	// Recorded before the bundle directory is announced, and the enrolment is
-	// revoked if that record cannot be written: the client key on disk is the
-	// credential, so an unrecorded create is undone rather than reported.
-	if auditErr := recordEnrolmentIssued(issuanceAuditorOrNil(ctx.Audit), ctx.Store, created.Enrolment, auditViaIPC, ""); auditErr != nil {
-		ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment %q could not be recorded in the audit log (%v) and has been removed", created.Enrolment.ClientID, auditErr))
-		return
-	}
-	ctx.UI.EmitEvent("onEnrolmentCreated",
-		marshalForUI(created.Enrolment),
-		marshalForUI(enrolmentBundleView{Dir: created.Dir}))
 }
 
 // ipcRevokeEnrolment goes through ctx.EnrolmentOps.Revoke, which goes
@@ -112,23 +118,18 @@ func ipcRevokeEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ClientID == "" {
 		return
 	}
-	revoked, err := ctx.EnrolmentOps.Revoke(msg.ClientID)
-	if err != nil {
-		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
-		return
-	}
-	// Reported and not undone: a revocation narrows, and refusing to narrow
-	// one because the log is broken is the worse failure of the two.
-	if auditErr := recordIssuance(issuanceAuditorOrNil(ctx.Audit), CredentialIssuance{
-		Revoked:    true,
-		Credential: auditCredentialEnrolment,
-		Subject:    revoked.ClientID,
-		Grants:     revoked.ProjectIDs,
-		Via:        auditViaIPC,
-	}); auditErr != nil {
-		slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
-	}
-	ctx.UI.EmitEvent("onEnrolmentRevoked", revoked.ClientID, revoked.Fingerprint)
+	// Off the main thread: EnrolmentOps.Revoke is gated (enrolment.revoke,
+	// §6.4); same reasoning as ipcCreateEnrolment above.
+	ctx.GoFunc(func() {
+		// EnrolmentOps.Revoke now records the revocation itself, so it can
+		// attach the presence_id the gate minted.
+		revoked, err := ctx.EnrolmentOps.Revoke(ctx.Ctx, msg.ClientID, auditViaIPC, "")
+		if err != nil {
+			dispatchEmit(ctx, "onEnrolmentError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onEnrolmentRevoked", revoked.ClientID, revoked.Fingerprint)
+	})
 }
 
 func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {

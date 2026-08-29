@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,12 @@ const (
 	auditCredentialPasskey   = "passkey"
 	auditCredentialBootstrap = "bootstrap_code"
 	auditCredentialProject   = "project_token"
+
+	// The config_change vocabulary (§7.5): a gated act that mutates
+	// settings without issuing anything a holder could authenticate with.
+	auditCredentialExternalMcp  = "external_mcp"
+	auditCredentialService      = "service"
+	auditCredentialProjectGrant = "project_grant"
 )
 
 // How an act was initiated. A separate axis from the actor kind: `cli` and
@@ -46,11 +53,20 @@ const (
 // build one.
 type CredentialIssuance struct {
 	// Revoked picks the event kind. False is issuance, which is the direction
-	// that widens and therefore the one that is fail-closed below.
+	// that widens and therefore the one that is fail-closed below. Ignored
+	// when ConfigChange is set.
 	Revoked bool
 
+	// ConfigChange marks this record as a config_change event rather than
+	// credential_issued/credential_revoked: the gated act mutated settings
+	// (registering an MCP or service, starting OAuth, widening a project's
+	// grant shape) but issued nothing a holder could authenticate with.
+	// Calling that credential_issued would be a lie, and leaving it
+	// unrecorded would break the ADR's detection argument (§7.5).
+	ConfigChange bool
+
 	// Credential is one of the auditCredential* values; Subject is the
-	// identifier of the thing issued or revoked.
+	// identifier of the thing issued, revoked or changed.
 	Credential string
 	Subject    string
 
@@ -58,8 +74,9 @@ type CredentialIssuance struct {
 	// its identifier — a credential's --name, a passkey's display name.
 	Name string
 
-	// Grants is the class set for an api_credential, or the granted
-	// access-profile ids for an enrolment. Nil for a kind that has neither.
+	// Grants is the class set for an api_credential, the granted
+	// access-profile ids for an enrolment, or the changed field names for a
+	// config_change project grant. Nil for a kind that has none of these.
 	Grants []string
 
 	// Via is one of the auditVia* values.
@@ -69,6 +86,11 @@ type CredentialIssuance struct {
 	// set only for Via == auditViaHTTP: the other doors authorize by
 	// ownership of the config dir, where there is no credential to name.
 	CredID string
+
+	// PresenceID is the nonce id (presence.Grant.ID()) that authorised this
+	// act, when it was gated (ADR-017 implementation spec §7.5). Empty for
+	// an ungated issuance — nothing here changes for those.
+	PresenceID string
 }
 
 // IssuanceAuditor is the issuance counterpart to ControlAuditor, and a
@@ -96,6 +118,54 @@ func issuanceAuditorOrNil(rec *AuditRecorder) IssuanceAuditor {
 	return rec
 }
 
+// errIssuanceAuditingRequired is what every gated core returns when there is
+// no sink an act could be recorded in.
+var errIssuanceAuditingRequired = errors.New(`refusing to issue — the tool-call audit log is disabled ("audit": {"enabled": false} in settings.json), and with sealed config active issuance auditing is a hard dependency, not a courtesy (ADR-017 Consequences; the same rule ADR-010 applies to the remote listener). Set "audit": {"enabled": true} and restart relay. ` + "`relay audit --path`" + ` names the file relay would write to.`)
+
+// issuanceAuditorReadiness is implemented by *AuditRecorder. A test fake
+// that implements only IssuanceAuditor and not this is treated as ready by
+// requireIssuanceAuditor: a fake wired to unconditionally accept a record IS
+// a sink, by construction, so there is nothing for this check to add.
+type issuanceAuditorReadiness interface{ Ready() bool }
+
+// requireIssuanceAuditor is decision 3.4's hard dependency (§7.4): a gated
+// core calls this BEFORE it asks for presence, so an operator is never made
+// to type a password for an act that was going to refuse anyway.
+//
+// a == nil, or a recorder reporting it is not Ready (disabled, or enabled
+// but never actually got a sink open), both refuse. This is deliberate:
+// refusing at the operation rather than at startup, unlike ADR-010's
+// remote-listener rule, because issuance is spread across six cores rather
+// than being one optional subsystem — refusing every one of them to start
+// would destroy the read half and the tray's own recovery UI over a single
+// misconfigured field.
+func requireIssuanceAuditor(a IssuanceAuditor) error {
+	if a == nil {
+		return errIssuanceAuditingRequired
+	}
+	if r, ok := a.(issuanceAuditorReadiness); ok && !r.Ready() {
+		return errIssuanceAuditingRequired
+	}
+	return nil
+}
+
+// recordConfigChange records a gated act that mutates settings but issues
+// nothing (§7.5): registering or unregistering an MCP or service, starting
+// an MCP's OAuth flow, or widening a project's grant shape. It goes through
+// the same durable, fail-closed RecordIssuance path recordIssuance does —
+// there is no second sink for a config_change to go missing in.
+func recordConfigChange(a IssuanceAuditor, credential, subject string, grants []string, via, credID, presenceID string) error {
+	return recordIssuance(a, CredentialIssuance{
+		ConfigChange: true,
+		Credential:   credential,
+		Subject:      subject,
+		Grants:       grants,
+		Via:          via,
+		CredID:       credID,
+		PresenceID:   presenceID,
+	})
+}
+
 // recordIssuance is the front door every issuing site calls.
 //
 // This is deliberate: a nil auditor returns nil rather than an error. Auditing
@@ -119,13 +189,14 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // disk, so withholding the bundle path from the caller would not withhold the
 // credential. revokeEnrolment removes the record AND the emitted bundle,
 // which is what makes the refusal real.
-func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, via, credID string) error {
+func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, via, credID, presenceID string) error {
 	err := recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialEnrolment,
 		Subject:    e.ClientID,
 		Grants:     e.ProjectIDs,
 		Via:        via,
 		CredID:     credID,
+		PresenceID: presenceID,
 	})
 	if err == nil {
 		return nil
@@ -144,11 +215,12 @@ func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, 
 // mint replaces its predecessor, so the expiry is the only non-secret fact
 // that tells two of them apart — which is exactly what a reader needs to match
 // a code against the registration that later consumed it.
-func recordBootstrapIssued(a IssuanceAuditor, expires, via string) error {
+func recordBootstrapIssued(a IssuanceAuditor, expires, via, presenceID string) error {
 	return recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialBootstrap,
 		Subject:    expires,
 		Via:        via,
+		PresenceID: presenceID,
 	})
 }
 
@@ -156,25 +228,27 @@ func recordBootstrapIssued(a IssuanceAuditor, expires, via string) error {
 // both — the old token dies and a new one is born — and it is recorded as the
 // issuance because that is the direction that widens: the new token is the one
 // somebody will hold.
-func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID string) error {
+func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID, presenceID string) error {
 	return recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialProject,
 		Subject:    projectID,
 		Via:        via,
 		CredID:     credID,
+		PresenceID: presenceID,
 	})
 }
 
 // recordPasskeyRevoked records a removed passkey. The stored public key has no
 // path into the record: passkeyView withholds X and Y from every operator
 // surface for the same reason, and CredentialIssuance has no field for them.
-func recordPasskeyRevoked(a IssuanceAuditor, p Passkey, via string) error {
+func recordPasskeyRevoked(a IssuanceAuditor, p Passkey, via, presenceID string) error {
 	return recordIssuance(a, CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialPasskey,
 		Subject:    p.ID,
 		Name:       p.Name,
 		Via:        via,
+		PresenceID: presenceID,
 	})
 }
 
@@ -199,7 +273,10 @@ func (r *AuditRecorder) RecordIssuance(iss CredentialIssuance) error {
 
 func issuanceEvent(iss CredentialIssuance) AuditEvent {
 	event := AuditEventCredentialIssued
-	if iss.Revoked {
+	switch {
+	case iss.ConfigChange:
+		event = AuditEventConfigChange
+	case iss.Revoked:
 		event = AuditEventCredentialRevoked
 	}
 	subject, subjectCut := capControlString(iss.Subject, auditMaxIssuanceFieldBytes)
@@ -217,6 +294,7 @@ func issuanceEvent(iss CredentialIssuance) AuditEvent {
 		Via:               iss.Via,
 		IssuanceTruncated: subjectCut || nameCut || grantsCut,
 		Actor:             issuanceActor(iss),
+		PresenceID:        iss.PresenceID,
 	}
 }
 

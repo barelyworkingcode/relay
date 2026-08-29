@@ -54,7 +54,7 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		Name:          "test",
 		Kind:          o.kind,
 		AllowedMcpIDs: []string{"macmcp"},
-		Token:         testToken,
+		Token:         NewSecret(testToken),
 		TokenHash:     hashToken(testToken),
 		AllowedTools:  o.allowedTools,
 		Access:        o.access,
@@ -76,7 +76,7 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
 		Projects:     []Project{proj},
 		Enrolments:   o.enrolments,
-		AdminSecret:  "supersecretadmin",
+		AdminSecret:  NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", tools,

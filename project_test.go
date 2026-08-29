@@ -127,7 +127,11 @@ func TestProjectKind_LocalSerializesWithNoKindKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken: %v", err)
 	}
-	b, err := json.Marshal(proj)
+	sealMe := &Settings{Projects: []Project{proj}}
+	if err := sealAllSecrets(sealMe, testSealer()); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	b, err := json.Marshal(sealMe.Projects[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -167,7 +171,7 @@ func TestProjectCreate(t *testing.T) {
 	if len(proj.AllowedModels) != 1 || proj.AllowedModels[0] != "claude-opus" {
 		t.Errorf("expected allowed models [claude-opus], got %v", proj.AllowedModels)
 	}
-	if proj.Token == "" {
+	if tok, _ := proj.Token.Reveal(); tok == "" {
 		t.Fatal("expected non-empty token plaintext")
 	}
 	if proj.TokenHash == "" {
@@ -205,7 +209,8 @@ func TestProjectCreate(t *testing.T) {
 
 	// Subtle: allowed MCPs are absent from Permissions (implicit allow); only
 	// disallowed MCPs get explicit PermOff entries.
-	authTok, err := s.AuthenticateProject(proj.Token)
+	projTok, _ := proj.Token.Reveal()
+	authTok, err := s.AuthenticateProject(projTok)
 	if err != nil {
 		t.Fatalf("AuthenticateProject failed: %v", err)
 	}
@@ -243,7 +248,8 @@ func TestProjectUpdate(t *testing.T) {
 		t.Fatalf("expected 2 allowed MCPs after update, got %d", len(p2.AllowedMcpIDs))
 	}
 
-	authTok, err := s.AuthenticateProject(proj.Token)
+	projTok, _ := proj.Token.Reveal()
+	authTok, err := s.AuthenticateProject(projTok)
 	if err != nil {
 		t.Fatalf("AuthenticateProject failed: %v", err)
 	}
@@ -285,7 +291,8 @@ func TestProjectDelete(t *testing.T) {
 		t.Errorf("expected 0 projects after delete, got %d", len(s.Projects))
 	}
 
-	_, err = s.AuthenticateProject(proj.Token)
+	projTok, _ := proj.Token.Reveal()
+	_, err = s.AuthenticateProject(projTok)
 	if err == nil {
 		t.Error("expected auth failure after project deletion")
 	}
@@ -302,7 +309,7 @@ func TestProjectTokenScoping(t *testing.T) {
 		},
 		Services:    []ServiceConfig{},
 		Projects:    []Project{},
-		AdminSecret: "test-admin",
+		AdminSecret: NewSecret("test-admin"),
 	}
 
 	proj, err := s.CreateProjectWithToken("ScopeTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
@@ -323,7 +330,7 @@ func TestProjectTokenScoping(t *testing.T) {
 			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 		}))
 
-	store := &FileSettingsStore{cache: s, dir: t.TempDir()}
+	store := &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()}
 	r := &appRouter{
 		store:    store,
 		tools:    mgr,
@@ -331,7 +338,8 @@ func TestProjectTokenScoping(t *testing.T) {
 		onChange: func() {},
 	}
 
-	result, err := r.ListTools(context.Background(), proj.Token)
+	projTok, _ := proj.Token.Reveal()
+	result, err := r.ListTools(context.Background(), projTok)
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
@@ -348,12 +356,12 @@ func TestProjectTokenScoping(t *testing.T) {
 		}
 	}
 
-	_, err = r.CallTool(context.Background(), "fs_read", json.RawMessage(`{"path":"/tmp"}`), proj.Token)
+	_, err = r.CallTool(context.Background(), "fs_read", json.RawMessage(`{"path":"/tmp"}`), projTok)
 	if err != nil {
 		t.Fatalf("expected fs_read to succeed, got: %v", err)
 	}
 
-	_, err = r.CallTool(context.Background(), "capture_screenshot", nil, proj.Token)
+	_, err = r.CallTool(context.Background(), "capture_screenshot", nil, projTok)
 	if err == nil {
 		t.Fatal("expected error calling tool from disallowed MCP")
 	}
@@ -361,7 +369,7 @@ func TestProjectTokenScoping(t *testing.T) {
 		t.Errorf("expected 'access denied', got %q", err.Error())
 	}
 
-	_, err = r.CallTool(context.Background(), "fs_bash", json.RawMessage(`{"command":"ls"}`), proj.Token)
+	_, err = r.CallTool(context.Background(), "fs_bash", json.RawMessage(`{"command":"ls"}`), projTok)
 	if err == nil {
 		t.Fatal("expected error calling disabled tool fs_bash")
 	}
@@ -372,7 +380,7 @@ func TestProjectTokenScoping(t *testing.T) {
 
 func TestProjectPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
-	store := NewSettingsStoreAt(tmpDir)
+	store := sealedSettingsStoreAt(tmpDir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized failed: %v", err)
 	}
@@ -389,7 +397,7 @@ func TestProjectPersistence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateProjectWithToken failed: %v", err)
 		}
-		projToken = proj.Token
+		projToken, _ = proj.Token.Reveal()
 	})
 	if err != nil {
 		t.Fatalf("store.With failed: %v", err)
@@ -403,7 +411,7 @@ func TestProjectPersistence(t *testing.T) {
 	if proj.Name != "PersistTest" {
 		t.Errorf("expected name 'PersistTest', got %q", proj.Name)
 	}
-	if proj.Token != projToken {
+	if reloadedTok, _ := proj.Token.Reveal(); reloadedTok != projToken {
 		t.Error("token plaintext not preserved after reload")
 	}
 	if len(proj.AllowedMcpIDs) != 1 || proj.AllowedMcpIDs[0] != "fsmcp" {

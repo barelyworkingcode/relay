@@ -23,10 +23,10 @@ import (
 func newMcpRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
-	ops := &McpOps{Store: store, Ctx: context.Background()}
+	ops := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket}
-	RegisterProjectRoutes(rr, store, nil, nil, nil, nil, nil)
+	RegisterProjectRoutes(rr, store, &ProjectOps{Store: store}, nil, nil, nil, nil, nil)
 	RegisterMcpRoutes(rr, ops)
 	return httptest.NewServer(mux), store
 }
@@ -219,9 +219,9 @@ func TestMcpRoutes_NeverLeaksOAuthSecrets(t *testing.T) {
 	if err := store.With(func(s *Settings) {
 		s.UpdateOAuthState(created.ID, &OAuthState{
 			ClientID:     "some-oauth-client-id",
-			ClientSecret: clientSecret,
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
+			ClientSecret: NewSecret(clientSecret),
+			AccessToken:  NewSecret(accessToken),
+			RefreshToken: NewSecret(refreshToken),
 			TokenExpiry:  "2099-01-01T00:00:00Z",
 		})
 	}); err != nil {

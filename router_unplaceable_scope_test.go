@@ -23,7 +23,7 @@ func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *
 	}
 	proj := Project{
 		ID: "probe", Name: "probe", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"macmcp"}, Token: testToken, TokenHash: hashToken(testToken),
+		AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
 		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		Access:       map[string]string{"macmcp": AccessWrite},
 		Context: map[string]json.RawMessage{
@@ -32,7 +32,7 @@ func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *
 	}
 	s := &Settings{
 		Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-		Projects: []Project{proj}, AdminSecret: "supersecretadmin",
+		Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
@@ -90,7 +90,7 @@ func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
 		proj := Project{
 			ID: "probe", Name: "probe", Kind: ProjectKindRemote,
-			AllowedMcpIDs: []string{"macmcp"}, Token: testToken, TokenHash: hashToken(testToken),
+			AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
 			AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
 			Access:       map[string]string{"macmcp": AccessWrite},
 			Context: map[string]json.RawMessage{
@@ -99,7 +99,7 @@ func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 		}
 		s := &Settings{
 			Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-			Projects: []Project{proj}, AdminSecret: "supersecretadmin",
+			Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
 		}
 		mgr := NewExternalMcpManager(nil)
 		serve := func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {

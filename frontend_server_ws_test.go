@@ -26,12 +26,12 @@ func startFrontendServerWith(t *testing.T, token string, enhanced *EnhancedServi
 	dir := mkShortTempDir(t, "fe-ws-")
 	sock := filepath.Join(dir, "frontend.sock")
 
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	extMgr := NewExternalMcpManager(nil)
-	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
 	}

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"text/tabwriter"
 	"time"
+
+	"relaygo/sealed"
 )
 
 // aiHome sandboxes the config dir and returns an initialised store rooted in
@@ -30,7 +32,7 @@ import (
 func aiHome(t *testing.T) (string, SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	return dir, store
 }
@@ -143,8 +145,13 @@ func aiGrants(ev AuditEvent) string { return strings.Join(ev.Grants, ",") }
 // The CLI doors
 // ---------------------------------------------------------------------------
 
+// credential mint and revoke are brokered (ADR-017 decision 2): this
+// process holds no sealer, so mintAPICredential/revokeAPICredentialIf run
+// inside CredentialOps on the other end of a real bridge connection, not in
+// this test's own process.
 func TestIssuance_CLICredentialMintAndRevokeAreRecorded(t *testing.T) {
 	_, store := aiHome(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	printed := aiQuiet(t, func() {
 		credentialMint(store, []string{"--name", "ci-deploy", "--class", "read", "--class", "grant"})
@@ -202,9 +209,16 @@ func aiPrintedToken(t *testing.T, printed string) string {
 	return ""
 }
 
-func TestIssuance_CLIEnrolCreateAndRevokeAreRecorded(t *testing.T) {
+// TestIssuance_EnrolCreateAndCLIRevokeAreRecorded exercises create through
+// the CLI path — `relay enrol create` itself, brokered over admin_op
+// (ADR-017 decision 2) into the exact same EnrolmentOps a real tray would
+// run: this process holds no sealer and never reaches relay's CA key
+// directly (§5.3.3, §5.4, AC-29), it only ever builds the request and
+// prints what comes back over the bridge. Revoke is the same shape.
+func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	dir, store := aiHome(t)
 	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	aiQuiet(t, func() {
 		enrolCreate(store, []string{"--client-id", "hermes-mail", "--grant", profile.ID})
@@ -236,12 +250,31 @@ func TestIssuance_CLIEnrolCreateAndRevokeAreRecorded(t *testing.T) {
 
 	aiRefuseSecrets(t, aiLogText(t), map[string]string{
 		"client private key": aiPEMBody(t, keyPEM),
-		"CA private key":     aiPEMBody(t, aiRead(t, filepath.Join(dir, "ca.key"))),
+		"CA private key":     aiPEMBody(t, aiUnsealCAKeyPEM(t, dir, store)),
 	})
 }
 
+// aiUnsealCAKeyPEM reads and opens ca.key.sealed directly — relay never
+// writes a plaintext ca.key (§5.7), so this is what a test now has to do to
+// get the CA's own private key material to check it never appears in the
+// audit log.
+func aiUnsealCAKeyPEM(t *testing.T, dir string, store SettingsStore) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, caKeySealedFile))
+	assertNoErr(t, err, "read ca.key.sealed")
+	var env sealed.Envelope
+	assertNoErr(t, json.Unmarshal(data, &env), "parse ca.key.sealed")
+	keyPEM, err := store.Sealer().Unseal(env, []byte(caAADPrefix+"ca.key"))
+	assertNoErr(t, err, "unseal ca.key.sealed")
+	return keyPEM
+}
+
+// login enrol and login revoke are brokered too (ADR-017 decision 2 — the
+// ADR-016 decision 2 SSH affordance is withdrawn on purpose, §3.2), so this
+// needs the same real bridge server the enrolment test above does.
 func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
 	_, store := aiHome(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	printed := aiQuiet(t, func() { loginEnrol(store) })
 
@@ -328,13 +361,13 @@ func aiPEMBody(t *testing.T, pem []byte) string {
 func TestIssuance_TrayAndSettingsWindowActsAreRecorded(t *testing.T) {
 	dir, store := aiHome(t)
 	rec := aiRecorderAt(t, filepath.Join(dir, "rec.jsonl"), nil)
-	ops := &LoginOps{Store: store, Audit: rec}
+	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
-	view, err := ops.MintBootstrap()
+	view, err := ops.MintBootstrap(context.Background(), auditViaTray)
 	assertNoErr(t, err, "MintBootstrap")
 
 	passkey := aiStorePasskey(t, store, "pk-ipc")
-	_, err = ops.RevokePasskey(passkey.ID)
+	_, err = ops.RevokePasskey(context.Background(), passkey.ID)
 	assertNoErr(t, err, "RevokePasskey")
 
 	session, sessionToken, err := aiMintLoginSession(store)
@@ -437,8 +470,9 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHT
 		Issuance:  issuance,
 	}
 	extMgr := NewExternalMcpManager(nil)
-	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store})
-	RegisterProjectRoutes(rr, store, extMgr, nil, nil, nil, nil)
+	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: rec, Issuance: issuance})
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuance}
+	RegisterProjectRoutes(rr, store, projOps, extMgr, nil, nil, nil, nil)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -509,9 +543,10 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	logged, err := os.ReadFile(f.rec.Path())
 	assertNoErr(t, err, "read recorder log")
 	stored, _ := f.store.Reload().findProjectByID(local.ID)
+	storedToken, _ := stored.Token.Reveal()
 	aiRefuseSecrets(t, string(logged), map[string]string{
 		"rotated project token":  rotated.Token,
-		"stored project token":   stored.Token,
+		"stored project token":   storedToken,
 		"project token hash":     stored.TokenHash,
 		"operator bearer":        f.bearer,
 		"operator bearer's hash": f.hash,
@@ -584,7 +619,7 @@ func aiHexOf(b []byte) string {
 func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	sock := filepath.Join(mkShortTempDir(t, "ai-lr-sock-"), "frontend.sock")
 	auditor := &lrAuditor{}
@@ -595,6 +630,7 @@ func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, &AuditOps{Audit: rec},
 		&McpOps{Store: store, Ctx: context.Background()},
+		&ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(rec)},
 		NewCredentialAuthorizer(store), auditor,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
@@ -642,7 +678,8 @@ func TestIssuance_HTTPRotateWithholdsTheTokenWhenTheRecordFails(t *testing.T) {
 		t.Fatalf("rotate_token: status %d, want 500 when the act cannot be recorded; body %s", resp.StatusCode, body)
 	}
 	stored, _ := f.store.Reload().findProjectByID(local.ID)
-	if strings.Contains(string(body), stored.Token) {
+	storedToken, _ := stored.Token.Reveal()
+	if strings.Contains(string(body), storedToken) {
 		t.Fatalf("the response carried the new project token even though the act was not recorded: %s", body)
 	}
 	if broken.calls != 1 {
@@ -677,9 +714,9 @@ func TestIssuance_TrayWithholdsTheLoginCodeWhenTheRecordFails(t *testing.T) {
 	// deliberately not a refusal.
 	rec := newAuditRecorderWith((&AuditConfig{}).resolve(), "ai-broken", failingWriteCloser{})
 	t.Cleanup(rec.Close)
-	ops := &LoginOps{Store: store, Audit: rec}
+	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
-	view, err := ops.MintBootstrap()
+	view, err := ops.MintBootstrap(context.Background(), auditViaTray)
 	if err == nil {
 		t.Fatalf("MintBootstrap succeeded with an unwritable audit log and returned code %q", view.Code)
 	}
@@ -693,11 +730,24 @@ type failingWriteCloser struct{}
 func (failingWriteCloser) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
 func (failingWriteCloser) Close() error              { return nil }
 
-// TestIssuance_AuditingOffIsNotARefusal pins the other half of the judgement:
-// an operator who wrote "enabled": false has turned the log off deliberately,
-// and issuance must keep working in a configuration relay supports.
-func TestIssuance_AuditingOffIsNotARefusal(t *testing.T) {
-	dir, store := aiHome(t)
+// TestIssuance_RecordIssuanceIsANoOpForUngatedCallersWhenAuditingIsOff pins
+// what ADR-017's Consequences still lean on: recordIssuance(nil, ...)
+// returns nil rather than refusing, for the callers that are not one of the
+// six gated cores.
+//
+// This test used to also mint a credential via the CLI to show issuance
+// "must keep working" with auditing off — that is no longer true, and not a
+// weakening of this test but a correction of it: `credential.mint` is a
+// gated operation (presence.GatedOps), and §7.4's hard dependency
+// (requireIssuanceAuditor, called before Gate.Require) now lives INSIDE
+// CredentialOps.Mint itself, so every door that reaches it — CLI over
+// admin_op, HTTP, IPC alike — refuses with auditing off. That refusal is
+// covered once, generically, for every gated op by
+// TestGate_IssuanceAuditingOffRefusesBeforeThePrompt in
+// presence_gate_wiring_test.go; duplicating it here via a CLI subprocess
+// would test the same core twice through a heavier harness.
+func TestIssuance_RecordIssuanceIsANoOpForUngatedCallersWhenAuditingIsOff(t *testing.T) {
+	_, store := aiHome(t)
 	off := false
 	assertNoErr(t, store.With(func(s *Settings) { s.Audit = &AuditConfig{Enabled: &off} }), "disable auditing")
 
@@ -708,16 +758,6 @@ func TestIssuance_AuditingOffIsNotARefusal(t *testing.T) {
 	}
 	if err := recordIssuance(issuanceAuditorOrNil(rec), CredentialIssuance{Credential: auditCredentialAPI, Subject: "x"}); err != nil {
 		t.Fatalf("recordIssuance refused while auditing is off: %v", err)
-	}
-
-	printed := aiQuiet(t, func() {
-		credentialMint(store, []string{"--name", "off-but-minted", "--class", "read"})
-	})
-	if !strings.Contains(printed, "token:") {
-		t.Fatalf("mint did not complete with auditing off: %s", printed)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "audit", "toolcalls.jsonl")); !os.IsNotExist(err) {
-		t.Errorf("a log file was created while auditing is off (stat err %v)", err)
 	}
 }
 
@@ -819,36 +859,16 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 	}
 }
 
-// TestIssuance_CLIRecordsWithTheTrayNotRunning covers the state every one of
-// these commands supports: no tray at all. The record must reach the file
-// `relay audit` reads, since that reader is the only one there is.
-func TestIssuance_CLIRecordsWithTheTrayNotRunning(t *testing.T) {
-	_, store := aiHome(t)
-
-	aiQuiet(t, func() {
-		credentialMint(store, []string{"--name", "no-tray", "--class", "read"})
-	})
-
-	creds := store.Reload().APICredentials
-	if len(creds) != 1 {
-		t.Fatalf("want 1 credential, got %d", len(creds))
-	}
-	path, err := auditLogPath()
-	assertNoErr(t, err, "auditLogPath")
-
-	// readAuditTail is what `relay audit` uses; asserting on it rather than on
-	// the raw file is what makes this a statement about the CLI's output being
-	// readable, not merely present.
-	found := false
-	for _, ev := range readAuditTail(path, auditTailBudget) {
-		if ev.Event == AuditEventCredentialIssued && ev.Subject == creds[0].ID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("relay audit's reader found no issuance record for %s with no tray running", creds[0].ID)
-	}
-}
+// A CLI credential mint with no tray running used to write its record
+// straight to disk anyway — every issuing command held "a recorder of its
+// own" independent of the tray. Brokering (ADR-017 decision 2) retires that
+// capability on purpose: CredentialOps.Mint runs inside the tray, not in
+// this process, so "no tray at all" is no longer a state relay half
+// supports — it is a clean, named refusal before anything is written
+// (TestBrokeredCommands_RefuseByNameAndTouchNothing, AC-11/AC-12), and a
+// record that DOES land, once the tray is running, reaches exactly the file
+// `relay audit` reads (TestIssuance_CLICredentialMintAndRevokeAreRecorded,
+// which now runs the same command through a real bridge server).
 
 // ---------------------------------------------------------------------------
 // Rendering

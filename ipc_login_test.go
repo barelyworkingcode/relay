@@ -73,7 +73,7 @@ func (p *ilPlatform) allJS() string {
 // newEnrolmentIPC. Nothing here can touch the real config dir.
 func ilIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI) {
 	t.Helper()
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	ui := &recordingUI{}
 	return &IPCContext{
@@ -88,7 +88,7 @@ func ilIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI) {
 		GoFunc:                 func(fn func()) { fn() },
 		NotifyReconcile:        func(string) error { return nil },
 		NotifyReloadMcp:        func(string, string) error { return nil },
-		LoginOps:               &LoginOps{Store: store},
+		LoginOps:               &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)},
 	}, store, ui
 }
 
@@ -467,16 +467,17 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 
 func ilTrayApp(t *testing.T) (*App, *ilPlatform, SettingsStore) {
 	t.Helper()
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	p := &ilPlatform{}
 	app := &App{
+		ctx:      context.Background(),
 		store:    store,
 		platform: p,
 		registry: &trayRegistry{},
 		extMgr:   NewExternalMcpManager(nil),
 	}
-	app.loginOps = &LoginOps{Store: store}
+	app.loginOps = &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	return app, p, store
 }
 
