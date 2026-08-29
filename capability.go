@@ -83,15 +83,25 @@ func ClassReachableOn(c CapabilityClass, t Transport) bool {
 	}
 }
 
+// RouteReserver is told every pattern relay registers, so a party that
+// routes to something else can refuse to shadow one. A nil implementation
+// is a valid Reserve value and reserves nothing, on the same terms as the
+// ControlAuditor contract above.
+type RouteReserver interface {
+	ReserveRelayRoute(pattern string)
+}
+
 // RouteRegistrar is the single door every control-plane route registration
 // goes through. Authz nil means allow (tests, and the socket during
 // migration); Auditor nil means no control-plane auditing, per the
-// ControlAuditor contract above.
+// ControlAuditor contract above; Reserve nil means the route set is not
+// accumulated anywhere.
 type RouteRegistrar struct {
 	Mux       *http.ServeMux
 	Transport Transport
 	Authz     Authorizer
 	Auditor   ControlAuditor
+	Reserve   RouteReserver
 }
 
 // controlStatus maps an Authorize refusal to the HTTP status it produces.
@@ -118,6 +128,13 @@ func controlStatus(err error) int {
 // decision 2); a 403 from inside a handler would still be a route someone
 // could reach.
 func (rr *RouteRegistrar) Handle(class CapabilityClass, pattern string, h http.HandlerFunc) {
+	// This is deliberate: the reservation happens BEFORE the transport
+	// check, so it records what relay serves anywhere rather than what this
+	// listener carries. An execute-class route is absent from TCP and is
+	// still a route a manifest may not claim.
+	if rr.Reserve != nil {
+		rr.Reserve.ReserveRelayRoute(pattern)
+	}
 	if !ClassReachableOn(class, rr.Transport) {
 		return
 	}
