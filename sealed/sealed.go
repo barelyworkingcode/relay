@@ -34,10 +34,18 @@ const (
 // context (is this a per-field failure or a whole-store key mismatch?) are
 // known.
 var (
-	ErrKeyMissing  = errors.New("sealing key not found")
-	ErrKeyMismatch = errors.New("sealing key id does not match")
-	ErrCorrupt     = errors.New("sealed value is corrupt")
-	ErrUnsupported = errors.New("unsupported seal format")
+	ErrKeyMissing = errors.New("sealing key not found")
+	// ErrKeyUnreadable is distinct from ErrKeyMissing: an item exists under
+	// relay's service/account, but its ACL does not name relay, so the OS
+	// refused the read (§5.3) instead of silently unlocking it. The two are
+	// never conflated — the operator's next move differs (nothing to
+	// investigate vs. something else holding relay's keychain slot) — and
+	// neither is ever a reason to create or adopt a replacement key
+	// (§5.5.1).
+	ErrKeyUnreadable = errors.New("sealing key exists but relay was refused permission to read it")
+	ErrKeyMismatch   = errors.New("sealing key id does not match")
+	ErrCorrupt       = errors.New("sealed value is corrupt")
+	ErrUnsupported   = errors.New("unsupported seal format")
 )
 
 // Envelope is one sealed value: AES-256-GCM ciphertext plus what is needed

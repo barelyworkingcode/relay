@@ -65,13 +65,31 @@ func resolveSealer(dir string, keyring sealed.Keyring) (sealer sealed.Sealer, de
 		// with nothing sealed yet — the only two conditions under which
 		// relay may create a key (§5.5).
 		if keyErr != nil {
-			if !errors.Is(keyErr, sealed.ErrKeyMissing) {
+			switch {
+			case errors.Is(keyErr, sealed.ErrKeyMissing):
+				var createErr error
+				keyID, key, createErr = keyring.Create()
+				if createErr != nil {
+					return nil, nil, fmt.Errorf("no sealing key exists and one could not be created: %w", createErr)
+				}
+			case errors.Is(keyErr, sealed.ErrKeyUnreadable):
+				// An item is already sitting under relay's own
+				// service/account and relay cannot read it — §5.5.1's rule
+				// applies even though nothing has been sealed yet: this is
+				// never a reason to create a replacement over an item
+				// relay does not control. Degrade rather than exit
+				// (returned via err would be fatal — see the doc comment
+				// on resolveSealer); Create() would refuse anyway once its
+				// own Load saw the same item, but failing here, named,
+				// keeps this a degraded start rather than os.Exit(1) in
+				// runTrayApp.
+				return nil, fmt.Errorf(
+					"a login keychain item already exists under relay's own service/account, but relay "+
+						"was refused permission to read it (%v); nothing has been sealed on this machine "+
+						"yet, but relay will not create a replacement key over an item it does not control",
+					keyErr), nil
+			default:
 				return nil, nil, fmt.Errorf("reading the sealing key: %w", keyErr)
-			}
-			var createErr error
-			keyID, key, createErr = keyring.Create()
-			if createErr != nil {
-				return nil, nil, fmt.Errorf("no sealing key exists and one could not be created: %w", createErr)
 			}
 		}
 		s, err := sealed.NewAESSealer(keyID, key)
@@ -82,6 +100,19 @@ func resolveSealer(dir string, keyring sealed.Keyring) (sealer sealed.Sealer, de
 
 	default:
 		if keyErr != nil {
+			if errors.Is(keyErr, sealed.ErrKeyUnreadable) {
+				// Distinct from ErrKeyMissing on purpose: the operator's
+				// next move differs. An absent key means nothing is there
+				// to investigate; an unreadable one means something else
+				// now holds relay's keychain slot.
+				return nil, fmt.Errorf(
+					"the sealed store expects key %s, but the login keychain item under relay's own "+
+						"service/account exists and relay was refused permission to read it (%v) — this "+
+						"is not the same as the key being missing. settings.json cannot be unsealed on "+
+						"this machine. relay will not create a replacement — a new key would re-seal "+
+						"your secrets under a key you did not choose",
+					declaredKeyID, keyErr), nil
+			}
 			return nil, fmt.Errorf(
 				"the sealed store expects key %s, but no such key is in the login keychain; "+
 					"settings.json cannot be unsealed on this machine. relay will not create a "+
