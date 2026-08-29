@@ -26,6 +26,7 @@ func (msg *ipcAddExternalMcpMsg) fields() mcpFields {
 		Command:     msg.Command,
 		Args:        msg.Args,
 		Env:         msg.Env,
+		TccServices: msg.TccServices,
 	}
 }
 
@@ -46,7 +47,7 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	// handshake, either of which can block for the length of
 	// MCPDiscoveryTimeout.
 	ctx.GoFunc(func() {
-		result, err := ctx.McpOps.Add(fields)
+		result, err := ctx.McpOps.Add(ctx.Ctx, fields, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil && !errors.Is(err, ErrAuthRequired) {
 				ctx.UI.EmitEvent("onExternalMcpError", err.Error())
@@ -74,7 +75,7 @@ func ipcAuthenticateMcp(ctx *IPCContext, raw json.RawMessage) {
 		// ctx.Platform.OpenURL is the one desktop dependency in this whole
 		// flow; McpOps.StartOAuth takes it as a parameter precisely so this
 		// is the only place it gets supplied (ADR-014 section 4).
-		if _, err := ctx.McpOps.StartOAuth(msg.ID, ctx.Platform.OpenURL); err != nil {
+		if _, err := ctx.McpOps.StartOAuth(ctx.Ctx, msg.ID, ctx.Platform.OpenURL, auditViaIPC, ""); err != nil {
 			dispatchError(ctx, "onOAuthError", msg.ID, err.Error())
 			return
 		}
@@ -88,7 +89,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if err := ctx.McpOps.Remove(msg.ID); err != nil {
+	if err := ctx.McpOps.Remove(ctx.Ctx, msg.ID, auditViaIPC, ""); err != nil {
 		ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 		return
 	}

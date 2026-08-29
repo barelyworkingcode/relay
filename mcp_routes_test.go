@@ -23,10 +23,10 @@ import (
 func newMcpRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
-	ops := &McpOps{Store: store, Ctx: context.Background()}
+	ops := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket}
-	RegisterProjectRoutes(rr, store, nil, nil, nil, nil, nil)
+	RegisterProjectRoutes(rr, store, &ProjectOps{Store: store}, nil, nil, nil, nil, nil)
 	RegisterMcpRoutes(rr, ops)
 	return httptest.NewServer(mux), store
 }

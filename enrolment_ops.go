@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
+	"time"
+
+	"relaygo/presence"
 )
 
 var (
@@ -39,6 +44,60 @@ type enrolmentFields struct {
 	Budget     EnrolmentBudget `json:"budget"`
 }
 
+// presenceDigest binds an enrolment.create grant to exactly the client id,
+// grant list and budget being issued (§6.4).
+func (f enrolmentFields) presenceDigest() presence.Digest {
+	return presence.NewDigestBuilder("enrolment.create").
+		StringField("client_id", true, f.ClientID).
+		StringSetField("project_ids", true, f.ProjectIDs).
+		DurationField("budget.window_seconds", true, time.Duration(f.Budget.WindowSeconds)).
+		DurationField("budget.max_calls", true, time.Duration(f.Budget.MaxCalls)).
+		DurationField("budget.max_result_bytes", true, time.Duration(f.Budget.MaxResultBytes)).
+		Build()
+}
+
+// presenceDigest binds an enrolment.update grant to exactly the fields the
+// request touches, absent-aware: a budget-only update must not be spendable
+// on a grant-list change and the reverse (§6.4).
+func (r enrolmentUpdateRequest) presenceDigest() presence.Digest {
+	b := presence.NewDigestBuilder("enrolment.update").StringField("client_id", true, r.ClientID)
+	if r.ProjectIDs != nil {
+		b.StringSetField("project_ids", true, *r.ProjectIDs)
+	} else {
+		b.StringSetField("project_ids", false, nil)
+	}
+	if r.Budget.WindowSeconds != nil {
+		b.DurationField("budget.window_seconds", true, time.Duration(*r.Budget.WindowSeconds))
+	} else {
+		b.DurationField("budget.window_seconds", false, 0)
+	}
+	if r.Budget.MaxCalls != nil {
+		b.DurationField("budget.max_calls", true, time.Duration(*r.Budget.MaxCalls))
+	} else {
+		b.DurationField("budget.max_calls", false, 0)
+	}
+	if r.Budget.MaxResultBytes != nil {
+		b.DurationField("budget.max_result_bytes", true, time.Duration(*r.Budget.MaxResultBytes))
+	} else {
+		b.DurationField("budget.max_result_bytes", false, 0)
+	}
+	return b.Build()
+}
+
+// enrolmentCreateReason names the actual act (§6.5.2).
+func enrolmentCreateReason(clientID string, projectIDs []string) string {
+	if len(projectIDs) == 0 {
+		return fmt.Sprintf("create an enrolment for client %q with no project access", clientID)
+	}
+	return fmt.Sprintf("create an enrolment for client %q with access to %s", clientID, joinWithAnd(projectIDs))
+}
+
+// errEnrolmentUnrecorded means the create committed to settings, the audit
+// write then failed, and recordEnrolmentIssued's own fail-closed rule
+// already undid it — a distinguishable sentinel so a door can choose the
+// right status without inspecting the message.
+var errEnrolmentUnrecorded = errors.New("enrolment created but could not be recorded in the audit log and has been revoked")
+
 // EnrolmentCreated is deliberately narrower than enrolmentBundle, the type
 // createEnrolment writes to disk: that one also carries KeyPath, CertPath
 // and CACertPath, and a caller across an API boundary has no legitimate use
@@ -68,7 +127,16 @@ type EnrolmentOps struct {
 	// alongside the block's own state, the same pair pushFullSettings has
 	// always sent. Nil-safe like every AuditRecorder method; nil reads as
 	// "auditing is off".
-	Audit    *AuditRecorder
+	Audit *AuditRecorder
+	// Issuance, when set, overrides Audit as the sink Create/Update/Revoke
+	// record into and requireIssuanceAuditor checks — see auditor()'s doc
+	// comment. Production leaves this nil.
+	Issuance IssuanceAuditor
+	// Gate is the presence check Create, Update and Revoke demand before
+	// they touch the store (ADR-017 decisions 3 and 4): an enrolment issues
+	// or destroys a remote identity. A nil Gate refuses all three — see
+	// requireGate.
+	Gate     *presence.Gate
 	OnChange func()
 }
 
@@ -100,10 +168,19 @@ func (o *EnrolmentOps) Get(clientID string) (Enrolment, error) {
 // only ever disagree with the one that counts. The only validation that
 // belongs at this layer is the client-id-required check, which needs no
 // lock because there is nothing yet to race over.
-func (o *EnrolmentOps) Create(f enrolmentFields) (EnrolmentCreated, error) {
+func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credID string) (EnrolmentCreated, error) {
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
 		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+	}
+
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return EnrolmentCreated{}, err
+	}
+	norm := enrolmentFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}
+	grant, err := requireGate(o.Gate, ctx, "enrolment.create", norm.presenceDigest(), enrolmentCreateReason(clientID, f.ProjectIDs))
+	if err != nil {
+		return EnrolmentCreated{}, err
 	}
 
 	bundle, err := createEnrolment(o.Store, enrolmentRequest{
@@ -114,22 +191,82 @@ func (o *EnrolmentOps) Create(f enrolmentFields) (EnrolmentCreated, error) {
 	if err != nil && !errors.Is(err, errEnrolmentBundle) {
 		return EnrolmentCreated{}, err
 	}
-	o.notify()
+	bundleErr := err
 	created := EnrolmentCreated{Enrolment: bundle.Enrolment, Dir: bundle.Dir}
-	if err != nil {
-		return created, err // errEnrolmentBundle: the record landed, the bundle write didn't
+
+	// Recorded before the bundle directory is announced, and the enrolment
+	// is revoked if the record cannot be written (recordEnrolmentIssued's
+	// own undo): the client key on disk is the credential, so an unrecorded
+	// create must not stand.
+	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
+		return EnrolmentCreated{}, fmt.Errorf("%w: %v", errEnrolmentUnrecorded, auditErr)
+	}
+	o.notify()
+	if bundleErr != nil {
+		return created, bundleErr // errEnrolmentBundle: the record landed, the bundle write didn't
 	}
 	return created, nil
+}
+
+// Update changes budget and/or grants without touching the certificate
+// (updateEnrolment's own doc comment on why that's a different operation
+// from revoke+recreate). Gated because a grant-list replacement is exactly
+// the "widens one" case §6.4's table calls out, even though ADR-017's own
+// table names only create and revoke.
+func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, via, credID string) (before, after Enrolment, err error) {
+	req.ClientID = strings.TrimSpace(req.ClientID)
+	if req.ClientID == "" {
+		return Enrolment{}, Enrolment{}, invalidEnrolment("client id is required")
+	}
+
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return Enrolment{}, Enrolment{}, err
+	}
+	grant, err := requireGate(o.Gate, ctx, "enrolment.update", req.presenceDigest(),
+		fmt.Sprintf("update the enrolment %q's grant", req.ClientID))
+	if err != nil {
+		return Enrolment{}, Enrolment{}, err
+	}
+
+	before, after, err = updateEnrolment(o.Store, req)
+	if err != nil {
+		return before, after, err
+	}
+	// Reported and not undone, matching the passkey-revoke and login-signout
+	// balance: unlike create, there is no side artifact (a private key
+	// already on disk) that an unrecorded update would leave dangling.
+	if auditErr := recordIssuance(o.auditor(), CredentialIssuance{
+		Credential: auditCredentialEnrolment,
+		Subject:    after.ClientID,
+		Grants:     after.ProjectIDs,
+		Via:        via,
+		CredID:     credID,
+		PresenceID: grant.ID(),
+	}); auditErr != nil {
+		slog.Error("enrolment updated but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
+	}
+	o.notify()
+	return before, after, nil
 }
 
 // Returns the revoked record: once it is gone the fingerprint is the only
 // thing tying this client's past calls to an identity, and re-reading it
 // beforehand would race a concurrent revoke of the same id.
-func (o *EnrolmentOps) Revoke(clientID string) (Enrolment, error) {
+func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (Enrolment, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return Enrolment{}, invalidEnrolment("client id is required")
 	}
+
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return Enrolment{}, err
+	}
+	grant, err := requireGate(o.Gate, ctx, "enrolment.revoke",
+		singleStringDigest("enrolment.revoke", "client_id", clientID), fmt.Sprintf("revoke the enrolment %q", clientID))
+	if err != nil {
+		return Enrolment{}, err
+	}
+
 	// Goes through revokeEnrolment, never RemoveEnrolment directly:
 	// revokeEnrolment fires the hook that severs LIVE connections holding
 	// the revoked certificate. A compromised agent sitting in a persistent
@@ -139,12 +276,39 @@ func (o *EnrolmentOps) Revoke(clientID string) (Enrolment, error) {
 	if err != nil {
 		return Enrolment{}, err
 	}
+	// Reported and not undone: a revocation narrows, and refusing to narrow
+	// one because the log is broken would make a failing disk the reason a
+	// compromised client stays enrolled.
+	if auditErr := recordIssuance(o.auditor(), CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialEnrolment,
+		Subject:    revoked.ClientID,
+		Grants:     revoked.ProjectIDs,
+		Via:        via,
+		CredID:     credID,
+		PresenceID: grant.ID(),
+	}); auditErr != nil {
+		slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
+	}
 	o.notify()
 	return revoked, nil
 }
 
 func (o *EnrolmentOps) auditEnabled() bool {
 	return o.Audit.Enabled()
+}
+
+// auditor prefers Issuance when set. This is subtle: production always
+// leaves Issuance nil and relies on Audit alone (which RemoteConfig also
+// reads directly, for Enabled() rather than for recording), but a test
+// exercising §7.4's hard dependency needs to inject a sink that fails in a
+// specific way without being a real *AuditRecorder, and Issuance is the
+// seam for that.
+func (o *EnrolmentOps) auditor() IssuanceAuditor {
+	if o.Issuance != nil {
+		return o.Issuance
+	}
+	return issuanceAuditorOrNil(o.Audit)
 }
 
 func (o *EnrolmentOps) RemoteConfig() (remoteConfigView, error) {

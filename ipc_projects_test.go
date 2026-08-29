@@ -88,6 +88,7 @@ func newProjectsIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI, *fa
 		NotifyReloadMcp:        func(string, string) error { return nil },
 		Tools:                  tools,
 		SkillLister:            skillLister,
+		ProjectOps:             &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)},
 	}
 	return ipc, store, ui, skillLister
 }

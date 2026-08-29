@@ -36,7 +36,11 @@ func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, SettingsStor
 	ui := &recordingUI{}
 	var rec *AuditRecorder
 	if auditEnabled {
-		rec = &AuditRecorder{cfg: resolvedAuditConfig{Enabled: true}}
+		// A real recorder with a live sink, not the bare cfg-only struct this
+		// fixture used before requireIssuanceAuditor existed (§7.4): issuance
+		// auditing is now a hard dependency, and Ready() -- which the gate
+		// checks -- requires a sink, not just Enabled().
+		rec = enabledIssuanceRecorder(t)
 	}
 	return &IPCContext{
 		Ctx:                    context.Background(),
@@ -51,7 +55,7 @@ func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, SettingsStor
 		NotifyReconcile:        func(string) error { return nil },
 		NotifyReloadMcp:        func(string, string) error { return nil },
 		Audit:                  rec,
-		EnrolmentOps:           &EnrolmentOps{Store: store, Audit: rec},
+		EnrolmentOps:           &EnrolmentOps{Store: store, Audit: rec, Gate: allowGate(t)},
 	}, store, ui
 }
 

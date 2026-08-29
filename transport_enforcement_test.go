@@ -61,6 +61,7 @@ func teNewServer(t *testing.T, store SettingsStore, authz Authorizer) *teServer 
 	enrolOps := &EnrolmentOps{Store: store, OnChange: func() { counters.enrolmentChanges++ }}
 	auditOps := &AuditOps{}
 	mcpOps := &McpOps{Store: store, Ctx: context.Background(), OnChange: func() { counters.mcpChanges++ }}
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	extMgr := NewExternalMcpManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
 
@@ -69,7 +70,7 @@ func teNewServer(t *testing.T, store SettingsStore, authz Authorizer) *teServer 
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(sockDir, "frontend.sock"), Token: token},
-		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, authz, nil,
+		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, projOps, authz, nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()

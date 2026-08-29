@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,7 +21,7 @@ import (
 func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (*httptest.Server, SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
-	ops := &ServiceOps{Store: store, Registry: reg, OnChange: onChange}
+	ops := &ServiceOps{Store: store, Registry: reg, OnChange: onChange, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	RegisterServiceRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
 	return httptest.NewServer(mux), store
@@ -358,7 +359,7 @@ func TestServiceRoutes_CreateSurvivesAutostartFailure(t *testing.T) {
 
 func TestServiceRoutes_CreateReportsFailedPersist(t *testing.T) {
 	base := newCLISandboxStore(t)
-	ops := &ServiceOps{Store: &failingStore{SettingsStore: base, err: errors.New("disk full")}, Registry: &svcRecorder{}}
+	ops := &ServiceOps{Store: &failingStore{SettingsStore: base, err: errors.New("disk full")}, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	RegisterServiceRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
@@ -434,9 +435,9 @@ func TestServiceOps_UpdatePreservesFrontendConsumerOptOut(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 
-	if _, err := ops.Update("backend", serviceFields{DisplayName: "Backend", Command: "/bin/new"}); err != nil {
+	if _, err := ops.Update(context.Background(), "backend", serviceFields{DisplayName: "Backend", Command: "/bin/new"}, auditViaIPC, ""); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 

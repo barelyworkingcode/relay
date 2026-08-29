@@ -10,6 +10,7 @@ package main
 // for the pattern being restored here: validate at commit time, not before.
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -86,15 +87,15 @@ func TestServiceOpsRace_UpdateLosesToConcurrentRemove(t *testing.T) {
 	sorSeedService(t, store, ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/old"})
 
 	reg := &sorRaceRegistry{}
-	ops := &ServiceOps{Store: store, Registry: reg}
+	ops := &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	reg.trigger = func(id string) bool {
-		if err := ops.Remove(id); err != nil {
+		if err := ops.Remove(context.Background(), id, auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 		return true // stale: it WAS running before the remove committed
 	}
 
-	_, err := ops.Update("svc", serviceFields{Command: "/bin/new"})
+	_, err := ops.Update(context.Background(), "svc", serviceFields{Command: "/bin/new"}, auditViaIPC, "")
 	if !errors.Is(err, errServiceNotFound) {
 		t.Fatalf("Update err = %v, want errServiceNotFound", err)
 	}
@@ -116,16 +117,16 @@ func TestServiceOpsRace_RemoveDuringConcurrentRemove(t *testing.T) {
 
 	reg := &sorRaceRegistry{}
 	hooked := &sorHookStore{SettingsStore: store}
-	ops := &ServiceOps{Store: hooked, Registry: reg}
-	other := &ServiceOps{Store: store, Registry: reg}
+	ops := &ServiceOps{Store: hooked, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	other := &ServiceOps{Store: store, Registry: reg, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove("svc"); err != nil {
+		if err := other.Remove(context.Background(), "svc", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
 
-	if err := ops.Remove("svc"); !errors.Is(err, errServiceNotFound) {
+	if err := ops.Remove(context.Background(), "svc", auditViaIPC, ""); !errors.Is(err, errServiceNotFound) {
 		t.Fatalf("Remove err = %v, want errServiceNotFound", err)
 	}
 }
@@ -139,11 +140,11 @@ func TestServiceOpsRace_SetAutostartDuringConcurrentRemove(t *testing.T) {
 
 	reg := &sorRaceRegistry{}
 	hooked := &sorHookStore{SettingsStore: store}
-	ops := &ServiceOps{Store: hooked, Registry: reg}
-	other := &ServiceOps{Store: store, Registry: reg}
+	ops := &ServiceOps{Store: hooked, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	other := &ServiceOps{Store: store, Registry: reg, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove("svc"); err != nil {
+		if err := other.Remove(context.Background(), "svc", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
@@ -165,16 +166,16 @@ func TestServiceOpsRace_McpRemoveDuringConcurrentRemove(t *testing.T) {
 	}
 
 	hooked := &sorHookStore{SettingsStore: store}
-	ops := &McpOps{Store: hooked}
-	other := &McpOps{Store: store}
+	ops := &McpOps{Store: hooked, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	other := &McpOps{Store: store, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove("mcp1"); err != nil {
+		if err := other.Remove(context.Background(), "mcp1", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
 
-	if err := ops.Remove("mcp1"); !errors.Is(err, errMcpNotFound) {
+	if err := ops.Remove(context.Background(), "mcp1", auditViaIPC, ""); !errors.Is(err, errMcpNotFound) {
 		t.Fatalf("Remove err = %v, want errMcpNotFound", err)
 	}
 }

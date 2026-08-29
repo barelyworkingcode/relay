@@ -88,7 +88,7 @@ func ilIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI) {
 		GoFunc:                 func(fn func()) { fn() },
 		NotifyReconcile:        func(string) error { return nil },
 		NotifyReloadMcp:        func(string, string) error { return nil },
-		LoginOps:               &LoginOps{Store: store},
+		LoginOps:               &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)},
 	}, store, ui
 }
 
@@ -471,12 +471,13 @@ func ilTrayApp(t *testing.T) (*App, *ilPlatform, SettingsStore) {
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	p := &ilPlatform{}
 	app := &App{
+		ctx:      context.Background(),
 		store:    store,
 		platform: p,
 		registry: &trayRegistry{},
 		extMgr:   NewExternalMcpManager(nil),
 	}
-	app.loginOps = &LoginOps{Store: store}
+	app.loginOps = &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	return app, p, store
 }
 

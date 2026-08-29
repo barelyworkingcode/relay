@@ -342,10 +342,11 @@ func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
 	extMgr := NewExternalMcpManager(nil)
 	dir := mkShortTempDir(t, "ce-eve-")
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: eveToken},
-		registry, nil, nil, ops, &EnrolmentOps{Store: store}, &AuditOps{}, &McpOps{Store: store, Ctx: context.Background()},
+		registry, nil, nil, ops, &EnrolmentOps{Store: store}, &AuditOps{}, &McpOps{Store: store, Ctx: context.Background()}, projOps,
 		NewCredentialAuthorizer(store), nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

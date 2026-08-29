@@ -469,7 +469,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 				t.Fatalf("EnsureInitialized: %v", err)
 			}
 			mux := http.NewServeMux()
-			RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(enumSurfaces), nil, c.enum, nil, nil)
+			RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, c.enum, nil, nil)
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 
@@ -494,7 +494,7 @@ func TestEnumerateRoute_HTTPCarriesTheChosenDependencies(t *testing.T) {
 	}
 	enum := okEnum("INBOX")
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(enumSurfaces), nil, enum, nil, nil)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, enum, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
