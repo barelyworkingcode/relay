@@ -5,26 +5,11 @@ import (
 	"testing"
 )
 
-func TestResolveID_ReturnsIDWhenGiven(t *testing.T) {
-	got := resolveID("my-id", "My Name")
-	if got != "my-id" {
-		t.Errorf("resolveID(\"my-id\", \"My Name\") = %q, want %q", got, "my-id")
-	}
-}
-
-func TestResolveID_SlugifiesNameWhenIDEmpty(t *testing.T) {
-	got := resolveID("", "My App")
-	if got != "my-app" {
-		t.Errorf("resolveID(\"\", \"My App\") = %q, want %q", got, "my-app")
-	}
-}
-
-func TestResolveID_BothEmptyReturnsEmpty(t *testing.T) {
-	got := resolveID("", "")
-	if got != "" {
-		t.Errorf("resolveID(\"\", \"\") = %q, want %q", got, "")
-	}
-}
+// resolveID and its --id register-time override are gone (ADR-017
+// implementation spec S6): McpOps.Add and ServiceOps.Create both derive a
+// record's id from --name (slugify) unconditionally, the same as every
+// other door always has, so a CLI-only override that brokering could never
+// honour was removed along with the direct-mutation path it served.
 
 func TestParseEnvPairs_NilInput(t *testing.T) {
 	env, err := parseEnvPairs(nil)

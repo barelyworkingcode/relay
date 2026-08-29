@@ -2,8 +2,10 @@ package main
 
 import (
 	"net"
+	"strings"
 
 	"relaygo/bridge"
+	"relaygo/presence"
 )
 
 // requireService returns a bridge client for command, or exits — naming
@@ -37,4 +39,31 @@ func serviceRequiredMessage(command string) string {
 		"  only the tray holds the key (ADR-017 decision 2). Start Relay and retry.\n" +
 		"  Read commands still work with relay stopped: `relay credential list`,\n" +
 		"  `relay grant`, `relay audit`."
+}
+
+// sshRefusalMessage is §6.6's shared refusal text: what a human reads when a
+// gated operation cannot display a presence prompt on this connection.
+const sshRefusalMessage = "refused: this needs your confirmation on the Mac's screen, and the session this\n" +
+	"  command is running in cannot show a prompt (for example, you are over SSH).\n" +
+	"  There is no queue and no pending-approval list.\n" +
+	"  Run it from a terminal in the logged-in desktop session, or from the Relay\n" +
+	"  Settings window.\n" +
+	"  Read commands are unaffected: relay audit, relay grant, and every `list`."
+
+// adminOpErrorText renders an admin_op failure for a human at a terminal.
+//
+// This is subtle: the bridge round trip discards the error's type — checkError
+// wraps every non-nil response code in a plain fmt.Errorf carrying only the
+// message text, so there is no presence.ErrNoSession left on the CLI side of
+// the wire to errors.Is against. The gate's own refusal for that case is
+// accurate but terse ("no session can display a presence prompt"); matching
+// its exact, stable sentinel text is what lets a privileged operation over
+// SSH surface as §6.6's full explanation instead of a generic RPC error. Any
+// other failure — a validation error, a not-found, an issuance-auditing
+// refusal — prints exactly as the service returned it.
+func adminOpErrorText(err error) string {
+	if strings.Contains(err.Error(), presence.ErrNoSession.Error()) {
+		return sshRefusalMessage
+	}
+	return err.Error()
 }

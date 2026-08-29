@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"relaygo/bridge"
 )
 
+// register, unregister and restart are brokered (ADR-017 decision 2): this
+// process holds no sealer (§5.4), so it dials the running tray over
+// admin_op and lets ServiceOps — the same core the Services tab and
+// RegisterServiceRoutes share — do the work. `list` is unaffected: it reads
+// settings.json directly and keeps working with the tray stopped.
 func runServiceCommand(args []string) {
 	store := NewSettingsStore()
 	runSubcommands("service", []cliSubcommand{
@@ -30,19 +34,26 @@ func serviceRegister(store SettingsStore, args []string) {
 	noFrontendCreds := fs.Bool("no-frontend-creds", false, "do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells")
 	fs.Parse(args)
 
+	if opts.Name == "" {
+		exitError("--name is required")
+	}
 	if *command == "" {
 		exitError("--command is required")
 	}
 
 	// nil (flag absent) leaves the setting untouched on re-register (see
-	// MergeServiceDefaults); an explicit false opts the service out.
+	// ServiceOps.Update's own merge for FrontendConsumer); an explicit
+	// false opts the service out.
 	var frontendConsumer *bool
 	if *noFrontendCreds {
 		f := false
 		frontendConsumer = &f
 	}
 
-	id, env := opts.resolveIDAndEnv()
+	env, err := parseEnvPairs(opts.EnvPairs)
+	if err != nil {
+		exitError("%v", err)
+	}
 
 	resolvedWorkdir := *workdir
 	if resolvedWorkdir != "" {
@@ -53,24 +64,35 @@ func serviceRegister(store SettingsStore, args []string) {
 		resolvedWorkdir = abs
 	}
 
-	config := ServiceConfig{
-		ID:               id,
+	fields := serviceFields{
 		DisplayName:      opts.Name,
 		Command:          *command,
 		Args:             []string(opts.Args),
-		Env:              secretMapFromPlain(env),
+		Env:              env,
 		WorkingDir:       resolvedWorkdir,
 		Autostart:        *autostart,
 		URL:              *url,
 		FrontendConsumer: frontendConsumer,
 	}
 
-	_, secret := upsertAndPrint(store, "service", opts.Name, id, func(s *Settings) bool {
-		s.MergeServiceDefaults(&config)
-		return s.UpsertService(config)
-	}, -1)
+	client := requireService("relay service register")
+	body, err := json.Marshal(fields)
+	if err != nil {
+		exitError("%v", err)
+	}
+	raw, err := client.AdminOp("service.register", body)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var view serviceView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		exitError("parse response: %v", err)
+	}
 
-	warnNotifyFailure(bridge.SendReloadService(id, secret))
+	fmt.Printf("registered service %q (%s)\n", view.DisplayName, view.ID)
+	if view.ProcessError != "" {
+		fmt.Printf("  note: %s\n", view.ProcessError)
+	}
 }
 
 func serviceUnregister(store SettingsStore, args []string) {
@@ -78,27 +100,45 @@ func serviceUnregister(store SettingsStore, args []string) {
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
 	fs.Parse(args)
+	if *id == "" && *name == "" {
+		exitError("--id or --name is required")
+	}
 
-	resolvedID, adminSecret := resolveAndRemove(store, "service", *id, *name,
-		(*Settings).ResolveServiceID, (*Settings).RemoveService)
-	warnNotifyFailure(bridge.SendReloadService(resolvedID, adminSecret))
+	client := requireService("relay service unregister")
+	resolvedID := store.Get().ResolveServiceID(*id, *name)
+	if resolvedID == "" {
+		if *id != "" {
+			exitError("no service found with id %q", *id)
+		}
+		exitError("no service found with name %q", *name)
+	}
+
+	body, err := json.Marshal(serviceUnregisterRequest{ID: resolvedID})
+	if err != nil {
+		exitError("%v", err)
+	}
+	if _, err := client.AdminOp("service.unregister", body); err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	fmt.Printf("unregistered service %q\n", resolvedID)
 }
 
-// serviceRestart sends the same ReloadService message an upsert sends; the
-// tray implements it as Stop → Start. Without a running tray this is a no-op
-// (the warning surfaces via warnNotifyFailure).
+// serviceRestart is not gated (§6.4): it changes no settings, it restarts
+// what is already configured, and the edit that configured it was gated
+// already. It is still brokered — this process cannot reach the registry
+// that owns the running process, only the tray can — but no presence
+// prompt is expected here.
 func serviceRestart(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service restart", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
 	fs.Parse(args)
-
 	if *id == "" && *name == "" {
 		exitError("--id or --name is required")
 	}
 
-	s := store.Get()
-	resolvedID := s.ResolveServiceID(*id, *name)
+	client := requireService("relay service restart")
+	resolvedID := store.Get().ResolveServiceID(*id, *name)
 	if resolvedID == "" {
 		if *id != "" {
 			exitError("no service found with id %q", *id)
@@ -107,12 +147,13 @@ func serviceRestart(store SettingsStore, args []string) {
 	}
 
 	fmt.Printf("restarting service %q\n", resolvedID)
-	// A CLI process holds no sealer (§5.4) and so can never reveal
-	// admin_secret (Secret.Reveal is structurally unreachable from any CLI
-	// entry point — AC-29); the notify below best-effort-fails exactly
-	// like it already tolerates a tray that is simply unreachable, and the
-	// restart still lands on the tray's next reconcile poll.
-	warnNotifyFailure(bridge.SendReloadService(resolvedID, ""))
+	body, err := json.Marshal(serviceRestartRequest{ID: resolvedID})
+	if err != nil {
+		exitError("%v", err)
+	}
+	if _, err := client.AdminOp("service.restart", body); err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
 }
 
 func serviceList(store SettingsStore) {

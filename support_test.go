@@ -173,6 +173,59 @@ type fakeServiceReloader struct{}
 
 func (f *fakeServiceReloader) Reload(id string, cfg *ServiceConfig) error { return nil }
 
+// newBrokerRouter wires the six S5 op cores onto an appRouter the way
+// trayapp.go does, backed by an allowing gate and a live issuance auditor —
+// the shape a test needs to prove a brokered CLI command genuinely
+// dispatches into its core (ADR-017 implementation spec §7) rather than
+// merely reaching the transport. mutate lets a caller narrow one core's
+// behaviour (a denying gate, a no-session context) without repeating the
+// rest of the wiring.
+func newBrokerRouter(t *testing.T, store SettingsStore, mutate func(*appRouter)) *appRouter {
+	t.Helper()
+	gate := allowGate(t)
+	// startAuditRecorder, not enabledIssuanceRecorder: this router stands in
+	// for the tray, and a test driving a CLI subcommand through it typically
+	// wants the SAME on-disk audit log auditLogPath() resolves — the file
+	// `relay audit` and this package's own aiLogText helpers read — not an
+	// unrelated recorder pointed at a throwaway path.
+	audit := startAuditRecorder(store.Get())
+	if audit == nil {
+		t.Fatal("newBrokerRouter: startAuditRecorder returned nil — auditing is off in this store's settings")
+	}
+	t.Cleanup(audit.Close)
+	issuance := issuanceAuditorOrNil(audit)
+	r := &appRouter{
+		store:         store,
+		tools:         NewExternalMcpManager(nil),
+		services:      noopServiceManager{},
+		enhanced:      NewEnhancedServiceRegistry(nil),
+		onChange:      func() {},
+		credentialOps: &CredentialOps{Store: store, Gate: gate, Issuance: issuance},
+		enrolmentOps:  &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance},
+		loginOps:      &LoginOps{Store: store, Gate: gate, Audit: audit},
+		mcpOps:        &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance},
+		serviceOps:    &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance},
+	}
+	if mutate != nil {
+		mutate(r)
+	}
+	return r
+}
+
+// serveBroker starts a real bridge server over r on the sandboxed
+// bridge.SocketPath() and stops it on cleanup, so a CLI subcommand's
+// requireService/AdminOp round trip has a real peer to dial — the same
+// transport AC-11/AC-12 exercise from the refusing side.
+func serveBroker(t *testing.T, r *appRouter) {
+	t.Helper()
+	bs, err := bridge.NewBridgeServer(context.Background(), r)
+	if err != nil {
+		t.Fatalf("NewBridgeServer: %v", err)
+	}
+	go bs.Serve()
+	t.Cleanup(bs.Close)
+}
+
 type FakeService struct {
 	t         *testing.T
 	serviceID string

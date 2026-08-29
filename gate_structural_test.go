@@ -76,7 +76,7 @@ var gateAllowlistedFiles = map[string]string{
 	// delegates to, are defined.
 	"settings.go":       "defines every s.* mutator method the cores and the free functions below call",
 	"settings_store.go": "defines With / WithDeclinable / withDeclinable themselves",
-	"api_credential.go": "defines MintFor, AddAPICredential, RemoveAPICredential",
+	"api_credential.go": "defines MintFor, AddAPICredential, RemoveAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
 	"enrolment.go":      "defines createEnrolment/updateEnrolment/revokeEnrolment and calls AddEnrolment/RemoveEnrolment/withDeclinable from inside them",
 	"project_apply.go":  "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
 
@@ -90,17 +90,15 @@ var gateAllowlistedFiles = map[string]string{
 	"frontend_server.go": "ensureFrontendTokenIsCredential's withDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
 	"login_routes.go":    "the WebAuthn ceremony's own MintFor (a signed assertion is a different presence factor from this gate) and withDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
 
-	// Known interim state (ADR-017 implementation spec, "Known interim
-	// state you must not be confused by"): `relay credential mint|revoke`,
-	// `relay mcp register|unregister` and `relay service register|
-	// unregister` still call their free-function implementations directly
-	// and are not yet routed through the gated cores — S6 brokers them over
-	// admin_op and this allowlist shrinks then. `relay enrol create` was
-	// already withdrawn in S4 (AC-29) and has no such entry to remove.
-	"credential_cmd.go": "S6 interim: relay credential mint|revoke call mintAPICredential/revokeAPICredentialIf directly, ungated, until brokered over admin_op",
-	"mcp_cmd.go":        "S6 interim: relay mcp register calls s.UpsertExternalMcp directly via upsertAndPrint, ungated, until brokered over admin_op",
-	"service_cmd.go":    "S6 interim: relay service register calls s.UpsertService directly via upsertAndPrint, ungated, until brokered over admin_op",
-	"cli_helpers.go":    "S6 interim: upsertAndPrint/resolveAndRemove are the shared store.With/store.With wrappers mcp_cmd.go and service_cmd.go call directly",
+	// S6 brokered every mutating CLI command over admin_op (ADR-017
+	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
+	// and cli_helpers.go no longer call a gated mutator or store.With at
+	// all — mintAPICredential/revokeAPICredentialIf moved to
+	// api_credential.go, and upsertAndPrint/resolveAndRemove (the
+	// store.With wrappers mcp_cmd.go and service_cmd.go called directly)
+	// were deleted along with the direct-mutation code paths they served.
+	// The four interim entries this comment used to document are gone;
+	// do not re-add them.
 }
 
 func gsModuleRoot(t *testing.T) string {

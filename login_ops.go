@@ -47,9 +47,9 @@ func mintBootstrapCode(s *Settings) (string, error) {
 // consumeBootstrapCode verifies plaintext against the stored anchor and, on
 // success, deletes it so it cannot be replayed. It takes *Settings rather
 // than a store so a caller can resolve and delete inside one store.With —
-// the same TOCTOU reasoning docs/tokens.md gives for resolveAndRemove:
-// reading the record in one call and deleting it in another would race a
-// second process minting or consuming between the two.
+// the same TOCTOU reasoning docs/tokens.md gives throughout: reading the
+// record in one call and deleting it in another would race a second
+// process minting or consuming between the two.
 func consumeBootstrapCode(s *Settings, plaintext string) error {
 	b := s.LoginBootstrap
 	if b == nil {
@@ -240,7 +240,11 @@ func (o *LoginOps) notify() {
 	}
 }
 
-func (o *LoginOps) MintBootstrap(ctx context.Context) (loginCodeView, error) {
+// via names the door this mint came from (auditViaTray for the menu item,
+// auditViaCLI for `relay login enrol` since S6 brokers it over admin_op) —
+// a parameter rather than a hardcoded auditViaTray, now that the tray's own
+// menu item is no longer this method's only caller.
+func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView, error) {
 	if o == nil {
 		return loginCodeView{}, errLoginOpsUnavailable
 	}
@@ -260,7 +264,7 @@ func (o *LoginOps) MintBootstrap(ctx context.Context) (loginCodeView, error) {
 	// this value IS the moment the code exists, so returning it is the
 	// disclosure, and refusing before it happens is what makes the refusal
 	// real. The unshown anchor expires on its own.
-	if err := recordBootstrapIssued(o.auditor(), expires, auditViaTray, grant.ID()); err != nil {
+	if err := recordBootstrapIssued(o.auditor(), expires, via, grant.ID()); err != nil {
 		return loginCodeView{}, fmt.Errorf("a login code was minted but could not be recorded in the audit log, so it was not shown: %w", err)
 	}
 	o.notify()
