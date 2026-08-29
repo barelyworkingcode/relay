@@ -322,7 +322,21 @@ restored. Eve and relayScheduler dial the **socket** and the legacy migration
 grants them `proxy`, so nothing relay injects is affected; a hand-minted
 `configure` credential that relied on the catch-all must be re-minted. With no
 catch-all on the TCP mux to absorb it, a near-miss like `POST /api/services`
-there is a 405 from `http.ServeMux` rather than a proxied request.
+there is a 405 from `http.ServeMux` rather than a proxied request — logged
+(`slog.Warn` with method, path and transport, inside `frontendCredentialAuth`)
+and deliberately not audited: an unregistered route is not an authorization
+decision, and a `ControlDecision` would put an attacker-drivable write on the
+listener ADR-015 decision 2 leaves empty.
+
+**A service may not claim a route relay serves.** `RouteRegistrar` accumulates
+relay's own route set as it registers it, and
+`EnhancedServiceRegistry.checkRouteConflictsLocked` refuses any manifest route
+whose path space overlaps one — a hand-maintained list would drift the first
+time someone added a route. A wildcard pattern reserves its subtree; the `/`
+catch-all is excluded, being the mount services are reached through rather
+than a path relay serves. `/relay/` stays reserved separately, since the login
+routes register outside `RouteRegistrar`. Rules and the operator-visible
+error: [`docs/service-manifest.md`](docs/service-manifest.md).
 
 **A credential may expire, and absent means never** (ADR-016 decision 3).
 `--ttl` writes an RFC3339 `expires`; a record without one round-trips exactly

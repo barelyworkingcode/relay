@@ -89,6 +89,21 @@ this listener carry a capability that runs a caller-supplied command" is no,
 and after it does, the answer is still no — a credential can be stolen and a
 filesystem permission is harder to borrow.
 
+**An unmatched path on the TCP mux is logged, and deliberately not audited.**
+A route that was never registered has no handler to record it, so the probe
+this decision exists to defeat was the one attempt leaving no trace at all:
+the same request on the socket, where the catch-all absorbs it, writes a
+`denied` control decision. The trace is a `slog.Warn` naming the method, the
+path and the transport, which is what an operator needs to see the shape of a
+probe. It is not a `ControlDecision`, for two reasons. An unregistered route
+is not an authorization decision — there is no class, no handler and no grant
+it was measured against, so a record would have to invent every field that
+makes the other records comparable. And a record is a write: putting an
+attacker-drivable one on the listener this decision leaves empty spends the
+property the emptiness buys. The line sits inside `frontendCredentialAuth`,
+so only a caller who already authenticated can produce one, which is what
+keeps a log a log rather than a flood.
+
 Consequence, stated plainly so it is not discovered later: **a browser-based
 view can never register an MCP or create a service.** Those actions stay in
 the tray, which is a real functional cost and the correct one. ADR-014 named

@@ -290,11 +290,12 @@ radius — a protocol change across repositories, and still deliberately not
 made here. What changes is that the floor is now honest: the mount is named as
 unclassified rather than mislabelled as configuration, and issue #50's
 guarantee (a browser-based view can never make relay execute an arbitrary
-command) holds again. Issue #50's second half stays open:
-`EnhancedServiceRegistry.checkRouteConflictsLocked` checks services against
-each other and never against relay's own patterns, so a service can still
-claim a path relay serves. Decision 5 depends on relay owning `/relay/`, which
-makes that gap worth closing, and it is not closed here.
+command) holds again. Issue #50's second half —
+`EnhancedServiceRegistry.checkRouteConflictsLocked` checking services against
+each other and never against relay's own patterns — is not closed here.
+It has since been closed by reserving relay's own route set, accumulated
+through `RouteRegistrar` rather than listed by hand; the rules are in
+[`docs/service-manifest.md`](../service-manifest.md).
 
 ### 5. The socket does not change, and 0600 is not spent twice
 

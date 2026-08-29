@@ -87,7 +87,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	}
 
 	tcpMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor}, s.routeDeps)
+	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor, Reserve: s.routeDeps.enhanced}, s.routeDeps)
 
 	// The origin comes from the address the kernel actually gave this
 	// listener, never from a constant or a request header — an ephemeral
@@ -107,7 +107,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, frontendRecover(tcpMux))),
+		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux)))),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
@@ -288,7 +288,7 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 	ensureFrontendTokenIsCredential(store, frontend.Token)
 
 	socketMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor}, deps)
+	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced}, deps)
 
 	// The socket door is composed through the same function the loopback one
 	// is, with an empty public set: a browser cannot reach a Unix socket and
@@ -448,6 +448,36 @@ func frontendCredentialAuth(store SettingsStore, next http.Handler) http.Handler
 		next.ServeHTTP(w, r)
 	})
 }
+
+// warnOnUnmatchedTCPRoute logs a request no pattern on the TCP mux claims —
+// http.ServeMux answering with its own 404 or its own 405, no relay handler
+// run. It sits inside frontendCredentialAuth, so only a caller who already
+// authenticated can produce a line.
+//
+// This is deliberate: it logs and records nothing. An unregistered route is
+// not an authorization decision, and a ControlDecision here would put an
+// attacker-drivable write on the listener ADR-015 decision 2 deliberately
+// leaves empty. The socket keeps no counterpart at all: its catch-all
+// absorbs every unmatched path, so a miss there is the dispatcher's, not
+// the mux's.
+//
+// This is subtle: the handler mux.Handler returns is discarded rather than
+// served. Only ServeMux.ServeHTTP stores the wildcard values a handler reads
+// back through r.PathValue, so serving it directly would empty every {id} in
+// the route set.
+func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern == "" {
+			slog.Warn(unmatchedRouteWarning,
+				"method", r.Method, "path", r.URL.Path, "transport", string(TransportTCP))
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// unmatchedRouteWarning is a constant so a test can match the line without
+// restating it.
+const unmatchedRouteWarning = "frontend: no route registered for this request"
 
 func frontendRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

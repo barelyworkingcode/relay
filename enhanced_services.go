@@ -77,6 +77,12 @@ type EnhancedServiceRegistry struct {
 	mu       sync.RWMutex
 	services map[string]*EnhancedService
 
+	// relayRoutes is the path space relay itself serves, accumulated from
+	// RouteRegistrar rather than written out here: a hand-maintained list
+	// drifts the first time someone adds a route, and a security check that
+	// has silently stopped covering half the surface is worse than none.
+	relayRoutes map[string]struct{}
+
 	// onChange fires after any successful RegisterManifest/Forget. Used by
 	// the front-door dispatcher to refresh its prefix table and by the
 	// settings UI to push status updates.
@@ -173,20 +179,106 @@ func (r *EnhancedServiceRegistry) LookupByPath(path string) *EnhancedService {
 	return best
 }
 
+// ReserveRelayRoute records one pattern relay registers, so no manifest can
+// claim a path relay already answers. Patterns arrive as http.ServeMux
+// spells them ("GET /api/projects/{id}"); relayRoutePath narrows one to the
+// path space it occupies.
+//
+// This is deliberate: the catch-all is dropped rather than reserved. "/" is
+// not a path relay serves — it is the mount that reaches services — so
+// reserving it would refuse every manifest route there is.
+func (r *EnhancedServiceRegistry) ReserveRelayRoute(pattern string) {
+	if r == nil {
+		return
+	}
+	path := relayRoutePath(pattern)
+	if path == "" || path == "/" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.relayRoutes == nil {
+		r.relayRoutes = make(map[string]struct{})
+	}
+	r.relayRoutes[path] = struct{}{}
+}
+
+// relayRoutePath reduces an http.ServeMux pattern to the path space it
+// occupies: the method is dropped, and a wildcard segment turns everything
+// from it onward into a prefix.
+//
+// This is deliberate: truncating at the wildcard reserves the whole subtree,
+// which is wider than the pattern matches. A route relay reaches by wildcard
+// makes that subtree relay's namespace, and a service placing a route inside
+// it survives only by http.ServeMux preferring the more specific pattern —
+// the ordering accident this check exists so nothing has to rely on.
+func relayRoutePath(pattern string) string {
+	if i := strings.LastIndex(pattern, " "); i >= 0 {
+		pattern = pattern[i+1:]
+	}
+	if i := strings.Index(pattern, "{"); i >= 0 {
+		pattern = pattern[:i]
+	}
+	return pattern
+}
+
+// routesOverlap reports whether two routes can ever answer the same request.
+// A route ending in "/" is a prefix and everything else is exact, which is
+// the rule LookupByPath dispatches by.
+//
+// This is deliberate: overlap, not string equality. Equality would let a
+// manifest claim "/api/" and swallow every relay route beneath it, and would
+// let one claim a path relay reaches by wildcard, which relay would then win
+// by specificity — a dead route rather than a refused one.
+func routesOverlap(a, b string) bool {
+	aPrefix := strings.HasSuffix(a, "/")
+	bPrefix := strings.HasSuffix(b, "/")
+	switch {
+	case aPrefix && bPrefix:
+		return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+	case aPrefix:
+		return strings.HasPrefix(b, a)
+	case bPrefix:
+		return strings.HasPrefix(a, b)
+	default:
+		return a == b
+	}
+}
+
+// collidingRelayRouteLocked returns the relay route that overlaps route, or
+// "". Sorted so a route overlapping two of them always names the same one.
+// Caller must hold r.mu.
+func (r *EnhancedServiceRegistry) collidingRelayRouteLocked(route string) string {
+	reserved := make([]string, 0, len(r.relayRoutes))
+	for path := range r.relayRoutes {
+		reserved = append(reserved, path)
+	}
+	sort.Strings(reserved)
+	for _, path := range reserved {
+		if routesOverlap(path, route) {
+			return path
+		}
+	}
+	return ""
+}
+
 // checkRouteConflictsLocked flags any duplicate route string between two
-// distinct serviceIDs, and refuses relay's own reserved prefix outright.
+// distinct serviceIDs, and refuses relay's own routes outright.
 // Caller must hold r.mu.Lock().
 //
-// The reserved check runs against relay's patterns, not against another
-// service's: /relay/ carries the unauthenticated login ceremony, and a
-// manifest that could claim it would put a service in front of the one door
-// relay serves with no credential (ADR-016 decision 4). This closes only the
-// /relay/ half of issue #50 — the general problem, that a service can claim
-// any other path relay serves, is still open.
+// Two reserved checks, because they rest on different evidence. /relay/ is a
+// constant: it carries the unauthenticated login ceremony, which is
+// registered outside RouteRegistrar (ADR-016 decision 5) and so is in no
+// accumulated set, and a manifest claiming it would put a service in front
+// of the one door relay serves with no credential. Everything else comes
+// from what RouteRegistrar was actually asked to register.
 func (r *EnhancedServiceRegistry) checkRouteConflictsLocked(serviceID string, routes []string) error {
 	for _, route := range routes {
 		if route == strings.TrimSuffix(relayReservedPrefix, "/") || strings.HasPrefix(route, relayReservedPrefix) {
 			return fmt.Errorf("manifest registry: route %q is reserved to relay (%s)", route, relayReservedPrefix)
+		}
+		if claimed := r.collidingRelayRouteLocked(route); claimed != "" {
+			return fmt.Errorf("manifest registry: route %q collides with %q, which relay serves", route, claimed)
 		}
 	}
 	for otherID, other := range r.services {

@@ -70,7 +70,8 @@ deployment fact, not a code fork — the service has one config loader.
 
 - **`routes`**: path prefixes (ending `/`) and exact paths the service serves.
   Drives the front-door dispatcher's longest-prefix match. WebSocket paths
-  (e.g. `/ws`) are valid entries.
+  (e.g. `/ws`) are valid entries. **A route may not claim a path relay itself
+  serves** — see the conflict rules below.
 - **`status`** (optional): a single GET endpoint relay polls (every
   `StatusPollInterval`, 2s) to render in the settings UI. Free-form JSON,
   rendered generically.
@@ -124,6 +125,35 @@ Lifecycle:
   its routes; subsequent requests 404 until re-registration.
 - **Route conflict** (two services declare the same exact route string) fails
   the second `RegisterManifest`; the service can log and exit or back off.
+- **Relay-route conflict** (a declared route overlaps a path relay serves)
+  fails `RegisterManifest` the same way. What an operator sees, on the
+  service's side as the registration error and in relay's log:
+
+  ```
+  manifest registry: route "/api/projects" collides with "/api/projects", which relay serves
+  ```
+
+  The reserved set is **accumulated from relay's own registrations**
+  (`RouteRegistrar`, ADR-015), never written down beside this check: a list
+  maintained by hand drifts the first time someone adds a route, and a
+  security check that has silently stopped covering half the surface is worse
+  than none. Three properties follow from that:
+
+  - **Overlap, not string equality.** A prefix route containing a relay path
+    collides (`/api/` swallows `/api/projects`), and so does a path inside a
+    relay prefix. Equality alone would let a manifest sit under relay and
+    survive only because `http.ServeMux` prefers the more specific pattern —
+    an ordering property, not a check.
+  - **A wildcard reserves its subtree.** Relay serves `/api/projects/{id}`, so
+    the whole of `/api/projects/` is relay's; a manifest may not place a route
+    inside it.
+  - **The `/` catch-all is not reserved.** It is the mount that reaches
+    services, not a path relay serves. Reserving it would refuse every service
+    there is.
+
+  `/relay/` is refused separately and absolutely (ADR-016 decision 5), in its
+  own words — it carries the unauthenticated login ceremony, which registers
+  outside `RouteRegistrar` and so appears in no accumulated set.
 - **Socket cleanup** is the service's job: remove a stale socket on startup,
   `os.Remove` on shutdown. Relay never touches the file.
 
