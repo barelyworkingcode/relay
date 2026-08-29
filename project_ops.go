@@ -15,7 +15,12 @@ import (
 // `configure` subset names: creating a project or widening its grant shape
 // needs the same presence check minting a credential does, because a
 // project's token is a security boundary and allowed_mcp_ids, allowed_tools,
-// access, context and allow_cwd_auth ARE what that boundary reaches.
+// access, context, allow_external and allow_cwd_auth ARE what that boundary
+// reaches. allow_external is ADR-011 decision 2c's second axis of the same
+// permission set: an agent holding a project token whose project it can
+// edit does not need to mint anything to reach outbound — it widens the
+// grant it already has (ADR-017 decision 3's own configure-subset
+// argument), so it is gated on exactly the same footing as allowed_tools.
 //
 // The one door each for HTTP (project_routes.go) and the WebView IPC
 // (ipc_projects.go) go through this rather than calling applyProjectCreate /
@@ -61,6 +66,7 @@ func (f projectCreateFields) presenceDigest() presence.Digest {
 		StringSetMapField("allowed_tools", true, f.AllowedTools).
 		StringMapField("access", true, f.Access).
 		RawJSONMapField("context", true, rawJSONMapOf(f.Context)).
+		BoolMapField("allow_external", true, f.AllowExternal).
 		BoolField("allow_cwd_auth", true, f.AllowCwdAuth).
 		StringField("kind", true, string(f.Kind)).
 		StringField("path", true, f.Path).
@@ -92,6 +98,11 @@ func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
 	} else {
 		b.RawJSONMapField("context", false, nil)
 	}
+	if f.AllowExternal != nil {
+		b.BoolMapField("allow_external", true, *f.AllowExternal)
+	} else {
+		b.BoolMapField("allow_external", false, nil)
+	}
 	if f.AllowCwdAuth != nil {
 		b.BoolField("allow_cwd_auth", true, *f.AllowCwdAuth)
 	} else {
@@ -111,14 +122,14 @@ func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
 }
 
 // projectUpdateTouchesGrant is AC-16c's "does" list: allowed_mcp_ids,
-// allowed_tools, access, context, allow_cwd_auth, kind or path. A request
-// touching only name, chat_templates, session_folders, generate_skill,
-// permission_policy, allowed_models or shell_templates must NOT prompt —
-// none of those widen what a token reaches. disabled_tools is deliberately
-// absent too: it is a denylist and can only narrow (§6.4).
+// allowed_tools, access, context, allow_external, allow_cwd_auth, kind or
+// path. A request touching only name, chat_templates, session_folders,
+// generate_skill, permission_policy, allowed_models or shell_templates must
+// NOT prompt — none of those widen what a token reaches. disabled_tools is
+// deliberately absent too: it is a denylist and can only narrow (§6.4).
 func projectUpdateTouchesGrant(f projectUpdateFields) bool {
 	return f.AllowedMcpIDs != nil || f.AllowedTools != nil || f.Access != nil ||
-		f.Context != nil || f.AllowCwdAuth != nil || f.Kind != nil || f.Path != nil
+		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil || f.Path != nil
 }
 
 func projectUpdateGrantFieldNames(f projectUpdateFields) []string {
@@ -134,6 +145,9 @@ func projectUpdateGrantFieldNames(f projectUpdateFields) []string {
 	}
 	if f.Context != nil {
 		names = append(names, "context")
+	}
+	if f.AllowExternal != nil {
+		names = append(names, "allow_external")
 	}
 	if f.AllowCwdAuth != nil {
 		names = append(names, "allow_cwd_auth")
@@ -160,6 +174,9 @@ func projectCreateGrantFieldNames(f projectCreateFields) []string {
 	}
 	if len(f.Context) > 0 {
 		names = append(names, "context")
+	}
+	if len(f.AllowExternal) > 0 {
+		names = append(names, "allow_external")
 	}
 	if f.AllowCwdAuth {
 		names = append(names, "allow_cwd_auth")

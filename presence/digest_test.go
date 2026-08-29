@@ -111,6 +111,16 @@ func TestDigest_MapKeyOrderIsIrrelevant(t *testing.T) {
 	}
 }
 
+func TestDigest_BoolMapKeyOrderIsIrrelevant(t *testing.T) {
+	m1 := map[string]bool{"macmcp": true, "fsmcp": false}
+	m2 := map[string]bool{"fsmcp": false, "macmcp": true}
+	a := NewDigestBuilder("op").BoolMapField("allow_external", true, m1).Build()
+	b := NewDigestBuilder("op").BoolMapField("allow_external", true, m2).Build()
+	if a != b {
+		t.Fatal("BoolMapField's digest depends on map iteration order")
+	}
+}
+
 func TestDigest_FieldLevelBoundariesDoNotCollide(t *testing.T) {
 	// This covers the FIELD-level boundary only: content shifted across
 	// the boundary between two different fields, and a field name shifted
@@ -284,6 +294,23 @@ func TestDigest_ElementBoundaryCollisions(t *testing.T) {
 			},
 			second: func() Digest {
 				return NewDigestBuilder("op").RawJSONMapField("context", true, map[string][]byte{"a": {}, "b\x00c": {}}).Build()
+			},
+		},
+		{
+			// BoolMapField's value is a fixed single byte, not put through
+			// putString, so it carries nothing a length-prefix mutation
+			// could touch — the exploitable boundary is the KEY, same as
+			// StringSetMapField and RawJSONMapField above. The two false/true
+			// assignments are chosen so the mutated (unprefixed) byte
+			// streams realign exactly: "a\x00b"+false+"c"+true and
+			// "a"+false+"b\x00c"+true are the same six bytes without a
+			// key length prefix, and different with one.
+			name: "BoolMapField: key list realigns around an embedded NUL",
+			first: func() Digest {
+				return NewDigestBuilder("op").BoolMapField("allow_external", true, map[string]bool{"a\x00b": false, "c": true}).Build()
+			},
+			second: func() Digest {
+				return NewDigestBuilder("op").BoolMapField("allow_external", true, map[string]bool{"a": false, "b\x00c": true}).Build()
 			},
 		},
 	}
