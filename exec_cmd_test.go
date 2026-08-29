@@ -1,10 +1,5 @@
 package main
 
-// Coverage for resolveToolArgs — the --args / --args-file / stdin resolution
-// that `relay mcp call` uses. The file/stdin path exists specifically to dodge
-// shell-quoting bugs (the "Van Gogh's apostrophe" case) for every skill-driven
-// tool call, and was previously untested.
-
 import (
 	"os"
 	"path/filepath"

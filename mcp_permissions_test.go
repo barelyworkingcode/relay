@@ -1,12 +1,5 @@
 package main
 
-// Pure-logic coverage for the TCC permission helpers. The tccutil spawn and
-// Cocoa primer are not unit-testable, but the alias/canonical/tccutil-spelling
-// mapping tables and the hand-rolled Info.plist parser are deterministic — and
-// a typo in any of them silently sends the wrong service name to
-// `tccutil reset` or fails to resolve a bundle ID. These were previously
-// untested.
-
 import (
 	"os"
 	"path/filepath"
@@ -146,7 +139,6 @@ func TestBundleIDFromCommand_WalksUpToInfoPlist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Direct path resolves by walking MacOS → Contents/Info.plist.
 	got, err := bundleIDFromCommand(bin)
 	if err != nil {
 		t.Fatalf("bundleIDFromCommand(direct): %v", err)
@@ -155,7 +147,8 @@ func TestBundleIDFromCommand_WalksUpToInfoPlist(t *testing.T) {
 		t.Errorf("direct bundle ID = %q, want com.example.foo", got)
 	}
 
-	// Symlink into the bundle (the ~/.local/bin/macmcp shape) resolves the same.
+	// A symlink into the bundle — the ~/.local/bin/macmcp shape — must resolve
+	// the same way as the direct path.
 	linkDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(linkDir, 0755); err != nil {
 		t.Fatal(err)

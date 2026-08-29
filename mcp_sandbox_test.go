@@ -2,10 +2,6 @@
 
 package main
 
-// fsMCP v3 integration, R5: spawning a --root'd stdio MCP under seatbelt.
-// The fail-closed tests are the point — a caller of prepareStdioLaunch that
-// gets a non-nil error must never fall back to an unsandboxed spawn.
-
 import (
 	"context"
 	"os"
@@ -27,8 +23,7 @@ func TestStdioRootFlag(t *testing.T) {
 		{"trailing with no value", []string{"--root"}, "", false},
 		{"among other flags", []string{"--read-only", "--root", "/a/b", "--max-response-bytes=9"}, "/a/b", true},
 		// Go's flag package accepts one dash as readily as two, so an MCP
-		// spelled this way starts and serves identically. Missing it here
-		// spawned the child with no seatbelt and no audited root.
+		// spelled this way starts and serves identically.
 		{"single dash, space form", []string{"-root", "/a/b"}, "/a/b", true},
 		{"single dash, equals form", []string{"-root=/a/b"}, "/a/b", true},
 		{"single dash among others", []string{"-read-only", "-root", "/a/b"}, "/a/b", true},
@@ -56,9 +51,9 @@ func TestStdioReadOnlyFlag(t *testing.T) {
 	if !stdioReadOnlyFlag([]string{"--read-only=true"}) {
 		t.Error("--read-only=true not recognized")
 	}
-	// Go parses a boolean flag's value with strconv.ParseBool and accepts one
-	// dash. Each of these makes fsMCP read-only, so each must pick the
-	// read-only profile rather than leaving the wider one in force.
+	// strconv.ParseBool, which parses a boolean flag's value, accepts one
+	// dash and several spellings — each of these must still pick the
+	// read-only profile.
 	for _, args := range [][]string{
 		{"-read-only"},
 		{"-read-only=true"},
@@ -71,7 +66,6 @@ func TestStdioReadOnlyFlag(t *testing.T) {
 			t.Errorf("stdioReadOnlyFlag(%v) = false; fsMCP is read-only but relay would apply the read-WRITE profile", args)
 		}
 	}
-	// And the shapes that genuinely are not read-only.
 	for _, args := range [][]string{
 		{"--read-only=false"},
 		{"--read-only=0"},
@@ -117,14 +111,13 @@ func TestEnsureSandboxProfile_ReadWriteVsReadOnly(t *testing.T) {
 		t.Errorf("read-only profile missing the read grant clause:\n%s", ro)
 	}
 	// Neither profile ever names an actual directory — the grant travels as
-	// -D GRANT=, never interpolated into the file (R5).
+	// -D GRANT=, never interpolated into the file.
 	for _, body := range [][]byte{rw, ro} {
 		if strings.Contains(string(body), "/Users") {
 			t.Errorf("profile interpolated a concrete path:\n%s", body)
 		}
 	}
 
-	// Idempotent: writing again must not error or change the content.
 	again, err := ensureSandboxProfile(false)
 	if err != nil || again != rwPath {
 		t.Fatalf("second ensureSandboxProfile(false) = %q, %v", again, err)
@@ -145,11 +138,6 @@ func TestPrepareStdioLaunch_NoRootPassesThrough(t *testing.T) {
 	}
 }
 
-// The consequence of the spelling, not just the parse: an MCP configured with
-// a single-dash -root must reach seatbelt and the audit record like any other.
-// Before, relay found no root, fell through to the unsandboxed pass-through
-// branch, and left ResolvedRoot empty — so the child ran unconfined and the
-// audit line carried no root= to say so.
 func TestPrepareStdioLaunch_SingleDashRootIsStillSandboxed(t *testing.T) {
 	mkSandboxRelayHome(t)
 	root := t.TempDir()
@@ -229,9 +217,6 @@ func TestPrepareStdioLaunch_ReadOnlyPicksTheReadOnlyProfile(t *testing.T) {
 	}
 }
 
-// TestPrepareStdioLaunch_FailClosed_SandboxExecMissing is the fail-closed
-// requirement's core claim: no sandbox-exec, no spawn at all — never a
-// silent fallback to running the MCP unsandboxed.
 func TestPrepareStdioLaunch_FailClosed_SandboxExecMissing(t *testing.T) {
 	mkSandboxRelayHome(t)
 	old := sandboxExecPath
@@ -249,9 +234,9 @@ func TestPrepareStdioLaunch_FailClosed_SandboxExecMissing(t *testing.T) {
 	}
 }
 
-// TestPrepareStdioLaunch_FailClosed_RootDoesNotResolve covers a --root that
-// cannot be resolved through symlinks (does not exist): seatbelt matches real
-// paths, so relay must refuse rather than sandbox against an unresolved one.
+// Seatbelt matches real, resolved paths, so a --root that does not resolve
+// through symlinks (because it does not exist) must be refused rather than
+// sandboxed against the wrong thing.
 func TestPrepareStdioLaunch_FailClosed_RootDoesNotResolve(t *testing.T) {
 	mkSandboxRelayHome(t)
 	cfg := &ExternalMcp{ID: "fsmcp3", Command: "/usr/local/bin/fsmcp3",
@@ -264,16 +249,6 @@ func TestPrepareStdioLaunch_FailClosed_RootDoesNotResolve(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// End-to-end: a real stdio child spawned through connectStdio, under a real
-// seatbelt, on this machine.
-// ---------------------------------------------------------------------------
-
-// TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot proves
-// the whole path relay actually runs: register an MCP with --root, start it
-// through the manager exactly as StartAll/Reconcile do, and check both that
-// the handshake still succeeds under seatbelt and that McpSurfaceFor reports
-// the resolved root (what router.go stamps onto the audit log, R2).
 func TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testing.T) {
 	if _, err := os.Stat(sandboxExecPath); err != nil {
 		t.Skipf("sandbox-exec not available on this machine: %v", err)
@@ -302,9 +277,6 @@ func TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testi
 	}
 }
 
-// TestExternalMcpManager_StdioRoot_FailsClosedWhenSandboxExecMissing proves
-// the manager-level path never spawns unsandboxed either: with sandbox-exec
-// unavailable, startOne must return an error and the MCP must never connect.
 func TestExternalMcpManager_StdioRoot_FailsClosedWhenSandboxExecMissing(t *testing.T) {
 	mkSandboxRelayHome(t)
 	old := sandboxExecPath

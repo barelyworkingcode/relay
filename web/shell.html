@@ -517,6 +517,30 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .remote-note { font-size: 11px; color: var(--text-2); margin-top: 8px; }
 .remote-note.warn { color: var(--warn); }
 .remote-note.danger { color: var(--danger); }
+
+/* ---- Passkeys (registrations + the browser sessions they minted) ---- */
+.pk-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }
+.pk-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 12px; }
+.pk-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.pk-meta { color: var(--text-3); font-size: 11px; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+/* The credential id is shown ABBREVIATED, never whole — the opposite choice
+   to .enrol-fp above, and deliberately so. A fingerprint outlives the record
+   it names and is the only thing identifying that client's calls afterwards;
+   a passkey id names nothing after revocation, so the only thing a full one
+   would add on screen is a long random-looking string next to the word
+   "credential". Revoke still sends the full id, which never gets rendered. */
+.pk-id { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+.pk-counter { color: var(--text-3); font-size: 11px; margin-top: 4px; }
+/* The minted bootstrap code. Loud, because it is on screen for two minutes
+   and is not recoverable once the window is closed. */
+.pk-code-banner { background: var(--bg-control); background: color-mix(in srgb, var(--accent) 14%, var(--bg-card)); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
+.pk-code { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: 1px; color: var(--text); word-break: break-all; user-select: all; margin: 8px 0; }
+.pk-code-line { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+.pk-code-line.warn { color: var(--warn); }
+.pk-code-line strong { color: var(--text); }
+.pk-session { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 8px; }
+.pk-session-name { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
+.pk-session-meta { color: var(--text-3); font-size: 11px; margin-top: 3px; }
 </style></head>
 <body>
 <div class="sidebar">
@@ -524,6 +548,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
     <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
     <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
+    <div class="sidebar-item" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
     <div class="sidebar-item" onclick="showPage('audit')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tool Calls</div>
 </div>
@@ -539,7 +564,10 @@ window.__RELAY_INIT__ = {
   mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,
   remote: __REMOTE_JSON__,
-  enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__
+  enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
+  passkeys: __PASSKEYS_JSON__,
+  loginSessions: __LOGIN_SESSIONS_JSON__,
+  loginCode: __LOGIN_CODE_JSON__
 };
 </script>
 <!--RELAY_BUNDLE-->

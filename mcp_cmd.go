@@ -88,9 +88,8 @@ func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
 	notifyMcpChange(updated, id, secret)
 }
 
-// discoverHTTPWithAuth discovers an HTTP MCP, handling OAuth if the server
-// requires authentication. Always returns a registerable config, even if
-// discovery or auth partially fails.
+// Always returns a registerable config, even if discovery or auth partially
+// fails.
 func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
@@ -103,7 +102,6 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 		exitError("server requires authentication but discovery returned no config")
 	}
 
-	// Server requires authentication — attempt OAuth flow.
 	fmt.Println("server requires authentication, starting OAuth flow...")
 	oauth, oauthErr := startOAuthFlow(mcpURL, openBrowserCmd)
 	if oauthErr != nil {
@@ -113,7 +111,6 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 		return result
 	}
 
-	// OAuth succeeded — retry discovery with credentials.
 	fmt.Println("authentication successful, retrying discovery...")
 	result, err = DiscoverHTTPMcp(context.Background(), name, id, mcpURL, oauth)
 	if err != nil {
@@ -130,7 +127,6 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 	return result
 }
 
-// openBrowserCmd opens a URL in the default browser.
 func openBrowserCmd(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {

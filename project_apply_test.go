@@ -5,17 +5,10 @@ import (
 	"testing"
 )
 
-// Tests for applyProjectCreate / applyProjectUpdate's remote-project
-// validation. GenerateSkill, AllowCwdAuth, and ShellTemplates aren't
-// parameters of CreateProjectWithTokenKind (project_test.go covers that
-// function directly) — they're applied by follow-on mutators inside
-// applyProjectCreate, so exercising their rejection requires going through
-// the full projectCreateFields path tested here. All hermetic: these use a
-// bare in-memory *Settings, never the real config dir (mirrors project_test.go).
-
-// TestApplyProjectCreate_RemoteRejectsAllowCwdAuth proves the full create
-// path (not just CreateProjectWithTokenKind) refuses allow_cwd_auth on a
-// remote project, and that nothing is left behind on rejection.
+// GenerateSkill, AllowCwdAuth, and ShellTemplates aren't parameters of
+// CreateProjectWithTokenKind (see project_test.go) — they're applied by
+// follow-on mutators inside applyProjectCreate, so testing their rejection
+// requires the full projectCreateFields path.
 func TestApplyProjectCreate_RemoteRejectsAllowCwdAuth(t *testing.T) {
 	s := &Settings{Version: 1}
 	f := projectCreateFields{
@@ -31,8 +24,7 @@ func TestApplyProjectCreate_RemoteRejectsAllowCwdAuth(t *testing.T) {
 	}
 }
 
-// TestApplyProjectCreate_RemoteRejectsGenerateSkill proves generate_skill is
-// refused rather than silently accepted as an inert toggle — today
+// Deliberate: refused rather than silently accepted as an inert toggle —
 // regenProjectSkills just skips pathless projects, which would make the flag
 // a lie about what it does.
 func TestApplyProjectCreate_RemoteRejectsGenerateSkill(t *testing.T) {
@@ -50,8 +42,6 @@ func TestApplyProjectCreate_RemoteRejectsGenerateSkill(t *testing.T) {
 	}
 }
 
-// TestApplyProjectCreate_RemoteRejectsShellTemplates proves shell templates
-// (which launch a host terminal) are refused on a project with no host.
 func TestApplyProjectCreate_RemoteRejectsShellTemplates(t *testing.T) {
 	s := &Settings{Version: 1}
 	f := projectCreateFields{
@@ -69,9 +59,6 @@ func TestApplyProjectCreate_RemoteRejectsShellTemplates(t *testing.T) {
 	}
 }
 
-// TestApplyProjectCreate_RemoteRejectsPathScopedGrant proves the full create
-// path also enforces ValidateProjectGrants (not just CreateProjectWithTokenKind
-// directly), naming the offending MCP.
 func TestApplyProjectCreate_RemoteRejectsPathScopedGrant(t *testing.T) {
 	s := &Settings{Version: 1}
 	f := projectCreateFields{
@@ -88,8 +75,6 @@ func TestApplyProjectCreate_RemoteRejectsPathScopedGrant(t *testing.T) {
 	}
 }
 
-// TestApplyProjectCreate_RemoteZeroMcpsSucceeds proves the full create path
-// accepts a remote project enrolled with zero grants.
 func TestApplyProjectCreate_RemoteZeroMcpsSucceeds(t *testing.T) {
 	s := &Settings{Version: 1}
 	f := projectCreateFields{
@@ -108,11 +93,8 @@ func TestApplyProjectCreate_RemoteZeroMcpsSucceeds(t *testing.T) {
 	}
 }
 
-// TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip proves the update path
-// re-validates the FINAL shape, not just the touched field: flipping
-// AllowCwdAuth on an already-remote project must be refused, and — critically
-// — nothing about the project may change when it is (found=true, but the
-// stored project is untouched).
+// Subtle: the update path re-validates the FINAL shape, not just the touched
+// field — and on rejection found=true but the stored project is untouched.
 func TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip(t *testing.T) {
 	s := &Settings{Version: 1}
 	created, err := applyProjectCreate(s, projectCreateFields{Name: "Agent VM", Kind: ProjectKindRemote}, nil)
@@ -132,8 +114,6 @@ func TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip(t *testing.T) {
 	}
 }
 
-// TestApplyProjectUpdate_RemoteRejectsWildcardMcps proves the update path
-// re-checks the wildcard rule when allowed_mcp_ids changes.
 func TestApplyProjectUpdate_RemoteRejectsWildcardMcps(t *testing.T) {
 	s := &Settings{Version: 1}
 	created, err := applyProjectCreate(s, projectCreateFields{Name: "Agent VM", Kind: ProjectKindRemote}, nil)

@@ -8,11 +8,10 @@ import (
 	"relaygo/bridge"
 )
 
-// ipcServiceConfigMsg drives the Service Inspector's config editor. The
-// manifest is the authority: relay refuses get/save for any service that did
-// not declare a Config. The file is opaque text on the wire — relay validates
-// that it parses and is within the size cap, but never interprets its shape
-// (the schema-driven form lives in the UI).
+// The manifest is the authority: relay refuses get/save for any service that
+// did not declare a Config. The file is opaque text on the wire — relay
+// validates that it parses and is within the size cap, but never interprets
+// its shape (the schema-driven form lives in the UI).
 type ipcServiceConfigMsg struct {
 	ServiceID string `json:"serviceId"`
 	Op        string `json:"op"`             // "get" | "save"
@@ -26,10 +25,9 @@ const (
 	configOpSave = "save"
 )
 
-// ipcServiceConfig handles a config get/save for one enhanced service. Path
-// resolution, reads, and writes go through resolveConfigPath (the single
-// security gate) and run off the UI thread — a save also restarts the service,
-// which blocks on process exit.
+// Path resolution, reads, and writes go through resolveConfigPath (the
+// single security gate) and run off the UI thread — a save also restarts
+// the service, which blocks on process exit.
 func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 	var msg ipcServiceConfigMsg
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -55,8 +53,6 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	// allowedRoot = the service's configured working directory; the gate
-	// confines reads/writes to it. Resolved synchronously (cheap, in-memory).
 	allowedRoot := ""
 	if svc, _ := ipc.Store.Get().findServiceByID(msg.ServiceID); svc != nil {
 		allowedRoot = svc.WorkingDir
@@ -91,9 +87,10 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}
-			// Write the ORIGINAL edited bytes (not a re-marshal) so comments and
-			// key order survive on disk; preserve the file's existing mode (taken
-			// from the same FileInfo we validated, avoiding a re-stat race).
+			// Write the ORIGINAL edited bytes (not a re-marshal) so comments
+			// and key order survive on disk; preserve the file's existing
+			// mode (from the same FileInfo just validated, avoiding a
+			// re-stat race).
 			if err := writeConfigFile(realPath, []byte(msg.Text), info.Mode().Perm()); err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
@@ -101,7 +98,6 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 			emitConfigResult(ipc, msg, true, "", "")
 
 			if decl.ApplyMode == bridge.ConfigApplyLive {
-				// Service watches the file itself; nothing to restart.
 				dispatchEmit(ipc, "onServiceConfigApplied", map[string]interface{}{
 					"serviceId": msg.ServiceID, "mode": "saved",
 				})
@@ -115,13 +111,10 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 	}
 }
 
-// restartServiceForConfig restarts a running service so it re-reads a freshly
-// saved config file, mirroring the off-thread reload in ipcUpdateService. Must
-// be called off-main (Reload→Stop blocks on process exit) — it already is, from
-// ipcServiceConfig's goroutine.
+// Must be called off-main (Reload->Stop blocks on process exit) — it already
+// is, from ipcServiceConfig's goroutine.
 func restartServiceForConfig(ipc *IPCContext, id string) {
 	if !ipc.Registry.IsRunning(id) {
-		// Not running — the new config loads on the next manual start.
 		dispatchEmit(ipc, "onServiceConfigApplied", map[string]interface{}{
 			"serviceId": id, "mode": "saved",
 		})
@@ -153,8 +146,6 @@ func restartServiceForConfig(ipc *IPCContext, id string) {
 	})
 }
 
-// emitConfigResult sends a get/save outcome back to the WebView. text carries
-// the file contents on a successful get; it is empty otherwise.
 func emitConfigResult(ipc *IPCContext, msg ipcServiceConfigMsg, ok bool, text, errStr string) {
 	if !ok {
 		slog.Warn("service config op rejected", "service", msg.ServiceID, "op", msg.Op, "reason", errStr)

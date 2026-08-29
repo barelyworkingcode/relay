@@ -2,13 +2,11 @@
 
 package main
 
-// Real stdio-transport coverage for externalMcpConn. Every other test in the
-// suite substitutes mockMcpConn, which bypasses the JSON-RPC framing, the
-// pending-request ID map, the reader-death signaling, and the stdin-write
-// path entirely. These tests drive the genuine spawnStdioConn → readLoop →
-// SendRequest pipeline against the in-tree cmd/testmcp peer, so a framing,
-// ID-routing, or deadlock regression in the actual fsMCP/macMCP code path is
-// caught — none of it was before.
+// mockMcpConn, used throughout the rest of the suite, bypasses the JSON-RPC
+// framing, the pending-request ID map, the reader-death signaling, and the
+// stdin-write path entirely. These tests drive the genuine spawnStdioConn →
+// readLoop → SendRequest pipeline against the in-tree cmd/testmcp peer so a
+// framing, ID-routing, or deadlock regression in that path is still caught.
 
 import (
 	"context"
@@ -29,8 +27,6 @@ var (
 	testmcpBinErr  error
 )
 
-// buildTestMcpBinary compiles cmd/testmcp once per test run and returns the
-// path. Mirrors buildTestServiceBinary.
 func buildTestMcpBinary(t *testing.T) string {
 	t.Helper()
 	testmcpBinOnce.Do(func() {
@@ -54,8 +50,6 @@ func buildTestMcpBinary(t *testing.T) string {
 	return testmcpBinPath
 }
 
-// newTestMcpConn spawns a real stdio connection to the testmcp peer and
-// registers cleanup.
 func newTestMcpConn(t *testing.T) *externalMcpConn {
 	t.Helper()
 	bin := buildTestMcpBinary(t)
@@ -67,7 +61,6 @@ func newTestMcpConn(t *testing.T) *externalMcpConn {
 	return conn
 }
 
-// markerOf decodes the {"marker":...} echo result.
 func markerOf(t *testing.T, raw json.RawMessage) string {
 	t.Helper()
 	var p struct {
@@ -90,9 +83,6 @@ func TestStdioConn_RoundTrip(t *testing.T) {
 	}
 }
 
-// Concurrent requests with deliberately reordered replies must each return
-// their OWN response — proving the pending map routes by JSON-RPC ID, not by
-// arrival order.
 func TestStdioConn_ConcurrentIDRouting(t *testing.T) {
 	conn := newTestMcpConn(t)
 
@@ -126,8 +116,6 @@ func TestStdioConn_ConcurrentIDRouting(t *testing.T) {
 	}
 }
 
-// readLoop must skip a malformed response line and still deliver the valid
-// response that follows it.
 func TestStdioConn_SkipsMalformedLine(t *testing.T) {
 	conn := newTestMcpConn(t)
 	res, err := conn.SendRequest(context.Background(), "garbage_then_echo", map[string]any{"marker": "survived"})
@@ -139,9 +127,8 @@ func TestStdioConn_SkipsMalformedLine(t *testing.T) {
 	}
 }
 
-// When the child process dies mid-request, the in-flight SendRequest must
-// return the reader error rather than hang, and every subsequent request must
-// fail fast (prepareRequest sees readerDone closed).
+// Every request after the reader dies must also fail fast: prepareRequest
+// sees readerDone closed rather than blocking on a reply that will never come.
 func TestStdioConn_ReaderDeathOnProcessExit(t *testing.T) {
 	conn := newTestMcpConn(t)
 
@@ -156,8 +143,6 @@ func TestStdioConn_ReaderDeathOnProcessExit(t *testing.T) {
 	}
 }
 
-// A caller-supplied context deadline must cancel a stuck request and reclaim
-// its pending slot.
 func TestStdioConn_ContextCancellation(t *testing.T) {
 	conn := newTestMcpConn(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -172,9 +157,8 @@ func TestStdioConn_ContextCancellation(t *testing.T) {
 	}
 }
 
-// The MCPRequestTimeout fallback (the timer.C branch) must fire when neither a
-// response nor a caller deadline arrives. MCPRequestTimeout is a var precisely
-// so this path can be exercised deterministically.
+// MCPRequestTimeout is a var, not a const, precisely so this fallback path
+// can be exercised deterministically here.
 func TestStdioConn_RequestTimeout(t *testing.T) {
 	old := MCPRequestTimeout
 	MCPRequestTimeout = 150 * time.Millisecond

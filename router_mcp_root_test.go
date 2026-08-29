@@ -1,8 +1,7 @@
 package main
 
-// fsMCP v3 integration, R2: relay knows the directory it spawned a stdio MCP
-// with even when the MCP itself publishes no contextSchema at all, and the
-// audit record must carry that fact separately from Scope so
+// Deliberate: relay records the directory it spawned a stdio MCP with even
+// when the MCP publishes no contextSchema, kept separate from Scope so
 // "scope=(none declared)" stays true and meaningful.
 
 import (
@@ -13,12 +12,8 @@ import (
 	"relaygo/mcp"
 )
 
-// fsmcpV3ToolSurface is a scale model of fsMCP v3's own annotations: every
-// tool is honestly read-only or mutating, and closed-world -- these tools
-// never leave the host -- which is what a real fs_list/fs_read grant looks
-// like and is needed here so the outbound-grant check (ADR-011 decision 2c)
-// does not itself refuse the call before McpRoot ever has a chance to be
-// recorded.
+// closed-world (openWorldHint:false) so the outbound-grant check (decision
+// 2c) doesn't refuse the call before McpRoot has a chance to be recorded.
 func fsmcpV3ToolSurface() []mcp.Tool {
 	return []mcp.Tool{
 		{Name: "fs_list", Description: "List a directory.",
@@ -28,10 +23,6 @@ func fsmcpV3ToolSurface() []mcp.Tool {
 	}
 }
 
-// rootedProfile builds a router granting one MCP that declares NO context
-// schema — matching fsMCP v3, which publishes none — whose live connection
-// carries a ResolvedRoot the way connectStdio populates it after a real
-// --root spawn.
 func rootedProfile(t *testing.T, root string) *appRouter {
 	t.Helper()
 	proj := Project{
@@ -79,9 +70,6 @@ func TestAudit_RecordsMcpRootAsSeparateFactFromScope(t *testing.T) {
 	}
 }
 
-// TestAudit_NoRootWhenRelayDidNotSpawnOne pins the negative: an MCP relay
-// connected to without a --root leaves McpRoot empty, never a placeholder
-// that would read as a real directory.
 func TestAudit_NoRootWhenRelayDidNotSpawnOne(t *testing.T) {
 	r := rootedProfile(t, "")
 	rec := newTestAudit(t, nil)

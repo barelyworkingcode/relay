@@ -7,13 +7,6 @@ import (
 	"relaygo/bridge"
 )
 
-// Tests for the in-memory registry of relay-enhanced services. Covers:
-//   - Register CRUD + replacement semantics
-//   - Route-conflict detection
-//   - Longest-prefix-match correctness
-//   - Forget lifecycle
-//   - onChange callback fan-out
-
 func newManifest(routes ...string) bridge.Manifest {
 	return bridge.Manifest{Routes: routes}
 }
@@ -65,7 +58,6 @@ func TestEnhancedServiceRegistry_RouteConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected conflict error on duplicate route across services")
 	}
-	// And svc-b should NOT be registered after the conflict.
 	if r.Get("svc-b") != nil {
 		t.Fatal("conflicting registration must not be persisted")
 	}
@@ -74,7 +66,6 @@ func TestEnhancedServiceRegistry_RouteConflict(t *testing.T) {
 func TestEnhancedServiceRegistry_RouteConflict_AllowsSameServiceReregister(t *testing.T) {
 	r := NewEnhancedServiceRegistry(nil)
 	_ = r.RegisterManifest("svc-a", "/tmp/a.sock", "tok-a", newManifest("/api/shared"))
-	// Re-registering svc-a with the same route must NOT conflict with itself.
 	if err := r.RegisterManifest("svc-a", "/tmp/a.sock", "tok-a-rotated", newManifest("/api/shared")); err != nil {
 		t.Fatalf("re-register of same service should not conflict: %v", err)
 	}
@@ -91,19 +82,18 @@ func TestEnhancedServiceRegistry_Forget(t *testing.T) {
 
 func TestEnhancedServiceRegistry_LookupByPath_LongestPrefix(t *testing.T) {
 	r := NewEnhancedServiceRegistry(nil)
-	// Two services with overlapping prefixes — longest must win.
 	_ = r.RegisterManifest("api", "/tmp/api.sock", "t1", newManifest("/api/"))
 	_ = r.RegisterManifest("sessions", "/tmp/sess.sock", "t2", newManifest("/api/sessions/"))
 
 	cases := []struct {
-		path     string
-		wantSvc  string
+		path    string
+		wantSvc string
 	}{
-		{"/api/foo", "api"},                          // matches /api/ only
-		{"/api/sessions/123", "sessions"},            // matches both, /api/sessions/ longer
-		{"/api/sessions/", "sessions"},               // exact-prefix match on sessions
-		{"/api/", "api"},                             // matches /api/ exactly
-		{"/unknown", ""},                             // nothing claims it
+		{"/api/foo", "api"},               // matches /api/ only
+		{"/api/sessions/123", "sessions"}, // matches both, /api/sessions/ longer
+		{"/api/sessions/", "sessions"},    // exact-prefix match on sessions
+		{"/api/", "api"},                  // matches /api/ exactly
+		{"/unknown", ""},                  // nothing claims it
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -137,7 +127,6 @@ func TestEnhancedServiceRegistry_LookupByPath_ExactVsPrefix(t *testing.T) {
 		t.Fatalf("prefix match failed; got=%v", got)
 	}
 	if got := r.LookupByPath("/api/prefix"); got != nil {
-		// "/api/prefix/" requires the trailing slash to match
 		t.Fatalf("prefix route should require the trailing slash; got=%v", got.ServiceID)
 	}
 }

@@ -1,16 +1,11 @@
 package main
 
-// ADR-011 decision 5: source replaces the hardcoded field name, and the grant
-// question becomes "would this leave the MCP with no usable tools?"
-
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// fsmcpSurface is fsMCP once it declares v2: one project_path field with no
-// applies_to, which governs every tool it has.
 func fsmcpSurface() McpSurface {
 	return McpSurface{
 		Schema:        json.RawMessage(fsmcpV2Schema),
@@ -19,8 +14,6 @@ func fsmcpSurface() McpSurface {
 	}
 }
 
-// macmcpSurface is macMCP's worked example: three restrict fields, only one of
-// them project_path, and that one governs exactly two of the tools.
 func macmcpSurface() McpSurface {
 	return McpSurface{
 		Schema:        json.RawMessage(macmcpSchema),
@@ -38,10 +31,6 @@ func remoteProjectGranting(ids ...string) *Project {
 }
 
 func TestValidateProjectGrants_RefusesAnMcpWhoseEveryToolNeedsTheProjectPath(t *testing.T) {
-	// The old rule refused fsMCP because it declared a field called
-	// "allowed_dirs". The new one refuses it because a profile has no path,
-	// every fs tool is governed by the field that path would fill, and so the
-	// grant would buy nothing at all. Same answer, derived instead of encoded.
 	s := &Settings{}
 	err := s.ValidateProjectGrants(remoteProjectGranting("fsmcp"), McpSurfaces{"fsmcp": fsmcpSurface()})
 	if err == nil {
@@ -55,15 +44,10 @@ func TestValidateProjectGrants_RefusesAnMcpWhoseEveryToolNeedsTheProjectPath(t *
 }
 
 func TestValidateProjectGrants_PermitsAnMcpThatKeepsUsableTools(t *testing.T) {
-	// macMCP's file_dirs governs mail_save_attachment and mail_get_source
-	// only, so the MCP stays grantable and precisely those two lose their
-	// filesystem write. This is ADR-011 finding 1's fix arriving as a
-	// consequence of the model rather than as a special case.
 	s := &Settings{}
 	if err := s.ValidateProjectGrants(remoteProjectGranting("macmcp"), McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
 		t.Fatalf("a profile was refused macMCP, which retains 7 usable tools: %v", err)
 	}
-	// And both together still fail on the one that cannot work.
 	err := s.ValidateProjectGrants(remoteProjectGranting("macmcp", "fsmcp"),
 		McpSurfaces{"macmcp": macmcpSurface(), "fsmcp": fsmcpSurface()})
 	if err == nil || !strings.Contains(err.Error(), "fsmcp") {
@@ -71,11 +55,11 @@ func TestValidateProjectGrants_PermitsAnMcpThatKeepsUsableTools(t *testing.T) {
 	}
 }
 
+// This is a coherence check an operator sees at edit time, not the boundary —
+// SyncProjectToken's guard and CallTool's presence check are — so a missing
+// surface is permitted rather than refused: refusing here would make an MCP
+// that is merely not running un-grantable.
 func TestValidateProjectGrants_PermitsWhenTheToolSurfaceIsUnknown(t *testing.T) {
-	// This is a coherence check an operator sees at edit time, not the
-	// boundary — SyncProjectToken's guard and CallTool's presence check are.
-	// Refusing on missing information would make an MCP that is merely not
-	// running un-grantable.
 	surface := macmcpSurface()
 	surface.Tools = nil
 	s := &Settings{}
@@ -95,10 +79,10 @@ func TestValidateProjectGrants_LocalProjectsAreExempt(t *testing.T) {
 	}
 }
 
+// Relay writes the path because the SCHEMA asked for it, not because relay
+// recognised the field name: the field here is called file_dirs and relay
+// has never heard of it.
 func TestSyncProjectToken_DerivesEveryProjectPathFieldTheSchemaDeclares(t *testing.T) {
-	// Relay writes the path because the SCHEMA asked for it, not because relay
-	// recognised the name. The field here is called file_dirs and relay has
-	// never heard of it.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "macmcp"}}}
 	proj := &Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"}}
 	s.SyncProjectToken(proj, McpSurfaces{"macmcp": macmcpSurface()})
@@ -107,17 +91,12 @@ func TestSyncProjectToken_DerivesEveryProjectPathFieldTheSchemaDeclares(t *testi
 	if string(values["file_dirs"]) != `["/tmp/project"]` {
 		t.Fatalf("file_dirs = %s, want the project path", values["file_dirs"])
 	}
-	// The operator-supplied fields are NOT invented. Relay has no answer to
-	// "which mailbox" and must not guess one.
 	if _, invented := values["mail_accounts"]; invented {
 		t.Errorf("relay invented a value for an operator-supplied scope field: %s", values["mail_accounts"])
 	}
 }
 
 func TestSyncProjectToken_DerivationDoesNotClobberOperatorSetFields(t *testing.T) {
-	// The old code replaced the whole context blob, which was harmless while
-	// relay derived exactly one field and destructive as soon as an operator
-	// can set others beside it.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "macmcp"}}}
 	proj := &Project{
 		ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"},
@@ -136,10 +115,10 @@ func TestSyncProjectToken_DerivationDoesNotClobberOperatorSetFields(t *testing.T
 	}
 }
 
+// Defence in depth: ValidateProjectGrants is supposed to refuse a grant this
+// could apply to; this guard is what keeps a bypass of that check from
+// turning a silent widening into a loud failure.
 func TestSyncProjectToken_ARemoteRecordNeverGetsAProjectPathField(t *testing.T) {
-	// Defence in depth, stated generically. ValidateProjectGrants is supposed
-	// to refuse a grant this could apply to; this guard is what keeps a bypass
-	// of that check from turning a silent widening into a loud failure.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "macmcp"}}}
 	proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"}}
 	s.SyncProjectToken(proj, McpSurfaces{"macmcp": macmcpSurface()})
@@ -148,18 +127,16 @@ func TestSyncProjectToken_ARemoteRecordNeverGetsAProjectPathField(t *testing.T) 
 	}
 }
 
+// fs_bash is DEFERRED by ADR-011 as still a hardcoded tool name — it is keyed
+// off "this MCP scopes something to the project path" rather than off the
+// field's name, the most domain-blind form available without a schema change.
 func TestSyncProjectToken_DisablesFsBashForAnyPathScopedMcp(t *testing.T) {
-	// DEFERRED by ADR-011: this is still a hardcoded tool name. It is now keyed
-	// off "this MCP scopes something to the project path" rather than off the
-	// field's name, which is the most domain-blind form available without the
-	// schema change.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "fsmcp"}}}
 	proj := &Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"fsmcp"}}
 	s.SyncProjectToken(proj, McpSurfaces{"fsmcp": fsmcpSurface()})
 	if len(proj.DisabledTools["fsmcp"]) != 1 || proj.DisabledTools["fsmcp"][0] != v1FsBashTool {
 		t.Fatalf("fs_bash was not auto-disabled: %v", proj.DisabledTools)
 	}
-	// Idempotent across resyncs.
 	s.SyncProjectToken(proj, McpSurfaces{"fsmcp": fsmcpSurface()})
 	if len(proj.DisabledTools["fsmcp"]) != 1 {
 		t.Fatalf("a resync duplicated the entry: %v", proj.DisabledTools)
@@ -167,8 +144,6 @@ func TestSyncProjectToken_DisablesFsBashForAnyPathScopedMcp(t *testing.T) {
 }
 
 func TestSyncProjectToken_PrunesTheNewAllowlistsForRevokedMcps(t *testing.T) {
-	// A stale entry for an MCP the project no longer grants reads as a grant
-	// and is not one.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "macmcp"}, {ID: "fsmcp"}}}
 	proj := &Project{
 		ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"},
@@ -188,8 +163,6 @@ func TestSyncProjectToken_PrunesTheNewAllowlistsForRevokedMcps(t *testing.T) {
 }
 
 func TestSyncProjectToken_V1SchemaStillGetsTheAllowedDirsBranch(t *testing.T) {
-	// One release of compatibility, unchanged: an MCP that declares no
-	// contextSchemaVersion is handled exactly as it was.
 	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "fsmcp"}}}
 	proj := &Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"fsmcp"}}
 	s.SyncProjectToken(proj, McpSurfaces{"fsmcp": {Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}})

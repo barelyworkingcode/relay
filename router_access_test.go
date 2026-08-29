@@ -1,11 +1,5 @@
 package main
 
-// ADR-011 decisions 2 and 2b: the two allowlists relay can enforce by itself —
-// which tools a grant names, and which operations it may perform. Both fail
-// closed, and the negative cases are the point of this file: an unannotated
-// tool is refused, a malformed annotations blob is refused, a profile with no
-// allowed_tools holds nothing, and a "*" never reaches a profile at all.
-
 import (
 	"context"
 	"encoding/json"
@@ -16,47 +10,22 @@ import (
 	"relaygo/mcp"
 )
 
-// macmcpToolSurface is a scale model of the real thing: mail tools beside the
-// twelve other domains macMCP bundles with them. The annotations are the ones
-// macMCP actually publishes, which is what makes finding 9's measurement
-// reproducible here — capture_screenshot, web_fetch and contacts_list_groups
-// are all honestly read-only, so the access mode alone leaves every one of
-// them reachable from a profile named for a mailbox.
-//
-// It carries BOTH axes (ADR-011 decisions 2 and 2c) because the point of the
-// second one is that they cross: web_fetch is read-only and reaches the
-// network, mail_create_draft mutates and touches nothing outside this Mac. A
-// fixture that annotated only one axis could not show either case.
 func macmcpToolSurface() []mcp.Tool {
 	readOnly := json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)
 	return []mcp.Tool{
 		{Name: "mail_search", Description: "Search mail.", Annotations: readOnly},
 		{Name: "mail_get_email", Description: "Read one message.", Annotations: readOnly},
-		// No annotations at all — macMCP omits them on mail_move and
-		// mail_mark_read today, and an absent hint is not a claim of safety.
-		// Under decision 2c the same silence means the opposite thing and
-		// denies the same way: absent openWorldHint IS open-world.
 		{Name: "mail_move", Description: "Move a message."},
-		// Mutating AND outbound: the tool the whole of decision 2c is about.
 		{Name: "mail_send", Description: "Send mail.", Annotations: json.RawMessage(`{"readOnlyHint":false,"openWorldHint":true}`)},
-		// Mutating and LOCAL — the other half of "draft but do not send". A
-		// write grant holds it with no outbound grant at all.
 		{Name: "mail_create_draft", Description: "Write a draft.", Annotations: json.RawMessage(`{"readOnlyHint":false,"openWorldHint":false}`)},
-		// A blob that parses as JSON but not as annotations. Must deny on both
-		// axes, and must not panic — these are server-supplied bytes relay has
-		// carried unread until now.
 		{Name: "mail_save_attachment", Description: "Write a file.", Annotations: json.RawMessage(`"read-only, honest"`)},
-		// A hint of the wrong type inside a well-formed object.
 		{Name: "mail_get_source", Description: "Fetch raw source.", Annotations: json.RawMessage(`{"readOnlyHint":"true"}`)},
 
 		{Name: "capture_screenshot", Description: "Screenshot the display.", Annotations: readOnly},
-		// Read-only AND outbound: honestly readOnlyHint: true, and an HTTP
-		// channel out of the host. The mode cannot see it; decision 2c can.
 		{Name: "web_fetch", Description: "Fetch a URL.", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":true}`)},
 		{Name: "contacts_list_groups", Description: "List contact groups.", Annotations: readOnly},
 		{Name: "messages_send", Description: "Send an iMessage."},
 		{Name: "shortcuts_run", Description: "Run a Shortcut."},
-		// The anchoring case: "mail_*" must not reach it.
 		{Name: "xmail_send", Description: "Not a mail tool.", Annotations: readOnly},
 	}
 }
@@ -71,14 +40,9 @@ type profileOpts struct {
 	tools         []mcp.Tool
 	schema        string
 	schemaVersion int
-	// enrolments put the profile behind a remote identity, which is what a
-	// per-enrolment budget is keyed on. Empty means no remote caller can be
-	// budgeted, which is every test that only cares about the grant.
-	enrolments []Enrolment
+	enrolments    []Enrolment
 }
 
-// newProfileRouter builds a router whose single project grants "macmcp" and
-// carries exactly the ADR-011 fields under test.
 func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 	t.Helper()
 	tools := o.tools
@@ -137,14 +101,7 @@ func listedToolNames(t *testing.T, r *appRouter) []string {
 	return names
 }
 
-// ---------------------------------------------------------------------------
-// Decision 2: the access mode
-// ---------------------------------------------------------------------------
-
 func TestAccessMode_DefaultsAreAsymmetric(t *testing.T) {
-	// This asymmetry is the decision, not an oversight: a grant to another
-	// machine that nobody has said anything about must not mutate, while every
-	// local project written before this field existed must keep working.
 	remote := &StoredToken{ProjectKind: ProjectKindRemote}
 	if got := remote.AccessMode("macmcp"); got != AccessRead {
 		t.Errorf("remote default = %q, want %q", got, AccessRead)
@@ -153,8 +110,6 @@ func TestAccessMode_DefaultsAreAsymmetric(t *testing.T) {
 	if got := local.AccessMode("macmcp"); got != AccessWrite {
 		t.Errorf("local default = %q, want %q", got, AccessWrite)
 	}
-	// A hand-edited value that is not exactly "write" narrows rather than
-	// widens; there is no third mode for it to mean.
 	for _, bogus := range []string{"readwrite", "rw", "WRITE", "", "admin"} {
 		tok := &StoredToken{Access: map[string]string{"macmcp": bogus}}
 		if got := tok.AccessMode("macmcp"); got != AccessRead {
@@ -182,19 +137,14 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 		{"a string that says true", `{"readOnlyHint":"true"}`, false},
 		{"the number one", `{"readOnlyHint":1}`, false},
 		{"an object", `{"readOnlyHint":{"yes":true}}`, false},
-		// F3. encoding/json matches STRUCT FIELDS case-insensitively, so a
-		// `ReadOnlyHint *bool` field admitted every one of these to a
-		// read-only grant while the doc comment said they were treated as
-		// mutating. None of them is the key the MCP specification defines, and
-		// decision 2's whole claim is that the mode is decided from a
-		// declaration an operator can read and diff — a buggy or hostile MCP
-		// must not be able to widen a grant with a near-miss spelling.
+		// encoding/json matches struct fields case-insensitively, so a naive
+		// `ReadOnlyHint *bool` field would admit these near-miss spellings to a
+		// read-only grant; none of them is the key the MCP spec defines, and
+		// the exact key is the only one read.
 		{"the spec key in title case", `{"ReadOnlyHint":true}`, false},
 		{"the spec key lowercased", `{"readonlyhint":true}`, false},
 		{"the spec key shouted", `{"READONLYHINT":true}`, false},
 		{"a near miss with an underscore", `{"read_only_hint":true}`, false},
-		// A variant beside the real key does not get a vote either way: the
-		// exact key is the only one read, and here it says false.
 		{"a variant beside an honest false", `{"ReadOnlyHint":true,"readOnlyHint":false}`, false},
 		{"a variant beside an honest true", `{"ReadOnlyHint":false,"readOnlyHint":true}`, true},
 		{"annotations are not an object", `"read-only"`, false},
@@ -215,12 +165,7 @@ func TestReadOnlyHint_OnlyAnExplicitBooleanTrueCounts(t *testing.T) {
 	}
 }
 
-// The same finding at the boundary rather than at the helper: a tool whose
-// only claim to being read-only is a case variant is refused by a read grant,
-// and is not listed to one.
 func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) {
-	// Each carries an honest openWorldHint: false, so the only thing under
-	// test here is the mode's spelling.
 	tools := []mcp.Tool{
 		{Name: "mail_search", Description: "Search mail.", Annotations: json.RawMessage(`{"readOnlyHint":true,"openWorldHint":false}`)},
 		{Name: "mail_wipe", Description: "Delete everything.", Annotations: json.RawMessage(`{"ReadOnlyHint":true,"openWorldHint":false}`)},
@@ -242,15 +187,6 @@ func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) 
 }
 
 func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T) {
-	// The allowlist is enumerated rather than wildcarded so this test measures
-	// the MODE and nothing else. A pattern wide enough to admit every tool
-	// ("*_*", "**") is refused by both the editor and the matcher now — that is
-	// F1's fix, and writing one here would have this test passing on a grant
-	// nobody can save.
-	//
-	// The outbound grant is given for the same reason: web_fetch is honestly
-	// read-only AND open-world, so without it this test would be measuring
-	// decision 2c on that one row and the mode everywhere else.
 	tok := &StoredToken{
 		ProjectKind: ProjectKindRemote,
 		AllowedTools: map[string][]string{"macmcp": {
@@ -275,21 +211,14 @@ func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T)
 }
 
 func TestCheckToolAccess_ANilToolDefinitionIsDeniedUnderARead(t *testing.T) {
-	// Relay could not find the definition, so it cannot verify the hint. That
-	// is not a reason to admit.
 	tok := &StoredToken{ProjectKind: ProjectKindRemote, AllowedTools: map[string][]string{"macmcp": {"mail_*"}}}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
 		t.Fatal("a tool whose definition relay could not find was admitted to a read grant")
 	}
-	// A write grant does not rescue it, because the OTHER annotation is
-	// unreadable too and its default points the other way: a definition relay
-	// could not find is open-world (ADR-011 decision 2c). Both layers read
-	// annotations, and both refuse when there are none to read.
 	tok.Access = map[string]string{"macmcp": AccessWrite}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
 		t.Fatal("a tool whose definition relay could not find was admitted for want of an openWorldHint")
 	}
-	// Only a grant that has said yes to both admits it.
 	tok.AllowExternal = map[string]bool{"macmcp": true}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err != nil {
 		t.Fatalf("a write grant allowing external access was still refused: %v", err)
@@ -306,10 +235,6 @@ func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("read profile listed %v, want %v", got, want)
 	}
-	// The same profile in write mode sees the mutating mail tools too — the
-	// local ones. The outbound grant is a separate question and this profile
-	// has not been given one, so mail_send and the tools whose annotations
-	// relay cannot read stay hidden (ADR-011 decision 2c).
 	r = newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
@@ -319,7 +244,6 @@ func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 	if got := listedToolNames(t, r); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("write profile listed %v, want %v", got, want)
 	}
-	// With both, all seven.
 	r = newProfileRouter(t, profileOpts{
 		kind:          ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
@@ -358,15 +282,6 @@ func TestCallTool_ReadProfileDeniesAMutatingToolAndAuditsItAsDenied(t *testing.T
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Decision 2b: allowed_tools
-// ---------------------------------------------------------------------------
-
-// TestListTools_ProfileNamedForMailDoesNotHoldTheRestOfMacMcp is finding 9's
-// measurement turned into an assertion. The live "Hermes Mail" enrolment was
-// authorized for capture_screenshot, capture_audio, shortcuts_run, web_fetch
-// and contacts_list_groups; every one of those is honestly read-only, so the
-// access mode does not touch them and only an allowlist does.
 func TestListTools_ProfileNamedForMailDoesNotHoldTheRestOfMacMcp(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
@@ -397,8 +312,6 @@ func TestListTools_ProfileNamedForMailDoesNotHoldTheRestOfMacMcp(t *testing.T) {
 }
 
 func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testing.T) {
-	// A profile with no allowlist holds no tools: a grant to another machine
-	// must be an enumeration someone typed.
 	r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote, access: map[string]string{"macmcp": AccessWrite}})
 	if got := listedToolNames(t, r); len(got) != 0 {
 		t.Fatalf("a profile with no allowed_tools was shown %v", got)
@@ -406,8 +319,6 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
 		t.Fatal("a profile with no allowed_tools called a tool")
 	}
-	// An explicitly empty list is the same as an absent one; there is no
-	// reading under which saving an empty allowlist meant "everything".
 	r = newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {}},
@@ -417,11 +328,6 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 		t.Fatalf("a profile with an empty allowed_tools was shown %v", got)
 	}
 
-	// A LOCAL project is unchanged: no allowlist means every tool, with
-	// disabled_tools still subtracting. Nothing is granted to it here, and
-	// nothing needs to be — a local project defaults to write AND to allowing
-	// the outbound tools (ADR-011 decision 2c), because its agent already has
-	// the host's network.
 	r = newProfileRouter(t, profileOpts{disabled: map[string][]string{"macmcp": {"shortcuts_run"}}})
 	got := listedToolNames(t, r)
 	if len(got) != len(macmcpToolSurface())-1 {
@@ -436,8 +342,6 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 }
 
 func TestListSkillBuckets_MirrorsListToolsFiltering(t *testing.T) {
-	// The skill renderer reads this, and a bucket that named a tool ListTools
-	// hides would advertise a capability the caller does not have.
 	r := newProfileRouter(t, profileOpts{
 		kind:         ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
@@ -459,9 +363,6 @@ func TestListSkillBuckets_MirrorsListToolsFiltering(t *testing.T) {
 }
 
 func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) {
-	// ADR-009 decision 4's reasoning one level down: registering a new tool is
-	// the same event as registering a new MCP, at finer grain and far more
-	// often.
 	remote := &Project{Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools: map[string][]string{"macmcp": {"*"}}}
 	err := validateProjectShape(remote)
@@ -471,25 +372,19 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 	if !strings.Contains(err.Error(), "allowed_tools") || !strings.Contains(err.Error(), "macmcp") {
 		t.Errorf("refusal should name the field and the MCP, got: %v", err)
 	}
-	// A "*" hidden among real patterns is the same wildcard.
 	remote.AllowedTools = map[string][]string{"macmcp": {"mail_*", "*"}}
 	if validateProjectShape(remote) == nil {
 		t.Fatal(`a profile was allowed a "*" beside real patterns`)
 	}
-	// Patterns are fine — the layers compose, so a future mail_delete_everything
-	// is still refused by the mode and still confined by the scope.
 	remote.AllowedTools = map[string][]string{"macmcp": {"mail_*"}}
 	if err := validateProjectShape(remote); err != nil {
 		t.Fatalf("a pattern allowlist was refused: %v", err)
 	}
-	// A LOCAL project is refused it too, and for a reason that is not the
-	// profile's. The call-time matcher ignores an over-broad entry (see
-	// toolAllowedByPatterns), so a local project holding ["*"] holds NO tools
-	// of that MCP — an allowlist that reads as "everything" and grants
-	// nothing. Accepting it on save would be validation and enforcement
-	// disagreeing again, which is the whole of F2. The way a local project
-	// says "everything" is to have no list at all, which it did before this
-	// field existed and still does.
+	// A LOCAL project is refused too, but for a different reason than the
+	// profile: toolAllowedByPatterns ignores an over-broad entry at call time,
+	// so a local project holding ["*"] would hold NO tools of that MCP —
+	// accepting it on save would silently grant nothing. The way a local
+	// project says "everything" is with no allowlist at all.
 	local := &Project{Path: "/tmp/x", AllowedTools: map[string][]string{"macmcp": {"*"}}}
 	if err := validateProjectShape(local); err == nil {
 		t.Fatal(`a local project was allowed allowed_tools: ["*"], which grants it nothing`)
@@ -501,8 +396,6 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 }
 
 func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
-	// An inert control is worse than none: it reads on the screen as a
-	// boundary and decides nothing allowed_tools has not already decided.
 	remote := &Project{Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 		DisabledTools: map[string][]string{"macmcp": {"messages_send"}}}
@@ -513,14 +406,12 @@ func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
 	if !strings.Contains(err.Error(), "allowed_tools") {
 		t.Errorf("refusal should name the mechanism that does bound a profile, got: %v", err)
 	}
-	// An empty entry is not a denylist.
 	remote.DisabledTools = map[string][]string{"macmcp": {}}
 	if err := validateProjectShape(remote); err != nil {
 		t.Fatalf("an empty disabled_tools entry was refused: %v", err)
 	}
-	// Nor is a leftover for an MCP the record no longer grants — that is what
-	// converting a local fsMCP project to remote produces, and SyncProjectToken
-	// prunes it moments later.
+	// A leftover denylist entry for an MCP the record no longer grants (e.g.
+	// after converting a local project to remote) must not be refused either.
 	remote.DisabledTools = map[string][]string{"fsmcp": {v1FsBashTool}}
 	if err := validateProjectShape(remote); err != nil {
 		t.Fatalf("a leftover denylist for an ungranted MCP was refused: %v", err)
@@ -529,8 +420,9 @@ func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
 
 func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 	// validateProjectShape refuses disabled_tools on a profile, but a record
-	// that acquired one by a route validation did not cover must still have it
-	// honoured: ignoring a denylist is the one direction that widens.
+	// that acquired one via a route validation didn't cover must still have it
+	// honoured — ignoring a denylist is the one direction that would widen
+	// access.
 	tok := &StoredToken{
 		ProjectKind:   ProjectKindRemote,
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
@@ -544,9 +436,8 @@ func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 }
 
 func TestCheckToolAccess_ServiceTokensAreUnaffected(t *testing.T) {
-	// Service tokens bypass checkToolAccess entirely in the router, exactly as
-	// before. Assert it through the router rather than the helper, since that
-	// is where the bypass lives.
+	// Assert through the router, not checkToolAccess — that's where the
+	// service-token bypass lives.
 	r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote})
 	svcToken := "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
 	r.serviceTokens.Register(hashToken(svcToken))

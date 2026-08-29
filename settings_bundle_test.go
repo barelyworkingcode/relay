@@ -1,17 +1,5 @@
 package main
 
-// Hermetic unit + smoke tests for the settings UI JavaScript. The previously
-// untested ~2,400-line settings layer is exercised here under goja (a pure-Go
-// ES VM) with the same esbuild bundler the production build uses — no Node, no
-// browser. Two layers:
-//
-//   1. Pure logic (web/src/lib/pure.js) — JSONC parsing, config-tree path ops,
-//      value coercion, required-field scanning, formatting — tested in isolation.
-//   2. A smoke test that bundles the WHOLE app (web/src/entry.js) under a minimal
-//      DOM shim and asserts it loads + renders without a ReferenceError. This is
-//      the regression net for the module split: a missing import or an un-
-//      globalized inline handler surfaces as a thrown error here.
-//
 // The bundle is rebuilt from source on every run, so the tests always reflect
 // the current web/src tree (not the committed web/dist artifact).
 
@@ -23,8 +11,6 @@ import (
 	"github.com/evanw/esbuild/pkg/api"
 )
 
-// bundleForTest bundles an entry point to an ES2015 IIFE goja can run. globalName
-// (when non-empty) exposes the entry's exports as that global var.
 func bundleForTest(t *testing.T, entry, globalName string) string {
 	t.Helper()
 	opts := api.BuildOptions{
@@ -52,7 +38,6 @@ func bundleForTest(t *testing.T, entry, globalName string) string {
 	return string(r.OutputFiles[0].Contents)
 }
 
-// newPureVM returns a goja runtime with web/src/lib/pure.js loaded as `PURE`.
 func newPureVM(t *testing.T) *goja.Runtime {
 	t.Helper()
 	vm := goja.New()
@@ -62,7 +47,6 @@ func newPureVM(t *testing.T) *goja.Runtime {
 	return vm
 }
 
-// evalString runs expr and returns its result as a string.
 func evalString(t *testing.T, vm *goja.Runtime, expr string) string {
 	t.Helper()
 	v, err := vm.RunString(expr)
@@ -134,7 +118,6 @@ func TestPureCoerce(t *testing.T) {
 
 func TestPureScanRequired(t *testing.T) {
 	vm := newPureVM(t)
-	// One required leaf, nested inside an object — empty draft should report it.
 	schema := `[{id:'svc',type:'object',fields:[{id:'name',type:'text',required:true,label:'Name'}]}]`
 	if got := evalString(t, vm, `String(PURE.cfgScanRequired(`+schema+`, {svc:{}}))`); got != "Name" {
 		t.Errorf("missing required: got %q want %q", got, "Name")
@@ -160,14 +143,11 @@ func TestPureFormatScalar(t *testing.T) {
 			}
 		})
 	}
-	// An old ISO timestamp renders as a relative "... ago" string.
 	if got := evalString(t, vm, `PURE.formatScalar('2020-01-01T00:00:00Z')`); !strings.HasSuffix(got, "ago") {
 		t.Errorf("iso relative: got %q, want a '... ago' string", got)
 	}
 }
 
-// domShim is a minimal document/window/navigator surface so the full app bundle
-// can load and run its bootstrap render() without a real browser.
 const domShim = `
 var window = globalThis;
 window.__RELAY_INIT__ = { externalMcps: [], services: [], runningIds: [], projects: [], mcpToolCache: {} };
@@ -200,7 +180,6 @@ var document = {
 };
 `
 
-// newAppVM loads the full app bundle under the DOM shim.
 func newAppVM(t *testing.T) *goja.Runtime {
 	t.Helper()
 	vm := goja.New()
@@ -219,18 +198,14 @@ func newAppVM(t *testing.T) *goja.Runtime {
 func TestSettingsBundleSmoke(t *testing.T) {
 	vm := newAppVM(t)
 
-	// Globalized handlers are present on window.
 	for _, fn := range []string{"render", "showPage", "renderServices", "renderServiceInspector", "cfgEdit", "saveProjectForm"} {
 		if got := evalString(t, vm, `typeof window.`+fn); got != "function" {
 			t.Errorf("window.%s: typeof = %q, want function", fn, got)
 		}
 	}
-	// The services renderer produces its heading.
 	if got := evalString(t, vm, `window.renderServices().indexOf('Services') >= 0`); got != "true" {
 		t.Errorf("renderServices() did not contain 'Services'")
 	}
-	// Switching to the inspector tab (empty status) renders the empty state and
-	// does not throw — exercises the surgical-update code path's siblings.
 	if got := evalString(t, vm, `(function(){ window.showPage('inspector'); return window.renderServiceInspector().indexOf('Service Inspector') >= 0; })()`); got != "true" {
 		t.Errorf("inspector render missing heading")
 	}
@@ -295,7 +270,6 @@ func TestProjectFormDirectoryAuth(t *testing.T) {
 		var offHtml = window.renderProjectForm();
 		var offPayload = window.harvestProjectForm();
 
-		// Toggling off must survive into the payload as an explicit false.
 		window.editProject('p1');
 		window.state.projectForm.allow_cwd_auth = false;
 		var toggledOff = window.harvestProjectForm();
@@ -337,8 +311,6 @@ func TestProjectFormDirectoryAuth(t *testing.T) {
 func TestStatusPollPreservesConfigRegion(t *testing.T) {
 	vm := newAppVM(t)
 
-	// A snapshot for a service that declares a config (so a #svc-config region
-	// exists), parameterized by a status value we can detect in the status region.
 	snap := func(sessions int) string {
 		return `{serviceId:'relay-llm', ok:true, fetchedAt:1, status:{sessions:` +
 			itoaTest(sessions) + `}, manifest:{routes:['/x'], status:{path:'/s'}, ` +
@@ -360,7 +332,6 @@ func TestStatusPollPreservesConfigRegion(t *testing.T) {
 	})()`
 
 	got := evalString(t, vm, script)
-	// config region untouched; status region refreshed with the new value.
 	if !strings.Contains(got, `"config":"EDITOR_SENTINEL"`) {
 		t.Errorf("config region was clobbered by the poll: %s", got)
 	}
@@ -382,7 +353,6 @@ func TestActionPendingKeyCanonical(t *testing.T) {
 	script := `(function(){
 		window.dispatchServiceAction('relay-llm','stop-instance',{name:'x',port:8004});
 		var afterDispatch = Object.keys(state.serviceActionPending).length;
-		// Go echoes the row with sorted keys (port before name -> name? sorted: name,port).
 		window.onServiceActionResult({serviceId:'relay-llm',actionId:'stop-instance',row:{port:8004,name:'x'},ok:true});
 		return JSON.stringify({afterDispatch:afterDispatch, afterResult:Object.keys(state.serviceActionPending).length});
 	})()`
@@ -395,7 +365,6 @@ func TestActionPendingKeyCanonical(t *testing.T) {
 	}
 }
 
-// itoaTest is a tiny int->string for building JS literals in tests.
 func itoaTest(n int) string {
 	if n == 0 {
 		return "0"

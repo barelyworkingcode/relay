@@ -14,9 +14,8 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// newTestServer builds a BridgeServer on a short /tmp socket and starts its
-// accept loop. Unlike startTestBridge it returns the *BridgeServer so the
-// caller can drive Close() directly and assert on shutdown behavior.
+// Unlike startTestBridge, this returns the *BridgeServer so the caller can
+// drive Close() directly and assert on shutdown behavior.
 func newTestServer(t *testing.T, router ToolRouter) (*BridgeServer, string) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "br")
@@ -37,11 +36,6 @@ func newTestServer(t *testing.T, router ToolRouter) (*BridgeServer, string) {
 	return srv, sockPath
 }
 
-// CR-1: Close() must not deadlock when a connection handler is parked in
-// scanner.Scan() with nothing to read. Before the socket-close-on-cancel fix,
-// StopAccepting() only cancelled the context and closed the listener, so an
-// in-flight Scan() never unblocked and wg.Wait() hung forever — the documented
-// "SIGTERM ignored, SIGKILL required" stall.
 func TestServer_CloseDoesNotHangOnIdleConnection(t *testing.T) {
 	srv, sockPath := newTestServer(t, &stubRouter{listToolsResponse: json.RawMessage(`[]`)})
 
@@ -51,8 +45,8 @@ func TestServer_CloseDoesNotHangOnIdleConnection(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Drive one request/response so we know the handler goroutine is alive and
-	// has looped back into Scan(); the connection is then left idle.
+	// One request/response first, to know the handler goroutine is alive and
+	// has looped back into Scan() before the connection is left idle.
 	_, _ = conn.Write([]byte(`{"type":"ListTools","token":"x"}` + "\n"))
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	sc := NewScanner(conn)
@@ -70,9 +64,6 @@ func TestServer_CloseDoesNotHangOnIdleConnection(t *testing.T) {
 	}
 }
 
-// CR-14: a single line larger than MaxMessageSize must yield an InvalidParams
-// error frame before the connection is dropped, rather than a silent close
-// that surfaces to the client as a generic "read failed".
 func TestServer_OversizedLineGetsErrorFrame(t *testing.T) {
 	sock := startTestBridge(t, &stubRouter{})
 	conn, err := net.Dial("unix", sock)
@@ -81,8 +72,8 @@ func TestServer_OversizedLineGetsErrorFrame(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Write one oversized, newline-free payload. The write may error (EPIPE)
-	// once the server gives up reading; that's expected, so it runs detached.
+	// Runs detached: once the server gives up reading, this write may error
+	// (EPIPE), and that's expected rather than a failure to handle inline.
 	go func() {
 		_, _ = conn.Write(bytes.Repeat([]byte("a"), MaxMessageSize+128*1024))
 	}()

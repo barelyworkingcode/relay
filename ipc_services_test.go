@@ -22,13 +22,14 @@ type svcRecorder struct {
 	stopped   []string
 	reloaded  []string
 	reloadErr error
+	startErr  error
 }
 
 func (r *svcRecorder) Start(c *ServiceConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started = append(r.started, c.ID)
-	return nil
+	return r.startErr
 }
 func (r *svcRecorder) Stop(id string) {
 	r.mu.Lock()
@@ -69,6 +70,7 @@ func newServicesIPC(store SettingsStore, reg ServiceManager) (*IPCContext, *reco
 		UpdateMenu:             func() {},
 		PushServiceStatusBatch: func() {},
 		GoFunc:                 func(fn func()) { fn() }, // run "async" work inline
+		Ops:                    &ServiceOps{Store: store, Registry: reg},
 	}
 	return ipc, ui
 }
@@ -225,6 +227,7 @@ func TestIPCRemoveService_RemovesAndStops(t *testing.T) {
 
 func TestIPCStopService_StopsAsync(t *testing.T) {
 	store := newCLISandboxStore(t)
+	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 	reg := &svcRecorder{}
 	ipc, ui := newServicesIPC(store, reg)
 
@@ -235,5 +238,49 @@ func TestIPCStopService_StopsAsync(t *testing.T) {
 	}
 	if !ui.hasEvent("onServiceStatus") {
 		t.Error("refreshServiceUI should have emitted onServiceStatus")
+	}
+}
+
+// A validation failure commits nothing, so the UI must not be told the edit landed.
+func TestIPCUpdateService_RunningValidationFailureIsNotReportedAsUpdated(t *testing.T) {
+	store := newCLISandboxStore(t)
+	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
+	ipc, ui := newServicesIPC(store, reg)
+
+	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: ""}))
+
+	msg := lastSettingsError(t, ui)
+	if strings.Contains(msg, "updated") {
+		t.Fatalf("nothing was persisted, so the error must not claim an update landed: %q", msg)
+	}
+	if msg != "command is required" {
+		t.Fatalf("error = %q, want %q", msg, "command is required")
+	}
+	if svc, _ := store.Get().findServiceByID("svc1"); svc.Command != "/bin/old" {
+		t.Fatalf("command should be untouched, got %q", svc.Command)
+	}
+}
+
+// A restart failure DID commit the edit, so the view has to be refreshed.
+func TestIPCUpdateService_RestartFailureStillRefreshesUI(t *testing.T) {
+	store := newCLISandboxStore(t)
+	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	reg := &svcRecorder{running: map[string]bool{"svc1": true}, reloadErr: errors.New("boom")}
+	ipc, ui := newServicesIPC(store, reg)
+
+	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
+
+	if svc, _ := store.Get().findServiceByID("svc1"); svc.Command != "/bin/new" {
+		t.Fatalf("the edit committed, got %q", svc.Command)
+	}
+	var sawStatus bool
+	for _, e := range ui.events {
+		if e.Name == "onServiceStatus" {
+			sawStatus = true
+		}
+	}
+	if !sawStatus {
+		t.Fatal("a committed edit must refresh the view even when the restart failed")
 	}
 }

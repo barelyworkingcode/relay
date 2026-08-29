@@ -1,30 +1,25 @@
 package main
 
-// CLI-level coverage for `relay enrol update`, mirroring service_cmd_test.go's
-// approach: drive the CLI entry point directly against a sandboxed store (no
-// subprocess, no touching the real config dir) and read the persisted result
-// back. The happy paths only — exitError calls os.Exit(1), which would kill
-// the test binary, so refusal paths are covered at the updateEnrolment level
-// in enrolment_test.go instead.
+// Happy paths only: exitError calls os.Exit(1), which would kill the test
+// binary, so refusal paths are covered at the updateEnrolment level in
+// enrolment_test.go instead.
 
 import (
 	"slices"
 	"testing"
 )
 
-// enrolCreateForCLITest creates an enrolment via the same path enrolCreate
-// uses, without going through flag parsing, so a test can set up a starting
-// state concisely.
+// Creates an enrolment via the same path enrolCreate uses, without going
+// through flag parsing, so a test can set up a starting state concisely.
 func enrolCreateForCLITest(t *testing.T, store SettingsStore, clientID string, projectIDs []string) {
 	t.Helper()
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: clientID, ProjectIDs: projectIDs})
 	assertNoErr(t, err, "createEnrolment")
 }
 
-// `relay enrol update --client-id X --max-calls N` changes only MaxCalls,
-// leaving WindowSeconds and MaxResultBytes exactly as they were created —
-// this is the CLI-level check that fs.Visit-based flag detection (not a zero
-// check) actually reaches updateEnrolment correctly.
+// Flag detection is fs.Visit-based, not a zero check, so an unnamed flag must
+// leave its field untouched rather than reset it — this is the CLI-level
+// check that the distinction actually reaches updateEnrolment.
 func TestEnrolUpdate_CLIChangesOnlyTheNamedBudgetFlag(t *testing.T) {
 	store := newCLISandboxStore(t)
 	enrolCreateForCLITest(t, store, "hermes-mail", nil)
@@ -42,9 +37,6 @@ func TestEnrolUpdate_CLIChangesOnlyTheNamedBudgetFlag(t *testing.T) {
 	}
 }
 
-// A second update naming a different flag leaves the first update's change in
-// place — each update touches only what it names, not a snapshot of "what was
-// last typed".
 func TestEnrolUpdate_CLISuccessiveUpdatesAreIndependent(t *testing.T) {
 	store := newCLISandboxStore(t)
 	enrolCreateForCLITest(t, store, "hermes-mail", nil)
@@ -61,8 +53,6 @@ func TestEnrolUpdate_CLISuccessiveUpdatesAreIndependent(t *testing.T) {
 	}
 }
 
-// --grant replaces the whole grant list, and --clear-grants empties it —
-// both without touching the fingerprint.
 func TestEnrolUpdate_CLIGrantAndClearGrants(t *testing.T) {
 	store := newCLISandboxStore(t)
 	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")

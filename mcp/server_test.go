@@ -13,20 +13,15 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// Tests for the MCP stdio server. The transport (stdin/stdout) is not
-// exercised directly here — handleMethod is the logic under test, and
-// it talks to a real bridge.BridgeServer over a /tmp socket for honest
-// end-to-end behavior.
-
-// stubRouter for the mcp package — mirrors bridge.stubRouter but
-// duplicated to avoid cross-package test imports.
+// stubRouter mirrors bridge.stubRouter but is duplicated here to avoid a
+// cross-package test import.
 type stubRouter struct {
 	mu           sync.Mutex
 	tools        json.RawMessage
 	toolsErr     error
 	callResult   json.RawMessage
 	callErr      error
-	callProgress []bridge.ProgressUpdate // emitted via the ctx sink before the result
+	callProgress []bridge.ProgressUpdate
 	listedToken  string
 	calledName   string
 	calledArgs   json.RawMessage
@@ -70,8 +65,6 @@ func (s *stubRouter) RegisterManifest(context.Context, bridge.RegisterManifestRe
 	return nil
 }
 
-// startBridgeForMCP boots a BridgeServer on a /tmp socket and returns
-// a bridge.Client connected to it.
 func startBridgeForMCP(t *testing.T, router bridge.ToolRouter, token string) *bridge.Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "mcptest-")
@@ -80,8 +73,9 @@ func startBridgeForMCP(t *testing.T, router bridge.ToolRouter, token string) *br
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	// Override ConfigDir → dir so bridge.NewBridgeServer's SocketPath()
-	// and bridge.NewClient both resolve to dir/relay.sock.
+	// bridge.NewBridgeServer's SocketPath() and bridge.NewClient both derive
+	// the socket path from ConfigDir, so overriding it here is what points
+	// both ends at the same dir/relay.sock without hardcoding it twice.
 	bridge.SetConfigDirForTest(dir)
 	t.Cleanup(func() { bridge.SetConfigDirForTest("") })
 
@@ -92,7 +86,6 @@ func startBridgeForMCP(t *testing.T, router bridge.ToolRouter, token string) *br
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() { srv.Close() })
 
-	// Wait briefly for accept loop.
 	sockPath := bridge.SocketPath()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -162,8 +155,8 @@ func TestHandleMethod_ToolsList_ProxiesToBridge(t *testing.T) {
 	}
 }
 
-// collectResponse drives handleToolsCall (which emits via a callback rather
-// than returning) and returns the single terminal *jsonrpc.Response.
+// handleToolsCall emits via a callback rather than returning; collectResponse
+// drives it and returns the single terminal *jsonrpc.Response.
 func collectResponse(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc.Response {
 	var resp *jsonrpc.Response
 	handleToolsCall(client, req, func(v interface{}) {

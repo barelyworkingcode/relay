@@ -1,9 +1,5 @@
 package main
 
-// ADR-011 decisions 4, 7 and 8, at the chokepoint: the call-time presence
-// re-check, what the audit record says about the authority a call ran with,
-// and the scope note a client is told its own limits through.
-
 import (
 	"context"
 	"encoding/json"
@@ -13,8 +9,6 @@ import (
 	"relaygo/bridge"
 )
 
-// scopedSchema is macMCP's declaration with the two operator fields only, so a
-// test can turn a scope requirement on without also needing a project path.
 const scopedSchema = `{
   "mail_accounts": {
     "type": "array", "items": {"type": "string"},
@@ -30,9 +24,9 @@ func scopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMes
 		kind:         kind,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
 		access:       map[string]string{"macmcp": AccessWrite},
-		// The outbound grant, because this file measures the SCOPE layer and
-		// web_fetch is its ungoverned control tool — one that decision 2c
-		// would otherwise refuse before the scope check was ever reached.
+		// web_fetch is the scope layer's ungoverned control tool, so it needs
+		// the outbound grant too or the access-mode check would refuse it
+		// before the scope check is ever reached.
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: values,
 		schema:        scopedSchema,
@@ -40,10 +34,6 @@ func scopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMes
 	})
 }
 
-// TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply is
-// the case the whole third defence exists for: the grant was validated against
-// a schema that had no restrict field, the MCP was upgraded, and nothing
-// re-ran validation. Only a check against the LIVE schema catches it.
 func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *testing.T) {
 	r := scopedProfile(t, ProjectKindRemote, nil)
 	rec := newTestAudit(t, nil)
@@ -55,8 +45,6 @@ func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *
 		t.Errorf("refusal should name the field the grant is missing, got: %v", err)
 	}
 
-	// A tool the field does not govern is untouched: applies_to is what
-	// selects, and web_fetch is outside "mail_*".
 	if _, err := r.CallTool(context.Background(), "web_fetch", json.RawMessage(`{}`), testToken); err != nil {
 		t.Fatalf("an ungoverned tool was refused for want of a scope: %v", err)
 	}
@@ -68,9 +56,6 @@ func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *
 }
 
 func TestCallTool_DeniesAnEmptyScopeValueTheSameAsAnAbsentOne(t *testing.T) {
-	// Absent and empty are both refusals: "no restriction" is deliberately not
-	// expressible as emptiness, so a stored [] must not read as a grant that
-	// confines nothing.
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
 		r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
 			"mail_accounts": json.RawMessage(empty),
@@ -90,11 +75,6 @@ func TestCallTool_AllowsWhenTheScopeIsSupplied(t *testing.T) {
 	}
 }
 
-// TestCallTool_ThePresenceCheckIsNotRemoteOnly pins ADR-011 decision 4's
-// deliberate part. The asymmetric default in decision 2 is not extended here,
-// because a mode has a defensible default in each direction and a scope has
-// none — there is no answer to "which mailbox" relay could pick and be right
-// about.
 func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
 	local := scopedProfile(t, ProjectKindLocal, nil)
 	if _, err := local.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
@@ -108,18 +88,6 @@ func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
 	}
 }
 
-// TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta pins the migration
-// hazard an MCP renaming a context field leaves behind: a stored blob outlives
-// the schema that wrote it (macMCP's write_dirs -> file_dirs is the concrete
-// case), relay never rewrites settings.json to match, and _meta is a general
-// channel a caller cannot audit from the outside. A key the LIVE schema no
-// longer declares must never be put on the wire under its old name.
-//
-// Issue #42 strengthened the second half. Not injecting it was never in
-// question; DISPATCHING ANYWAY was, and that is what this used to assert.
-// Nothing reaches the wire now, because a scope relay cannot place is a scope
-// relay cannot enforce — see TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace
-// for the case in its own right.
 func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 	var capturedMeta json.RawMessage
 	capture := func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
@@ -136,8 +104,8 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 		AllowedMcpIDs: []string{"macmcp"}, Token: testToken, TokenHash: hashToken(testToken),
 		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		Access:       map[string]string{"macmcp": AccessWrite},
-		// The stored blob still carries a field the live schema below no
-		// longer declares — exactly what is left behind by a rename.
+		// write_dirs is left over from a schema rename; the live schema below
+		// no longer declares it.
 		Context: map[string]json.RawMessage{
 			"macmcp": json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`),
 		},
@@ -162,8 +130,6 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 }
 
 func TestCallTool_AV1SchemaImposesNoPresenceRequirement(t *testing.T) {
-	// A declaration that never opted into the vocabulary declared no scope
-	// keywords, so there is nothing here to be present.
 	r := newProfileRouter(t, profileOpts{
 		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 		schema:        scopedSchema,
@@ -174,15 +140,6 @@ func TestCallTool_AV1SchemaImposesNoPresenceRequirement(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Decision 7: what the record says about the authority
-// ---------------------------------------------------------------------------
-
-// scopedSchemaWithSecret is scopedSchema plus an ordinary, non-restrict
-// context value: a field relay injects and otherwise ignores. It has to be
-// DECLARED for the call to run at all (issue #42 refuses a value relay cannot
-// place), which is the honest fixture anyway — an undeclared api_key could
-// only ever have got into settings.json by hand.
 const scopedSchemaWithSecret = `{
   "mail_accounts": {
     "type": "array", "items": {"type": "string"},
@@ -194,9 +151,6 @@ const scopedSchemaWithSecret = `{
 }`
 
 func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
-	// _meta is a general channel and a future MCP may pass an API key through
-	// it. Logging Context[extID] wholesale would make the audit file the place
-	// credentials go to be archived.
 	r := newProfileRouter(t, profileOpts{
 		kind:          ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
@@ -232,8 +186,6 @@ func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 	if _, leaked := ev.Scope["project_id"]; leaked {
 		t.Error("project_id was recorded as a resource scope")
 	}
-	// Serialize the whole line: the on-disk contract is what external tooling
-	// greps, and a credential must not appear anywhere in it.
 	line, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
@@ -243,16 +195,6 @@ func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 	}
 }
 
-// F4. A `denied` or `throttled` record carries the authority the call was
-// refused under, because those are the two records a security review reads
-// first and "which layer refused this, and under what mode?" is not answerable
-// from a record that omits the mode.
-//
-// setAuthority used to run where _meta was assembled, which is AFTER the tool
-// check, the scope-presence check and the budget — so every one of those three
-// refusals wrote a record with no `access` and no `scope` at all, while
-// docs/audit-log.md says a call_tool record carries what was in force. Live,
-// `relay audit --outcome denied` showed neither field on any record.
 func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 	scoped := map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)}
 
@@ -263,7 +205,6 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 		outcome string
 	}{
 		{
-			// Refused by the tool allowlist — the layer F1 is about.
 			name: "a tool the allowlist does not name", tool: "web_fetch",
 			opts: profileOpts{kind: ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
@@ -271,7 +212,6 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 			outcome: AuditOutcomeDenied,
 		},
 		{
-			// Refused by the mode: mail_send is not annotated read-only.
 			name: "a mutating tool under a read grant", tool: "mail_send",
 			opts: profileOpts{kind: ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
@@ -301,10 +241,6 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 		})
 	}
 
-	// A grant with no value at all is refused by the presence check, and that
-	// record still has to say which mode it was refused under — the scope is
-	// empty because there was none, which is the finding itself and must be
-	// distinguishable from the field simply not being recorded.
 	t.Run("a grant missing its scope value", func(t *testing.T) {
 		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
 			allowedTools: map[string][]string{"macmcp": {"mail_*"}},
@@ -328,8 +264,6 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 		}
 	})
 
-	// And the budget refusal, which is the other outcome relay decides by
-	// itself. Both records a review filters on now carry the authority.
 	t.Run("a call over its enrolment budget", func(t *testing.T) {
 		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
 			allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
@@ -361,9 +295,6 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 }
 
 func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
-	// ADR-008 already places this case: tool_error means the call completed
-	// and the MCP answered no. Promoting it to an outcome would inflate a
-	// small enum that --outcome, the CLI table and the UI pill all key on.
 	cases := []struct {
 		name   string
 		result string
@@ -395,8 +326,6 @@ func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
 			if ev.ScopeViolation != tc.want {
 				t.Errorf("scope_violation = %v, want %v", ev.ScopeViolation, tc.want)
 			}
-			// Whatever the marker says, an in-protocol refusal is a tool_error
-			// and nothing else.
 			if strings.Contains(tc.result, `"isError":true`) && ev.Outcome != AuditOutcomeToolError {
 				t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeToolError)
 			}
@@ -405,9 +334,9 @@ func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
 }
 
 func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
-	// The intent record is the one written before the call. An authority
-	// recorded only on the completion would be missing from exactly the record
-	// that survives a crash mid-call.
+	// The intent record is written before the call; an authority recorded
+	// only on the completion would be missing from the record that survives a
+	// crash mid-call.
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 	assertNoErr(t, f.store.With(func(s *Settings) {
 		proj, _ := s.findProjectByID(f.project.ID)
@@ -438,10 +367,6 @@ func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
 		t.Errorf("intent scope = %v", intent.Scope)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Decision 8: the scope note
-// ---------------------------------------------------------------------------
 
 func TestListTools_AppendsTheScopeNoteToGovernedToolsOnly(t *testing.T) {
 	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
@@ -476,9 +401,9 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
-	// Both list paths read the same live tool objects. Calling one after the
-	// other is exactly the sequence that would double-append if the note were
-	// written onto shared state instead of onto each path's own copy.
+	// Both list paths read the same live tool objects; calling one after the
+	// other is the sequence that would double-append if the note were written
+	// onto shared state instead of onto each path's own copy.
 	if _, err := r.ListTools(context.Background(), testToken); err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -501,7 +426,6 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 	if !found {
 		t.Fatal("mail_search was not bucketed")
 	}
-	// And the live tool list itself was not mutated by either pass.
 	for _, tool := range r.tools.Tools("macmcp") {
 		if strings.Contains(tool.Description, scopeNotePrefix) {
 			t.Fatalf("a listing wrote its note back onto the MCP's own tool list: %q", tool.Description)
@@ -509,25 +433,12 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// scopeFromMeta: absent vs. declared-but-empty vs. populated
-//
-// This is the load-bearing check for the audit-visibility work: an absent
-// scope (an MCP with no scope: "restrict" field at all) and an empty one (the
-// field is declared but this call's grant supplied nothing for it) must be
-// different values on the wire, not just different in prose, because a
-// `denied` record's whole claim rests on the second one being distinguishable
-// from "nothing to record". scopeFromMeta used to collapse both to nil.
-// ---------------------------------------------------------------------------
-
 func TestScopeFromMeta_NoRestrictFieldDeclaredIsAbsent(t *testing.T) {
-	// A v1 schema declares no ADR-011 vocabulary at all.
 	v1 := ParseContextSchema(json.RawMessage(`{"anything":"here"}`), 1)
 	if got := scopeFromMeta(v1, json.RawMessage(`{"anything":"here"}`)); got != nil {
 		t.Errorf("v1 schema: scope = %#v, want nil (no scope concept declared)", got)
 	}
 
-	// A v2 schema that declares fields, none of them scope: "restrict".
 	v2NoRestrict := ParseContextSchema(json.RawMessage(`{
 		"note": {"type": "string", "source": "operator"}
 	}`), 2)
@@ -539,8 +450,6 @@ func TestScopeFromMeta_NoRestrictFieldDeclaredIsAbsent(t *testing.T) {
 func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *testing.T) {
 	cs := ParseContextSchema(json.RawMessage(scopedSchema), 2)
 
-	// Empty _meta entirely: the schema declares mail_accounts as restrict, so
-	// there is something to report on even though nothing was supplied.
 	got := scopeFromMeta(cs, json.RawMessage(`{}`))
 	if got == nil {
 		t.Fatal("scope = nil, want a non-nil empty map — the field IS declared, it just carried no value")
@@ -549,9 +458,9 @@ func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *t
 		t.Errorf("scope = %#v, want empty", got)
 	}
 
-	// The distinction has to survive encoding/json, not just live as a Go nil
-	// check: omitempty on a map treats a nil and an empty map identically, so
-	// this is what actually reaches the CLI and the settings UI.
+	// omitempty on a map is defined by length, so it treats a nil and an
+	// empty map identically — the distinction has to survive encoding/json,
+	// not just live as a Go nil check.
 	blob, err := json.Marshal(AuditEvent{Access: AccessRead, Scope: got})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -572,10 +481,9 @@ func TestScopeFromMeta_PopulatedValueIsCarried(t *testing.T) {
 	}
 }
 
-// TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently pins the wire contract
-// scopeFromMeta's fix depends on: encoding/json renders a nil map as `null`
-// and a non-nil empty map as `{}` as long as the field is not `omitempty` (a
-// map's omitempty is defined by length, so it cannot tell the two apart).
+// encoding/json renders a nil map as `null` and a non-nil empty map as `{}`
+// as long as the field is not `omitempty` — scopeFromMeta depends on this to
+// keep "no scope declared" and "declared but empty" distinguishable on the wire.
 func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
 	absent, err := json.Marshal(AuditEvent{Access: "read"})
 	if err != nil {

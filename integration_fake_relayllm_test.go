@@ -1,17 +1,5 @@
 package main
 
-// Hermetic integration test for the relay ↔ relayLLM boundary.
-//
-// Uses FakeRelayLLMService — a stub service preloaded with relayLLM's
-// declared manifest from test/fixtures/manifests/relayllm.json — to
-// verify that:
-//   1. A service registering relayLLM's manifest gets every declared
-//      route into the dispatcher's table.
-//   2. Inbound HTTP for any of those routes lands on the upstream
-//      socket with the inbound Authorization stripped and the service-
-//      declared token injected.
-//   3. The /ws upgrade path works the same way.
-//
 // Drift mitigation: this test reads the manifest from a JSON file that
 // relayLLM's own test suite is expected to assert against. If a route
 // is added on either side without updating the file, one side breaks
@@ -100,7 +88,6 @@ func TestIntegration_FakeRelayLLM_WebSocketUpgradeAndForward(t *testing.T) {
 	mkSandboxRelayHome(t)
 	registry := NewEnhancedServiceRegistry(nil)
 
-	// Replace the default echo handler with a WS upgrade so /ws works.
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	fake := NewFakeService(t, FakeServiceOptions{
 		ServiceID: "relayLLM",
@@ -158,7 +145,6 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 		services: &fakeServiceReloader{},
 		enhanced: enhanced,
 	}
-	// Plant a service token so the registration call can authenticate.
 	const svcTokenPlain = "svc-token-fake-relayllm"
 	router.serviceTokens.Register(hashToken(svcTokenPlain))
 
@@ -174,7 +160,6 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// The router should have persisted the manifest.
 	rec := enhanced.Get(fake.ServiceID())
 	if rec == nil {
 		t.Fatal("manifest not persisted in registry")

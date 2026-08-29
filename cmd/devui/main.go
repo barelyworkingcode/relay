@@ -1,25 +1,6 @@
-// Command devui serves the Relay settings UI in an ordinary browser for visual
-// QA and behavioral testing (theme/light-dark, layout, the status-poll focus
-// regression). It is a DEVELOPER TOOL ONLY:
-//
-//   - It is a separate binary, never linked into Relay.app — there is zero
-//     chance of it adding production attack surface.
-//   - It binds 127.0.0.1 only, serves the static HTML with canned fixture data,
-//     and answers IPC messages from a hard-coded mock. No Unix socket, no bearer
-//     token, no real Settings mutators, nothing reads or writes user config.
-//
-// The page is the exact file the WKWebView loads, so layout/markup/CSS render
-// faithfully. Note one fidelity caveat: the `-apple-system-*` CSS color
-// keywords resolve only in WebKit (Safari/WKWebView), so in Chrome the standard
-// CSS system-color fallbacks (Canvas/CanvasText/AccentColor) are what you see —
-// good enough for layout + light/dark behavior, but final native color fidelity
-// must be checked in the real app.
-//
-// Usage:
-//
-//	go run ./cmd/devui                       # serves web/dist/settings.html on :8765
-//	go run ./cmd/devui -html web/dist/settings.html
-//	go run ./cmd/devui -addr 127.0.0.1:9000
+// Command devui is a developer-only tool for visual QA: a separate binary,
+// never linked into Relay.app, that binds 127.0.0.1 only and serves the
+// settings UI with canned fixture data and no real Settings mutators.
 package main
 
 import (
@@ -47,8 +28,8 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Read fresh on every request so editing the HTML + refreshing the tab
-		// is the whole dev loop — no rebuild, no restart.
+		// Read fresh every request: editing the HTML and refreshing the tab is
+		// the whole dev loop, no rebuild or restart.
 		if _, err := w.Write([]byte(buildPage(string(raw)))); err != nil {
 			log.Printf("write response: %v", err)
 		}
@@ -58,10 +39,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-// buildPage substitutes the init-data tokens with fixtures and injects the
-// mock-IPC bridge (before the page script) plus the status-poll simulator
-// (after it). Every token renderSettingsHTML substitutes must appear here too:
-// an unreplaced __X_JSON__ leaves the page's init object syntactically invalid
+// Every token renderSettingsHTML substitutes must appear here too: an
+// unreplaced __X_JSON__ leaves the page's init object syntactically invalid
 // and takes the whole bundle down on load.
 func buildPage(html string) string {
 	html = strings.NewReplacer(
@@ -74,22 +53,19 @@ func buildPage(html string) string {
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
 		"__REMOTE_JSON__", fixtureRemote,
 		"__ENROLMENT_BUDGET_DEFAULTS_JSON__", fixtureEnrolmentBudgetDefaults,
+		"__PASSKEYS_JSON__", fixturePasskeys,
+		"__LOGIN_SESSIONS_JSON__", fixtureLoginSessions,
+		"__LOGIN_CODE_JSON__", fixtureLoginCode,
 	).Replace(html)
 
-	// The mock must define window.webkit BEFORE the page's ipc() runs, so it
-	// goes right after <body> (the page script lives further down the body).
+	// window.webkit must exist before the page's ipc() runs, so the mock goes
+	// right after <body>.
 	html = strings.Replace(html, "<body>", "<body>\n"+mockBridgeScript, 1)
-	// The poll simulator must run AFTER the page defines its window.onX handlers
-	// and its bootstrap render(), so it goes just before </body>.
+	// The poll simulator must run after the page installs its window.onX
+	// handlers and its bootstrap render(), so it goes just before </body>.
 	html = strings.Replace(html, "</body>", pollSimScript+"\n</body>", 1)
 	return html
 }
-
-// --- Fixtures -------------------------------------------------------------
-//
-// Representative, PII-free sample data that exercises every render path: stdio
-// + HTTP MCPs, several services, a project, and (via the status batch below) a
-// rich service manifest covering object/array/map/keyValue/leaf config nodes.
 
 const fixtureExternalMcps = `[
   {"id":"fsmcp","display_name":"fsMCP","command":"/usr/local/bin/fsmcp","args":["--root","/Users/you"],"env":{},"transport":"stdio","tcc_services":[]},
@@ -112,27 +88,33 @@ const fixtureProjects = `[
   {"id":"proj-mail","name":"Mail (remote)","kind":"remote","allowed_mcp_ids":["macmcp"],"allowed_models":[],"chat_templates":[],"generate_skill":false,"token":"relay_proj_0f1e2d3c4b5a6978","disabled_tools":{}}
 ]`
 
-// fixtureEnrolments exercises the Remote Clients list: a resolvable grant, and
-// a full-length fingerprint (never truncated — after an enrolment is deleted it
-// is the only thing that names that client's calls in the audit log). No key
-// material appears here, and none ever crosses this boundary in production
-// either: the create response carries a bundle DIRECTORY and nothing else.
+// The fingerprint is never truncated: after an enrolment is deleted it is the
+// only thing that names that client's calls in the audit log. No key material
+// appears here, matching production — the create response carries a bundle
+// directory and nothing else.
 const fixtureEnrolments = `[
   {"client_id":"hermes-mail","fingerprint":"sha256:9f2a4c1d6b8e0f37a5c9d2e4b6081f3a7c5e9d1b3f5a7c9e1d3b5f7a9c1e3d5b","project_ids":["proj-mail"],"budget":{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608},"created_at":"2026-08-20T09:14:00Z"}
 ]`
 
-// fixtureRemote is the enabled-and-auditing state. Flip enabled/configured/
-// audit_enabled here to eyeball the other three renderings: an absent block, a
-// present-but-off one, and one that is configured but dead because auditing is
-// disabled.
 const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true}`
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
 
-// fixtureMcpScopeFields mirrors what a v2 contextSchema projects to
-// (ScopeFieldView): macMCP's worked example from ADR-011, so the per-MCP
-// permission panel has an operator-set field, a dependent one, and a
-// project_path-derived one to render read-only.
+// The credential id is abbreviated and there is no public key here, matching
+// production: passkeyView has no field that could carry one.
+const fixturePasskeys = `[
+  {"id":"cred_9f2a4c1d6b8e0f37a5c9d2e4b6081f3a","short":"cred_9f2a4c…","name":"MacBook Touch ID","created":"2026-08-21T11:02:00Z","sign_count":0,"counter_supported":false},
+  {"id":"cred_31bd77aa04e6c9f2118d5c30ab7e6641","short":"cred_31bd77…","name":"YubiKey 5C","created":"2026-08-24T16:40:00Z","sign_count":7,"counter_supported":true}
+]`
+
+const fixtureLoginSessions = `[
+  {"id":"a3f1c8de-5b21-4f70-9e6a-2d4c81b0e957","name":"login cred_9f2a4c… 2026-08-28T08:12:04Z","created":"2026-08-28T08:12:04Z","expires":"2026-08-28T20:12:04Z"}
+]`
+
+// Null, which is the state on every ordinary open: a code is present only in
+// the paint the tray's "Show Login Code..." item triggered.
+const fixtureLoginCode = `null`
+
 const fixtureMcpScopeFields = `{
   "fsmcp":[
     {"name":"allowed_dirs","type":"array","item_type":"string","description":"Directories this client may reach","source":"project_path"}
@@ -153,9 +135,8 @@ const fixtureMcpToolCache = `{
   ]
 }`
 
-// mockBridgeScript stands in for the WKWebView message bridge. ipc() in the page
-// takes the window.webkit branch, so every IPC posts here; we answer a few op
-// types with canned data and log the rest.
+// Stands in for the WKWebView bridge; the page's ipc() posts through
+// window.webkit, so every message lands here.
 var mockBridgeScript = `<script>
 (function () {
   var FIXTURE_CONFIG_TEXT = ` + jsString(fixtureConfigText) + `;
@@ -165,7 +146,7 @@ var mockBridgeScript = `<script>
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
-    setTimeout(function () { handle(msg); }, 140); // simulate round-trip latency
+    setTimeout(function () { handle(msg); }, 140);
   } } } };
   function handle(msg) {
     switch (msg.type) {
@@ -196,13 +177,9 @@ var mockBridgeScript = `<script>
         window.onRemoteConfigUpdated({ configured: true, enabled: !!msg.enabled, listen: msg.listen || '',
                                        effective: msg.listen || '127.0.0.1:9910', audit_enabled: true });
         break;
-      // add/update/remove/start/stop etc. — no-op in the harness, just logged above
+      // add/update/remove/start/stop etc. are no-ops here; already logged above
     }
   }
-  // enumerate answers context/enumerate the way a v2 MCP does, including the
-  // degraded shapes — those are the ones worth eyeballing, because each has to
-  // read differently and none of them may look like an empty list. Force one
-  // by asking for a field named after the status you want to see.
   function enumerate(msg) {
     var res = { mcp_id: msg.mcp_id, field: msg.field, status: 'ok', values: null };
     if (msg.mcp_id !== 'macmcp') { res.status = 'unsupported'; res.error = msg.mcp_id + ' does not implement context/enumerate'; return res; }
@@ -228,9 +205,6 @@ var mockBridgeScript = `<script>
 })();
 </script>`
 
-// pollSimScript reproduces the tray's 2-second status poll so the Service
-// Inspector populates and the focus-clobber regression is reproducible: focus an
-// input on the Inspector tab and watch whether a tick wipes it.
 var pollSimScript = `<script>
 (function () {
   var BATCH = ` + inlineJSON(fixtureStatusBatch) + `;
@@ -244,10 +218,6 @@ var pollSimScript = `<script>
 })();
 </script>`
 
-// fixtureAuditEvents covers every outcome the Tool Calls tab renders
-// differently: a plain success, a protocol-level tool error, a permission
-// denial, an unauthenticated attempt, a directory-auth grant, and a record
-// whose arguments were truncated.
 const fixtureAuditEvents = `[
   {"id":"ev-1","ts":"2026-08-19T10:24:02.117Z","dur_ms":412,"event":"call_tool",
    "actor":{"kind":"project","project_id":"proj-acme","project_name":"Acme Website","auth":"token","pid":41221,"proc":"relay","parent":"claude"},
@@ -281,12 +251,10 @@ const fixtureAuditEvents = `[
 
 const fixtureAuditStatus = `{"enabled":true,"path":"/Users/you/Library/Application Support/relay/logs/audit/toolcalls.jsonl","dropped":0,"recorded":6,"log_args":true,"log_lists":false}`
 
-// fixtureMcpToolCacheTools is the tool list keyed by MCP id, served to
-// list_mcp_tools requests (the project tri-state picker).
 const fixtureMcpToolCacheTools = fixtureMcpToolCache
 
-// fixtureConfigText is the raw config file the mock returns for a config 'get'.
-// JSONC-style comment included to exercise the comment stripper.
+// The JSONC-style comment inside this literal is deliberate: it exercises the
+// comment stripper.
 const fixtureConfigText = `{
   // relayLLM configuration (sample)
   "openai": { "baseUrl": "http://localhost:1234/v1", "apiKey": "sk-sample-key" },
@@ -299,9 +267,6 @@ const fixtureConfigText = `{
   "logLevel": "info"
 }`
 
-// fixtureStatusBatch is one ServiceStatusSnapshot whose manifest exercises every
-// config node type (object, array of objects with a rest:true keyValue, map,
-// bool, select, number, text, secret) plus a forEach row action.
 const fixtureStatusBatch = `[
   {
     "serviceId": "relay-llm",
@@ -350,14 +315,12 @@ const fixtureStatusBatch = `[
 
 // inlineJSON neutralizes any literal </ in JSON before it is spliced into an
 // inline <script> as a JS value, so a string value containing </script> can't
-// terminate the <script> element early. (<\/ is a valid escape inside a JS/JSON
-// string; structural JSON contains no </, so this is a no-op there.)
+// terminate the <script> element early. Structural JSON contains no </, so
+// this is a no-op there.
 func inlineJSON(s string) string {
 	return strings.ReplaceAll(s, "</", "<\\/")
 }
 
-// jsString renders s as a safely-quoted JavaScript string literal (used to embed
-// the raw config text as a JS value inside the mock script).
 func jsString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')

@@ -2,13 +2,6 @@
 
 package main
 
-// Issue #39: an external MCP is shared by every access profile that names it,
-// so anything that kills its child process is an outage for every grant it
-// serves — and relay never brought one back. These tests drive the real
-// spawnStdioConn → readLoop → supervisor path against the in-tree cmd/testmcp
-// peer; nothing here is mocked, because the defect lived in the seam between
-// the process, the reader goroutine and the manager's bookkeeping.
-
 import (
 	"context"
 	"os"
@@ -18,16 +11,12 @@ import (
 	"time"
 )
 
-// connOf returns the manager's current connection for id, or nil.
 func connOf(m *ExternalMcpManager, id string) McpConnection {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.conns[id]
 }
 
-// waitForNewConn blocks until the manager holds a connection for id that is not
-// prev — i.e. until a respawn has been published. Fails the test on timeout,
-// which is what "relay never respawns a dead child" looks like from here.
 func waitForNewConn(t *testing.T, m *ExternalMcpManager, id string, prev McpConnection) *externalMcpConn {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
@@ -45,9 +34,9 @@ func waitForNewConn(t *testing.T, m *ExternalMcpManager, id string, prev McpConn
 	return nil
 }
 
-// A child that dies must be brought back — and must come back fully: handshake
-// re-run, tools rediscovered, context schema re-read. A respawn that served
-// calls before its schema was known would be a worse bug than the outage.
+// A respawn must come back fully — handshake re-run, tools rediscovered,
+// context schema re-read — because serving calls before the schema is known
+// would be a worse bug than the outage it recovers from.
 func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	m := NewExternalMcpManager(nil)
@@ -55,8 +44,8 @@ func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := stdioMcp("mcp-dies", bin)
-	// A peer that declares a v2 context schema, so the assertion below is about
-	// the schema being rediscovered and not about it never having existed.
+	// v2 context schema, so the assertion below is about the schema being
+	// rediscovered, not about it never having existed.
 	cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
 	if err := m.startOne(ctx, &cfg); err != nil {
 		t.Fatalf("startOne: %v", err)
@@ -70,7 +59,7 @@ func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 		t.Fatalf("before the crash the surface should carry the declared schema, got %+v", s)
 	}
 
-	// Kill the child the way a crash does: it exits with a call in flight.
+	// "exit" is testmcp's own RPC for crashing itself mid-request.
 	if _, err := first.SendRequest(ctx, "exit", nil); err == nil {
 		t.Fatal("expected the in-flight call to fail when the child exits")
 	}
@@ -95,9 +84,6 @@ func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 	}
 }
 
-// The capability comes back through the manager, not only on the connection
-// object: a caller that goes through CallTool must find a working MCP again
-// without anyone reloading anything.
 func TestSupervisor_CallToolWorksAgainAfterACrash(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	m := NewExternalMcpManager(nil)
@@ -115,15 +101,11 @@ func TestSupervisor_CallToolWorksAgainAfterACrash(t *testing.T) {
 	}
 	waitForNewConn(t, m, "mcp-crash", first)
 
-	// CallTool routes through the manager's connection map, which is the path
-	// every access profile's tool call takes.
 	if _, err := m.CallTool(ctx, "mcp-crash", "echo", nil, nil); err != nil {
 		t.Fatalf("CallTool after respawn: %v", err)
 	}
 }
 
-// Stop is not a crash. A supervisor whose MCP an operator removed must not
-// resurrect it, or a removed MCP would be unremovable.
 func TestSupervisor_StopDoesNotRespawn(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 8)
@@ -150,9 +132,6 @@ func TestSupervisor_StopDoesNotRespawn(t *testing.T) {
 	}
 }
 
-// A child that will not stay up must be abandoned rather than respawned
-// forever, and the abandonment must be reported — it is the state that needs a
-// human, so it is the one that must not be silent.
 func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 3)
@@ -175,10 +154,10 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 		}
 	})
 
-	// A first handshake that succeeds, then a command that cannot be respawned:
-	// the config is captured at install time, so pointing the supervisor at a
-	// binary that no longer exists is how a crash loop is produced without a
-	// binary that crashes.
+	// The config's binary path is captured at install time, so copying it and
+	// then deleting the copy produces a crash loop without a binary that
+	// actually crashes: a first successful handshake, then every respawn
+	// attempt fails because the path is gone.
 	dir := t.TempDir()
 	doomed := dir + "/testmcp-copy"
 	copyFile(t, bin, doomed)
@@ -219,10 +198,6 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 	}
 }
 
-// A supervision transition has to reach the audit log, because a dead MCP
-// otherwise shows up only as a run of `error` outcomes with no cause and a
-// client-side `read response: EOF` — the report this project's docs say to
-// trust last.
 func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	dir := t.TempDir()
@@ -295,8 +270,8 @@ func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 			t.Errorf("%s attributes a project (%q) to a record about relay itself", ev.Event, ev.Actor.ProjectID)
 		}
 	}
-	// The table an operator reads has no EVENT column, so the transition has to
-	// survive into the DETAIL cell or the row says nothing at all.
+	// The operator's table has no EVENT column, so the transition must survive
+	// into the DETAIL cell or the row says nothing at all.
 	if got := auditDetail(*down); !strings.HasPrefix(got, McpHealthDown+": ") {
 		t.Errorf("mcp_down detail = %q, want it to lead with the transition", got)
 	}
@@ -321,8 +296,6 @@ func shortenRestartPolicy(t *testing.T, attempts int) {
 	})
 }
 
-// copyFile duplicates src at dst with the executable bit set, so a test can own
-// a binary it is allowed to delete out from under a running child.
 func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
 	b, err := os.ReadFile(src)
@@ -341,9 +314,6 @@ func removeFile(t *testing.T, path string) {
 	}
 }
 
-// An MCP whose restart budget ran out must still be recoverable without
-// relaunching the tray — otherwise "abandoned" is the same permanent outage
-// issue #39 opened on, reached more slowly.
 func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 2)
@@ -380,8 +350,6 @@ func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 		t.Fatal("the child was never abandoned")
 	}
 
-	// The operator fixes whatever was wrong, and anything that reconciles —
-	// any settings change — must pick the MCP back up.
 	copyFile(t, bin, doomed)
 	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-abandoned", doomed)})
 
@@ -396,11 +364,10 @@ func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 	}
 }
 
-// A reload arrives over the bridge, and bridge.BridgeServer hands each handler
-// a PER-CONNECTION context that dies the moment the client disconnects —
-// `relay mcp register` is one such client and it exits immediately. Supervision
-// must outlive it, or it would apply to some MCPs and not others depending on
-// which command last touched them.
+// bridge.BridgeServer hands each handler a PER-CONNECTION context that dies
+// the moment the client disconnects — `relay mcp register` is one such client
+// and it exits immediately. Supervision tied to that context would apply to
+// some MCPs and not others depending on which command last touched them.
 func TestSupervisor_OutlivesTheReloadCallersContext(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	m := NewExternalMcpManager(nil)
@@ -415,7 +382,7 @@ func TestSupervisor_OutlivesTheReloadCallersContext(t *testing.T) {
 	if err := m.Reload(reqCtx, "mcp-reloaded", &cfg); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	cancel() // the bridge client hangs up
+	cancel()
 
 	first := connOf(m, "mcp-reloaded")
 	if first == nil {

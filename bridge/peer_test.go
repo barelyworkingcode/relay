@@ -50,8 +50,7 @@ func TestPeerPID_ReportsConnectingProcess(t *testing.T) {
 	}
 }
 
-// A non-Unix connection has no peer pid to read; "unknown" is a valid answer
-// and must not be an error.
+// "unknown" (zero) is a valid answer here and must not be an error.
 func TestPeerPID_ZeroForNonUnixConn(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

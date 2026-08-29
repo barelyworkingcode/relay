@@ -1,12 +1,5 @@
 package main
 
-// Tool Calls tab (the audit-log viewer) under goja, using the same bundle +
-// DOM shim as settings_bundle_test.go. The tab is the primary way anyone will
-// actually read the audit log, so the tests pin the things a reviewer depends
-// on: that refusals are visually distinct from successes, that the caller and
-// project attribution reach the screen, and that a truncated or disabled state
-// says so rather than looking like a complete record.
-
 import (
 	"strings"
 	"testing"
@@ -14,8 +7,6 @@ import (
 	"github.com/dop251/goja"
 )
 
-// seedAuditVM loads the app bundle and puts the given events on the Tool Calls
-// tab. Returns the VM with state.page already switched to 'audit'.
 func seedAuditVM(t *testing.T, eventsJSON, statusJSON string) *goja.Runtime {
 	t.Helper()
 	vm := newAppVM(t)
@@ -67,8 +58,6 @@ func TestAuditTab_RendersEventsWithAttribution(t *testing.T) {
 	}
 }
 
-// A denial must not look like a success at a glance — that distinction is the
-// whole reason the tab exists.
 func TestAuditTab_OutcomesAreVisuallyDistinct(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, auditStatusOn)
 	html := evalString(t, vm, `window.renderAudit()`)
@@ -81,8 +70,6 @@ func TestAuditTab_OutcomesAreVisuallyDistinct(t *testing.T) {
 	}
 }
 
-// Typing in the filter box must not cross the IPC boundary — it filters what is
-// already loaded, so the tab stays responsive on every keystroke.
 func TestAuditTab_TextFilterIsLocal(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, auditStatusOn)
 
@@ -95,7 +82,6 @@ func TestAuditTab_TextFilterIsLocal(t *testing.T) {
 		t.Errorf("text filter returned %q, want 1:send_mail", got)
 	}
 
-	// The filter searches the caller and the arguments too, not just the tool.
 	got = evalString(t, vm, `(function(){
 		window.state.auditFilter.text = 'notes.md';
 		return window.auditVisible().length;
@@ -125,8 +111,6 @@ func TestAuditTab_ServerSideFiltersApplyLocallyToo(t *testing.T) {
 	}
 }
 
-// Expanding a row is where the full record lives: the arguments, the working
-// directory behind a directory-auth grant, the caller pid.
 func TestAuditTab_ExpandedRowShowsFullRecord(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, auditStatusOn)
 	html := evalString(t, vm, `(function(){
@@ -154,14 +138,11 @@ func TestAuditTab_TruncatedArgsAreLabelled(t *testing.T) {
 		return window.renderAudit();
 	})()`)
 
-	// A truncated record that looks complete is worse than no record.
 	if !strings.Contains(html, "truncated") || !strings.Contains(html, "90210") {
 		t.Errorf("truncated arguments were not labelled as such:\n%s", html)
 	}
 }
 
-// Disabled auditing must be stated outright. An empty table would otherwise
-// read as "nothing happened".
 func TestAuditTab_DisabledStateIsExplicit(t *testing.T) {
 	vm := seedAuditVM(t, `[]`, `{enabled:false, path:'', dropped:0, recorded:0}`)
 	html := evalString(t, vm, `window.renderAudit()`)
@@ -174,7 +155,6 @@ func TestAuditTab_DisabledStateIsExplicit(t *testing.T) {
 	}
 }
 
-// Dropped events mean the log is incomplete, which the reader has to be told.
 func TestAuditTab_DropCountIsSurfaced(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, `{enabled:true, path:'/tmp/x', dropped:7, recorded:2}`)
 	html := evalString(t, vm, `window.renderAudit()`)
@@ -201,8 +181,6 @@ func TestAuditTab_EmptyStateDistinguishesLoadingFromNoMatches(t *testing.T) {
 	}
 }
 
-// A live event appends without a full repaint, so whatever the user is typing
-// in the filter box survives an inbound tool call.
 func TestAuditTab_LiveEventPrepends(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, auditStatusOn)
 	got := evalString(t, vm, `(function(){
@@ -216,7 +194,6 @@ func TestAuditTab_LiveEventPrepends(t *testing.T) {
 	}
 }
 
-// With Follow off, the view must stay where the reader put it.
 func TestAuditTab_FollowOffIgnoresLiveEvents(t *testing.T) {
 	vm := seedAuditVM(t, auditEventFixture, auditStatusOn)
 	got := evalString(t, vm, `(function(){
@@ -229,8 +206,6 @@ func TestAuditTab_FollowOffIgnoresLiveEvents(t *testing.T) {
 	}
 }
 
-// Switching to the tab must load it: it is the one tab not seeded by the
-// initial payload.
 func TestAuditTab_ShowPageTriggersInitialLoad(t *testing.T) {
 	vm := newAppVM(t)
 	// Intercept at the WebKit message handler rather than window.ipc: the
@@ -247,13 +222,6 @@ func TestAuditTab_ShowPageTriggersInitialLoad(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Remote callers (ADR-010)
-// ---------------------------------------------------------------------------
-
-// A remote call is two records sharing one id, and its actor has no process to
-// name. Both facts have to survive to the screen: an operator looking at the
-// tab is the person who decides whether a VM is behaving.
 const auditRemoteFixture = `[{
 	id: 'rv1', ts: '2026-08-20T09:00:00.000Z', dur_ms: 0, event: 'call_tool', phase: 'intent',
 	actor: { kind:'remote', project_id:'proj_mail', project_name:'Mail', auth:'mtls',
@@ -273,8 +241,6 @@ func TestAuditTab_RemoteCallerIsLabelledByItsEnrolledClient(t *testing.T) {
 	vm := seedAuditVM(t, auditRemoteFixture, auditStatusOn)
 	html := evalString(t, vm, `window.renderAudit()`)
 
-	// The caller column would otherwise be a dash for every remote row: pid
-	// attribution means nothing across a network.
 	if !strings.Contains(html, "hermes-mail") {
 		t.Errorf("remote rows do not name the enrolled client:\n%s", html)
 	}
@@ -283,9 +249,6 @@ func TestAuditTab_RemoteCallerIsLabelledByItsEnrolledClient(t *testing.T) {
 	}
 }
 
-// throttled says the grant was legitimate and the pattern of use was not, which
-// is what exfiltration looks like from the host's side. It must not read as an
-// ordinary error at a glance.
 func TestAuditTab_ThrottledAndPendingHaveTheirOwnPills(t *testing.T) {
 	vm := seedAuditVM(t, auditRemoteFixture, auditStatusOn)
 	html := evalString(t, vm, `window.renderAudit()`)
@@ -333,14 +296,6 @@ func TestAuditTab_ExpandedRemoteRecordShowsFullFingerprint(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The authority a call ran with (ADR-011 decision 7) — access, scope,
-// allow_external and scope_violation — was recorded on every record but
-// reachable only through --json and a grep. These tests pin that the Tool
-// Calls tab now shows it: a compact badge on the row for a scope violation,
-// and the full authority in the row's expanded detail.
-// ---------------------------------------------------------------------------
-
 const auditAuthorityFixture = `[{
 	id: 'au1', ts: '2026-08-21T09:00:00.000Z', dur_ms: 40, event: 'call_tool',
 	actor: { kind:'project', project_id:'p1', project_name:'Mail RO', auth:'token' },
@@ -363,9 +318,6 @@ const auditAuthorityFixture = `[{
 	actor: { kind:'service', auth:'service' }
 }]`
 
-// A scope violation must be visible without expanding the row: it is the
-// signal a security review watches for, and it must not read the same as an
-// ordinary tool_error.
 func TestAuditTab_ScopeViolationGetsARowBadge(t *testing.T) {
 	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
 	html := evalString(t, vm, `window.renderAudit()`)
@@ -373,14 +325,11 @@ func TestAuditTab_ScopeViolationGetsARowBadge(t *testing.T) {
 	if !strings.Contains(html, "audit-badge-scope") {
 		t.Errorf("scope-violating row did not get the badge:\n%s", html)
 	}
-	// The one-line detail column carries the marker too, mirroring the CLI.
 	if !strings.Contains(html, "scope_violation: true") {
 		t.Errorf("detail column is missing the scope_violation marker:\n%s", html)
 	}
 }
 
-// The ordinary tool_error in the fixture (au2) must not get the badge or the
-// marker — only au1 probed a boundary.
 func TestAuditTab_OrdinaryToolErrorHasNoScopeBadge(t *testing.T) {
 	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
 	got := evalString(t, vm, `(function(){
@@ -392,8 +341,6 @@ func TestAuditTab_OrdinaryToolErrorHasNoScopeBadge(t *testing.T) {
 	}
 }
 
-// The expanded row is where the full authority lives: the mode, the outbound
-// grant and the injected scope, per ADR-011 decision 7.
 func TestAuditTab_ExpandedRowShowsTheAuthority(t *testing.T) {
 	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
 	html := evalString(t, vm, `(function(){
@@ -413,9 +360,6 @@ func TestAuditTab_ExpandedRowShowsTheAuthority(t *testing.T) {
 	}
 }
 
-// An absent scope (this MCP declares none) and an empty one (declared, but
-// nothing was injected — the finding on au3's denied record) must render as
-// different sentences, not the same blank.
 func TestAuditTab_AbsentScopeAndEmptyScopeRenderDifferently(t *testing.T) {
 	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
 
@@ -444,8 +388,6 @@ func TestAuditTab_AbsentScopeAndEmptyScopeRenderDifferently(t *testing.T) {
 	}
 }
 
-// A record with no recorded authority at all (a service token's list_tools
-// call) must not show placeholder Access/Outbound/Scope lines.
 func TestAuditTab_NoAuthorityRecordedShowsNoAuthorityLines(t *testing.T) {
 	vm := seedAuditVM(t, auditAuthorityFixture, auditStatusOn)
 	html := evalString(t, vm, `(function(){
@@ -471,8 +413,6 @@ func TestAuditTab_ScopeViolationOutcomeFilterSelectsOnTheField(t *testing.T) {
 		t.Errorf("scope_violation filter returned %q, want 1:au1", got)
 	}
 
-	// The ordinary tool_error filter must still match both tool_error rows,
-	// scope violation or not — unaffected by the new value.
 	got = evalString(t, vm, `(function(){
 		window.state.auditFilter.outcome = 'tool_error';
 		var rows = window.auditVisible();

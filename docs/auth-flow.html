@@ -1,0 +1,1377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>relay — authentication and authorization, end to end</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fdfdfb;
+    --fg: #1c1c19;
+    --muted: #5d5d56;
+    --rule: #dcdcd4;
+    --panel: #f4f4ef;
+    --code: #f0f0ea;
+    --accent: #7a3c12;
+    --warn: #8d1f1f;
+    --ok: #1e5c34;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15161a;
+      --fg: #e5e5e0;
+      --muted: #9d9d96;
+      --rule: #33343b;
+      --panel: #1d1f24;
+      --code: #1d1f24;
+      --accent: #e2a067;
+      --warn: #f0908d;
+      --ok: #82c89c;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 2.5rem 1.25rem 6rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.62 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 47rem; margin: 0 auto; }
+
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 .4rem; letter-spacing: -.01em; }
+  h2 {
+    font-size: 1.22rem; margin: 3rem 0 .8rem; padding-top: .9rem;
+    border-top: 1px solid var(--rule); letter-spacing: -.005em;
+  }
+  h3 { font-size: 1.02rem; margin: 2rem 0 .5rem; }
+  h4 { font-size: .95rem; margin: 1.4rem 0 .35rem; }
+  p, li { margin: .7rem 0; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: none; }
+  .sub { color: var(--muted); margin: 0 0 1.6rem; }
+  .muted { color: var(--muted); }
+
+  code, kbd, samp { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  p code, li code, td code, th code, dd code, dt code {
+    font-size: .875em; background: var(--code); padding: .08em .3em; border-radius: 3px;
+    overflow-wrap: anywhere;
+  }
+  pre {
+    background: var(--code); border: 1px solid var(--rule); border-radius: 5px;
+    padding: .8rem .9rem; overflow-x: auto; font-size: .8rem; line-height: 1.55;
+    margin: .9rem 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .scroll { overflow-x: auto; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; min-width: 30rem; }
+  th, td { text-align: left; vertical-align: top; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; white-space: nowrap; }
+  td code { overflow-wrap: anywhere; }
+  table.classes td:first-child, table.classes td:first-child code { white-space: nowrap; overflow-wrap: normal; }
+
+  .note {
+    background: var(--panel); border-left: 3px solid var(--rule);
+    padding: .1rem .95rem; margin: 1.2rem 0; border-radius: 0 4px 4px 0;
+  }
+  .note p:first-child { margin-top: .8rem; }
+  .note p:last-child { margin-bottom: .8rem; }
+
+  nav.toc { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: .3rem 1.1rem .9rem; }
+  nav.toc h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; border: 0; margin: 1rem 0 .4rem; padding: 0; color: var(--muted); }
+  nav.toc ol { margin: 0; padding-left: 1.4rem; font-size: .93rem; }
+  nav.toc li { margin: .28rem 0; }
+
+  dl { margin: 1rem 0; }
+  dt { font-weight: 600; margin-top: 1rem; }
+  dd { margin: .25rem 0 0 0; }
+
+  figure { margin: 1.6rem 0; }
+  figcaption { font-size: .84rem; color: var(--muted); margin-top: .5rem; }
+  .diagram { overflow-x: auto; }
+  .diagram svg { display: block; min-width: 41rem; width: 100%; height: auto; }
+  .d-life { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 3 4; }
+  .d-box { fill: var(--panel); stroke: var(--rule); stroke-width: 1; }
+  .d-band { fill: var(--code); stroke: var(--rule); stroke-width: 1; }
+  .d-refuse { fill: none; stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+  .d-arrow { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .d-arrow-bad { stroke: var(--warn); stroke-width: 1.2; fill: none; }
+  .d-head { fill: var(--fg); }
+  .d-head-bad { fill: var(--warn); }
+  text { font-family: system-ui, -apple-system, sans-serif; fill: var(--fg); }
+  .t-lane { font-size: 12px; font-weight: 600; }
+  .t-step { font-size: 11px; }
+  .t-note { font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .t-bad { font-size: 11px; fill: var(--warn); }
+  .t-sect { font-size: 11px; font-weight: 600; fill: var(--muted); letter-spacing: .06em; }
+
+  .ok { color: var(--ok); }
+  .bad { color: var(--warn); }
+  footer { margin-top: 3.5rem; padding-top: 1rem; border-top: 1px solid var(--rule); font-size: .87rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>relay — authentication and authorization, end to end</h1>
+<p class="sub">How a caller gets a credential, what that credential reaches, and what a refusal looks like.</p>
+
+<p>This page is for the two people who have to act on it: an engineer wiring a new
+consumer to relay's HTTP control plane, and an operator who needs to know what a
+credential can reach and how to get one. It assumes HTTP and public-key crypto and
+nothing about relay.</p>
+
+<p>It is the <em>flow</em>. <a href="tokens.md"><code>docs/tokens.md</code></a> is the
+<em>inventory</em> — the canonical table of every credential in the ecosystem, and where
+each lives at rest. <a href="audit-log.md"><code>docs/audit-log.md</code></a> is the
+record format. The reasoning lives in
+<a href="decisions/014-every-capability-is-an-http-capability.md">ADR-014</a>,
+<a href="decisions/015-control-plane-authorization.md">ADR-015</a> and
+<a href="decisions/016-interactive-login-and-the-view-credential.md">ADR-016</a>;
+those argue, this explains.</p>
+
+<div class="note">
+<p><strong>Every command and every response on this page was executed.</strong> Nothing
+here is composed by hand. The transcripts come from a relay built with
+<code>./build.sh --test</code> and started against a throwaway config directory
+(<code>relay --config-dir /tmp/relaydoc</code>) with
+<code>RELAY_API_LISTEN=127.0.0.1:8790</code>, so nothing here touched a real install. The
+<code>relay</code> in each transcript is
+<code>/Applications/Relay.app/Contents/MacOS/relay --config-dir /tmp/relaydoc</code>, shortened
+for reading. Secrets are truncated in place and marked with
+<code>…</code> — the shape is real, the value is cut. Credential ids and passkey ids are
+identifiers, not secrets, and are shown whole, because the audit output refers to them.</p>
+</div>
+
+<nav class="toc" aria-label="Contents">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#try">Fifteen minutes, from nothing to a working credential</a></li>
+  <li><a href="#credentials">The credential model</a></li>
+  <li><a href="#classes">The class model, and the line under <code>execute</code></a></li>
+  <li><a href="#transport">Transport is part of the grant</a></li>
+  <li><a href="#gates">The two gates</a></li>
+  <li><a href="#passkey">The passkey ceremony, step by step</a></li>
+  <li><a href="#audit">What gets audited, and what does not</a></li>
+  <li><a href="#failures">Failure modes you will actually hit</a></li>
+  <li><a href="#code">Where this lives in the code</a></li>
+</ol>
+</nav>
+
+<h2 id="try">1. Fifteen minutes, from nothing to a working credential</h2>
+
+<p>The control plane is an HTTP API. It always has a 0600 Unix socket. It has a loopback
+TCP listener only if you asked for one:</p>
+
+<pre><code>RELAY_API_LISTEN=127.0.0.1:8790 /Applications/Relay.app/Contents/MacOS/relay
+RELAY_API_LISTEN=127.0.0.1:8790 open -a Relay      # also works — open passes the environment on</code></pre>
+
+<p>Relay must not already be running when you do this, or <code>open</code> merely activates the
+existing process. Confirm the bind before going further:</p>
+
+<pre><code>$ lsof -nP -iTCP:8790 -sTCP:LISTEN
+COMMAND   PID  USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+relay   18066 admin    8u  IPv4 0xc97e17983d2959df      0t0  TCP 127.0.0.1:8790 (LISTEN)</code></pre>
+
+<p>Mint a credential on the host. The token is printed once:</p>
+
+<pre><code>$ relay credential mint --name doc-readonly --class read
+minted credential "doc-readonly"
+  id:      0c49e4b1-c5fb-420b-a473-6685b9403769
+  classes: read
+  created: 2026-08-28T23:09:46Z
+  expires: never
+  token:   0e4fd44e6e6bc693…
+  this token is shown ONCE and is not recoverable — only its SHA-256 is stored
+  present it as: Authorization: Bearer &lt;token&gt;</code></pre>
+
+<p>Use it:</p>
+
+<pre><code>$ curl -sS -i -H "Authorization: Bearer 0e4fd44e6e6bc693…" http://127.0.0.1:8790/api/projects
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 3
+
+[]</code></pre>
+
+<p>Ask it to do something it was not granted, and see the shape of a refusal:</p>
+
+<pre><code>$ curl -sS -i -H "Authorization: Bearer 0e4fd44e6e6bc693…" \
+       -H 'Content-Type: application/json' -d '{"name":"x"}' \
+       http://127.0.0.1:8790/api/projects
+HTTP/1.1 403 Forbidden
+Content-Type: text/plain; charset=utf-8
+
+Forbidden</code></pre>
+
+<p>Then check the ground truth. The agent's — or the caller's — own account of what it
+could reach is not evidence; <code>relay audit</code> is:</p>
+
+<pre><code>$ relay audit --kind control
+TIME      OUTCOME  PROJECT  MCP  TOOL  MS  CALLER                                DETAIL
+16:09:54  ok       -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  GET /api/projects  class=read  transport=tcp
+16:09:54  denied   -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  POST /api/projects  class=configure  transport=tcp  class not granted</code></pre>
+
+<p>Everything below is that loop, with the reasons.</p>
+
+<h2 id="credentials">2. The credential model</h2>
+
+<p>Relay has several credentials, and only some of them are about the HTTP control plane
+this page describes. The distinction matters when you are debugging: presenting the wrong
+one gets you a 401 that says nothing about which door you knocked on.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Credential</th><th>Reaches</th><th>Held by</th><th>Issued by</th><th>At rest</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Project token</strong><br><code>RELAY_PROJECT_TOKEN</code></td>
+  <td>The <em>bridge</em>, not this API. Scopes MCP tool calls to one project.</td>
+  <td>Project shells, LLM CLIs, the <code>relay mcp</code> child</td>
+  <td>Relay, per project</td>
+  <td>Plaintext + SHA-256 inline in the project in <code>settings.json</code></td>
+</tr>
+<tr>
+  <td><strong>Service token</strong><br><code>RELAY_SERVICE_TOKEN</code></td>
+  <td>The bridge, unfiltered — broker and admin ops.</td>
+  <td>A spawned enhanced service</td>
+  <td>Relay, per spawn</td>
+  <td>In memory only; never persisted, never given to a child shell</td>
+</tr>
+<tr>
+  <td><strong>Frontend token</strong><br><code>RELAY_FRONTEND_TOKEN</code></td>
+  <td>This API, as a credential — see below.</td>
+  <td>Eve, relayScheduler</td>
+  <td>Relay, fresh per process start</td>
+  <td>SHA-256, as the <code>legacy-frontend-token</code> record</td>
+</tr>
+<tr>
+  <td><strong>Control-plane credential</strong><br><code>api_credentials</code></td>
+  <td>This API, on the classes it names.</td>
+  <td>Whatever you hand it to</td>
+  <td><code>relay credential mint</code></td>
+  <td>SHA-256 in <code>settings.json</code></td>
+</tr>
+<tr>
+  <td><strong>Login credential</strong></td>
+  <td>This API, <code>read</code>+<code>configure</code>, for 12 hours.</td>
+  <td>One browser tab, in memory</td>
+  <td>A passkey assertion at <code>/relay/login</code></td>
+  <td>SHA-256, as an ordinary <code>api_credentials</code> record</td>
+</tr>
+<tr>
+  <td><strong>Enhanced-service internal bearer</strong></td>
+  <td>One service's own internal socket.</td>
+  <td>Relay's dispatcher</td>
+  <td>The service, declared at <code>RegisterManifest</code></td>
+  <td>In relay's in-memory manifest registry</td>
+</tr>
+<tr>
+  <td><strong>Login bootstrap code</strong></td>
+  <td>Nothing. It authorises registering a passkey.</td>
+  <td>The operator's eyes, for two minutes</td>
+  <td><code>relay login enrol</code></td>
+  <td>SHA-256 + expiry in <code>settings.json</code></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>Two more exist and are out of scope here: the <code>admin_secret</code> that gates a
+handful of bridge ops, and per-MCP OAuth tokens that authenticate <em>relay</em> to
+upstream servers. <a href="tokens.md"><code>docs/tokens.md</code></a> has both.</p>
+
+<h3 id="cred-control">The control-plane credential</h3>
+
+<p>This is the one thing the HTTP API authenticates. It carries a name, a SHA-256 of a
+token relay printed once, an explicit set of classes, a creation time, and optionally an
+expiry. Here is a real record set, straight out of a sandbox <code>settings.json</code>
+with the hashes cut:</p>
+
+<pre><code>{
+  "api_credentials": [
+    {
+      "id": "245e087e-7c8f-47e1-9bf8-adf83cc79c45",
+      "name": "legacy-frontend-token",
+      "hash": "04ae7a030e238742…",
+      "classes": ["read", "configure", "proxy"],
+      "created": "2026-08-28T23:09:33Z"
+    },
+    {
+      "id": "9fe92b8e-622b-4a73-8b94-36a1da1f7f80",
+      "name": "doc-executor",
+      "hash": "13bb6a58e17cc25c…",
+      "classes": ["read", "execute"],
+      "created": "2026-08-28T23:09:46Z"
+    },
+    {
+      "id": "1366dbe3-b5ee-482c-993a-9e02d6822018",
+      "name": "doc-shortlived",
+      "hash": "4f3f794a11838299…",
+      "classes": ["read"],
+      "created": "2026-08-28T23:10:48Z",
+      "expires": "2026-08-28T23:11:18Z"
+    }
+  ]
+}</code></pre>
+
+<p>Rules worth knowing before you mint one:</p>
+
+<ul>
+<li><strong>An absent class set grants nothing.</strong> Never "everything", never "read".
+A credential written by a tool that predates the class model is inert. The CLI refuses to
+mint one, because a credential that silently reaches nothing is worse to debug than an
+error at the point of entry:
+<pre><code>$ relay credential mint --name doc-nothing
+error: at least one class is required (read,configure,grant,execute,proxy); a credential with no class can reach nothing
+
+$ relay credential mint --name doc-typo --class reed
+error: unknown class "reed"; valid classes are read,configure,grant,execute,proxy</code></pre></li>
+
+<li><strong>Classes do not nest.</strong> <code>grant</code> does not imply
+<code>read</code>. A <code>grant</code>-only credential cannot list projects:
+<pre><code>$ curl ... -H "Authorization: Bearer fe42793646211c38…" http://127.0.0.1:8790/api/projects
+403</code></pre></li>
+
+<li><strong>No <code>--ttl</code> means no expiry, and absent is the compatible value.</strong>
+A record written before the field existed round-trips unchanged. A negative lifetime is an
+operator mistake, not a way to mint something already dead:
+<pre><code>$ relay credential mint --name doc-negative --class read --ttl -1h
+error: a negative lifetime (-1h0m0s) is not a credential; omit --ttl for one that never expires</code></pre></li>
+
+<li><strong>Expired records are reaped lazily</strong>, inside the same settings write as
+the next mint or the next login — never on a timer. Reaping is housekeeping, not
+enforcement: a credential stops authenticating the moment it expires, swept or not.
+<code>list</code> hides expired records; <code>--include-expired</code> shows what the next
+mint will sweep:
+<pre><code>$ relay credential list --include-expired
+ID                                    NAME                   CLASSES               CREATED               EXPIRES
+245e087e-7c8f-47e1-9bf8-adf83cc79c45  legacy-frontend-token  read,configure,proxy  2026-08-28T23:09:33Z  never
+9fe92b8e-622b-4a73-8b94-36a1da1f7f80  doc-executor           read,execute          2026-08-28T23:09:46Z  never
+0c49e4b1-c5fb-420b-a473-6685b9403769  doc-readonly           read                  2026-08-28T23:09:46Z  never
+1366dbe3-b5ee-482c-993a-9e02d6822018  doc-shortlived         read                  2026-08-28T23:10:48Z  2026-08-28T23:11:18Z (expired)</code></pre>
+Neither the plaintext nor the hash is ever printed by <code>list</code>. The hash verifies a
+live secret, so a listing that showed it would put an offline-guessable value into
+scrollback.</li>
+
+<li><strong>Revoking is immediate</strong>, because authorization reads the settings file
+through a stat-and-reload rather than a cached view. There is no restart and no poll
+interval — the same guarantee <code>relay enrol create</code> gets.
+<pre><code>$ relay credential revoke --id 6d6c25d7-fd98-4142-852b-705dc296bb32
+revoked credential "6d6c25d7-fd98-4142-852b-705dc296bb32"
+  name:    doc-reader
+  classes: read,configure
+  its token stops authenticating on the next request; nothing else was touched
+
+$ curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer 56f2978b4866a7fb…" http://127.0.0.1:8790/api/projects
+401</code></pre></li>
+</ul>
+
+<h3 id="cred-legacy">The frontend token, and the credential it migrates to</h3>
+
+<p>Consumers relay spawns itself — Eve, relayScheduler — receive
+<code>RELAY_FRONTEND_TOKEN</code> and <code>RELAY_FRONTEND_SOCKET</code> in their
+environment. That token is <em>not</em> a second authentication path. On every start relay
+records it as one control-plane credential named <code>legacy-frontend-token</code>,
+holding exactly <code>read</code> + <code>configure</code> + <code>proxy</code>:</p>
+
+<pre><code>$ relay credential list                     # on a config directory that had never been used
+ID                                    NAME                   CLASSES               CREATED               EXPIRES
+245e087e-7c8f-47e1-9bf8-adf83cc79c45  legacy-frontend-token  read,configure,proxy  2026-08-28T23:09:33Z  never</code></pre>
+
+<p>Three consequences, all of which will bite someone eventually.</p>
+
+<ul>
+<li><strong>The plaintext changes on every relay start</strong> — relay mints a fresh
+32-byte token per process. The migration finds the record <em>by name</em> and overwrites
+its hash in place, so restarting does not accumulate a new legacy credential each time.</li>
+<li><strong>The name is reserved.</strong> You cannot mint or revoke it by hand, because
+the next start would silently clobber whatever you put there:
+<pre><code>$ relay credential mint --name legacy-frontend-token --class read
+error: "legacy-frontend-token" is reserved for the RELAY_FRONTEND_TOKEN migration, which rewrites its hash on every relay start; it cannot be minted or revoked by hand</code></pre></li>
+<li><strong>Its class set is a narrowing, and it is overwritten rather than merged.</strong>
+The legacy token never holds <code>grant</code> or <code>execute</code>. If your consumer
+rotates project tokens, creates enrolments, registers an MCP or writes a service's
+<code>command</code>, it needs a credential of its own — <code>relay credential mint --name
+my-rotator --class grant</code>. Editing a wider class set onto the record by hand does not
+survive the next start.</li>
+</ul>
+
+<h3 id="cred-internal">The enhanced-service internal bearer</h3>
+
+<p>An enhanced service (relayLLM, relayScheduler) picks its own internal socket and its own
+token, and declares both to relay through <code>RegisterManifest</code>. When relay proxies a
+front-door request onward, it <em>strips</em> the caller's inbound
+<code>Authorization</code> header and injects the service-declared one. The two trust
+boundaries never touch: the caller's credential authorises reaching the proxied surface at
+all, and the service's own bearer is what the service sees. This is why the class on that
+mount is <code>proxy</code> and not something more specific — see
+<a href="#classes">the class model</a>.</p>
+
+<h3 id="cred-login">The login credential</h3>
+
+<p>An interactive login mints an ordinary <code>api_credentials</code> record. There is
+still exactly one thing the API authenticates and one place an operator revokes. What is
+special is only its shape:</p>
+
+<pre><code>$ relay credential list
+ID                                    NAME                                      CLASSES         CREATED               EXPIRES
+69a9acee-a6a8-4be9-aa3a-a11c6135ef86  login 3FPKcJeU-R7J… 2026-08-28T23:12:59Z  read,configure  2026-08-28T23:12:59Z  2026-08-29T11:12:59Z</code></pre>
+
+<ul>
+<li><strong><code>read</code> + <code>configure</code>, and nothing else.</strong> Never
+<code>grant</code> — a view that can rotate a project token is a view whose compromise
+issues credentials. Never <code>execute</code>, which is unroutable on TCP anyway; stating
+it on the credential means the refusal survives someone later serving the view over the
+socket. Never <code>proxy</code>, which is what makes <code>configure</code> mean what it
+says: the page cannot reach a session, a terminal or <code>/ws</code>. That set is a
+ceiling to be narrowed from audit evidence, never widened by one.</li>
+<li><strong>Twelve hours.</strong> A first value, expected to be wrong. What matters is
+that expiry exists and that the audit log can show whether it is being hit.</li>
+<li><strong>One record per login</strong>, named for the ceremony that produced it, so an
+audit record attributes one browser session rather than a role.</li>
+<li><strong>The browser holds it in memory only</strong> — in a closure, not
+<code>localStorage</code>, not a cookie. A reload runs the ceremony again. On a machine with
+no platform authenticator, that makes every reload a physical act, and that cost is chosen
+deliberately over persistence.</li>
+<li><strong>Signing out is revoking that one record.</strong>
+<pre><code>$ relay credential revoke --id 69a9acee-a6a8-4be9-aa3a-a11c6135ef86
+revoked credential "69a9acee-a6a8-4be9-aa3a-a11c6135ef86"
+  name:    login 3FPKcJeU-R7J… 2026-08-28T23:12:59Z
+  classes: read,configure
+  its token stops authenticating on the next request; nothing else was touched</code></pre></li>
+</ul>
+
+<h3 id="cred-bootstrap">The bootstrap code, which is not a credential</h3>
+
+<p><code>relay login enrol</code> prints a code. It authorises exactly one thing —
+registering a passkey — and is never accepted in place of an assertion, so it cannot become
+a password. It never authenticates a request to the API on its own.</p>
+
+<pre><code>$ relay login enrol
+login code: 923f24dfdd66…
+  expires:   2026-08-28T23:12:28Z (valid for 2m0s, single use)
+  this code registers a passkey — it is NOT a password and is never accepted in place of one
+  open http://localhost:8790/relay/login and enter it to register a passkey
+  this code is shown ONCE and is not recoverable</code></pre>
+
+<p>Only its SHA-256 and expiry are stored, and there is at most one live at a time —
+running <code>enrol</code> twice replaces rather than accumulates. Run without
+<code>RELAY_API_LISTEN</code> set, the command cannot tell you where to redeem it, and says
+so instead of guessing:</p>
+
+<pre><code>$ relay login enrol
+login code: ec4cffd80839…
+  expires:   2026-08-28T23:12:28Z (valid for 2m0s, single use)
+  this code registers a passkey — it is NOT a password and is never accepted in place of one
+  open the relay login page (http://localhost:&lt;RELAY_API_LISTEN port&gt;/relay/login) and enter it to register a passkey
+  this code is shown ONCE and is not recoverable</code></pre>
+
+<h2 id="classes">3. The class model, and the line under <code>execute</code></h2>
+
+<p>A capability's class is a property of <em>what it can cause</em>, never of which tab it
+appears on. There are five.</p>
+
+<div class="scroll">
+<table class="classes">
+<thead><tr><th>Class</th><th>Blast radius</th><th>Routes</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>read</code></td>
+  <td>Discloses configuration or history. Changes nothing.</td>
+  <td><code>GET /api/projects</code>, <code>GET /api/projects/{id}</code>,
+      <code>GET /api/services</code>, <code>GET /api/services/{id}</code>,
+      <code>GET /api/enrolments</code>, <code>GET /api/enrolments/{id}</code>,
+      <code>GET /api/remote</code>, <code>GET /api/mcps</code>,
+      <code>GET /api/mcps/{id}/tools</code>, <code>GET /api/mcps/{id}/scope_fields</code>,
+      <code>GET /api/audit</code>, <code>GET /api/audit/log</code>,
+      <code>POST /api/mcps/{id}/enumerate</code></td>
+</tr>
+<tr>
+  <td><code>configure</code></td>
+  <td>Changes relay's own state, within decisions the operator already made.</td>
+  <td><code>POST /api/projects</code>, <code>PUT /api/projects/{id}</code>,
+      <code>DELETE /api/projects/{id}</code>, <code>POST /api/projects/{id}/regen_skill</code>,
+      <code>DELETE /api/services/{id}</code>, <code>POST /api/services/{id}/start</code>,
+      <code>POST /api/services/{id}/stop</code>, <code>PUT /api/services/{id}/autostart</code>,
+      <code>DELETE /api/mcps/{id}</code>, <code>POST /api/audit/export</code></td>
+</tr>
+<tr>
+  <td><code>grant</code></td>
+  <td>Issues or revokes a credential <em>another party</em> holds.</td>
+  <td><code>POST /api/projects/{id}/rotate_token</code>, <code>POST /api/enrolments</code>,
+      <code>DELETE /api/enrolments/{id}</code></td>
+</tr>
+<tr>
+  <td><code>execute</code></td>
+  <td>The <em>caller</em> supplies what runs, or what is exposed.</td>
+  <td><code>POST /api/mcps</code>, <code>POST /api/services</code>,
+      <code>PUT /api/services/{id}</code>, <code>PUT /api/remote</code></td>
+</tr>
+<tr>
+  <td><code>proxy</code></td>
+  <td>Reaches a surface relay has <em>not</em> classified.</td>
+  <td>the <code>/</code> catch-all — every route an enhanced service registers via its
+      manifest, <code>/ws</code> included</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p><code>POST /api/mcps/{id}/enumerate</code> is <code>read</code> despite being a POST: it
+asks a connected MCP for a scope field's real values and changes nothing. The method is not
+the classification; the blast radius is.</p>
+
+<h3 id="execute-line">Why service create is <code>execute</code> and service start is not</h3>
+
+<p>The line under <code>execute</code> is <strong>not</strong> "a process starts".
+<code>POST /api/services/{id}/start</code> launches one and is merely <code>configure</code>.
+The line is <em>who chose what runs</em>.</p>
+
+<p>Starting an already-configured service acts on a decision the operator already made.
+Writing the <code>command</code> field <em>makes</em> that decision — and a caller who can
+write a command and then start it has made relay execute an arbitrary program as the host
+user. That is the whole classification, and it is why <code>POST /api/services</code> and
+<code>PUT /api/services/{id}</code> sit in <code>execute</code> alongside
+<code>POST /api/mcps</code>, while start, stop and autostart do not. The same test puts
+<code>PUT /api/remote</code> in <code>execute</code>: it chooses the address the mTLS
+listener binds.</p>
+
+<p><code>proxy</code> is a class of its own rather than <code>execute</code> for a
+different reason: what the catch-all reaches is whatever a manifest declares, which relay
+cannot see and therefore cannot bound. Calling it <code>execute</code> would also hand the
+legacy frontend token <code>POST /api/mcps</code> and <code>PUT /api/services/{id}</code> —
+the two things the migration exists to withhold. Naming it as unclassified is the honest
+answer until the manifest protocol can describe per-route blast radius.</p>
+
+<h2 id="transport">4. Transport is part of the grant</h2>
+
+<p>Relay's control plane has two doors, and they carry different route sets on purpose.</p>
+
+<h3 id="the-socket">The 0600 Unix socket</h3>
+
+<p>Always present. Relay creates it in the config directory, one per process:</p>
+
+<pre><code>$ ls -l /tmp/relaydoc/relay-frontend-*.sock ; ls -ld /tmp/relaydoc
+srw-------  1 admin  wheel  0 Aug 28 16:09 /tmp/relaydoc/relay-frontend-18066.sock
+drwx------  6 admin  wheel  192 Aug 28 16:14 /tmp/relaydoc</code></pre>
+
+<p>Its authority is the filesystem: the kernel refuses a connection from any other user,
+and it does so before relay sees a byte. That is a real, checkable property of the
+<em>listener</em>, known at bind time — not an inference about a peer. (Relay refuses to use
+the caller's pid as an authorization input for exactly the opposite reason: a pid is
+reusable and racy.)</p>
+
+<p>Dial it with <code>curl --unix-socket</code>:</p>
+
+<pre><code>$ curl -sS -i --unix-socket /tmp/relaydoc/relay-frontend-18066.sock \
+       -H "Authorization: Bearer d015a0929972172b…" \
+       -H 'Content-Type: application/json' -d '{"id":"demo","command":"/bin/echo hi"}' \
+       http://localhost/api/services
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":"display name is required"}</code></pre>
+
+<p>A 400 from the handler is the point: the <code>execute</code> route exists here, the
+credential holds <code>execute</code>, and the request reached validation.</p>
+
+<h3 id="the-tcp-bind">The opt-in loopback TCP bind</h3>
+
+<p>Absent unless you ask. Set <code>RELAY_API_LISTEN</code> and relay binds a second
+listener beside the socket, and says so loudly:</p>
+
+<pre><code>level=WARN msg="frontend API bound to loopback TCP in addition to its socket" addr=127.0.0.1:8790</code></pre>
+
+<p>The address must be loopback. A non-loopback bind is refused outright rather than
+downgraded to the socket alone, because someone who asked for a TCP door and silently did
+not get one would debug the wrong thing:</p>
+
+<pre><code>$ RELAY_API_LISTEN=0.0.0.0:8792 relay
+level=ERROR msg="failed to bind API listener" error="api listen address must be loopback: \"0.0.0.0:8792\""
+$ echo $?
+1</code></pre>
+
+<p>Classing narrows what a stolen credential reaches; it is not a transport authentication
+scheme. Reachability is still the only boundary against a network attacker, and a typo must
+not be the thing that removes it. This bind remains a development affordance, not a
+supported deployment.</p>
+
+<h3 id="absent-not-refused">Why <code>execute</code> and <code>proxy</code> are absent from TCP, not refused on it</h3>
+
+<p>Route registration goes through one function, <code>RouteRegistrar.Handle</code>, which
+takes the class and the transport the mux is being built for. When the class is not
+reachable on that transport, <strong>it registers nothing at all</strong> — not a wrapped
+handler that checks and refuses.</p>
+
+<p>The difference is the whole of it. A policy check inside a handler is code someone can
+later invert, wrap or forget, and a 403 from inside a handler is still a route someone
+reached. A pattern that was never handed to that mux has no code path on that listener for
+a later change to get wrong. Relay applies the same reasoning to its remote dispatch table,
+which holds two entries so that a new admin operation is unreachable from a VM until
+somebody adds it to a list that is visibly a security boundary.</p>
+
+<p>The consequence, stated so it is not discovered later: <strong>a browser-based view can
+never register an MCP, create a service, or reach a proxied route.</strong> Those stay on
+the socket. That is a real functional cost and the intended one.</p>
+
+<h3 id="what-you-observe">What a caller actually observes there</h3>
+
+<p>Because the route was never registered, the refusal comes from Go's
+<code>http.ServeMux</code>, not from relay's authorization layer. Two shapes, and which one
+you get depends only on whether another method holds the same path.</p>
+
+<p><strong>405, when a sibling route holds the path.</strong> All four <code>execute</code>
+routes have a <code>read</code> or <code>configure</code> sibling that <em>is</em> routed on
+TCP, so in practice this is what you always see for <code>execute</code>. The
+<code>Allow</code> header tells you what survived:</p>
+
+<pre><code>$ curl -sS -i -H "Authorization: Bearer d015a0929972172b…" \
+       -H 'Content-Type: application/json' -d '{}' \
+       http://127.0.0.1:8790/api/services
+HTTP/1.1 405 Method Not Allowed
+Allow: GET, HEAD
+Content-Type: text/plain; charset=utf-8
+
+Method Not Allowed
+
+$ curl -sS -i -X PUT -H "Authorization: Bearer d015a0929972172b…" \
+       -H 'Content-Type: application/json' -d '{}' \
+       http://127.0.0.1:8790/api/remote
+HTTP/1.1 405 Method Not Allowed
+Allow: GET, HEAD</code></pre>
+
+<p><strong>404, when nothing holds the path.</strong> The <code>proxy</code> catch-all is
+the mount that would otherwise have absorbed every unmatched path. It is socket-only, so on
+TCP there is no catch-all and an unmatched path is simply not there:</p>
+
+<pre><code>$ curl -sS -i -H "Authorization: Bearer 0e4fd44e6e6bc693…" http://127.0.0.1:8790/v1/sessions
+HTTP/1.1 404 Not Found
+Content-Type: text/plain; charset=utf-8
+
+404 page not found</code></pre>
+
+<p>Compare the same request on the socket, where the catch-all <em>is</em> mounted, with a
+credential that lacks <code>proxy</code>. Now the refusal comes from relay, and it is a 403:</p>
+
+<pre><code>$ curl -sS -i --unix-socket /tmp/relaydoc/relay-frontend-18066.sock \
+       -H "Authorization: Bearer 0e4fd44e6e6bc693…" http://localhost/v1/sessions
+HTTP/1.1 403 Forbidden
+Content-Type: text/plain; charset=utf-8
+
+Forbidden</code></pre>
+
+<div class="note">
+<p><strong>Reading a status here.</strong> On TCP, <span class="bad">405</span> or
+<span class="bad">404</span> means <em>no such route on this listener</em> — it says nothing
+about your credential, and no amount of re-minting will change it. Move to the socket.
+<span class="bad">403</span> means the route exists and your credential lacks the class —
+re-mint naming it. <span class="bad">401</span> means the bearer resolved to no live
+credential at all.</p>
+</div>
+
+<h2 id="gates">5. The two gates</h2>
+
+<p>Two checks run on every request, in this order, and they answer different questions.</p>
+
+<ol>
+<li><strong><code>frontendCredentialAuth</code> — "is this anyone?"</strong> It resolves the
+request's <code>Authorization: Bearer</code> against every record in
+<code>api_credentials</code>, comparing SHA-256 in constant time, before any handler runs.
+An unauthenticated WebSocket upgrade therefore never allocates a session.</li>
+<li><strong><code>RouteRegistrar</code> — "may they do this?"</strong> Each route was
+registered under a class; the wrapper resolves the bearer to a credential again, attaches
+its id to the request context, and then checks the class.</li>
+</ol>
+
+<p>Only the second may narrow. The two were briefly conflated once, with the outer check
+admitting exactly one fixed token — which made every other credential unreachable and the
+class model dead code. That defect is the reason the layering is written down.</p>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 760 470" role="img" aria-labelledby="reqpath-title">
+  <title id="reqpath-title">The path of one request through relay's two gates</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="d-head"/>
+    </marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="d-head-bad"/>
+    </marker>
+  </defs>
+
+  <rect x="250" y="14" width="250" height="34" rx="5" class="d-box"/>
+  <text class="t-step" x="375" y="35" text-anchor="middle">request — socket, or loopback TCP</text>
+  <line x1="375" y1="48" x2="375" y2="72" class="d-arrow" marker-end="url(#ah)"/>
+
+  <rect x="250" y="74" width="250" height="34" rx="5" class="d-box"/>
+  <text class="t-note" x="375" y="95" text-anchor="middle">frontendPublicDoor</text>
+
+  <line x1="250" y1="91" x2="186" y2="91" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="10" y="70" width="174" height="42" rx="5" class="d-box"/>
+  <text class="t-step" x="97" y="86" text-anchor="middle">login mux — exactly 3</text>
+  <text class="t-step" x="97" y="101" text-anchor="middle">patterns, no credential</text>
+  <text class="t-step" x="216" y="86" text-anchor="middle">match</text>
+
+  <line x1="375" y1="108" x2="375" y2="132" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="250" y="134" width="250" height="34" rx="5" class="d-box"/>
+  <text class="t-note" x="375" y="155" text-anchor="middle">frontendCredentialAuth</text>
+  <line x1="500" y1="151" x2="564" y2="151" class="d-arrow-bad" marker-end="url(#ahb)"/>
+  <rect x="566" y="130" width="184" height="42" rx="5" class="d-refuse"/>
+  <text class="t-bad" x="658" y="146" text-anchor="middle">401 unauthorized</text>
+  <text class="t-bad" x="658" y="161" text-anchor="middle">absent · malformed · expired</text>
+
+  <line x1="375" y1="168" x2="375" y2="192" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="250" y="194" width="250" height="34" rx="5" class="d-box"/>
+  <text class="t-note" x="375" y="215" text-anchor="middle">frontendRecover</text>
+
+  <line x1="375" y1="228" x2="375" y2="252" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="250" y="254" width="250" height="48" rx="5" class="d-box"/>
+  <text class="t-step" x="375" y="272" text-anchor="middle">the mux for THIS transport —</text>
+  <text class="t-step" x="375" y="290" text-anchor="middle">routes whose class is reachable here</text>
+  <line x1="500" y1="278" x2="564" y2="278" class="d-arrow-bad" marker-end="url(#ahb)"/>
+  <rect x="566" y="257" width="184" height="42" rx="5" class="d-refuse"/>
+  <text class="t-bad" x="658" y="273" text-anchor="middle">404 · 405 from ServeMux</text>
+  <text class="t-bad" x="658" y="288" text-anchor="middle">the route is not on this door</text>
+
+  <line x1="375" y1="302" x2="375" y2="326" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="250" y="328" width="250" height="48" rx="5" class="d-box"/>
+  <text class="t-note" x="375" y="346" text-anchor="middle">RouteRegistrar.authorize(class)</text>
+  <text class="t-step" x="375" y="364" text-anchor="middle">records the decision, allowed or not</text>
+  <line x1="500" y1="352" x2="564" y2="352" class="d-arrow-bad" marker-end="url(#ahb)"/>
+  <rect x="566" y="331" width="184" height="42" rx="5" class="d-refuse"/>
+  <text class="t-bad" x="658" y="347" text-anchor="middle">403 Forbidden</text>
+  <text class="t-bad" x="658" y="362" text-anchor="middle">class not granted</text>
+
+  <line x1="375" y1="376" x2="375" y2="400" class="d-arrow" marker-end="url(#ah)"/>
+  <rect x="250" y="402" width="250" height="34" rx="5" class="d-box"/>
+  <text class="t-step" x="375" y="423" text-anchor="middle">handler</text>
+
+  <text class="t-sect" x="10" y="458">On the socket door the public mux is nil, and frontendPublicDoor hands every request straight to the authenticated side.</text>
+</svg>
+</div>
+<figcaption>One request, both doors. The socket and the TCP listener share
+<code>frontendCredentialAuth</code> and <code>frontendRecover</code> — authentication and
+panic handling cannot drift between them — while their route sets deliberately differ.</figcaption>
+</figure>
+
+<h3 id="fail-closed">Fail closed, and say nothing</h3>
+
+<p>Absent, malformed and unknown bearers all get the same 401 with the same body. So does an
+expired credential. That uniformity is deliberate: a distinguishable answer would be an
+oracle for which credentials exist, and "this credential existed once" is a fact a bearer
+relay refuses should not be able to establish.</p>
+
+<pre><code>$ curl -sS -i http://127.0.0.1:8790/api/projects | head -6
+HTTP/1.1 401 Unauthorized
+Content-Type: text/plain; charset=utf-8
+X-Content-Type-Options: nosniff
+Content-Length: 13
+
+unauthorized
+
+$ curl -sS -i -H "Authorization: Bearer not-a-token" http://127.0.0.1:8790/api/projects | head -6
+HTTP/1.1 401 Unauthorized
+Content-Type: text/plain; charset=utf-8
+X-Content-Type-Options: nosniff
+Content-Length: 13
+
+unauthorized</code></pre>
+
+<p>An <em>empty</em> credential set also fails closed. A settings file that is missing,
+corrupt, truncated or unreadable resolves to empty settings for a reader, and empty means
+every request is refused — serving open would silently expose every proxied service. This is
+why deleting <code>settings.json</code> works as a way to lock the control plane out.</p>
+
+<h3 id="public-mux">Why the login routes are a separate mux</h3>
+
+<p>The three login patterns are served with no credential at all. They live in their own
+<code>http.ServeMux</code> that is consulted <em>before</em>
+<code>frontendCredentialAuth</code> — not as an exemption inside the authenticated mux.</p>
+
+<p>An exemption is a second gate in front of the mux that already authenticates, and a
+second gate shadowing the first is precisely the defect that had to be fixed once already.
+A separate mux also means a fourth unauthenticated pattern has to be added to a short list
+somebody reviews, rather than discovered to already work.</p>
+
+<p>The public surface is exactly three <em>(method, path)</em> pairs. A request to the right
+path with the wrong method does not match, and falls through to the authenticated side:</p>
+
+<pre><code>$ curl -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8790/relay/login          # public route, wrong method
+401
+$ curl -o /dev/null -w '%{http_code}\n' http://localhost:8790/relay/login/challenge        # POST-only, asked with GET
+401
+$ curl -o /dev/null -w '%{http_code}\n' http://localhost:8790/relay/login/status           # no such pattern
+401</code></pre>
+
+<p><code>/relay/</code> is reserved: a service manifest that tries to claim a route under it
+is refused at registration, so nothing can shadow the login page. And the login routes exist
+only where a TCP listener is bound, because a WebAuthn ceremony is verified against an
+<em>origin</em> and a Unix socket has none. Over the socket, <code>/relay/login</code> is
+just another path under the catch-all:</p>
+
+<pre><code>$ curl -o /dev/null -w '%{http_code}\n' --unix-socket /tmp/relaydoc/relay-frontend-18066.sock \
+       http://localhost/relay/login
+401
+$ curl -o /dev/null -w '%{http_code}\n' --unix-socket /tmp/relaydoc/relay-frontend-18066.sock \
+       -H "Authorization: Bearer 0e4fd44e6e6bc693…" http://localhost/relay/login
+403</code></pre>
+
+<h2 id="passkey">6. The passkey ceremony, step by step</h2>
+
+<p>Relay authenticates its owner with WebAuthn: ES256, user verification required. There is
+no password and no set-a-password flow. The argument is not that passkeys are modern — it is
+that a password verifier is a <em>new kind of secret</em> in <code>settings.json</code>. Every
+other value there is either a hash of something relay issued or a token whose compromise
+relay bounds. A password is offline-guessable, chosen by a human, and reused, so its
+compromise reaches systems relay has never heard of. It is also phishable, and the only new
+attack surface this whole feature opens is "a page in the owner's browser".</p>
+
+<p>The cost is real and worth stating: the relying-party id is pinned to
+<code>localhost</code> because an RP ID must be a registrable domain, so
+<code>http://127.0.0.1:PORT</code> cannot carry the ceremony at all. The bind address stays
+what it is; the URL you type is part of the design.</p>
+
+<h3 id="not-self-service">Registration is not self-service</h3>
+
+<p>Registering a passkey is the point at which a <em>new identity</em> is created, and relay
+refuses to let that be reachable by presenting a secret over the network. The anchor is a
+code minted by a CLI running as the user who owns the config directory.</p>
+
+<p>Trust-on-first-use was considered and refused. The window is not a harmless few seconds:
+any page the owner visits can POST to a loopback bind, so the race is not between the owner
+and an attacker who has to get there first — it is between the owner and every open tab. And
+the window would <em>reopen</em>, because deleting <code>settings.json</code> is a documented
+way to lock the control plane out, and under TOFU that act would silently re-arm
+self-registration. A boundary that a documented recovery procedure disarms is not a
+boundary.</p>
+
+<p>What the anchor does <em>not</em> defend against is the user who owns the config
+directory: that user can read every project token in <code>settings.json</code> and write a
+bootstrap record of their own. Relay has never defended the config dir against its owner and
+does not start here. What it defends is the new surface — a page in the browser, or anything
+reaching the loopback port through a tunnel, cannot read the config dir and cannot produce
+the code.</p>
+
+<h3 id="ceremony-diagram">The ceremony</h3>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 760 700" role="img" aria-labelledby="ceremony-title">
+  <title id="ceremony-title">Sequence of the passkey registration and assertion ceremonies</title>
+  <defs>
+    <marker id="sh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="d-head"/>
+    </marker>
+  </defs>
+
+  <!-- lifelines -->
+  <line x1="80"  y1="52" x2="80"  y2="676" class="d-life"/>
+  <line x1="270" y1="52" x2="270" y2="676" class="d-life"/>
+  <line x1="470" y1="52" x2="470" y2="676" class="d-life"/>
+  <line x1="690" y1="52" x2="690" y2="676" class="d-life"/>
+
+  <!-- lane headers -->
+  <rect x="14" y="12" width="132" height="32" rx="5" class="d-box"/>
+  <text class="t-lane" x="80" y="32" text-anchor="middle">operator (host)</text>
+  <rect x="200" y="12" width="140" height="32" rx="5" class="d-box"/>
+  <text class="t-lane" x="270" y="32" text-anchor="middle">authenticator</text>
+  <rect x="396" y="12" width="148" height="32" rx="5" class="d-box"/>
+  <text class="t-lane" x="470" y="32" text-anchor="middle">browser page</text>
+  <rect x="618" y="12" width="130" height="32" rx="5" class="d-box"/>
+  <text class="t-lane" x="690" y="32" text-anchor="middle">relay (HTTP)</text>
+
+  <text class="t-sect" x="14" y="72">REGISTER — anchored on the host</text>
+
+  <rect x="14" y="82" width="734" height="26" rx="4" class="d-band"/>
+  <text class="t-note" x="24" y="99">relay login enrol · stores SHA-256(code) + 2-minute expiry in settings.json</text>
+
+  <line x1="80" y1="128" x2="466" y2="128" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="273" y="122" text-anchor="middle">paste the code into the page</text>
+
+  <line x1="470" y1="158" x2="686" y2="158" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="152" text-anchor="middle">POST /relay/login/challenge {register}</text>
+
+  <line x1="690" y1="188" x2="474" y2="188" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="182" text-anchor="middle">challenge (32 B) · rp_id · origin · user_handle</text>
+
+  <line x1="470" y1="218" x2="274" y2="218" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="370" y="212" text-anchor="middle">credentials.create — ES256, UV required</text>
+
+  <line x1="270" y1="248" x2="466" y2="248" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="370" y="242" text-anchor="middle">clientDataJSON + attestationObject</text>
+
+  <line x1="470" y1="278" x2="686" y2="278" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="272" text-anchor="middle">POST /relay/login/verify {register, code}</text>
+
+  <rect x="14" y="292" width="734" height="44" rx="4" class="d-band"/>
+  <text class="t-note" x="24" y="309">verify: challenge consumed once · type webauthn.create · origin · rpIdHash · UP+UV flags</text>
+  <text class="t-note" x="24" y="326">fmt "none", empty attStmt · ES256 P-256 key · no extensions, no trailing bytes · THEN the code</text>
+
+  <line x1="690" y1="358" x2="474" y2="358" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="352" text-anchor="middle">201 {credential_id, name}</text>
+
+  <text class="t-sect" x="14" y="396">SIGN IN — every time, including after a reload</text>
+
+  <line x1="470" y1="424" x2="686" y2="424" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="418" text-anchor="middle">POST /relay/login/challenge {assert}</text>
+
+  <line x1="690" y1="454" x2="474" y2="454" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="448" text-anchor="middle">challenge + allowCredentials[registered ids]</text>
+
+  <line x1="470" y1="484" x2="274" y2="484" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="370" y="478" text-anchor="middle">credentials.get — UV required</text>
+
+  <line x1="270" y1="514" x2="466" y2="514" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="370" y="508" text-anchor="middle">authenticatorData + ES256 signature</text>
+
+  <line x1="470" y1="544" x2="686" y2="544" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="538" text-anchor="middle">POST /relay/login/verify {assert}</text>
+
+  <rect x="14" y="558" width="734" height="44" rx="4" class="d-band"/>
+  <text class="t-note" x="24" y="575">verify signature over authenticatorData ‖ SHA-256(clientDataJSON) · counter must advance</text>
+  <text class="t-note" x="24" y="592">mint an APICredential: read + configure, 12 h, reaping whatever has expired</text>
+
+  <line x1="690" y1="624" x2="474" y2="624" class="d-arrow" marker-end="url(#sh)"/>
+  <text class="t-step" x="578" y="618" text-anchor="middle">200 {token, expires, classes}</text>
+
+  <rect x="14" y="638" width="734" height="26" rx="4" class="d-band"/>
+  <text class="t-note" x="24" y="655">the page holds the token in a closure — not localStorage, not a cookie; a reload starts over</text>
+</svg>
+</div>
+<figcaption>Both ceremonies. The bootstrap code is checked <em>after</em> the cryptographic
+verification, and only at the moment the record is about to be written.</figcaption>
+</figure>
+
+<h3 id="ceremony-real">The same ceremony, with the real bytes</h3>
+
+<p>The transcript below is a real Chrome, driven headless against a relay bound at
+<code>127.0.0.1:8790</code>, recorded from inside the page by wrapping <code>fetch</code>.
+Long base64 fields are cut; nothing else is edited.</p>
+
+<h4>Challenge, registration</h4>
+<pre><code>POST /relay/login/challenge  →  200
+request : {"ceremony":"register"}
+response: {"challenge":"YoJFJuILhmYHJ4m4KrxaMBVp9MZKZRzxC-5HV_3cWXg",
+           "rp_id":"localhost","origin":"http://localhost:8790",
+           "user_handle":"cmVsYXktb3duZXI","user_name":"relay owner","credentials":[]}</code></pre>
+
+<p>The challenge is 32 random bytes, single use, valid 60 seconds, in a fixed table of 64
+entries. <code>user_handle</code> decodes to the constant <code>relay-owner</code>: an
+authenticator stores the handle it was given at registration and returns it on every
+assertion, so it must be byte-identical across two ceremonies that share no state, and relay
+has exactly one owner.</p>
+
+<h4><code>navigator.credentials.create</code>, and what Chrome produced</h4>
+<pre><code>POST /relay/login/verify  →  201
+request : {"ceremony":"register","code":"923f24df…",
+           "client_data_json":"eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdl…",
+           "attestation_object":"o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YVikSZYN5YgOjGh0NBcP…"}
+response: {"credential_id":"3FPKcJeU-R7JowWNdy4yZ5ludF8QtA30RALSPhUsbfc",
+           "name":"browser passkey 2026-08-28T23:12:56Z"}</code></pre>
+
+<p>Decoded, that <code>clientDataJSON</code> is (from the live-Chrome test, which prints it):</p>
+
+<pre><code>{"type":"webauthn.create",
+ "challenge":"XLS8fi4-l0Z8c2Fk0AGDfNoeSu49bX7PatAcbR7XJ6E",
+ "origin":"http://localhost:56486",
+ "crossOrigin":false}
+
+chrome attestation: fmt="none" aaguid=01020304050607080102030405060708 flags=0x45 signCount=1 authData=164 bytes</code></pre>
+
+<p><strong>What relay verifies, in order.</strong> The challenge is consumed — lookup and
+delete under one lock, so an unknown challenge, an expired one, one already spent and one
+issued for the other ceremony are one answer and a replay races nothing. Then
+<code>type</code> is <code>webauthn.create</code>; <code>origin</code> equals the origin
+derived from the address the kernel actually gave the listener, never a header or a setting;
+<code>crossOrigin</code> is not true. Then the attestation object must be exactly the
+three-key <code>none</code> shape with an empty statement — any other format, a non-empty
+statement or a fourth key is a refusal. Then the authenticator data: the RP ID hash matches
+<code>SHA-256("localhost")</code>, the user-present and user-verified flags are both set,
+extension data is refused outright, and there must be no trailing bytes beyond what the
+flags imply. Then the COSE key must be exactly five entries describing an ES256 key on
+P-256, and the point must be on the curve.</p>
+
+<p>Only then does relay touch settings, and it does the cap check, the duplicate check and
+the bootstrap-code check <em>inside</em> the same write:</p>
+
+<ul>
+<li>The cap (five passkeys) and the duplicate check are re-run at commit even though the
+verifier already ran them, because the verifier ran them against a snapshot read before the
+ceremony and two registrations racing would both pass it.</li>
+<li>The code is consumed only once the record is certain to land, so a refused registration
+does not spend the operator's anchor.</li>
+<li>A refusal <em>declines</em> the write. Nothing is saved and the file is left byte for
+byte as it was — otherwise every refused registration, which needs no code and no
+credential, would be a trigger on relay's settings writer for anything that can reach the
+listener.</li>
+</ul>
+
+<h4>Assertion</h4>
+<pre><code>POST /relay/login/challenge  →  200
+request : {"ceremony":"assert"}
+response: {"challenge":"oUShAqIXrI4pSfbgHUtwpsWvvCCJMOCM_9KkUKr96tA",
+           "rp_id":"localhost","origin":"http://localhost:8790",
+           "credentials":["3FPKcJeU-R7JowWNdy4yZ5ludF8QtA30RALSPhUsbfc"]}</code></pre>
+
+<p>That <code>credentials</code> array is a stated cost. Refusing discoverable credentials
+means <code>allowCredentials</code> has to be supplied, so this endpoint hands an
+unauthenticated caller the registered credential ids. They are opaque, they are not
+verifiers, and the login document discloses that passkeys exist anyway.</p>
+
+<pre><code>POST /relay/login/verify  →  200
+request : {"ceremony":"assert",
+           "credential_id":"3FPKcJeU-R7JowWNdy4yZ5ludF8QtA30RALSPhUsbfc",
+           "client_data_json":"eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoib1VTaEFxSVhy…",
+           "authenticator_data":"SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAg",
+           "signature":"MEQCIETSipIoEU7Q6uYnWFUgSdUxcc-Tj5lmatlGQhg2MiqKAiBc7Uw_va3ttRgMNux-sSowgNwmFBcvYMgipGEQ2-0EBQ",
+           "user_handle":""}
+response: {"token":"752aca69b7324bac…","expires":"2026-08-29T11:12:59Z","classes":["read","configure"]}</code></pre>
+
+<p>The assertion's <code>clientDataJSON</code>, decoded, ends with a member relay does not
+know about:</p>
+
+<pre><code>{"type":"webauthn.get","challenge":"oUShAqIXrI4pSfbgHUtwpsWvvCCJMOCM_9KkUKr96tA",
+ "origin":"http://localhost:8790","crossOrigin":false,
+ "other_keys_can_be_added_here":"do not compare clientDataJSON against a template. See https://goo.gl/yabPex"}</code></pre>
+
+<p>That member is why relay parses client data permissively about unknown JSON fields while
+being strict about everything else: the specification reserves the right to add them and
+browsers already ship one. Rejecting unknown members here would be a refusal of real user
+agents, not of attacker input. (The <em>request bodies</em> to
+<code>/relay/login/*</code>, by contrast, are decoded with unknown fields disallowed.)</p>
+
+<p><strong>What relay verifies on an assertion.</strong> Challenge, type, origin and
+cross-origin as before; the credential id must resolve to a stored passkey; if a user handle
+is sent it must match the stored one; the authenticator data must be exactly 37 bytes with
+no attested credential data; RP ID hash, user present, user verified. Then ECDSA over
+<code>SHA-256(authenticatorData ‖ SHA-256(clientDataJSON))</code> against the stored public
+key. A credential id that resolves to nothing and a signature that does not verify get the
+<em>same</em> answer — splitting them would tell an unauthenticated caller which credential
+ids exist.</p>
+
+<p>Finally the signature counter must strictly increase, which is the cloned-authenticator
+signal. If an authenticator reported counter 0 at registration, relay fixes that credential
+as counter-less for good, so a later 0 is not misread as a clone. A counter failure is
+audited with its detail and answered to the caller in the words of an ordinary rejected
+assertion.</p>
+
+<p>What that leaves on the host:</p>
+
+<pre><code>$ relay login list
+NAME                                  CREDENTIAL ID  CREATED               SIGN COUNT
+browser passkey 2026-08-28T23:12:56Z  3FPKcJeU-R7J…  2026-08-28T23:12:56Z  2
+
+$ relay credential list
+ID                                    NAME                                      CLASSES         CREATED               EXPIRES
+69a9acee-a6a8-4be9-aa3a-a11c6135ef86  login 3FPKcJeU-R7J… 2026-08-28T23:12:59Z  read,configure  2026-08-28T23:12:59Z  2026-08-29T11:12:59Z</code></pre>
+
+<p>The stored passkey record holds the public key and nothing secret. Neither
+<code>relay login list</code> nor the Settings tab prints the key: it is not a secret, but a
+listing has no legitimate use for it, and a field carrying it would be the obvious place for
+key material to start living.</p>
+
+<pre><code>{
+  "id": "3FPKcJeU-R7JowWNdy4yZ5ludF8QtA30RALSPhUsbfc",
+  "name": "browser passkey 2026-08-28T23:12:56Z",
+  "x": "E8xO3tbB0eQFi5z9wyXySfSiAN7…",
+  "y": "rJtVBR9W+bqWr+QYjHnhwAx8cSW…",
+  "sign_count": 2,
+  "counter_supported": true,
+  "user_handle": "cmVsYXktb3duZXI",
+  "created": "2026-08-28T23:12:56Z"
+}</code></pre>
+
+<h3 id="what-the-credential-does">And then it is an ordinary credential</h3>
+
+<pre><code>GET  /api/projects                -> 200
+POST /api/enrolments              -> 403
+POST /api/projects/x/rotate_token -> 403</code></pre>
+
+<h3 id="login-page">The login page itself</h3>
+
+<p>The page loads nothing — no CDN, no framework, no external font, no image — and says so
+in a header rather than by habit:</p>
+
+<pre><code>$ curl -sS -D - -o /dev/null http://localhost:8790/relay/login
+HTTP/1.1 200 OK
+Cache-Control: no-store
+Content-Security-Policy: default-src 'none'; script-src 'nonce-B2LoOoedv4Us2+EHzwfhSw'; style-src 'nonce-B2LoOoedv4Us2+EHzwfhSw'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+Content-Type: text/html; charset=utf-8
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff</code></pre>
+
+<p>The nonce is fresh on every render. <code>connect-src 'self'</code> is the one thing the
+policy must allow: the page's own fetches back to the two POST routes. The document is small
+and hand-written on purpose — every parameter that matters (ES256 only, user verification
+required, resident key discouraged, <code>allowCredentials</code> on every assertion) is
+visible in one screen of JavaScript rather than assembled by a library.</p>
+
+<p>The POST routes require <code>Content-Type: application/json</code>, which is not
+decoration. A content type outside the three an HTML form can produce forces the browser to
+preflight a cross-origin POST, and relay answers no preflight and emits no CORS header — so
+a page on another origin cannot reach these routes at all, on top of the origin binding the
+ceremony itself carries.</p>
+
+<pre><code>$ curl -sS -i -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+       -d 'ceremony=register' http://localhost:8790/relay/login/challenge
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":"login: malformed request: content type \"application/x-www-form-urlencoded\""}
+
+$ curl -sS -X POST -H 'Content-Type: application/json' \
+       -d '{"ceremony":"assert","password":"hunter2"}' http://localhost:8790/relay/login/verify
+{"error":"login: malformed request: json: unknown field \"password\""}</code></pre>
+
+<h3 id="losing-it">Losing the authenticator, and revoking one</h3>
+
+<p>There is deliberately no second factor, no backup code and no recovery question — each of
+those is a phishable shared secret wearing a different hat. The recovery path is the host:
+<code>relay login enrol</code> registers another passkey, and <code>relay credential
+mint</code> bypasses the browser entirely. Anyone who can run those already owns the config
+directory.</p>
+
+<p>Revoking a passkey stops the <em>next</em> login and does not end sessions it already
+signed in. Those are two records with two lifetimes, and the CLI says so at the point of the
+act:</p>
+
+<pre><code>$ relay login revoke --id 3FPKcJeU-R7JowWNdy4yZ5ludF8QtA30RALSPhUsbfc
+revoked passkey "browser passkey 2026-08-28T23:12:56Z"
+  id: 3FPKcJeU-R7J…
+  it can no longer complete a login assertion; nothing else was touched
+  browser sessions this passkey already signed in are NOT ended — see `relay credential list`, or Settings → Passkeys</code></pre>
+
+<p><code>revoke --id</code> takes the full credential id, not the abbreviated form the
+listing prints — an abbreviation is ambiguous:</p>
+
+<pre><code>$ relay login revoke --id "3FPKcJeU-R7J…"
+error: no passkey found with id "3FPKcJeU-R7J…"</code></pre>
+
+<h2 id="audit">7. What gets audited, and what does not</h2>
+
+<p><code>relay audit</code> is ground truth for anything relay gates. Every authorization
+decision on the control plane — allowed or refused — is a <code>control_decision</code>
+record with the same standing as a tool-call denial.</p>
+
+<pre><code>$ relay audit --kind control
+TIME      OUTCOME  PROJECT  MCP  TOOL  MS  CALLER                                DETAIL
+16:09:54  ok       -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  GET /api/projects  class=read  transport=tcp
+16:09:54  denied   -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  POST /api/projects  class=configure  transport=tcp  class not granted
+16:10:14  ok       -        -    -     0   9fe92b8e-622b-4a73-8b94-36a1da1f7f80  POST /api/services  class=execute  transport=socket
+16:10:14  denied   -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  POST /api/services  class=execute  transport=socket  class not granted
+16:10:14  denied   -        -    -     0   0c49e4b1-c5fb-420b-a473-6685b9403769  GET /v1/sessions  class=proxy  transport=socket  class not granted
+16:12:56  ok       -        -    -     0   3FPKcJeU-R7J…                         POST /relay/login/verify  class=  transport=tcp
+16:12:59  ok       -        -    -     0   69a9acee-a6a8-4be9-aa3a-a11c6135ef86  POST /relay/login/verify  class=  transport=tcp
+16:13:10  denied   -        -    -     0   69a9acee-a6a8-4be9-aa3a-a11c6135ef86  POST /api/enrolments  class=grant  transport=tcp  class not granted
+16:13:21  denied   -        -    -     0   -                                     POST /relay/login/verify  class=  transport=tcp  invalid or expired login code</code></pre>
+
+<p>One record, raw:</p>
+
+<pre><code>$ relay audit --kind control --tail 1 --json
+{"id":"c7144fb1-c68f-4c7a-ad70-ed0a5a16af36","ts":"2026-08-28T23:10:14.714091Z","dur_ms":0,
+ "event":"control_decision","actor":{"kind":"control","auth":"token","cred_id":"0c49e4b1-c5fb-420b-a473-6685b9403769"},
+ "outcome":"denied","error":"class not granted","scope":null,
+ "method":"GET","path":"/v1/sessions","class":"proxy","transport":"socket"}</code></pre>
+
+<h3 id="audit-what">What is in a record</h3>
+
+<ul>
+<li><strong>Method, path, class, transport and credential id.</strong> The decision is
+recorded <em>before</em> the handler runs, so a panic or a slow handler cannot suppress it —
+it is a record of the authorization decision, not of the handler's outcome.</li>
+<li><strong>The credential id is attached as soon as the bearer resolves</strong>, before
+the class check, so a class refusal still names the credential that attempted it. Only an
+unresolved bearer leaves it blank, since there is no credential to name.</li>
+<li><strong>Method and path are capped</strong> (32 and 1024 bytes), because they are read
+off the request line before any credential has been resolved: a caller holding no class at
+all still reaches this record on every refusal.</li>
+<li><strong>Login ceremonies carry an empty <code>class</code>.</strong> Those routes are not
+registered through <code>RouteRegistrar</code> and there is no class that means "none";
+inventing one would put the hole in the vocabulary into a record.</li>
+<li><strong>For a login, <code>cred_id</code> is the credential that was minted</strong>,
+which is what makes a browser session attributable. For a registration it is the abbreviated
+passkey id.</li>
+</ul>
+
+<h3 id="audit-not">What is deliberately not in one</h3>
+
+<ul>
+<li><strong>The 401s.</strong> A bearer that resolves to nothing is refused by
+<code>frontendCredentialAuth</code>, which is in front of the registrar, so no
+<code>control_decision</code> is written. In the transcript above, several unauthenticated
+requests were made and none appear. They are logged at WARN level, not audited.</li>
+<li><strong>The 404s and 405s on TCP.</strong> No handler ran and no authorization decision
+was taken, so there is nothing to record. A route that is not on a listener produces silence
+in the audit log — which is another reason to read the status rather than the log when
+debugging transport.</li>
+<li><strong>Any secret.</strong> No token, no stored hash, no bootstrap code, from any field.
+A refusal records the <em>sentinel</em> relay itself wrote rather than the error's full text,
+because a decode failure quotes the body it choked on and the body of a registration is where
+a caller's guess at the anchor lives. The counter refusal is the one exception, and its
+detail is relay's own — a stored credential id and two stored counters.</li>
+<li><strong>Refusals from before a ceremony was attempted</strong> — a malformed body, an
+unknown ceremony name. They are reachable at line rate by anything that can open a socket and
+say nothing about a login.</li>
+<li><strong>Refusals the ceremony limiter itself produced.</strong> This one is visible in a
+transcript. Six identical bad assertions in a row:
+<pre><code>attempt 1: 403 retry-after= {"error":"webauthn: unknown, expired or already used challenge"}
+attempt 2: 403 retry-after= {"error":"webauthn: unknown, expired or already used challenge"}
+attempt 3: 429 retry-after=2 {"error":"too many failed login ceremonies: retry after 2s"}
+attempt 4: 429 retry-after=2 {"error":"too many failed login ceremonies: retry after 2s"}
+attempt 5: 429 retry-after=2 {"error":"too many failed login ceremonies: retry after 2s"}
+attempt 6: 429 retry-after=2 {"error":"too many failed login ceremonies: retry after 2s"}</code></pre>
+produce two records, not six:
+<pre><code>$ relay audit --kind control --tail 2
+16:13:50  denied  -  -  -  0  -  POST /relay/login/verify  class=  transport=tcp  webauthn: unknown, expired or already used challenge
+16:13:50  denied  -  -  -  0  -  POST /relay/login/verify  class=  transport=tcp  webauthn: unknown, expired or already used challenge</code></pre>
+The throttle is the one refusal an unauthenticated caller can provoke as fast as it can send.
+Recording it would be exactly the audit-log amplification the control-plane caps exist to
+prevent. The failures that <em>caused</em> the throttle are each recorded.</li>
+</ul>
+
+<p>The limiter allows three failures, then delays by two seconds per failure over that,
+capping at thirty, and clears on a ceremony that completed end to end — including the parts
+the verifier cannot see. It returns the delay rather than sleeping: a verifier that slept
+would hold a goroutine per attempt, which is a cheaper denial of service than the one being
+rate-limited.</p>
+
+<div class="note">
+<p><strong>A challenge flood is a denial of service relay bounds but cannot prevent.</strong>
+<code>POST /relay/login/challenge</code> allocates an entry in a fixed table (64 entries,
+60 seconds, single use) and is unauthenticated by construction; on a loopback bind every
+request arrives from the same address, so there is no identity to reserve a slot against. A
+flood that keeps issuing as entries expire keeps the owner refused for as long as it runs.
+What is bounded is what it costs relay — a fixed table, no disk, no goroutine — and the
+condition is not silent: a full table logs a warning at most once per TTL, which is the
+difference between an operator seeing "login is broken" and seeing that something is
+hammering the login route. The CLI is the recovery path, as it is for every other login
+failure.</p>
+</div>
+
+<h2 id="failures">8. Failure modes you will actually hit</h2>
+
+<h3 id="f-401">401 on a request that worked yesterday</h3>
+<p><strong>What you see.</strong> <code>HTTP/1.1 401 Unauthorized</code> with the body
+<code>unauthorized</code>. Nothing in <code>relay audit --kind control</code>.</p>
+<p><strong>What it means.</strong> The bearer resolved to no live credential. Four causes are
+indistinguishable on purpose: no header, a malformed one, an unknown token, and an
+<em>expired</em> credential.</p>
+<p><strong>What to do.</strong> <code>relay credential list --include-expired</code>. If your
+credential is there marked <code>(expired)</code>, that is your answer. If it is a browser
+login, run the ceremony again — a reload does that by itself. If the whole list is empty,
+relay is failing closed on an unreadable or missing <code>settings.json</code>; check
+<code>relay.log</code> for <code>no API credentials configured</code>. If your token is a
+<code>RELAY_FRONTEND_TOKEN</code> captured from an earlier process, it is stale — relay mints
+a new one each start.</p>
+
+<h3 id="f-code">"invalid or expired login code"</h3>
+<p><strong>What you see.</strong> In the page: <code>Registration refused: invalid or
+expired login code</code>. On the wire, <code>403</code> with
+<code>{"error":"invalid or expired login code"}</code>. In the audit log, a
+<code>denied</code> record on <code>POST /relay/login/verify</code> with that reason and no
+credential id.</p>
+<p><strong>What it means.</strong> One of: the code was already spent, it is older than two
+minutes, a later <code>relay login enrol</code> replaced it, or it was never right. Those are
+refused identically, so that a caller who cannot read the config directory cannot learn
+whether registration is currently anchored at all.</p>
+<p><strong>What to do.</strong> Run <code>relay login enrol</code> again and redeem it
+promptly. Two minutes is the whole design: the window between minting and redeeming should be
+a deliberate, momentary act, not something you forget was open. Note that a refused
+registration leaves <code>settings.json</code> untouched — no half-registered passkey to
+clean up — and does not spend a <em>later</em> code.</p>
+
+<h3 id="f-403">403 Forbidden</h3>
+<p><strong>What you see.</strong> <code>HTTP/1.1 403 Forbidden</code>, body
+<code>Forbidden</code>, and a <code>denied … class not granted</code> record naming your
+credential id and the class the route wanted.</p>
+<p><strong>What it means.</strong> You authenticated. The route exists on this transport. Your
+credential does not hold its class.</p>
+<p><strong>What to do.</strong> Read the class off the audit record — it is the authoritative
+answer, not this page's route table — and mint a credential naming it. Remember that classes
+do not nest: <code>relay credential mint --name my-rotator --class grant --class read</code>
+if you need both. If the credential in question is <code>legacy-frontend-token</code>, you
+cannot widen it; mint your own.</p>
+
+<h3 id="f-405">405 or 404 on the loopback bind</h3>
+<p><strong>What you see.</strong> <code>405 Method Not Allowed</code> with an
+<code>Allow</code> header, or <code>404 page not found</code>. Nothing in the audit log at
+all.</p>
+<p><strong>What it means.</strong> The route is not registered on this listener. Your
+credential is irrelevant — an <code>execute</code>-class credential gets the identical
+refusal. This is <code>execute</code> (service create/update, MCP register, remote bind) or
+<code>proxy</code> (anything an enhanced service registers, <code>/ws</code> included).</p>
+<p><strong>What to do.</strong> Use the socket:
+<code>curl --unix-socket "$RELAY_FRONTEND_SOCKET" http://localhost/api/…</code>. There is no
+flag, setting or credential that puts these routes on TCP; the registration never happens.
+If you are writing a browser-side view, treat this as a design constraint rather than a bug —
+those actions stay on the host.</p>
+
+<h3 id="f-nolistener">Connection refused, or no <code>/relay/login</code> at all</h3>
+<p><strong>What you see.</strong></p>
+<pre><code>$ curl -sS http://localhost:8791/relay/login
+curl: (7) Failed to connect to localhost port 8791 after 0 ms: Couldn't connect to server</code></pre>
+<p>and, in relay's log, a <code>frontend server bound</code> line with a socket and
+<em>no</em> <code>frontend API bound to loopback TCP</code> line after it.</p>
+<p><strong>What it means.</strong> <code>RELAY_API_LISTEN</code> was not set for that process.
+There is no socket at all — not a closed one, not one that refuses. An install that never
+asked for a browser door has no browser-facing network surface, and the login routes are
+registered nowhere rather than registered against a placeholder origin.</p>
+<p><strong>What to do.</strong> Restart relay with <code>RELAY_API_LISTEN=127.0.0.1:PORT</code>.
+Confirm with <code>lsof -nP -iTCP:PORT -sTCP:LISTEN</code>, and check that
+<code>relay login enrol</code> now prints a URL rather than the
+<code>&lt;RELAY_API_LISTEN port&gt;</code> placeholder. If relay exited at startup instead,
+look for <code>failed to bind API listener</code> — a non-loopback address is refused
+outright.</p>
+
+<h3 id="f-signout">A revoked passkey that did not sign anyone out</h3>
+<p><strong>What you see.</strong> <code>relay login revoke</code> succeeded, and a browser tab
+keeps working.</p>
+<p><strong>What it means.</strong> The passkey and the credentials it minted are separate
+records with separate lifetimes. Revoking the passkey stops the next assertion; it does not
+touch a credential already issued, which lives up to twelve hours.</p>
+<p><strong>What to do.</strong> <code>relay credential list</code>, find the record whose name
+starts with <code>login </code>, and <code>relay credential revoke --id …</code>. Or Settings →
+Passkeys → Signed-in Browsers → Sign out, which does the same thing and refuses anything that
+is not a login credential.</p>
+
+<h2 id="code">9. Where this lives in the code</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>File</th><th>What is in it</th></tr></thead>
+<tbody>
+<tr><td><code>capability.go</code></td><td>The five classes, <code>ClassReachableOn</code>, and <code>RouteRegistrar</code> — the single door every route registration goes through.</td></tr>
+<tr><td><code>api_credential.go</code></td><td>Minting, expiry, constant-time lookup, the legacy-token migration, and the <code>Authorizer</code> that resolves a bearer to a credential.</td></tr>
+<tr><td><code>frontend_server.go</code></td><td>Both listeners, <code>registerFrontendRoutes</code> per transport, and <code>frontendCredentialAuth</code>.</td></tr>
+<tr><td><code>login_routes.go</code></td><td>The three public patterns, <code>frontendPublicDoor</code>, and what a login records.</td></tr>
+<tr><td><code>login_document.go</code></td><td>The login page and its CSP.</td></tr>
+<tr><td><code>webauthn.go</code>, <code>webauthn_challenge.go</code>, <code>webauthn_cbor.go</code></td><td>The verifier, the challenge table and the ceremony limiter.</td></tr>
+<tr><td><code>login_ops.go</code></td><td>The bootstrap code, passkey revocation, and the sign-out gate the Settings window goes through.</td></tr>
+<tr><td><code>credential_cmd.go</code>, <code>login_cmd.go</code></td><td><code>relay credential …</code> and <code>relay login …</code>.</td></tr>
+<tr><td><code>project_routes.go</code>, <code>service_routes.go</code>, <code>enrolment_routes.go</code>, <code>mcp_routes.go</code>, <code>audit_routes.go</code></td><td>The route table — each route's class is on its <code>rr.Handle</code> line.</td></tr>
+<tr><td><code>audit_control.go</code></td><td><code>RecordDecision</code>, and the caps on method and path.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The route table in this page was read off those five <code>*_routes.go</code> files. If it
+and the code ever disagree, the code is right and this page is wrong.</p>
+
+<footer>
+<p>Inventory: <a href="tokens.md"><code>docs/tokens.md</code></a> ·
+Records: <a href="audit-log.md"><code>docs/audit-log.md</code></a> ·
+Reasoning: <a href="decisions/014-every-capability-is-an-http-capability.md">ADR-014</a>,
+<a href="decisions/015-control-plane-authorization.md">ADR-015</a>,
+<a href="decisions/016-interactive-login-and-the-view-credential.md">ADR-016</a>.</p>
+</footer>
+
+</main>
+</body>
+</html>

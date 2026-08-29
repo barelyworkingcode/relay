@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// restrictedProject creates a project whose allowed_models is an explicit,
-// non-wildcard list.
 func restrictedProject(t *testing.T, store SettingsStore, models []string) Project {
 	t.Helper()
 	proj := createTestProject(t, store, "Restricted", t.TempDir(), []string{"fsmcp"})
@@ -57,8 +55,6 @@ func TestModelAllowedForProject_EmptyAllowlistIsUnrestricted(t *testing.T) {
 	}
 }
 
-// nextSpy records whether the downstream handler ran and what body it saw —
-// the guard must forward the original payload untouched on allow.
 type nextSpy struct {
 	called   bool
 	gotBody  string
@@ -128,8 +124,7 @@ func TestSessionModelGuard_FailsOpenOnNonJSON(t *testing.T) {
 	}
 }
 
-// CR-7: the allowlist must hold on the trailing-slash variant of the create
-// path. Go's ServeMux routes "POST /api/sessions/" to the catch-all, so a guard
+// Go's ServeMux routes "POST /api/sessions/" to the catch-all, so a guard
 // bound to the exact "POST /api/sessions" pattern would miss it.
 func TestSessionModelGuard_BlocksDisallowedModel_TrailingSlash(t *testing.T) {
 	store := newProjectsTestStore(t)
@@ -150,9 +145,8 @@ func TestSessionModelGuard_BlocksDisallowedModel_TrailingSlash(t *testing.T) {
 	}
 }
 
-// Sub-resource POSTs (e.g. sending a message to an existing session) are NOT
-// gated: they never name a model and may carry bodies larger than the guard's
-// buffer, which must not be read/truncated. They must pass straight through.
+// Sub-resource POSTs never name a model and may carry bodies larger than the
+// guard's buffer, which must not be read or truncated.
 func TestSessionModelGuard_IgnoresSubResourcePath(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := restrictedProject(t, store, []string{"haiku"})
@@ -174,9 +168,8 @@ func TestSessionModelGuard_IgnoresSubResourcePath(t *testing.T) {
 }
 
 // An oversized create body can't be fully inspected for its model field, so
-// the guard must fail closed (413) rather than truncate-and-forward. Without
-// this, padding a disallowed-model body past the 1 MiB cap could slip the
-// model past relay's authoritative allowlist boundary.
+// the guard must fail closed (413) rather than truncate-and-forward — padding
+// a disallowed-model body past the cap must not slip it past the allowlist.
 func TestSessionModelGuard_OversizedBodyFailsClosed(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := restrictedProject(t, store, []string{"haiku"})
@@ -209,7 +202,6 @@ func TestSessionModelGuard_BodyAtCapIsInspected(t *testing.T) {
 	guard := newSessionModelGuard(store, spy)
 	rec := httptest.NewRecorder()
 
-	// Disallowed model in a body padded to exactly the cap → still blocked.
 	prefix := `{"projectId":"` + proj.ID + `","model":"opus","pad":"`
 	suffix := `"}`
 	pad := strings.Repeat("A", maxSessionBodyBytes-len(prefix)-len(suffix))
@@ -229,8 +221,6 @@ func TestSessionModelGuard_BodyAtCapIsInspected(t *testing.T) {
 	}
 }
 
-// Non-POST requests to the sessions path (e.g. listing) must pass through
-// without the guard buffering the body.
 func TestSessionModelGuard_IgnoresNonPost(t *testing.T) {
 	store := newProjectsTestStore(t)
 	spy := &nextSpy{}
@@ -243,10 +233,8 @@ func TestSessionModelGuard_IgnoresNonPost(t *testing.T) {
 	}
 }
 
-// remoteProject stores a remote project directly. Built by hand rather than
-// through the create path so the guard is proven on its own: a session must be
-// refused because the project IS remote, not because validation happened to
-// run somewhere upstream.
+// Built by hand rather than through the create path, so a refusal proves the
+// guard itself acted — not that validation happened to run upstream.
 func remoteProject(t *testing.T, store SettingsStore) Project {
 	t.Helper()
 	var out Project
@@ -290,8 +278,6 @@ func TestSessionModelGuard_RefusesRemoteProject(t *testing.T) {
 	}
 }
 
-// Belt and braces on the above: prove the allowlist alone would have let this
-// through, so the test above is testing the guard and not an accident.
 func TestModelAllowedForProject_WouldPermitRemoteProject(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := remoteProject(t, store)
@@ -302,7 +288,6 @@ func TestModelAllowedForProject_WouldPermitRemoteProject(t *testing.T) {
 	}
 }
 
-// A local project must still create sessions exactly as before.
 func TestSessionModelGuard_LocalProjectStillCreatesSessions(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := restrictedProject(t, store, []string{"opus"})

@@ -9,11 +9,6 @@ import (
 	"relaygo/bridge"
 )
 
-// resolveConfigPath is the single security gate for the config editor. These
-// tests pin its containment guarantees: a regular file within the allowed root
-// resolves; anything that escapes the root (directly or via symlink), is not a
-// regular file, or is oversize is rejected.
-
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -62,8 +57,6 @@ func TestResolveConfigPath_RejectsSymlinkEscape(t *testing.T) {
 	target := filepath.Join(outside, "secret.json")
 	writeFile(t, target, `{"secret":true}`)
 
-	// A symlink INSIDE the root pointing at a file OUTSIDE it must be caught
-	// by the EvalSymlinks + containment check.
 	link := filepath.Join(root, "settings.json")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -154,8 +147,6 @@ func TestReadConfigFile_HappyPath(t *testing.T) {
 	}
 }
 
-// CR-18: if the resolved path is swapped for a different file between
-// resolveConfigPath and the open, the os.SameFile check must reject the read.
 func TestReadConfigFile_RejectsSwappedFile(t *testing.T) {
 	root := t.TempDir()
 	cfg := filepath.Join(root, "settings.json")
@@ -181,15 +172,12 @@ func TestValidateConfigText_JSONCAndJSON(t *testing.T) {
 	if err := validateConfigText([]byte(jsoncWithComments), bridge.ConfigFormatJSONC); err != nil {
 		t.Errorf("jsonc with comments should validate: %v", err)
 	}
-	// Default format is jsonc.
 	if err := validateConfigText([]byte(jsoncWithComments), ""); err != nil {
 		t.Errorf("default (jsonc) should validate: %v", err)
 	}
-	// Strict json must reject comments.
 	if err := validateConfigText([]byte(jsoncWithComments), bridge.ConfigFormatJSON); err == nil {
 		t.Errorf("strict json should reject comments")
 	}
-	// Malformed is rejected in either mode.
 	if err := validateConfigText([]byte(`{"a":}`), bridge.ConfigFormatJSONC); err == nil {
 		t.Errorf("malformed jsonc should be rejected")
 	}
@@ -219,11 +207,9 @@ func TestWriteConfigFile_RoundTripPreservesBytes(t *testing.T) {
 	if string(got) != edited {
 		t.Errorf("round-trip mismatch:\n got  %q\n want %q", string(got), edited)
 	}
-	// No leftover temp file.
 	if _, err := os.Stat(cfg + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("temp file should not remain: %v", err)
 	}
-	// Mode preserved (0600).
 	gotInfo, _ := os.Stat(cfg)
 	if gotInfo.Mode().Perm() != 0o600 {
 		t.Errorf("perm widened: got %v, want 0600", gotInfo.Mode().Perm())
