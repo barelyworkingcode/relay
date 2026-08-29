@@ -248,6 +248,69 @@ identity binding is real and was measured working as described, but a
 SIP-disabled box is not the environment to treat that measurement as a
 worst-case bound — re-measure on a production Mac before leaning on it there.
 
+## A foreign item under relay's own service/account, and why the fix is a timeout, not a flag
+
+The ACL section above describes what happens when relay's OWN key exists and
+a different identity tries to read it. The inverse case matters just as
+much: an item planted under relay's exact service (`com.barelyworkingcode.relay`)
+and account (`config-seal-key`) by any OTHER process running as the same
+user — no privilege escalation needed, any local process can write a
+generic-password item under a name it does not own. Before this was fixed,
+`keychainKeyring.Load()` handed that item straight to `SecItemCopyMatching`
+with no query flag bounding what could happen next, and relay read its
+sealing key synchronously at startup, before the tray existed to offer any
+recovery. The result depended entirely on the planted item's ACL:
+
+- A hard ACL naming one or more specific trusted applications (what
+  `SecAccessCreate` — the mechanism this file itself uses, §5.3.1 — always
+  produces): a reader not on that list gets `errSecInteractionNotAllowed`
+  (-25308) immediately, with no dialog, in every measurement here. This
+  shape was never the problem.
+- **No trusted-application list at all** — what `security add-generic-
+  password` produces when its `-T` is omitted, and exactly what an
+  attacker's `-U` overwrite in the field looked like: the keychain's own
+  "`X` wants to use your confidential information stored in `Y`... enter
+  the login keychain password" dialog, with Deny / Allow / Always Allow.
+  Relay raising that dialog, unprompted, at a time of another process's
+  choosing, is worse than a silent failure: it is relay's own, genuine
+  identity asking for the login password, which is issue #65's
+  impersonation risk made more convincing by being real. And because the
+  dialog blocks `SecItemCopyMatching` synchronously, the tray — and with it
+  every recovery surface, including "Reset Sealed Store…" — never starts.
+
+**`kSecUseAuthenticationUI` does not fix the second shape.** It was added to
+the read query on the assumption that `kSecUseAuthenticationUISkip` (or
+`...UIFail`) would turn the dialog into a clean `errSecInteractionNotAllowed`
+the same way the hard-ACL case already does without any flag. Measured
+against this exact planted-item shape, it does not: neither `Skip`, nor
+`Fail`, nor the older deprecated `kSecUseNoAuthenticationUI` boolean
+changed the outcome, and the dialog appeared identically whether the
+reading process was an unsigned test binary or one signed with a real
+Developer ID identity. The likely reason is that this is legacy ACL
+"confirm access" UI — a `securityd`/SecurityAgent code path older than, and
+distinct from, the LocalAuthentication-flavoured authentication UI that
+`kSecUseAuthenticationUI` actually governs (device passcode / biometric
+confirmation, and locked-keychain unlock prompts). The flag is left on the
+query anyway, because it is free and it does help the hard-ACL shape stay a
+clean, immediate refusal — but nothing downstream may assume it is
+sufficient on its own.
+
+**The fix that actually holds is `keychainKeyring.copyItem`'s
+`keychainReadTimeout`** (`sealed/keychain_darwin.go`): the real
+`SecItemCopyMatching` call runs in a goroutine, and `copyItem` waits on it
+for at most a few seconds before giving up and returning a named
+`ErrKeyUnreadable`, regardless of what the OS decided to do with the read.
+This does not make the dialog disappear — if the OS raised one, it stays on
+screen, unanswered, until a human dismisses it or the process exits, and
+there is no query-level way to cancel it once asked. What it guarantees is
+narrower and is the actual requirement: relay's own run loop is never the
+thing waiting on that dialog. The tray starts, serves the read half, and
+offers "Reset Sealed Store…" on schedule, whether or not a stray dialog is
+sitting on the desktop from a read that timed out. `sealedResetDigest`
+(`sealed_reset.go`) calls the same `Load()` before its own presence check
+runs, so it inherits this bound for free — the reset menu item cannot be
+made to hang the same way, either.
+
 ## The CLI carries relay's own code identity — this is structural, not incidental
 
 `/Applications/Relay.app/Contents/MacOS/relay credential mint` runs the exact

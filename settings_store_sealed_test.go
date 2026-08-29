@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,6 +121,118 @@ func TestResolveSealedStore_ForeignKeyNeverAdopted(t *testing.T) {
 	}
 	if strings.Contains(string(after), "cccccccccccccccc") {
 		t.Fatal("the foreign key id leaked into settings.json")
+	}
+}
+
+// fakeUnreadableKeyring is an injectable sealed.Keyring standing in for the
+// real keychainKeyring's -25308 (errSecInteractionNotAllowed) condition —
+// an item is present under relay's service/account, but relay is not on
+// its ACL — without needing the real keychain. createCalls lets a test
+// assert Create() was never reached, which is §5.5.1's rule stated as a
+// fact a test can check rather than only as a comment.
+type fakeUnreadableKeyring struct {
+	loadErr     error
+	createCalls int
+}
+
+func (f *fakeUnreadableKeyring) Load() (string, []byte, error) { return "", nil, f.loadErr }
+
+func (f *fakeUnreadableKeyring) Create() (string, []byte, error) {
+	f.createCalls++
+	return "", nil, fmt.Errorf("fakeUnreadableKeyring: Create must never be called for an unreadable item")
+}
+
+func (f *fakeUnreadableKeyring) Destroy() error { return nil }
+
+// unreadableErr mimics what keychain_darwin.go's copyItem actually returns
+// for OSStatus -25308: sealed.ErrKeyUnreadable, wrapped with the same shape
+// of detail a real caller would see.
+func unreadableErr() error {
+	return fmt.Errorf("%w: OSStatus -25308 (errSecInteractionNotAllowed) for com.barelyworkingcode.relay/config-seal-key",
+		sealed.ErrKeyUnreadable)
+}
+
+// TestResolveSealedStore_UnreadableKeyDegrades_DistinctFromMissing is the
+// hermetic half of the regression test for the startup-blocking defect:
+// settings.json names a key, and the keyring answers with the condition a
+// real foreign-ACL keychain item produces (errSecInteractionNotAllowed),
+// not ErrKeyMissing. TestResolveSealedStore_MissingKeyDegrades already
+// covers "the item is gone"; this covers "the item is there and relay
+// cannot use it" — a different operator problem, and the messages must not
+// collide. This is what settings_store_sealed_test.go could not previously
+// exercise: every existing degraded-state test used ErrKeyMissing, so a
+// keyring.Load failure that was NOT ErrKeyMissing fell through
+// resolveSealer's default branch and got the "no such key is in the login
+// keychain" message anyway — wrong, but nothing here caught it.
+func TestResolveSealedStore_UnreadableKeyDegrades_DistinctFromMissing(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	seedSealedInstall(t, dir, "aaaaaaaaaaaaaaaa")
+	before := sdRead(t, dir)
+
+	keyring := &fakeUnreadableKeyring{loadErr: unreadableErr()}
+	store, err := ResolveSealedStore(dir, keyring)
+	if err != nil {
+		t.Fatalf("ResolveSealedStore returned a fatal error for a degraded case: %v", err)
+	}
+	if store.Sealer() != nil {
+		t.Fatal("an unreadable key must not resolve to a working sealer")
+	}
+	status := store.SealStatus()
+	if status == nil {
+		t.Fatal("SealStatus must name the degraded reason")
+	}
+	if strings.Contains(status.Error(), "no such key is in the login keychain") {
+		t.Errorf("degraded message = %q, reads as simply absent — an unreadable item is a different condition", status.Error())
+	}
+	if !strings.Contains(status.Error(), "refused permission to read it") {
+		t.Errorf("degraded message = %q, does not name the item as present-but-unreadable", status.Error())
+	}
+	assertDegradedStoreBehaviour(t, store, dir)
+
+	if keyring.createCalls != 0 {
+		t.Fatal("Create was called for an unreadable key — this is §5.5.1's rule broken")
+	}
+	after := sdRead(t, dir)
+	if string(before) != string(after) {
+		t.Fatal("settings.json changed after resolving against an unreadable key")
+	}
+}
+
+// TestResolveSealedStore_FirstRunUnreadableItemDegrades_NeverCreates covers
+// §5.5's other branch: no sealed_key_id yet (a genuine first run, or a
+// pre-sealing settings.json), but a foreign, unreadable item already
+// occupies relay's keychain slot. Before this fix, any keyring.Load error
+// other than ErrKeyMissing on this branch made resolveSealer return a
+// fatal err, which runTrayApp turns into os.Exit(1) — not a hang, but
+// still a violation of "relay starts, it does not exit" for a condition
+// that is, by §5.5.1's own rule, supposed to degrade like every other
+// missing/mismatched/foreign/unreadable key.
+func TestResolveSealedStore_FirstRunUnreadableItemDegrades_NeverCreates(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+
+	keyring := &fakeUnreadableKeyring{loadErr: unreadableErr()}
+	store, err := ResolveSealedStore(dir, keyring)
+	if err != nil {
+		t.Fatalf("ResolveSealedStore returned a fatal error instead of degrading: %v", err)
+	}
+	if store.Sealer() != nil {
+		t.Fatal("an unreadable item on first run must not resolve to a working sealer")
+	}
+	status := store.SealStatus()
+	if status == nil {
+		t.Fatal("SealStatus must name the degraded reason")
+	}
+	if !strings.Contains(status.Error(), "refused permission to read it") {
+		t.Errorf("degraded message = %q, does not name the item as present-but-unreadable", status.Error())
+	}
+	if keyring.createCalls != 0 {
+		t.Fatal("Create was called over an item relay could not read — this is §5.5.1's rule broken")
+	}
+	if err := store.EnsureInitialized(); err != nil {
+		t.Fatalf("EnsureInitialized must not fail on a degraded first-run store: %v", err)
+	}
+	if store.Get() == nil {
+		t.Fatal("a degraded first-run store must still serve Get()")
 	}
 }
 

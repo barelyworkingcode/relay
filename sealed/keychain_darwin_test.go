@@ -182,3 +182,68 @@ func TestKeychainKeyring_ACLGrantsSelfAndRejectsForeignAppPath(t *testing.T) {
 		t.Fatalf("Load from the trusted application's own process: %v", err)
 	}
 }
+
+// TestKeychainKeyring_PlantedItemResolvesToNamedRefusal_NeverPrompts is the
+// live-keychain regression test for the startup-blocking defect. It
+// reproduces the exact shape of the reported attack — `security
+// add-generic-password -s ... -a ... -w '<json>'` with no `-T` — against a
+// namespaced, non-production service/account. Omitting `-T` is the load-
+// bearing detail: per `security`'s own default, an item added this way
+// gets an ACL of "confirm before allowing access" rather than a hard
+// trusted-application list, which is what makes ANY reader — including
+// relay itself — fall to the keychain's own consent dialog. A
+// `keychainKeyring{}.addItem` (used by every other test in this file)
+// always builds a SecAccessCreate ACL naming one specific trusted
+// application, which measurably refuses a mismatched reader with -25308
+// and no dialog at all (§5.3.2's own table) — so it does NOT exercise the
+// branch this test needs to and would pass whether or not the fix were
+// present. Only the plain `security` CLI path reproduces the actual bug.
+//
+// This is subtle: kSecUseAuthenticationUISkip does NOT suppress this
+// particular dialog — measured here against both an unsigned and a
+// Developer-ID-signed reader, it still appears. copyItem's
+// keychainReadTimeout is what actually keeps this test (and relay's own
+// startup) from blocking on it: Load returns a named ErrKeyUnreadable once
+// that deadline passes, well inside this test's own `-timeout`, but the
+// OS-level dialog itself is NOT cancelled by that — it can be left showing
+// on whatever screen ran this test until the process exits or a human
+// dismisses it. That is a real, documented cost of running this test, not
+// a bug in it: there is no query-level way to make the OS answer instead
+// of a human once it has decided to ask one, so relay's fix is to stop
+// waiting, not to stop the dialog from appearing.
+func TestKeychainKeyring_PlantedItemResolvesToNamedRefusal_NeverPrompts(t *testing.T) {
+	kr := testKeychainKeyring(t)
+
+	keyID, key, err := generateKey()
+	if err != nil {
+		t.Fatalf("generateKey: %v", err)
+	}
+	payload, err := encodeKeychainPayload(keyID, key)
+	if err != nil {
+		t.Fatalf("encodeKeychainPayload: %v", err)
+	}
+	addCmd := exec.Command("security", "add-generic-password",
+		"-s", kr.service, "-a", kr.account, "-w", string(payload))
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("security add-generic-password: %v (%s)", err, out)
+	}
+	// kr.Destroy() (the cleanup testKeychainKeyring already registered)
+	// goes through this package's own SecItemDelete, which is not
+	// guaranteed to succeed against every ACL shape `security` can
+	// produce. `security delete-generic-password` is the same tool that
+	// created this item and is known to remove it; registered after
+	// testKeychainKeyring's own cleanup, so it runs FIRST (t.Cleanup is
+	// LIFO), leaving nothing for the standard cleanup's residue check to
+	// find.
+	t.Cleanup(func() {
+		_ = exec.Command("security", "delete-generic-password", "-s", kr.service, "-a", kr.account).Run()
+	})
+
+	_, _, loadErr := kr.Load()
+	if errors.Is(loadErr, ErrKeyMissing) {
+		t.Fatal("Load reported the key as MISSING, but the planted item is present — these must never be conflated")
+	}
+	if !errors.Is(loadErr, ErrKeyUnreadable) {
+		t.Fatalf("Load against a planted item: got %v, want ErrKeyUnreadable", loadErr)
+	}
+}
