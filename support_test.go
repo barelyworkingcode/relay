@@ -216,12 +216,27 @@ func newBrokerRouter(t *testing.T, store SettingsStore, mutate func(*appRouter))
 // bridge.SocketPath() and stops it on cleanup, so a CLI subcommand's
 // requireService/AdminOp round trip has a real peer to dial — the same
 // transport AC-11/AC-12 exercise from the refusing side.
+//
+// This is subtle: bridge/server.go resolves each connection's REAL kernel
+// audit session by default (§6.6), and the process running `go test` may
+// itself belong to a session with no graphic access — over SSH, or in a
+// CI/agent harness with no console attached. newBrokerRouter's whole point
+// is "prove a brokered CLI command reaches its core given an ALLOWING
+// gate" — i.e. simulate the operator sitting at the console — so this
+// pins GraphicAccess: true explicitly rather than leaving the outcome
+// dependent on whatever environment happens to run the suite. A test that
+// wants the OTHER row (a caller that cannot show a prompt) constructs its
+// own bridge.BridgeServer and overrides this the other way — see
+// TestBridge_NoGraphicAccessRefusesWithoutPromptingTheProvider.
 func serveBroker(t *testing.T, r *appRouter) {
 	t.Helper()
 	bs, err := bridge.NewBridgeServer(context.Background(), r)
 	if err != nil {
 		t.Fatalf("NewBridgeServer: %v", err)
 	}
+	bs.SetCallerSessionResolverForTest(func(net.Conn) presence.CallerSession {
+		return presence.CallerSession{GraphicAccess: true}
+	})
 	go bs.Serve()
 	t.Cleanup(bs.Close)
 }

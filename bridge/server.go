@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"relaygo/jsonrpc"
+	"relaygo/presence"
 )
 
 type BridgeServer struct {
@@ -26,6 +27,28 @@ type BridgeServer struct {
 	// just before StopAccepting runs.
 	mu     sync.Mutex
 	closed bool
+
+	// callerSession resolves a connection's presence.CallerSession (§6.6).
+	// nil in every struct literal that does not set it explicitly — a
+	// handful of this package's own tests build a BridgeServer by hand
+	// rather than through NewBridgeServer — so handleConn falls back to
+	// PeerCallerSession itself rather than requiring every call site to
+	// know about this field. Production code never overrides it.
+	callerSession func(net.Conn) presence.CallerSession
+}
+
+// SetCallerSessionResolverForTest overrides how THIS server resolves a
+// connection's presence.CallerSession. It exists because a real peer's
+// kernel audit session is whatever the process running the test happens to
+// have — there is no way to force AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS off
+// from inside the test binary itself — and a test proving §6.6's refusal
+// end to end needs that fact pinned, not ambient. This does not touch
+// package presence or weaken Gate.Request in any way: it only supplies the
+// one input Gate.Request already reads off the context before deciding
+// whether to prompt at all. Production never calls this; NewBridgeServer's
+// default (PeerCallerSession) is the only resolver a shipped relay uses.
+func (s *BridgeServer) SetCallerSessionResolverForTest(fn func(net.Conn) presence.CallerSession) {
+	s.callerSession = fn
 }
 
 func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, error) {
@@ -46,11 +69,12 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 	ctx, cancel := context.WithCancel(ctx)
 
 	return &BridgeServer{
-		router:   router,
-		listener: listener,
-		sockPath: sockPath,
-		ctx:      ctx,
-		cancel:   cancel,
+		router:        router,
+		listener:      listener,
+		sockPath:      sockPath,
+		ctx:           ctx,
+		cancel:        cancel,
+		callerSession: PeerCallerSession,
 	}, nil
 }
 
@@ -119,6 +143,19 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	// life of the socket, and the getsockopt is pure overhead on every
 	// subsequent frame. Audit attribution only.
 	ctx = WithCallerPID(ctx, PeerPID(conn))
+
+	// Resolved once per connection too, beside PeerPID, and for the same
+	// reason: it can't change for the socket's lifetime. Unlike PeerPID this
+	// is a presence-gate INPUT, not audit-only — a caller whose session
+	// cannot show a prompt must refuse before the gate ever asks
+	// LocalAuthentication, which does not itself refuse a remote caller and
+	// would otherwise raise the login-password prompt on the physical
+	// console for whoever is sitting there (§6.6).
+	resolveSession := s.callerSession
+	if resolveSession == nil {
+		resolveSession = PeerCallerSession
+	}
+	ctx = presence.WithCallerSession(ctx, resolveSession(conn))
 
 	// Close the connection when this context is cancelled so a handler
 	// blocked in scanner.Scan() unblocks promptly at shutdown. Without this,
