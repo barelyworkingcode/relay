@@ -16,10 +16,9 @@ import (
 // scheme, resolving keyring against whatever sealed_key_id the file names
 // (§5.5), and returns a store ready for full use.
 //
-// It is not called from runTrayApp yet — wiring it in belongs beside the
-// presence gate's own construction, at the same call site, which is a
-// later step. Every branch here is exercised directly, with a memory
-// keyring, by sealed_config_test.go.
+// Called from runTrayApp, at the same call site the presence gate's own
+// provider is constructed. Every branch here is exercised directly, with a
+// memory keyring, by settings_store_sealed_test.go.
 //
 // A non-nil error is never a reason to treat the returned store as unusable:
 // on every degraded branch below, the store is already fully able to serve
@@ -27,6 +26,27 @@ import (
 // key-creation failure on a genuine first run returns a nil store, because
 // there is nothing yet to read a clear field out of.
 func ResolveSealedStore(dir string, keyring sealed.Keyring) (*FileSettingsStore, error) {
+	sealer, degradedReason, err := resolveSealer(dir, keyring)
+	if err != nil {
+		return nil, err
+	}
+	if degradedReason != nil {
+		return NewSettingsStoreDegraded(dir, degradedReason), nil
+	}
+	return NewSettingsStoreSealed(dir, sealer), nil
+}
+
+// resolveSealer is §5.5's table, factored out of ResolveSealedStore so the
+// break-glass reset (sealed_reset.go) can re-run it against the SAME
+// FileSettingsStore instance after deleting settings.json and the keychain
+// item — every subsystem the running tray wired at startup holds that one
+// store, and constructing a fresh *FileSettingsStore for it would leave all
+// of them pointed at settings nothing refers to any more.
+//
+// Exactly one of (sealer, degradedReason) is non-nil on a nil err; err
+// non-nil means resolution itself failed (a first run whose key could not
+// even be created) and the other two returns are meaningless.
+func resolveSealer(dir string, keyring sealed.Keyring) (sealer sealed.Sealer, degradedReason error, err error) {
 	declaredKeyID, hasSealedFields := peekSealedKeyID(dir)
 	keyID, key, keyErr := keyring.Load()
 
@@ -37,8 +57,8 @@ func ResolveSealedStore(dir string, keyring sealed.Keyring) (*FileSettingsStore,
 		// this should never arise from relay's own writes, and adopting
 		// either interpretation of it silently would be a guess dressed up
 		// as a recovery.
-		return NewSettingsStoreDegraded(dir, errors.New(
-			"settings.json holds sealed fields but names no sealed_key_id — this combination should not exist")), nil
+		return nil, errors.New(
+			"settings.json holds sealed fields but names no sealed_key_id — this combination should not exist"), nil
 
 	case declaredKeyID == "":
 		// First run, or a settings.json written before sealing existed
@@ -46,38 +66,67 @@ func ResolveSealedStore(dir string, keyring sealed.Keyring) (*FileSettingsStore,
 		// relay may create a key (§5.5).
 		if keyErr != nil {
 			if !errors.Is(keyErr, sealed.ErrKeyMissing) {
-				return nil, fmt.Errorf("reading the sealing key: %w", keyErr)
+				return nil, nil, fmt.Errorf("reading the sealing key: %w", keyErr)
 			}
 			var createErr error
 			keyID, key, createErr = keyring.Create()
 			if createErr != nil {
-				return nil, fmt.Errorf("no sealing key exists and one could not be created: %w", createErr)
+				return nil, nil, fmt.Errorf("no sealing key exists and one could not be created: %w", createErr)
 			}
 		}
-		sealer, err := sealed.NewAESSealer(keyID, key)
+		s, err := sealed.NewAESSealer(keyID, key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return NewSettingsStoreSealed(dir, sealer), nil
+		return s, nil, nil
 
 	default:
 		if keyErr != nil {
-			return NewSettingsStoreDegraded(dir, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"the sealed store expects key %s, but no such key is in the login keychain; "+
 					"settings.json cannot be unsealed on this machine. relay will not create a "+
 					"replacement — a new key would re-seal your secrets under a key you did not choose",
-				declaredKeyID)), nil
+				declaredKeyID), nil
 		}
 		if keyID != declaredKeyID {
-			return NewSettingsStoreDegraded(dir, fmt.Errorf(
-				"the sealed store is bound to key %s, settings.json expects key %s", keyID, declaredKeyID)), nil
+			return nil, fmt.Errorf(
+				"the sealed store is bound to key %s, settings.json expects key %s", keyID, declaredKeyID), nil
 		}
-		sealer, err := sealed.NewAESSealer(keyID, key)
+		s, err := sealed.NewAESSealer(keyID, key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return NewSettingsStoreSealed(dir, sealer), nil
+		return s, nil, nil
 	}
+}
+
+// Reresolve recomputes ss's sealer against its own dir and keyring's
+// CURRENT state — the only legitimate way ss's sealer ever changes after
+// construction. Used solely by the break-glass reset (§5.6 clause 5), after
+// settings.json and the keychain item have just been deleted: keyring.Load
+// now fails with ErrKeyMissing and peekSealedKeyID sees no sealed_key_id, so
+// this resolves exactly like a first run and mints a fresh key — which is
+// correct here, and ONLY here, because the operator just passed a presence
+// check demanding precisely that.
+func (ss *FileSettingsStore) Reresolve(keyring sealed.Keyring) error {
+	sealer, degradedReason, err := resolveSealer(ss.dir, keyring)
+	if err != nil {
+		return err
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.sealer = sealer
+	ss.sealUnavailable = degradedReason
+	// Every cached fact about the file this store used to know is now
+	// stale — the reset deleted it out from under this exact instance —
+	// so the next Get()/EnsureInitialized() must re-stat and re-read
+	// rather than answer from a cache describing a file that is gone.
+	ss.cache = nil
+	ss.fileSeen = false
+	ss.readErr = nil
+	ss.sealErrors = nil
+	ss.lastModTime = 0
+	return nil
 }
 
 // peekSealedKeyID reads whatever settings.json currently holds without a

@@ -104,7 +104,7 @@ func pgwCases(t *testing.T) []pgwCase {
 			}},
 		{"login.bootstrap.mint", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &LoginOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
-			_, err := ops.MintBootstrap(context.Background())
+			_, err := ops.MintBootstrap(context.Background(), auditViaCLI)
 			return err
 		}},
 		{"login.passkey.revoke",

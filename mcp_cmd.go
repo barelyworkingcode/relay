@@ -1,18 +1,18 @@
 package main
 
 import (
-	"context"
-	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
-	"os/exec"
-	"runtime"
 	"strings"
-
-	"relaygo/bridge"
 )
 
+// register and unregister are brokered (ADR-017 decision 2): this process
+// holds no sealer (§5.4), so it dials the running tray over admin_op and
+// lets McpOps — the same core the MCP Servers tab and RegisterMcpRoutes
+// share — do the discovery, the SSRF guard and the reconcile notify. `list`
+// is unaffected: it reads settings.json directly and keeps working with
+// the tray stopped.
 func runMcpCommand(args []string) {
 	store := NewSettingsStore()
 	runSubcommands("mcp", []cliSubcommand{
@@ -22,126 +22,61 @@ func runMcpCommand(args []string) {
 	}, args)
 }
 
+// mcpRegister covers both transports, matching McpOps.Add itself: an HTTP
+// MCP that answers 401 during discovery still gets its record persisted
+// (mcpView.AuthRequired says so), and completing OAuth for it is a desktop
+// act with no CLI door (ADR-014 section 4 — StartOAuth needs a local
+// callback listener and a real browser, and only the Settings window and
+// the tray's own IPC ever reach it).
 func mcpRegister(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
 	var opts registerOpts
 	addRegisterFlags(fs, &opts)
-	command := fs.String("command", "", "command to run")
+	command := fs.String("command", "", "command to run (required for stdio transport)")
 	transport := fs.String("transport", "stdio", "transport type (stdio or http)")
 	mcpURL := fs.String("url", "", "MCP endpoint URL (required for http)")
 	tccServices := fs.String("tcc-services", "", "comma-separated TCC services the MCP needs (e.g. calendar,contacts,reminders,microphone,appleevents)")
 	fs.Parse(args)
 
+	if opts.Name == "" {
+		exitError("--name is required")
+	}
 	if *transport != "stdio" && *transport != "http" {
 		exitError("--transport must be stdio or http")
 	}
 
-	if *transport == "http" {
-		mcpRegisterHTTP(store, opts.Name, opts.ID, *mcpURL)
-		return
+	env, err := parseEnvPairs(opts.EnvPairs)
+	if err != nil {
+		exitError("%v", err)
 	}
-
-	if *command == "" {
-		exitError("--command is required for stdio transport")
-	}
-
-	id, env := opts.resolveIDAndEnv()
-
-	cfg := ExternalMcp{
-		ID:          id,
+	fields := mcpFields{
 		DisplayName: opts.Name,
+		Transport:   *transport,
+		URL:         *mcpURL,
 		Command:     *command,
 		Args:        []string(opts.Args),
-		Env:         secretMapFromPlain(env),
+		Env:         env,
 		TccServices: parseTccServices(*tccServices),
 	}
 
-	updated, secret := upsertAndPrint(store, "mcp", opts.Name, id, func(s *Settings) bool {
-		return s.UpsertExternalMcp(cfg)
-	}, -1)
-	notifyMcpChange(updated, id, secret)
-}
-
-func mcpRegisterHTTP(store SettingsStore, name, id, mcpURL string) {
-	if name == "" {
-		exitError("--name is required")
-	}
-	if mcpURL == "" {
-		exitError("--url is required for HTTP transport")
-	}
-	if err := validateMcpURL(mcpURL); err != nil {
-		exitError("%v", err)
-	}
-
-	id = resolveID(id, name)
-	if id == "" {
-		exitError("could not derive ID from name %q", name)
-	}
-
-	fmt.Printf("discovering HTTP MCP %q at %s...\n", name, mcpURL)
-
-	result := discoverHTTPWithAuth(name, id, mcpURL)
-
-	updated, secret := upsertAndPrint(store, "mcp", name, id, func(s *Settings) bool {
-		return s.UpsertExternalMcp(*result)
-	}, -1)
-	notifyMcpChange(updated, id, secret)
-}
-
-// Always returns a registerable config, even if discovery or auth partially
-// fails.
-func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
-	result, err := DiscoverHTTPMcp(context.Background(), name, id, mcpURL, nil)
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		exitError("%v", err)
-	}
-	if !errors.Is(err, ErrAuthRequired) {
-		return result
-	}
-	if result == nil {
-		exitError("server requires authentication but discovery returned no config")
-	}
-
-	fmt.Println("server requires authentication, starting OAuth flow...")
-	oauth, oauthErr := startOAuthFlow(mcpURL, openBrowserCmd)
-	if oauthErr != nil {
-		fmt.Fprintf(os.Stderr, "OAuth failed: %v\n", oauthErr)
-		fmt.Println("registering without authentication -- authenticate later via settings UI")
-		result.OAuthState = nil
-		return result
-	}
-
-	fmt.Println("authentication successful, retrying discovery...")
-	result, err = DiscoverHTTPMcp(context.Background(), name, id, mcpURL, oauth)
+	client := requireService("relay mcp register")
+	body, err := json.Marshal(fields)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error after auth: %v\n", err)
-		return &ExternalMcp{
-			ID:          id,
-			DisplayName: name,
-			Transport:   "http",
-			URL:         mcpURL,
-			OAuthState:  oauth.toOAuthState(),
-		}
+		exitError("%v", err)
 	}
-	result.OAuthState = oauth.toOAuthState()
-	return result
-}
+	raw, err := client.AdminOp("mcp.register", body)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var view mcpView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		exitError("parse response: %v", err)
+	}
 
-func openBrowserCmd(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
+	fmt.Printf("registered mcp %q (%s)\n", view.DisplayName, view.ID)
+	if view.AuthRequired {
+		fmt.Println("  this MCP requires authentication — finish it from the Relay Settings window's Authenticate button")
 	}
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to open browser: %v\n", err)
-		return
-	}
-	go cmd.Wait()
 }
 
 func mcpUnregister(store SettingsStore, args []string) {
@@ -149,10 +84,27 @@ func mcpUnregister(store SettingsStore, args []string) {
 	id := fs.String("id", "", "MCP ID")
 	name := fs.String("name", "", "MCP display name")
 	fs.Parse(args)
+	if *id == "" && *name == "" {
+		exitError("--id or --name is required")
+	}
 
-	_, adminSecret := resolveAndRemove(store, "mcp", *id, *name,
-		(*Settings).ResolveMcpID, (*Settings).RemoveExternalMcp)
-	warnNotifyFailure(bridge.SendReconcile(adminSecret))
+	client := requireService("relay mcp unregister")
+	resolvedID := store.Get().ResolveMcpID(*id, *name)
+	if resolvedID == "" {
+		if *id != "" {
+			exitError("no mcp found with id %q", *id)
+		}
+		exitError("no mcp found with name %q", *name)
+	}
+
+	body, err := json.Marshal(mcpUnregisterRequest{ID: resolvedID})
+	if err != nil {
+		exitError("%v", err)
+	}
+	if _, err := client.AdminOp("mcp.unregister", body); err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	fmt.Printf("unregistered mcp %q\n", resolvedID)
 }
 
 func mcpList(store SettingsStore) {

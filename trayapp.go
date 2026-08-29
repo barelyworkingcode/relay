@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"relaygo/bridge"
+	"relaygo/presence"
+	"relaygo/sealed"
 )
 
 // appInstance is the singleton tray app, set by runTrayApp and read by Cocoa
@@ -75,6 +77,23 @@ type App struct {
 	// no reason. Pointer so atomic.CompareAndSwap on a content-derived value
 	// is straightforward.
 	lastStatusBatchDigest atomic.Pointer[[32]byte]
+
+	// presenceGate is the real LocalAuthentication-backed gate every gated
+	// core's own Gate field points at (ADR-017 decisions 3 and 4). The tray
+	// uses it directly for exactly one act of its own: resetSealedStore.
+	presenceGate *presence.Gate
+
+	// sealedKeyring is the ONE production keychain keyring (§5.3.3: the
+	// keychain is asked only from the tray, never from a CLI process). Held
+	// here only for the break-glass reset, which is the one act that must
+	// delete the keychain item the running store's key lives in — every
+	// ordinary seal and unseal goes through the store's own sealer instead.
+	sealedKeyring sealed.Keyring
+
+	// configDir is where settings.json, ca.key.sealed and ca.crt live.
+	// resetSealedStore is the one place outside FileSettingsStore itself
+	// that deletes files in this directory by name.
+	configDir string
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -89,10 +108,11 @@ func (a *App) goFunc(fn func()) {
 
 // Menu item IDs.
 const (
-	menuIDSettings  = 2
-	menuIDExit      = 3
-	menuIDLoginCode = 4
-	menuIDSvcBase   = 100 // service items start here
+	menuIDSettings         = 2
+	menuIDExit             = 3
+	menuIDLoginCode        = 4
+	menuIDResetSealedStore = 5
+	menuIDSvcBase          = 100 // service items start here
 )
 
 func runTrayApp() {
@@ -104,15 +124,50 @@ func runTrayApp() {
 	platform.Init()
 	slog.Info("platform initialized")
 
-	store := NewSettingsStore()
+	// The keychain keyring is constructed here and NOWHERE else in the
+	// program (§5.3.3, AC-29): this is the tray's own path, and the ACL
+	// binds to whatever code identity SecTrustedApplicationCreateFromPath
+	// reads from it. A CLI process carries relay's own code identity too,
+	// so a second call site here would satisfy the very ACL this design
+	// depends on the CLI never asking — TestSeal_NoCLIPathReachesTheKeychain
+	// is what keeps that true.
+	configDir := bridge.ConfigDir()
+	keyring := sealed.NewKeychainKeyring(resolveRelayBin())
+	store, err := ResolveSealedStore(configDir, keyring)
+	if err != nil {
+		slog.Error("failed to resolve the sealed store", "error", err)
+		os.Exit(1)
+	}
 
-	// Ensure admin secret is generated and persisted on first launch.
+	// Ensure admin secret is generated and persisted on first launch, run
+	// migration on first encounter with a plaintext settings.json (§4.7),
+	// or — on a degraded store — do nothing beyond loading what the clear
+	// fields already say (§5.6 clause 1: relay starts, it does not exit).
 	if err := store.EnsureInitialized(); err != nil {
 		slog.Error("failed to initialize settings", "error", err)
 		os.Exit(1)
 	}
+	if reason := store.SealStatus(); reason != nil {
+		// §5.6: the read half works in full from here on — relay grant,
+		// relay audit, every list, the Settings window (rendering sealed
+		// values as sealUnavailablePlaceholder) and the tray menu below.
+		// Every sealed operation refuses naming this same reason; nothing
+		// here creates or adopts a replacement key (§5.5.1).
+		slog.Warn("sealed store is degraded — sealed operations will refuse until this is resolved", "reason", reason)
+	}
 	settings := store.Get()
 	slog.Info("settings loaded")
+
+	// The real LocalAuthentication provider is constructed in exactly one
+	// place: here. The hermetic suite never calls runTrayApp, so it never
+	// reaches this line — presence.LocalAuthProviderConstructions() staying
+	// at zero across `go test ./...` is what AC-20 checks instead of hoping.
+	presenceProvider := presence.NewLocalAuthProvider()
+	presenceGate, err := presence.NewGate(presenceProvider)
+	if err != nil {
+		slog.Error("failed to construct the presence gate", "error", err)
+		os.Exit(1)
+	}
 
 	// External MCP manager with injected callback for OAuth token refresh persistence.
 	extMgr := NewExternalMcpManager(
@@ -126,12 +181,15 @@ func runTrayApp() {
 	registry := NewServiceRegistry()
 
 	app := &App{
-		ctx:      ctx,
-		cancel:   cancel,
-		store:    store,
-		platform: platform,
-		extMgr:   extMgr,
-		registry: registry,
+		ctx:           ctx,
+		cancel:        cancel,
+		store:         store,
+		platform:      platform,
+		extMgr:        extMgr,
+		registry:      registry,
+		presenceGate:  presenceGate,
+		sealedKeyring: keyring,
+		configDir:     configDir,
 	}
 
 	// Event-driven menu updates: rebuild tray status dots immediately when
@@ -165,6 +223,7 @@ func runTrayApp() {
 	serviceOps := &ServiceOps{
 		Store:    store,
 		Registry: registry,
+		Gate:     presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(func() {
 				app.updateMenu()
@@ -197,8 +256,8 @@ func runTrayApp() {
 	audit := startAuditRecorder(store.Get())
 	app.audit = audit
 	// serviceOps is constructed above, before the audit recorder exists, so
-	// its Issuance field is wired here rather than in the literal (S7 will
-	// add the presence Gate alongside it, in the same place).
+	// its Issuance field is wired here rather than in the literal. Gate was
+	// already set there — the real provider has no such ordering constraint.
 	serviceOps.Issuance = issuanceAuditorOrNil(audit)
 
 	// A dead external MCP used to be invisible: every client got
@@ -222,6 +281,15 @@ func runTrayApp() {
 	// now that it exists so the Projects-tab "Regen Now" button can run.
 	app.ipcCtx.SkillLister = router
 	app.ipcCtx.Audit = audit
+	router.serviceOps = serviceOps
+
+	// credentialOps is admin_op's only door onto CredentialOps (ADR-017
+	// implementation spec S6): `relay credential mint|revoke` is host-only
+	// and has no Settings tab of its own, so it is wired straight onto the
+	// router rather than threaded through IPCContext the way the other five
+	// cores are.
+	credentialOps := &CredentialOps{Store: store, Gate: presenceGate, Issuance: issuanceAuditorOrNil(audit)}
+	router.credentialOps = credentialOps
 
 	// auditOps is the one core behind both the Tool Calls tab (via
 	// app.ipcCtx.AuditOps) and RegisterAuditRoutes on the frontend server
@@ -238,11 +306,13 @@ func runTrayApp() {
 	enrolmentOps := &EnrolmentOps{
 		Store: store,
 		Audit: audit,
+		Gate:  presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullSettings)
 		},
 	}
 	app.ipcCtx.EnrolmentOps = enrolmentOps
+	router.enrolmentOps = enrolmentOps
 
 	// loginOps is the one core behind the tray's login-code item, the
 	// Passkeys tab and `relay login` (ADR-016). It gets no HTTP door: passkey
@@ -253,12 +323,14 @@ func runTrayApp() {
 	loginOps := &LoginOps{
 		Store: store,
 		Audit: audit,
+		Gate:  presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullSettings)
 		},
 	}
 	app.loginOps = loginOps
 	app.ipcCtx.LoginOps = loginOps
+	router.loginOps = loginOps
 
 	// mcpOps is the one core behind both the MCP Servers tab (via
 	// app.ipcCtx.McpOps) and RegisterMcpRoutes on the frontend server
@@ -269,6 +341,7 @@ func runTrayApp() {
 	mcpOps := &McpOps{
 		Store:           store,
 		Ctx:             ctx,
+		Gate:            presenceGate,
 		Issuance:        issuanceAuditorOrNil(audit),
 		NotifyReconcile: bridge.SendReconcile,
 		NotifyReloadMcp: bridge.SendReloadMcp,
@@ -277,6 +350,7 @@ func runTrayApp() {
 		},
 	}
 	app.ipcCtx.McpOps = mcpOps
+	router.mcpOps = mcpOps
 
 	// Live-tail the Tool Calls tab. Fires on the audit writer goroutine, so
 	// hop to main before touching the WebView.
@@ -335,6 +409,7 @@ func runTrayApp() {
 	// the tray share the presence gate and the audit record.
 	projectOps := &ProjectOps{
 		Store:    store,
+		Gate:     presenceGate,
 		Issuance: issuanceAuditorOrNil(audit),
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullProjects)
@@ -576,9 +651,20 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 		items = append(items, menuItem{Title: "-", ID: 0})
 	}
 
+	// §5.6's degraded-state surface: a disabled, non-clickable line naming
+	// exactly why sealed operations are refusing, so the operator sees this
+	// in the menu bar without first opening Settings. ID 0 is already used
+	// above for separators, which the click handler ignores the same way.
+	if ss, ok := a.store.(*FileSettingsStore); ok {
+		if reason := ss.SealStatus(); reason != nil {
+			items = append(items, menuItem{Title: "⚠ Sealed store: " + reason.Error(), ID: 0})
+		}
+	}
+
 	items = append(items,
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true},
 		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
+		menuItem{Title: "Reset Sealed Store...", ID: menuIDResetSealedStore, Enabled: true},
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Exit", ID: menuIDExit, Enabled: true},
 	)
@@ -607,6 +693,9 @@ func (a *App) onMenuClick(itemID int) {
 	case itemID == menuIDLoginCode:
 		a.showLoginCode()
 
+	case itemID == menuIDResetSealedStore:
+		a.confirmAndResetSealedStore()
+
 	case itemID == menuIDExit:
 		a.cleanup()
 		os.Exit(0)
@@ -627,18 +716,63 @@ func (a *App) onMenuClick(itemID int) {
 // that is not up can only be told through its first paint. One that IS up is
 // never reloaded by OpenSettings, so for that one the emit is the only
 // channel. Hence the two arms rather than a single call.
+//
+// This is deliberate: onMenuClick runs on the Cocoa main thread, and
+// login.bootstrap.mint is gated (§6.4) — MintBootstrap now reaches a real
+// LocalAuthentication provider whose Evaluate blocks the calling goroutine
+// on a channel until the async completion handler fires. Running that on
+// the same thread that owns the run loop the dialog needs pumped would
+// deadlock the two against each other (§6.5), so the mint happens in a
+// tracked goroutine and every UI touch after it hops back to main.
 func (a *App) showLoginCode() {
-	view, err := a.loginOps.MintBootstrap(a.ctx)
-	if err != nil {
-		slog.Error("failed to mint a login code from the tray", "error", err)
-		view = loginCodeView{Error: err.Error()}
-	}
-	if a.settingsOpen.Load() {
-		a.emitSettingsEvent("onLoginCodeMinted", view)
-	} else {
-		a.pendingLoginCode = &view
-	}
-	a.openSettingsWindow()
+	a.goFunc(func() {
+		view, err := a.loginOps.MintBootstrap(a.ctx, auditViaTray)
+		if err != nil {
+			slog.Error("failed to mint a login code from the tray", "error", err)
+			view = loginCodeView{Error: err.Error()}
+		}
+		a.platform.DispatchToMain(func() {
+			if a.settingsOpen.Load() {
+				a.emitSettingsEvent("onLoginCodeMinted", view)
+			} else {
+				a.pendingLoginCode = &view
+			}
+			a.openSettingsWindow()
+		})
+	})
+}
+
+// confirmAndResetSealedStore is the tray's break-glass menu item (§5.6
+// clause 5): "Reset Sealed Store…". There is no separate confirmation panel
+// in front of the presence prompt — the prompt itself, via
+// sealedResetReason, is the one surface guaranteed to work regardless of
+// what a degraded store lets the Settings WebView render, and answering it
+// (with the login password) IS the confirmation. A cancelled or refused
+// prompt leaves every file untouched; resetSealedStore only starts deleting
+// after Require succeeds.
+//
+// Runs in a tracked goroutine for the same reason showLoginCode does:
+// resetSealedStore reaches the real presence gate, which must never be
+// invoked from the Cocoa main thread onMenuClick runs on (§6.5).
+func (a *App) confirmAndResetSealedStore() {
+	a.goFunc(func() {
+		ss, ok := a.store.(*FileSettingsStore)
+		if !ok {
+			slog.Error("sealed store reset: store is not file-backed")
+			return
+		}
+		if err := resetSealedStore(a.ctx, a.configDir, ss, a.sealedKeyring, a.presenceGate); err != nil {
+			slog.Error("sealed store reset failed", "error", err)
+			return
+		}
+		slog.Warn("sealed store reset: settings.json, the CA and the keychain key were deleted; relay re-initialised with a fresh key")
+		a.platform.DispatchToMain(func() {
+			a.updateMenu()
+			if a.settingsOpen.Load() {
+				a.pushFullSettings()
+			}
+		})
+	})
 }
 
 func (a *App) toggleService(menuItemID int) {

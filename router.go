@@ -196,6 +196,21 @@ type appRouter struct {
 	// unbudgeted router by omission.
 	budgets       enrolmentBudgets
 	serviceTokens serviceTokenStore
+
+	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
+	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
+	// (trayapp.go constructs each once and wires it here too), so a mutation
+	// brokered over admin_op carries the same Gate, the same nonce table and
+	// the same OnChange as one made from curl or the Settings window — never
+	// a second, parallel copy. A nil field here refuses by name
+	// (admin_ops.go's requireXxxOps) rather than panicking three calls deep
+	// inside a core, which is what a test appRouter that forgot to wire one
+	// gets instead of a crash.
+	credentialOps *CredentialOps
+	enrolmentOps  *EnrolmentOps
+	loginOps      *LoginOps
+	mcpOps        *McpOps
+	serviceOps    *ServiceOps
 }
 
 const serviceTokenName = "service"
