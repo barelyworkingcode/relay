@@ -65,7 +65,8 @@ func isRelayManagedSkillDir(name string) bool {
 // surface. The project's plaintext token is used to query the live tool
 // list and is NEVER written into a file.
 func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoot string, mode RegenMode) ([]string, error) {
-	if proj.Token == "" {
+	token, ok := proj.Token.Reveal()
+	if !ok || token == "" {
 		return nil, fmt.Errorf("project %q has no token", proj.Name)
 	}
 	if skillsRoot == "" {
@@ -89,7 +90,7 @@ func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoo
 	// migrated only by RegenAlways.
 	skipExisting := mode == RegenSkipIfExists
 
-	buckets, err := lister.ListSkillBuckets(ctx, proj.Token)
+	buckets, err := lister.ListSkillBuckets(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("list skill buckets: %w", err)
 	}

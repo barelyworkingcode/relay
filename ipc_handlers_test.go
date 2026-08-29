@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"relaygo/sealed"
 )
 
 func TestIPCDispatch_AllDeclaredMessageTypesHaveHandlers(t *testing.T) {
@@ -108,6 +110,7 @@ func (noopStore) Get() *Settings                { return defaultSettings() }
 func (noopStore) Reload() *Settings             { return defaultSettings() }
 func (noopStore) ReloadIfChanged() *Settings    { return defaultSettings() }
 func (noopStore) With(fn func(*Settings)) error { fn(defaultSettings()); return nil }
+func (noopStore) Sealer() sealed.Sealer         { return nil }
 
 // noopServiceManager satisfies ServiceManager with no-op methods. Used
 // only as a placeholder so handler tests can construct an IPCContext.

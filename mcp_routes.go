@@ -33,7 +33,7 @@ func mcpViewOf(m ExternalMcp) mcpView {
 		Transport:   m.Transport,
 		Command:     m.Command,
 		Args:        m.Args,
-		Env:         m.Env,
+		Env:         revealEnvForUI(m.Env),
 		URL:         m.URL,
 		TccServices: m.TccServices,
 	}

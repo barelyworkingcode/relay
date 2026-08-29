@@ -8,7 +8,7 @@ import "testing"
 func newCLISandboxStore(t *testing.T) SettingsStore {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

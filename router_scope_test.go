@@ -101,7 +101,7 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 
 	proj := Project{
 		ID: "test-project", Name: "test", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"macmcp"}, Token: testToken, TokenHash: hashToken(testToken),
+		AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
 		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		Access:       map[string]string{"macmcp": AccessWrite},
 		// write_dirs is left over from a schema rename; the live schema below
@@ -112,7 +112,7 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 	}
 	s := &Settings{
 		Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-		Projects: []Project{proj}, AdminSecret: "supersecretadmin",
+		Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))

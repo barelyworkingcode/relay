@@ -56,7 +56,7 @@ func (f *fakeSkillLister) ListSkillBuckets(_ context.Context, _ string) ([]Skill
 func newProjectsIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI, *fakeSkillLister) {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -133,7 +133,8 @@ func TestIPCCreateProject_HappyPath(t *testing.T) {
 	if err := json.Unmarshal(rawAdded, &added); err != nil {
 		t.Fatalf("unmarshal added: %v", err)
 	}
-	if added.Name != "Alpha" || added.Token == "" {
+	addedToken, _ := added.Token.Reveal()
+	if added.Name != "Alpha" || addedToken == "" {
 		t.Fatalf("unexpected added project: %+v", added)
 	}
 	persisted, _ := store.Get().findProjectByID(added.ID)
@@ -237,7 +238,7 @@ func TestIPCRemoveProject_DeletesAndEmits(t *testing.T) {
 func TestIPCRotateProjectToken_EmitsNewPlaintextAndInvalidatesOld(t *testing.T) {
 	ipc, store, ui, _ := newProjectsIPC(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
-	oldPlain := proj.Token
+	oldPlain, _ := proj.Token.Reveal()
 
 	raw := mustRaw(t, ipcIDMsg{ID: proj.ID})
 	ipcRotateProjectToken(ipc, raw)

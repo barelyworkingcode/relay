@@ -20,7 +20,7 @@ import (
 
 func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	dir := mkShortTempDir(t, "apie2e-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 
 func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 	dir := mkShortTempDir(t, "apiauth-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 // happened to answer on its own.
 func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	dir := mkShortTempDir(t, "apie2e-tcp404-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

@@ -62,7 +62,7 @@ type lrServer struct {
 func lrNewServer(t *testing.T) *lrServer {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

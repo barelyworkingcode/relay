@@ -79,7 +79,7 @@ type remoteFixtureOpts struct {
 func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	f := &remoteFixture{t: t, dir: dir, store: store}
@@ -348,7 +348,7 @@ func TestRemoteServer_ProjectIDIsOptionalForOneGrantAndRequiredForSeveral(t *tes
 func TestRemoteServer_UnenrolledCertificateIsClosedWithoutReadingARequest(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 	keyPEM, certPEM, _, err := ca.IssueClientCert("ghost")
 	assertNoErr(t, err, "IssueClientCert")
@@ -393,7 +393,7 @@ func TestRemoteServer_ForeignCertificateIsRejected(t *testing.T) {
 	// A second, unrelated CA — the same code path relay uses for its own,
 	// pointed at a different config dir.
 	otherDir := mkShortTempDir(t, "other-ca-")
-	otherCA, err := generateCA(otherDir+"/ca.key", otherDir+"/ca.crt")
+	otherCA, err := generateCA(otherDir+"/"+caKeySealedFile, otherDir+"/ca.crt", testSealer())
 	assertNoErr(t, err, "generate foreign CA")
 	keyPEM, certPEM, _, err := otherCA.IssueClientCert("impostor")
 	assertNoErr(t, err, "issue foreign client cert")
@@ -438,7 +438,8 @@ func TestRemoteServer_CwdFieldIsRejectedRatherThanIgnored(t *testing.T) {
 // client that thinks otherwise should learn so at the door.
 func TestRemoteServer_TokenFieldIsRejected(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
-	resp := f.dial().roundTrip(`{"type":"ListTools","token":"` + f.project.Token + `"}`)
+	projTok, _ := f.project.Token.Reveal()
+	resp := f.dial().roundTrip(`{"type":"ListTools","token":"` + projTok + `"}`)
 	if resp.Type != bridge.RespError || !strings.Contains(resp.Message, "token") {
 		t.Fatalf("a request carrying a token returned %s/%q, want a refusal naming the field", resp.Type, resp.Message)
 	}
@@ -708,7 +709,8 @@ func TestRemoteServer_AuditRefusalDoesNotAffectLocalCallers(t *testing.T) {
 		t.Fatal("expected the remote listener to refuse")
 	}
 	// The same router, called locally with a project token, keeps working.
-	if _, err := f.router.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), f.project.Token); err != nil {
+	projTok2, _ := f.project.Token.Reveal()
+	if _, err := f.router.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), projTok2); err != nil {
 		t.Fatalf("a local caller was affected by the remote listener's refusal: %v", err)
 	}
 	if f.mcpCalls.Load() != 1 {

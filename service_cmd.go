@@ -58,7 +58,7 @@ func serviceRegister(store SettingsStore, args []string) {
 		DisplayName:      opts.Name,
 		Command:          *command,
 		Args:             []string(opts.Args),
-		Env:              env,
+		Env:              secretMapFromPlain(env),
 		WorkingDir:       resolvedWorkdir,
 		Autostart:        *autostart,
 		URL:              *url,
@@ -107,7 +107,12 @@ func serviceRestart(store SettingsStore, args []string) {
 	}
 
 	fmt.Printf("restarting service %q\n", resolvedID)
-	warnNotifyFailure(bridge.SendReloadService(resolvedID, s.AdminSecret))
+	// A CLI process holds no sealer (§5.4) and so can never reveal
+	// admin_secret (Secret.Reveal is structurally unreachable from any CLI
+	// entry point — AC-29); the notify below best-effort-fails exactly
+	// like it already tolerates a tray that is simply unreachable, and the
+	// restart still lands on the tray's next reconcile poll.
+	warnNotifyFailure(bridge.SendReloadService(resolvedID, ""))
 }
 
 func serviceList(store SettingsStore) {

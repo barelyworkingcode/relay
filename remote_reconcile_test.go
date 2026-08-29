@@ -54,7 +54,7 @@ func (f *remoteFixture) supervise() *RemoteSupervisor {
 // occurs under. Nothing in these tests may reach the running listener's store,
 // or the test proves only that a process can read its own writes.
 func (f *remoteFixture) cliWriter() SettingsStore {
-	return NewSettingsStoreAt(f.dir)
+	return sealedSettingsStoreAt(f.dir)
 }
 
 // dialAddr connects to an explicit address with an explicit bundle, so a test

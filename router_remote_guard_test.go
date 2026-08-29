@@ -19,7 +19,7 @@ func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 		Name:          "remote",
 		Kind:          ProjectKindRemote,
 		AllowedMcpIDs: []string{},
-		Token:         "remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Token:         NewSecret("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		TokenHash:     hashToken("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		// Carried from a former life as a local project. Validation would
 		// refuse this today; the guard must not depend on that.

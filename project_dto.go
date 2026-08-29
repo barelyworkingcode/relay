@@ -2,11 +2,13 @@ package main
 
 import "encoding/json"
 
-// projectView is the frontend-facing projection of a Project: an explicit
-// allow-list of fields safe to expose over relay's HTTP/frontend surface (eve,
-// and through it the browser). The plaintext project token and its hash are
-// deliberately excluded — the only place a token legitimately crosses HTTP is
-// the rotate_token response, which returns the new plaintext exactly once.
+// projectView is the projection of a Project safe to expose to a caller that
+// is not the tray itself: relay's HTTP/frontend surface (eve, and through it
+// the browser) and the bridge's ListProjects/GetProject, answered to any
+// service-token holder. The plaintext project token and its hash are
+// deliberately excluded — the only place a token legitimately crosses either
+// surface is the rotate_token response, which returns the new plaintext
+// exactly once, and ResolvePtyEnv, the bridge's sole plaintext-token egress.
 //
 // This is an allow-list, not "Project minus the secrets", on purpose: a future
 // secret-ish field added to Project stays hidden until someone consciously adds

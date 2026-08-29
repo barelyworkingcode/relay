@@ -116,20 +116,26 @@ type ToolInfo struct {
 	Category    string `json:"category,omitempty"`
 }
 
+// ClientSecret, AccessToken and RefreshToken are the bearers relay presents
+// upstream (or that mint one indefinitely); all three are sealed (§4.1).
+// ClientID and TokenExpiry stay clear: relay only checks them, never hands
+// them to anything.
 type OAuthState struct {
 	ClientID     string `json:"client_id,omitempty"`
-	ClientSecret string `json:"client_secret,omitempty"`
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
+	ClientSecret Secret `json:"client_secret,omitempty"`
+	AccessToken  Secret `json:"access_token,omitempty"`
+	RefreshToken Secret `json:"refresh_token,omitempty"`
 	TokenExpiry  string `json:"token_expiry,omitempty"`
 }
 
 type ExternalMcp struct {
-	ID              string            `json:"id"`
-	DisplayName     string            `json:"display_name"`
-	Command         string            `json:"command,omitempty"`
-	Args            []string          `json:"args"`
-	Env             map[string]string `json:"env"`
+	ID          string   `json:"id"`
+	DisplayName string   `json:"display_name"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args"`
+	// Env values are sealed; the keys stay clear so an operator reading
+	// settings.json can still see which variables this MCP receives (§4.3).
+	Env             map[string]Secret `json:"env"`
 	DiscoveredTools []ToolInfo        `json:"-"`
 	ContextSchema   json.RawMessage   `json:"-"`
 	// ContextSchemaVersion absent or < 2 means v1 (ADR-011 decision 3); it
@@ -181,14 +187,15 @@ func (m *ExternalMcp) Validate() error {
 // its own listener, and sends RegisterManifest to relay; a generic service
 // ignores the env var and relay never dispatches to it.
 type ServiceConfig struct {
-	ID          string            `json:"id"`
-	DisplayName string            `json:"display_name"`
-	Command     string            `json:"command"`
-	Args        []string          `json:"args"`
-	Env         map[string]string `json:"env"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	Autostart   bool              `json:"autostart"`
-	URL         string            `json:"url,omitempty"`
+	ID          string   `json:"id"`
+	DisplayName string   `json:"display_name"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	// Env values are sealed; the keys stay clear (§4.3), same as ExternalMcp.Env.
+	Env        map[string]Secret `json:"env"`
+	WorkingDir string            `json:"working_dir,omitempty"`
+	Autostart  bool              `json:"autostart"`
+	URL        string            `json:"url,omitempty"`
 
 	// FrontendConsumer is tri-state: nil injects relay's front-door creds
 	// (RELAY_FRONTEND_SOCKET/TOKEN) for backward compatibility, false
@@ -265,9 +272,13 @@ type Project struct {
 	AllowedModels  []string        `json:"allowed_models"`
 	ChatTemplates  []ChatTemplate  `json:"chat_templates,omitempty"`
 	ShellTemplates []ShellTemplate `json:"shell_templates,omitempty"`
-	Token          string          `json:"token"` // plaintext (settings.json is 0600)
-	TokenHash      string          `json:"token_hash"`
-	CreatedAt      string          `json:"created_at"`
+	// Token is sealed (§4.1); TokenHash is the SHA-256 AuthenticateProject
+	// actually resolves against and stays clear. The two are the same length
+	// in hex and are NOT distinguishable by shape — never seal or clear one
+	// by looking at the other, only by which field this is.
+	Token     Secret `json:"token"`
+	TokenHash string `json:"token_hash"`
+	CreatedAt string `json:"created_at"`
 
 	DisabledTools map[string][]string        `json:"disabled_tools,omitempty"`
 	Context       map[string]json.RawMessage `json:"context,omitempty"`

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -40,7 +41,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func buildCommand(config *ServiceConfig) *exec.Cmd {
+func buildCommand(config *ServiceConfig) (*exec.Cmd, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -56,8 +57,12 @@ func buildCommand(config *ServiceConfig) *exec.Cmd {
 	if config.WorkingDir != "" {
 		cmd.Dir = config.WorkingDir
 	}
-	mergeEnv(cmd, config.Env)
-	return cmd
+	env, err := revealEnvOrErr(config.Env)
+	if err != nil {
+		return nil, fmt.Errorf("env: %w", err)
+	}
+	mergeEnv(cmd, env)
+	return cmd, nil
 }
 
 // processGroupAlive signals 0 to the negative PID (the process group, not

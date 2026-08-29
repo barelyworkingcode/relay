@@ -14,6 +14,7 @@ import (
 	"github.com/tidwall/jsonc"
 
 	"relaygo/bridge"
+	"relaygo/sealed"
 )
 
 type SettingsStore interface {
@@ -22,6 +23,12 @@ type SettingsStore interface {
 	Reload() *Settings
 	ReloadIfChanged() *Settings
 	With(fn func(*Settings)) error
+	// Sealer returns the store's sealer, or nil on a CLI-shaped or
+	// degraded store (§5.4, §5.6). It exists so a caller that needs to
+	// seal something outside settings.json itself — LoadOrCreateCA's
+	// ca.key.sealed — shares the same key rather than resolving one of
+	// its own.
+	Sealer() sealed.Sealer
 }
 
 var _ SettingsStore = (*FileSettingsStore)(nil)
@@ -82,11 +89,44 @@ type FileSettingsStore struct {
 	// serialize over are records this process never saw.
 	readErr error
 	dir     string // injected for testability, rather than calling bridge.ConfigDir() directly
+
+	// sealer, when non-nil, is what load() opens sealed fields with and
+	// save() reseals them with. nil is two different things depending on
+	// sealUnavailable (§5.4, §5.6):
+	//
+	//   - sealer == nil, sealUnavailable == nil: the CLI's read-only-half
+	//     store (NewSettingsStore / NewSettingsStoreAt). It never had a
+	//     sealer to begin with, and every write refuses with
+	//     errSealerRequired — a second, structural guarantee behind
+	//     brokering that a CLI process cannot write settings.json even if
+	//     some future change reintroduced a direct call.
+	//   - sealer == nil, sealUnavailable != nil: the tray, degraded — a
+	//     keyring that could not produce the key settings.json names.
+	//     Every write refuses with errSealUnavailable wrapping the named
+	//     reason, but reads still work in full (§5.6).
+	sealer          sealed.Sealer
+	sealUnavailable error
+	// sealErrors holds one entry per Secret that a present, matching
+	// sealer still could not open — a corrupt envelope, or (via
+	// verifyProjectTokenHashes) a project token that opened but does not
+	// hash to its own token_hash. Populated by load(); read by SealStatus().
+	sealErrors map[string]error
 }
 
 // errSettingsUnreadable is what a caller matches with errors.Is to tell a
 // refusal to write from a write that was attempted and failed.
 var errSettingsUnreadable = errors.New("settings file exists but could not be read")
+
+// errSealerRequired is what every write on a sealer-less, non-degraded
+// store refuses with — the CLI's shape (§5.4). Never wraps a reason: there
+// is nothing to name beyond "this process never had a sealer," which is
+// what distinguishes it from errSealUnavailable.
+var errSealerRequired = errors.New("this process holds no sealing key and cannot write settings.json")
+
+// errSealUnavailable is what every write on a degraded tray store refuses
+// with (§5.6 clause 3). Always wraps the named reason a caller matches with
+// errors.Is and reads with Error().
+var errSealUnavailable = errors.New("sealed store is unavailable")
 
 func NewSettingsStore() *FileSettingsStore {
 	return &FileSettingsStore{dir: bridge.ConfigDir()}
@@ -94,6 +134,52 @@ func NewSettingsStore() *FileSettingsStore {
 
 func NewSettingsStoreAt(dir string) *FileSettingsStore {
 	return &FileSettingsStore{dir: dir}
+}
+
+// NewSettingsStoreSealed is the tray's constructor for the fully-working
+// case: sealer already resolved against the key settings.json names
+// (§5.5). Constructing one with a nil sealer is a programming error, not a
+// degraded state — use NewSettingsStoreDegraded for that.
+func NewSettingsStoreSealed(dir string, sealer sealed.Sealer) *FileSettingsStore {
+	return &FileSettingsStore{dir: dir, sealer: sealer}
+}
+
+// NewSettingsStoreDegraded is the tray's constructor for §5.6: a keyring
+// that could not produce the key settings.json names, named by reason.
+// The store still loads and serves every clear field; every write refuses.
+func NewSettingsStoreDegraded(dir string, reason error) *FileSettingsStore {
+	if reason == nil {
+		panic("sealed: NewSettingsStoreDegraded called with a nil reason")
+	}
+	return &FileSettingsStore{dir: dir, sealUnavailable: reason}
+}
+
+// Sealer returns the store's sealer, or nil on a CLI-shaped or degraded
+// store. It exists so a caller that legitimately needs to seal something
+// outside settings.json itself — ca.key, in LoadOrCreateCA — can share the
+// same key rather than resolving one of its own.
+func (ss *FileSettingsStore) Sealer() sealed.Sealer {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.sealer
+}
+
+// SealStatus reports why the sealed store is not fully available, or nil
+// when every sealed field this process has seen opened cleanly. A
+// whole-store reason (sealUnavailable) is reported ahead of any per-field
+// one: with no working sealer at all, every field is equally and
+// unsurprisingly unopenable, and naming each one separately would bury the
+// one fact that actually explains it.
+func (ss *FileSettingsStore) SealStatus() error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.sealUnavailable != nil {
+		return fmt.Errorf("%w: %v", errSealUnavailable, ss.sealUnavailable)
+	}
+	for _, err := range ss.sealErrors {
+		return err
+	}
+	return nil
 }
 
 func (ss *FileSettingsStore) path() string {
@@ -154,6 +240,13 @@ func (ss *FileSettingsStore) load() *Settings {
 		return defaultSettings()
 	}
 	ss.readErr = nil
+
+	openErrs := openAllSecrets(&s, ss.sealer)
+	for path, err := range verifyProjectTokenHashes(&s) {
+		openErrs[path] = err
+	}
+	ss.sealErrors = openErrs
+
 	s.normalize()
 	return &s
 }
@@ -268,6 +361,24 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 // the two mean different things. It mutates s deliberately: both callers make s
 // the cache immediately afterwards, so the cache and the file stay identical.
 func (ss *FileSettingsStore) save(s *Settings) error {
+	// This is deliberate: sealing happens HERE, before json.MarshalIndent,
+	// not to the file afterwards. The bytes handed to atomicWriteFile below
+	// already contain no plaintext, so the settings.json.*.tmp staging file
+	// never contains any either, and a process killed between create and
+	// rename leaves a sealed file behind, not a plaintext one (§4.5). Do
+	// not "fix" this by adding sweeping or shredding to atomicWriteFile —
+	// that would be machinery in the wrong place for a residue that this
+	// step already prevents from ever being written.
+	if ss.sealer == nil {
+		if ss.sealUnavailable != nil {
+			return fmt.Errorf("%w: %v", errSealUnavailable, ss.sealUnavailable)
+		}
+		return errSealerRequired
+	}
+	if err := sealAllSecrets(s, ss.sealer); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(ss.dir, 0700); err != nil {
 		return fmt.Errorf("create settings dir: %w", err)
 	}
@@ -290,37 +401,66 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 }
 
 func ensureAdminSecret(s *Settings) error {
-	if s.AdminSecret != "" {
+	if pt, ok := s.AdminSecret.Reveal(); ok && pt != "" {
 		return nil
 	}
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Errorf("generate admin secret: %w", err)
 	}
-	s.AdminSecret = hex.EncodeToString(b[:])
+	s.AdminSecret = NewSecret(hex.EncodeToString(b[:]))
 	return nil
 }
 
-// EnsureInitialized creates a settings file that is not there yet. That is its
-// whole job, and a file that exists but cannot be read is not that case: it is
-// refused, loudly, with the file untouched.
+// EnsureInitialized creates a settings file that is not there yet, migrates
+// one written before sealing existed, or — on a degraded store (§5.6) —
+// simply loads what it can and leaves the file untouched. It never writes
+// on a degraded or sealer-less store: every write on either refuses inside
+// save() with a named reason, and starting over that reason with fresh
+// defaults would be worse than deferring to the operator.
 //
-// The tray exits on this error rather than starting. Creating settings over an
-// unreadable file destroys every project, token hash, credential and enrolment
-// in it at launch, with no operator surface saying so — and starting instead
-// with the empty settings the read produced shows an operator a relay that
-// appears to have lost everything, inviting them to rebuild it by hand and make
-// the loss real. A refusal naming the file leaves the only recoverable state on
-// disk.
+// A file that exists but cannot be read is refused, loudly, with the file
+// untouched, on a sealer-bearing store exactly as it always has been: the
+// tray exits on THIS error rather than starting, because an unreadable
+// file has unknown contents, and starting over it destroys every project,
+// token hash, credential and enrolment in it with no operator surface
+// saying so. A degraded store is not this case — its contents are known
+// and readable, only its sealed fields are not, which is why §5.6 has
+// relay start instead of exit: the recovery UI lives in the tray, and
+// exiting would leave the operator with a machine whose only recovery
+// surface is the thing that will not start.
 func (ss *FileSettingsStore) EnsureInitialized() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+
 	s := ss.load()
 	if err := ss.unreadableErrLocked(); err != nil {
 		return fmt.Errorf("%w — refusing to initialize over it; repair or move the file, or delete it to start fresh", err)
 	}
+
+	if ss.sealer == nil {
+		// Degraded (sealUnavailable names why) or CLI-shaped (nothing to
+		// name). Either way this process cannot write, so there is
+		// nothing left to do beyond serving what load() already produced.
+		ss.cache = s
+		if info, err := os.Stat(ss.path()); err == nil {
+			ss.lastModTime = info.ModTime().UnixNano()
+		}
+		return nil
+	}
+
+	if needsSealedMigration(s) || caKeyAwaitsMigration(ss.dir) {
+		if err := ss.migrateLocked(s); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if err := ensureAdminSecret(s); err != nil {
 		return err
+	}
+	if s.SealedKeyID == "" {
+		s.SealedKeyID = ss.sealer.KeyID()
 	}
 	if err := ss.save(s); err != nil {
 		return err

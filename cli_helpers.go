@@ -73,8 +73,11 @@ func (opts *registerOpts) resolveIDAndEnv() (id string, env map[string]string) {
 // upsertAndPrint prints a tool count in the output message when toolCount
 // >= 0; a negative value means "omit" rather than "zero".
 func upsertAndPrint(store SettingsStore, entity, name, id string, fn func(*Settings) bool, toolCount int) (updated bool, adminSecret string) {
+	// adminSecret is always "" here: a CLI process holds no sealer (§5.4)
+	// and so can never reveal it (Secret.Reveal is structurally
+	// unreachable from any CLI entry point — AC-29). The notify calls this
+	// feeds are already tolerant of a bridge round trip that fails.
 	if err := store.With(func(s *Settings) {
-		adminSecret = s.AdminSecret
 		updated = fn(s)
 	}); err != nil {
 		exitError("failed to save settings: %v", err)
@@ -146,6 +149,7 @@ func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn fu
 	}
 
 	var resolvedID string
+	// adminSecret is always "" here — see upsertAndPrint.
 	var adminSecret string
 	if err := store.With(func(s *Settings) {
 		resolvedID = resolveFn(s, id, name)
@@ -153,7 +157,6 @@ func resolveAndRemove(store SettingsStore, entity, id, name string, resolveFn fu
 			return // no-op write; entity not found
 		}
 		removeFn(s, resolvedID)
-		adminSecret = s.AdminSecret
 	}); err != nil {
 		exitError("failed to save settings: %v", err)
 	}

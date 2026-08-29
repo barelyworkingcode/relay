@@ -20,7 +20,7 @@ func narrowingRouter(t *testing.T, order []string, proj Project, tools map[strin
 		tools = collisionTools()
 	}
 	tp := newCollidingProvider(order, tools)
-	proj.Token = testToken
+	proj.Token = NewSecret(testToken)
 	proj.TokenHash = hashToken(testToken)
 	if proj.Context == nil {
 		proj.Context = collisionScopes()
@@ -33,10 +33,10 @@ func narrowingRouter(t *testing.T, order []string, proj Project, tools map[strin
 			{ID: collisionMcpC, DisplayName: collisionMcpC},
 		},
 		Projects:    []Project{proj},
-		AdminSecret: "supersecretadmin",
+		AdminSecret: NewSecret("supersecretadmin"),
 	}
 	return &appRouter{
-		store:    &FileSettingsStore{cache: s, dir: t.TempDir()},
+		store:    &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
 		tools:    tp,
 		services: NewServiceRegistry(),
 		onChange: func() {},
@@ -150,10 +150,10 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 			ExternalMcps: []ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
 			Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpB},
-				Token:         testToken, TokenHash: hashToken(testToken)}},
-			AdminSecret: "supersecretadmin",
+				Token:         NewSecret(testToken), TokenHash: hashToken(testToken)}},
+			AdminSecret: NewSecret("supersecretadmin"),
 		}
-		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir()},
+		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
 			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {
 			t.Fatalf("an unregistered MCP served a call; dispatched=%v", tp.dispatchedIDs())
@@ -169,10 +169,10 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 			ExternalMcps: []ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
 			Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpB},
-				Token:         testToken, TokenHash: hashToken(testToken)}},
-			AdminSecret: "supersecretadmin",
+				Token:         NewSecret(testToken), TokenHash: hashToken(testToken)}},
+			AdminSecret: NewSecret("supersecretadmin"),
 		}
-		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir()},
+		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
 			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err != nil {
 			t.Fatalf("a granted MCP was refused because an unregistered one also exposes the name: %v", err)
@@ -263,11 +263,11 @@ func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testi
 				},
 				Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
 					AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
-					Token:         testToken, TokenHash: hashToken(testToken),
+					Token:         NewSecret(testToken), TokenHash: hashToken(testToken),
 					Context: collisionScopes()}},
-				AdminSecret: "supersecretadmin",
+				AdminSecret: NewSecret("supersecretadmin"),
 			}
-			r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir()},
+			r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
 				tools: tp, services: NewServiceRegistry(), onChange: func() {}, audit: rec}
 
 			if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {

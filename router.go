@@ -862,7 +862,10 @@ func (v scopeView) annotate(t *mcp.Tool) {
 
 func (r *appRouter) ValidateAdmin(token string) error {
 	s := r.store.Get()
-	if len(token) == 0 || subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminSecret)) != 1 {
+	// A degraded sealed store (§5.6) has no admin_secret to compare
+	// against, so this fails closed exactly like an empty token would.
+	adminSecret, ok := s.AdminSecret.Reveal()
+	if len(token) == 0 || !ok || subtle.ConstantTimeCompare([]byte(token), []byte(adminSecret)) != 1 {
 		return fmt.Errorf("admin authentication failed")
 	}
 	return nil
@@ -929,11 +932,17 @@ func (r *appRouter) requireServiceToken(token, op string) error {
 	return nil
 }
 
+// ListProjects and GetProject answer through projectToView/projectsToView —
+// the same allow-list the eve-facing HTTP routes project through
+// (project_dto.go) — rather than marshalling the raw Project. Marshalling
+// Project directly would hand any service-token holder every project's
+// plaintext token: ResolvePtyEnv below is the sole plaintext-token egress
+// over the bridge, and no other bridge response may carry one.
 func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
 	if err := r.requireServiceToken(token, "ListProjects"); err != nil {
 		return nil, err
 	}
-	return json.Marshal(r.store.Get().Projects)
+	return json.Marshal(projectsToView(r.store.Get().Projects))
 }
 
 func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
@@ -944,7 +953,7 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 	if proj == nil {
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
 	}
-	return json.Marshal(proj)
+	return json.Marshal(projectToView(*proj))
 }
 
 // ResolvePtyEnv returns the env bundle (project-scoped token + working dir)
@@ -983,8 +992,14 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		}
 	}
 
+	relayToken, ok := proj.Token.Reveal()
+	if !ok {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError,
+			fmt.Errorf("project %q has no token: the sealed store may be unavailable", proj.ID))
+	}
+
 	return bridge.PtyEnvResponse{
-		RelayToken: proj.Token,
+		RelayToken: relayToken,
 		WorkingDir: proj.Path,
 	}, nil
 }

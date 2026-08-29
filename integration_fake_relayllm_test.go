@@ -135,7 +135,7 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 	// production path (service token check, manifest validation, registry
 	// write, onChange fire).
 	enhanced := NewEnhancedServiceRegistry(nil)
-	store := NewSettingsStoreAt(bridge.ConfigDir())
+	store := sealedSettingsStoreAt(bridge.ConfigDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
