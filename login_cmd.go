@@ -22,9 +22,16 @@ func runLoginCommand(args []string) {
 }
 
 func loginEnrol(store SettingsStore) {
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	plaintext, expires, err := mintLoginBootstrap(store)
 	if err != nil {
 		exitError("%v", err)
+	}
+	if err := recordBootstrapIssued(aud, expires, auditViaCLI); err != nil {
+		refuseUnrecordedIssuance(err, "a login code was minted",
+			"`relay login enrol` again once the audit log is writable; the unprinted anchor expires in "+bootstrapCodeTTL.String())
 	}
 
 	fmt.Printf("login code: %s\n", plaintext)
@@ -63,9 +70,15 @@ func loginRevoke(store SettingsStore, args []string) {
 	id := fs.String("id", "", "credential id of the passkey to revoke (required)")
 	fs.Parse(args)
 
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	removed, err := revokePasskey(store, *id)
 	if err != nil {
 		exitError("%v", err)
+	}
+	if err := recordPasskeyRevoked(aud, removed, auditViaCLI); err != nil {
+		warnUnrecordedRevocation(err, fmt.Sprintf("passkey %q (%s) was revoked", removed.Name, abbreviatePasskeyID(removed.ID)))
 	}
 
 	fmt.Printf("revoked passkey %q\n", removed.Name)

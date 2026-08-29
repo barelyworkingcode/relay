@@ -248,6 +248,7 @@ func runTrayApp() {
 	// open window in sync with a revoke made from a terminal.
 	loginOps := &LoginOps{
 		Store: store,
+		Audit: audit,
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullSettings)
 		},

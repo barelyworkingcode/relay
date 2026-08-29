@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"slices"
@@ -209,8 +210,19 @@ type loginCodeView struct {
 // right failure for that: the WebView's messages all arrive on one thread, so
 // a panic in any handler takes every other tab down with it.
 type LoginOps struct {
-	Store    SettingsStore
+	Store SettingsStore
+	// Audit records the issuance and revocation this core performs. Nil-safe
+	// like every AuditRecorder method; nil reads as "auditing is off", which
+	// records nothing and refuses nothing.
+	Audit    *AuditRecorder
 	OnChange func()
+}
+
+func (o *LoginOps) auditor() IssuanceAuditor {
+	if o == nil {
+		return nil
+	}
+	return issuanceAuditorOrNil(o.Audit)
 }
 
 var errLoginOpsUnavailable = errors.New("passkey management is unavailable in this relay process")
@@ -228,6 +240,13 @@ func (o *LoginOps) MintBootstrap() (loginCodeView, error) {
 	plaintext, expires, err := mintLoginBootstrap(o.Store)
 	if err != nil {
 		return loginCodeView{}, err
+	}
+	// The code is withheld rather than returned when it cannot be recorded:
+	// this value IS the moment the code exists, so returning it is the
+	// disclosure, and refusing before it happens is what makes the refusal
+	// real. The unshown anchor expires on its own.
+	if err := recordBootstrapIssued(o.auditor(), expires, auditViaTray); err != nil {
+		return loginCodeView{}, fmt.Errorf("a login code was minted but could not be recorded in the audit log, so it was not shown: %w", err)
 	}
 	o.notify()
 	return loginCodeView{
@@ -300,6 +319,12 @@ func (o *LoginOps) RevokePasskey(id string) (Passkey, error) {
 	if err != nil {
 		return Passkey{}, err
 	}
+	// Reported and not refused: the passkey is already gone, and a revocation
+	// narrows — see warnUnrecordedRevocation for why that direction is
+	// fail-open where issuance is not.
+	if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC); err != nil {
+		slog.Error("passkey revoked but not recorded in the audit log", "id", abbreviatePasskeyID(removed.ID), "error", err)
+	}
 	o.notify()
 	return removed, nil
 }
@@ -323,6 +348,16 @@ func (o *LoginOps) SignOut(id string) (APICredential, error) {
 	})
 	if err != nil {
 		return APICredential{}, err
+	}
+	if err := recordIssuance(o.auditor(), CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialAPI,
+		Subject:    removed.ID,
+		Name:       removed.Name,
+		Grants:     classStrings(removed.Classes),
+		Via:        auditViaIPC,
+	}); err != nil {
+		slog.Error("login session signed out but not recorded in the audit log", "id", removed.ID, "error", err)
 	}
 	o.notify()
 	return removed, nil

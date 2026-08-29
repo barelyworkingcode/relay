@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 )
 
@@ -173,6 +174,14 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 	}
 	if !found {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
+		return
+	}
+	// Withheld rather than shown when the record cannot be written. The old
+	// token is already dead and there is no undo for that, but the new one has
+	// not left this process yet, so refusing here still means no project token
+	// ever reaches a holder unrecorded — rotate again once the log is writable.
+	if auditErr := recordProjectTokenRotated(issuanceAuditorOrNil(ctx.Audit), msg.ID, auditViaIPC, ""); auditErr != nil {
+		ctx.UI.EmitEvent("onProjectError", fmt.Sprintf("the token was rotated but could not be recorded in the audit log (%v), so it was not shown; rotate again", auditErr))
 		return
 	}
 

@@ -292,6 +292,19 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
+		// The control_decision this route already writes says the caller was
+		// allowed to reach rotate_token; it does not say a project token was
+		// rotated, which is the fact an operator is reading the log for. The
+		// new plaintext is withheld when the act cannot be recorded — the old
+		// token is already dead either way, so refusing here still means no
+		// project token reaches a holder unrecorded.
+		if auditErr := recordProjectTokenRotated(rr.Issuance, id, auditViaHTTP, credIDOf(r)); auditErr != nil {
+			slog.Error("rotate project token: audit record failed", "project", id, "error", auditErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "the token was rotated but could not be recorded in the audit log, so it was not returned; rotate again",
+			})
+			return
+		}
 		notify()
 		writeJSON(w, http.StatusOK, map[string]string{"token": newPlaintext})
 	})

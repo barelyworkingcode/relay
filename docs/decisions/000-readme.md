@@ -107,6 +107,27 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   enumerated, including what happens when a signature counter does not
   increase.
 
+- [017 — The config dir is not a boundary against its owner](017-config-dir-is-not-a-boundary.md)
+  (**Proposed, not implemented**): relay's protections are real against a
+  *remote* client (ADR-010) and against an agent *confined to relay-granted
+  tools* (ADR-011, ADR-015), and are not a boundary against code running as the
+  owning user — which is now what an LLM agent is. Escalation has three doors:
+  read the plaintext project tokens out of the 0600 `settings.json`, mint a
+  `grant`+`execute` credential, or read `ca.key` and issue a certificate. The
+  answer is to seal **what relay hands out** (token plaintexts, `admin_secret`,
+  refresh tokens, `ca.key`) under a keychain key while leaving every **verifier**
+  readable, so authentication, `relay grant` and a hand-edit survive; to make the
+  running service the **sole broker of its own credentials** — ADR-007's project
+  token pattern applied to `settings.json`, so the CLI asks rather than writes,
+  one process holds the key, and one process writes the file; and to gate
+  escalation on the **operation, not the transport**. The determination cannot be
+  "is this caller authorised" — everything reaching a 0600 socket is the owner —
+  so it is LocalAuthentication *presence*, per operation: **enclave for the key
+  at rest, presence for the operation**, either alone leaving the door open. Names what stays broken: `proxy`
+  reaches a terminal and is not gated, privileged CLI use over SSH stops working,
+  and relay cannot defend against an agent the user starts from their own shell —
+  that is an account boundary.
+
 ## Format
 
 Each ADR carries **Status** + **Date** in its header, then **Context**,

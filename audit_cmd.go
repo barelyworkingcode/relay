@@ -24,9 +24,10 @@ func runAuditCommand(args []string) {
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
 		"it selects tool_error records the MCP marked as a resource-scope refusal")
-	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, unknown")
-	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision")
-	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args")
+	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, operator, unknown")
+	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision, credential_issued, credential_revoked")
+	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args, "+
+		"and an issuance record's credential kind, identifier, name and grants")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
 	pathOnly := fs.Bool("path", false, "print the log file path and exit")
 	// Off by default so the table's shape — one line per call, the same eight
@@ -168,6 +169,12 @@ func auditBaseDetail(ev AuditEvent) string {
 		}
 		return ev.Supervision + ": " + collapseWhitespace(ev.Error)
 	}
+	// An issuance row names no MCP or tool either, and unlike a
+	// control_decision it names no route: what was issued, to what identifier,
+	// with what grant, and through which door IS the whole record.
+	if ev.Credential != "" {
+		return auditIssuanceDetail(ev)
+	}
 	// A control_decision row (ADR-015) names no MCP or tool, so the
 	// method/path/class/transport it carries instead is the detail — every
 	// other kind of event leaves Method and Path empty.
@@ -188,6 +195,31 @@ func auditBaseDetail(ev AuditEvent) string {
 		return fmt.Sprintf("%d tools visible", ev.ToolCount)
 	}
 	return ""
+}
+
+// auditIssuanceDetail renders a credential_issued / credential_revoked row.
+// Nothing it prints comes from a field that could hold a secret: Credential,
+// Subject, SubjectName, Grants and Via are the only ones it reads, and
+// CredentialIssuance has no plaintext, hash or key material to put in any of
+// them.
+func auditIssuanceDetail(ev AuditEvent) string {
+	parts := []string{ev.Credential}
+	if ev.Subject != "" {
+		parts = append(parts, ev.Subject)
+	}
+	if ev.SubjectName != "" {
+		parts = append(parts, fmt.Sprintf("(%s)", collapseWhitespace(ev.SubjectName)))
+	}
+	if len(ev.Grants) > 0 {
+		parts = append(parts, "grants="+strings.Join(ev.Grants, ","))
+	}
+	if ev.Via != "" {
+		parts = append(parts, "via="+ev.Via)
+	}
+	if ev.IssuanceTruncated {
+		parts = append(parts, "(truncated)")
+	}
+	return strings.Join(parts, "  ")
 }
 
 // ok is false when nothing was recorded for this record at all — a service

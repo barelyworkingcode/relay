@@ -163,9 +163,23 @@ func credentialMint(store SettingsStore, args []string) {
 	fs.Var(&classes, "class", "capability class this credential may exercise (repeatable): "+formatClasses(capabilityClasses))
 	fs.Parse(args)
 
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	cred, plaintext, err := mintAPICredential(store, credentialMintRequest{Name: *name, Classes: []string(classes), TTL: *ttl})
 	if err != nil {
 		exitError("%v", err)
+	}
+	if err := recordIssuance(aud, CredentialIssuance{
+		Credential: auditCredentialAPI,
+		Subject:    cred.ID,
+		Name:       cred.Name,
+		Grants:     classStrings(cred.Classes),
+		Via:        auditViaCLI,
+	}); err != nil {
+		refuseUnrecordedIssuance(err,
+			fmt.Sprintf("credential %q (%s) was minted", cred.Name, cred.ID),
+			fmt.Sprintf("relay credential revoke --id %s", cred.ID))
 	}
 
 	fmt.Printf("minted credential %q\n", cred.Name)
@@ -234,9 +248,22 @@ func credentialRevoke(store SettingsStore, args []string) {
 	id := fs.String("id", "", "id of the credential to revoke (required)")
 	fs.Parse(args)
 
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	removed, err := revokeAPICredential(store, *id)
 	if err != nil {
 		exitError("%v", err)
+	}
+	if err := recordIssuance(aud, CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialAPI,
+		Subject:    removed.ID,
+		Name:       removed.Name,
+		Grants:     classStrings(removed.Classes),
+		Via:        auditViaCLI,
+	}); err != nil {
+		warnUnrecordedRevocation(err, fmt.Sprintf("credential %q (%s) was revoked", removed.Name, removed.ID))
 	}
 
 	fmt.Printf("revoked credential %q\n", removed.ID)

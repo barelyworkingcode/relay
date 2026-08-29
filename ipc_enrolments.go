@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 )
 
 const (
@@ -88,6 +89,13 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if err != nil {
 		ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment created but %v", err))
 	}
+	// Recorded before the bundle directory is announced, and the enrolment is
+	// revoked if that record cannot be written: the client key on disk is the
+	// credential, so an unrecorded create is undone rather than reported.
+	if auditErr := recordEnrolmentIssued(issuanceAuditorOrNil(ctx.Audit), ctx.Store, created.Enrolment, auditViaIPC, ""); auditErr != nil {
+		ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment %q could not be recorded in the audit log (%v) and has been removed", created.Enrolment.ClientID, auditErr))
+		return
+	}
 	ctx.UI.EmitEvent("onEnrolmentCreated",
 		marshalForUI(created.Enrolment),
 		marshalForUI(enrolmentBundleView{Dir: created.Dir}))
@@ -108,6 +116,17 @@ func ipcRevokeEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if err != nil {
 		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
 		return
+	}
+	// Reported and not undone: a revocation narrows, and refusing to narrow
+	// one because the log is broken is the worse failure of the two.
+	if auditErr := recordIssuance(issuanceAuditorOrNil(ctx.Audit), CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialEnrolment,
+		Subject:    revoked.ClientID,
+		Grants:     revoked.ProjectIDs,
+		Via:        auditViaIPC,
+	}); auditErr != nil {
+		slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
 	}
 	ctx.UI.EmitEvent("onEnrolmentRevoked", revoked.ClientID, revoked.Fingerprint)
 }

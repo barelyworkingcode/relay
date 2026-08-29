@@ -26,6 +26,15 @@ type auditValidationError struct{ reason string }
 func (e *auditValidationError) Error() string        { return e.reason }
 func (e *auditValidationError) Is(target error) bool { return target == errAuditInvalid }
 
+// recorder is nil-safe so a caller can derive an IssuanceAuditor from a slice
+// that may itself be absent, without a second nil check at every call site.
+func (o *AuditOps) recorder() *AuditRecorder {
+	if o == nil {
+		return nil
+	}
+	return o.Audit
+}
+
 func invalidAudit(reason string) error {
 	return &auditValidationError{reason: reason}
 }
@@ -42,12 +51,13 @@ var auditValidOutcomes = map[string]bool{
 }
 
 var auditValidKinds = map[string]bool{
-	AuditActorProject: true,
-	AuditActorService: true,
-	AuditActorRemote:  true,
-	AuditActorUnknown: true,
-	AuditActorRelay:   true,
-	AuditActorControl: true,
+	AuditActorProject:  true,
+	AuditActorService:  true,
+	AuditActorRemote:   true,
+	AuditActorUnknown:  true,
+	AuditActorRelay:    true,
+	AuditActorControl:  true,
+	AuditActorOperator: true,
 }
 
 // auditQueryFields is the transport-agnostic filter shape behind both doors:

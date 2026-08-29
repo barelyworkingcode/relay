@@ -73,6 +73,12 @@ type loginRoutes struct {
 	store    SettingsStore
 	verifier *WebAuthnVerifier
 	auditor  ControlAuditor
+	// issuance records the two credentials this surface hands out — a
+	// registered passkey and the credential an assertion mints — which the
+	// ceremony's own control_decision row does not name. Set by the frontend
+	// server after construction rather than taken as a parameter, so the
+	// pattern list stays constructible without one.
+	issuance IssuanceAuditor
 }
 
 func newLoginRoutes(store SettingsStore, verifier *WebAuthnVerifier, auditor ControlAuditor) *loginRoutes {
@@ -296,6 +302,25 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Recorded before the caller is told the registration succeeded, and the
+	// passkey is removed if the record cannot be written. Unlike a minted
+	// token there is nothing to withhold here — the authenticator already
+	// holds the private key — so deleting the stored record is the only thing
+	// that makes this passkey unable to sign in, and therefore the only real
+	// refusal available.
+	if auditErr := recordIssuance(lr.issuance, CredentialIssuance{
+		Credential: auditCredentialPasskey,
+		Subject:    id,
+		Name:       passkey.Name,
+		Via:        auditViaHTTP,
+	}); auditErr != nil {
+		if _, undoErr := revokePasskey(lr.store, id); undoErr != nil {
+			slog.Error("login: unrecorded passkey could not be removed", "id", abbreviatePasskeyID(id), "error", undoErr)
+		}
+		lr.recordLoginOutcome("", false, auditErr)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	lr.verifier.CeremonyCompleted()
 	lr.recordLoginOutcome(abbreviatePasskeyID(id), true, nil)
 	slog.Info("login: registered a passkey", "id", abbreviatePasskeyID(id), "name", passkey.Name)
@@ -369,6 +394,20 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 	})
 	if saveErr != nil || token == "" {
 		lr.recordLoginOutcome("", false, saveErr)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// The token is withheld when the mint cannot be recorded: it has not left
+	// this process yet, and a credential whose secret nobody was given
+	// authenticates nothing. The inert record is swept by its own expiry.
+	if auditErr := recordIssuance(lr.issuance, CredentialIssuance{
+		Credential: auditCredentialAPI,
+		Subject:    credID,
+		Name:       loginCredentialPrefix + abbreviatePasskeyID(id),
+		Grants:     classStrings(loginCredentialClasses),
+		Via:        auditViaHTTP,
+	}); auditErr != nil {
+		lr.recordLoginOutcome("", false, auditErr)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

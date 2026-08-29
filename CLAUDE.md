@@ -47,6 +47,8 @@ router.go                Bridge auth (service vs project tokens), tool filtering
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
 audit_cmd.go             `relay audit` CLI
+audit_issuance.go        credential_issued / credential_revoked: the record every mint and revoke writes,
+                         the CLI's own append-only recorder, and the fail-closed rule for issuance
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
 scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
 enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
@@ -381,6 +383,19 @@ the rotation caps applied, so a fresh install records without being configured,
 and only an explicit `"enabled": false` turns it off — which costs the remote
 listener (ADR-010) and every `control_decision` (ADR-015). A new install writes
 the block out explicitly so the file says what relay is doing.
+**Every act that issues or revokes a credential is recorded too**
+(`audit_issuance.go`): `credential_issued` / `credential_revoked`, naming what,
+its identifier, the class set or grant, and which door it came from — CLI, the
+Settings window, the tray menu, or HTTP. A `control_decision` says a caller was
+allowed to reach `rotate_token`; it does not say a token was rotated, and most
+issuance is a CLI process that reaches no route at all. **Issuance is
+fail-closed** on ADR-010 decision 5's argument: the record is written and
+synced before the secret reaches anyone, and an act that cannot be recorded is
+refused — the plaintext withheld, an unrecorded enrolment revoked, an
+unrecorded passkey removed. **Revocation is not**, because refusing to narrow a
+grant when the log is broken is the worse failure; it is loud instead. A CLI
+process appends with a recorder of its own and never rotates, so it cannot
+rename the log out from under the tray's open descriptor.
 Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
 VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
 ADR-008, narrowed for remote callers by ADR-010, widened by ADR-012 with the
