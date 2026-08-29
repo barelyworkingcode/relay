@@ -102,6 +102,21 @@ type RouteRegistrar struct {
 	Authz     Authorizer
 	Auditor   ControlAuditor
 	Reserve   RouteReserver
+
+	// Issuance records the acts of the handful of routes that hand out a
+	// credential, which is a different fact from the Auditor's record that the
+	// caller was allowed to reach them. Nil means no issuance auditing, on the
+	// same terms as the ControlAuditor contract above.
+	Issuance IssuanceAuditor
+}
+
+// recordIssuedBy is the registrar's shorthand for a handler that has just
+// issued something: it names the caller from the credential the request
+// already resolved, so no handler has to reach into the context itself.
+func (rr *RouteRegistrar) recordIssuedBy(r *http.Request, iss CredentialIssuance) error {
+	iss.Via = auditViaHTTP
+	iss.CredID, _ = APICredentialIDFromContext(r.Context())
+	return recordIssuance(rr.Issuance, iss)
 }
 
 // controlStatus maps an Authorize refusal to the HTTP status it produces.

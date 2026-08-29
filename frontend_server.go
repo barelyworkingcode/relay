@@ -87,7 +87,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	}
 
 	tcpMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor, Reserve: s.routeDeps.enhanced}, s.routeDeps)
+	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor, Issuance: s.routeDeps.issuance, Reserve: s.routeDeps.enhanced}, s.routeDeps)
 
 	// The origin comes from the address the kernel actually gave this
 	// listener, never from a constant or a request header — an ephemeral
@@ -128,7 +128,9 @@ func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
 	if err != nil {
 		return nil, fmt.Errorf("login routes: %w", err)
 	}
-	return newLoginMux(newLoginRoutes(s.routeDeps.store, verifier, s.auditor)), nil
+	lr := newLoginRoutes(s.routeDeps.store, verifier, s.auditor)
+	lr.issuance = s.routeDeps.issuance
+	return newLoginMux(lr), nil
 }
 
 // LoginOrigin reports the origin the login ceremony is bound to, or ""
@@ -167,6 +169,10 @@ type frontendRouteDeps struct {
 	auditOps          *AuditOps
 	mcpOps            *McpOps
 	enhanced          *EnhancedServiceRegistry
+	// issuance is derived once here from auditOps' recorder so the socket mux,
+	// the TCP mux and the login routes cannot disagree about whether an
+	// issuance is recorded.
+	issuance IssuanceAuditor
 }
 
 // registerFrontendRoutes builds the full relay-internal route set onto
@@ -283,12 +289,13 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		auditOps:          auditOps,
 		mcpOps:            mcpOps,
 		enhanced:          enhanced,
+		issuance:          issuanceAuditorOrNil(auditOps.recorder()),
 	}
 
 	ensureFrontendTokenIsCredential(store, frontend.Token)
 
 	socketMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced}, deps)
+	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor, Issuance: deps.issuance, Reserve: deps.enhanced}, deps)
 
 	// The socket door is composed through the same function the loopback one
 	// is, with an empty public set: a browser cannot reach a Unix socket and

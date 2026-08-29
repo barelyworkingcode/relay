@@ -41,6 +41,9 @@ func enrolCreate(store SettingsStore, args []string) {
 		fmt.Println("note: no --grant given; this client is enrolled but can reach no access profile until one is added")
 	}
 
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	bundle, err := createEnrolment(store, enrolmentRequest{
 		ClientID:   *clientID,
 		ProjectIDs: []string(grants),
@@ -55,6 +58,11 @@ func enrolCreate(store SettingsStore, args []string) {
 	}
 
 	e := bundle.Enrolment
+	if err := recordEnrolmentIssued(aud, store, e, auditViaCLI, ""); err != nil {
+		exitError("enrolment %q was created but the audit log could not record it (%v); "+
+			"the enrolment and its bundle have been removed and this client can reach nothing", e.ClientID, err)
+	}
+
 	fmt.Printf("enrolled %q\n", e.ClientID)
 	fmt.Printf("  fingerprint: %s\n", e.Fingerprint)
 	fmt.Printf("  profiles:    %s\n", formatGrants(e.ProjectIDs))
@@ -171,9 +179,21 @@ func enrolRevoke(store SettingsStore, args []string) {
 		exitError("--client-id is required")
 	}
 
+	aud, closeAud := cliIssuanceAuditor(store)
+	defer closeAud()
+
 	removed, err := revokeEnrolment(store, *clientID)
 	if err != nil {
 		exitError("%v", err)
+	}
+	if err := recordIssuance(aud, CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialEnrolment,
+		Subject:    removed.ClientID,
+		Grants:     removed.ProjectIDs,
+		Via:        auditViaCLI,
+	}); err != nil {
+		warnUnrecordedRevocation(err, fmt.Sprintf("enrolment %q was revoked", removed.ClientID))
 	}
 
 	fmt.Printf("revoked enrolment %q\n", removed.ClientID)

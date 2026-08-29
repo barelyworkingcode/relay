@@ -39,6 +39,15 @@ const (
 	// REFUSED alike, given the same standing as a tool-call denial (ADR-015).
 	// Built by audit_control.go, never by router instrumentation.
 	AuditEventControlDecision = "control_decision"
+
+	// CredentialIssued and CredentialRevoked record that a credential came
+	// into existence or stopped existing. They are a different fact from a
+	// control_decision, which says a caller was allowed to reach a route:
+	// most issuance is initiated from a CLI process that reaches no route at
+	// all, and the routes that do issue would otherwise record the
+	// authorization and not the act. Built by audit_issuance.go.
+	AuditEventCredentialIssued  = "credential_issued"
+	AuditEventCredentialRevoked = "credential_revoked"
 )
 
 // Denied means a known credential was refused a tool it may not use;
@@ -96,6 +105,12 @@ const (
 	// (ADR-015) — a distinct actor kind from Project/Service/Remote because
 	// it names a capability-classed credential, not a tool caller.
 	AuditActorControl = "control"
+
+	// Operator is whoever owns the config dir: the `relay` CLI and the tray's
+	// own windows. It is distinct from Control because there is no credential
+	// to name — the authorization is ownership of the config dir — and
+	// distinct from Relay because relay is not acting on its own behalf.
+	AuditActorOperator = "operator"
 )
 
 const (
@@ -254,6 +269,29 @@ type AuditEvent struct {
 	PathTruncated   bool   `json:"path_truncated,omitempty"`
 	Class           string `json:"class,omitempty"`
 	Transport       string `json:"transport,omitempty"`
+
+	// Set only on credential_issued / credential_revoked events. Credential
+	// names WHAT (the auditCredential* vocabulary), Subject its identifier,
+	// SubjectName the human-readable label where the kind has one distinct
+	// from its identifier, Grants the class set or the granted
+	// access-profile ids where the kind has either, and Via how the act was
+	// initiated.
+	//
+	// None of these is ever a plaintext, a hash, or key material:
+	// CredentialIssuance has no field that could carry one, which is what
+	// makes that true by construction rather than by discipline at each of
+	// the doors that build one.
+	Credential  string   `json:"credential,omitempty"`
+	Subject     string   `json:"subject,omitempty"`
+	SubjectName string   `json:"subject_name,omitempty"`
+	Grants      []string `json:"grants,omitempty"`
+	Via         string   `json:"via,omitempty"`
+
+	// One marker for the four fields above rather than one each, unlike
+	// MethodTruncated/PathTruncated: they describe a single act, and the
+	// question an operator has of a cut record is whether it was cut, not
+	// which part of one sentence lost bytes.
+	IssuanceTruncated bool `json:"issuance_truncated,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -626,7 +664,14 @@ func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
+	return newAuditRecorderWith(resolved, path, w), nil
+}
 
+// newAuditRecorderWith is the constructor a caller that owns the sink uses:
+// the tray hands it a rotatingWriter, a CLI process hands it a plain
+// append-only file (audit_issuance.go), and a test hands it whatever it needs
+// to fail.
+func newAuditRecorderWith(resolved resolvedAuditConfig, path string, w io.WriteCloser) *AuditRecorder {
 	// Lowercase once rather than per call.
 	extra := make([]string, 0, len(resolved.RedactKeys))
 	for _, k := range resolved.RedactKeys {
@@ -645,10 +690,20 @@ func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
 		done:    make(chan struct{}),
 	}
 	go r.run()
-	return r, nil
+	return r
 }
 
 func (r *AuditRecorder) Enabled() bool { return r != nil && r.cfg.Enabled }
+
+// hasSink reports whether there is a writer goroutine and a file behind this
+// recorder.
+//
+// This is subtle: a zero-valued AuditRecorder answers Enabled() from its
+// config alone, and every channel on it is nil. Handing an event to one over
+// syncCh would block forever, since a nil channel is never ready and there is
+// no run() to close done — so the durable path asks this first and reports the
+// recorder unavailable instead of deadlocking its caller.
+func (r *AuditRecorder) hasSink() bool { return r != nil && r.syncCh != nil }
 
 func (r *AuditRecorder) LogLists() bool { return r != nil && r.cfg.LogLists }
 
@@ -700,7 +755,7 @@ var errAuditUnavailable = errors.New("audit recorder unavailable")
 // the file still belongs to the writer goroutine, so the event is handed over
 // rather than written from the caller's goroutine.
 func (r *AuditRecorder) RecordDurable(ev AuditEvent) error {
-	if r == nil || !r.cfg.Enabled {
+	if !r.hasSink() || !r.cfg.Enabled {
 		return errAuditUnavailable
 	}
 	req := auditDurableWrite{ev: ev, reply: make(chan error, 1)}
@@ -906,6 +961,7 @@ func (q AuditQuery) matches(ev *AuditEvent) bool {
 			ev.Tool, ev.McpID, ev.Error, ev.Actor.ProjectName,
 			ev.Actor.Proc, ev.Actor.Parent, string(ev.Args),
 			ev.Method, ev.Path, ev.Class, ev.Transport, ev.Actor.CredID,
+			ev.Credential, ev.Subject, ev.SubjectName, ev.Via, strings.Join(ev.Grants, ","),
 		}, "\x00"))
 		if !strings.Contains(hay, needle) {
 			return false

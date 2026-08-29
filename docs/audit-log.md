@@ -2,6 +2,8 @@
 
 Every tool call that passes through relay is recorded: what was called, by which
 project, from which process, with what arguments, and whether it was allowed.
+So is every act that issues or revokes a credential — see
+[Issuance and revocation](#issuance-and-revocation).
 
 Read it in the tray under **Settings → Tool Calls**, or from a terminal with
 `relay audit`.
@@ -22,9 +24,10 @@ interesting event:
 | `pending` | An intent record, written before the call ran and awaiting its completion |
 
 Event kinds are `call_tool`, `list_tools`, `list_skills`, `control_decision`
-(see [below](#control-plane-authorization-decisions)), and — for records relay
-writes about itself rather than about a caller — `mcp_down` / `mcp_up` (see
-below).
+(see [below](#control-plane-authorization-decisions)), `credential_issued` /
+`credential_revoked` (see [below](#issuance-and-revocation)), and — for records
+relay writes about itself rather than about a caller — `mcp_down` / `mcp_up`
+(see below).
 
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
 only one of the three that says the grant was legitimate and the *pattern of
@@ -275,6 +278,12 @@ What is given up by setting it to false:
   `control_decision` above — creating a service, issuing an enrolment, a
   credential refused a class it does not hold — leaves no trace, which is the
   state ADR-015 argues against.
+- **Issuance and revocation go unrecorded.** Every `credential_issued` and
+  `credential_revoked` below is lost too. Minting still works: turning
+  auditing off is a deliberate act written into settings.json, and refusing to
+  mint in a configuration relay supports would make it unusable. This is the
+  one state in which a credential can be issued with nothing in the log, and
+  it is deliberately reachable only on purpose.
 - **A passkey login leaves no record.** `/relay/login` is the one surface an
   unauthenticated caller can obtain a credential from, and its outcomes are
   recorded here and nowhere else.
@@ -428,6 +437,134 @@ relay audit --kind control              # every control-plane authorization deci
 relay audit --event control_decision --outcome denied   # refusals only
 ```
 
+A `control_decision` and an issuance record are both written for the routes
+that issue, and neither replaces the other: one says the caller was allowed
+through the door, the other says what came out of it. See
+[Issuance and revocation](#issuance-and-revocation).
+
+## Issuance and revocation
+
+`credential_issued` and `credential_revoked` record that a credential came into
+existence or stopped existing. They are a **different fact from a
+`control_decision`**, which says a caller was allowed to reach a route: most
+issuance is initiated from a CLI process that reaches no route at all, and the
+two HTTP routes that issue would otherwise record "this caller may call
+rotate_token" and never "a project token was rotated".
+
+```json
+{"id":"…","ts":"…","event":"credential_issued","actor":{"kind":"operator","auth":"none","pid":41221,"proc":"relay","parent":"claude"},
+ "credential":"api_credential","subject":"cred_5e2a","subject_name":"ci-deploy","grants":["read","grant"],"via":"cli","outcome":"ok"}
+{"id":"…","ts":"…","event":"credential_revoked","actor":{"kind":"control","auth":"token","cred_id":"5e2a…"},
+ "credential":"enrolment","subject":"hermes-mail","grants":["proj_mail"],"via":"http","outcome":"ok"}
+```
+
+- **`credential`** is what was issued or revoked: `api_credential` (a
+  control-plane credential, whether minted by `relay credential mint` or by a
+  completed login ceremony), `enrolment`, `passkey`, `bootstrap_code`, or
+  `project_token`.
+- **`subject`** is its identifier. A `bootstrap_code` has none — only its
+  SHA-256 is stored — so its `subject` is the anchor's **expiry**, which is the
+  only non-secret fact that tells one anchor from the next and is what matches
+  a minted code to the registration that later consumed it.
+- **`subject_name`** is the human-readable label where the kind has one
+  distinct from its identifier: a credential's `--name`, a passkey's display
+  name.
+- **`grants`** is the ADR-015 class set for an `api_credential` and the granted
+  access-profile ids for an `enrolment`. Absent for the kinds that have
+  neither.
+- **`via`** is how the act was initiated: `cli`, `ipc` (the Settings window),
+  `tray` (the menu item), or `http`.
+- **`actor.kind`** is `operator` for every door authorized by ownership of the
+  config dir — the CLI and the tray's own windows — and `control` with a
+  `cred_id` for an HTTP door, matching the `control_decision` beside it. For an
+  `operator` record `actor.parent` is the field that matters: it names the
+  shell or the agent that ran `relay credential mint`.
+- `subject`, `subject_name` and `grants` are capped at 256 bytes each, with at
+  most 64 grant entries, and a cut record carries `issuance_truncated: true`.
+  An enrolment's client id arrives in the body of `POST /api/enrolments`, so
+  these are caller-shaped in the same way `path` and `method` are, and are
+  bounded for the same reason.
+
+**Nothing here is ever a plaintext, a hash, or key material.** The record is
+built from one struct (`CredentialIssuance`) that has no field able to carry
+one, so a leak would have to be added there — visibly, in one place — rather
+than at one of the doors.
+
+```
+relay audit --event credential_issued           # everything relay handed out
+relay audit --event credential_revoked
+relay audit --kind operator                     # everything done from the CLI or the tray
+relay audit --grep hermes-mail                  # one client's whole issuance history
+```
+
+### Issuance is fail-closed; revocation is not
+
+ADR-010 decision 5 refuses a remote tool call that cannot be recorded, and the
+same argument reaches issuance: `settings.json` is 0600, so anything running as
+the owner can already mint `--class grant --class execute`. If the record were
+fail-open, that adversary's escalation path would be to break the sink first
+and mint silently — the one attack this record exists to detect would be the
+one it cannot see.
+
+So **the record is written and synced before the act's point of no return**,
+which is the moment the secret reaches a holder:
+
+| act | order | if the record cannot be written |
+|---|---|---|
+| `credential mint`, `login enrol`, a login ceremony's credential | act, then record, then disclose | the secret is never printed or returned; the command fails and names the inert record it left behind |
+| `enrol create` | act, then record, then hand back the bundle path | the enrolment is **revoked**, which also removes the emitted bundle — the client private key is already on disk, so nothing less would be a refusal |
+| passkey registration | act, then record, then answer 201 | the stored passkey is removed, which is what makes it unable to sign in |
+| `rotate_token` | rotate, then record, then return | the new token is not returned; the old one is already dead either way, so rotate again |
+
+A credential whose secret was never disclosed grants nothing to anybody, which
+is what makes each of these a real refusal rather than the theatre ADR-010
+warns about. The inert `api_credential` record is deliberately left in
+`settings.json` rather than swept: the machine has just shown it cannot be
+written to reliably, and the command names the one line that cleans it up.
+
+**Revocation is the other way round.** A revocation narrows a grant, so
+refusing to narrow one because the log is broken would make a failing disk the
+reason a compromised credential stays live. The act stands, the record is
+attempted, and a failure is loud — a non-zero exit from the CLI, an
+`slog.Error` from the tray and the API — but never a refusal.
+
+`audit.enabled: false` is neither of these. It is a state an operator chose,
+and issuance proceeds in it, unrecorded and legible in `settings.json`.
+
+### How a CLI process records
+
+`relay credential`, `relay enrol` and `relay login` run in a **separate process
+from the tray**, and both processes write one rotating log. A CLI process
+therefore opens the log itself, `O_APPEND`, and **never rotates it**.
+
+Rotation is the only cross-process-destructive operation there is: it renames
+the log out from under every other open descriptor, and the tray holds one for
+the life of the app. A CLI process that rotated would leave the tray writing
+into a file it had already moved, and repeated CLI rotations would shift that
+file out of the generation window entirely. Appending cannot do that to
+anybody — each record is one `write(2)` on an `O_APPEND` descriptor, which the
+kernel serialises against every other appender, so the two processes interleave
+whole lines and never half of one.
+
+Handing the record to the tray over the bridge socket was the alternative, and
+it is worse on three counts: the tray is **not running** for a large share of
+these commands, which is a supported state, so the append path would have to
+exist anyway; a "write this audit record" bridge request is a forgery primitive
+spelled out in the protocol; and it would let a busy or wedged tray block a
+mint.
+
+The cost is a **soft cap** rather than a hard one. The tray's writer counts
+only the bytes it has itself written since it opened the file, so appends it
+did not make are invisible to its accounting and the log can exceed
+`max_file_bytes` by whatever CLI processes added. Nothing is lost: the tray
+rotates on its own accounting eventually and takes the whole file, CLI records
+included, into the next generation, and relay's next start re-stats the file
+and picks up its true size. Issuance is an operator act at human rate, so the
+overshoot is a few hundred bytes per invocation.
+
+`relay audit` reads the file directly, so a record written by one CLI process
+is readable by the next with no tray involved at all.
+
 ## Fail-open, visibly
 
 Events are handed to a single writer goroutine over a bounded channel. If that
@@ -462,6 +599,8 @@ relay audit                          # 50 most recent, as a table
 relay audit --tail 200 --outcome denied
 relay audit --kind remote                 # everything any VM did
 relay audit --kind relay                  # external-MCP outages and recoveries
+relay audit --event credential_issued     # every credential relay handed out
+relay audit --kind operator               # every act from the CLI or the tray
 relay audit --project proj_7f2a --mcp fsmcp
 relay audit --grep read_file --json  # JSONL, oldest first, for piping
 relay audit --path                   # print the log path and exit
@@ -472,8 +611,8 @@ works when the tray is stopped — which is when you are most likely to want it.
 
 ## Where it hooks in
 
-One place: `appRouter.CallTool` in `router.go`. Every tool invocation in the
-ecosystem funnels through it — `relay mcp`, `relay mcp call`, relayLLM's MCP
+One place for tool calls: `appRouter.CallTool` in `router.go`. Every tool
+invocation in the ecosystem funnels through it — `relay mcp`, `relay mcp call`, relayLLM's MCP
 client, project shells — because that is also where auth is resolved and the
 permission check is made. `ListTools` and `ListSkillBuckets` are instrumented
 the same way.
@@ -481,3 +620,12 @@ the same way.
 Instrumentation goes through nil-safe helpers on `*auditCall` (`audit_call.go`),
 so a router built without a recorder behaves exactly as it did before auditing
 existed, and the router code has no `if audit != nil` noise.
+
+Issuance has no equivalent chokepoint and deliberately does not get a synthetic
+one: there is no single function every mint and revoke passes through, and the
+record has to name **which door** the act came from, which only the door knows.
+So `audit_issuance.go` holds the record builder and the fail-closed rules, and
+each door — the CLI subcommands, `LoginOps`, the IPC handlers, and the routes
+registered through `RouteRegistrar` — calls it with its own `via`. Adding a new
+way to issue a credential means adding a call there; nothing catches one that
+forgets, which is why the list of doors is short and named here.
