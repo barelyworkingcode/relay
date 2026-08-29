@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +39,12 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 		extMgr,
 		Endpoint{Socket: sock, Token: token},
 		enhanced,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
 		nil,
 		nil,
 	)
@@ -142,5 +151,141 @@ func TestFrontendServer_BearerAuth_RejectsWrongScheme(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 on Basic scheme; got %d", resp.StatusCode)
+	}
+}
+
+func TestListenLoopback_RefusesNonLoopback(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:9980", ":9980", "192.168.64.1:9980"} {
+		t.Run(addr, func(t *testing.T) {
+			s := &FrontendServer{server: &http.Server{}}
+			err := s.ListenLoopback(addr)
+			if !errors.Is(err, ErrNonLoopbackAPIListen) {
+				t.Fatalf("%q must be refused as non-loopback, got %v", addr, err)
+			}
+			if s.tcpLn != nil {
+				t.Fatal("a refused address must not leave a listener bound")
+			}
+		})
+	}
+}
+
+// TestListenLoopback_ServesReadAndConfigureButNotExecute pins ADR-015
+// decision 2: the TCP mux is built fresh per transport and only carries
+// read/configure/grant routes, never execute. It deliberately replaces a
+// pre-ADR-015 test that asserted the TCP listener served the socket's exact
+// handler — that property is gone on purpose.
+func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
+	dir := mkShortTempDir(t, "fe-tcp-")
+	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	if err := store.EnsureInitialized(); err != nil {
+		t.Fatalf("EnsureInitialized: %v", err)
+	}
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
+	if _, err := ops.Create(serviceFields{DisplayName: "Worker", Command: "/bin/sleep", Args: []string{"1"}}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+	extMgr := NewExternalMcpManager(nil)
+
+	srv, err := NewFrontendServer(
+		store, extMgr, extMgr, extMgr,
+		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("NewFrontendServer: %v", err)
+	}
+	if err := srv.ListenLoopback("127.0.0.1:0"); err != nil {
+		t.Fatalf("ListenLoopback: %v", err)
+	}
+	go func() { _ = srv.Serve() }()
+	go func() { _ = srv.ServeLoopback() }()
+	defer srv.Shutdown(context.Background())
+
+	base := "http://" + srv.tcpLn.Addr().String()
+
+	// read, no bearer: the TCP door enforces the same auth as the socket.
+	resp, err := http.Get(base + "/api/services")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a read route without a bearer must be 401, got %d", resp.StatusCode)
+	}
+
+	// read, with bearer: the route is registered and answers for real.
+	req, _ := http.NewRequest("GET", base+"/api/services", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET with token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("an authenticated read route must reach its handler, got %d", resp.StatusCode)
+	}
+
+	// configure, no bearer: same enforcement as read.
+	autostartBody := func() *bytes.Buffer { return bytes.NewBufferString(`{"autostart":true}`) }
+	req, _ = http.NewRequest("PUT", base+"/api/services/worker/autostart", autostartBody())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a configure route without a bearer must be 401, got %d", resp.StatusCode)
+	}
+
+	// configure, with bearer: reachable, and mutates real state.
+	req, _ = http.NewRequest("PUT", base+"/api/services/worker/autostart", autostartBody())
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT with token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("an authenticated configure route must reach its handler, got %d", resp.StatusCode)
+	}
+	if svc, _ := store.Get().findServiceByID("worker"); svc == nil || !svc.Autostart {
+		t.Fatal("the configure route must have actually run on TCP")
+	}
+
+	// execute: POST /api/services is never registered on TCP at all
+	// (ADR-015 decision 2) — a correct bearer cannot reach it either. The
+	// mux answers 405 rather than 404 because GET /api/services IS
+	// registered on that same path and nothing else claims the method: the
+	// "/" catch-all is socket-only (ADR-016 decision 4) and absorbs nothing
+	// here. Either way no handler ran, which the Allow header and the
+	// unchanged store below both attest.
+	req, _ = http.NewRequest("POST", base+"/api/services", bytes.NewBufferString(`{"display_name":"phantom","command":"/bin/true"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("an execute route must be absent from the TCP mux, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Allow") == "" {
+		t.Fatal("the 405 carries no Allow header, so it is not http.ServeMux's own refusal")
+	}
+	if strings.Contains(resp.Header.Get("Allow"), "POST") {
+		t.Fatalf("Allow = %q names POST, so some pattern claims it on TCP", resp.Header.Get("Allow"))
+	}
+	if svc, _ := store.Get().findServiceByID("phantom"); svc != nil {
+		t.Fatal("the execute route must never have reached ServiceOps.Create on TCP")
+	}
+}
+
+func TestListenLoopback_AbsentAddrBindsNothing(t *testing.T) {
+	s := &FrontendServer{server: &http.Server{}}
+	if err := s.ListenLoopback(""); err != nil {
+		t.Fatalf("an absent address is not an error: %v", err)
+	}
+	if s.tcpLn != nil {
+		t.Fatal("absent means no listener at all")
 	}
 }

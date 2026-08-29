@@ -6,14 +6,10 @@ import (
 	"testing"
 )
 
-// TestProjectRoutes_FrontendOmitsToken locks the security boundary: the
-// eve-facing project endpoints must never serialize the plaintext token or its
-// hash. rotate_token is the sole exception.
 func TestProjectRoutes_FrontendOmitsToken(t *testing.T) {
 	srv, store := newProjectRoutesServer(t)
 	defer srv.Close()
 
-	// Seed a project with a real token directly in the store.
 	var id string
 	if err := store.With(func(s *Settings) {
 		p, err := s.CreateProjectWithToken("Secret", t.TempDir(), nil, nil, nil, nil)
@@ -36,7 +32,6 @@ func TestProjectRoutes_FrontendOmitsToken(t *testing.T) {
 		}
 	}
 
-	// GET list
 	resp, body := doJSON(t, "GET", srv.URL+"/api/projects", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list: status %d", resp.StatusCode)
@@ -50,7 +45,6 @@ func TestProjectRoutes_FrontendOmitsToken(t *testing.T) {
 	}
 	assertNoTokenKeys("list[0]", list[0])
 
-	// GET single
 	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+id, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get: status %d", resp.StatusCode)
@@ -61,7 +55,6 @@ func TestProjectRoutes_FrontendOmitsToken(t *testing.T) {
 	}
 	assertNoTokenKeys("single", single)
 
-	// rotate_token MUST return the new plaintext — the one sanctioned exception.
 	resp, body = doJSON(t, "POST", srv.URL+"/api/projects/"+id+"/rotate_token", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rotate: status %d", resp.StatusCode)

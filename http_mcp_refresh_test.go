@@ -1,11 +1,5 @@
 package main
 
-// Integration coverage for the HTTP-MCP OAuth auto-refresh path. The snapshot
-// and applyRefreshedToken units were tested in isolation; this wires the whole
-// chain together — a within-window SendRequest must hit the token endpoint,
-// put the NEW access token on the wire to the MCP, and fire the onTokenRefresh
-// persistence callback — plus the stillValid graceful-degradation branch.
-
 import (
 	"context"
 	"io"
@@ -15,8 +9,6 @@ import (
 	"time"
 )
 
-// mcpResultServer captures each request's Authorization header (into authCh,
-// non-blocking) and replies with a fixed JSON-RPC result.
 func mcpResultServer(t *testing.T, authCh chan<- string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

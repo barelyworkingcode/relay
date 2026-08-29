@@ -10,18 +10,9 @@ import "C"
 
 import "unsafe"
 
-// ProcessNames returns the command name for pid and for its parent, or empty
-// strings when either can't be read (the process exited, or it belongs to
-// another user).
-//
 // Uses libproc's proc_pidinfo rather than shelling out to `ps`: this sits on
 // the tool-call path, and two syscalls cost microseconds where a fork+exec
 // costs milliseconds.
-//
-// The parent matters more than the process itself. `relay mcp` opens a fresh
-// connection — and often a fresh process — per call, so the peer pid alone
-// names a throwaway subprocess; its parent is the agent that actually asked for
-// the tool.
 func ProcessNames(pid int) (proc, parent string) {
 	name, ppid, ok := procInfo(pid)
 	if !ok {
@@ -35,7 +26,6 @@ func ProcessNames(pid int) (proc, parent string) {
 	return name, parent
 }
 
-// procInfo reads one process's name and parent pid via PROC_PIDTBSDINFO.
 func procInfo(pid int) (name string, ppid int, ok bool) {
 	if pid <= 0 {
 		return "", 0, false

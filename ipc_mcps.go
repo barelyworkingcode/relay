@@ -5,24 +5,28 @@ import (
 	"errors"
 )
 
-// ---------------------------------------------------------------------------
-// External MCP IPC handlers
-// ---------------------------------------------------------------------------
-
-// dispatchEmit emits a named event to the settings UI on the main thread.
-// Use from background goroutines: WKWebView's evaluateJavaScript must run
-// on the main thread or it crashes the process.
+// Must run from background goroutines only: WKWebView's evaluateJavaScript
+// crashes the process if called off the main thread.
 func dispatchEmit(ctx *IPCContext, event string, args ...interface{}) {
 	ctx.Platform.DispatchToMain(func() {
 		ctx.UI.EmitEvent(event, args...)
 	})
 }
 
-// dispatchError is preserved as a synonym for legacy ipc_mcps callers.
-// Prefer dispatchEmit at new call sites; the events emitted are not
-// always errors.
+// Despite the name, the events emitted here are not always errors.
 func dispatchError(ctx *IPCContext, event string, args ...interface{}) {
 	dispatchEmit(ctx, event, args...)
+}
+
+func (msg *ipcAddExternalMcpMsg) fields() mcpFields {
+	return mcpFields{
+		DisplayName: msg.DisplayName,
+		Transport:   msg.Transport,
+		URL:         msg.URL,
+		Command:     msg.Command,
+		Args:        msg.Args,
+		Env:         msg.Env,
+	}
 }
 
 func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
@@ -30,47 +34,28 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
+	fields := msg.fields()
 
-	id := slugify(msg.DisplayName)
-	if id == "" {
-		ctx.UI.EmitEvent("onExternalMcpError", "display name is required")
-		return
-	}
-
-	if msg.Transport == "http" {
-		if msg.URL == "" {
-			ctx.UI.EmitEvent("onExternalMcpError", "URL is required for HTTP transport")
-			return
-		}
-		if err := validateMcpURL(msg.URL); err != nil {
-			ctx.UI.EmitEvent("onExternalMcpError", err.Error())
-			return
-		}
-		ctx.UI.EmitEvent("onDiscoveryStarted")
-		ctx.GoFunc(func() { addHTTPMcp(ctx, msg.DisplayName, id, msg.URL) })
-		return
-	}
-
-	if msg.Command == "" {
-		ctx.UI.EmitEvent("onExternalMcpError", "command is required for stdio transport")
-		return
-	}
-
+	// Validation now lives in McpOps.Add, so this fires unconditionally
+	// rather than only once the request is known-legal; the request is
+	// about to run through Add regardless, and the spinner starting a beat
+	// before an "invalid" toast is a cosmetic cost, not a behavior change.
 	ctx.UI.EmitEvent("onDiscoveryStarted")
 
+	// Off the main thread: Add spawns a stdio child or does an HTTP
+	// handshake, either of which can block for the length of
+	// MCPDiscoveryTimeout.
 	ctx.GoFunc(func() {
-		result, err := DiscoverExternalMcp(ctx.Ctx, msg.DisplayName, id, msg.Command, msg.Args, msg.Env)
+		result, err := ctx.McpOps.Add(fields)
 		ctx.Platform.DispatchToMain(func() {
-			if err != nil {
+			if err != nil && !errors.Is(err, ErrAuthRequired) {
 				ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 				return
 			}
-
-			if !ctx.withSettingsReconcile(func(s *Settings) { s.UpsertExternalMcp(*result) }) {
-				return
-			}
-
 			ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(result))
+			if errors.Is(err, ErrAuthRequired) {
+				ctx.UI.EmitEvent("onOAuthRequired", result.ID)
+			}
 		})
 	})
 }
@@ -80,7 +65,21 @@ func ipcAuthenticateMcp(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	ctx.GoFunc(func() { authenticateMcp(ctx, msg.ID) })
+
+	// Off the main thread: StartOAuth blocks on OAuth discovery, the local
+	// callback listener, and the token exchange.
+	ctx.GoFunc(func() {
+		dispatchEmit(ctx, "onOAuthStarted", msg.ID)
+
+		// ctx.Platform.OpenURL is the one desktop dependency in this whole
+		// flow; McpOps.StartOAuth takes it as a parameter precisely so this
+		// is the only place it gets supplied (ADR-014 section 4).
+		if _, err := ctx.McpOps.StartOAuth(msg.ID, ctx.Platform.OpenURL); err != nil {
+			dispatchError(ctx, "onOAuthError", msg.ID, err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onOAuthComplete", msg.ID)
+	})
 }
 
 func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
@@ -89,74 +88,9 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if !ctx.withSettingsReconcile(func(s *Settings) { s.RemoveExternalMcp(msg.ID) }) {
+	if err := ctx.McpOps.Remove(msg.ID); err != nil {
+		ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 		return
 	}
-
 	ctx.UI.EmitEvent("onExternalMcpRemoved", msg.ID)
-}
-
-// ---------------------------------------------------------------------------
-// HTTP MCP helpers
-// ---------------------------------------------------------------------------
-
-func addHTTPMcp(ctx *IPCContext, displayName, id, mcpURL string) {
-	result, err := DiscoverHTTPMcp(ctx.Ctx, displayName, id, mcpURL, nil)
-
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		dispatchError(ctx, "onExternalMcpError", err.Error())
-		return
-	}
-	if result == nil {
-		dispatchError(ctx, "onExternalMcpError", "discovery returned no configuration")
-		return
-	}
-
-	needsAuth := errors.Is(err, ErrAuthRequired)
-
-	ctx.Platform.DispatchToMain(func() {
-		if !ctx.withSettingsReconcile(func(s *Settings) { s.UpsertExternalMcp(*result) }) {
-			return
-		}
-
-		ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(result))
-
-		if needsAuth {
-			ctx.UI.EmitEvent("onOAuthRequired", id)
-		}
-	})
-}
-
-func authenticateMcp(ctx *IPCContext, id string) {
-	s := ctx.Store.Get()
-	mcpCfg, _ := s.findMcpByID(id)
-	if mcpCfg == nil {
-		dispatchError(ctx, "onOAuthError", id, "MCP not found")
-		return
-	}
-	if !mcpCfg.IsHTTP() {
-		dispatchError(ctx, "onOAuthError", id, "only HTTP MCPs support OAuth")
-		return
-	}
-
-	ctx.Platform.DispatchToMain(func() {
-		ctx.UI.EmitEvent("onOAuthStarted", id)
-	})
-
-	oauth, err := startOAuthFlow(mcpCfg.URL, ctx.Platform.OpenURL)
-	if err != nil {
-		dispatchError(ctx, "onOAuthError", id, err.Error())
-		return
-	}
-
-	ctx.Platform.DispatchToMain(func() {
-		if !ctx.withSettingsNotify(
-			func(s *Settings) { s.UpdateOAuthState(id, oauth) },
-			func(secret string) error { return ctx.NotifyReloadMcp(id, secret) },
-		) {
-			return
-		}
-
-		ctx.UI.EmitEvent("onOAuthComplete", id)
-	})
 }

@@ -8,8 +8,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// seedShellTemplates sets a project's shell templates via the mutator inside a
-// store transaction. Reuses newPtyTestRouter's sandboxed store + project.
 func seedShellTemplates(t *testing.T, r *appRouter, projID string, tmpls []ShellTemplate) {
 	t.Helper()
 	if err := r.store.With(func(s *Settings) {
@@ -48,9 +46,8 @@ func TestResolveProjectTemplate_Found(t *testing.T) {
 	if resp.Env["TERM"] != "xterm-256color" {
 		t.Errorf("env not round-tripped: %+v", resp.Env)
 	}
-	// ShellTemplateResponse has no token field by construction — assert at the
-	// behavioral level too that resolving a template never surfaces the project
-	// token anywhere in the response (ResolvePtyEnv is the sole token egress).
+	// Deliberate: ShellTemplateResponse has no token field — ResolvePtyEnv is
+	// the sole token egress.
 	if resp.ID != want.ID {
 		t.Errorf("id mismatch: %q", resp.ID)
 	}
@@ -84,8 +81,6 @@ func TestResolveProjectTemplate_RequiresServiceToken(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 	seedShellTemplates(t, router, proj.ID, []ShellTemplate{{ID: "t", Name: "T", Command: "ssh"}})
 
-	// A project token (not a service token) must be rejected — project config is
-	// service-token-gated over the bridge.
 	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
 		TemplateID: "t",

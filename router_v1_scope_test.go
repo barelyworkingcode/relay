@@ -1,22 +1,5 @@
 package main
 
-// A v1-schema MCP has a call-time defence, and its audit line says what it was
-// confined by.
-//
-// ADR-011 decision 5 gives SyncProjectToken one rule — never DERIVE a
-// source: "project_path" field for a remote-kind record — and decision 4 gives
-// CallTool a second, independent one. The second had no v1 equivalent:
-// checkScopePresence, filterKnownContextFields and scopeFromMeta each returned
-// early for v1, and ValidateProjectGrants runs at save time only. So a
-// settings.json edited by hand to give an access profile a v1 filesystem MCP,
-// with a context blob naming any directory it liked, had that value injected
-// and honoured — the belt-and-braces principle honoured for allowed_tools and
-// for v2 scope and nowhere for v1.
-//
-// And decision 7's property — the log answers what was attempted with what
-// authority — failed for every v1 MCP: `scope: null` on a call relay had
-// confined with a value relay derived itself.
-
 import (
 	"context"
 	"encoding/json"
@@ -49,9 +32,6 @@ func fsProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage
 	})
 }
 
-// TestCallTool_AProfileCannotForgeAV1FilesystemScope is the finding, reproduced
-// through the router. The value below is the shape a hand-edited settings.json
-// carries; before this, it went out on the wire and fsMCP obeyed it.
 func TestCallTool_AProfileCannotForgeAV1FilesystemScope(t *testing.T) {
 	r := fsProfile(t, ProjectKindRemote, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/Users/admin/.ssh"]`),
@@ -108,9 +88,6 @@ func TestCallTool_AProfileCannotForgeAV2ProjectPathScope(t *testing.T) {
 	}
 }
 
-// TestCallTool_ALocalProjectStillUsesItsV1Scope is the case that must not
-// regress: a local project HAS a path, SyncProjectToken derives the value, and
-// the field is satisfiable. Nothing above applies to it.
 func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
 	r := fsProfile(t, ProjectKindLocal, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
@@ -120,10 +97,6 @@ func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
 	}
 }
 
-// TestAudit_AV1CallRecordsTheScopeItWasConfinedBy is decision 7's property for
-// the version it used to be false for. The value here is one relay derived and
-// injected; recording `scope: null` beside it says the call carried no
-// confinement, which is the opposite of what happened.
 func TestAudit_AV1CallRecordsTheScopeItWasConfinedBy(t *testing.T) {
 	r := fsProfile(t, ProjectKindLocal, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),

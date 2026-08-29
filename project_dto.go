@@ -4,30 +4,23 @@ import "encoding/json"
 
 // projectView is the frontend-facing projection of a Project: an explicit
 // allow-list of fields safe to expose over relay's HTTP/frontend surface (eve,
-// and through it the browser). The plaintext project token and its hash are the
-// MCP-access security boundary and are deliberately excluded — the only place a
-// token legitimately crosses HTTP is the explicit rotate_token response, which
-// returns the new plaintext exactly once.
+// and through it the browser). The plaintext project token and its hash are
+// deliberately excluded — the only place a token legitimately crosses HTTP is
+// the rotate_token response, which returns the new plaintext exactly once.
 //
 // This is an allow-list, not "Project minus the secrets", on purpose: a future
 // secret-ish field added to Project stays hidden until someone consciously adds
-// it here, so the frontend can never silently start leaking a new credential.
-// (An embedding + json:"-" shadow does NOT work — the dropped outer field just
-// uncovers the embedded one, re-leaking it.)
+// it here. (An embedding + json:"-" shadow does NOT work — the dropped outer
+// field just uncovers the embedded one, re-leaking it.)
 //
-// IPC (ipc_projects.go / marshalForUI) intentionally does NOT use this view: the
-// tray IS relay — the token authority — and legitimately shows and rotates the
-// token in its native Projects tab. Only the eve-facing HTTP routes in
+// IPC (ipc_projects.go / marshalForUI) intentionally does NOT use this view:
+// the tray IS relay — the token authority — and legitimately shows and rotates
+// the token in its native Projects tab. Only the eve-facing HTTP routes in
 // project_routes.go project through this.
 type projectView struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
-	// Kind, and below it Access and AllowedTools, are here because without
-	// them the GET cannot show what the PUT accepted — a UI that cannot render
-	// its own state. Kind additionally decides how everything else on the row
-	// reads: a record with no path, no models and no skill is either an access
-	// profile or a broken project, and only this field says which.
+	ID               string                     `json:"id"`
+	Name             string                     `json:"name"`
+	Path             string                     `json:"path"`
 	Kind             ProjectKind                `json:"kind,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`

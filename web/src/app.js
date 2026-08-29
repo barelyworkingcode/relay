@@ -23,6 +23,13 @@ const REMOTE_INIT = window.__RELAY_INIT__.remote || null;
 // create form's placeholders name the real numbers instead of a second copy
 // of them that can rot apart from normalizeEnrolmentBudget.
 const ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
+const PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
+const LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
+// A bootstrap code minted by the tray's "Show Login Code..." item, seeded into
+// the first paint because the window it is meant for did not exist when the
+// code was minted. Null on every ordinary open, and never persisted anywhere:
+// it lives in this page for two minutes and is not recoverable afterwards.
+const LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
 
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
@@ -114,6 +121,15 @@ let state = {
     remoteDirty: false,
     remoteError: null,
 
+    // Passkeys tab. Seeded like enrolments, and for the same reason — a
+    // credential you cannot see is one you will not revoke.
+    passkeys: PASSKEYS_INIT,
+    loginSessions: LOGIN_SESSIONS_INIT,
+    loginCode: LOGIN_CODE_INIT,
+    passkeyError: null,
+    passkeyRevoked: null,                   // {name, short} shown after a revoke
+    loginSignedOut: null,                   // credential name shown after a sign-out
+
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
     // on the Go side so it can be sent verbatim.
@@ -133,7 +149,9 @@ const AUDIT_MAX_ROWS = 500;
 
 function showPage(page) {
     state.page = page;
-    const pages = ['services', 'mcps', 'projects', 'remote', 'inspector', 'audit'];
+    // Positional against the sidebar items in web/shell.html — adding one
+    // there without adding it here highlights the wrong row.
+    const pages = ['services', 'mcps', 'projects', 'remote', 'passkeys', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
@@ -185,6 +203,8 @@ function render(source) {
         // Projects tab does: an external change must not eat keystrokes.
         if (fromPush && (state.enrolForm || state.remoteDirty)) return;
         el.innerHTML = renderEnrolments();
+    } else if (state.page === 'passkeys') {
+        el.innerHTML = renderPasskeys();
     } else if (state.page === 'audit') {
         el.innerHTML = renderAudit();
         restoreAuditFocus();
@@ -791,6 +811,8 @@ window.onSettingsReloaded = function(data) {
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
+    if (data.passkeys) state.passkeys = data.passkeys;
+    if (data.login_sessions) state.loginSessions = data.login_sessions;
     if (data.remote) {
         state.remote = data.remote;
         // Re-seed the listener draft from the server's answer unless the user
@@ -3184,6 +3206,222 @@ window.onRemoteConfigError = function(msg) {
     if (state.page === 'remote') render('push');
 };
 
+// ---------------------------------------------------------------------------
+// Passkeys tab — the registrations that can sign a browser in, and the browser
+// sessions they have already signed in.
+//
+// Both lists are on this one screen because they are separate records with
+// separate lifetimes, and the difference is exactly what an operator gets
+// wrong: revoking a passkey stops the NEXT login and does nothing to a session
+// already minted, which lives out its twelve hours regardless (ADR-016
+// decision 3). A tab that showed only the registrations would let "revoked"
+// read as "signed out", and the sign-out button below is the other half of
+// that sentence.
+//
+// Nothing here renders a public key. The Go side has no field carrying one
+// (passkeyView), which is what makes that true by construction rather than by
+// remembering not to print it; the same discipline enrolmentBundleView uses
+// for the client private key.
+//
+// The credential id renders ABBREVIATED, the opposite of the certificate
+// fingerprint one tab over. That is deliberate: a fingerprint outlives the
+// enrolment it names and is the only thing identifying that client's past
+// calls, while a passkey id names nothing once revoked — so a full one on
+// screen would add a long random-looking string beside the word "credential"
+// and buy nothing.
+// ---------------------------------------------------------------------------
+
+// The one place the tray item's name is written in the page. Whatever an
+// operator with no passkeys is told to click has to match the menu exactly.
+const LOGIN_CODE_MENU_ITEM = 'Show Login Code...';
+
+function pkSignCountText(p) {
+    if (!p.counter_supported) return 'This authenticator does not count signatures — the ordinary case for a synced passkey, and not a fault.';
+    return 'Signature counter at last accepted assertion: ' + (p.sign_count || 0) + '.';
+}
+
+// renderLoginCodeBanner shows a code that exists nowhere else. Three facts
+// have to be on screen with it, and each one is a mistake if it is missing:
+// what it does (registers a passkey, and is never a password), how long it
+// lasts, and that asking for another one kills this one — mintBootstrapCode
+// replaces rather than accumulates, so a second banner would otherwise leave
+// the operator with two codes on screen and one that works.
+function renderLoginCodeBanner(c) {
+    let html = '<div class="pk-code-banner">';
+    if (c.error) {
+        html += '<strong>Could not mint a login code.</strong>';
+        html += '<div class="pk-code-line">' + esc(c.error) + '</div>';
+        html += '<div class="pk-code-line">Nothing was changed. Try the tray item again, or run <code>relay login enrol</code> in a terminal — it writes through the same store and will report the same failure with more detail.</div>';
+        html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
+        html += '</div>';
+        return html;
+    }
+    html += '<strong>Login code</strong>';
+    html += '<div class="pk-code">' + esc(c.code) + '</div>';
+    html += '<div class="pk-code-line">Expires <strong>' + esc(c.expires || '') + '</strong> — valid for ' + esc(c.ttl || '') + ', single use.</div>';
+    html += '<div class="pk-code-line">This code registers a passkey. It is <strong>NOT a password</strong> and is never accepted in place of a passkey assertion.</div>';
+    if (c.url) {
+        html += '<div class="pk-code-line">Open <code>' + esc(c.url) + '</code> and enter it.</div>';
+    } else {
+        html += '<div class="pk-code-line warn">There is no login page to enter it into: relay has no TCP listener, so <code>RELAY_API_LISTEN</code> is unset and the login routes are registered nowhere. Set it and relaunch relay, then mint a fresh code.</div>';
+    }
+    html += '<div class="pk-code-line warn">Showing another code replaces this one — there is only ever one live at a time, and this one stops working the moment the next is minted.</div>';
+    html += '<div class="pk-code-line">It is shown here once and is not recoverable. Closing this window loses it.</div>';
+    html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="copyLoginCode()">Copy</button> <button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
+    html += '</div>';
+    return html;
+}
+
+function renderPasskeys() {
+    let html = '<div class="page-header"><h2>Passkeys</h2>';
+    html += '<button class="btn" onclick="refreshPasskeys()">Refresh</button></div>';
+    html += '<p class="page-intro">A passkey is how you sign in to relay from a browser. There is no password: the login page at <code>/relay/login</code> accepts a passkey assertion and nothing else. Registering one is a host-side act — it needs a single-use code minted on this machine, so a page in your browser cannot register itself.</p>';
+
+    if (state.loginCode) html += renderLoginCodeBanner(state.loginCode);
+    if (state.passkeyError) html += '<div class="proj-error">' + esc(state.passkeyError) + '</div>';
+    if (state.passkeyRevoked) {
+        html += '<div class="audit-note">Revoked passkey <strong>' + esc(state.passkeyRevoked.name || state.passkeyRevoked.short) + '</strong>. It can no longer complete a login. Any browser it already signed in keeps its session below until you end it or it expires.</div>';
+    }
+    if (state.loginSignedOut) {
+        html += '<div class="audit-note">Signed out <strong>' + esc(state.loginSignedOut) + '</strong>. Its token stops authenticating on the next request; that browser must run the ceremony again.</div>';
+    }
+
+    const list = state.passkeys || [];
+    if (!list.length) {
+        html += '<div class="empty-state">No passkeys are registered, so nothing can sign in to relay from a browser yet.<br><br>'
+            + 'To register one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + '</strong> in the Relay tray menu, or run <code>relay login enrol</code> in a terminal. Either mints a single-use code that lasts two minutes; open the login page, enter it, and your authenticator registers a passkey.<br><br>'
+            + 'The code exists so registration cannot be self-service: it can only be minted by something already running as you on this machine, never by a page that reached the port.</div>';
+    }
+    for (const p of list) {
+        html += '<div class="pk-card">';
+        html += '<div class="pk-card-header">';
+        html += '<span class="pk-card-name">' + esc(p.name || '(unnamed passkey)') + '</span>';
+        html += '<button class="btn btn-sm btn-danger" onclick="revokePasskey(\'' + esc(p.id) + '\')">Revoke</button>';
+        html += '</div>';
+        html += '<div class="pk-id">Credential: ' + esc(p.short || '') + '</div>';
+        html += '<div class="pk-counter">' + esc(pkSignCountText(p)) + '</div>';
+        html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || '—') + '</strong></span></div>';
+        html += '</div>';
+    }
+
+    html += renderLoginSessions();
+    return html;
+}
+
+// renderLoginSessions is the sign-out half. Each row is one APICredential the
+// ceremony minted — one per login, which is what makes signing a single
+// browser out a real operation rather than a global switch (ADR-016
+// decision 3).
+function renderLoginSessions() {
+    const sessions = state.loginSessions || [];
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Signed-in Browsers</div>';
+    html += '<p class="proj-section-help">Each completed login mints its own short-lived control-plane credential, held in the browser\'s memory and nowhere else — not <code>localStorage</code>, not a cookie — so a reload runs the ceremony again. It reaches <code>read</code> and <code>configure</code> and nothing else: no project-token rotation, no terminal, no session. Signing out revokes that one credential; every other browser and every credential relay injects into a service is untouched.</p>';
+
+    if (!sessions.length) {
+        html += '<div class="empty-state">No browser is signed in. A session appears here the moment one completes the ceremony at the login page, and disappears when it expires — twelve hours at most.</div>';
+        html += '</div>';
+        return html;
+    }
+    for (const c of sessions) {
+        html += '<div class="pk-session">';
+        html += '<div>';
+        html += '<div class="pk-session-name">' + esc(c.name || c.id) + '</div>';
+        html += '<div class="pk-session-meta">Signed in ' + esc(c.created || '—') + ' · expires ' + esc(c.expires || 'never') + '</div>';
+        html += '</div>';
+        html += '<button class="btn btn-sm btn-danger" onclick="signOutLogin(\'' + esc(c.id) + '\')">Sign out</button>';
+        html += '</div>';
+    }
+    // Named so the CLI is not a hidden second path: the same records are in
+    // `relay credential list`, and this tab is the door onto them that is
+    // where the person at the machine already is.
+    html += '<p class="proj-section-help">These are ordinary control-plane credentials, so <code>relay credential list</code> shows them too and <code>relay credential revoke --id ID</code> ends one from a terminal. This button refuses anything that is not a login session — a credential you minted for a script is not sign-out-able from a browser view.</p>';
+    html += '</div>';
+    return html;
+}
+
+function refreshPasskeys() {
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: 'list_passkeys' }));
+}
+
+function copyLoginCode() {
+    if (state.loginCode && state.loginCode.code) copyProjectToken(state.loginCode.code);
+}
+
+function dismissLoginCode() {
+    state.loginCode = null;
+    render();
+}
+
+// revokePasskey names what survives the act as well as what it cuts. "Are you
+// sure?" over a credential id is not a decision anyone can make, and the
+// surviving session is the half an operator will otherwise assume is gone.
+function revokePasskey(id) {
+    const p = (state.passkeys || []).find(x => x.id === id);
+    if (!p) return;
+    const live = (state.loginSessions || []).length;
+    let msg = 'Revoke the passkey "' + (p.name || p.short) + '"?\n\n'
+        + 'It can no longer sign in to relay from any browser. The passkey stays on your authenticator — relay just stops recognising it — and nothing else in settings is touched.\n\n';
+    msg += live
+        ? ('This does NOT sign anyone out: ' + live + ' browser session(s) are live and stay live until they expire. Sign them out separately below.')
+        : 'No browser session is currently live, so nothing is signed in with it.';
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: 'revoke_passkey', id: id }));
+}
+
+function signOutLogin(id) {
+    const c = (state.loginSessions || []).find(x => x.id === id);
+    if (!c) return;
+    const msg = 'Sign out "' + (c.name || c.id) + '"?\n\n'
+        + 'That browser\'s credential stops authenticating on its next request and it has to run the login ceremony again. No passkey is revoked and no other session is affected.';
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: 'sign_out_login', id: id }));
+}
+
+// ---- Passkeys IPC event handlers ----
+
+window.onPasskeysReloaded = function(passkeys, sessions) {
+    state.passkeys = passkeys || [];
+    state.loginSessions = sessions || [];
+    state.passkeyError = null;
+    if (state.page === 'passkeys') render('push');
+};
+
+window.onPasskeyRevoked = function(id, name) {
+    const p = (state.passkeys || []).find(x => x.id === id);
+    state.passkeys = (state.passkeys || []).filter(x => x.id !== id);
+    state.passkeyError = null;
+    state.loginSignedOut = null;
+    state.passkeyRevoked = { name: name || '', short: p ? p.short : '' };
+    if (state.page === 'passkeys') render('push');
+};
+
+window.onLoginSessionRevoked = function(id, name) {
+    state.loginSessions = (state.loginSessions || []).filter(x => x.id !== id);
+    state.passkeyError = null;
+    state.passkeyRevoked = null;
+    state.loginSignedOut = name || id || '';
+    if (state.page === 'passkeys') render('push');
+};
+
+window.onPasskeyError = function(msg) {
+    state.passkeyError = msg || 'the passkey operation failed';
+    if (state.page === 'passkeys') render('push');
+};
+
+// onLoginCodeMinted is the tray's channel into a window that was ALREADY open
+// when the menu item was clicked. A window that was not open gets the same
+// value seeded into its first paint instead (LOGIN_CODE_INIT) — see
+// App.showLoginCode for why the two cases cannot share one mechanism.
+window.onLoginCodeMinted = function(code) {
+    state.loginCode = code || null;
+    state.passkeyError = null;
+    showPage('passkeys');
+};
+
 // Service Inspector — generic renderer driven by each service's manifest
 // (carried inside its status snapshot) plus the snapshot itself.
 
@@ -4564,7 +4802,9 @@ window.onServiceActionResult = function(result) {
     if (state.page === 'inspector') updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
 };
 
-render();
+// A tray-minted code arrives with the first paint, so the window opens on the
+// tab that shows it rather than on Services with the code out of sight.
+if (LOGIN_CODE_INIT) showPage('passkeys'); else render();
 
 // Inline on* handlers in rendered HTML resolve against window. Bundling scopes
 // these declarations to the module, so re-expose every top-level function (and
@@ -4572,6 +4812,7 @@ render();
 // classic <script> had.
 Object.assign(window, {
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
+    copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
     cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,

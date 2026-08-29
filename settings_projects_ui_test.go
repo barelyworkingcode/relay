@@ -1,29 +1,13 @@
 package main
 
-// Characterization + regression tests for the Projects tab's tri-state MCP
-// picker and (later in this file) the remote-project form behavior added on
-// top of it. Part 1 (characterization) pins CURRENT behavior of projMcpState,
-// setProjMcpState, toggleProjTool, pruneStaleDisabledTool, and
-// harvestProjectForm's payload shape BEFORE the remote-kind changes land, so a
-// regression in the surrounding refactor shows up here. Part 2 covers the new
-// remote-project behavior itself. Uses the same goja harness as
-// settings_bundle_test.go (newAppVM, evalString, domShim).
-
 import (
 	"strings"
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// Part 1 — characterization tests (pin behavior that predates this change)
-// ---------------------------------------------------------------------------
-
-// TestProjMcpStateThreeStates pins how projMcpState derives each of its three
-// states. The subtle one: 'selected' is signalled by KEY PRESENCE in
-// disabled_tools (even an empty array), not by array length — setProjMcpState
-// deliberately seeds disabled_tools[mcpID] = [] when the user picks "Selected"
-// before unchecking anything, and projMcpState must still read that back as
-// 'selected' rather than falling through to 'all'.
+// Subtle: 'selected' is signaled by key presence in disabled_tools, not array
+// length — setProjMcpState seeds an empty array on purpose, and projMcpState
+// must not mistake that for 'all'.
 func TestProjMcpStateThreeStates(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -54,11 +38,6 @@ func TestProjMcpStateThreeStates(t *testing.T) {
 	}
 }
 
-// TestSetProjMcpStateSelectedSeedsEmptyArray pins the sentinel behavior
-// explicitly: clicking "Selected" writes an EMPTY array into disabled_tools,
-// not no key at all — because key presence (not length) is what projMcpState
-// reads. If this ever regressed to skip seeding, the UI would render as "All
-// tools" immediately after the user clicked "Selected".
 func TestSetProjMcpStateSelectedSeedsEmptyArray(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -82,9 +61,6 @@ func TestSetProjMcpStateSelectedSeedsEmptyArray(t *testing.T) {
 	}
 }
 
-// TestSetProjMcpStateExpandsWildcard pins that the FIRST per-MCP edit off of
-// the wildcard state expands allowed_mcp_ids into the concrete registered MCP
-// ID set (and resets disabled_tools) before applying the requested state.
 func TestSetProjMcpStateExpandsWildcard(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -110,8 +86,6 @@ func TestSetProjMcpStateExpandsWildcard(t *testing.T) {
 	}
 }
 
-// TestSetProjMcpStateTransitions pins the 'all' / 'selected' / 'none' button
-// transitions on an already-expanded (non-wildcard) form.
 func TestSetProjMcpStateTransitions(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -144,12 +118,8 @@ func TestSetProjMcpStateTransitions(t *testing.T) {
 	}
 }
 
-// TestToggleProjToolDenylistPreservesStale pins two things about
-// toggleProjTool: (1) it stores a DENYLIST — unchecking a tool adds it to
-// disabled_tools[mcpID], checking it removes it; (2) it preserves any
-// previously-disabled tool names that are no longer present in the live tool
-// list (e.g. the MCP was renamed/upgraded), regardless of what's being
-// toggled in the same call.
+// toggleProjTool stores a denylist (unchecking adds, checking removes) and
+// preserves stale disabled names no longer present in the live tool list.
 func TestToggleProjToolDenylistPreservesStale(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -181,8 +151,6 @@ func TestToggleProjToolDenylistPreservesStale(t *testing.T) {
 	}
 }
 
-// TestPruneStaleDisabledTool pins pruneStaleDisabledTool: kept=true is a
-// no-op, kept=false removes exactly that name from the mcp's denylist.
 func TestPruneStaleDisabledTool(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -211,12 +179,8 @@ func TestPruneStaleDisabledTool(t *testing.T) {
 	}
 }
 
-// TestHarvestProjectFormPayloadShape pins the current (pre-remote-kind)
-// harvestProjectForm payload: it carries the form's identity/grant/policy
-// fields, and it deliberately OMITS chat_templates (Eve owns editing them;
-// update_project treats an absent field as "leave unchanged"). This must
-// still hold after the remote-kind form work — the only additive change
-// expected there is a new `kind` field.
+// Deliberate: harvestProjectForm omits chat_templates — Eve owns editing them,
+// and update_project treats an absent field as "leave unchanged".
 func TestHarvestProjectFormPayloadShape(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -252,15 +216,7 @@ func TestHarvestProjectFormPayloadShape(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Part 3 — new remote-project form behavior
-// ---------------------------------------------------------------------------
-
-// TestRemoteProjectFormHidesHostControls covers both the edit form for an
-// existing remote project and the new-project form after switching to Remote:
-// the path input, Directory Auth section, Generate Skill section, and the "*"
-// wildcard toggles (MCPs and models) must all be ABSENT from the rendered
-// HTML — not merely disabled — and a short note must explain why.
+// Controls must be absent from the rendered HTML, not merely disabled.
 func TestRemoteProjectFormHidesHostControls(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -306,12 +262,8 @@ func TestRemoteProjectFormHidesHostControls(t *testing.T) {
 	}
 }
 
-// TestRemoteProjectZeroMcpHarvest covers the valid resting state described in
-// project_apply.go: a remote project with zero MCP grants harvests to a
-// payload the server will accept — kind "remote", no path key at all, an
-// empty allowed_models, and an empty (not missing) allowed_mcp_ids. Also
-// checks that saveProjectForm's client-side validation does not block on the
-// (now absent) path.
+// Remote + zero MCP grants must harvest with no path key at all (an absent
+// key, not an empty string) but an empty (not missing) allowed_mcp_ids.
 func TestRemoteProjectZeroMcpHarvest(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -347,11 +299,8 @@ func TestRemoteProjectZeroMcpHarvest(t *testing.T) {
 	}
 }
 
-// TestSwitchLocalToRemoteClearsWildcard covers the new-project default: the
-// blank form starts with the "*" MCP wildcard set (matching today's local
-// default), and switching to Remote before first save must clear it to an
-// empty explicit list rather than letting Save send a wildcard the server
-// will reject (validateProjectShape refuses "*" on a remote project).
+// Switching to remote must clear the "*" wildcard — validateProjectShape
+// refuses "*" on a remote project.
 func TestSwitchLocalToRemoteClearsWildcard(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -376,13 +325,6 @@ func TestSwitchLocalToRemoteClearsWildcard(t *testing.T) {
 	}
 }
 
-// TestLocalProjectFormUnchanged is the regression net for the daily-driver
-// path: with kind local (the default, both for a brand-new form and an
-// existing project), every control that existed before the remote-kind work
-// must still render — path input, MCP wildcard toggle, models section +
-// wildcard toggle, chat templates, permission policy, skill section,
-// directory auth section, and (edit-only) the bearer token section. None of
-// the remote-only explanatory text should appear.
 func TestLocalProjectFormUnchanged(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -437,13 +379,8 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 	}
 }
 
-// TestProjectListBadgesRemote covers renderProjects: a remote-kind record gets
-// a visible badge naming it an ACCESS PROFILE (ADR-011 decision 1) and local
-// projects don't. Also pins what a record granting no MCP says: the row states
-// that it reaches nothing, in the noun that record deserves, rather than
-// rendering a count an operator has to interpret. The count itself is gone —
-// "MCPs: 1" beside a client that can read every mailbox on the machine is the
-// failure ADR-011 exists to fix, and it was rendered from this function.
+// No bare MCP count: "MCPs: 1" beside a client that can read every mailbox is
+// exactly the disclosure ADR-011 forbids.
 func TestProjectListBadgesRemote(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -473,33 +410,6 @@ func TestProjectListBadgesRemote(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// relay#25 — the New Project form silently discarded a typed name, and a
-// refused Create said nothing an operator could see. Three tests below, one
-// per load-bearing fix:
-//
-//   - capture-and-restore is now a property of render() itself, not
-//     something each mutator has to remember to call, so ANY re-render of
-//     the form (not only the enumeration picker's async answer) preserves
-//     what was typed;
-//   - a Create refused by a check THIS form can localize (name, path) says
-//     so next to the field and focuses it;
-//   - a Create refused by the SERVER (validateProjectShape /
-//     validateProjectPermissions, reached over IPC as onProjectError) now
-//     actually repaints while the form is open — it used to be silently
-//     swallowed by the exact guard meant to protect the form from an
-//     unrelated external change.
-// ---------------------------------------------------------------------------
-
-// TestGrantingAnMcpDoesNotEatTheTypedName reproduces relay#25 defect (a)
-// directly: type a name into a new access profile, click "Granted" on an
-// MCP, and the name must still be there. Before the fix, capture-before-
-// repaint lived only in toggleScopeFieldPicker / retryScopeEnum /
-// toggleProjScopeValueAt / onScopeFieldEnumerated — each a special case added
-// for the enumeration picker's OWN async re-render — and setProjMcpGranted
-// (along with setProjMcpState, setProjMcpWildcard, setProjAccess,
-// setProjModelsWildcard) had no such call, so its render() rebuilt the name
-// input from state.projectForm.name, which was still '' from blankProjectForm.
 func TestGrantingAnMcpDoesNotEatTheTypedName(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -527,14 +437,6 @@ func TestGrantingAnMcpDoesNotEatTheTypedName(t *testing.T) {
 	}
 }
 
-// TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt covers the half
-// of relay#25 defect (b) this form CAN localize: an empty required field. The
-// refusal was always correct (a required field is empty) and always set
-// state.projectFormError — what was missing is anything that made an operator
-// notice, since the message rendered only in a banner at the very top of a
-// form that can be scrolled well past it. The fix names the field, prints the
-// reason next to it, and moves focus there. Also pins that a refused Create
-// never reaches the wire.
 func TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){
@@ -572,17 +474,6 @@ func TestSaveProjectForm_RefusedCreateNamesTheFieldAndFocusesIt(t *testing.T) {
 	}
 }
 
-// TestOnProjectError_SurfacesWhileTheFormIsStillOpen covers the more
-// important half of relay#25 defect (b): a refusal from
-// validateProjectShape / validateProjectPermissions on the SERVER, which
-// arrives over IPC as onProjectError while Create's form is still open (it is
-// never closed on a refusal). onProjectError answered with render('push'),
-// which is the exact guard written to stop an UNRELATED external change from
-// wiping keystrokes mid-edit — so the guard swallowed the refusal's own
-// answer too, and #content was never repainted: "no error banner, no field
-// highlight, no log line. The dialog sits there looking complete," verbatim
-// from the issue, for a call that is the security check ADR-011 exists to
-// enforce.
 func TestOnProjectError_SurfacesWhileTheFormIsStillOpen(t *testing.T) {
 	vm := newAppVM(t)
 	script := `(function(){

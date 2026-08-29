@@ -59,13 +59,74 @@ ADR that references the old one. Do not edit accepted ADRs in place.
   — in one critical section, so a callable MCP with no schema is
   unrepresentable; an over-long frame fails its own call and the stream
   resyncs; and a child's death, recovery, and abandonment become audit rows.
-- [012 — Relay forwards a call's arguments, it does not re-serialise
+- [013 — Relay forwards a call's arguments, it does not re-serialise
   them](013-relay-forwards-arguments-verbatim.md): tool arguments travel as
   `json.RawMessage` from the wire to the MCP and into the audit log. Relay
   validates and authorises a call without decoding its payload, because a round
   trip through Go values substitutes U+FFFD for a lone surrogate, sorts keys,
   drops duplicates and reformats numbers — and because a log that paraphrases
   what a client sent is not ground truth.
+
+- [014 — Every capability is an HTTP capability, and the view is just a
+  client](014-every-capability-is-an-http-capability.md): the IPC dispatch
+  table holds 27 commands and HTTP answers 9, so starting a service, revoking
+  an enrolment and querying the audit log are reachable only from a mouse. One
+  core per capability, envelopes that decode/call/encode and nothing else,
+  commands that answer their caller, and events demoted to change
+  notifications. Authorization is deferred and named as the risk; any listener
+  beyond the 0600 socket is opt-in and absent by default.
+- [015 — The control plane is classed by blast radius, and transport is part of
+  the grant](015-control-plane-authorization.md): pays ADR-014's deferred
+  authorization debt. Four capability classes (`read` / `configure` / `grant` /
+  `execute`) where the line for `execute` is **who chose what runs**, not
+  whether a process starts; `execute` routes are never registered on a TCP
+  listener at all rather than gated behind a check, imitating ADR-010's
+  two-entry dispatch table; a credential names its classes and an absent set
+  grants nothing; and the settings view becomes the LEAST privileged client
+  because a browser-held credential is the most exposed. `PeerPID` is
+  explicitly refused as an authorization input.
+
+- [016 — A login is a ceremony anchored on the host, and the view holds a
+  credential of its own](016-interactive-login-and-the-view-credential.md):
+  implements ADR-015 decision 4. A human authenticates with a **passkey**, not
+  a password, because a password would put an offline-guessable, reused secret
+  in `settings.json` and is phishable by the one surface this opens — a page in
+  the owner's browser. Registering one is a **host-side operator act** anchored
+  by a short-lived code from `relay login enrol`, for ADR-010 decision 8's
+  reason: trust-on-first-use would let any tab claim the machine, and would
+  silently re-arm every time `settings.json` is deleted. The ceremony yields a
+  **short-lived credential, one per login, held in memory and never in
+  `localStorage` and never in a cookie**, carrying `read`+`configure` and
+  nothing else. A fifth class, **`proxy`**, splits the enhanced-service
+  catch-all out of `configure` and is socket-only, which is what makes the
+  view's class set genuinely small and what answers issue #50. The 0600 socket
+  keeps authenticating: relay already distinguishes among same-user processes
+  (`--no-frontend-creds`), and 0600 is already spent justifying `execute`.
+  **No WebAuthn library** — ES256 only, `none` attestation only, one origin,
+  one RP ID, no resident keys, no extensions — and every assertion check is
+  enumerated, including what happens when a signature counter does not
+  increase.
+
+- [017 — The config dir is not a boundary against its owner](017-config-dir-is-not-a-boundary.md)
+  (**Proposed, not implemented**): relay's protections are real against a
+  *remote* client (ADR-010) and against an agent *confined to relay-granted
+  tools* (ADR-011, ADR-015), and are not a boundary against code running as the
+  owning user — which is now what an LLM agent is. Escalation has three doors:
+  read the plaintext project tokens out of the 0600 `settings.json`, mint a
+  `grant`+`execute` credential, or read `ca.key` and issue a certificate. The
+  answer is to seal **what relay hands out** (token plaintexts, `admin_secret`,
+  refresh tokens, `ca.key`) under a keychain key while leaving every **verifier**
+  readable, so authentication, `relay grant` and a hand-edit survive; to make the
+  running service the **sole broker of its own credentials** — ADR-007's project
+  token pattern applied to `settings.json`, so the CLI asks rather than writes,
+  one process holds the key, and one process writes the file; and to gate
+  escalation on the **operation, not the transport**. The determination cannot be
+  "is this caller authorised" — everything reaching a 0600 socket is the owner —
+  so it is LocalAuthentication *presence*, per operation: **enclave for the key
+  at rest, presence for the operation**, either alone leaving the door open. Names what stays broken: `proxy`
+  reaches a terminal and is not gated, privileged CLI use over SSH stops working,
+  and relay cannot defend against an agent the user starts from their own shell —
+  that is an account boundary.
 
 ## Format
 

@@ -12,15 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Tests for the front-door HTTP+WS dispatcher. Covers:
-//   - longest-prefix-match wiring (LookupByPath is unit-tested elsewhere;
-//     here we verify the dispatcher actually USES it)
-//   - 404 when no service claims the path
-//   - inbound Authorization is stripped, declared internal token injected
-//   - request body is preserved
-//   - WS upgrade round-trip with token injection
-//   - WS proxy doesn't leak goroutines after both sides close
-
 func TestFrontendDispatcher_404OnUnknownPath(t *testing.T) {
 	registry := NewEnhancedServiceRegistry(nil)
 	dispatcher := NewFrontendDispatcher(registry)
@@ -48,8 +39,6 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	srv := httptest.NewServer(dispatcher)
 	defer srv.Close()
 
-	// Send a request carrying a frontend Authorization header that should
-	// be stripped before reaching the upstream service.
 	req, _ := http.NewRequest("POST", srv.URL+"/api/a/echo?x=1", strings.NewReader(`{"hello":"world"}`))
 	req.Header.Set("Authorization", "Bearer FRONTEND-TOKEN-MUST-NOT-LEAK")
 	req.Header.Set("Content-Type", "application/json")
@@ -74,8 +63,7 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	if string(got.Body) != `{"hello":"world"}` {
 		t.Fatalf("body lost; got %q", got.Body)
 	}
-	// Authorization-header rewrite: must NOT carry the inbound token, MUST
-	// carry the service-declared token.
+	// The inbound frontend token must not leak to the upstream service.
 	auth := got.Headers.Get("Authorization")
 	if strings.Contains(auth, "FRONTEND-TOKEN-MUST-NOT-LEAK") {
 		t.Fatalf("inbound Authorization leaked to upstream: %q", auth)
@@ -102,7 +90,6 @@ func TestFrontendDispatcher_LongestPrefixWins(t *testing.T) {
 	srv := httptest.NewServer(dispatcher)
 	defer srv.Close()
 
-	// /api/sessions/123 → inner; /api/other → outer
 	resp1, err := http.Get(srv.URL + "/api/sessions/123")
 	assertNoErr(t, err, "GET sessions")
 	_, _ = io.Copy(io.Discard, resp1.Body)
@@ -124,10 +111,9 @@ func TestFrontendDispatcher_LongestPrefixWins(t *testing.T) {
 func TestFrontendDispatcher_WSUpgradeAndForward(t *testing.T) {
 	registry := NewEnhancedServiceRegistry(nil)
 
-	// Upstream WS handler: echoes any text frame as `echo:<msg>`.
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	wsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Authorization must be the service-declared token.
+		// Token injection applies to the WS upgrade request too, not just HTTP.
 		if r.Header.Get("Authorization") == "" {
 			t.Errorf("upstream WS upgrade missing Authorization header")
 		}
@@ -171,9 +157,6 @@ func TestFrontendDispatcher_WSUpgradeAndForward(t *testing.T) {
 }
 
 func TestFrontendDispatcher_WSNoGoroutineLeak(t *testing.T) {
-	// Regression guard: the proxyWS goroutine pair must terminate when
-	// either side closes. Run a small batch of WS sessions and check the
-	// goroutine count returns to baseline.
 	registry := NewEnhancedServiceRegistry(nil)
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -199,7 +182,6 @@ func TestFrontendDispatcher_WSNoGoroutineLeak(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 
-	// Settle baseline.
 	runtime.GC()
 	time.Sleep(50 * time.Millisecond)
 	base := runtime.NumGoroutine()
@@ -212,15 +194,13 @@ func TestFrontendDispatcher_WSNoGoroutineLeak(t *testing.T) {
 		conn.Close()
 	}
 
-	// Give the proxy goroutines time to drain.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		runtime.GC()
 		if runtime.NumGoroutine() <= base+2 {
-			return // OK
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("goroutine leak after 5 WS sessions: base=%d now=%d", base, runtime.NumGoroutine())
 }
-

@@ -517,6 +517,30 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .remote-note { font-size: 11px; color: var(--text-2); margin-top: 8px; }
 .remote-note.warn { color: var(--warn); }
 .remote-note.danger { color: var(--danger); }
+
+/* ---- Passkeys (registrations + the browser sessions they minted) ---- */
+.pk-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }
+.pk-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 12px; }
+.pk-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.pk-meta { color: var(--text-3); font-size: 11px; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+/* The credential id is shown ABBREVIATED, never whole — the opposite choice
+   to .enrol-fp above, and deliberately so. A fingerprint outlives the record
+   it names and is the only thing identifying that client's calls afterwards;
+   a passkey id names nothing after revocation, so the only thing a full one
+   would add on screen is a long random-looking string next to the word
+   "credential". Revoke still sends the full id, which never gets rendered. */
+.pk-id { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+.pk-counter { color: var(--text-3); font-size: 11px; margin-top: 4px; }
+/* The minted bootstrap code. Loud, because it is on screen for two minutes
+   and is not recoverable once the window is closed. */
+.pk-code-banner { background: var(--bg-control); background: color-mix(in srgb, var(--accent) 14%, var(--bg-card)); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
+.pk-code { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: 1px; color: var(--text); word-break: break-all; user-select: all; margin: 8px 0; }
+.pk-code-line { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+.pk-code-line.warn { color: var(--warn); }
+.pk-code-line strong { color: var(--text); }
+.pk-session { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 8px; }
+.pk-session-name { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
+.pk-session-meta { color: var(--text-3); font-size: 11px; margin-top: 3px; }
 </style></head>
 <body>
 <div class="sidebar">
@@ -524,6 +548,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
     <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
     <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
+    <div class="sidebar-item" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
     <div class="sidebar-item" onclick="showPage('audit')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tool Calls</div>
 </div>
@@ -539,7 +564,10 @@ window.__RELAY_INIT__ = {
   mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,
   remote: __REMOTE_JSON__,
-  enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__
+  enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
+  passkeys: __PASSKEYS_JSON__,
+  loginSessions: __LOGIN_SESSIONS_JSON__,
+  loginCode: __LOGIN_CODE_JSON__
 };
 </script>
 <script>
@@ -754,6 +782,9 @@ window.__RELAY_INIT__ = {
   var ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
   var REMOTE_INIT = window.__RELAY_INIT__.remote || null;
   var ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
+  var PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
+  var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
+  var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
   function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
       window.webkit.messageHandlers.ipc.postMessage(msg);
@@ -871,6 +902,16 @@ window.__RELAY_INIT__ = {
     // uncommitted edit of the remote block
     remoteDirty: false,
     remoteError: null,
+    // Passkeys tab. Seeded like enrolments, and for the same reason — a
+    // credential you cannot see is one you will not revoke.
+    passkeys: PASSKEYS_INIT,
+    loginSessions: LOGIN_SESSIONS_INIT,
+    loginCode: LOGIN_CODE_INIT,
+    passkeyError: null,
+    passkeyRevoked: null,
+    // {name, short} shown after a revoke
+    loginSignedOut: null,
+    // credential name shown after a sign-out
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
     // on the Go side so it can be sent verbatim.
@@ -889,7 +930,7 @@ window.__RELAY_INIT__ = {
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
     state.page = page;
-    const pages = ["services", "mcps", "projects", "remote", "inspector", "audit"];
+    const pages = ["services", "mcps", "projects", "remote", "passkeys", "inspector", "audit"];
     document.querySelectorAll(".sidebar-item").forEach((el, i) => {
       el.classList.toggle("active", pages[i] === page);
     });
@@ -913,6 +954,8 @@ window.__RELAY_INIT__ = {
     } else if (state.page === "remote") {
       if (fromPush && (state.enrolForm || state.remoteDirty)) return;
       el.innerHTML = renderEnrolments();
+    } else if (state.page === "passkeys") {
+      el.innerHTML = renderPasskeys();
     } else if (state.page === "audit") {
       el.innerHTML = renderAudit();
       restoreAuditFocus();
@@ -1426,6 +1469,8 @@ window.__RELAY_INIT__ = {
     if (data.mcp_tool_cache) state.mcpToolCache = data.mcp_tool_cache;
     if (data.mcp_scope_fields) state.mcpScopeFields = data.mcp_scope_fields;
     if (data.enrolments) state.enrolments = data.enrolments;
+    if (data.passkeys) state.passkeys = data.passkeys;
+    if (data.login_sessions) state.loginSessions = data.login_sessions;
     if (data.remote) {
       state.remote = data.remote;
       if (!state.remoteDirty) state.remoteDraft = null;
@@ -3021,6 +3066,150 @@ window.__RELAY_INIT__ = {
     state.remoteError = msg || "could not save the remote block";
     if (state.page === "remote") render("push");
   };
+  var LOGIN_CODE_MENU_ITEM = "Show Login Code...";
+  function pkSignCountText(p) {
+    if (!p.counter_supported) return "This authenticator does not count signatures \u2014 the ordinary case for a synced passkey, and not a fault.";
+    return "Signature counter at last accepted assertion: " + (p.sign_count || 0) + ".";
+  }
+  function renderLoginCodeBanner(c) {
+    let html = '<div class="pk-code-banner">';
+    if (c.error) {
+      html += "<strong>Could not mint a login code.</strong>";
+      html += '<div class="pk-code-line">' + esc(c.error) + "</div>";
+      html += '<div class="pk-code-line">Nothing was changed. Try the tray item again, or run <code>relay login enrol</code> in a terminal \u2014 it writes through the same store and will report the same failure with more detail.</div>';
+      html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
+      html += "</div>";
+      return html;
+    }
+    html += "<strong>Login code</strong>";
+    html += '<div class="pk-code">' + esc(c.code) + "</div>";
+    html += '<div class="pk-code-line">Expires <strong>' + esc(c.expires || "") + "</strong> \u2014 valid for " + esc(c.ttl || "") + ", single use.</div>";
+    html += '<div class="pk-code-line">This code registers a passkey. It is <strong>NOT a password</strong> and is never accepted in place of a passkey assertion.</div>';
+    if (c.url) {
+      html += '<div class="pk-code-line">Open <code>' + esc(c.url) + "</code> and enter it.</div>";
+    } else {
+      html += '<div class="pk-code-line warn">There is no login page to enter it into: relay has no TCP listener, so <code>RELAY_API_LISTEN</code> is unset and the login routes are registered nowhere. Set it and relaunch relay, then mint a fresh code.</div>';
+    }
+    html += '<div class="pk-code-line warn">Showing another code replaces this one \u2014 there is only ever one live at a time, and this one stops working the moment the next is minted.</div>';
+    html += '<div class="pk-code-line">It is shown here once and is not recoverable. Closing this window loses it.</div>';
+    html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="copyLoginCode()">Copy</button> <button class="btn btn-sm" onclick="dismissLoginCode()">Done</button></div>';
+    html += "</div>";
+    return html;
+  }
+  function renderPasskeys() {
+    let html = '<div class="page-header"><h2>Passkeys</h2>';
+    html += '<button class="btn" onclick="refreshPasskeys()">Refresh</button></div>';
+    html += '<p class="page-intro">A passkey is how you sign in to relay from a browser. There is no password: the login page at <code>/relay/login</code> accepts a passkey assertion and nothing else. Registering one is a host-side act \u2014 it needs a single-use code minted on this machine, so a page in your browser cannot register itself.</p>';
+    if (state.loginCode) html += renderLoginCodeBanner(state.loginCode);
+    if (state.passkeyError) html += '<div class="proj-error">' + esc(state.passkeyError) + "</div>";
+    if (state.passkeyRevoked) {
+      html += '<div class="audit-note">Revoked passkey <strong>' + esc(state.passkeyRevoked.name || state.passkeyRevoked.short) + "</strong>. It can no longer complete a login. Any browser it already signed in keeps its session below until you end it or it expires.</div>";
+    }
+    if (state.loginSignedOut) {
+      html += '<div class="audit-note">Signed out <strong>' + esc(state.loginSignedOut) + "</strong>. Its token stops authenticating on the next request; that browser must run the ceremony again.</div>";
+    }
+    const list = state.passkeys || [];
+    if (!list.length) {
+      html += '<div class="empty-state">No passkeys are registered, so nothing can sign in to relay from a browser yet.<br><br>To register one, choose <strong>' + esc(LOGIN_CODE_MENU_ITEM) + "</strong> in the Relay tray menu, or run <code>relay login enrol</code> in a terminal. Either mints a single-use code that lasts two minutes; open the login page, enter it, and your authenticator registers a passkey.<br><br>The code exists so registration cannot be self-service: it can only be minted by something already running as you on this machine, never by a page that reached the port.</div>";
+    }
+    for (const p of list) {
+      html += '<div class="pk-card">';
+      html += '<div class="pk-card-header">';
+      html += '<span class="pk-card-name">' + esc(p.name || "(unnamed passkey)") + "</span>";
+      html += `<button class="btn btn-sm btn-danger" onclick="revokePasskey('` + esc(p.id) + `')">Revoke</button>`;
+      html += "</div>";
+      html += '<div class="pk-id">Credential: ' + esc(p.short || "") + "</div>";
+      html += '<div class="pk-counter">' + esc(pkSignCountText(p)) + "</div>";
+      html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || "\u2014") + "</strong></span></div>";
+      html += "</div>";
+    }
+    html += renderLoginSessions();
+    return html;
+  }
+  function renderLoginSessions() {
+    const sessions = state.loginSessions || [];
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Signed-in Browsers</div>';
+    html += `<p class="proj-section-help">Each completed login mints its own short-lived control-plane credential, held in the browser's memory and nowhere else \u2014 not <code>localStorage</code>, not a cookie \u2014 so a reload runs the ceremony again. It reaches <code>read</code> and <code>configure</code> and nothing else: no project-token rotation, no terminal, no session. Signing out revokes that one credential; every other browser and every credential relay injects into a service is untouched.</p>`;
+    if (!sessions.length) {
+      html += '<div class="empty-state">No browser is signed in. A session appears here the moment one completes the ceremony at the login page, and disappears when it expires \u2014 twelve hours at most.</div>';
+      html += "</div>";
+      return html;
+    }
+    for (const c of sessions) {
+      html += '<div class="pk-session">';
+      html += "<div>";
+      html += '<div class="pk-session-name">' + esc(c.name || c.id) + "</div>";
+      html += '<div class="pk-session-meta">Signed in ' + esc(c.created || "\u2014") + " \xB7 expires " + esc(c.expires || "never") + "</div>";
+      html += "</div>";
+      html += `<button class="btn btn-sm btn-danger" onclick="signOutLogin('` + esc(c.id) + `')">Sign out</button>`;
+      html += "</div>";
+    }
+    html += '<p class="proj-section-help">These are ordinary control-plane credentials, so <code>relay credential list</code> shows them too and <code>relay credential revoke --id ID</code> ends one from a terminal. This button refuses anything that is not a login session \u2014 a credential you minted for a script is not sign-out-able from a browser view.</p>';
+    html += "</div>";
+    return html;
+  }
+  function refreshPasskeys() {
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: "list_passkeys" }));
+  }
+  function copyLoginCode() {
+    if (state.loginCode && state.loginCode.code) copyProjectToken(state.loginCode.code);
+  }
+  function dismissLoginCode() {
+    state.loginCode = null;
+    render();
+  }
+  function revokePasskey(id) {
+    const p = (state.passkeys || []).find((x) => x.id === id);
+    if (!p) return;
+    const live = (state.loginSessions || []).length;
+    let msg = 'Revoke the passkey "' + (p.name || p.short) + '"?\n\nIt can no longer sign in to relay from any browser. The passkey stays on your authenticator \u2014 relay just stops recognising it \u2014 and nothing else in settings is touched.\n\n';
+    msg += live ? "This does NOT sign anyone out: " + live + " browser session(s) are live and stay live until they expire. Sign them out separately below." : "No browser session is currently live, so nothing is signed in with it.";
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: "revoke_passkey", id }));
+  }
+  function signOutLogin(id) {
+    const c = (state.loginSessions || []).find((x) => x.id === id);
+    if (!c) return;
+    const msg = 'Sign out "' + (c.name || c.id) + `"?
+
+That browser's credential stops authenticating on its next request and it has to run the login ceremony again. No passkey is revoked and no other session is affected.`;
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: "sign_out_login", id }));
+  }
+  window.onPasskeysReloaded = function(passkeys, sessions) {
+    state.passkeys = passkeys || [];
+    state.loginSessions = sessions || [];
+    state.passkeyError = null;
+    if (state.page === "passkeys") render("push");
+  };
+  window.onPasskeyRevoked = function(id, name) {
+    const p = (state.passkeys || []).find((x) => x.id === id);
+    state.passkeys = (state.passkeys || []).filter((x) => x.id !== id);
+    state.passkeyError = null;
+    state.loginSignedOut = null;
+    state.passkeyRevoked = { name: name || "", short: p ? p.short : "" };
+    if (state.page === "passkeys") render("push");
+  };
+  window.onLoginSessionRevoked = function(id, name) {
+    state.loginSessions = (state.loginSessions || []).filter((x) => x.id !== id);
+    state.passkeyError = null;
+    state.passkeyRevoked = null;
+    state.loginSignedOut = name || id || "";
+    if (state.page === "passkeys") render("push");
+  };
+  window.onPasskeyError = function(msg) {
+    state.passkeyError = msg || "the passkey operation failed";
+    if (state.page === "passkeys") render("push");
+  };
+  window.onLoginCodeMinted = function(code) {
+    state.loginCode = code || null;
+    state.passkeyError = null;
+    showPage("passkeys");
+  };
   function renderServiceInspector() {
     state._cfgBind = [];
     state._cfgBadJson = {};
@@ -4118,7 +4307,8 @@ window.__RELAY_INIT__ = {
     }
     if (state.page === "inspector") updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
   };
-  render();
+  if (LOGIN_CODE_INIT) showPage("passkeys");
+  else render();
   Object.assign(window, {
     auditBaseDetail,
     auditCaller,
@@ -4140,6 +4330,15 @@ window.__RELAY_INIT__ = {
     setAuditFilter,
     toggleAuditFollow,
     toggleAuditRow,
+    copyLoginCode,
+    dismissLoginCode,
+    pkSignCountText,
+    refreshPasskeys,
+    renderLoginCodeBanner,
+    renderLoginSessions,
+    renderPasskeys,
+    revokePasskey,
+    signOutLogin,
     cancelEnrolment,
     dismissEnrolBundle,
     enrolBudgetText,

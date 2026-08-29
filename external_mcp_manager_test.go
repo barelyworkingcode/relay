@@ -2,10 +2,8 @@
 
 package main
 
-// Coverage for ExternalMcpManager.Reconcile and Reload — the start/stop diffing
-// on the MCP-config-change hot path, previously untested. Uses the real
-// cmd/testmcp stdio peer (which answers initialize + tools/list) so the spawn,
-// handshake, and connection bookkeeping all run for real, not through mocks.
+// Uses the real cmd/testmcp stdio peer so spawn, handshake, and connection
+// bookkeeping run for real, not through mocks.
 
 import (
 	"context"
@@ -22,7 +20,6 @@ func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
-	// Seed a connection that the next reconcile must remove.
 	if err := m.startOne(ctx, ptr(stdioMcp("mcp-old", bin))); err != nil {
 		t.Fatalf("startOne mcp-old: %v", err)
 	}
@@ -30,7 +27,6 @@ func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
 		t.Fatal("mcp-old should be connected after startOne")
 	}
 
-	// Desired set drops mcp-old and introduces mcp-new.
 	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-new", bin)})
 
 	if m.IsConnected("mcp-old") {
@@ -51,7 +47,6 @@ func TestExternalMcpManager_Reconcile_RetainsUnchanged(t *testing.T) {
 		t.Fatalf("startOne mcp-keep: %v", err)
 	}
 
-	// Superset reconcile: mcp-keep stays connected, mcp-add starts.
 	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-keep", bin), stdioMcp("mcp-add", bin)})
 
 	if !m.IsConnected("mcp-keep") {
@@ -87,5 +82,4 @@ func TestExternalMcpManager_Reload_RestartsConnection(t *testing.T) {
 	}
 }
 
-// ptr returns the address of a copy of v.
 func ptr[T any](v T) *T { return &v }

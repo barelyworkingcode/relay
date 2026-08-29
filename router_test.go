@@ -10,27 +10,18 @@ import (
 	"relaygo/mcp"
 )
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// testToken is a known plaintext token used across router tests.
 const testToken = "aaaaaabbbbbbccccccddddddeeeeee0011223344556677889900aabbccddeeff"
 
-// makeSettings builds a Settings with one project whose token matches testToken.
-// perms defines which MCPs are allowed (PermOn) or denied (PermOff).
-// The project's AllowedMcpIDs is derived from the PermOn entries.
 func makeSettings(perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage) *Settings {
 	hash := hashToken(testToken)
-	// Derive AllowedMcpIDs from PermOn entries.
 	var allowed []string
 	for id, p := range perms {
 		if p == PermOn {
 			allowed = append(allowed, id)
 		}
 	}
-	// Build ExternalMcps from all permission keys so AuthenticateProject
-	// can set PermOff for non-allowed MCPs.
+	// ExternalMcps must include every permission key so AuthenticateProject
+	// can mark absentees PermOff.
 	var mcps []ExternalMcp
 	for id := range perms {
 		mcps = append(mcps, ExternalMcp{ID: id, DisplayName: id})
@@ -53,7 +44,6 @@ func makeSettings(perms map[string]Permission, disabled map[string][]string, ctx
 	}
 }
 
-// newTestRouter creates an appRouter with the given settings and ExternalMcpManager.
 func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRouter {
 	t.Helper()
 	store := &FileSettingsStore{cache: s, dir: t.TempDir()}
@@ -65,13 +55,9 @@ func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRoute
 	}
 }
 
-// setupRouter builds a test router with the given MCPs registered in both settings
-// and the manager. Each entry maps mcp-id to its mock connection.
 func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage, mocks map[string]*mockMcpConn) *appRouter {
 	t.Helper()
 	s := makeSettings(perms, disabled, ctx)
-	// makeSettings already creates ExternalMcps from perms keys.
-	// Add any mock MCPs not already in perms.
 	existing := make(map[string]bool)
 	for _, m := range s.ExternalMcps {
 		existing[m.ID] = true
@@ -88,14 +74,12 @@ func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string]
 	return newTestRouter(t, s, mgr)
 }
 
-// okHandler returns a sendRequestFunc that always succeeds with the given JSON.
 func okHandler(result string) func(context.Context, string, interface{}) (json.RawMessage, error) {
 	return func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
 		return json.RawMessage(result), nil
 	}
 }
 
-// unmarshalTools parses a JSON tool list result and fails the test on error.
 func unmarshalTools(t *testing.T, raw json.RawMessage) []mcp.Tool {
 	t.Helper()
 	var tools []mcp.Tool
@@ -104,10 +88,6 @@ func unmarshalTools(t *testing.T, raw json.RawMessage) []mcp.Tool {
 	}
 	return tools
 }
-
-// ---------------------------------------------------------------------------
-// resolveAuth
-// ---------------------------------------------------------------------------
 
 func TestResolveAuth_ValidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
@@ -147,10 +127,6 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 		t.Fatal("expected error for empty token")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// ListTools
-// ---------------------------------------------------------------------------
 
 func TestListTools_ReturnsPermittedTools(t *testing.T) {
 	r := setupRouter(t,
@@ -263,10 +239,6 @@ func TestListTools_InvalidToken(t *testing.T) {
 		t.Fatal("expected error for invalid token")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// CallTool
-// ---------------------------------------------------------------------------
 
 func TestCallTool_Success(t *testing.T) {
 	r := setupRouter(t,
@@ -387,7 +359,6 @@ func TestCallTool_InjectsMetaContext(t *testing.T) {
 	if !ok || len(dirs) != 2 {
 		t.Errorf("expected allowed_dirs with 2 entries, got %v", meta["allowed_dirs"])
 	}
-	// The authenticated project id rides alongside per-token context.
 	if meta["project_id"] != "test-project" {
 		t.Errorf("expected _meta.project_id=test-project alongside context, got %v", meta["project_id"])
 	}
@@ -411,8 +382,8 @@ func TestCallTool_InjectsProjectIDWhenContextNotSet(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	// Even with no per-token context, relay injects the authenticated project id
-	// so an MCP can attribute the call without trusting LLM-supplied values.
+	// Deliberate: project_id is always injected, even with no context, so an
+	// MCP can attribute the call without trusting LLM-supplied values.
 	meta, ok := capturedParams["_meta"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected _meta to be a map, got %T", capturedParams["_meta"])
@@ -462,10 +433,6 @@ func TestCallTool_RoutesToCorrectMcp(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ValidateAdmin
-// ---------------------------------------------------------------------------
-
 func TestValidateAdmin_CorrectSecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
@@ -496,15 +463,10 @@ func TestValidateAdmin_EmptySecret(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Service tokens (in-memory, full access)
-// ---------------------------------------------------------------------------
-
 func TestResolveAuth_ServiceToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
-	// Register a service token.
 	svcToken := "servicetokenservicetokenservicetokenservicetokenservicetokenservic"
 	svcHash := hashToken(svcToken)
 	r.serviceTokens.Register(svcHash)
@@ -517,7 +479,6 @@ func TestResolveAuth_ServiceToken(t *testing.T) {
 		t.Errorf("expected service token name, got %q", stored.Name)
 	}
 
-	// Cleanup.
 	r.serviceTokens.Remove(svcHash)
 	_, _, err = r.resolveAuth(context.Background(), svcToken)
 	if err == nil {

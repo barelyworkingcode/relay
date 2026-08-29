@@ -11,19 +11,15 @@ import (
 	"relaygo/bridge"
 )
 
-// sandboxExecPath is where seatbelt lives. A var rather than a const so a
-// test can point it at a path that does not exist and exercise the
-// fail-closed branch without depending on sandbox-exec actually being
-// missing from the machine running the suite.
+// A var rather than a const so a test can point it at a path that does not
+// exist and exercise the fail-closed branch without depending on
+// sandbox-exec actually being missing from the machine running the suite.
 var sandboxExecPath = "/usr/bin/sandbox-exec"
 
-// sandboxProfileCommon is the shared body of every seatbelt profile relay
-// generates: what a sandboxed stdio MCP may exec and what it may read outside
-// its own grant. Verified working on macOS 26.4 arm64 against a Go binary and
-// against ripgrep (fsMCP v3 integration, R5) — this is not a profile whose
-// failure mode is a clean refusal, it is a silent narrowing of what
-// "sandboxed" means, so do not edit it without re-verifying on a real
-// machine.
+// Verified working on macOS 26.4 arm64 against a Go binary and against
+// ripgrep (fsMCP v3 integration, R5) — a failure here is not a clean refusal,
+// it is a silent narrowing of what "sandboxed" means, so do not edit this
+// without re-verifying on a real machine.
 const sandboxProfileCommon = `(version 1)
 (import "bsd.sb")
 (allow process-exec*)
@@ -43,19 +39,15 @@ const sandboxGrantReadWrite = `(allow file-read* file-write* (subpath (param "GR
 const sandboxGrantReadOnly = `(allow file-read* (subpath (param "GRANT")))
 `
 
-// sandboxDir is relay's own subdirectory for generated seatbelt profiles.
 func sandboxDir() string {
 	return filepath.Join(bridge.ConfigDir(), "sandbox")
 }
 
-// ensureSandboxProfile writes (or rewrites) the seatbelt profile for a
-// read-write or read-only grant and returns its path.
-//
-// The grant directory itself never appears in this file. It is passed as a
-// `-D GRANT=` parameter at spawn time (prepareStdioLaunch) instead, so the
-// profile's own bytes are identical for every sandboxed MCP and a directory
-// name containing a quote or a backslash cannot touch its syntax. Writing it
-// to a file under relay's own config dir — rather than a temp file — means an
+// The grant directory itself never appears in the profile file: it is passed
+// as a `-D GRANT=` parameter at spawn time (prepareStdioLaunch) instead, so
+// the profile's own bytes are identical for every sandboxed MCP and a
+// directory name containing a quote or a backslash cannot touch its syntax.
+// Writing it under relay's own config dir, rather than a temp file, means an
 // attacker with write access to a shared temp directory cannot swap the
 // profile out from under sandbox-exec between relay writing it and the child
 // reading it.
@@ -75,15 +67,12 @@ func ensureSandboxProfile(readOnly bool) (string, error) {
 	return path, nil
 }
 
-// splitFlag decodes one argv element the way Go's flag package does, since
-// that is what is on the other end of these arguments.
-//
-// This is deliberate: BOTH "-name" and "--name" are accepted, because Go's
-// flag package accepts both and an MCP spelled "-root /srv/notes" starts and
-// serves exactly as "--root /srv/notes" does. Matching only the double-dash
-// form meant relay found no root, took prepareStdioLaunch's pass-through
-// branch, and spawned the MCP with no seatbelt and no audited root — the one
-// direction this must never fail in, reached by a spelling nothing rejects.
+// BOTH "-name" and "--name" are accepted, because Go's flag package accepts
+// both and an MCP spelled "-root /srv/notes" starts and serves exactly as
+// "--root /srv/notes" does. Matching only the double-dash form meant relay
+// found no root, took prepareStdioLaunch's pass-through branch, and spawned
+// the MCP with no seatbelt and no audited root — the one direction this must
+// never fail in, reached by a spelling nothing rejects.
 //
 // ok is false for an argument that is not a flag, including the bare "--"
 // that ends flag parsing.
@@ -101,7 +90,6 @@ func splitFlag(arg string) (name, value string, hasValue, ok bool) {
 	return trimmed, "", false, true
 }
 
-// stdioRootFlag reads the --root value out of a stdio MCP's configured Args.
 // This is the one narrow, declared thing relay parses out of an MCP's own argv
 // (fsMCP v3 integration, R2/R5) — not a general argument parser, and it must
 // not grow into one: relay does not know what any OTHER MCP's flags mean.
@@ -128,10 +116,9 @@ func stdioRootFlag(args []string) (string, bool) {
 	return "", false
 }
 
-// stdioReadOnlyFlag reports whether Args carries fsMCP's own --read-only
-// switch, which decides which of the two seatbelt profiles applies. It does
-// not, and must not, decide relay's own access mode (ADR-011 decision 2) —
-// this reads fsMCP's process-level flag back only to pick a profile.
+// This decides which of the two seatbelt profiles applies. It does not, and
+// must not, decide relay's own access mode (ADR-011 decision 2) — this reads
+// fsMCP's process-level flag back only to pick a profile.
 func stdioReadOnlyFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--" {
@@ -144,20 +131,16 @@ func stdioReadOnlyFlag(args []string) bool {
 		if !hasValue {
 			return true
 		}
-		// Go's flag package parses a boolean flag's value with
-		// strconv.ParseBool, so "1", "t" and "TRUE" all mean what "true"
-		// means. Reading only the literal "true" left an fsMCP started with
-		// "--read-only=1" running under the read-WRITE profile. A value Go
-		// cannot parse stops the MCP from starting at all, so false is the
-		// honest answer for it.
+		// Go's flag package parses a boolean flag's value with ParseBool, so
+		// "1", "t" and "TRUE" all mean "true"; reading only the literal
+		// "true" left an fsMCP started with "--read-only=1" running under
+		// the read-WRITE profile.
 		v, err := strconv.ParseBool(value)
 		return err == nil && v
 	}
 	return false
 }
 
-// prepareStdioLaunch decides how to spawn a configured stdio MCP.
-//
 // Without a --root argument, the command and args pass through unchanged —
 // this mechanism is deliberately narrow (R5) and does not sandbox an MCP
 // relay was never told the boundary of.
@@ -170,16 +153,13 @@ func stdioReadOnlyFlag(args []string) bool {
 // anything.
 //
 // cfg.ResolvedRoot is set on success so the caller, and through it the audit
-// log, can name the directory without re-deriving it from Args and without a
-// second filesystem round trip.
+// log, can name the directory without re-deriving it from Args.
 func prepareStdioLaunch(cfg *ExternalMcp) (command string, args []string, err error) {
 	root, ok := stdioRootFlag(cfg.Args)
 	if !ok {
-		// Said out loud, at the same level as the seatbelt line below. An MCP
-		// relay was never told the boundary of is spawned unconfined by
-		// design (R5) — macMCP has no --root and never will — but "no
-		// seatbelt" and "the log line scrolled past" must not look identical
-		// to an operator reading back why a directory was reachable.
+		// Said out loud, at the same level as the seatbelt log line below:
+		// "no seatbelt" and "the log line scrolled past" must not look
+		// identical to an operator reading back why a directory was reachable.
 		slog.Info("spawning MCP unsandboxed: no --root argument to bound it with", "id", cfg.ID)
 		return cfg.Command, cfg.Args, nil
 	}

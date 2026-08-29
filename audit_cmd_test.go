@@ -1,10 +1,7 @@
 package main
 
-// The gap this file closes: access, scope, allow_external and scope_violation
-// were recorded on every AuditEvent (ADR-011 decision 7) but reachable only
-// through --json and a grep. `relay audit`'s table is the thing a human
-// actually reads, and these tests pin what it now shows without breaking the
-// shape a script parsing the eight existing columns already depends on.
+// Deliberate: relay audit's table gains new columns without breaking the
+// shape a script parsing the eight existing columns depends on.
 
 import (
 	"bytes"
@@ -14,10 +11,6 @@ import (
 )
 
 func boolPtr(b bool) *bool { return &b }
-
-// ---------------------------------------------------------------------------
-// auditDetail: the scope_violation marker
-// ---------------------------------------------------------------------------
 
 func TestAuditDetail_MarksScopeViolationEvenWithNoOtherDetail(t *testing.T) {
 	ev := AuditEvent{Outcome: AuditOutcomeToolError, ScopeViolation: true}
@@ -37,9 +30,6 @@ func TestAuditDetail_ScopeViolationMarkerLeadsExistingDetail(t *testing.T) {
 	}
 }
 
-// An ordinary tool_error — the overwhelming majority of them — must render
-// exactly as it did before this feature existed: nothing here may make a
-// non-violation look like one.
 func TestAuditDetail_OrdinaryToolErrorIsUnmarked(t *testing.T) {
 	ev := AuditEvent{Outcome: AuditOutcomeToolError, Args: json.RawMessage(`{"path":"/tmp/x"}`)}
 	got := auditDetail(ev)
@@ -52,9 +42,8 @@ func TestAuditDetail_OrdinaryToolErrorIsUnmarked(t *testing.T) {
 }
 
 func TestAuditDetail_DeniedRecordShowsWhichLayerRefused(t *testing.T) {
-	// This is the layer-naming the CLI is asked to preserve: relay's own
-	// refusal messages already say which check fired, and auditDetail must
-	// not truncate or otherwise obscure that sentence.
+	// auditDetail must not truncate or otherwise obscure relay's own refusal
+	// message.
 	ev := AuditEvent{Outcome: AuditOutcomeDenied,
 		Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"}
 	got := auditDetail(ev)
@@ -62,10 +51,6 @@ func TestAuditDetail_DeniedRecordShowsWhichLayerRefused(t *testing.T) {
 		t.Errorf("auditDetail = %q, want the refusal message verbatim", got)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// auditScopeSummary / auditAuthorityLine
-// ---------------------------------------------------------------------------
 
 func TestAuditScopeSummary_AbsentEmptyAndPopulatedReadDifferently(t *testing.T) {
 	if got := auditScopeSummary(nil); got != "(none declared)" {
@@ -105,10 +90,9 @@ func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
 	}
 }
 
-// TestAuditAuthorityLine_RootIsDistinctFromScope pins fsMCP v3 integration
-// R2: a schema-less MCP still has "scope=(none declared)" — that stays true
-// and stays meaningful — while the directory relay itself spawned the MCP
-// with is a separate, additional fact on the same line.
+// Deliberate: root and scope are separate facts on the same line — a
+// schema-less MCP still reads scope=(none declared) even though root is
+// populated.
 func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
 	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true),
 		McpRoot: "/Users/admin/source/barelyworkingcode/testfolder"}
@@ -124,9 +108,8 @@ func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
 	}
 }
 
-// TestAuditAuthorityLine_NoRootOmitsTheField pins the negative: an MCP relay
-// did not spawn with --root prints no root= segment at all, rather than an
-// empty one that would read as "spawned with an empty root".
+// Subtle: no root= segment at all, not an empty one that would read as
+// "spawned with an empty root".
 func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
 	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true)}
 	line, ok := auditAuthorityLine(ev)
@@ -150,10 +133,6 @@ func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 		t.Errorf("authority line = %q, want outbound=n/a for a nil AllowExternal", line)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// writeAuditTable: default shape is unchanged; --authority is additive
-// ---------------------------------------------------------------------------
 
 func TestWriteAuditTable_DefaultShapeUnchanged(t *testing.T) {
 	events := []AuditEvent{
@@ -196,8 +175,6 @@ func TestWriteAuditTable_AuthorityFlagAddsALinePerConfinedCall(t *testing.T) {
 	}
 }
 
-// A service-token call carries no authority at all, and --authority must not
-// invent placeholders for it.
 func TestWriteAuditTable_AuthorityFlagSkipsRecordsWithNoAuthority(t *testing.T) {
 	events := []AuditEvent{
 		{Outcome: AuditOutcomeOK, Tool: "list_services", Actor: AuditActor{Kind: AuditActorService}},

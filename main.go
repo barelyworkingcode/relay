@@ -21,19 +21,11 @@ func main() {
 		}
 	}
 
-	// --config-dir is a global flag that may precede any subcommand. It
-	// reroutes settings, pidfiles, logs, and the bridge socket to the given
-	// directory — enables multi-instance use, the demo harness
-	// (scripts/demo.sh), and as a graceful production surface for the same
-	// override the test suite uses. See bridge.SetConfigDir.
 	args := os.Args[1:]
 	args = applyConfigDirFlag(args)
 
-	// Tee logs to <config-dir>/logs/relay.log so the tray process's logs survive
-	// a GUI launch: LaunchServices sends an app's stderr to /dev/null, which
-	// otherwise loses every slog line. Managed services already log to the same
-	// dir as <id>.log (see serviceLogDir). Set up after applyConfigDirFlag so it
-	// honors --config-dir; falls back to stderr-only if the file can't be opened.
+	// LaunchServices sends a GUI app's stderr to /dev/null, which would
+	// otherwise lose every slog line; tee to <config-dir>/logs/relay.log too.
 	logOut := io.Writer(os.Stderr)
 	if logDir, err := serviceLogDir(); err == nil {
 		if rw, err := openRotatingLog(filepath.Join(logDir, "relay.log")); err == nil {
@@ -58,21 +50,23 @@ func main() {
 		runAuditCommand(args[1:])
 	case "enrol":
 		runEnrolCommand(args[1:])
+	case "credential":
+		runCredentialCommand(args[1:])
+	case "login":
+		runLoginCommand(args[1:])
 	case "grant":
 		runGrantCommand(args[1:])
 	case "mcpList":
 		exitError("mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list")
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|grant]\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: relay [--config-dir DIR] [service|mcp|mcpExec|audit|enrol|credential|login|grant]\n", args[0])
 		os.Exit(1)
 	}
 }
 
-// applyConfigDirFlag consumes a leading --config-dir <path> (or --config-dir=<path>)
-// argument if present, calls bridge.SetConfigDir, and returns the remaining
-// args. Kept pre-flag.Parse because each subcommand uses its own flag.FlagSet
-// and we need the override applied before any subcommand initializes anything
-// that reads ConfigDir.
+// applyConfigDirFlag must run before any subcommand's flag.Parse: each
+// subcommand owns its own flag.FlagSet, so this is the only chance to apply
+// --config-dir before anything reads ConfigDir.
 func applyConfigDirFlag(args []string) []string {
 	if len(args) == 0 {
 		return args
@@ -92,8 +86,6 @@ func applyConfigDirFlag(args []string) []string {
 	return args
 }
 
-// runMcpOrServer dispatches to MCP management subcommands or runs the stdio
-// MCP server, depending on the first argument.
 func runMcpOrServer(args []string) {
 	if len(args) > 0 {
 		switch args[0] {
@@ -106,7 +98,6 @@ func runMcpOrServer(args []string) {
 		}
 	}
 
-	// MCP stdio server mode.
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	token := fs.String("token", "", "auth token")
 	fs.Parse(args)
@@ -118,9 +109,9 @@ func runMcpOrServer(args []string) {
 		// Transition: accept the legacy env name from an un-migrated spawner.
 		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
 	}
-	// An empty token is not fatal: the bridge client falls back to directory
-	// auth, which relay honors only for projects that opted in (AllowCwdAuth).
-	// Failing here instead would deny that path before relay can decide.
+	// An empty token is not fatal: the bridge falls back to directory auth,
+	// which relay honors only for projects that opted in (AllowCwdAuth).
+	// Failing here would deny that path before relay can decide.
 	if err := mcp.RunMCPServer(*token); err != nil {
 		exitError("mcp server error: %v", err)
 	}

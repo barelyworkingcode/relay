@@ -17,112 +17,83 @@ import (
 	"relaygo/mcp"
 )
 
-// ---------------------------------------------------------------------------
-// Interfaces for dependency injection
-// ---------------------------------------------------------------------------
-
-// ToolProvider abstracts read-only access to external MCP tool data and invocation.
 type ToolProvider interface {
 	Tools(id string) []mcp.Tool
 	// ToolOwners returns every connected MCP exposing the name, sorted, so
-	// that resolution happens inside the caller's grant rather than against
+	// resolution happens inside the caller's grant rather than against
 	// whichever connection a map iteration reached first — see
 	// resolveToolOwner.
 	ToolOwners(name string) []string
 	CallTool(ctx context.Context, id, name string, args, meta json.RawMessage) (json.RawMessage, error)
 	// McpSurfaceFor is the LIVE declaration: the context schema an MCP
-	// published at its last handshake, that schema's version, and the tools it
-	// exposes now. Read at call time rather than from the stored grant because
-	// the only defence that catches an MCP which grew a scope field AFTER a
+	// published at its last handshake, that schema's version, and the tools
+	// it exposes now. Read at call time rather than from the stored grant --
+	// the only defence that catches an MCP which grew a scope field after a
 	// grant was validated is one that asks the running server (ADR-011
 	// decision 4).
 	McpSurfaceFor(id string) McpSurface
 }
 
-// ToolManager extends ToolProvider with lifecycle operations for reconciling
-// and reloading MCP connections.
 type ToolManager interface {
 	ToolProvider
 	Reconcile(ctx context.Context, mcps []ExternalMcp)
 	Reload(ctx context.Context, id string, cfg *ExternalMcp) error
 }
 
-// ServiceReloader abstracts service restart operations.
 type ServiceReloader interface {
 	Reload(id string, cfg *ServiceConfig) error
 }
 
-// checkToolAccess verifies that the resolved token has permission to access
-// the specified MCP and (optionally) tool. Pass empty toolName to check
-// only the MCP-level permission. Operates on the StoredToken directly so it
-// works for both external tokens (from Tokens[]) and project tokens (inline).
+// checkToolAccess applies the layers in this order deliberately: which MCP,
+// then which tools, then which operations, then which side of the host, then
+// the denylist. Each later layer can only SUBTRACT from what the earlier
+// ones admitted, so a refusal always names the grant that was never given
+// rather than a switch an operator flipped further down.
 //
-// tool is the live definition of toolName, needed for the two checks below
-// that read its annotations — the access mode and the outbound grant; pass nil
-// for an MCP-level check. A nil tool with a non-empty toolName means relay
-// could not find the definition, which is a denial on both of them, in
-// opposite spellings of the same fail-closed rule — see readOnlyHintTrue and
-// toolIsOpenWorld.
+// Pass empty toolName for an MCP-level check only. tool is the live
+// definition, needed by the mode and outbound-grant checks below to read its
+// annotations; pass nil for an MCP-level check. A nil tool with a non-empty
+// toolName means relay could not find the definition, which both of those
+// checks treat as a denial (see readOnlyHintTrue and toolIsOpenWorld).
 func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) error {
-	// Check MCP-level permission.
 	if perm, ok := tok.Permissions[mcpID]; ok && perm == PermOff {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID))
 	}
 	if toolName == "" {
 		return nil
 	}
-	// Which tools (ADR-011 decision 2b). An allowlist, checked before the mode
-	// and before the denylist: a tool this grant does not name is refused
-	// whatever its annotations say and whatever any denylist omits. This is
-	// what keeps a profile named for one mailbox out of capture_screenshot,
-	// shortcuts_run, web_fetch and the address book — all of which the live
-	// "Hermes Mail" enrolment was measured to reach, and none of which the
-	// access mode below would have stopped, because they are honestly
-	// read-only.
+	// Which tools (ADR-011 decision 2b), checked before the mode and the
+	// denylist: a tool this grant does not name is refused whatever its
+	// annotations say, which is what keeps a profile named for one mailbox
+	// out of capture_screenshot, shortcuts_run, web_fetch and the address
+	// book -- all honestly read-only, so the mode check below would not have
+	// stopped any of them.
 	if !tok.ToolAllowed(mcpID, toolName) {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not in the allowed tools for MCP '%s'", toolName, mcpID))
 	}
-	// Which operations (ADR-011 decision 2). Relay applies this rule itself, at
-	// its own chokepoint, and what it decided is visible in the audit log and
-	// in what ListTools returns. What relay does NOT verify is the input: the
-	// classification of a tool as read-only is the MCP's own readOnlyHint, and
-	// an MCP that mislabels a mutating tool defeats the mode. That is still
-	// meaningfully stronger than the resource layer — a false hint is a lie
-	// told in a published tool list an operator can read and diff, whereas an
-	// ignored _meta leaves no trace anywhere.
+	// Which operations (ADR-011 decision 2). Relay verifies the MCP's own
+	// readOnlyHint, not the tool's actual behavior -- an MCP that mislabels a
+	// mutating tool defeats the mode. Still stronger than the resource layer:
+	// a false hint is a lie in a published tool list an operator can read and
+	// diff, where an ignored _meta leaves no trace anywhere.
 	if tok.AccessMode(mcpID) != AccessWrite {
 		if !readOnlyHintTrue(tool) {
 			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not annotated read-only and this grant is read-only for MCP '%s'", toolName, mcpID))
 		}
 	}
 	// Which side of the host (ADR-011 decision 2c). Orthogonal to the mode
-	// above, not a value of it, so it is a separate check and not a third
-	// branch of that one: a tool can be read-only and open-world (web_fetch),
-	// or mutating and local (mail_create_draft), and neither question answers
-	// the other.
-	//
-	// It sits AFTER the mode and BEFORE the denylist. After the mode because
-	// the two are both grant-shaped and either may refuse, so their order only
-	// decides which refusal is named — and putting the new one second means no
-	// call that is denied today changes the sentence it is denied with. Before
-	// the denylist for the reason stated there: a denylist can only subtract
-	// from what the allowlists admitted, and a refusal should name the grant
-	// that was never given rather than the switch an operator flipped.
+	// above, not a value of it: a tool can be read-only and open-world
+	// (web_fetch), or mutating and local (mail_create_draft).
 	if !tok.ExternalAllowed(mcpID) {
 		if toolIsOpenWorld(tool) {
 			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' reaches outside this host and this grant does not allow external access for MCP '%s'", toolName, mcpID))
 		}
 	}
-	// Tool-level disabling. Last, because it can only ever SUBTRACT from what
-	// the three allowlists already admitted, and because that is the order in
-	// which the layers are easiest to reason about: which MCP, which tools,
-	// which operations, then what an operator switched off by hand.
-	//
-	// Applied to every token kind, not only local ones. validateProjectShape
-	// refuses disabled_tools on a remote-kind record — an inert control is
-	// worse than none — but a record that acquired one by a route validation
-	// did not cover (a hand-edited settings.json) must still have it honoured:
-	// ignoring a denylist is the one direction that widens.
+	// Applied to every token kind, not only local ones: validateProjectShape
+	// refuses disabled_tools on a remote-kind record, but a record that
+	// acquired one by a route validation didn't cover (a hand-edited
+	// settings.json) must still have it honoured -- ignoring a denylist is
+	// the one direction that widens.
 	if tok.DisabledTools != nil && slices.Contains(tok.DisabledTools[mcpID], toolName) {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is disabled for this token", toolName))
 	}
@@ -130,30 +101,22 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) e
 }
 
 // readOnlyHintTrue reports whether a tool's annotations declare
-// readOnlyHint: true, EXPLICITLY, as a boolean, and under that exact spelling.
+// readOnlyHint: true, EXPLICITLY, as a boolean, under that exact spelling.
+// Everything else -- absent, null, malformed JSON, a string "true", a number
+// 1, or false -- is "mutating" (ADR-011 finding 9): a tool added to an MCP
+// after a grant was written is denied to every read-only grant until
+// annotated truthfully, rather than silently granted the way a denylist
+// would grant it.
 //
-// Everything else is "mutating": absent, null, malformed JSON, a string
-// "true", a number 1, or false. That is the whole rule and it is what makes
-// ADR-011 finding 9 safe — a tool added to an MCP after a grant was written is
-// denied to every read-only grant until someone annotates it truthfully,
-// rather than silently granted the way a denylist would grant it.
+// The spelling is read from a map rather than decoded into a struct on
+// purpose: encoding/json matches struct fields CASE-INSENSITIVELY, so a
+// `ReadOnlyHint *bool` field would admit {"ReadOnlyHint":true} and
+// {"readonlyhint":true} -- neither the key the MCP specification defines --
+// to every read-only grant. A map lookup is exact.
 //
-// The spelling is read from a map rather than decoded into a struct, and that
-// is the point rather than a style choice. encoding/json matches struct fields
-// CASE-INSENSITIVELY, so a `ReadOnlyHint *bool` field admitted
-// {"ReadOnlyHint":true} and {"readonlyhint":true} — neither of which is the
-// key the MCP specification defines — to every read-only grant, while the
-// comment above said such blobs were treated as mutating. A map lookup is
-// exact, which is what decision 2 asks for: relay's whole claim here is that a
-// mode is decided from a declaration an operator can read and diff, and a
-// buggy or hostile MCP must not be able to widen a grant with a near-miss key
-// that no reviewer reading the spec would recognise as one.
-//
-// It must never panic on a malformed blob: annotations are server-supplied
-// bytes relay has carried unread since the type was written, so this is the
-// first code to trust them with anything, and the first thing an MCP could get
-// wrong. Unmarshalling the one value into a *bool gives all three answers —
-// error, nil, value — without a type switch that could miss a case.
+// Must never panic on a malformed blob: annotations are server-supplied
+// bytes, so unmarshalling into a *bool gives all three answers -- error,
+// nil, value -- without a type switch that could miss a case.
 func readOnlyHintTrue(tool *mcp.Tool) bool {
 	if tool == nil || len(tool.Annotations) == 0 {
 		return false
@@ -173,39 +136,20 @@ func readOnlyHintTrue(tool *mcp.Tool) bool {
 	return hint != nil && *hint
 }
 
-// mcpReadOnlyHintKey is the annotation key the MCP specification defines, in
-// the specification's spelling. It is a constant so the exactness above is one
-// value rather than a string literal someone later "tidies".
 const mcpReadOnlyHintKey = "readOnlyHint"
 
 // toolIsOpenWorld reports whether a tool must be treated as reaching outside
-// this host: whether it may talk to the network, to a remote mailbox, to
-// anything relay cannot see the other end of.
+// this host.
 //
-// THE POLARITY IS INVERTED FROM readOnlyHintTrue, AND THAT IS NOT A BUG. Both
-// fail closed; they fail closed in opposite directions because the two hints
-// have opposite defaults in the MCP specification, and each function answers
-// the question that DENIES when the hint is missing:
-//
-//	readOnlyHint  defaults to false — absent means "mutating", which a READ
-//	              grant must refuse. So that function asks "is it explicitly
-//	              true?" and absent answers no.
-//	openWorldHint defaults to TRUE  — absent means "open-world", which a grant
-//	              without allow_external must refuse. So this one asks "is it
-//	              explicitly false?" and absent answers no to THAT, i.e. yes to
-//	              open-world.
-//
-// Written out because the asymmetry is exactly what a later reader will try to
-// "tidy" into one shared helper, and the tidy version admits every unannotated
-// tool to every grant.
-//
-// Everything else about it is readOnlyHintTrue's discipline, unchanged and for
-// unchanged reasons: the exact key spelling, read out of a map because
-// encoding/json matches struct fields case-insensitively and {"OpenWorldHint":
-// false} is not a declaration the MCP specification defines; a malformed blob
-// answering "open-world" rather than panicking; a nil tool — relay could not
-// find the definition — answering "open-world", because a grant must not be
-// widened by relay's own ignorance of what it is about to call.
+// THE POLARITY IS INVERTED FROM readOnlyHintTrue, AND THAT IS NOT A BUG: the
+// two hints have opposite defaults in the MCP specification, and each
+// function answers the question that DENIES when the hint is missing.
+// readOnlyHint defaults to false (absent means "mutating", so that function
+// asks "explicitly true?"); openWorldHint defaults to TRUE (absent means
+// "open-world", so this one asks "explicitly false?", and absent answers no
+// to that -- i.e. yes to open-world). A later reader who "tidies" this into
+// one shared helper with readOnlyHintTrue admits every unannotated tool to
+// every grant.
 func toolIsOpenWorld(tool *mcp.Tool) bool {
 	if tool == nil || len(tool.Annotations) == 0 {
 		return true
@@ -226,12 +170,8 @@ func toolIsOpenWorld(tool *mcp.Tool) bool {
 	return hint == nil || *hint
 }
 
-// mcpOpenWorldHintKey is the annotation key the MCP specification defines for
-// the second axis, in the specification's spelling, and a constant for the
-// same reason mcpReadOnlyHintKey is.
 const mcpOpenWorldHintKey = "openWorldHint"
 
-// findTool locates a tool definition by name in a list.
 func findTool(tools []mcp.Tool, name string) *mcp.Tool {
 	for i := range tools {
 		if tools[i].Name == name {
@@ -241,40 +181,33 @@ func findTool(tools []mcp.Tool, name string) *mcp.Tool {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// ToolRouter implementation
-// ---------------------------------------------------------------------------
-
 type appRouter struct {
 	store    SettingsStore
 	tools    ToolManager
 	services ServiceReloader
 	enhanced *EnhancedServiceRegistry
 	onChange func()
-	// audit records every tool call, denial, and auth failure that passes
-	// through this router. Nil disables auditing entirely — every call site
-	// goes through nil-safe helpers, so nothing branches on it.
+	// Nil disables auditing entirely -- every call site goes through
+	// nil-safe helpers, so nothing branches on it.
 	audit *AuditRecorder
 	// budgets enforces each enrolment's rolling call-rate and result-volume
-	// caps for remote callers (ADR-010 decision 7). The zero value enforces —
-	// see enrolmentBudgets — so there is nothing to wire up and no way to end
-	// up with an unbudgeted router by omission.
+	// caps for remote callers (ADR-010 decision 7). The zero value enforces
+	// (see enrolmentBudgets), so there is no way to end up with an
+	// unbudgeted router by omission.
 	budgets       enrolmentBudgets
 	serviceTokens serviceTokenStore
 }
 
-// serviceTokenName identifies service tokens in the Name field.
 const serviceTokenName = "service"
 
 // serviceTokenStore holds ephemeral in-memory tokens for managed services.
-// Tokens are never persisted — if Relay crashes, both the tokens and the
+// Tokens are never persisted -- if relay crashes, both the tokens and the
 // services that use them disappear together.
 type serviceTokenStore struct {
 	mu     sync.Mutex
-	hashes map[string]*StoredToken // hash → synthetic StoredToken with full access
+	hashes map[string]*StoredToken // hash -> synthetic StoredToken with full access
 }
 
-// Register adds an in-memory service token.
 func (s *serviceTokenStore) Register(hash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -287,43 +220,34 @@ func (s *serviceTokenStore) Register(hash string) {
 	}
 }
 
-// Remove deletes an in-memory service token.
 func (s *serviceTokenStore) Remove(hash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.hashes, hash)
 }
 
-// Lookup checks if a hash matches an in-memory service token.
 func (s *serviceTokenStore) Lookup(hash string) *StoredToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hashes[hash]
 }
 
-// Len returns the number of registered service tokens. Provides a synchronized
-// read so callers (e.g. tests) don't touch the map directly and race the
-// reaper's Remove on process exit.
 func (s *serviceTokenStore) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.hashes)
 }
 
-// Compile-time interface assertions.
 var (
 	_ bridge.ToolRouter = (*appRouter)(nil)
 	_ ToolManager       = (*ExternalMcpManager)(nil)
 	_ ServiceReloader   = (*ServiceRegistry)(nil)
 )
 
-// resolveAuth loads settings and authenticates the given token.
-// Checks in-memory service tokens first (full access, no per-MCP permissions),
-// then project tokens (inline permissions), then external tokens in settings.
-//
-// With no token, falls back to directory auth (resolveCwdAuth) — opt-in per
-// project. A token that is present but wrong is always a hard failure: the
-// fallback must never rescue a bad credential, only the absence of one.
+// resolveAuth: with no token, falls back to directory auth (resolveCwdAuth),
+// opt-in per project. A token that is present but wrong is always a hard
+// failure -- the fallback must never rescue a bad credential, only the
+// absence of one.
 func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken, *Settings, error) {
 	if token == "" {
 		return r.resolveCwdAuth(ctx)
@@ -331,13 +255,11 @@ func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken
 
 	s := r.store.Get()
 
-	// Check ephemeral service tokens first.
 	hash := hashToken(token)
 	if tok := r.serviceTokens.Lookup(hash); tok != nil {
 		return tok, s, nil
 	}
 
-	// Check project tokens (inline permissions). Reuse hash from above.
 	if stored := s.AuthenticateProjectByHash(hash); stored != nil {
 		return stored, s, nil
 	}
@@ -346,10 +268,10 @@ func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken
 }
 
 // resolveCwdAuth authenticates a tokenless caller by the working directory it
-// asserted over the bridge. Only projects with AllowCwdAuth participate, and the
-// resulting scope is exactly the project's token scope — this identifies a
-// caller, it does not widen one. Grants are logged: directory auth has no
-// deliberate hand-off to point at afterwards, so the log is the audit trail.
+// asserted over the bridge. The resulting scope is exactly the project's
+// token scope -- this identifies a caller, it does not widen one. Grants are
+// logged: directory auth has no deliberate hand-off to point at afterwards,
+// so the log is the audit trail.
 func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings, error) {
 	cwd := bridge.CallerCwdFromContext(ctx)
 	if cwd == "" {
@@ -367,21 +289,14 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings
 	return stored, s, nil
 }
 
-// ambiguousToolNames returns the tool names this grant admits on more than one
-// connected MCP — the names CallTool refuses outright, because a bare name
-// cannot say which MCP it meant (issue #35).
-//
-// The listing has to agree with dispatch or the two surfaces lie in opposite
-// directions: ListTools would advertise a tool that can never be called, and
-// ListSkillBuckets would write it into a SKILL.md for an agent to spend calls
-// on. That is the same invariant the note on ListSkillBuckets already states
-// for withheld scope fields, and issue #35's own complaint was that nothing on
-// the reviewable path showed the problem — a listing that advertises an
-// uncallable tool does not show it either.
-//
-// It is logged rather than only withheld: a name that vanishes from a listing
-// with no explanation anywhere is the silent half of the same failure. The log
-// fires only for a configuration that is already broken, so it is not chatty.
+// ambiguousToolNames returns the tool names this grant admits on more than
+// one connected MCP -- the names CallTool refuses outright, because a bare
+// name cannot say which MCP it meant. The listing must agree with dispatch,
+// or ListTools would advertise a tool that can never be called and
+// ListSkillBuckets would write it into a SKILL.md for an agent to spend
+// calls on. Logged rather than only withheld, so a name that vanishes from a
+// listing isn't the silent half of the failure; the log fires only for a
+// configuration that is already broken.
 func (r *appRouter) ambiguousToolNames(stored *StoredToken, s *Settings, isServiceToken bool) map[string]bool {
 	owners := map[string]int{}
 	for _, ext := range s.ExternalMcps {
@@ -422,7 +337,6 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 	tools := make([]mcp.Tool, 0)
 	ambiguous := r.ambiguousToolNames(stored, settings, isServiceToken)
 
-	// External MCP tools.
 	for _, ext := range settings.ExternalMcps {
 		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
@@ -448,14 +362,11 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 	return json.Marshal(tools)
 }
 
-// ListSkillBuckets groups the token's visible tools into skill buckets for
-// skill generation. Membership matches ListTools exactly (same auth + per-MCP
-// and per-tool access filtering); the only difference is that this keeps the
-// owning MCP in scope so it can group. Bucket key = server-supplied tool
-// category if present, else the owning MCP's display name (the name-prefix
-// fallback in toolCategory is intentionally NOT used for keys — it produces
-// noise like "Generate" from generate_image; uncategorized tools route by
-// their MCP instead). Buckets are returned in a deterministic order.
+// ListSkillBuckets groups the token's visible tools into skill buckets.
+// Membership matches ListTools exactly. Bucket key is the server-supplied
+// tool category if present, else the owning MCP's display name -- the
+// name-prefix fallback in toolCategory is deliberately NOT used for keys, as
+// it produces noise like "Generate" from generate_image.
 func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
 	au := r.beginAudit(ctx, AuditEventListSkills)
 
@@ -479,11 +390,8 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
-			// Membership already mirrors ListTools; the withholding and the
-			// scope note have to mirror it too, or the skill renderer would
-			// write a SKILL.md advertising a tool ListTools withholds and
-			// CallTool refuses. appendScopeNote is idempotent, which is what
-			// keeps the two paths from double-appending if they ever meet.
+			// appendScopeNote is idempotent, so the two listing paths cannot
+			// double-append a scope note if they ever converge.
 			if !view.listable(t.Name) {
 				continue
 			}
@@ -499,8 +407,8 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 		}
 	}
 
-	// Iterate keys in sorted order so slug-collision merges are deterministic
-	// (the alphabetically-first key wins as the bucket's display Key).
+	// Sorted so slug-collision merges are deterministic: the
+	// alphabetically-first key wins as the bucket's display Key.
 	keys := make([]string, 0, len(groups))
 	for k := range groups {
 		keys = append(keys, k)
@@ -530,32 +438,19 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	return buckets, nil
 }
 
-// grantRoutesToolTo reports whether the OPERATOR's own layers admit toolName on
-// mcpID: the MCP grant itself, the per-MCP tool allowlist, and the per-MCP
-// denylist. It is the predicate that decides which owners of a bare tool name
+// grantRoutesToolTo reports whether the OPERATOR's own layers admit toolName
+// on mcpID -- the predicate that decides which owners of a bare tool name
 // this grant could have meant.
 //
-// It began as the MCP-level check alone, which refused too much: an MCP the
-// grant allows but on which this specific tool is denied — by an allowlist that
-// does not name it, or a denylist that does — was still counted as a collider,
-// so a grant that had already said which server should serve the name was told
-// it was ambiguous. For a remote profile that is sharpest, because an absent
-// allowed_tools entry means NO tools: an MCP that can serve nothing at all
-// still made every colliding name uncallable.
-//
-// Narrowing by these layers can only ever SHRINK the candidate set, so it never
-// makes an MCP reachable that was not already reachable through it. Every
-// surviving candidate is one that passes every layer.
-//
-// It deliberately stops short of the two layers checkToolAccess applies after
-// these — the access mode and the outbound grant — even though either can also
-// refuse the call. Those two are decided from the MCP's OWN annotations
-// (readOnlyHint, openWorldHint), and a route must never be a function of a
-// value the MCP controls: an MCP that declares readOnlyHint: true would
-// otherwise be able to make itself the sole candidate for a name a read-only
-// grant admits on nobody else, and capture a call the operator meant for
-// another server. The three layers here are all things a human typed into
-// settings.json.
+// It deliberately stops short of the two layers checkToolAccess applies
+// after these -- the access mode and the outbound grant -- even though
+// either can also refuse the call. Those two are decided from the MCP's OWN
+// annotations (readOnlyHint, openWorldHint), and a route must never be a
+// function of a value the MCP controls: an MCP that declares
+// readOnlyHint: true would otherwise be able to make itself the sole
+// candidate for a name a read-only grant admits on nobody else, and capture
+// a call the operator meant for another server. The three layers here are
+// all things a human typed into settings.json.
 func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
 	if checkToolAccess(tok, mcpID, "", nil) != nil {
 		return false
@@ -568,44 +463,27 @@ func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
 
 // resolveToolOwner picks which of a tool name's owners this grant means.
 //
-// A tool name is not unique across MCPs, and the id chosen here is far more
-// than a dispatch target: it also selects the `_meta` resource scope
-// (stored.Context[id]) the call runs under, the disabled-tools list applied to
-// it, the live schema its scope is checked against, and the mcp_id the audit
-// records. Resolving the name globally therefore let Go's map seed decide
-// which confinement governed a call and which MCP the audit blamed for it —
-// the resource layer, not the routing layer, going nondeterministic. So the
-// grant answers the question: the owners on which the OPERATOR's own layers
-// admit this tool are the candidates — see grantRoutesToolTo.
+// A tool name is not unique across MCPs, and the id chosen here also selects
+// the `_meta` resource scope, the disabled-tools list, the live schema its
+// scope is checked against, and the mcp_id the audit records -- resolving
+// the name globally would let Go's map seed decide which confinement
+// governed a call. So the grant answers the question: the owners on which
+// the OPERATOR's own layers admit this tool are the candidates (see
+// grantRoutesToolTo).
 //
-// More than one candidate is REFUSED rather than resolved. The wire carries a
-// bare tool name, so the caller has not said which MCP it meant and relay has
-// no honest way to infer it; picking one would silently apply one MCP's scope
-// to a call the operator may have meant for the other's, which is the bug
-// being fixed rather than a smaller version of it. Naming every collider tells
-// an operator their grant is ambiguous — a configuration that is already
-// broken today and shows nowhere, since tools/list renders per MCP and looks
-// right. Service tokens are held to the same rule: they admit every MCP, so
-// they are the grant most likely to be ambiguous, and "pick one at random"
-// was never more correct for them than for anyone else.
+// More than one candidate is REFUSED rather than resolved: picking one would
+// silently apply one MCP's scope to a call the operator may have meant for
+// the other's. Service tokens follow the same rule -- they admit every MCP,
+// so "pick one at random" is never more correct for them than for anyone
+// else.
 //
-// Zero full candidates used to fall through to owners[0] unconditionally and
-// let the checks below refuse it in their own words — but owners[0] is a real
-// owner of the tool GLOBALLY, not within this grant (fsMCP v3 integration R6:
-// measured live as "MCP 'fsmcp' is disabled for this token" on a token that
-// was never granted an MCP of that name). Falling through named an MCP
-// outside the grant and pointed the operator at a permission that was never
-// the problem.
-//
-// The fix distinguishes two zero-candidate shapes rather than treating them
-// as one. An owner this grant admits at the MCP level, just not at the
-// tool/mode/disabled layer grantRoutesToolTo also checks, is an MCP the
-// caller already knows it holds — falling through to it, as before, lets
-// checkToolAccess below write ITS specific reason (wrong tool, wrong mode,
-// hand-disabled) rather than R6's generic one, and keeps every existing
-// denial's wording and audited authority unchanged. Only when NOT ONE owner
-// of the name is granted even at the MCP level — every real owner is outside
-// this grant — is a call refused here, in terms of the grant's own MCPs.
+// A zero-candidate name falls through to owners[0] ONLY when that owner is
+// granted at the MCP level (just refused at the tool/mode/disabled layer):
+// that lets checkToolAccess below write its specific reason (wrong tool,
+// wrong mode, hand-disabled) instead of a generic one, without naming an MCP
+// outside the grant. When no owner is granted even at the MCP level, the
+// call is refused here, in terms of the grant's own MCPs -- never by naming
+// an MCP the caller was never granted.
 func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
@@ -629,10 +507,9 @@ func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string,
 	return "", noGrantedOwnerError(toolName, granted)
 }
 
-// noGrantedOwnerError is R6's refusal for a name none of the grant's own MCPs
-// publish. It names the MCPs the caller already knows it holds — never the
-// outside MCP that actually publishes the name, which resolveToolOwner never
-// even reveals to this function.
+// noGrantedOwnerError names the MCPs the caller already knows it holds --
+// never the outside MCP that actually publishes the name, which
+// resolveToolOwner never even reveals to this function.
 func noGrantedOwnerError(toolName string, granted []string) error {
 	if len(granted) == 0 {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
@@ -643,10 +520,9 @@ func noGrantedOwnerError(toolName string, granted []string) error {
 		toolName, strings.Join(granted, ", ")))
 }
 
-// grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP level —
-// the set an R6 refusal is allowed to name, since the caller already knows it
-// holds them. A service token admits every connected MCP (see
-// resolveToolOwner), so its list is every id in s.ExternalMcps.
+// grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP
+// level -- the set a noGrantedOwnerError refusal is allowed to name, since
+// the caller already knows it holds them.
 func grantedMcpIDsForToken(stored *StoredToken, isServiceToken bool, s *Settings) []string {
 	var ids []string
 	for _, ext := range s.ExternalMcps {
@@ -658,11 +534,10 @@ func grantedMcpIDsForToken(stored *StoredToken, isServiceToken bool, s *Settings
 	return ids
 }
 
+// CallTool is the one chokepoint every tool call funnels through, including
+// refused ones -- a denied or unauthenticated call is precisely what a
+// security review is looking for, so it is audited too.
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	// Every tool call in the ecosystem funnels through here, which makes this
-	// the one place auditing has to be correct. Note that the refusals are
-	// audited too: a denied or unauthenticated call is precisely what a
-	// security review is looking for.
 	au := r.beginAudit(ctx, AuditEventCallTool)
 	au.setTool(name, args)
 
@@ -676,16 +551,12 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 
 	isServiceToken := stored.Name == serviceTokenName
 
-	// Check external MCPs.
 	owners := r.tools.ToolOwners(name)
-	// A live connection relay holds no configuration for is not a candidate for
-	// anything. The deny-set a grant resolves into is built by walking
-	// settings.ExternalMcps (storedTokenForProject), so an MCP that is connected
-	// but absent from that list gets no PermOff entry and reads as GRANTED to
-	// every token — the one direction this whole function exists to close. The
-	// window is narrow (a removed MCP between the settings write and the
-	// teardown of its connection) and was equally open before this change; it
-	// costs one filter to stop relying on that.
+	// An MCP that is connected but absent from settings.ExternalMcps gets no
+	// PermOff entry and would read as GRANTED to every token -- the deny-set
+	// a grant resolves into is built by walking settings.ExternalMcps, so a
+	// live connection relay holds no configuration for is not a candidate
+	// for anything.
 	owners = slices.DeleteFunc(owners, func(id string) bool {
 		return !slices.ContainsFunc(settings.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
 	})
@@ -694,10 +565,10 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		au.done(AuditOutcomeError, err)
 		return nil, err
 	}
-	// Resolved inside the grant, and BEFORE au.setMcp and everything below it:
-	// the schema read, the _meta assembly, the scope checks and the audit's
-	// mcp_id all take a single resolved MCP as given, and an ambiguous name has
-	// no such thing to give them.
+	// Resolved BEFORE au.setMcp and everything below it: the schema read,
+	// the _meta assembly, the scope checks and the audit's mcp_id all take a
+	// single resolved MCP as given, and an ambiguous name has no such thing
+	// to give them.
 	extID, err := resolveToolOwner(stored, isServiceToken, name, owners, grantedMcpIDsForToken(stored, isServiceToken, settings))
 	if err != nil {
 		au.done(AuditOutcomeDenied, err)
@@ -706,66 +577,38 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	au.setMcp(extID)
 
 	// The MCP's LIVE declaration, read now rather than taken from the stored
-	// grant. That is the whole point of the third defence below: a grant is
-	// validated once, at edit time, against the schema an MCP published then,
-	// and an MCP that grows a restrict-field afterwards would otherwise keep
-	// serving every existing grant with no scope at all (ADR-011 decision 4).
+	// grant: a grant is validated once, at edit time, against the schema an
+	// MCP published then, and an MCP that grows a restrict-field afterwards
+	// would otherwise keep serving every existing grant with no scope at all
+	// (ADR-011 decision 4).
 	surface := r.tools.McpSurfaceFor(extID)
 	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
-	// The directory relay spawned this MCP with, if any (ADR-011 decision 7 /
-	// fsMCP v3 integration R2). Recorded unconditionally, alongside setMcp
-	// rather than gated behind isServiceToken like setAuthority below: it is a
-	// fact about the MCP's configuration, not about the caller's grant, and
-	// costs nothing to set on a record that will not render it.
 	au.setMcpRoot(surface.Root)
 
-	// The _meta this call would run with: the per-token context for this MCP,
-	// filtered down to fields the LIVE schema still declares, plus the
-	// authenticated project id so an MCP can attribute the call to a project
-	// without trusting LLM-supplied values. Relay is the project authority
-	// here.
-	//
-	// The filter matters because a stored blob outlives the schema that wrote
-	// it: an MCP can rename or drop a field (macMCP's write_dirs -> file_dirs
-	// is exactly this) between when a grant was written and when a call runs,
-	// and relay never rewrites settings.json to match — see the stale-key note
-	// on SyncProjectToken. Without it, a value stored under a name the MCP no
-	// longer recognises still went out on the wire under that name: dead
-	// weight ordinarily, but on an MCP that gives a NEW field the OLD name a
-	// stale value would be handed to logic that never validated it.
-	// filterKnownContextFields is only reached once extID has already resolved
-	// to a live connection (ToolOwners above), so this can never be the
-	// "MCP is merely down" case that makes pruning stored data unsafe.
+	// filterKnownContextFields drops any stored value under a field name the
+	// LIVE schema no longer declares: an MCP can rename or drop a field
+	// between when a grant was written and when a call runs, and relay never
+	// rewrites settings.json to match, so an unfiltered value stored under
+	// an old name could be picked up by unrelated new logic reusing that
+	// name. Only reached once extID has resolved to a live connection, so
+	// this is never the "MCP is merely down" case that makes pruning stored
+	// data unsafe.
 	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
 	meta = mergeArgsSHA256(meta, bridge.ArgsSHA256FromContext(ctx))
 
-	// Audit the authority actually in force (ADR-011 decision 7), BEFORE the
-	// first thing that can refuse.
-	//
-	// It used to be recorded where the call was about to be handed to the MCP,
-	// which is after the tool check, the scope-presence check and the budget —
-	// so `denied` and `throttled` records, the two a security review reads
-	// first, carried no `access` and no `scope` at all, while docs/audit-log.md
-	// says a call_tool record carries what was in force. "Which layer refused
-	// this, and under what mode?" is not answerable from a record that omits
-	// the mode, and `relay audit --outcome denied` was the query it was least
-	// answerable for.
-	//
-	// It is taken from `meta` — the bytes that would go on the wire — rather
-	// than from the project, so a permitted call records what was injected. On
-	// a refusal nothing is injected, and what is recorded is then the authority
-	// the call was judged against, which is the same set of values and is the
-	// question the record is being asked. Assembling meta a few lines earlier
-	// costs one map merge on a path that was going to do it anyway.
+	// Audited BEFORE the first thing that can refuse (ADR-011 decision 7),
+	// taken from `meta` -- the bytes that would go on the wire -- rather
+	// than from the project, so a `denied` or `throttled` record still shows
+	// which mode and scope the call was judged against, not only a
+	// permitted one.
 	if !isServiceToken {
 		au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
 
-		// A declaration relay could not read (ContextSchema.Usable). Checked
-		// before every other layer because it is the layer that says whether
-		// the other answers mean anything: a fragment that would not decode
-		// may have been the restrict field governing this very tool, so
-		// "nothing governs it" is not a finding, it is the absence of one.
+		// A declaration relay could not read. Checked before every other
+		// layer: a fragment that would not decode may have been the
+		// restrict field governing this very tool, so "nothing governs it"
+		// is not a finding, it is the absence of one.
 		if !schema.Usable() {
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: MCP '%s' publishes a context schema relay cannot read, so no grant on it can be enforced (%s)",
@@ -774,25 +617,14 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			return nil, err
 		}
 
-		// A scope the OPERATOR wrote that relay cannot place in the MCP's live
-		// schema (issue #42). This used to drop the value, dispatch the call
-		// unconfined, and record `scope=(none declared)` — the reassuring one
-		// of two very different facts.
-		//
-		// Immediately after Usable() because it is the same finding from the
-		// other end. There, relay cannot read what the MCP declared; here, it
-		// cannot place what the operator declared. Both have the same
-		// consequence — for this grant, on this MCP, relay does not know what
-		// it would be handing over — and so both get the same answer: nothing
-		// is handed over. AFTER Usable() rather than before, because a schema
-		// that failed to decode has fields relay never parsed, and reporting
-		// those as "your profile names a field this MCP does not declare"
-		// would blame the operator for the MCP author's typo.
-		//
-		// Ahead of the tool check for the reason Usable() is ahead of it: "this
-		// tool is not in your allowed_tools" is a statement about a boundary,
-		// and this is the layer that decides whether relay is in a position to
-		// make statements about this MCP's boundaries at all.
+		// A scope the OPERATOR wrote that relay cannot place in the MCP's
+		// live schema. Checked immediately after Usable() as the same
+		// finding from the other end -- there, relay cannot read what the
+		// MCP declared; here, it cannot place what the operator declared --
+		// and both get the same answer: nothing is handed over. Ahead of
+		// the tool check because this is the layer that decides whether
+		// relay is in a position to make statements about this MCP's
+		// boundaries at all.
 		if unplaced := unplaceableContextFields(schema, contextValues(stored.Context[extID])); len(unplaced) > 0 {
 			au.setUnplacedScope(unplaced)
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
@@ -806,41 +638,25 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
 		}
-		// Presence re-check. `denied` is the right outcome because RELAY made
-		// this decision — no MCP was reached, nothing was probed, and there is
-		// no result to relay (ADR-011 decision 7). It sits ahead of the budget
-		// check because a call with no scope is not a legitimate call whose
-		// pattern of use was refused; it is a call the grant does not cover.
+		// Presence re-check, ahead of the budget check: a call with no
+		// scope is not a legitimate call whose pattern of use was refused,
+		// it is a call the grant does not cover.
 		//
-		// NOT remote-only, deliberately. Decision 2's asymmetric default
-		// (remote reads, local writes) is not extended to scope, because the
-		// two are different in kind: a MODE has a defensible default in each
-		// direction, and a SCOPE has none — there is no answer to "which
-		// mailbox" relay could pick and be right about. One has a safe wrong
-		// answer; the other does not. So a local project granted an MCP with an
-		// operator-set restrict field must set a value or lose the tools that
-		// field governs. A source: "project_path" field is unaffected, because
-		// SyncProjectToken derives it for a local project and it is therefore
-		// always present.
-		// A scope this record's KIND can never supply (ADR-011 decision 5),
-		// checked ahead of the presence re-check because it is a different
-		// finding with a different answer: not "set a value" but "this grant
-		// can never hold one".
+		// NOT remote-only, deliberately: decision 2's asymmetric default
+		// (remote reads, local writes) is not extended to scope, because a
+		// MODE has a defensible default in each direction and a SCOPE does
+		// not -- there is no answer to "which mailbox" relay could pick and
+		// be right about. So a local project granted an MCP with an
+		// operator-set restrict field must set a value or lose the tools
+		// that field governs.
 		//
-		// It is also the second defence for a case that had none. Decision 5
-		// gives SyncProjectToken the rule "never DERIVE a project_path field
-		// for a remote-kind record" — but nothing removes one written into
-		// settings.json by hand, and for a v1 schema every call-time guard
-		// returned early: checkScopePresence, filterKnownContextFields and
-		// scopeFromMeta all exempt v1, so a hand-written context.fsmcp
-		// allowed_dirs on an access profile was injected and honoured. The
-		// belt-and-braces principle held for allowed_tools and for v2 scope
-		// and had no v1 equivalent.
-		//
-		// Refusing rather than stripping, and that is the whole reason it is a
-		// refusal: for a v1 filesystem-scoped MCP an ABSENT allowed_dirs is
-		// what fsMCP reads as unrestricted, so removing the value and letting
-		// the call through would turn a forged confinement into no confinement.
+		// A scope this record's KIND can never supply (ADR-011 decision 5)
+		// is checked first, as a different finding with a different answer:
+		// not "set a value" but "this grant can never hold one". Refusing
+		// rather than stripping: for a v1 filesystem-scoped MCP an ABSENT
+		// allowed_dirs is what fsMCP reads as unrestricted, so removing the
+		// value and letting the call through would turn a forged
+		// confinement into no confinement.
 		if f, unsatisfiable := unsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
@@ -854,27 +670,17 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		}
 	}
 
-	// Per-enrolment budgets (ADR-010 decision 7). One context lookup decides
-	// whether any of this applies: a local caller carries no remote identity,
-	// so it takes no lock, keeps no ledger, and is not accounted at all.
-	//
-	// The rate check sits here — after the grant check, before the intent
-	// record and before the MCP — because a throttled call must not invoke the
-	// tool. Refusing after the mailbox has been read would interdict nothing.
-	// It stays a single audit record rather than an intent/completion pair for
-	// the same reason a denial does: no MCP was reached, so there is no
-	// side effect for a pre-call record to bracket.
-	//
-	// `throttled` is distinct from `denied` (a tool the grant never included)
-	// and `tool_error` (a boundary inside the MCP) because it is the only one
-	// of the three that says the grant was legitimate and the pattern of use
-	// was not — which is what exfiltration looks like from the host's side.
+	// Per-enrolment budgets (ADR-010 decision 7): a local caller carries no
+	// remote identity, so it is not accounted at all. The rate check sits
+	// here -- after the grant check, before the MCP -- because a throttled
+	// call must not invoke the tool; refusing after the tool has run would
+	// interdict nothing.
 	rc, isRemote := bridge.RemoteCallerFromContext(ctx)
 	var budget EnrolmentBudget
 	if isRemote {
-		// Resolved once and reused below, so admission and accounting for one
-		// call are always governed by the same numbers even if an operator
-		// edits the enrolment mid-call.
+		// Resolved once and reused below, so admission and accounting for
+		// one call are always governed by the same numbers even if an
+		// operator edits the enrolment mid-call.
 		budget = settings.enrolmentBudget(rc)
 		if err := r.budgets.admit(rc, budget); err != nil {
 			au.done(AuditOutcomeThrottled, err)
@@ -882,40 +688,29 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		}
 	}
 
-	// Fail-closed auditing for a remote caller (ADR-010 decision 5). This sits
-	// after auth resolution, so the actor is known and the record is
-	// attributable, and immediately before the MCP is invoked, so a call that
-	// cannot be recorded is refused rather than merely regretted. Local callers
-	// are untouched: intent() is a no-op for them and the single fail-open
-	// record below is exactly what ADR-008 specified.
+	// Fail-closed auditing for a remote caller (ADR-010 decision 5),
+	// immediately before the MCP is invoked, so a call that cannot be
+	// recorded is refused rather than merely regretted. A no-op for local
+	// callers.
 	if err := au.intent(); err != nil {
 		err = fmt.Errorf("audit: refusing tool call that cannot be recorded: %w", err)
-		// Best-effort, over the ordinary fail-open queue: if the sink is broken
-		// this will be dropped too, but a transient failure should still leave
-		// the refusal visible rather than silent.
 		au.done(AuditOutcomeError, err)
 		return nil, err
 	}
 
 	result, err := r.tools.CallTool(ctx, extID, name, args, meta)
 	if isRemote {
-		// Volume is charged after the fact because a result's size is not
-		// knowable before the MCP answers: this call completes and its bytes
-		// count, and the NEXT one is refused once the window is spent. Charged
-		// even on error, because bytes that came back left the host whether or
-		// not the tool called them a success.
+		// Charged after the fact because a result's size is not knowable
+		// before the MCP answers, and even on error: bytes that came back
+		// left the host whether or not the tool called them a success.
 		r.budgets.charge(rc, budget, len(result))
 	}
 	au.doneResult(result, err)
 	return result, err
 }
 
-// mergeProjectID returns base with a top-level "project_id" added when
-// projectID is non-empty. base is the per-token _meta context (may be nil). When
-// projectID is empty it returns base unchanged, preserving prior behavior for
-// service/external tokens. Falls back gracefully if base isn't a JSON object.
 // mergeArgsSHA256 places the client's argument hash on the outgoing _meta,
-// verbatim. Relay does not check it — see bridge.RemoteRequest.ArgsSHA256.
+// verbatim; relay does not check it (see bridge.RemoteRequest.ArgsSHA256).
 func mergeArgsSHA256(base json.RawMessage, sum string) json.RawMessage {
 	if sum == "" {
 		return base
@@ -957,17 +752,11 @@ func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 	return out
 }
 
-// checkScopePresence is ADR-011 decision 4's third defence: for every
-// scope: "restrict" field in the MCP's live schema that governs this tool,
-// require a non-empty value in the grant's context.
-//
-// Absent and empty are both refusals, and that is the whole rule — relay
-// writes a non-empty value or it refuses the operation, never a placeholder,
-// never [], never null, never the field omitted while the grant stands.
-// "No restriction" is deliberately not expressible as emptiness.
-//
-// A v1 schema is exempt: it declared no scope keywords, so there is nothing
-// here to be present.
+// checkScopePresence requires a non-empty value in the grant's context for
+// every scope: "restrict" field the live schema declares for this tool.
+// Absent and empty are both refusals -- "no restriction" is deliberately not
+// expressible as emptiness. A v1 schema is exempt: it declares no scope
+// keywords.
 func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcpID, toolName string) error {
 	if !cs.V2() {
 		return nil
@@ -984,30 +773,19 @@ func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcp
 }
 
 // scopeFromMeta extracts the injected scope for the audit record: ONLY the
-// fields the MCP declared as scope: "restrict", never the whole context map.
+// fields the MCP declared as scope: "restrict", never the whole context map
+// -- _meta is a general channel and a future MCP may pass an API key
+// through it, so logging it wholesale would make the audit file a place
+// credentials go to be archived.
 //
-// The return is nil ONLY when the live schema declares no restrict field at
-// all -- there is no scope concept for this MCP, so "absent" is the honest
-// answer. Whenever it declares at least one, this returns a map even if that
-// map ends up empty, because "declared, but this call's grant supplied
-// nothing" is itself a fact worth a caller being able to see, and on a
-// `denied` record (checkScopePresence refused right after this ran) it is the
-// finding the record exists to carry. Collapsing that case to nil made it
-// indistinguishable from an MCP that never had a scope to begin with.
-//
-// The fields come from auditedScopeFields rather than RestrictFields so a v1
-// schema is covered too. `if !cs.V2() { return nil }` made decision 7's
-// property fail for every v1 MCP: a call relay had confined with a value relay
-// itself derived was recorded as `scope: null`, the same line an MCP with no
-// scope concept at all produces. The one question the field exists to answer
-// -- was this call confined? -- was unanswerable for exactly the MCP whose
-// confinement relay writes.
-//
-// _meta is a general channel and a future MCP may pass an API key through it.
-// Logging the map wholesale would make the audit file the place credentials go
-// to be archived. Filtering to declared restrict-fields is both safer and
-// domain-blind — relay is not deciding which keys look sensitive, it is
-// recording only the ones something declared as permissions.
+// Returns nil ONLY when the live schema declares no restrict field at all.
+// Whenever it declares at least one, this returns a map even if empty,
+// because "declared, but this call's grant supplied nothing" is itself the
+// finding a `denied` record exists to carry; collapsing that to nil would
+// make it indistinguishable from an MCP with no scope concept at all. Fields
+// come from auditedScopeFields rather than RestrictFields so a v1 MCP whose
+// confinement relay itself derives is still answerable as "was this call
+// confined?" rather than recorded as `scope: null`.
 func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
 	fields := auditedScopeFields(cs)
 	if len(fields) == 0 {
@@ -1023,30 +801,18 @@ func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMe
 	return out
 }
 
-// scopeView is what a listing has to know about one MCP's scope to describe it
-// the way CallTool will judge it. Built once per MCP per listing so the schema
-// is parsed once rather than per tool.
-//
-// It answers TWO questions, and they are one type because the whole finding
-// this replaces is that they were answered in different places and disagreed.
-// ListTools applied layers 1-4 and then only ANNOTATED scope; the presence
-// check ran in CallTool alone. So a tool whose grant could never supply a
-// governing field was listed, written into the SKILL.md an agent reads, and
-// then refused on every call — with the appended note naming the fields that
-// DID have values and never the one that was the reason.
-//
-// A client is told its own limits here because renderBucketSkillMd is the
-// wrong ONLY place: access profiles have no skills (validateProjectShape
-// refuses GenerateSkill), so the agent this feature exists for would never see
-// it. One implementation reaches the remote listener's ListTools,
-// `relay mcp call --list`, and ListSkillBuckets.
+// scopeView is what a listing has to know about one MCP's scope to describe
+// it the way CallTool will judge it -- built once per MCP per listing so the
+// schema is parsed once rather than per tool. It answers both whether a tool
+// is listable and what scope note to attach, as one type, so ListTools and
+// ListSkillBuckets cannot answer either question differently.
 type scopeView struct {
 	schema   ContextSchema
 	values   map[string]json.RawMessage
 	isRemote bool
-	// scoped is false for a service token, which holds no project context and
-	// is not scoped at all: there is nothing truthful to say about its limits
-	// and nothing to withhold from it.
+	// scoped is false for a service token, which holds no project context
+	// and is not scoped at all: nothing truthful to say about its limits and
+	// nothing to withhold from it.
 	scoped bool
 }
 
@@ -1063,29 +829,16 @@ func newScopeView(r *appRouter, stored *StoredToken, mcpID string, isServiceToke
 	}
 }
 
-// listable reports whether a tool may appear in this token's listing at all.
-//
-// It withholds exactly what CallTool refuses UNCONDITIONALLY, and nothing
-// else. The distinction is the one ADR-011 decision 4 and decision 5 draw
-// between two things that look identical at the call:
-//
-//   - A value that is not set YET stays listed, and the loud `denied` naming
-//     the missing field stays with it. That refusal is more diagnostic to an
-//     operator than silent absence, and the gap closes the moment someone
-//     types a value.
-//   - A value that can NEVER be set — a source: "project_path" field on an
-//     access profile, or a v1 filesystem MCP granted to one — is withheld.
-//     There is no configuration under which that tool works, so listing it
-//     advertises a capability the client cannot have, and `relayremote skill`
-//     writes it into a SKILL.md the agent then plans around.
-//
-// A schema relay could not read withholds everything, matching CallTool: the
-// fragment that failed may have been the one governing this tool, so there is
-// nothing to stand behind about any of them. A scope THIS GRANT sets that
-// relay cannot place in that schema withholds everything for the same reason
-// and by the same rule (issue #42): CallTool refuses every tool on this MCP
-// unconditionally, and a listing that advertised them would put a tool into
-// `relayremote list` and into a generated SKILL.md that can never be called.
+// listable withholds exactly what CallTool refuses UNCONDITIONALLY, and
+// nothing else (ADR-011 decisions 4 and 5): a value that is not set YET
+// stays listed, with the loud `denied` naming the missing field more
+// diagnostic than silent absence; a value that can NEVER be set -- a
+// source: "project_path" field on an access profile, or a v1 filesystem MCP
+// granted to one -- is withheld, since no configuration makes that tool
+// work and `relayremote skill` would otherwise write it into a SKILL.md the
+// agent plans around. A schema relay could not read, or a scope this grant
+// sets that relay cannot place in it, withholds every tool on the MCP,
+// matching CallTool's unconditional refusal.
 func (v scopeView) listable(toolName string) bool {
 	if !v.scoped {
 		return true
@@ -1122,14 +875,11 @@ func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
 	r.onChange()
 }
 
-// regenProjectSkills updates SKILL.md for every project with GenerateSkill: true.
-// Best-effort: errors are logged, not returned. Called on relay startup and
-// after MCP reconcile so generated skills reflect the current tool surface.
-// EmitSkills is idempotent — it skips the write when on-disk content already
-// matches — so a pass that touches no files is normal, not a no-op failure.
-// If the underlying MCP processes have not yet fully initialized, the skill
-// picks up the new tools on the next regen trigger (next project save, next
-// reconcile, next startup).
+// regenProjectSkills updates SKILL.md for every project with
+// GenerateSkill: true. Best-effort: errors are logged, not returned.
+// EmitSkills is idempotent -- it skips the write when on-disk content
+// already matches -- so a pass that touches no files is normal, not a
+// no-op failure.
 func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) {
 	processed := 0
 	for _, proj := range settings.Projects {
@@ -1164,13 +914,10 @@ func (r *appRouter) ReloadService(id string) error {
 	return nil
 }
 
-// requireServiceToken authenticates a token and rejects anything that isn't
-// a service token. Returns CodeUnauthorized on failure with op named in the
-// error for caller-friendly logging.
-//
-// Deliberately resolves against a bare context: service-token operations
-// (ResolvePtyEnv, RegisterManifest, project reads) must never be reachable by
-// directory auth, which only ever yields a project-scoped token.
+// requireServiceToken deliberately resolves against a bare context:
+// service-token operations (ResolvePtyEnv, RegisterManifest, project reads)
+// must never be reachable by directory auth, which only ever yields a
+// project-scoped token.
 func (r *appRouter) requireServiceToken(token, op string) error {
 	stored, _, err := r.resolveAuth(context.Background(), token)
 	if err != nil {
@@ -1182,7 +929,6 @@ func (r *appRouter) requireServiceToken(token, op string) error {
 	return nil
 }
 
-// ListProjects returns all projects. Requires a valid service token.
 func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
 	if err := r.requireServiceToken(token, "ListProjects"); err != nil {
 		return nil, err
@@ -1190,7 +936,6 @@ func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
 	return json.Marshal(r.store.Get().Projects)
 }
 
-// GetProject returns a single project by ID. Requires a valid service token.
 func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
 	if err := r.requireServiceToken(token, "GetProject"); err != nil {
 		return nil, err
@@ -1202,16 +947,11 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 	return json.Marshal(proj)
 }
 
-// ResolvePtyEnv returns the env bundle (project-scoped token + working dir) for
-// spawning a project-scoped PTY. Service-token authentication required. Skill
-// generation is owned by relay (startup, project save, MCP reconcile, manual
-// regen) and is not driven by this call.
-//
-// RelayToken in the response is the project's plaintext token; the caller
-// (relayLLM) must inject it as the project-token env (RELAY_PROJECT_TOKEN) in
-// the spawned process and never expose it in argv, files, or logs.
-//
-// Remote projects are refused outright — see refuseRemotePty.
+// ResolvePtyEnv returns the env bundle (project-scoped token + working dir)
+// for spawning a project-scoped PTY. RelayToken is the project's plaintext
+// token; the caller (relayLLM) must inject it as RELAY_PROJECT_TOKEN and
+// never expose it in argv, files, or logs. Remote projects are refused
+// outright -- see refuseRemotePty.
 func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
 	if err := r.requireServiceToken(token, "ResolvePtyEnv"); err != nil {
 		return bridge.PtyEnvResponse{}, err
@@ -1220,10 +960,9 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	s := r.store.Get()
 	var proj *Project
 	if req.ProjectID != "" {
-		// Authoritative path: resolve by project id, then validate the requested
-		// directory belongs to the project. Without this check a service token
-		// could bind an arbitrary cwd to another project's token (confused
-		// deputy). Relay is the project authority.
+		// Validating that the requested directory belongs to the project
+		// matters: without it a service token could bind an arbitrary cwd
+		// to another project's token (confused deputy).
 		proj, _ = s.findProjectByID(req.ProjectID)
 		if proj == nil {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
@@ -1235,7 +974,6 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
 		}
 	} else {
-		// Legacy path: resolve by project id/name, or directory match.
 		proj = findProjectForPty(s, req.Project, req.Directory)
 		if proj == nil {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
@@ -1251,19 +989,11 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	}, nil
 }
 
-// ResolveProjectTemplate returns a project-scoped shell (terminal) launch
-// template by (ProjectID, TemplateID). Service-token authentication required.
-//
-// It returns ONLY the template definition fields (command/args/env/…), never
-// the project token: ResolvePtyEnv is the sole plaintext-token egress over the
-// bridge and this call must not widen that surface. Do not be tempted to reuse
-// GetProject here — that marshals the raw Project including its plaintext token.
-//
-// relayLLM calls this to spawn a private, project-only shell whose command lives
-// in relay's project record rather than relayLLM's global pty map. The launch's
-// project token + working dir are still resolved separately via ResolvePtyEnv,
-// where the directory-within-project confused-deputy check lives; this call is
-// keyed purely on ids and binds no cwd.
+// ResolveProjectTemplate returns ONLY the template definition fields
+// (command/args/env/...), never the project token: ResolvePtyEnv is the
+// sole plaintext-token egress over the bridge and this call must not widen
+// that surface. Do not be tempted to reuse GetProject here -- that marshals
+// the raw Project including its plaintext token.
 func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.ShellTemplateRequest, token string) (bridge.ShellTemplateResponse, error) {
 	if err := r.requireServiceToken(token, "ResolveProjectTemplate"); err != nil {
 		return bridge.ShellTemplateResponse{}, err
@@ -1273,12 +1003,11 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 	if proj == nil {
 		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
 	}
-	// Validation already keeps ShellTemplates empty on a remote project, so the
-	// loop below would fall through to "not found" anyway. Refuse explicitly
-	// regardless: a Project constructed directly (a migration, a hand-edited
-	// settings.json) could carry templates from a former life as a local
-	// project, and resolving one would hand a host launch command to a caller
-	// acting for another machine.
+	// Refused explicitly rather than relying on ShellTemplates being empty on
+	// a remote project: a Project constructed directly (a migration, a
+	// hand-edited settings.json) could carry templates from a former life as
+	// a local project, and resolving one would hand a host launch command to
+	// a caller acting for another machine.
 	if proj.IsRemote() {
 		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
 			fmt.Errorf("project %q is a remote project: shell templates launch a host terminal", proj.ID))
@@ -1299,21 +1028,14 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 	return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("shell template not found: project_id=%q template_id=%q", req.ProjectID, req.TemplateID))
 }
 
-// refuseRemotePty rejects a PTY launch bound to a remote project.
-//
-// This is not merely "a remote project has nothing sensible to run in". Without
-// it the request succeeds: dirWithinProject("", "") returns true, because the
-// empty-dir branch ("no directory to validate") is checked before the empty-
-// project-path branch and short-circuits it. The caller would then receive the
-// project's plaintext token with WorkingDir: "", and Go's exec.Cmd treats an
-// empty Dir as the PARENT process's working directory — so a host shell would
-// come up holding a remote project's credential, rooted wherever relay happens
-// to be running. That is exactly the confused-deputy binding the directory
-// check exists to prevent, arrived at by a different route.
-//
-// Refusing here rather than teaching dirWithinProject about kinds keeps that
-// helper a pure containment predicate, and keeps the reason visible at the
-// place where the token is about to be handed out.
+// refuseRemotePty rejects a PTY launch bound to a remote project. Without
+// it the request would succeed: dirWithinProject("", "") returns true (the
+// empty-dir branch short-circuits before the empty-project-path branch), so
+// the caller would receive the project's plaintext token with
+// WorkingDir: "", and Go's exec.Cmd treats an empty Dir as the PARENT
+// process's working directory -- a host shell coming up holding a remote
+// project's credential. Refusing here rather than teaching dirWithinProject
+// about kinds keeps that helper a pure containment predicate.
 func refuseRemotePty(proj *Project) error {
 	if !proj.IsRemote() {
 		return nil
@@ -1322,10 +1044,9 @@ func refuseRemotePty(proj *Project) error {
 		fmt.Errorf("project %q is a remote project: it has no host directory to launch a terminal in", proj.ID))
 }
 
-// findProjectForPty resolves the project for a PTY launch. Eve's terminal_create
-// only carries the working directory, so we accept either an explicit project
-// identifier (ID or name) or a directory match against Project.Path, in a
-// single pass over the project list.
+// findProjectForPty accepts either an explicit project identifier (ID or
+// name) or a directory match against Project.Path, since a terminal_create
+// request may carry only the working directory.
 func findProjectForPty(s *Settings, project, directory string) *Project {
 	for i := range s.Projects {
 		p := &s.Projects[i]
@@ -1339,11 +1060,9 @@ func findProjectForPty(s *Settings, project, directory string) *Project {
 	return nil
 }
 
-// dirWithinProject reports whether dir is equal to or nested under projectPath.
-// Both are cleaned before comparison. An empty dir means "no directory to
-// validate" and returns true — the LLM-provider path may send a project id with
-// no cwd. Used to stop a service token from binding an arbitrary working
-// directory to a project's token.
+// dirWithinProject reports whether dir is equal to or nested under
+// projectPath. An empty dir means "no directory to validate" and returns
+// true -- the LLM-provider path may send a project id with no cwd.
 func dirWithinProject(dir, projectPath string) bool {
 	if dir == "" {
 		return true
@@ -1353,11 +1072,9 @@ func dirWithinProject(dir, projectPath string) bool {
 	}
 	// Prefer filesystem identity when both paths exist: os.SameFile compares
 	// device + inode, so it sees through case-insensitive volumes (a stored
-	// "/users/Me/x" really is the on-disk "/Users/me/x") and any
-	// aliasing that string comparison would reject. Only ever adds matches for
-	// directories that genuinely ARE the project directory. Falls through to the
-	// textual check when either side can't be stat'd — paths that don't exist
-	// yet are legitimate here.
+	// "/users/Me/x" really is the on-disk "/Users/me/x"). Falls
+	// through to the textual check when either side can't be stat'd -- paths
+	// that don't exist yet are legitimate here.
 	if within, decided := dirWithinProjectByIdentity(dir, projectPath); decided {
 		return within
 	}

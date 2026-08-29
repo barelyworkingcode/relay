@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// parseResourceMetadataURL
-// ---------------------------------------------------------------------------
-
 func TestParseResourceMetadataURL_ValidHeader(t *testing.T) {
 	header := `Bearer resource_metadata="https://example.com/.well-known/resource"`
 	got := parseResourceMetadataURL(header)
@@ -50,10 +46,6 @@ func TestParseResourceMetadataURL_MultipleParams(t *testing.T) {
 		t.Errorf("parseResourceMetadataURL(%q) = %q, want %q", header, got, want)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// generatePKCE
-// ---------------------------------------------------------------------------
 
 func TestGeneratePKCE_NonEmpty(t *testing.T) {
 	pkce, err := generatePKCE()
@@ -111,10 +103,6 @@ func TestGeneratePKCE_TwoCallsProduceDifferentValues(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// generateState
-// ---------------------------------------------------------------------------
-
 func TestGenerateState_NonEmpty(t *testing.T) {
 	state, err := generateState()
 	if err != nil {
@@ -155,10 +143,6 @@ func TestGenerateState_IsBase64URL(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// CR-2: OAuth discovery SSRF guard
-// ---------------------------------------------------------------------------
-
 func TestValidateOAuthDiscoveryURL(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -189,7 +173,6 @@ func TestValidateOAuthDiscoveryURL(t *testing.T) {
 	}
 }
 
-// The fetch helpers must reject an SSRF target before issuing any request.
 func TestFetchProtectedResourceMetadata_RejectsSSRFTarget(t *testing.T) {
 	if _, err := fetchProtectedResourceMetadata("file:///etc/passwd"); err == nil {
 		t.Error("expected PRM fetch to reject a file:// URL")

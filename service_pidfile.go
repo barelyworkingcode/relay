@@ -11,10 +11,8 @@ import (
 )
 
 // Pidfiles let the next tray session reclaim services orphaned when the
-// current process is SIGKILLed or force-quit: the reaper goroutine in
-// ServiceRegistry.Start cannot run in that case, so children get reparented
-// to launchd (PPID 1) and keep their listen ports — see ReclaimOrphans for
-// the recovery flow.
+// current process is SIGKILLed or force-quit -- see ReclaimOrphans in
+// service_registry.go for the recovery flow.
 
 func pidFileDir() (string, error) {
 	dir := filepath.Join(bridge.ConfigDir(), "run")
@@ -48,9 +46,9 @@ func removePidFile(id string) {
 	_ = os.Remove(path)
 }
 
-// readPidFile returns the PID stored in the named pidfile. Returns 0 with a
-// nil error when the file does not exist, so callers can treat "no orphan to
-// reclaim" and "no pidfile written yet" the same way.
+// readPidFile returns 0 with a nil error when the file does not exist, so
+// callers can treat "no orphan to reclaim" and "no pidfile written yet" the
+// same way.
 func readPidFile(id string) (int, error) {
 	path, err := pidFilePath(id)
 	if err != nil {

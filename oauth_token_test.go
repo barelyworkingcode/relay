@@ -1,14 +1,5 @@
 package main
 
-// Coverage for the OAuth token-endpoint POST (exchangeCode / refreshAccessToken
-// / postTokenEndpoint) and the local callback server. The SSRF guard and PKCE
-// helpers were already tested; these close the gap on actually getting and
-// refreshing credentials, and on the CSRF-critical callback state check.
-//
-// The token endpoint runs on httptest's 127.0.0.1 listener, which the OAuth
-// SSRF validator permits (loopback HTTP is allowed), so these exercise the real
-// oauthHTTPClient.PostForm path end to end.
-
 import (
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +9,6 @@ import (
 	"time"
 )
 
-// tokenEndpoint starts an httptest server that records the last posted form and
-// replies with the supplied status + body.
 func tokenEndpoint(t *testing.T, status int, body string) (*oauthMetadata, *url.Values) {
 	t.Helper()
 	var lastForm url.Values
@@ -44,7 +33,6 @@ func TestExchangeCode_HappyPath(t *testing.T) {
 	if resp.AccessToken != "at-123" || resp.RefreshToken != "rt-456" || resp.ExpiresIn != 3600 {
 		t.Fatalf("unexpected token response: %+v", resp)
 	}
-	// The authorization_code grant must carry the PKCE verifier and code.
 	if form.Get("grant_type") != "authorization_code" {
 		t.Errorf("grant_type = %q, want authorization_code", form.Get("grant_type"))
 	}
@@ -92,7 +80,7 @@ func TestPostTokenEndpoint_Non200IsError(t *testing.T) {
 }
 
 func TestPostTokenEndpoint_MissingAccessTokenIsError(t *testing.T) {
-	meta, _ := tokenEndpoint(t, 200, `{"token_type":"Bearer"}`) // no access_token
+	meta, _ := tokenEndpoint(t, 200, `{"token_type":"Bearer"}`)
 	_, err := refreshAccessToken(meta, "rt", "id", "")
 	if err == nil || !strings.Contains(err.Error(), "missing access_token") {
 		t.Fatalf("want missing-access_token error, got %v", err)
@@ -100,17 +88,11 @@ func TestPostTokenEndpoint_MissingAccessTokenIsError(t *testing.T) {
 }
 
 func TestPostTokenEndpoint_RejectsNonLoopbackHTTP(t *testing.T) {
-	// The SSRF validator runs before any request: a public http:// token
-	// endpoint must be rejected outright.
 	meta := &oauthMetadata{TokenEndpoint: "http://token.example.com/token"}
 	if _, err := refreshAccessToken(meta, "rt", "id", ""); err == nil {
 		t.Fatal("expected rejection of non-loopback HTTP token endpoint")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// oauthCallbackServer
-// ---------------------------------------------------------------------------
 
 func TestOAuthCallback_DeliversCode(t *testing.T) {
 	srv, redirectURI, err := newOAuthCallbackServer("state-xyz")
@@ -134,8 +116,6 @@ func TestOAuthCallback_DeliversCode(t *testing.T) {
 	}
 }
 
-// CSRF defense: a callback whose state doesn't match must be rejected (400) and
-// must not deliver a code.
 func TestOAuthCallback_StateMismatchRejected(t *testing.T) {
 	srv, redirectURI, err := newOAuthCallbackServer("expected-state")
 	if err != nil {
@@ -182,7 +162,7 @@ func TestOAuthCallback_MissingCodeIsError(t *testing.T) {
 	}
 	defer srv.Close()
 
-	resp, err := http.Get(redirectURI + "?state=s") // valid state, no code, no error
+	resp, err := http.Get(redirectURI + "?state=s")
 	if err != nil {
 		t.Fatalf("GET callback: %v", err)
 	}

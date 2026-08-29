@@ -10,9 +10,6 @@ import (
 	"relaygo/bridge"
 )
 
-// ServiceStatusSnapshot is one tick of one service's polled status, plus a
-// snapshot of the manifest the UI needs to render action buttons. Sent to
-// the settings window as part of the per-tick batch.
 type ServiceStatusSnapshot struct {
 	ServiceID string          `json:"serviceId"`
 	Manifest  bridge.Manifest `json:"manifest"`
@@ -22,14 +19,11 @@ type ServiceStatusSnapshot struct {
 	FetchedAt int64           `json:"fetchedAt"` // unix ms
 }
 
-// pollServiceStatuses fetches each registered service's status endpoint
-// (if declared) and returns one snapshot per service. Services without a
-// Status declaration still appear in the batch so the UI shows them as
-// "registered, no status". Services whose fetch fails get OK=false and
-// Error populated.
-//
-// Fetches run concurrently with a per-call ctx; the per-client
-// statusFetchTimeout caps each one, so a slow service can't stall the tick.
+// pollServiceStatuses fetches each registered service's status endpoint and
+// returns one snapshot per service; services without a Status declaration
+// still appear so the UI can show "registered, no status". Fetches run
+// concurrently, each bounded by the client's statusFetchTimeout so a slow
+// service can't stall the whole tick.
 func pollServiceStatuses(ctx context.Context, enhanced *EnhancedServiceRegistry) []ServiceStatusSnapshot {
 	if enhanced == nil {
 		return nil
@@ -57,8 +51,6 @@ func pollServiceStatuses(ctx context.Context, enhanced *EnhancedServiceRegistry)
 				return
 			}
 			client := NewServiceStatusClient(rec.InternalSocket, rec.InternalToken)
-			// One client per service per tick: release its pooled Unix-socket
-			// connection when the fetch returns so it doesn't leak until GC.
 			defer client.CloseIdleConnections()
 			body, err := client.GetStatus(ctx, rec.Manifest.Status.Path)
 			if err != nil {
@@ -76,17 +68,11 @@ func pollServiceStatuses(ctx context.Context, enhanced *EnhancedServiceRegistry)
 }
 
 // pushServiceStatusBatch polls every registered service and emits a single
-// onServiceStatusBatch event to the settings window. Skipped when the
-// settings window is closed (no consumer) or when the digest matches the
-// previously-emitted one — the latter prevents 30/min WebView re-renders
-// for a steady-state system.
-//
-// Safe to call from any goroutine: HTTP polling runs in-place (off-main
-// is the expected caller context), then hops to main for the WebView emit
-// because WKWebView's evaluateJavaScript requires the main thread.
-//
-// FetchedAt is excluded from the change-detection digest because it ticks
-// every poll and would defeat suppression.
+// onServiceStatusBatch event, skipping the emit when the digest matches the
+// previously-emitted one -- this suppresses WebView re-renders for a
+// steady-state system. Safe to call from any goroutine: polling runs
+// in-place, then hops to main for the emit because WKWebView's
+// evaluateJavaScript requires the main thread.
 func (a *App) pushServiceStatusBatch() {
 	if !a.settingsOpen.Load() || a.ipcCtx == nil || a.ipcCtx.Enhanced == nil {
 		return
@@ -102,9 +88,8 @@ func (a *App) pushServiceStatusBatch() {
 	})
 }
 
-// batchDigest fingerprints a status batch excluding the per-tick FetchedAt
-// timestamps. Two ticks with identical service / manifest / status / error
-// content collapse to the same digest, so the emit is suppressed.
+// batchDigest zeroes FetchedAt before hashing -- it ticks every poll and
+// would otherwise defeat change-detection suppression.
 func batchDigest(batch []ServiceStatusSnapshot) [32]byte {
 	stripped := make([]ServiceStatusSnapshot, len(batch))
 	for i, s := range batch {

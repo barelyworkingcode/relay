@@ -35,14 +35,12 @@ func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) 
 		t.Fatal("converting a project holding a filesystem-scoped MCP to remote must be refused")
 	}
 
-	// The refusal must have changed nothing.
 	after, _ := s.findProjectByID(proj.ID)
 	if after.IsRemote() || after.Path != dir {
 		t.Fatalf("refused conversion mutated the project: kind=%q path=%q", after.Kind, after.Path)
 	}
 
 	// Conversion attempt 2: drop the filesystem grant in the same request.
-	// This is legal, and the stale allowed_dirs context must not survive it.
 	none := []string{}
 	if _, _, err := applyProjectUpdate(s, proj.ID, projectUpdateFields{
 		Kind: &remote, Path: &empty, AllowedMcpIDs: &none,
@@ -58,19 +56,11 @@ func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) 
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The two controls a profile can hold and cannot use (ADR-011 decision 2b's
-// argument, ADR-009 decision 2's rule)
-// ---------------------------------------------------------------------------
-//
-// A permission policy is a set of Claude CLI gates on a session, and a chat
-// template is a preset for starting one. An access profile launches no session
-// — resolvePtyEnv and resolveProjectTemplate both refuse a remote record — so
-// both are inert on one. "Refusing it at the door is more honest than a control
-// that quietly no-ops" is the same rule that already removes the path, the
-// skill toggle, the shell templates, the model allowlist and directory auth,
-// and it is the reason the editor no longer renders either as "inert".
-
+// An access profile launches no session — resolvePtyEnv and
+// resolveProjectTemplate both refuse a remote record — so both are inert on
+// one. "Refusing it at the door is more honest than a control that quietly
+// no-ops" is the same rule that already removes the path, the skill toggle,
+// the shell templates, the model allowlist and directory auth.
 func TestProjectCreateRemote_RejectsPermissionPolicy(t *testing.T) {
 	s := &Settings{Version: 1}
 	_, err := applyProjectCreate(s, projectCreateFields{
@@ -155,7 +145,6 @@ func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *tes
 		t.Fatal("a refused conversion mutated the record")
 	}
 
-	// Clearing both in the same request converts.
 	noTemplates := []ChatTemplate{}
 	if _, _, err := applyProjectUpdate(s, proj.ID, projectUpdateFields{
 		Kind: &remote, Path: &empty,
@@ -174,8 +163,6 @@ func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *tes
 	}
 }
 
-// A LOCAL project is untouched by any of this: both controls are exactly what
-// they always were.
 func TestProjectLocal_KeepsItsPolicyAndTemplates(t *testing.T) {
 	s := &Settings{Version: 1}
 	created, err := applyProjectCreate(s, projectCreateFields{

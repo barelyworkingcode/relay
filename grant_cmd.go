@@ -10,32 +10,12 @@ import (
 	"strings"
 )
 
-// `relay grant` — the operator-side answer to "what did I actually grant?"
-// (issue #41).
-//
-// It exists because the operator guide's FIRST verification step used to be
-// `relayremote list --schema`, which is a CLIENT-side tool reading a
-// CLIENT-facing string. Since `disclose: "count"` (issue #33) that string says
-// "confined to 1 value" for a grant of /Users/me/project and, byte for byte,
-// for a grant of "/". An operator following the documented procedure could not
-// tell a correct grant from a catastrophic one, and the check could not fail.
-//
-// The asymmetry that makes this a command rather than a change to that one is
-// the whole of issue #41: `disclose` governs what reaches the CLIENT, and it
-// should never have governed what relay shows the person who typed the grant.
-// The client is correctly told only that it is confined and to how many roots.
-// The operator is entitled to the coordinates — it is their machine and their
-// grant — so this prints them, in full, always, whatever any field's
-// `disclose` says.
-//
-// It reads settings.json directly, exactly as `relay audit` does and for the
-// same reason: the question "what does this profile grant" must be answerable
-// with the tray stopped, and a check an operator cannot run during an incident
-// is not a check. The cost is that it describes the grant AS AUTHORED and
-// cannot ask a live MCP whether it still declares these fields — so it says so
-// once, in its own footer, rather than letting a reader mistake a stored value
-// for an enforced one (that question is issue #42's, and relay now refuses the
-// call outright rather than dropping the value).
+// runGrantCommand prints a project's or access profile's grant as authored.
+// `disclose` governs only what reaches the CLIENT; this always prints scope
+// values in full regardless of any field's `disclose` setting. It reads
+// settings.json directly, like `relay audit`, so the question is answerable
+// with the tray stopped — and describes the grant as authored, not as a live
+// MCP currently enforces it.
 func runGrantCommand(args []string) {
 	fs := flag.NewFlagSet("grant", flag.ExitOnError)
 	projectID := fs.String("project", "", "show one record by id or name (default: every record)")
@@ -68,11 +48,8 @@ func runGrantCommand(args []string) {
 	printGrantViews(os.Stdout, views)
 }
 
-// selectGrantRecords resolves --project against BOTH the id and the name,
-// because an operator reading the Settings list has the name in front of them
-// and an operator reading an audit line has the id. An empty selector means
-// every record, which is the form to run when the question is "is anything on
-// this machine granted more than I think".
+// selectGrantRecords resolves --project against both the id and the name:
+// Settings shows the name, an audit line shows the id.
 func selectGrantRecords(projects []Project, selector string) []Project {
 	if selector == "" {
 		out := make([]Project, len(projects))
@@ -88,20 +65,15 @@ func selectGrantRecords(projects []Project, selector string) []Project {
 	return nil
 }
 
-// grantMcpView is one MCP's line of a grant: the four allowlists ADR-011
-// names, with the resource scope shown as the values themselves.
 type grantMcpView struct {
 	Mcp      string            `json:"mcp"`
 	Access   string            `json:"access"`
 	Outbound string            `json:"outbound"`
 	Tools    string            `json:"tools"`
 	Scope    map[string]string `json:"scope,omitempty"`
-	// Warnings names each scope value that reaches further than a folder, in
-	// the same words every other surface uses (scopeBreadthWarnings).
-	Warnings []string `json:"warnings,omitempty"`
+	Warnings []string          `json:"warnings,omitempty"`
 }
 
-// grantView is one project or access profile as an operator reads it.
 type grantView struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
@@ -111,12 +83,10 @@ type grantView struct {
 }
 
 func newGrantView(s *Settings, p Project) grantView {
-	// The token view is built rather than the Project fields read directly, so
-	// this command resolves the two asymmetric defaults (ADR-011 decision 2)
-	// through the SAME code the router does. A CLI that re-derived "absent
-	// access means read for a profile and write for a project" would be a
-	// second copy of the rule, free to disagree the day it changes — and this
-	// command exists to be believed.
+	// Built as a StoredToken and read through its methods, not the Project
+	// fields directly, so the asymmetric defaults (ADR-011 decision 2) resolve
+	// through the same code the router uses — a CLI that re-derived them would
+	// be a second copy of the rule, free to disagree the day it changes.
 	tok := &StoredToken{
 		ProjectKind:   p.Kind,
 		Access:        p.Access,
@@ -154,9 +124,9 @@ func newGrantView(s *Settings, p Project) grantView {
 	return out
 }
 
-// grantedMcpIDs expands the wildcard the way SyncProjectToken does — to every
-// MCP relay knows about — because that is what the grant actually reaches. A
-// summary that printed "*" would be hiding the number the operator needs.
+// grantedMcpIDs expands the wildcard the way SyncProjectToken does, to every
+// MCP relay knows about: that is what the grant actually reaches, and
+// printing "*" would hide the number the operator needs.
 func grantedMcpIDs(s *Settings, p Project) []string {
 	ids := p.AllowedMcpIDs
 	if isWildcard(ids) {
@@ -168,9 +138,8 @@ func grantedMcpIDs(s *Settings, p Project) []string {
 	return out
 }
 
-// grantToolText mirrors StoredToken.ToolAllowed's asymmetric default in words:
-// an access profile holds only what allowed_tools enumerates (absent means
-// NOTHING), a local project holds everything minus its denylist.
+// grantToolText mirrors StoredToken.ToolAllowed's asymmetric default in
+// words; keep the two in sync or this misdescribes what a call would do.
 func grantToolText(tok *StoredToken, p Project, mcpID string) string {
 	patterns := p.AllowedTools[mcpID]
 	if len(patterns) > 0 {
@@ -208,10 +177,8 @@ func printGrantViews(w io.Writer, views []grantView) {
 			if len(m.Scope) == 0 {
 				fmt.Fprintf(w, "  %-14s scope: (none set)\n", "")
 			}
-			// The warning is a separate line and is spelled out rather than
-			// abbreviated, because the failure this command exists to catch is
-			// an operator's eye sliding over a single character (issue #41: a
-			// profile card rendered "/" inline and nobody saw it).
+			// Spelled out, not abbreviated: an operator's eye can slide over
+			// a single character like "/".
 			for _, warning := range m.Warnings {
 				fmt.Fprintf(w, "  %-14s ** %s **\n", "", strings.ToUpper(warning))
 				warned = true

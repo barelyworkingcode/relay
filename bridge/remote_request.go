@@ -16,16 +16,14 @@ import (
 // makes a stolen settings.json grant no remote access at all (decision 2).
 //
 // There is no Cwd field either. Directory auth is already unreachable here by
-// construction — it fires only when no token is present, and identity arrives
-// from the connection — but "unreachable by a chain of reasoning" and
-// "unrepresentable" are different properties, and only the second survives
-// somebody refactoring the router. A separate type is what makes it the
-// second.
+// construction, but "unreachable by a chain of reasoning" and
+// "unrepresentable" are different properties, and only the second survives a
+// future refactor of the router.
 //
 // ProjectID selects among an enrolment's grants. It is deliberately NOT a
 // secret: relay honours it only when the resolved enrolment actually holds
-// that grant, so sending someone else's project id is a refusal rather than an
-// escalation.
+// that grant, so sending someone else's project id is a refusal rather than
+// an escalation.
 type RemoteRequest struct {
 	Type      string          `json:"type"`
 	Name      string          `json:"name,omitempty"`
@@ -40,20 +38,15 @@ type RemoteRequest struct {
 	ArgsSHA256 string `json:"args_sha256,omitempty"`
 }
 
-// DecodeRemoteRequest parses one wire line STRICTLY: an unrecognised key is an
-// error, not something to skip.
-//
-// Go's default is to ignore unknown JSON keys silently, which would leave a
-// client that sent `cwd` believing it had authenticated by directory while it
-// had in fact authenticated by certificate. Both succeed identically today, so
-// the divergence would surface much later and in the confusing direction —
-// after the certificate was revoked and the caller kept working, or after the
-// grant changed and the cwd it trusted did nothing. Strict decoding turns that
-// into an error at the door.
-//
-// The cost is that adding a field to this struct requires deploying both ends
-// together. Both ends are ours, so that is a coordination step rather than a
-// compatibility break (decision 4).
+// DecodeRemoteRequest parses one wire line STRICTLY: an unrecognised key is
+// an error, not something to skip. Go's default of ignoring unknown keys
+// would let a client that sent `cwd` believe it had authenticated by
+// directory while it had in fact authenticated by certificate — both succeed
+// identically today, so the divergence would surface later and in the
+// confusing direction. Strict decoding turns that into an error at the door,
+// at the cost that adding a field to this struct requires deploying both
+// ends together (they're both ours, so that's a coordination step, not a
+// compatibility break — decision 4).
 func DecodeRemoteRequest(line []byte) (*RemoteRequest, error) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()

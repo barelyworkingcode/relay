@@ -2,15 +2,6 @@
 
 package main
 
-// Issue #39, defect 1: an MCP response longer than bridge.MaxMessageSize used
-// to be fatal to the whole connection. bufio.Scanner returns bufio.ErrTooLong
-// and cannot resync, so readLoop exited, every pending call failed, and the
-// connection — shared by every access profile that names the MCP — stayed dead.
-// One over-long fs_read on one profile took four unrelated enrolments down.
-//
-// A frame that is too long is one bad answer. It fails the one call it belongs
-// to and nothing else.
-
 import (
 	"bufio"
 	"context"
@@ -21,8 +12,8 @@ import (
 	"relaygo/bridge"
 )
 
-// newTestBufReader wraps a string in the same reader readLoop uses, so the
-// frame tests exercise the production buffer size.
+// Wraps a string in the same reader readLoop uses, so the frame tests
+// exercise the production buffer size.
 func newTestBufReader(s string) *bufio.Reader {
 	return bufio.NewReaderSize(strings.NewReader(s), mcpReadBufferSize)
 }
@@ -35,8 +26,9 @@ func TestStdioConn_OversizedFrameFailsOnlyItsOwnCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("an over-long response must fail its call")
 	}
-	// The caller has to be told what to do differently. "token too long" is a
-	// fact about relay's scanner, not about the request that produced it.
+	// "token too long" would be a fact about relay's scanner, not about the
+	// request that produced it — the caller needs to be told what to do
+	// differently instead.
 	if !strings.Contains(err.Error(), "exceeds relay's") {
 		t.Errorf("error = %q, want it to name the size limit it broke", err)
 	}
@@ -44,7 +36,6 @@ func TestStdioConn_OversizedFrameFailsOnlyItsOwnCall(t *testing.T) {
 		t.Errorf("error = %q, want it to say what the MCP should do instead", err)
 	}
 
-	// The connection is the shared one. It must still be there.
 	select {
 	case <-conn.readerDone:
 		t.Fatal("the connection died with the frame: one over-long line is still a permanent outage")
@@ -60,16 +51,14 @@ func TestStdioConn_OversizedFrameFailsOnlyItsOwnCall(t *testing.T) {
 	}
 }
 
-// Resync has to land on a frame boundary. Reading the tail of a discarded
+// Resync has to land on a frame boundary: reading the tail of a discarded
 // oversized frame as if it were a message would hand a fragment to
-// json.Unmarshal — and the frame after it is a real response someone is
+// json.Unmarshal, and the frame after it is a real response someone is
 // waiting for.
 func TestStdioConn_ResyncsToTheNextFrameBoundary(t *testing.T) {
 	conn := newTestMcpConn(t)
 	ctx := context.Background()
 
-	// Three concurrent calls: the oversized one fails, both neighbours are
-	// answered correctly, and none of them is answered with a fragment.
 	type result struct {
 		marker string
 		err    error
@@ -107,9 +96,6 @@ func TestStdioConn_ResyncsToTheNextFrameBoundary(t *testing.T) {
 	}
 }
 
-// readMcpFrame is the piece that makes the above possible: it must count and
-// discard an over-long frame rather than buffer it, and leave the reader on the
-// next frame.
 func TestReadMcpFrame_DiscardsAndResyncs(t *testing.T) {
 	big := strings.Repeat("A", bridge.MaxMessageSize+1024)
 	input := "{\"a\":1}\n" + big + "\n{\"b\":2}\n"

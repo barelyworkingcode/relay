@@ -10,9 +10,6 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// newPtyTestRouter builds a real appRouter backed by a sandboxed settings store
-// containing a single project, plus a planted service token. Returns the router,
-// the created project, and the plaintext service token.
 func newPtyTestRouter(t *testing.T) (*appRouter, Project, string) {
 	t.Helper()
 	mkSandboxRelayHome(t)
@@ -119,7 +116,6 @@ func TestResolvePtyEnv_UnknownProjectID(t *testing.T) {
 func TestResolvePtyEnv_RequiresServiceToken(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 
-	// A project token (not a service token) must be rejected.
 	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
@@ -157,7 +153,6 @@ func TestDirWithinProject_ResolvesSymlinks(t *testing.T) {
 	if !dirWithinProject(filepath.Join(real, "sub"), tmp) {
 		t.Errorf("symlink-equivalent subdir wrongly rejected: dir=%q project=%q", filepath.Join(real, "sub"), tmp)
 	}
-	// And the reverse orientation.
 	if !dirWithinProject(filepath.Join(tmp, "sub"), real) {
 		t.Errorf("symlink-equivalent subdir wrongly rejected (reverse): dir=%q project=%q", filepath.Join(tmp, "sub"), real)
 	}

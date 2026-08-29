@@ -1,20 +1,5 @@
 package main
 
-// The enumeration picker, under goja (ADR-011 decision 6).
-//
-// Decision 6 exists because of the ADR's second constraint: typing "INBOX" by
-// hand is the error-prone step, and under decision 4 a typo fails CLOSED — the
-// agent silently gets nothing, which is safe and baffling. A picker removes the
-// typo. What it must not do is introduce a worse failure in its place, and
-// there are two of those:
-//
-//   - rendering a FAILED call as an empty list, which tells an operator there
-//     are no mailboxes on a machine full of them;
-//   - dropping a stored value the MCP no longer offers, which silently widens
-//     or narrows a profile because something was renamed on the host.
-//
-// Most of this file is about those two.
-
 import (
 	"strings"
 	"testing"
@@ -22,8 +7,6 @@ import (
 	"github.com/dop251/goja"
 )
 
-// The same worked example the rest of the suite uses, plus one operator field
-// the MCP does NOT declare enumerable — the case that must keep its text box.
 const pickerFieldsFixture = `{
 	macmcp: [
 		{name:'mail_accounts', type:'array', item_type:'string', description:'Mail accounts this client may read from or send as', source:'operator', applies_to:['mail_*'], enumerable:true},
@@ -38,7 +21,6 @@ const pickerProjectsFixture = `[
 	 context:{macmcp:{mail_accounts:['Bob'], mail_mailboxes:['INBOX','Projects/Archive']}}, disabled_tools:{}}
 ]`
 
-// seedPickerVM opens p_bob in the editor with the picker fixture loaded.
 func seedPickerVM(t *testing.T) *goja.Runtime {
 	t.Helper()
 	vm := newAppVM(t)
@@ -58,7 +40,6 @@ func seedPickerVM(t *testing.T) *goja.Runtime {
 	return vm
 }
 
-// answer delivers one ContextEnumResult the way relay does, then re-renders.
 func answer(t *testing.T, vm *goja.Runtime, json string) string {
 	t.Helper()
 	return evalString(t, vm, `(function(){
@@ -82,13 +63,6 @@ func sentMessages(t *testing.T, vm *goja.Runtime) string {
 	return evalString(t, vm, `window.__sent.join("\n")`)
 }
 
-// ---------------------------------------------------------------------------
-// When it is asked for
-// ---------------------------------------------------------------------------
-
-// Enumeration is a live call into another process. It happens when an operator
-// OPENS a control — not on a paint, not on a keystroke — and it is cached per
-// (mcp, field, dependency values) for the life of the form.
 func TestScopePicker_FetchesOnOpenAndCaches(t *testing.T) {
 	vm := seedPickerVM(t)
 
@@ -110,8 +84,6 @@ func TestScopePicker_FetchesOnOpenAndCaches(t *testing.T) {
 
 	answer(t, vm, `{mcp_id:'macmcp', field:'mail_accounts', status:'ok', values:[{value:'Alice',label:'Alice'},{value:'Bob',label:'Bob'}]}`)
 
-	// Closing and reopening does not re-ask: the answer is cached for the life
-	// of the form.
 	openField(t, vm, "mail_accounts")
 	openField(t, vm, "mail_accounts")
 	if n := strings.Count(sentMessages(t, vm), "enumerate_scope_field"); n != 1 {
@@ -119,9 +91,6 @@ func TestScopePicker_FetchesOnOpenAndCaches(t *testing.T) {
 	}
 }
 
-// The values are real values, the stored one is ticked, and ticking another
-// writes it through the same storage the text box uses — so harvest, clearing
-// and the "needs a scope value" banner all keep working untouched.
 func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 	vm := seedPickerVM(t)
 	openField(t, vm, "mail_accounts")
@@ -130,7 +99,6 @@ func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 	if !strings.Contains(html, "Bob (work)") {
 		t.Errorf("the MCP's own label is not shown\n%s", html)
 	}
-	// Bob is stored, so Bob is ticked and Alice is not.
 	got := evalString(t, vm, `(function(){
 		var out = [];
 		for (var i = 0; i < window.state._scopeBind.length; i++) out.push(window.state._scopeBind[i].value);
@@ -143,8 +111,6 @@ func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 		t.Errorf("want exactly the stored value ticked\n%s", html)
 	}
 
-	// Tick Alice: the stored value becomes both, through the same text the
-	// box edits.
 	payload := evalString(t, vm, `(function(){
 		window.toggleProjScopeValueAt(0, true);
 		document.getElementById('projName').value = 'Hermes — Bob INBOX';
@@ -154,7 +120,6 @@ func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 		t.Fatalf("ticking a value did not reach the payload: %s", payload)
 	}
 
-	// Untick Bob: it goes, and nothing else does.
 	payload = evalString(t, vm, `(function(){
 		window.toggleProjScopeValueAt(1, false);
 		document.getElementById('projName').value = 'Hermes — Bob INBOX';
@@ -165,19 +130,9 @@ func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The behaviour that matters most
-// ---------------------------------------------------------------------------
-
-// A stored value the MCP no longer offers stays VISIBLE and stays SELECTED,
-// flagged as unrecognised. An account renamed on the host must not quietly
-// widen or narrow a profile by disappearing from a form, and a value that
-// vanishes from the editor is a value the next save deletes.
 func TestScopePicker_AStoredValueNoLongerOfferedSurvives(t *testing.T) {
 	vm := seedPickerVM(t)
 	openField(t, vm, "mail_mailboxes")
-	// The MCP offers INBOX and something else; "Projects/Archive" — which this
-	// profile is confined to — is gone.
 	html := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'INBOX',label:'INBOX'},{value:'Sent',label:'Sent'}]}`)
 
 	if !strings.Contains(html, "Projects/Archive") {
@@ -189,7 +144,6 @@ func TestScopePicker_AStoredValueNoLongerOfferedSurvives(t *testing.T) {
 	if !strings.Contains(html, "does not offer Projects/Archive") {
 		t.Errorf("the flag does not name the value\n%s", html)
 	}
-	// It is ticked — it is in force — and it survives a save untouched.
 	payload := evalString(t, vm, `(function(){
 		document.getElementById('projName').value = 'Hermes — Bob INBOX';
 		return JSON.stringify(window.harvestProjectForm().context);
@@ -197,7 +151,6 @@ func TestScopePicker_AStoredValueNoLongerOfferedSurvives(t *testing.T) {
 	if !strings.Contains(payload, `"mail_mailboxes":["INBOX","Projects/Archive"]`) {
 		t.Fatalf("an unrecognised value did not survive the save: %s", payload)
 	}
-	// And it is removable, deliberately, by unticking it.
 	payload = evalString(t, vm, `(function(){
 		var idx = -1;
 		for (var i = 0; i < window.state._scopeBind.length; i++)
@@ -211,13 +164,10 @@ func TestScopePicker_AStoredValueNoLongerOfferedSurvives(t *testing.T) {
 	}
 }
 
-// A FAILED call is never rendered as an empty list. Each degraded case keeps
-// text entry so an operator is never blocked, and each says something
-// different, because the operator's next action differs in each.
 func TestScopePicker_DegradedCases(t *testing.T) {
 	cases := []struct {
 		name       string
-		clearFirst bool // no stored value, so an empty answer really is empty
+		clearFirst bool
 		answer     string
 		wantText   []string
 		wantNoText []string
@@ -283,8 +233,6 @@ func TestScopePicker_DegradedCases(t *testing.T) {
 					t.Errorf("unexpectedly present: %q\n%s", unwanted, html)
 				}
 			}
-			// A failure NEVER renders as a list of choices — that is the
-			// rendering that means "there are none".
 			if !c.wantBox && strings.Contains(html, "proj-scope-choices") {
 				t.Errorf("an empty answer drew an empty choice list\n%s", html)
 			}
@@ -296,10 +244,6 @@ func TestScopePicker_DegradedCases(t *testing.T) {
 					t.Errorf("a failed call drew choices\n%s", html)
 				}
 			}
-			// The stored value is still on screen and still stored, whatever
-			// went wrong — in the picker's summary, or in the text box the
-			// degraded cases fall back to. A confinement must never vanish
-			// because the MCP that lists its values would not answer.
 			if !c.clearFirst && !strings.Contains(html, "Bob") {
 				t.Errorf("the stored value disappeared behind a failure\n%s", html)
 			}
@@ -307,8 +251,6 @@ func TestScopePicker_DegradedCases(t *testing.T) {
 	}
 }
 
-// -32601 is a fact about the MCP, not about one field: every field of it
-// degrades, and nothing asks again. That is "silently and permanently".
 func TestScopePicker_UnsupportedIsPermanentForTheWholeMcp(t *testing.T) {
 	vm := seedPickerVM(t)
 	openField(t, vm, "mail_accounts")
@@ -327,13 +269,6 @@ func TestScopePicker_UnsupportedIsPermanentForTheWholeMcp(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Dependency order
-// ---------------------------------------------------------------------------
-
-// mail_mailboxes is read WITHIN the chosen accounts, so the request carries
-// them — and changing the account choice re-reads the list rather than leaving
-// a stale one on screen under a new account's name.
 func TestScopePicker_DependencyOrder(t *testing.T) {
 	vm := seedPickerVM(t)
 	openField(t, vm, "mail_mailboxes")
@@ -344,8 +279,6 @@ func TestScopePicker_DependencyOrder(t *testing.T) {
 	}
 	answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'INBOX'},{value:'Projects/Archive'}]}`)
 
-	// Now the account choice changes. The old list is not the answer to the
-	// new question, so it must not stay on screen as if it were.
 	html := evalString(t, vm, `(function(){
 		window.setProjScopeText('macmcp', 'mail_accounts', 'Alice');
 		window.refreshDependentScopeFields('macmcp', 'mail_accounts');
@@ -360,14 +293,8 @@ func TestScopePicker_DependencyOrder(t *testing.T) {
 	}
 }
 
-// An UNCHOSEN dependency lists across everything rather than showing an empty
-// picker. That is the state the control opens in, so getting it wrong means an
-// operator's first sight of the feature is an empty list — and macMCP, which
-// reads an empty filter as "all", would never even be asked the narrowing
-// question this side invented.
 func TestScopePicker_UnchosenDependencyListsAcrossEverything(t *testing.T) {
 	vm := seedPickerVM(t)
-	// Clear the account choice, then open the field that depends on it.
 	evalString(t, vm, `(function(){ window.setProjScopeText('macmcp', 'mail_accounts', ''); return ''; })()`)
 	openField(t, vm, "mail_mailboxes")
 
@@ -379,7 +306,6 @@ func TestScopePicker_UnchosenDependencyListsAcrossEverything(t *testing.T) {
 		t.Errorf("want an empty values object, got: %s", sent)
 	}
 
-	// And the answer — every account's mailboxes — renders as the choices.
 	html := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'Alice/INBOX'},{value:'Bob/INBOX'}]}`)
 	for _, want := range []string{"Alice/INBOX", "Bob/INBOX"} {
 		if !strings.Contains(html, want) {
@@ -388,12 +314,6 @@ func TestScopePicker_UnchosenDependencyListsAcrossEverything(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The rest of the panel is unchanged
-// ---------------------------------------------------------------------------
-
-// A field the MCP does not declare enumerable keeps its text box, with no
-// picker, no fetch and no error.
 func TestScopePicker_NonEnumerableFieldIsUnchanged(t *testing.T) {
 	vm := seedPickerVM(t)
 	html := evalString(t, vm, `window.renderProjectForm()`)
@@ -405,8 +325,6 @@ func TestScopePicker_NonEnumerableFieldIsUnchanged(t *testing.T) {
 	}
 }
 
-// The read-only rendering of a source: "project_path" field is untouched — it
-// is derived, not chosen, and there is nothing to pick.
 func TestScopePicker_ProjectPathFieldStillReadOnly(t *testing.T) {
 	vm := seedScopeVM(t, scopeProjectsFixture, "p_local")
 	html := evalString(t, vm, `window.renderProjectForm()`)
@@ -418,9 +336,6 @@ func TestScopePicker_ProjectPathFieldStillReadOnly(t *testing.T) {
 	}
 }
 
-// A repaint driven by an arriving answer must not eat what someone was typing.
-// The name lives only in the DOM until harvest, and this is the one render in
-// the editor that is not triggered by a click.
 func TestScopePicker_AnArrivingAnswerDoesNotEatTheNameBeingTyped(t *testing.T) {
 	vm := seedPickerVM(t)
 	openField(t, vm, "mail_accounts")
@@ -434,10 +349,6 @@ func TestScopePicker_AnArrivingAnswerDoesNotEatTheNameBeingTyped(t *testing.T) {
 	}
 }
 
-// A cross-product scope makes duplicate values normal: every account has an
-// INBOX, and the mailbox value is account-independent (ADR-011's worked
-// example). Two boxes holding the same value would tick and untick together,
-// which reads as a bug, so they are one choice carrying both labels.
 func TestScopePicker_OneValueIsOneChoiceHoweverOftenItIsOffered(t *testing.T) {
 	vm := seedPickerVM(t)
 	evalString(t, vm, `(function(){ window.setProjScopeText('macmcp', 'mail_mailboxes', ''); return ''; })()`)

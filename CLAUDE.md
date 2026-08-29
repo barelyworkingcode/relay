@@ -13,7 +13,9 @@ service management.
 - `relay service register|unregister|restart|list` — service self-registration. `restart` sends `ReloadService`; the tray does Stop → Start in place.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
+- `relay credential mint --name NAME --class CLASS [--class ...] [--ttl 12h] | list [--include-expired] | revoke --id ID` — control-plane API credentials (ADR-015, ADR-016). `--class` is one of `read`, `configure`, `grant`, `execute`, `proxy`; an unknown class or an empty set is refused. `--ttl` gives the credential an expiry; omitted means never. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
 - `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
+- `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one (and does **not** end sessions it already signed in — those are `relay credential revoke`, or Settings → Passkeys). The code is also mintable from the tray's **Show Login Code...** item, which goes through the same `mintBootstrapCode`. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
 
 ## Architecture
 
@@ -45,11 +47,23 @@ router.go                Bridge auth (service vs project tokens), tool filtering
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
 audit_cmd.go             `relay audit` CLI
+audit_issuance.go        credential_issued / credential_revoked: the record every mint and revoke writes,
+                         the CLI's own append-only recorder, and the fail-closed rule for issuance
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
 scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
 enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
 enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
 enrol_cmd.go             `relay enrol` CLI
+capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
+api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
+credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
+login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share)
+login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
+webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, none attestation only
+webauthn_cbor.go         CBOR decode via fxamacker/cbor, pinned to the CTAP2 canonical subset
+webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
+login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
+login_document.go        The self-contained login page, served under a strict CSP
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
@@ -57,7 +71,8 @@ external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpCon
 wire_json.go             Verbatim JSON encoding for the outbound JSON-RPC frame (ADR-013)
 http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
-frontend_server.go       Front-door HTTP server; project routes local, rest falls through
+frontend_server.go       Front-door HTTP server; project routes local, rest falls through;
+                         composes the public login mux in front of frontendCredentialAuth
 frontend_dispatcher.go   Manifest-driven HTTP + WS dispatcher (longest-prefix match)
 frontend_model_guard.go  Enforces a project's allowed_models before relayLLM sees the request
 relay_llm_channel.go     Provisions the frontend socket + bearer token (filename legacy; contents are the generic FrontendChannel)
@@ -65,7 +80,7 @@ enhanced_services.go     In-memory registry of enhanced services; per-service re
 service_registry.go      Background process management + ephemeral service tokens
 service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
 service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
-ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments)
+ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
 service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
@@ -289,13 +304,52 @@ declarations, no service-ID hardcoding anywhere in relay. Full spec:
 
 ## Security
 
-The four-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
-brokering rationale: ADR-007):
+The five-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
+the flow end to end, with worked examples:
+[`docs/auth-flow.html`](docs/auth-flow.html); brokering rationale: ADR-007):
 
 - **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Plaintext + SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
 - **Service token** (`RELAY_SERVICE_TOKEN`) — ephemeral, in-memory, full bridge access; lets a service authenticate its own bridge calls. **Never injected into a spawned child** — if a project token can't be resolved, the child gets no token (fail closed).
-- **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch; an empty configured token fails closed. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
+- **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch. It is no longer a credential of its own: relay records it as the `legacy-frontend-token` **control-plane credential** on every start, so it reaches exactly `read`+`configure`+`proxy`. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
+- **Control-plane credential** (`settings.json` → `api_credentials`) — the API's authenticator (ADR-015). Names an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; absent means **nothing**, never everything. `frontendCredentialAuth` resolves any bearer to one of these before a handler runs (no credentials at all fails closed), and `RouteRegistrar` then checks the route's class — the first asks "is this anyone?", the second "may they do this?". `execute` and `proxy` routes are absent from the TCP mux entirely, not refused on it. Mint with `relay credential mint --name N --class read [--class …]`; the plaintext is printed **once**. A consumer that needs `grant` — including `POST /api/projects/{id}/rotate_token` — or `execute` over HTTP must mint its own.
 - **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
+
+**The proxied surface has a class of its own, and it is socket-only** (ADR-016
+decision 4). The `/` catch-all is the one mount whose blast radius relay
+cannot see — what it reaches is whatever a manifest declares — so it is named
+`proxy` rather than mislabelled as configuration. A `configure` credential no
+longer reaches relayLLM's sessions, terminals or `/ws`, and the browser-facing
+loopback bind reaches no proxied route at all: that is issue #50's guarantee
+restored. Eve and relayScheduler dial the **socket** and the legacy migration
+grants them `proxy`, so nothing relay injects is affected; a hand-minted
+`configure` credential that relied on the catch-all must be re-minted. With no
+catch-all on the TCP mux to absorb it, a near-miss like `POST /api/services`
+there is a 405 from `http.ServeMux` rather than a proxied request — logged
+(`slog.Warn` with method, path and transport, inside `frontendCredentialAuth`)
+and deliberately not audited: an unregistered route is not an authorization
+decision, and a `ControlDecision` would put an attacker-drivable write on the
+listener ADR-015 decision 2 leaves empty.
+
+**A service may not claim a route relay serves.** `RouteRegistrar` accumulates
+relay's own route set as it registers it, and
+`EnhancedServiceRegistry.checkRouteConflictsLocked` refuses any manifest route
+whose path space overlaps one — a hand-maintained list would drift the first
+time someone added a route. A wildcard pattern reserves its subtree; the `/`
+catch-all is excluded, being the mount services are reached through rather
+than a path relay serves. `/relay/` stays reserved separately, since the login
+routes register outside `RouteRegistrar`. Rules and the operator-visible
+error: [`docs/service-manifest.md`](docs/service-manifest.md).
+
+**A credential may expire, and absent means never** (ADR-016 decision 3).
+`--ttl` writes an RFC3339 `expires`; a record without one round-trips exactly
+as it did before the field existed. An `expires` relay cannot parse reads as
+**expired**, and an expired credential is refused *identically* to an unknown
+one — a distinguishable answer would be an oracle for which credentials exist.
+Expired records are reaped lazily, inside the same `store.With` as the next
+mint, never by a timer. This is not a reversal of `enrolment_ca.go`'s
+revocation-over-expiry choice: an enrolment is long-lived and revoked, a login
+credential is short-lived by design and renewed by another ceremony. See
+[`docs/tokens.md`](docs/tokens.md#expiry).
 
 **External MCPs are supervised children** — one stdio connection per MCP id,
 shared by every access profile that names it, and therefore restarted when it
@@ -324,6 +378,24 @@ caller the sink fails open and shows its drop count rather than stalling a tool
 call; for a remote one it is fail-closed — an `intent` record is written and
 flushed before the MCP runs, a `completion` record with the same `id` follows,
 and a call whose intent cannot be recorded is refused (ADR-010 decision 5).
+**Auditing is on by default**: an absent `audit` block resolves to enabled with
+the rotation caps applied, so a fresh install records without being configured,
+and only an explicit `"enabled": false` turns it off — which costs the remote
+listener (ADR-010) and every `control_decision` (ADR-015). A new install writes
+the block out explicitly so the file says what relay is doing.
+**Every act that issues or revokes a credential is recorded too**
+(`audit_issuance.go`): `credential_issued` / `credential_revoked`, naming what,
+its identifier, the class set or grant, and which door it came from — CLI, the
+Settings window, the tray menu, or HTTP. A `control_decision` says a caller was
+allowed to reach `rotate_token`; it does not say a token was rotated, and most
+issuance is a CLI process that reaches no route at all. **Issuance is
+fail-closed** on ADR-010 decision 5's argument: the record is written and
+synced before the secret reaches anyone, and an act that cannot be recorded is
+refused — the plaintext withheld, an unrecorded enrolment revoked, an
+unrecorded passkey removed. **Revocation is not**, because refusing to narrow a
+grant when the log is broken is the worse failure; it is loud instead. A CLI
+process appends with a recorder of its own and never rotates, so it cannot
+rename the log out from under the tray's open descriptor.
 Viewer: Settings → Tool Calls, or `relay audit` (`--kind remote` for anything a
 VM did). Full reference: [`docs/audit-log.md`](docs/audit-log.md); rationale:
 ADR-008, narrowed for remote callers by ADR-010, widened by ADR-012 with the
@@ -370,13 +442,38 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Remote Clients, Service Inspector, Tool Calls.
+Services, MCP Servers, Projects, Remote Clients, Passkeys, Service Inspector,
+Tool Calls.
 
 The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
 grants it reaches — by project *name*, with the certificate fingerprint in full
 — and reads/writes the `remote` block. Creating an enrolment returns the bundle
 **directory** only: the client private key inside it never crosses the IPC
 boundary.
+
+The Passkeys tab (`ipc_login.go`) is the Remote Clients tab's shape applied to
+interactive login (ADR-016): registered passkeys with name, abbreviated
+credential id, creation time and last sign count — **never** the public key,
+which `passkeyView` has no field for — and beneath them the live browser
+sessions those passkeys minted, each with its own Sign out. The two lists are
+one screen because revoking a passkey stops the *next* login and does nothing
+to a credential it already issued; a tab showing only the first would let
+"revoked" read as "signed out" for up to twelve hours. Sign out goes through
+`revokeAPICredentialIf` with a login-only gate inside the same `store.With` as
+the delete, so the WebView can never revoke an operator's own long-lived
+credential — that stays `relay credential revoke`.
+
+The tray's **Show Login Code...** item is the second presentation ADR-016
+decision 2 allows for the bootstrap anchor. It mints through the same
+`mintBootstrapCode` inside `store.With` the CLI uses (`LoginOps.MintBootstrap`)
+and shows the code in the Settings window, because relay is `LSUIElement` and
+that window is the only surface the tray has. A window that is not open yet
+gets the code seeded into its first paint (`renderSettingsDocument`); one
+already open gets an emit — Cocoa drops a script evaluated against a WebView
+that does not exist yet, and never reloads a window that does. Minting replaces
+rather than accumulates, so the panel says out loud that showing another code
+kills this one. The item is never the *only* source: the menu is unreachable
+over SSH and from the hermetic tier, which is why `relay login enrol` stays.
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via
@@ -415,14 +512,17 @@ a recent Go toolchain (see `go.mod`) and macOS.
 `bridge.ConfigDir()` to a per-test temp dir under `/tmp` (via `mkShortTempDir`,
 which sidesteps the 104-char Unix-socket path limit) populated from
 `test/fixtures/relay-home/`. The `support_safety_test.go` guard fails the suite
-if anything in the real ConfigDir changes during a run.
+if anything in the real ConfigDir changes during a run. The suite expects
+relay stopped: a running instance legitimately rewrites `settings.json` there
+on its own schedule and will trip this guard for a reason that has nothing to
+do with the code under test.
 
 ### Three tiers
 
 | Command | What runs | When |
 |---|---|---|
 | `go test ./...` | Hermetic suite — pure Go, no spawned binaries, no user files | Every commit (pre-commit hook) |
-| `go test -tags=live ./...` | Spawns the real `../relayLLM` binary end-to-end | After relay↔relayLLM boundary changes |
+| `go test -tags=live ./...` | Spawns real binaries end-to-end: the `../relayLLM` binary, and a headless Google Chrome that runs the passkey login ceremony against the real `/relay/login` document (`webauthn_browser_live_test.go`) | After relay↔relayLLM boundary changes; after any change to the WebAuthn verifier, the login routes or the login page |
 | `go test -race ./...` | Hermetic suite + race detector | Pre-push hook; before merging concurrency changes |
 
 Install the hooks once per clone: `git config core.hooksPath .githooks`.
@@ -434,7 +534,15 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
 3. Need a working router → `newTestRouter(t, settings, mgr)`.
 4. Exercising a manifest-registering service → `NewFakeService(t, FakeServiceOptions{...})`. The relayLLM contract is covered by `integration_fake_relayllm_test.go`.
 5. Need a real spawned subprocess → the `cmd/testservice` / `cmd/testmcp` binaries, built on demand via `buildTestServiceBinary(t)` / `buildTestMcpBinary(t)`, never an `exec.Command` mock.
-6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully if `../relayLLM` isn't built.
+6. Live-tier tests carry `//go:build live` and `t.Skip` gracefully when the
+   real binary they need is absent — `../relayLLM` unbuilt, or Google Chrome
+   not installed. A developer without one must see a skip, never a failure.
+7. The WebAuthn verifier is covered twice on purpose (ADR-016 decision 8):
+   `webauthn_test.go`'s software client owns every negative case in the
+   hermetic tier, and `webauthn_browser_live_test.go` runs exactly one
+   ceremony in a real Chrome — the only evidence that relay agrees with a
+   user agent it did not also write. Neither covers real authenticator
+   hardware or Safari; both gaps are named in `docs/testing-roadmap.md`.
 
 ### Not covered by the suite
 

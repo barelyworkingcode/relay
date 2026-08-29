@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// The manifest wire shape is duplicated across the relay-side bridge
-// module and relayLLM (see ADR-001 + ROADMAP item X1). Golden a JSON
-// round-trip so a field rename here breaks loudly before it can drift
+// Deliberate: the manifest wire shape is duplicated in relayLLM (ADR-001) —
+// this golden round-trip makes a field rename break loudly before it drifts
 // from the other side.
 func TestActionDecl_JSONRoundTrip_PreservesForEach(t *testing.T) {
 	original := ActionDecl{
@@ -49,9 +48,6 @@ func TestActionDecl_OmitsEmptyForEach(t *testing.T) {
 	}
 }
 
-// Validate is the schema-level gatekeeper called from bridge/server.go's
-// RegisterManifest handler. Lock in the rules that matter for the
-// no-carveouts contract.
 func TestManifestValidate_HappyPath(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/", "/ws"},
@@ -90,9 +86,8 @@ func TestManifestValidate_RejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
-// CR-13: Validate must normalize a lower/mixed-case method to its canonical
-// upper-case form in place, so downstream HTTP dispatch (which uses
-// action.Method verbatim) issues a verb servers actually match.
+// Deliberate: normalized in place because downstream HTTP dispatch uses
+// action.Method verbatim.
 func TestManifestValidate_NormalizesActionMethodCase(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},
@@ -119,8 +114,6 @@ func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 	}
 }
 
-// A manifest with no Config still validates — Config is optional and most
-// services won't declare one. Guards the json:",omitempty" backward-compat.
 func TestManifestValidate_NoConfigStillValidates(t *testing.T) {
 	m := Manifest{Routes: []string{"/api/"}}
 	if err := m.Validate(); err != nil {
@@ -128,9 +121,8 @@ func TestManifestValidate_NoConfigStillValidates(t *testing.T) {
 	}
 }
 
-// Exercises every recursive node type the renderer supports: object → array of
-// object, object → map of object, plus select/secret/json/string[]/stringMap
-// leaves. Mirrors the shape relayLLM declares (openai/llama/pi/pty).
+// Exercises every recursive node type the renderer supports, mirroring
+// relayLLM's real schema shape (openai/llama/pi/pty).
 func TestManifestValidate_ConfigSchema_HappyPath(t *testing.T) {
 	m := Manifest{
 		Routes: []string{"/api/"},

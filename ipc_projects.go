@@ -2,20 +2,18 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 )
 
-// ---------------------------------------------------------------------------
-// Project IPC handlers — relay's native Projects tab. Mirrors project_routes.go
-// (the HTTP surface eve uses) but emits events instead of returning HTTP bodies
-// so the in-tray WebView can stay reactive. The HTTP and IPC paths share the
-// same Settings mutators, so a project created over IPC is identical to one
-// created over HTTP and vice versa.
-// ---------------------------------------------------------------------------
+// Project IPC handlers for relay's native Projects tab. These mirror
+// project_routes.go (the HTTP surface eve uses) but emit events instead of
+// returning HTTP bodies so the in-tray WebView can stay reactive; both paths
+// share the same Settings mutators, so a project created over IPC is
+// identical to one created over HTTP.
 
-// ipcUpdateProjectMsg mirrors the PUT /api/projects/{id} body for the IPC
-// transport, which (unlike the HTTP route) carries the project id inline. The
-// patch fields themselves are the shared projectUpdateFields so the update
+// ipcUpdateProjectMsg carries the project id inline, unlike the HTTP PUT
+// route. The patch fields are the shared projectUpdateFields so the update
 // orchestration stays in one place (applyProjectUpdate).
 type ipcUpdateProjectMsg struct {
 	ID string `json:"id"`
@@ -32,24 +30,19 @@ type ipcListMcpToolsMsg struct {
 	McpID string `json:"mcp_id"`
 }
 
-// ipcEnumerateScopeFieldMsg mirrors the POST /api/mcps/{id}/enumerate body,
-// with the MCP id inline as every IPC message carries it.
 type ipcEnumerateScopeFieldMsg struct {
 	McpID  string                     `json:"mcp_id"`
 	Field  string                     `json:"field"`
 	Values map[string]json.RawMessage `json:"values,omitempty"`
 }
 
-// ipcCreateProject creates a new project, applies optional skill/policy, and
-// emits onProjectAdded with the full row (including the freshly-generated
-// plaintext token — the user copies it from the form's Token field).
 func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[projectCreateFields](raw, "create_project")
 	if !ok {
 		return
 	}
-	// Validate the policy BEFORE any mutation so a bad policy can't create a
-	// project that then has to be rolled back — mirrors the HTTP POST route.
+	// Validated before any mutation so a bad policy can't create a project
+	// that then has to be rolled back — mirrors the HTTP POST route.
 	if msg.PermissionPolicy != nil {
 		if err := validatePermissionPolicy(msg.PermissionPolicy); err != nil {
 			ctx.UI.EmitEvent("onProjectError", err.Error())
@@ -70,7 +63,6 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	// Skill regen runs off the UI thread — same pattern as the HTTP route.
 	if ctx.SkillLister != nil && created.GenerateSkill {
 		ctx.GoFunc(func() {
 			reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, created)
@@ -80,8 +72,6 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onProjectAdded", marshalForUI(created))
 }
 
-// ipcUpdateProject patches an existing project. Empty body fields are
-// "no change" (pointer semantics); set fields fully replace prior values.
 func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcUpdateProjectMsg](raw, "update_project")
 	if !ok || msg.ID == "" {
@@ -93,10 +83,9 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 	}
-	// Shape/grant validation (including path) now happens inside
-	// applyProjectUpdate against the fully-merged candidate — mirrors the HTTP
-	// PUT route. See project_routes.go for why a standalone path-only
-	// pre-check can no longer judge this correctly.
+	// Shape/grant validation (including path) happens inside
+	// applyProjectUpdate against the fully-merged candidate — mirrors the
+	// HTTP PUT route.
 	var updated Project
 	var found bool
 	var updateErr error
@@ -126,7 +115,6 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
 }
 
-// ipcRemoveProject deletes a project and its skill file. Idempotent.
 func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcIDMsg](raw, "remove_project")
 	if !ok || msg.ID == "" {
@@ -161,9 +149,9 @@ func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onProjectRemoved", msg.ID)
 }
 
-// ipcRotateProjectToken issues a new plaintext token. The old token stops
-// authenticating on the next call to AuthenticateProject, so any active
-// session (Eve, relayLLM, CLI) must re-auth.
+// ipcRotateProjectToken: the old token stops authenticating on the next call
+// to AuthenticateProject, so any active session (Eve, relayLLM, CLI) must
+// re-auth.
 func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcIDMsg](raw, "rotate_project_token")
 	if !ok || msg.ID == "" {
@@ -188,16 +176,21 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
 		return
 	}
+	// Withheld rather than shown when the record cannot be written. The old
+	// token is already dead and there is no undo for that, but the new one has
+	// not left this process yet, so refusing here still means no project token
+	// ever reaches a holder unrecorded — rotate again once the log is writable.
+	if auditErr := recordProjectTokenRotated(issuanceAuditorOrNil(ctx.Audit), msg.ID, auditViaIPC, ""); auditErr != nil {
+		ctx.UI.EmitEvent("onProjectError", fmt.Sprintf("the token was rotated but could not be recorded in the audit log (%v), so it was not shown; rotate again", auditErr))
+		return
+	}
 
-	// Emit the new plaintext ONCE — the UI shows a "copy now" banner.
-	// Re-fetches of the project carry the same plaintext (it lives inline in
-	// the project struct) but the banner makes the rotation visible.
 	ctx.UI.EmitEvent("onProjectTokenRotated", msg.ID, newPlaintext)
 }
 
-// ipcRegenProjectSkill forces a SKILL.md regeneration regardless of the
-// GenerateSkill flag. The flag gates *automatic* regen on save/MCP-change;
-// this is the explicit user-initiated path.
+// ipcRegenProjectSkill forces regeneration regardless of the GenerateSkill
+// flag, which only gates *automatic* regen on save/MCP-change — this is the
+// explicit user-initiated path.
 func ipcRegenProjectSkill(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcIDMsg](raw, "regen_project_skill")
 	if !ok || msg.ID == "" {
@@ -227,10 +220,10 @@ func ipcRegenProjectSkill(ctx *IPCContext, raw json.RawMessage) {
 	})
 }
 
-// ipcUpdateProjectDisabledTools is the fine-grained handler the form can
-// call when the user toggles individual tools — avoids resending the entire
-// project body on every checkbox click. Kept in addition to update_project
-// (which patches the full map) because it makes the per-row UX cheap.
+// ipcUpdateProjectDisabledTools lets the form toggle one tool without
+// resending the entire project body on every checkbox click; kept alongside
+// update_project (which patches the full map) because it makes the per-row
+// UX cheap.
 func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcProjectDisabledToolsMsg](raw, "update_project_disabled_tools")
 	if !ok || msg.ID == "" || msg.McpID == "" {
@@ -259,10 +252,9 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
 }
 
-// ipcListMcpTools returns the live tool list for one MCP so the picker can
-// render checkboxes. Emits an empty list rather than an error when the MCP
-// is registered-but-not-connected (e.g. HTTP MCP awaiting OAuth) so the UI
-// can show its own "authenticate first" hint without a noisy error.
+// ipcListMcpTools emits an empty list rather than an error when the MCP is
+// registered-but-not-connected (e.g. HTTP MCP awaiting OAuth) so the UI can
+// show its own "authenticate first" hint without a noisy error.
 func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcListMcpToolsMsg](raw, "list_mcp_tools")
 	if !ok || msg.McpID == "" {
@@ -278,19 +270,16 @@ func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 	ctx.UI.EmitEvent("onMcpToolsListed", msg.McpID, marshalForUI(infos))
 }
 
-// ipcEnumerateScopeField is the tray's half of ADR-011 decision 6, and the
-// exact counterpart of POST /api/mcps/{id}/enumerate: ADR-004 keeps the two
-// editors co-equal, and an editor that can only offer a picker over HTTP is
-// not co-equal with one that cannot.
+// ipcEnumerateScopeField is the tray's counterpart of
+// POST /api/mcps/{id}/enumerate (ADR-004 keeps the two editors co-equal).
+// Both surfaces call enumerateScopeField, so every check relay makes — is
+// this a field the MCP declared, did it declare it enumerable — is made
+// once and identically. The result is emitted VERBATIM, including its
+// status, because the picker must render "no values" and "could not ask"
+// differently.
 //
-// Both surfaces call enumerateScopeField, so every check relay makes on its
-// own — is this a field the MCP declared, did it declare it enumerable, which
-// dependency values may be sent — is made once and identically. The result is
-// emitted VERBATIM, including its status, because the whole point is that the
-// picker must render "no values" and "could not ask" differently.
-//
-// It runs off the UI thread: a context/enumerate is a live round trip to
-// another process, and blocking the main thread on one would freeze the whole
+// Runs off the UI thread: a context/enumerate is a live round trip to
+// another process, and blocking the main thread on one would freeze the
 // settings window for as long as the MCP takes.
 func ipcEnumerateScopeField(ctx *IPCContext, raw json.RawMessage) {
 	msg, ok := unmarshalIPC[ipcEnumerateScopeFieldMsg](raw, "enumerate_scope_field")
@@ -305,11 +294,9 @@ func ipcEnumerateScopeField(ctx *IPCContext, raw json.RawMessage) {
 	})
 }
 
-// mcpSurfacesFrom returns the runtime MCP surfaces from the IPC context's
-// tool provider when it also implements McpSurfaceProvider (the production
-// *ExternalMcpManager satisfies both). In tests where Tools is a narrow stub,
-// returns nil and SyncProjectToken falls back to its "no scope derivation"
-// path.
+// mcpSurfacesFrom returns nil when ctx.Tools doesn't also implement
+// McpSurfaceProvider (a narrow test stub, typically) — SyncProjectToken
+// falls back to its "no scope derivation" path in that case.
 func mcpSurfacesFrom(ctx *IPCContext) McpSurfaces {
 	if p, ok := ctx.Tools.(McpSurfaceProvider); ok {
 		return p.AllMcpSurfaces()

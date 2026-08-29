@@ -1,36 +1,5 @@
 package main
 
-// Issue #35: CallTool resolved a tool name to an MCP GLOBALLY, before the
-// caller's grant was consulted, by iterating a Go map. Two consequences, and
-// the second is the one that matters:
-//
-//   - a token granted only B, calling a tool A and B both expose, was refused
-//     with "MCP 'A' is disabled for this token";
-//   - a token granted BOTH dispatched to a different MCP call to call, so
-//     stored.Context[extID] (the _meta resource scope), DisabledTools[extID]
-//     and the audit's mcp_id were all chosen by Go's map seed.
-//
-// The behaviour pinned here is resolution WITHIN the calling grant's MCP-level
-// allowance:
-//
-//  1. grant admits exactly one owner  -> that owner serves, in BOTH orders;
-//  2. grant admits several owners     -> a DETERMINISTIC refusal naming the
-//     tool and every colliding id, never an arbitrary pick;
-//  3. the audit names the MCP that ACTUALLY served;
-//  4. grant admits no owner           -> a denial, and the same one every time;
-//  5. single-MCP behaviour unchanged.
-//
-// These tests are written to compile against BOTH the pre-fix interface
-// (ToolProvider.FindToolOwner) and the post-fix one (ToolProvider.ToolOwners).
-// collidingProvider below implements both methods; a Go interface only
-// requires the methods it names, so the same file builds either way and the
-// only thing that changes is whether the assertions hold.
-//
-// The assertions are on OUTCOMES, never on error prose: that it is an error,
-// that it carries CodeUnauthorized, that the audit outcome is `denied`, and
-// that the message CONTAINS the colliding ids. The sentence is the
-// implementer's to write.
-
 import (
 	"context"
 	"encoding/json"
@@ -44,17 +13,6 @@ import (
 	"relaygo/mcp"
 )
 
-// ---------------------------------------------------------------------------
-// A tool provider whose connection order is DECLARED, not map-derived
-// ---------------------------------------------------------------------------
-
-// dispatchedCall is one invocation that actually reached an MCP. Recording the
-// id is the whole point: "refused" and "silently did nothing" are
-// indistinguishable from the caller's return value and mean opposite things,
-// so every test here asks which MCP was reached rather than only whether an
-// error came back. The meta is recorded too, because the resource scope in
-// force (allowed_dirs) is keyed off the same id and is the layer issue #35
-// says goes non-deterministic.
 type dispatchedCall struct {
 	mcpID string
 	tool  string
@@ -63,11 +21,8 @@ type dispatchedCall struct {
 
 // collidingProvider is a ToolManager backed by an ORDERED slice rather than a
 // map, so a test can state the connection order explicitly instead of hoping a
-// map reproduces one. It deliberately implements BOTH resolution methods.
+// map reproduces one.
 type collidingProvider struct {
-	// order is the connection order this provider reports. Pre-fix,
-	// FindToolOwner returns order[0] among the owners, which is exactly the
-	// arbitrary global pick the map made — made reproducible.
 	order []string
 	tools map[string][]mcp.Tool
 
@@ -90,28 +45,6 @@ func (p *collidingProvider) exposes(id, toolName string) bool {
 
 func (p *collidingProvider) Tools(id string) []mcp.Tool { return p.tools[id] }
 
-// FindToolOwner is the PRE-FIX ToolProvider method. It answers with the first
-// owner in the declared order — a deterministic stand-in for "whichever one
-// the map enumerated first" — plus that MCP's config, matching the real
-// signature exactly.
-//
-// Post-fix this method is simply unused by the router; it stays so this file
-// compiles against the interface as it is TODAY as well as as it will be.
-func (p *collidingProvider) FindToolOwner(name string) (string, *ExternalMcp) {
-	for _, id := range p.order {
-		if p.exposes(id, name) {
-			cfg := ExternalMcp{ID: id, DisplayName: id}
-			return id, &cfg
-		}
-	}
-	return "", nil
-}
-
-// ToolOwners is the POST-FIX ToolProvider method: every CONNECTED MCP exposing
-// the tool, sorted, so the router can intersect that set with the grant.
-// Sorted output is returned even though the router is the thing that must be
-// deterministic — an unsorted answer here would let a correct router still
-// produce an order-dependent refusal.
 func (p *collidingProvider) ToolOwners(name string) []string {
 	var out []string
 	for _, id := range p.order {
@@ -131,23 +64,20 @@ func (p *collidingProvider) CallTool(_ context.Context, id, name string, _ json.
 }
 
 // McpSurfaceFor answers with the zero surface: no schema, version 0. That is a
-// v1 MCP, which exempts these tests from the scope-presence and
-// schema-usability layers and leaves the per-MCP context blob passed through
-// to _meta verbatim — so what CallTool records as `meta` is exactly the
-// resource scope that was in force.
+// v1 MCP, which leaves the per-MCP context blob passed through to _meta
+// verbatim — so what CallTool records as `meta` is exactly the resource scope
+// that was in force.
 func (p *collidingProvider) McpSurfaceFor(string) McpSurface { return McpSurface{} }
 
 func (p *collidingProvider) Reconcile(context.Context, []ExternalMcp)           {}
 func (p *collidingProvider) Reload(context.Context, string, *ExternalMcp) error { return nil }
 
-// dispatches returns a snapshot of everything that reached an MCP.
 func (p *collidingProvider) dispatches() []dispatchedCall {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.calls)
 }
 
-// dispatchedIDs is the dispatch log reduced to the ids, for fingerprinting.
 func (p *collidingProvider) dispatchedIDs() []string {
 	var out []string
 	for _, c := range p.dispatches() {
@@ -156,28 +86,17 @@ func (p *collidingProvider) dispatchedIDs() []string {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
 const (
 	collisionMcpA = "fs-a"
 	collisionMcpB = "fs-b"
 	// collisionMcpC exposes nothing that collides. It exists so a grant can
 	// name a real, connected, permitted MCP while admitting NEITHER owner of
-	// the colliding tool — case 4.
+	// the colliding tool.
 	collisionMcpC = "notes"
 
-	// collidingTool is exposed by BOTH fs-a and fs-b. Two filesystem MCPs
-	// exposing one read tool is the ordinary case issue #35 is about.
 	collidingTool = "fs_read"
 )
 
-// collisionTools is the surface of all three MCPs. Unannotated on purpose: the
-// project below is LOCAL, which defaults to write and to allowed-external, so
-// an unannotated tool is callable and none of the ADR-011 annotation layers
-// can be what refuses. Anything that refuses in these tests refuses because of
-// the grant's MCP-level allowance, which is what is under test.
 func collisionTools() map[string][]mcp.Tool {
 	return map[string][]mcp.Tool{
 		collisionMcpA: simpleTools(collidingTool, "fs_write", "a_only"),
@@ -187,8 +106,7 @@ func collisionTools() map[string][]mcp.Tool {
 }
 
 // collisionScopes is the per-MCP _meta context. The two values are different
-// on purpose: which one goes on the wire is the resource-scope layer, and
-// issue #35's real finding is that the map seed was choosing it.
+// on purpose: which one goes on the wire is the resource-scope layer.
 func collisionScopes() map[string]json.RawMessage {
 	return map[string]json.RawMessage{
 		collisionMcpA: json.RawMessage(`{"allowed_dirs":["/scope/only-a"]}`),
@@ -197,14 +115,11 @@ func collisionScopes() map[string]json.RawMessage {
 	}
 }
 
-// newCollisionRouter builds a router over collidingProvider whose single local
-// project grants exactly allowedMcpIDs, with the MCPs connected in the given
-// order. rec may be shared across many routers so a determinism loop writes one
+// rec may be shared across many routers so a determinism loop writes one
 // audit log; pass nil for no auditing.
 //
 // It does not go through newTestRouter because that helper takes a concrete
-// *ExternalMcpManager and this needs an injected ToolManager. Nothing existing
-// is modified.
+// *ExternalMcpManager and this needs an injected ToolManager.
 func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, allowedMcpIDs []string, disabled map[string][]string) (*appRouter, *collidingProvider) {
 	t.Helper()
 	tp := newCollidingProvider(order, collisionTools())
@@ -237,9 +152,6 @@ func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, all
 	}, tp
 }
 
-// bothOrders is the pair of connection orders every resolution assertion has
-// to hold under. A map cannot be relied on to reproduce one order, so a
-// single-order test proves nothing about a router that resolves by order.
 func bothOrders() map[string][]string {
 	return map[string][]string{
 		"a-then-b": {collisionMcpA, collisionMcpB, collisionMcpC},
@@ -247,11 +159,6 @@ func bothOrders() map[string][]string {
 	}
 }
 
-// outcomeFingerprint reduces one call to the facts a caller and an auditor can
-// observe. Two calls with the same fingerprint are the same outcome; a
-// determinism assertion is then string equality, which cannot be satisfied by
-// "it refused both times, differently".
-//
 // The error's TEXT is included deliberately even though no test pins its
 // wording: determinism is a property OF the wording as much as of the code, and
 // a refusal that names fs-a on Monday and fs-b on Tuesday is precisely the bug.
@@ -267,17 +174,6 @@ func outcomeFingerprint(err error, ev *AuditEvent, dispatched []string) string {
 	return fmt.Sprintf("err=%q code=%d dispatched=%v | %s", errText, codeOf(err), dispatched, audit)
 }
 
-// ---------------------------------------------------------------------------
-// 1. The grant admits exactly one owner — that owner serves, in BOTH orders
-// ---------------------------------------------------------------------------
-
-// This is the case observed live in issue #35: a token granted only B, calling
-// a tool A and B both expose, refused with "MCP 'A' is disabled for this
-// token". B owns the tool name, B is granted, B must serve it.
-//
-// The assertion is on WHICH MCP was reached, not on the absence of an error.
-// A router that returned nil and called nothing would pass an error check and
-// is the opposite of correct.
 func TestCallTool_GrantAdmittingOneOwnerReachesIt_InBothConnectionOrders(t *testing.T) {
 	for _, granted := range []string{collisionMcpA, collisionMcpB} {
 		for orderName, order := range bothOrders() {
@@ -307,9 +203,6 @@ func TestCallTool_GrantAdmittingOneOwnerReachesIt_InBothConnectionOrders(t *test
 					t.Errorf("dispatched tool = %q, want %q", calls[0].tool, collidingTool)
 				}
 
-				// The resource scope that went on the wire must be the granted
-				// MCP's, not the other owner's. This is the layer issue #35
-				// says the map seed was choosing.
 				wantDir := "/scope/only-" + strings.TrimPrefix(granted, "fs-")
 				if !strings.Contains(calls[0].meta, wantDir) {
 					t.Errorf("_meta = %s, want it to carry %s — the scope in force must be the served MCP's",
@@ -331,21 +224,11 @@ func TestCallTool_GrantAdmittingOneOwnerReachesIt_InBothConnectionOrders(t *test
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 2. The grant admits several owners — a DETERMINISTIC refusal naming both
-// ---------------------------------------------------------------------------
-
 const collisionDeterminismRuns = 50
 
-// A single call cannot distinguish "refuses" from "happened to refuse this
-// time", so the identical call is made many times, across both connection
-// orders, and every outcome must be byte-identical — the returned error, its
-// code, the audit record, and the set of MCPs reached.
-//
-// Both orders belong in the SAME identity set on purpose. "Deterministic" here
-// does not mean "stable given a fixed enumeration order"; it means the answer
-// does not depend on enumeration order at all, which is the only reading under
-// which the resource-scope layer stops being a function of the map seed.
+// Both orders belong in the SAME identity set. "Deterministic" here does not
+// mean "stable given a fixed enumeration order"; it means the answer does not
+// depend on enumeration order at all.
 func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth(t *testing.T) {
 	rec := newTestAudit(t, nil)
 	dir := t.TempDir()
@@ -365,8 +248,6 @@ func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth
 			fingerprints = append(fingerprints,
 				orderName+" #"+fmt.Sprint(i)+" -> "+outcomeFingerprint(err, ev, tp.dispatchedIDs()))
 
-			// Nothing may be reached. An ambiguity resolved by calling one of
-			// the candidates is the bug, whatever it returns afterwards.
 			// Tallied rather than fatal so the determinism comparison below
 			// still runs and the failure shows BOTH halves of the finding.
 			for _, id := range tp.dispatchedIDs() {
@@ -375,8 +256,6 @@ func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth
 		}
 	}
 
-	// Determinism first: it is the property, and it is what a single call
-	// cannot show.
 	first := fingerprintBody(fingerprints[0])
 	for _, fp := range fingerprints[1:] {
 		if body := fingerprintBody(fp); body != first {
@@ -388,15 +267,12 @@ func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth
 		t.Fatalf("an ambiguous call reached %v — a collision the caller cannot disambiguate must be refused, not picked", reached)
 	}
 
-	// Then the shape of the one outcome.
 	if lastErr == nil {
 		t.Fatal("a grant admitting both fs-a and fs-b served a colliding tool instead of refusing the ambiguity")
 	}
 	if code := codeOf(lastErr); code != jsonrpc.CodeUnauthorized {
 		t.Errorf("error code = %d, want CodeUnauthorized (%d)", code, jsonrpc.CodeUnauthorized)
 	}
-	// The message must let an operator learn WHICH grant is ambiguous, which
-	// means the tool and every colliding id. The sentence is not pinned.
 	for _, want := range []string{collidingTool, collisionMcpA, collisionMcpB} {
 		if !strings.Contains(lastErr.Error(), want) {
 			t.Errorf("refusal %q does not mention %q — an operator cannot learn which MCPs collided", lastErr.Error(), want)
@@ -418,8 +294,6 @@ func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth
 	}
 }
 
-// fingerprintBody strips the run label a fingerprint is prefixed with, so the
-// label makes a failure readable without entering the comparison itself.
 func fingerprintBody(labelled string) string {
 	if _, body, ok := strings.Cut(labelled, " -> "); ok {
 		return body
@@ -427,15 +301,6 @@ func fingerprintBody(labelled string) string {
 	return labelled
 }
 
-// ---------------------------------------------------------------------------
-// 3. The audit names the MCP that ACTUALLY served
-// ---------------------------------------------------------------------------
-
-// The audit's mcp_id came from the same global lookup as the dispatch, so it
-// inherited the same nondeterminism: a record could name an MCP that did not
-// serve the call. Stated as an invariant over every grant and both orders —
-// whenever a call was served, exactly one MCP was reached and the record names
-// that one.
 func TestCallTool_AuditRecordNamesTheMcpThatServedTheCall(t *testing.T) {
 	for _, granted := range []string{collisionMcpA, collisionMcpB} {
 		for orderName, order := range bothOrders() {
@@ -467,15 +332,6 @@ func TestCallTool_AuditRecordNamesTheMcpThatServedTheCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 4. The grant admits NO owner — still a denial, and the same one every time
-// ---------------------------------------------------------------------------
-
-// The grant names a real, connected, permitted MCP that does not own the tool.
-// Both owners are outside the grant, so the call must be refused — and refused
-// identically every time, naming the same MCP whichever order the owners were
-// connected in. Pre-fix the named MCP was whichever one the map reached first,
-// so an operator diagnosing a denial was shown a different culprit run to run.
 func TestCallTool_GrantAdmittingNoOwnerDeniesDeterministically(t *testing.T) {
 	rec := newTestAudit(t, nil)
 	dir := t.TempDir()
@@ -510,24 +366,15 @@ func TestCallTool_GrantAdmittingNoOwnerDeniesDeterministically(t *testing.T) {
 			t.Fatalf("the same denial was reported two different ways.\n  %s\n  %s", fingerprints[0], fp)
 		}
 	}
-	// The spec for this case reads "still a denial ... the same MCP named every
-	// time", which is the access-denied shape rather than the unknown-tool one.
 	// If the fix instead decides that a tool no GRANTED MCP owns is simply not
-	// in this caller's surface — a defensible and arguably tighter reading,
-	// since it names no MCP the grant does not hold — this is the one line to
-	// revisit. The determinism assertion above is not negotiable either way.
+	// in this caller's surface, this is the one line to revisit. The
+	// determinism assertion above is not negotiable either way.
 	if code := codeOf(lastErr); code != jsonrpc.CodeUnauthorized {
 		t.Errorf("error code = %d, want CodeUnauthorized (%d); the refusal was %v",
 			code, jsonrpc.CodeUnauthorized, lastErr)
 	}
 }
 
-// fsMCP v3 integration R6: the case above ("grant admits no owner") is the
-// exact live defect — a grant naming only collisionMcpC, calling a tool only
-// fs-a and fs-b own, used to fall through to owners[0] and refuse with "MCP
-// 'fs-a' is disabled for this token": an MCP the grant never named. The
-// refusal must diagnose the tool against the caller's OWN grant instead, and
-// must not teach the caller that fs-a or fs-b exist.
 func TestCallTool_GrantAdmittingNoOwnerNamesNoMcpOutsideTheGrant(t *testing.T) {
 	for orderName, order := range bothOrders() {
 		r, tp := newCollisionRouter(t, nil, t.TempDir(), order, []string{collisionMcpC}, nil)
@@ -545,8 +392,6 @@ func TestCallTool_GrantAdmittingNoOwnerNamesNoMcpOutsideTheGrant(t *testing.T) {
 				t.Errorf("%s: refusal named %q, an MCP outside this grant: %q", orderName, leaked, msg)
 			}
 		}
-		// The grant's own MCP is fine to name — the caller already knows it
-		// holds collisionMcpC, so the message can (and here does) say so.
 		if !strings.Contains(msg, collisionMcpC) {
 			t.Errorf("%s: refusal did not name the grant's own MCP %q: %q", orderName, collisionMcpC, msg)
 		}
@@ -556,10 +401,6 @@ func TestCallTool_GrantAdmittingNoOwnerNamesNoMcpOutsideTheGrant(t *testing.T) {
 	}
 }
 
-// A tool the grant's OWN MCP merely refuses at a lower layer (here,
-// hand-disabled) is a different case from R6's: that MCP is not "outside the
-// grant", so it must still be the one resolved and audited — with that
-// layer's own specific denial, not R6's generic "no tool available" one.
 func TestCallTool_GrantedMcpOwnerStillResolvedWhenItRefusesItself(t *testing.T) {
 	rec := newTestAudit(t, nil)
 	r, tp := newCollisionRouter(t, rec, t.TempDir(),
@@ -586,17 +427,7 @@ func TestCallTool_GrantedMcpOwnerStillResolvedWhenItRefusesItself(t *testing.T) 
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 5. Single-MCP behaviour is unchanged
-// ---------------------------------------------------------------------------
-
-// The regression guard. With one connected MCP there is no collision to
-// resolve, so every existing answer must survive verbatim: a granted call is
-// served and audited ok, an ungranted MCP is refused with CodeUnauthorized and
-// audited denied, a tool nobody exposes is an error, and a hand-disabled tool
-// is still refused.
 func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
-	// Only one MCP is connected, so nothing collides.
 	soloTools := map[string][]mcp.Tool{collisionMcpA: simpleTools(collidingTool, "fs_write")}
 	soloOrder := []string{collisionMcpA}
 
@@ -690,13 +521,6 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// The same properties through the REAL manager, whose conns IS a Go map
-// ---------------------------------------------------------------------------
-
-// collisionCounter is a call counter that can be installed as a mockMcpConn's
-// sendRequestFunc, so a test can tell which of two live connections a call
-// actually landed on.
 type collisionCounter struct {
 	mu sync.Mutex
 	n  int
@@ -717,9 +541,6 @@ func (c *collisionCounter) count() int {
 	return c.n
 }
 
-// newRealManagerCollisionRouter registers fs-a and fs-b as live connections in
-// a real ExternalMcpManager — whose conns field is the map issue #35 is about
-// — and grants the project exactly allowedMcpIDs.
 func newRealManagerCollisionRouter(t *testing.T, allowedMcpIDs []string) (*appRouter, *collisionCounter, *collisionCounter) {
 	t.Helper()
 	a, b := &collisionCounter{}, &collisionCounter{}
@@ -747,9 +568,8 @@ func newRealManagerCollisionRouter(t *testing.T, allowedMcpIDs []string) (*appRo
 	return newTestRouter(t, s, mgr), a, b
 }
 
-// The live reproduction of the reported symptom, with no mock standing in for
-// the map. Go randomises map iteration, so over many identical calls a router
-// that resolves globally will resolve to fs-a about half the time and refuse —
+// Go randomises map iteration, so over many identical calls a router that
+// resolves globally will resolve to fs-a about half the time and refuse —
 // while fs-b, which is granted and owns the tool, sits there able to serve.
 func TestCallTool_RealManagerMapOrderDoesNotDecideWhetherAGrantedCallSucceeds(t *testing.T) {
 	const runs = 200
@@ -777,10 +597,6 @@ func TestCallTool_RealManagerMapOrderDoesNotDecideWhetherAGrantedCallSucceeds(t 
 	}
 }
 
-// The worse half of the finding: with BOTH granted, the map seed was choosing
-// which resource scope applied. Whatever the fix decides the answer is, the
-// answer must be the SAME one every time — so either every call is refused, or
-// every call lands on one and the same MCP. A split is the bug.
 func TestCallTool_RealManagerBothGrantedProducesOneAnswerNotTwo(t *testing.T) {
 	const runs = 200
 	r, a, b := newRealManagerCollisionRouter(t, []string{collisionMcpA, collisionMcpB})
@@ -797,13 +613,10 @@ func TestCallTool_RealManagerBothGrantedProducesOneAnswerNotTwo(t *testing.T) {
 	if len(seen) != 1 {
 		t.Errorf("%d identical calls produced %d distinct outcomes: %v", runs, len(seen), seen)
 	}
-	// And whichever it is, it must not have been split across the two MCPs:
-	// that is the resource-scope layer being decided by the map seed.
 	if a.count() != 0 && b.count() != 0 {
 		t.Errorf("the same call was served by %s %d times and by %s %d times — which allowed_dirs applied was chosen by the map seed",
 			collisionMcpA, a.count(), collisionMcpB, b.count())
 	}
-	// The settled spec: an ambiguous grant is refused, not resolved by picking.
 	if a.count()+b.count() != 0 {
 		t.Errorf("an ambiguous grant reached an MCP %d times — a collision the caller cannot disambiguate must be refused",
 			a.count()+b.count())
