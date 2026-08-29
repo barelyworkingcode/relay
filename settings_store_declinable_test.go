@@ -37,11 +37,11 @@ func sdRead(t *testing.T, dir string) []byte {
 // that no new file was renamed over this one.
 func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	if err := store.With(func(s *Settings) { s.AdminSecret = "before" }); err != nil {
+	if err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("before") }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -50,7 +50,7 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 
 	refusal := fmt.Errorf("declined on purpose")
 	err := store.WithDeclinable(func(s *Settings) error {
-		s.AdminSecret = "after"
+		s.AdminSecret = NewSecret("after")
 		return refusal
 	})
 	if err != refusal {
@@ -64,15 +64,15 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 	if got := sdRead(t, dir); string(got) != string(beforeBytes) {
 		t.Fatalf("a declined write changed settings.json:\n before %s\n after  %s", beforeBytes, got)
 	}
-	if got := store.Get().AdminSecret; got != "before" {
+	if got, _ := store.Get().AdminSecret.Reveal(); got != "before" {
 		t.Fatalf("the declined mutation reached the cache: admin secret = %q", got)
 	}
 
 	// The other half: a callback that returns nil still saves.
-	if err := store.WithDeclinable(func(s *Settings) error { s.AdminSecret = "committed"; return nil }); err != nil {
+	if err := store.WithDeclinable(func(s *Settings) error { s.AdminSecret = NewSecret("committed"); return nil }); err != nil {
 		t.Fatalf("WithDeclinable (committing): %v", err)
 	}
-	if got := store.Get().AdminSecret; got != "committed" {
+	if got, _ := store.Get().AdminSecret.Reveal(); got != "committed" {
 		t.Fatalf("admin secret = %q after a committing callback, want committed", got)
 	}
 }
@@ -90,19 +90,19 @@ func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T
 	run := func(t *testing.T, flood int) *Settings {
 		t.Helper()
 		dir := mkEmptySandboxRelayHome(t)
-		stale := NewSettingsStoreAt(dir)
+		stale := sealedSettingsStoreAt(dir)
 		if err := stale.EnsureInitialized(); err != nil {
 			t.Fatalf("EnsureInitialized: %v", err)
 		}
-		if err := stale.With(func(s *Settings) { s.AdminSecret = "seeded" }); err != nil {
+		if err := stale.With(func(s *Settings) { s.AdminSecret = NewSecret("seeded") }); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		seen := sdStat(t, dir).ModTime()
 
 		// A second store standing in for `relay credential mint` in its own
 		// process: it commits, and is told the write succeeded.
-		committer := NewSettingsStoreAt(dir)
-		if err := committer.With(func(s *Settings) { s.AdminSecret = canary }); err != nil {
+		committer := sealedSettingsStoreAt(dir)
+		if err := committer.With(func(s *Settings) { s.AdminSecret = NewSecret(canary) }); err != nil {
 			t.Fatalf("committing writer: %v", err)
 		}
 		if err := os.Chtimes(sdSettingsPath(dir), seen, seen); err != nil {
@@ -120,17 +120,17 @@ func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T
 				t.Fatalf("refusal %d reported success", i)
 			}
 		}
-		return NewSettingsStoreAt(dir).Reload()
+		return sealedSettingsStoreAt(dir).Reload()
 	}
 
 	t.Run("control", func(t *testing.T) {
-		if got := run(t, 0).AdminSecret; got != canary {
+		if got, _ := run(t, 0).AdminSecret.Reveal(); got != canary {
 			t.Fatalf("with no refusals at all the committed change is %q, want %q — the harness itself loses it", got, canary)
 		}
 	})
 
 	t.Run("flood", func(t *testing.T) {
-		if got := run(t, 200).AdminSecret; got != canary {
+		if got, _ := run(t, 200).AdminSecret.Reveal(); got != canary {
 			t.Fatalf("200 refused writes lost a change another writer was told had succeeded: admin secret = %q, want %q", got, canary)
 		}
 	})
@@ -142,7 +142,7 @@ func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T
 // staging file shared between them tears visibly rather than by luck.
 func TestSettingsStore_ConcurrentWritersNeverProduceAnUnparseableFile(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	seed := NewSettingsStoreAt(dir)
+	seed := sealedSettingsStoreAt(dir)
 	if err := seed.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -202,10 +202,10 @@ func TestSettingsStore_ConcurrentWritersNeverProduceAnUnparseableFile(t *testing
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			store := NewSettingsStoreAt(dir)
+			store := sealedSettingsStoreAt(dir)
 			for r := 0; r < rounds; r++ {
 				if err := store.With(func(s *Settings) {
-					s.AdminSecret = fmt.Sprintf("writer-%d-round-%d", w, r)
+					s.AdminSecret = NewSecret(fmt.Sprintf("writer-%d-round-%d", w, r))
 					s.Projects = bulk(200 + w*90)
 				}); err != nil {
 					t.Errorf("writer %d round %d: %v", w, r, err)

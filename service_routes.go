@@ -28,7 +28,7 @@ func serviceViewOf(c ServiceConfig, running bool) serviceView {
 		DisplayName:      c.DisplayName,
 		Command:          c.Command,
 		Args:             c.Args,
-		Env:              c.Env,
+		Env:              revealEnvForUI(c.Env),
 		WorkingDir:       c.WorkingDir,
 		Autostart:        c.Autostart,
 		URL:              c.URL,
@@ -88,7 +88,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		created, err := ops.Create(body)
+		created, err := ops.Create(r.Context(), body, auditViaHTTP, credIDOf(r))
 		if err != nil && !errors.Is(err, errServiceProcess) {
 			writeServiceError(w, err)
 			return
@@ -103,7 +103,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		updated, err := ops.Update(r.PathValue("id"), body)
+		updated, err := ops.Update(r.Context(), r.PathValue("id"), body, auditViaHTTP, credIDOf(r))
 		if err != nil && !errors.Is(err, errServiceProcess) {
 			writeServiceError(w, err)
 			return
@@ -112,7 +112,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 	})
 
 	rr.Handle(ClassConfigure, "DELETE /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := ops.Remove(r.PathValue("id")); err != nil {
+		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeServiceError(w, err)
 			return
 		}

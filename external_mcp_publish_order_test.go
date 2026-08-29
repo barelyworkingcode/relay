@@ -25,7 +25,7 @@ func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 	ctx := context.Background()
 
 	declaring := stdioMcp("mcp-schema", bin)
-	declaring.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+	declaring.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 	if err := m.startOne(ctx, &declaring); err != nil {
 		t.Fatalf("startOne (declaring): %v", err)
 	}
@@ -57,7 +57,7 @@ func TestPublishOrder_NoConnectionIsReachableBeforeItsSchema(t *testing.T) {
 	for i := 0; i < starts; i++ {
 		id := fmt.Sprintf("mcp-order-%d", i)
 		cfg := stdioMcp(id, bin)
-		cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+		cfg.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 
 		stop := make(chan struct{})
 		bad := make(chan string, 1)

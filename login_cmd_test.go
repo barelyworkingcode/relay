@@ -15,7 +15,7 @@ import (
 func lcNewStore(t *testing.T) (SettingsStore, string) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -44,9 +44,12 @@ func lcCapture(t *testing.T, fn func()) string {
 // TestLoginEnrol_CLIPrintsCodeButStoresOnlyItsHash is the enrol case: the
 // plaintext must appear on stdout (it is unrecoverable, so this is the only
 // chance) and must never appear in settings.json, which stores nothing but
-// the SHA-256 (ADR-016 decision 2).
+// the SHA-256 (ADR-016 decision 2). `login enrol` is brokered (ADR-017
+// decision 2), so this needs a real bridge server behind a wired LoginOps
+// over the same store the plaintext-absence check reads back from.
 func TestLoginEnrol_CLIPrintsCodeButStoresOnlyItsHash(t *testing.T) {
 	store, dir := lcNewStore(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	out := lcCapture(t, func() { loginEnrol(store) })
 

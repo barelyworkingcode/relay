@@ -36,9 +36,9 @@ type httpOAuth struct {
 func (o *httpOAuth) toOAuthState() *OAuthState {
 	return &OAuthState{
 		ClientID:     o.clientID,
-		ClientSecret: o.clientSecret,
-		AccessToken:  o.accessToken,
-		RefreshToken: o.refreshToken,
+		ClientSecret: NewSecret(o.clientSecret),
+		AccessToken:  NewSecret(o.accessToken),
+		RefreshToken: NewSecret(o.refreshToken),
 		TokenExpiry:  o.tokenExpiry.UTC().Format(time.RFC3339),
 	}
 }
@@ -80,6 +80,15 @@ func (c *httpMcpConn) snapshot() sessionSnapshot {
 	}
 }
 
+// newHTTPMcpConn builds the connection alone, seeded with no bearer at all
+// — deliberately: any OAuth state, stored or freshly obtained, is applied
+// afterwards by applyStoredOAuthState or applyPlainAuth, never read out of
+// cfg here. Those two callers reach very different kinds of value (one a
+// sealed, from-disk OAuthState; the other plaintext this process just
+// obtained and never persisted), and keeping their entry points separate
+// is what keeps Secret.Reveal — forbidden on every CLI path, §5.3.3 — out
+// of this constructor, which both a CLI process (DiscoverHTTPMcp) and the
+// tray (startHTTP) call.
 func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
 		url:        cfg.URL,
@@ -90,22 +99,52 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 		},
 	}
 	conn.config = cfg
-
 	conn.oauth.url = cfg.URL
+	return conn
+}
 
-	if cfg.OAuthState != nil {
-		conn.oauth.accessToken = cfg.OAuthState.AccessToken
-		conn.oauth.refreshToken = cfg.OAuthState.RefreshToken
-		conn.oauth.clientID = cfg.OAuthState.ClientID
-		conn.oauth.clientSecret = cfg.OAuthState.ClientSecret
-		if cfg.OAuthState.TokenExpiry != "" {
-			if t, err := time.Parse(time.RFC3339, cfg.OAuthState.TokenExpiry); err == nil {
-				conn.oauth.tokenExpiry = t
-			}
+// applyStoredOAuthState seeds conn from a previously sealed-and-opened
+// OAuthState — the tray's own reconnect path (startHTTP) only. A value
+// that could not be opened (§5.6: no sealer, or a mismatched/corrupt one)
+// reveals as "" here rather than refusing the connection outright — the
+// first request then gets the same ErrAuthRequired an expired token
+// already produces, which is the existing, well-trodden path back to
+// re-authenticating.
+func applyStoredOAuthState(conn *httpMcpConn, oauth *OAuthState) {
+	if oauth == nil {
+		return
+	}
+	accessToken, _ := oauth.AccessToken.Reveal()
+	refreshToken, _ := oauth.RefreshToken.Reveal()
+	clientSecret, _ := oauth.ClientSecret.Reveal()
+	conn.oauth.accessToken = accessToken
+	conn.oauth.refreshToken = refreshToken
+	conn.oauth.clientID = oauth.ClientID
+	conn.oauth.clientSecret = clientSecret
+	if oauth.TokenExpiry != "" {
+		if t, err := time.Parse(time.RFC3339, oauth.TokenExpiry); err == nil {
+			conn.oauth.tokenExpiry = t
 		}
 	}
+}
 
-	return conn
+// applyPlainAuth seeds conn from a bearer this process holds as plaintext
+// and has never sealed or persisted — DiscoverHTTPMcp's path, reachable
+// from the CLI's own OAuth ceremony (mcp_cmd.go). It touches no Secret at
+// all, by construction: oauthResult's fields are plain strings.
+func applyPlainAuth(conn *httpMcpConn, auth *oauthResult) {
+	if auth == nil {
+		return
+	}
+	conn.oauth.accessToken = auth.AccessToken
+	conn.oauth.refreshToken = auth.RefreshToken
+	conn.oauth.clientID = auth.ClientID
+	conn.oauth.clientSecret = auth.ClientSecret
+	if auth.TokenExpiry != "" {
+		if t, err := time.Parse(time.RFC3339, auth.TokenExpiry); err == nil {
+			conn.oauth.tokenExpiry = t
+		}
+	}
 }
 
 type tokenRefreshSnap struct {
@@ -437,6 +476,7 @@ func (c *httpMcpConn) doClose() {
 
 func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
+	applyStoredOAuthState(conn, mcpCfg.OAuthState)
 
 	if m.onTokenRefresh != nil {
 		id := mcpCfg.ID
@@ -462,16 +502,22 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp)
 	return nil
 }
 
-func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, oauth *OAuthState) (*ExternalMcp, error) {
+// DiscoverHTTPMcp's auth parameter is plaintext, not a Secret-bearing
+// OAuthState: this is the CLI's own discovery path too (mcp_cmd.go, after
+// completing its own OAuth ceremony), and no CLI entry point may reach
+// Secret.Reveal (§5.3.3, AC-29). auth.toOAuthState wraps it for the
+// returned config's OAuthState field, which is what persistence writes.
+func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *oauthResult) (*ExternalMcp, error) {
 	cfg := ExternalMcp{
 		ID:          id,
 		DisplayName: displayName,
 		Transport:   "http",
 		URL:         mcpURL,
-		OAuthState:  oauth,
+		OAuthState:  auth.toOAuthState(),
 	}
 
 	conn := newHTTPMcpConn(cfg)
+	applyPlainAuth(conn, auth)
 	defer conn.Close() // Safe for all paths: Close is a no-op if no session was established.
 
 	// Bound discovery so a hung HTTP server can't block the UI indefinitely.

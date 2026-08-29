@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 )
 
@@ -42,7 +41,9 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	// Validated before any mutation so a bad policy can't create a project
-	// that then has to be rolled back — mirrors the HTTP POST route.
+	// that then has to be rolled back — mirrors the HTTP POST route. Cheap
+	// and non-blocking, so it stays on the IPC thread rather than paying a
+	// GoFunc/DispatchToMain round trip for the common "bad input" case.
 	if msg.PermissionPolicy != nil {
 		if err := validatePermissionPolicy(msg.PermissionPolicy); err != nil {
 			ctx.UI.EmitEvent("onProjectError", err.Error())
@@ -50,26 +51,28 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		}
 	}
 
-	var created Project
-	var createErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		created, createErr = applyProjectCreate(s, *msg, mcpSurfacesFrom(ctx))
+	surfaces := mcpSurfacesFrom(ctx)
+	// Off the main thread: ProjectOps.Create is gated (project.grant, §6.4
+	// of the ADR-017 implementation spec) whenever the request sets a
+	// grant-widening field, and Gate.Require blocks on LocalAuthentication's
+	// async completion handler, which needs the Cocoa run loop pumped to be
+	// delivered — the same deadlock showLoginCode's doc comment in
+	// trayapp.go describes.
+	ctx.GoFunc(func() {
+		created, createErr := ctx.ProjectOps.Create(ctx.Ctx, *msg, surfaces, auditViaIPC, "")
+		if createErr != nil {
+			dispatchEmit(ctx, "onProjectError", createErr.Error())
+			return
+		}
+
+		if ctx.SkillLister != nil && created.GenerateSkill {
+			ctx.GoFunc(func() {
+				reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, created)
+			})
+		}
+
+		dispatchEmit(ctx, "onProjectAdded", marshalForUI(projectToNativeView(created)))
 	})
-	if !okSettings {
-		return
-	}
-	if createErr != nil {
-		ctx.UI.EmitEvent("onProjectError", createErr.Error())
-		return
-	}
-
-	if ctx.SkillLister != nil && created.GenerateSkill {
-		ctx.GoFunc(func() {
-			reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, created)
-		})
-	}
-
-	ctx.UI.EmitEvent("onProjectAdded", marshalForUI(created))
 }
 
 func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
@@ -83,36 +86,34 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 	}
-	// Shape/grant validation (including path) happens inside
-	// applyProjectUpdate against the fully-merged candidate — mirrors the
-	// HTTP PUT route.
-	var updated Project
-	var found bool
-	var updateErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		updated, found, updateErr = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
+	// Off the main thread: ProjectOps.Update is gated (project.grant, §6.4)
+	// whenever the patch widens the grant, and Gate.Require blocks on the
+	// same async LocalAuthentication completion the Cocoa run loop must
+	// pump — see ipcCreateProject just above.
+	ctx.GoFunc(func() {
+		// Shape/grant validation (including path) happens inside
+		// applyProjectUpdate against the fully-merged candidate — mirrors
+		// the HTTP PUT route.
+		updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
 			return mcpSurfacesFrom(ctx)
-		})
+		}, auditViaIPC, "")
+		if updateErr != nil {
+			dispatchEmit(ctx, "onProjectError", updateErr.Error())
+			return
+		}
+		if !found {
+			dispatchEmit(ctx, "onProjectError", "project not found")
+			return
+		}
+
+		if ctx.SkillLister != nil && updated.GenerateSkill {
+			ctx.GoFunc(func() {
+				reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, updated)
+			})
+		}
+
+		dispatchEmit(ctx, "onProjectUpdated", marshalForUI(projectToNativeView(updated)))
 	})
-	if !okSettings {
-		return
-	}
-	if updateErr != nil {
-		ctx.UI.EmitEvent("onProjectError", updateErr.Error())
-		return
-	}
-	if !found {
-		ctx.UI.EmitEvent("onProjectError", "project not found")
-		return
-	}
-
-	if ctx.SkillLister != nil && updated.GenerateSkill {
-		ctx.GoFunc(func() {
-			reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, updated)
-		})
-	}
-
-	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
 }
 
 func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
@@ -158,34 +159,26 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var newPlaintext string
-	var found bool
-	var genErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		newPlaintext, found, genErr = s.RotateProjectToken(msg.ID)
-	})
-	if !okSettings {
-		return
-	}
-	if genErr != nil {
-		slog.Error("rotate project token: token generation failed", "error", genErr)
-		ctx.UI.EmitEvent("onProjectError", "failed to generate token")
-		return
-	}
-	if !found {
-		ctx.UI.EmitEvent("onProjectError", "project not found")
-		return
-	}
-	// Withheld rather than shown when the record cannot be written. The old
-	// token is already dead and there is no undo for that, but the new one has
-	// not left this process yet, so refusing here still means no project token
-	// ever reaches a holder unrecorded — rotate again once the log is writable.
-	if auditErr := recordProjectTokenRotated(issuanceAuditorOrNil(ctx.Audit), msg.ID, auditViaIPC, ""); auditErr != nil {
-		ctx.UI.EmitEvent("onProjectError", fmt.Sprintf("the token was rotated but could not be recorded in the audit log (%v), so it was not shown; rotate again", auditErr))
-		return
-	}
+	// Off the main thread: RotateToken is gated (project.rotate_token,
+	// §6.4) and Gate.Require blocks on the same async LocalAuthentication
+	// completion the Cocoa run loop must pump — see ipcCreateProject above.
+	ctx.GoFunc(func() {
+		// ProjectOps.RotateToken records the rotation itself (so it can
+		// attach the presence_id the gate minted) and withholds the new
+		// plaintext when that record cannot be written — rotate again once
+		// the log is writable.
+		newPlaintext, found, err := ctx.ProjectOps.RotateToken(ctx.Ctx, msg.ID, auditViaIPC, "")
+		if err != nil {
+			dispatchEmit(ctx, "onProjectError", err.Error())
+			return
+		}
+		if !found {
+			dispatchEmit(ctx, "onProjectError", "project not found")
+			return
+		}
 
-	ctx.UI.EmitEvent("onProjectTokenRotated", msg.ID, newPlaintext)
+		dispatchEmit(ctx, "onProjectTokenRotated", msg.ID, newPlaintext)
+	})
 }
 
 // ipcRegenProjectSkill forces regeneration regardless of the GenerateSkill
@@ -249,7 +242,7 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
 		return
 	}
-	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
+	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(projectToNativeView(updated)))
 }
 
 // ipcListMcpTools emits an empty list rather than an error when the MCP is

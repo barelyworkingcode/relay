@@ -81,10 +81,11 @@ func TestResolveProjectTemplate_RequiresServiceToken(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 	seedShellTemplates(t, router, proj.ID, []ShellTemplate{{ID: "t", Name: "T", Command: "ssh"}})
 
+	projTok, _ := proj.Token.Reveal()
 	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
 		TemplateID: "t",
-	}, proj.Token)
+	}, projTok)
 	if code := codeOf(err); code != jsonrpc.CodeUnauthorized {
 		t.Errorf("error code = %d, want CodeUnauthorized (%d)", code, jsonrpc.CodeUnauthorized)
 	}

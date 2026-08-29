@@ -1,14 +1,16 @@
 package main
 
-// The trailing SendReloadService notify fails harmlessly (no tray running)
-// via warnNotifyFailure.
+// register, unregister and restart are brokered (ADR-017 decision 2), so a
+// test exercising them needs a real bridge server behind a wired ServiceOps
+// — newBrokerRouter + serveBroker give it one, over the same store the
+// assertions read back from afterward.
 
 import "testing"
 
 func newCLISandboxStore(t *testing.T) SettingsStore {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -17,6 +19,7 @@ func newCLISandboxStore(t *testing.T) SettingsStore {
 
 func TestServiceRegister_NoFrontendCredsSetsOptOut(t *testing.T) {
 	store := newCLISandboxStore(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	serviceRegister(store, []string{
 		"--name", "Backend Svc",
@@ -39,6 +42,7 @@ func TestServiceRegister_NoFrontendCredsSetsOptOut(t *testing.T) {
 
 func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
 	store := newCLISandboxStore(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	serviceRegister(store, []string{
 		"--name", "Frontend Svc",
@@ -52,8 +56,8 @@ func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
 		t.Fatalf("want exactly 1 registered service, got %d", len(svcs))
 	}
 	cfg := svcs[0]
-	// Absent flag → nil, so MergeServiceDefaults leaves it untouched on
-	// re-register and the default (inject) applies.
+	// Absent flag → nil, so a re-register leaves it untouched and the
+	// default (inject) applies.
 	if cfg.FrontendConsumer != nil {
 		t.Errorf("FrontendConsumer = %v, want nil when --no-frontend-creds absent", *cfg.FrontendConsumer)
 	}

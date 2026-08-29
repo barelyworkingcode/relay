@@ -6,6 +6,7 @@ package main
 // reporting, and the async stop-then-refresh pattern — was unverified.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -59,10 +60,10 @@ func (r *svcRecorder) RunningIDs() []string {
 	return ids
 }
 
-func newServicesIPC(store SettingsStore, reg ServiceManager) (*IPCContext, *recordingUI) {
+func newServicesIPC(t *testing.T, store SettingsStore, reg ServiceManager) (*IPCContext, *recordingUI) {
 	ui := &recordingUI{}
 	ipc := &IPCContext{
-		Ctx:                    nil,
+		Ctx:                    context.Background(),
 		Store:                  store,
 		UI:                     ui,
 		Platform:               stubPlatform{}, // DispatchToMain runs inline
@@ -70,7 +71,7 @@ func newServicesIPC(store SettingsStore, reg ServiceManager) (*IPCContext, *reco
 		UpdateMenu:             func() {},
 		PushServiceStatusBatch: func() {},
 		GoFunc:                 func(fn func()) { fn() }, // run "async" work inline
-		Ops:                    &ServiceOps{Store: store, Registry: reg},
+		Ops:                    &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)},
 	}
 	return ipc, ui
 }
@@ -101,7 +102,7 @@ func seedService(t *testing.T, store SettingsStore, cfg ServiceConfig) {
 func TestIPCAddService_HappyPathPersistsAndEmits(t *testing.T) {
 	store := newCLISandboxStore(t)
 	reg := &svcRecorder{}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "My Svc", Command: "/bin/x"}))
 
@@ -120,7 +121,7 @@ func TestIPCAddService_HappyPathPersistsAndEmits(t *testing.T) {
 func TestIPCAddService_AutostartStartsService(t *testing.T) {
 	store := newCLISandboxStore(t)
 	reg := &svcRecorder{}
-	ipc, _ := newServicesIPC(store, reg)
+	ipc, _ := newServicesIPC(t, store, reg)
 
 	ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "Auto Svc", Command: "/bin/x", Autostart: true}))
 
@@ -133,7 +134,7 @@ func TestIPCAddService_AutostartStartsService(t *testing.T) {
 func TestIPCAddService_ValidationErrors(t *testing.T) {
 	t.Run("empty display name", func(t *testing.T) {
 		store := newCLISandboxStore(t)
-		ipc, ui := newServicesIPC(store, &svcRecorder{})
+		ipc, ui := newServicesIPC(t, store, &svcRecorder{})
 		ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "", Command: "/bin/x"}))
 		if msg := lastSettingsError(t, ui); msg != "display name is required" {
 			t.Errorf("error = %q, want display name is required", msg)
@@ -144,7 +145,7 @@ func TestIPCAddService_ValidationErrors(t *testing.T) {
 	})
 	t.Run("empty command", func(t *testing.T) {
 		store := newCLISandboxStore(t)
-		ipc, ui := newServicesIPC(store, &svcRecorder{})
+		ipc, ui := newServicesIPC(t, store, &svcRecorder{})
 		ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "X", Command: ""}))
 		if msg := lastSettingsError(t, ui); msg != "command is required" {
 			t.Errorf("error = %q, want command is required", msg)
@@ -156,7 +157,7 @@ func TestIPCUpdateService_RunningTriggersReload(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
-	ipc, _ := newServicesIPC(store, reg)
+	ipc, _ := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
 
@@ -172,7 +173,7 @@ func TestIPCUpdateService_NotRunningSkipsReload(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{} // not running
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
 
@@ -188,7 +189,7 @@ func TestIPCUpdateService_RestartFailureEmitsError(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}, reloadErr: errors.New("boom")}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
 
@@ -199,7 +200,7 @@ func TestIPCUpdateService_RestartFailureEmitsError(t *testing.T) {
 
 func TestIPCUpdateService_CommandRequired(t *testing.T) {
 	store := newCLISandboxStore(t)
-	ipc, ui := newServicesIPC(store, &svcRecorder{})
+	ipc, ui := newServicesIPC(t, store, &svcRecorder{})
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: ""}))
 	if msg := lastSettingsError(t, ui); msg != "command is required" {
 		t.Errorf("error = %q, want command is required", msg)
@@ -210,7 +211,7 @@ func TestIPCRemoveService_RemovesAndStops(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 	reg := &svcRecorder{}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcRemoveService(ipc, mustJSON(t, ipcIDMsg{ID: "svc1"}))
 
@@ -229,7 +230,7 @@ func TestIPCStopService_StopsAsync(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 	reg := &svcRecorder{}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcStopService(ipc, mustJSON(t, ipcIDMsg{ID: "svc1"}))
 
@@ -246,7 +247,7 @@ func TestIPCUpdateService_RunningValidationFailureIsNotReportedAsUpdated(t *test
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: ""}))
 
@@ -267,7 +268,7 @@ func TestIPCUpdateService_RestartFailureStillRefreshesUI(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}, reloadErr: errors.New("boom")}
-	ipc, ui := newServicesIPC(store, reg)
+	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
 

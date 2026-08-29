@@ -604,7 +604,7 @@ func TestAudit_ResultPreviewOptIn(t *testing.T) {
 
 func TestAudit_CallerIdentityOverBridge(t *testing.T) {
 	dir := mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -615,7 +615,7 @@ func TestAudit_CallerIdentityOverBridge(t *testing.T) {
 			Name:          "audit-e2e",
 			Path:          dir,
 			AllowedMcpIDs: []string{"audite2e"},
-			Token:         testToken,
+			Token:         NewSecret(testToken),
 			TokenHash:     hashToken(testToken),
 		})
 	}); err != nil {

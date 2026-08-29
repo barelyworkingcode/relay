@@ -6,15 +6,22 @@ import (
 	"fmt"
 )
 
+// fields always sets WorkingDir, Autostart and URL (never leaves them nil):
+// the Settings window's form carries the service's complete state on every
+// save, add or update, so every field it sends is an explicit value on the
+// wire already — there is no "the operator left this blank" case for IPC to
+// distinguish the way the CLI's absent flags need to. Only ServiceOps.Update
+// needs the nil case at all, and only the CLI (register with a flag left off
+// the command line) produces it.
 func (msg *ipcServiceMsg) fields() serviceFields {
 	return serviceFields{
 		DisplayName: msg.DisplayName,
 		Command:     msg.Command,
 		Args:        msg.Args,
 		Env:         msg.Env,
-		WorkingDir:  msg.WorkingDir,
-		Autostart:   msg.Autostart,
-		URL:         msg.URL,
+		WorkingDir:  &msg.WorkingDir,
+		Autostart:   &msg.Autostart,
+		URL:         &msg.URL,
 	}
 }
 
@@ -23,21 +30,32 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
+	fields := msg.fields()
 
-	created, err := ctx.Ops.Create(msg.fields())
-	// Only errServiceProcess means the record landed; every other error means
-	// nothing was persisted, and announcing a row for it would add a blank
-	// service to the list.
-	if err != nil && !errors.Is(err, errServiceProcess) {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
-		return
-	}
-	if err != nil {
-		ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but %v", err))
-	}
-
-	ctx.UpdateMenu()
-	ctx.UI.EmitEvent("onServiceAdded", marshalForUI(created))
+	// Off the main thread: ServiceOps.Create is gated (service.register,
+	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes. ipcUpdateService
+	// just below already runs off-thread for an unrelated reason; this
+	// keeps the two consistent.
+	ctx.GoFunc(func() {
+		created, err := ctx.Ops.Create(ctx.Ctx, fields, auditViaIPC, "")
+		// Only errServiceProcess means the record landed; every other error
+		// means nothing was persisted, and announcing a row for it would add
+		// a blank service to the list.
+		if err != nil && !errors.Is(err, errServiceProcess) {
+			dispatchEmit(ctx, "onSettingsError", err.Error())
+			return
+		}
+		ctx.Platform.DispatchToMain(func() {
+			if err != nil {
+				ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but %v", err))
+			}
+			ctx.UpdateMenu()
+			ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeView(created)))
+		})
+	})
 }
 
 func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
@@ -48,7 +66,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 
 	// Remove blocks on the stopped process's exit, so it runs off the UI thread.
 	ctx.GoFunc(func() {
-		err := ctx.Ops.Remove(msg.ID)
+		err := ctx.Ops.Remove(ctx.Ctx, msg.ID, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onSettingsError", err.Error())
@@ -71,7 +89,7 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 	// whether it is running can change between any check here and Update's own.
 	// Branching on it would put a blocking Stop on the main thread.
 	ctx.GoFunc(func() {
-		_, err := ctx.Ops.Update(msg.ID, fields)
+		_, err := ctx.Ops.Update(ctx.Ctx, msg.ID, fields, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			switch {
 			case err != nil && errors.Is(err, errServiceProcess):

@@ -146,7 +146,7 @@ func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteTool
 			"set audit.enabled to true, or remove the remote block from settings.json")
 	}
 
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, fmt.Errorf("remote listener: %w", err)
 	}
@@ -390,13 +390,14 @@ func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, erro
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("project %q is not a remote project: a grant that went stale is refused at call time rather than honoured", projectID))
 	}
-	if proj.Token == "" {
+	token, ok := proj.Token.Reveal()
+	if !ok || token == "" {
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeInternalError,
-			fmt.Errorf("project %q has no token", projectID))
+			fmt.Errorf("project %q has no token: the sealed store may be unavailable", projectID))
 	}
 	// Resolved server-side, never put on the wire: not a credential the
 	// client holds.
-	return proj.Token, nil
+	return token, nil
 }
 
 func (s *RemoteServer) track(rc *remoteConn) {

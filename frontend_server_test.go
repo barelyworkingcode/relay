@@ -25,7 +25,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 	dir := mkShortTempDir(t, "fe-")
 	sock := filepath.Join(dir, "frontend.sock")
 
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -39,6 +39,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 		extMgr,
 		Endpoint{Socket: sock, Token: token},
 		enhanced,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -176,12 +177,12 @@ func TestListenLoopback_RefusesNonLoopback(t *testing.T) {
 // handler — that property is gone on purpose.
 func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	dir := mkShortTempDir(t, "fe-tcp-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
-	if _, err := ops.Create(serviceFields{DisplayName: "Worker", Command: "/bin/sleep", Args: []string{"1"}}); err != nil {
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	if _, err := ops.Create(context.Background(), serviceFields{DisplayName: "Worker", Command: "/bin/sleep", Args: []string{"1"}}, auditViaIPC, ""); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
 	extMgr := NewExternalMcpManager(nil)
@@ -189,7 +190,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

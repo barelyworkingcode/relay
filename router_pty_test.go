@@ -14,7 +14,7 @@ func newPtyTestRouter(t *testing.T) (*appRouter, Project, string) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
-	store := NewSettingsStoreAt(bridge.ConfigDir())
+	store := sealedSettingsStoreAt(bridge.ConfigDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestResolvePtyEnv_ByProjectID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)
 	}
-	if resp.RelayToken != proj.Token {
+	if projTok, _ := proj.Token.Reveal(); resp.RelayToken != projTok {
 		t.Errorf("RelayToken = %q, want the project token", resp.RelayToken)
 	}
 	if resp.WorkingDir != proj.Path {
@@ -78,7 +78,7 @@ func TestResolvePtyEnv_ByProjectID_AcceptsSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv (subdir): %v", err)
 	}
-	if resp.RelayToken != proj.Token {
+	if projTok, _ := proj.Token.Reveal(); resp.RelayToken != projTok {
 		t.Errorf("RelayToken = %q, want the project token", resp.RelayToken)
 	}
 }
@@ -116,10 +116,11 @@ func TestResolvePtyEnv_UnknownProjectID(t *testing.T) {
 func TestResolvePtyEnv_RequiresServiceToken(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 
+	projTok, _ := proj.Token.Reveal()
 	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
-	}, proj.Token)
+	}, projTok)
 	if code := codeOf(err); code != jsonrpc.CodeUnauthorized {
 		t.Errorf("error code = %d, want CodeUnauthorized (%d)", code, jsonrpc.CodeUnauthorized)
 	}
@@ -135,7 +136,7 @@ func TestResolvePtyEnv_LegacyDirectoryMatchStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy directory-match resolve: %v", err)
 	}
-	if resp.RelayToken != proj.Token {
+	if projTok, _ := proj.Token.Reveal(); resp.RelayToken != projTok {
 		t.Errorf("RelayToken = %q, want the project token", resp.RelayToken)
 	}
 }

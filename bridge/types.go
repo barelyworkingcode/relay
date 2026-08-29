@@ -22,6 +22,13 @@ const (
 	ReqResolvePtyEnv          = "ResolvePtyEnv"
 	ReqResolveProjectTemplate = "ResolveProjectTemplate"
 	ReqRegisterManifest       = "RegisterManifest"
+
+	// ReqAdminOp is the one entry point for every brokered mutation (ADR-017
+	// decision 2): BridgeRequest.Name carries the operation name and
+	// Arguments its JSON payload. It is deliberately absent from
+	// remoteHandlers — a VM has no code path to it at all, not a refusal on
+	// one.
+	ReqAdminOp = "admin_op"
 )
 
 const (
@@ -197,6 +204,10 @@ type ToolRouter interface {
 	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
 	// Re-registration with the same ServiceID replaces the prior record.
 	RegisterManifest(ctx context.Context, req RegisterManifestRequest, token string) error
+	// AdminOp dispatches one brokered admin operation by name. name and args
+	// are opaque to the transport; the implementation resolves name against
+	// its own inner table and decides whether it exists at all.
+	AdminOp(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 }
 
 func NewScanner(r io.Reader) *bufio.Scanner {

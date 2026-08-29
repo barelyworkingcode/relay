@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -93,6 +94,101 @@ func (s *Settings) AuthenticateAPICredential(plaintext string) *APICredential {
 // store.With.
 func (s *Settings) Mint(name string, classes []CapabilityClass) (APICredential, string, error) {
 	return s.MintFor(name, classes, 0)
+}
+
+// mintAPICredential validates and mints, returning the PLAINTEXT token
+// alongside the record. It is the only moment that value exists; nothing
+// stores it and no later call can reconstruct it from the record.
+//
+// CredentialOps.Mint is the only caller left: it validates first (so a
+// malformed request never reaches the gate) and wraps this with the
+// presence check and the issuance record, but the mint itself — and the
+// store.With it runs inside — lives here, in the same file as MintFor and
+// AddAPICredential, not in credential_cmd.go: a CLI process never calls
+// this directly (AC-15), only the gated core does.
+func mintAPICredential(store SettingsStore, req credentialMintRequest) (APICredential, string, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return APICredential{}, "", errors.New("a credential name is required")
+	}
+	if name == legacyFrontendCredentialName {
+		return APICredential{}, "", errReservedCredentialName
+	}
+	classes, err := parseCapabilityClasses(req.Classes)
+	if err != nil {
+		return APICredential{}, "", err
+	}
+	if req.TTL < 0 {
+		return APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
+	}
+
+	var cred APICredential
+	var plaintext string
+	var mintErr error
+	// Reaped in the same store.With as the mint, which is the whole of the
+	// reaping schedule: this is a write that was happening anyway, so
+	// sweeping here costs nothing and needs no timer.
+	if err := store.With(func(s *Settings) {
+		reapExpiredAPICredentials(s)
+		cred, plaintext, mintErr = s.MintFor(name, classes, req.TTL)
+	}); err != nil {
+		return APICredential{}, "", fmt.Errorf("save settings: %w", err)
+	}
+	if mintErr != nil {
+		return APICredential{}, "", mintErr
+	}
+	return cred, plaintext, nil
+}
+
+func revokeAPICredential(store SettingsStore, id string) (APICredential, error) {
+	return revokeAPICredentialIf(store, id, nil)
+}
+
+// revokeAPICredentialIf revokes by id, refusing whatever `permitted` rejects
+// on top of the reserved-name refusal every caller gets. LoginOps.SignOut is
+// the other caller (via a permitted closure that requires a login-session
+// credential); CredentialOps.Revoke passes nil.
+//
+// The extra gate runs inside this store.With rather than as a lookup in the
+// caller for the reason the resolve and the remove already share one: a
+// separate Get() then With() is a TOCTOU window on a file two processes
+// write, and a gate on the far side of that window is a gate that can be
+// stepped around.
+func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICredential) error) (APICredential, error) {
+	if strings.TrimSpace(id) == "" {
+		return APICredential{}, errors.New("a credential id is required")
+	}
+
+	var removed APICredential
+	var found bool
+	var refusal error
+	if err := store.With(func(s *Settings) {
+		cred := s.FindAPICredential(id)
+		if cred == nil {
+			return
+		}
+		found = true
+		if cred.Name == legacyFrontendCredentialName {
+			refusal = errReservedCredentialName
+			return
+		}
+		if permitted != nil {
+			if err := permitted(*cred); err != nil {
+				refusal = err
+				return
+			}
+		}
+		removed, _ = s.RemoveAPICredential(id)
+	}); err != nil {
+		return APICredential{}, fmt.Errorf("save settings: %w", err)
+	}
+	if !found {
+		return APICredential{}, fmt.Errorf("no credential found with id %q", id)
+	}
+	if refusal != nil {
+		return APICredential{}, refusal
+	}
+	return removed, nil
 }
 
 // MintFor creates a new credential, appends it to s, and returns the record

@@ -77,7 +77,10 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		return nil
 	}
 
-	cmd := buildCommand(config)
+	cmd, err := buildCommand(config)
+	if err != nil {
+		return fmt.Errorf("build command for %q: %w", config.ID, err)
+	}
 
 	var tokenHash string
 	if r.TokenStore != nil {

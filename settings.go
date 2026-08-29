@@ -13,7 +13,18 @@ type Settings struct {
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
 	Services     []ServiceConfig `json:"services"`
 	Projects     []Project       `json:"projects"`
-	AdminSecret  string          `json:"admin_secret,omitempty"`
+	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
+	// accepts for a handful of admin ops, not a value relay only checks.
+	AdminSecret Secret `json:"admin_secret,omitempty"`
+
+	// SealedKeyID names the login-keychain key every sealed field below was
+	// last sealed with. It is clear, not a Secret: an operator (and
+	// relay itself, before it has resolved a Sealer) must be able to read
+	// it straight off disk to tell a key mismatch from a missing key
+	// (§5.5, §5.6). Absent means either a pre-sealing settings.json (some
+	// legacy plaintext Secret, or none at all) or a fresh install that has
+	// not chosen a key yet.
+	SealedKeyID string `json:"sealed_key_id,omitempty"`
 
 	// Enrolments bind client certificates to the remote grants they may use
 	// (ADR-010 decision 2). omitempty, like Audit: an install that never
@@ -326,7 +337,7 @@ func (s *Settings) RotateProjectToken(id string) (plaintext string, found bool, 
 	if err != nil {
 		return "", true, err
 	}
-	proj.Token = plaintext
+	proj.Token = NewSecret(plaintext)
 	proj.TokenHash = hash
 	return plaintext, true, nil
 }

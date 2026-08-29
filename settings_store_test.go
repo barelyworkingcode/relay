@@ -10,7 +10,7 @@ import (
 
 func TestReloadIfChanged_DetectsExternalWrite(t *testing.T) {
 	dir := mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -21,7 +21,14 @@ func TestReloadIfChanged_DetectsExternalWrite(t *testing.T) {
 
 	path := filepath.Join(dir, "settings.json")
 	cur := store.Get()
-	cur.AdminSecret = "externally-rotated-secret"
+	cur.AdminSecret = NewSecret("externally-rotated-secret")
+	// sealAllSecrets before marshalling, exactly as save() does: a
+	// Secret with no envelope refuses to serialise at all (§4.4), so this
+	// simulates a real external writer rather than a fixture that bypasses
+	// sealing.
+	if err := sealAllSecrets(cur, testSealer()); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
 	data, err := json.MarshalIndent(cur, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -40,10 +47,10 @@ func TestReloadIfChanged_DetectsExternalWrite(t *testing.T) {
 	if got == nil {
 		t.Fatal("ReloadIfChanged should have detected the external write")
 	}
-	if got.AdminSecret != "externally-rotated-secret" {
-		t.Fatalf("reloaded AdminSecret = %q, want externally-rotated-secret", got.AdminSecret)
+	if pt, _ := got.AdminSecret.Reveal(); pt != "externally-rotated-secret" {
+		t.Fatalf("reloaded AdminSecret = %q, want externally-rotated-secret", pt)
 	}
-	if store.Get().AdminSecret != "externally-rotated-secret" {
+	if pt, _ := store.Get().AdminSecret.Reveal(); pt != "externally-rotated-secret" {
 		t.Fatal("cache not updated after ReloadIfChanged")
 	}
 	if got := store.ReloadIfChanged(); got != nil {
@@ -53,12 +60,12 @@ func TestReloadIfChanged_DetectsExternalWrite(t *testing.T) {
 
 func TestReloadIfChanged_NilAfterInternalWrite(t *testing.T) {
 	dir := mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 
-	if err := store.With(func(s *Settings) { s.AdminSecret = "internally-set" }); err != nil {
+	if err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("internally-set") }); err != nil {
 		t.Fatalf("With: %v", err)
 	}
 	if got := store.ReloadIfChanged(); got != nil {
@@ -68,7 +75,7 @@ func TestReloadIfChanged_NilAfterInternalWrite(t *testing.T) {
 
 func TestReloadIfChanged_MissingFileReturnsNil(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir) // deliberately no EnsureInitialized → no file
+	store := sealedSettingsStoreAt(dir) // deliberately no EnsureInitialized → no file
 	if got := store.ReloadIfChanged(); got != nil {
 		t.Fatalf("ReloadIfChanged with no settings file should return nil, got %+v", got)
 	}

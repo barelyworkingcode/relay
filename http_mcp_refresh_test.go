@@ -37,15 +37,14 @@ func refreshTokenServer(t *testing.T, status int, body string) *httptest.Server 
 // newRefreshableConn builds an httpMcpConn whose token expires at `expiry`, with
 // its OAuth metadata pre-pointed at tokenURL (so no network discovery runs).
 func newRefreshableConn(mcpURL, tokenURL string, expiry time.Time, accessToken string) *httpMcpConn {
-	conn := newHTTPMcpConn(ExternalMcp{
-		ID: "http-mcp", Transport: "http", URL: mcpURL,
-		OAuthState: &OAuthState{
-			AccessToken:  accessToken,
-			RefreshToken: "old-rt",
-			ClientID:     "cid",
-			TokenExpiry:  expiry.UTC().Format(time.RFC3339),
-		},
-	})
+	oauth := &OAuthState{
+		AccessToken:  NewSecret(accessToken),
+		RefreshToken: NewSecret("old-rt"),
+		ClientID:     "cid",
+		TokenExpiry:  expiry.UTC().Format(time.RFC3339),
+	}
+	conn := newHTTPMcpConn(ExternalMcp{ID: "http-mcp", Transport: "http", URL: mcpURL, OAuthState: oauth})
+	applyStoredOAuthState(conn, oauth)
 	conn.oauth.meta = &oauthMetadata{TokenEndpoint: tokenURL + "/token"}
 	return conn
 }
@@ -71,7 +70,12 @@ func TestHTTPMcp_AutoRefresh_UsesNewTokenAndPersists(t *testing.T) {
 	if gotAuth := <-authCh; gotAuth != "Bearer new-at" {
 		t.Errorf("MCP saw %q, want Bearer new-at (refreshed token on the wire)", gotAuth)
 	}
-	if persisted == nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" {
+	if persisted == nil {
+		t.Fatal("onTokenRefresh was never called")
+	}
+	persistedAT, _ := persisted.AccessToken.Reveal()
+	persistedRT, _ := persisted.RefreshToken.Reveal()
+	if persistedAT != "new-at" || persistedRT != "new-rt" {
 		t.Errorf("onTokenRefresh persisted %+v, want new-at/new-rt", persisted)
 	}
 }

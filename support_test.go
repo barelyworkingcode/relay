@@ -22,7 +22,71 @@ import (
 	"time"
 
 	"relaygo/bridge"
+	"relaygo/presence"
+	"relaygo/presence/presencetest"
+	"relaygo/sealed"
 )
+
+// testSealKeyID/testSealKey are a fixed, non-secret AES-256 key used by
+// every hermetic test that needs a working sealer — never the real login
+// keychain (headline rule above: no test may touch it), and never derived
+// from anything random, so a failure reproduces byte for byte.
+var (
+	testSealKeyID = "0123456789abcdef"
+	testSealKey   = bytes.Repeat([]byte{0x42}, 32)
+)
+
+// allowGate returns a presence.Gate wired to presencetest.Allow() — the
+// hermetic seam ADR-017 implementation spec §6.8 requires. Every test that
+// exercises a gated core's SUCCESS path needs one; a test exercising a
+// refusal instead constructs its own presencetest.Deny() / NoSession() /
+// Recording, or leaves Gate nil to exercise §6.7's fail-closed default.
+func allowGate(t *testing.T) *presence.Gate {
+	t.Helper()
+	g, err := presence.NewGate(presencetest.Allow())
+	if err != nil {
+		t.Fatalf("presence.NewGate: %v", err)
+	}
+	return g
+}
+
+// enabledIssuanceRecorder returns an *AuditRecorder that is Ready() —
+// enabled and holding a live sink — so requireIssuanceAuditor (§7.4) does
+// not refuse it. Every test exercising a gated core's success path needs
+// one, since issuance auditing is now a hard dependency; a test exercising
+// AC-26 (auditing off refuses) passes nil instead.
+func enabledIssuanceRecorder(t *testing.T) *AuditRecorder {
+	t.Helper()
+	rec, err := NewAuditRecorder(nil, filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditRecorder: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("NewAuditRecorder returned nil for an enabled config")
+	}
+	t.Cleanup(rec.Close)
+	return rec
+}
+
+// testSealer returns a Sealer over the fixed test key. It needs no *testing.T
+// and no cleanup: it is pure in-memory AES-GCM, not a keychain item.
+func testSealer() sealed.Sealer {
+	s, err := sealed.NewAESSealer(testSealKeyID, testSealKey)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+// sealedSettingsStoreAt is the hermetic-suite stand-in for the tray's own
+// NewSettingsStoreSealed: a store that can actually write, backed by
+// testSealer rather than the login keychain. Most tests that need a
+// SettingsStore at all want this one — plain NewSettingsStoreAt is for
+// tests specifically exercising the CLI's read-only shape (errSealerRequired)
+// or the degraded states in settings_store_sealed_test.go.
+func sealedSettingsStoreAt(dir string) *FileSettingsStore {
+	return NewSettingsStoreSealed(dir, testSealer())
+}
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
@@ -89,7 +153,7 @@ func mkShortTempDir(t *testing.T, prefix string) string {
 func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
 	t.Helper()
 	dir := mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("newSandboxRouter: EnsureInitialized: %v", err)
 	}
@@ -108,6 +172,74 @@ func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
 type fakeServiceReloader struct{}
 
 func (f *fakeServiceReloader) Reload(id string, cfg *ServiceConfig) error { return nil }
+
+// newBrokerRouter wires the six S5 op cores onto an appRouter the way
+// trayapp.go does, backed by an allowing gate and a live issuance auditor —
+// the shape a test needs to prove a brokered CLI command genuinely
+// dispatches into its core (ADR-017 implementation spec §7) rather than
+// merely reaching the transport. mutate lets a caller narrow one core's
+// behaviour (a denying gate, a no-session context) without repeating the
+// rest of the wiring.
+func newBrokerRouter(t *testing.T, store SettingsStore, mutate func(*appRouter)) *appRouter {
+	t.Helper()
+	gate := allowGate(t)
+	// startAuditRecorder, not enabledIssuanceRecorder: this router stands in
+	// for the tray, and a test driving a CLI subcommand through it typically
+	// wants the SAME on-disk audit log auditLogPath() resolves — the file
+	// `relay audit` and this package's own aiLogText helpers read — not an
+	// unrelated recorder pointed at a throwaway path.
+	audit := startAuditRecorder(store.Get())
+	if audit == nil {
+		t.Fatal("newBrokerRouter: startAuditRecorder returned nil — auditing is off in this store's settings")
+	}
+	t.Cleanup(audit.Close)
+	issuance := issuanceAuditorOrNil(audit)
+	r := &appRouter{
+		store:         store,
+		tools:         NewExternalMcpManager(nil),
+		services:      noopServiceManager{},
+		enhanced:      NewEnhancedServiceRegistry(nil),
+		onChange:      func() {},
+		credentialOps: &CredentialOps{Store: store, Gate: gate, Issuance: issuance},
+		enrolmentOps:  &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance},
+		loginOps:      &LoginOps{Store: store, Gate: gate, Audit: audit},
+		mcpOps:        &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance},
+		serviceOps:    &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance},
+	}
+	if mutate != nil {
+		mutate(r)
+	}
+	return r
+}
+
+// serveBroker starts a real bridge server over r on the sandboxed
+// bridge.SocketPath() and stops it on cleanup, so a CLI subcommand's
+// requireService/AdminOp round trip has a real peer to dial — the same
+// transport AC-11/AC-12 exercise from the refusing side.
+//
+// This is subtle: bridge/server.go resolves each connection's REAL kernel
+// audit session by default (§6.6), and the process running `go test` may
+// itself belong to a session with no graphic access — over SSH, or in a
+// CI/agent harness with no console attached. newBrokerRouter's whole point
+// is "prove a brokered CLI command reaches its core given an ALLOWING
+// gate" — i.e. simulate the operator sitting at the console — so this
+// pins GraphicAccess: true explicitly rather than leaving the outcome
+// dependent on whatever environment happens to run the suite. A test that
+// wants the OTHER row (a caller that cannot show a prompt) constructs its
+// own bridge.BridgeServer and overrides this the other way — see
+// TestBridge_NoGraphicAccessRefusesWithoutPromptingTheProvider.
+func serveBroker(t *testing.T, r *appRouter) {
+	t.Helper()
+	bs, err := bridge.NewBridgeServer(context.Background(), r)
+	if err != nil {
+		t.Fatalf("NewBridgeServer: %v", err)
+	}
+	bs.SetCallerSessionResolverForTest(func(net.Conn) presence.CallerSession {
+		return presence.CallerSession{GraphicAccess: true}
+	})
+	go bs.Serve()
+	t.Cleanup(bs.Close)
+}
 
 type FakeService struct {
 	t         *testing.T

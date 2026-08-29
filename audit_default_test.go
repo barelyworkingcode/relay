@@ -83,7 +83,7 @@ func adWriteSettings(t *testing.T, dir, body string) *FileSettingsStore {
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o600); err != nil {
 		t.Fatalf("seed settings.json: %v", err)
 	}
-	return NewSettingsStoreAt(dir)
+	return sealedSettingsStoreAt(dir)
 }
 
 func adReadRawSettings(t *testing.T, dir string) map[string]json.RawMessage {
@@ -103,7 +103,7 @@ func TestAdExistingSettingsWithNoAuditBlockRoundTripUnchanged(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	store := adWriteSettings(t, dir, `{"version":1,"external_mcps":[],"services":[],"projects":[]}`)
 
-	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = "rewritten" }), "With")
+	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = NewSecret("rewritten") }), "With")
 
 	if raw, ok := adReadRawSettings(t, dir)["audit"]; ok {
 		t.Errorf("a rewrite invented an audit block the operator never wrote: %s", raw)
@@ -118,7 +118,7 @@ func TestAdExistingExplicitFalseSurvivesARewrite(t *testing.T) {
 	store := adWriteSettings(t, dir,
 		`{"version":1,"external_mcps":[],"services":[],"projects":[],"audit":{"enabled":false}}`)
 
-	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = "rewritten" }), "With")
+	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = NewSecret("rewritten") }), "With")
 
 	raw, ok := adReadRawSettings(t, dir)["audit"]
 	if !ok {
@@ -145,7 +145,7 @@ func TestAdExistingExplicitFalseSurvivesARewrite(t *testing.T) {
 
 func TestAdNewInstallWritesAuditEnabledExplicitly(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	raw, ok := adReadRawSettings(t, dir)["audit"]
@@ -194,7 +194,7 @@ func TestAdDefaultInstallLogIsBounded(t *testing.T) {
 func adRemoteStore(t *testing.T, audit *AuditConfig) (string, SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	assertNoErr(t, store.With(func(s *Settings) {
 		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: "127.0.0.1:0"}

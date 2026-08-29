@@ -20,13 +20,13 @@ import (
 
 func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	dir := mkShortTempDir(t, "apie2e-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	reg := &svcRecorder{}
 	extMgr := NewExternalMcpManager(nil)
-	ops := &ServiceOps{Store: store, Registry: reg}
+	ops := &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 
 	// execute-class: POST /api/services writes the caller-supplied `command`
 	// into settings (ADR-015 decision 1), so it exists only on the socket
@@ -60,7 +60,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -128,7 +128,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 
 func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 	dir := mkShortTempDir(t, "apiauth-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil,
+		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -177,7 +177,7 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 // happened to answer on its own.
 func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	dir := mkShortTempDir(t, "apie2e-tcp404-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

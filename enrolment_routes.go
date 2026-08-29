@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 )
 
@@ -96,21 +95,12 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		created, err := ops.Create(body)
+		// EnrolmentOps.Create now records the issuance itself (and undoes the
+		// create if that recording fails) so it can attach the presence_id
+		// the gate minted — this route no longer has a grant to name.
+		created, err := ops.Create(r.Context(), body, auditViaHTTP, credIDOf(r))
 		if err != nil && !errors.Is(err, errEnrolmentBundle) {
 			writeEnrolmentError(w, err)
-			return
-		}
-		// This route already writes a control_decision saying this caller was
-		// allowed to reach POST /api/enrolments. That is not the same fact as
-		// "a client certificate was issued to hermes-mail granting proj_mail",
-		// which is what an operator reading the log is looking for, so the act
-		// gets its own record — and the enrolment is revoked if that record
-		// cannot be written.
-		if auditErr := recordEnrolmentIssued(rr.Issuance, ops.Store, created.Enrolment, auditViaHTTP, credIDOf(r)); auditErr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "the enrolment could not be recorded in the audit log and has been revoked: " + auditErr.Error(),
-			})
 			return
 		}
 		// The client private key never rides in this response, on 2xx or
@@ -120,21 +110,11 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 	})
 
 	rr.Handle(ClassGrant, "DELETE /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
-		revoked, err := ops.Revoke(r.PathValue("id"))
-		if err != nil {
+		// EnrolmentOps.Revoke now records the revocation itself, so it can
+		// attach the presence_id the gate minted.
+		if _, err := ops.Revoke(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeEnrolmentError(w, err)
 			return
-		}
-		// Reported and not undone, unlike the create above: a revocation
-		// narrows, and refusing to narrow one because the log is broken would
-		// make a failing disk the reason a compromised client stays enrolled.
-		if auditErr := rr.recordIssuedBy(r, CredentialIssuance{
-			Revoked:    true,
-			Credential: auditCredentialEnrolment,
-			Subject:    revoked.ClientID,
-			Grants:     revoked.ProjectIDs,
-		}); auditErr != nil {
-			slog.Error("enrolment revoked but not recorded in the audit log", "client_id", revoked.ClientID, "error", auditErr)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

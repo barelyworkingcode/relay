@@ -27,7 +27,7 @@ func rootedProfile(t *testing.T, root string) *appRouter {
 	t.Helper()
 	proj := Project{
 		ID: "test-project", Name: "test", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"fsmcp3"}, Token: testToken, TokenHash: hashToken(testToken),
+		AllowedMcpIDs: []string{"fsmcp3"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
 		AllowedTools: map[string][]string{"fsmcp3": {"fs_*"}},
 		Access:       map[string]string{"fsmcp3": AccessWrite},
 	}
@@ -35,7 +35,7 @@ func rootedProfile(t *testing.T, root string) *appRouter {
 		Version:      1,
 		ExternalMcps: []ExternalMcp{{ID: "fsmcp3", DisplayName: "fsMCP v3"}},
 		Projects:     []Project{proj},
-		AdminSecret:  "supersecretadmin",
+		AdminSecret:  NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	conn := newMockConn("fsmcp3", fsmcpV3ToolSurface(),

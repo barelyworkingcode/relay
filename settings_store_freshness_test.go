@@ -57,7 +57,7 @@ type ssfStack struct {
 func ssfNewStack(t *testing.T) *ssfStack {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	srv := accNewServer(t, store, accLegacyToken)
@@ -171,7 +171,7 @@ func TestSSFEveryDegradedSettingsStateFailsClosed(t *testing.T) {
 // a credential: both are records in a file that is no longer there.
 func TestSSFDeletingSettingsRevokesAnEnrolment(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	proj := mkStoreProject(t, store, ProjectKindRemote, "ssf-remote", "")
@@ -201,7 +201,7 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 		t.Fatalf("fixture is not a fresh install: stat = %v", err)
 	}
 
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if got := store.ReloadIfChanged(); got != nil {
 		t.Fatalf("a settings file that was never created is not a change, got %+v", got)
 	}
@@ -213,14 +213,14 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("EnsureInitialized did not create settings.json: %v", err)
 	}
-	if store.Get().AdminSecret == "" {
+	if pt, ok := store.Get().AdminSecret.Reveal(); !ok || pt == "" {
 		t.Fatal("EnsureInitialized did not generate an admin secret")
 	}
 
 	assertNoErr(t, store.With(func(s *Settings) {
 		s.UpsertService(ServiceConfig{ID: "ssf-first", DisplayName: "ssf-first", Command: "/bin/true"})
 	}), "first mutation after a fresh start")
-	if _, idx := NewSettingsStoreAt(dir).Get().findServiceByID("ssf-first"); idx < 0 {
+	if _, idx := sealedSettingsStoreAt(dir).Get().findServiceByID("ssf-first"); idx < 0 {
 		t.Fatal("the first mutation after a fresh start did not reach disk")
 	}
 }
@@ -232,11 +232,12 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 func TestSSFWithPersistsSettingsThatWereNeverOnDisk(t *testing.T) {
 	dir := mkShortTempDir(t, "ssf-nofile-")
 	store := &FileSettingsStore{
-		dir: dir,
+		dir:    dir,
+		sealer: testSealer(),
 		cache: &Settings{
 			Version:     currentSettingsVersion,
 			Projects:    []Project{{ID: "ssf-p", Name: "ssf", Path: dir}},
-			AdminSecret: "ssf-secret",
+			AdminSecret: NewSecret("ssf-secret"),
 		},
 	}
 
@@ -247,7 +248,7 @@ func TestSSFWithPersistsSettingsThatWereNeverOnDisk(t *testing.T) {
 		s.Projects[0].AllowCwdAuth = true
 	}), "With over a store whose settings are not on disk yet")
 
-	proj, _ := NewSettingsStoreAt(dir).Get().findProjectByID("ssf-p")
+	proj, _ := sealedSettingsStoreAt(dir).Get().findProjectByID("ssf-p")
 	if proj == nil {
 		t.Fatal("the project never reached disk")
 	}
@@ -269,11 +270,14 @@ func TestSSFWithPersistsSettingsThatWereNeverOnDisk(t *testing.T) {
 // stands in for every other record type on the same path.
 func TestSSFCrossProcessWriteSurvivesTheNextWith(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	trayStore := NewSettingsStoreAt(dir)
+	trayStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, trayStore.EnsureInitialized(), "EnsureInitialized (tray)")
 	srv := accNewServer(t, trayStore, accLegacyToken)
 
-	cliStore := NewSettingsStoreAt(dir)
+	// Sealed, like the tray: a CLI-shaped store (no sealer) now refuses
+	// every write by design (§5.4), so a second WRITING process here is
+	// modeled the same way the tray itself is until brokering (S6) lands.
+	cliStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, cliStore.EnsureInitialized(), "EnsureInitialized (cli)")
 
 	_, plaintext, err := mintAPICredential(cliStore, credentialMintRequest{Name: "ssf-cli", Classes: []string{"read"}})
@@ -287,7 +291,7 @@ func TestSSFCrossProcessWriteSurvivesTheNextWith(t *testing.T) {
 		s.UpsertService(ServiceConfig{ID: "ssf-tray-svc", DisplayName: "ssf-tray-svc", Command: "/bin/true"})
 	}), "the tray's next write")
 
-	onDisk := NewSettingsStoreAt(dir).Get()
+	onDisk := sealedSettingsStoreAt(dir).Get()
 	if onDisk.AuthenticateAPICredential(plaintext) == nil {
 		t.Error("the credential the CLI minted is gone from settings.json after the tray's next write; its plaintext was printed once and cannot be reissued")
 	}
@@ -309,12 +313,15 @@ func TestSSFCrossProcessWriteSurvivesTheNextWith(t *testing.T) {
 // whatever the reload brought in.
 func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
-	trayStore := NewSettingsStoreAt(dir)
+	trayStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, trayStore.EnsureInitialized(), "EnsureInitialized (tray)")
 
 	proj := mkStoreProject(t, trayStore, ProjectKindLocal, "ssf-owned", t.TempDir())
 
-	cliStore := NewSettingsStoreAt(dir)
+	// Sealed, like the tray: a CLI-shaped store (no sealer) now refuses
+	// every write by design (§5.4), so a second WRITING process here is
+	// modeled the same way the tray itself is until brokering (S6) lands.
+	cliStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, cliStore.EnsureInitialized(), "EnsureInitialized (cli)")
 	assertNoErr(t, cliStore.With(func(s *Settings) {
 		s.UpsertExternalMcp(ExternalMcp{ID: "ssf-cli-mcp", DisplayName: "ssf-cli-mcp", Command: "/bin/true"})
@@ -335,7 +342,7 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 		t.Fatal("the project this store created was not visible to its own With callback after the reload")
 	}
 
-	onDisk := NewSettingsStoreAt(dir).Get()
+	onDisk := sealedSettingsStoreAt(dir).Get()
 	updated, _ := onDisk.findProjectByID(proj.ID)
 	if updated == nil {
 		t.Fatal("the project is gone from settings.json")
@@ -500,7 +507,7 @@ func TestSSFStoreRecoversOnceTheFileIsUsableAgain(t *testing.T) {
 				s.UpsertService(ServiceConfig{ID: "ssf-recovered", DisplayName: "ssf-recovered", Command: "/bin/true"})
 			}), "mutation once settings.json was usable again")
 
-			onDisk := NewSettingsStoreAt(k.dir).Get()
+			onDisk := sealedSettingsStoreAt(k.dir).Get()
 			if _, idx := onDisk.findServiceByID("ssf-recovered"); idx < 0 {
 				t.Error("the mutation made after recovery did not reach disk")
 			}
@@ -530,7 +537,7 @@ func TestSSFEnsureInitializedRefusesAnUnusableFile(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			dir := mkEmptySandboxRelayHome(t)
 			path := filepath.Join(dir, "settings.json")
-			seed := NewSettingsStoreAt(dir)
+			seed := sealedSettingsStoreAt(dir)
 			assertNoErr(t, seed.EnsureInitialized(), "EnsureInitialized (seed)")
 			assertNoErr(t, seed.With(func(s *Settings) {
 				s.UpsertService(ServiceConfig{ID: "ssf-keep-me", DisplayName: "ssf-keep-me", Command: "/bin/true"})
@@ -540,7 +547,7 @@ func TestSSFEnsureInitializedRefusesAnUnusableFile(t *testing.T) {
 			before := ssfRawSettings(t, path)
 
 			// A fresh process, as the next tray start is.
-			err := NewSettingsStoreAt(dir).EnsureInitialized()
+			err := sealedSettingsStoreAt(dir).EnsureInitialized()
 			if err == nil {
 				t.Error("EnsureInitialized succeeded over a settings.json it could not read; at tray start that is a silent total wipe on every launch")
 			}
@@ -557,7 +564,7 @@ func TestSSFEnsureInitializedRefusesAnUnusableFile(t *testing.T) {
 	// not fire on a file that is merely absent.
 	t.Run("absent file is still created", func(t *testing.T) {
 		dir := mkEmptySandboxRelayHome(t)
-		store := NewSettingsStoreAt(dir)
+		store := sealedSettingsStoreAt(dir)
 		assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized on a fresh install")
 		if _, err := os.Stat(filepath.Join(dir, "settings.json")); err != nil {
 			t.Fatalf("EnsureInitialized did not create settings.json: %v", err)

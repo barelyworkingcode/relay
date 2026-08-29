@@ -1,17 +1,23 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 )
 
 // Login registration is anchored on the host, by the user who owns the
-// config dir; nothing in this file is reachable over a socket (ADR-016
-// decision 2). It runs in a separate process from the tray, so every read
-// and write goes through the store rather than a cached settings view,
-// matching enrol_cmd.go and credential_cmd.go. The mint, list and revoke
-// themselves live in login_ops.go, which is also what the tray's own
-// surfaces go through — the split enrolment.go and enrol_cmd.go use.
+// config dir. `enrol` and `revoke` are brokered (ADR-017 decision 2): this
+// process holds no sealer (§5.4), so it dials the running tray over
+// admin_op and lets LoginOps — the same core the Passkeys tab and the
+// tray's own "Show Login Code..." item share — do the work. `list` is
+// unaffected: it reads settings.json directly and keeps working with the
+// tray stopped.
+//
+// ADR-016 decision 2 kept this subcommand specifically because the tray's
+// menu is unreachable over SSH; ADR-017 §3.2 withdraws that affordance on
+// purpose — a session that cannot show a presence prompt refuses here
+// exactly as it does for every other gated operation, with no exemption.
 func runLoginCommand(args []string) {
 	store := NewSettingsStore()
 	runSubcommands("login", []cliSubcommand{
@@ -22,23 +28,21 @@ func runLoginCommand(args []string) {
 }
 
 func loginEnrol(store SettingsStore) {
-	aud, closeAud := cliIssuanceAuditor(store)
-	defer closeAud()
-
-	plaintext, expires, err := mintLoginBootstrap(store)
+	client := requireService("relay login enrol")
+	raw, err := client.AdminOp("login.bootstrap.mint", nil)
 	if err != nil {
-		exitError("%v", err)
+		exitError("%s", adminOpErrorText(err))
 	}
-	if err := recordBootstrapIssued(aud, expires, auditViaCLI); err != nil {
-		refuseUnrecordedIssuance(err, "a login code was minted",
-			"`relay login enrol` again once the audit log is writable; the unprinted anchor expires in "+bootstrapCodeTTL.String())
+	var view loginCodeView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		exitError("parse response: %v", err)
 	}
 
-	fmt.Printf("login code: %s\n", plaintext)
-	fmt.Printf("  expires:   %s (valid for %s, single use)\n", expires, bootstrapCodeTTL)
+	fmt.Printf("login code: %s\n", view.Code)
+	fmt.Printf("  expires:   %s (valid for %s, single use)\n", view.Expires, bootstrapCodeTTL)
 	fmt.Println("  this code registers a passkey — it is NOT a password and is never accepted in place of one")
-	if url := loginPageURL(); url != "" {
-		fmt.Printf("  open %s and enter it to register a passkey\n", url)
+	if view.URL != "" {
+		fmt.Printf("  open %s and enter it to register a passkey\n", view.URL)
 	} else {
 		fmt.Println("  open the relay login page (http://localhost:<RELAY_API_LISTEN port>/relay/login) and enter it to register a passkey")
 	}
@@ -70,15 +74,18 @@ func loginRevoke(store SettingsStore, args []string) {
 	id := fs.String("id", "", "credential id of the passkey to revoke (required)")
 	fs.Parse(args)
 
-	aud, closeAud := cliIssuanceAuditor(store)
-	defer closeAud()
-
-	removed, err := revokePasskey(store, *id)
+	client := requireService("relay login revoke")
+	body, err := json.Marshal(loginPasskeyRevokeRequest{ID: *id})
 	if err != nil {
 		exitError("%v", err)
 	}
-	if err := recordPasskeyRevoked(aud, removed, auditViaCLI); err != nil {
-		warnUnrecordedRevocation(err, fmt.Sprintf("passkey %q (%s) was revoked", removed.Name, abbreviatePasskeyID(removed.ID)))
+	raw, err := client.AdminOp("login.passkey.revoke", body)
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var removed Passkey
+	if err := json.Unmarshal(raw, &removed); err != nil {
+		exitError("parse response: %v", err)
 	}
 
 	fmt.Printf("revoked passkey %q\n", removed.Name)
