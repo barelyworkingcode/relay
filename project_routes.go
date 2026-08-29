@@ -3,11 +3,36 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+
+	"relaygo/presence"
 )
+
+// projectOpsHTTPStatus maps a ProjectOps refusal onto the status a caller
+// should see: a presence or audit-dependency refusal is 403, an internal
+// settings-write failure is 500, and everything else (a validation error
+// from applyProjectCreate/applyProjectUpdate) is 400 — the status this
+// route always gave a createErr/updateErr before ProjectOps existed.
+func projectOpsHTTPStatus(err error) int {
+	switch {
+	case errors.Is(err, presence.ErrGrantInvalid), errors.Is(err, presence.ErrRefused),
+		errors.Is(err, presence.ErrNoSession), errors.Is(err, presence.ErrUnavailable),
+		errors.Is(err, errPresenceGateNotWired), errors.Is(err, errIssuanceAuditingRequired):
+		return http.StatusForbidden
+	case errors.Is(err, errProjectSaveFailed), errors.Is(err, errProjectTokenUnrecorded):
+		return http.StatusInternalServerError
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func writeProjectGateError(w http.ResponseWriter, err error) {
+	writeJSON(w, projectOpsHTTPStatus(err), map[string]string{"error": err.Error()})
+}
 
 // McpSurfaceProvider supplies what relay knows at runtime about each MCP —
 // context schema, its version, and the tool surface — required when
@@ -121,7 +146,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
@@ -156,23 +181,15 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 			return
 		}
 
-		var created Project
-		var createErr error
-		if err := store.With(func(s *Settings) {
-			created, createErr = applyProjectCreate(s, body, mcps.AllMcpSurfaces())
-		}); err != nil {
-			slog.Error("create project: save failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
-			return
-		}
+		created, createErr := ops.Create(r.Context(), body, mcps.AllMcpSurfaces(), auditViaHTTP, credIDOf(r))
 		if createErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": createErr.Error()})
+			writeProjectGateError(w, createErr)
 			return
 		}
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, created)
 		}
-		notify()
+		// ops.Create already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusCreated, projectToView(created))
 	})
 
@@ -196,18 +213,9 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 		// empty path is valid depends on Kind (required for local, mandatory
 		// for remote), so a standalone path-only pre-check can no longer judge
 		// it correctly — the merged candidate is the only place that knows.
-		var updated Project
-		var found bool
-		var updateErr error
-		if err := store.With(func(s *Settings) {
-			updated, found, updateErr = applyProjectUpdate(s, id, body, mcps.AllMcpSurfaces)
-		}); err != nil {
-			slog.Error("update project: save failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
-			return
-		}
+		updated, found, updateErr := ops.Update(r.Context(), id, body, mcps.AllMcpSurfaces, auditViaHTTP, credIDOf(r))
 		if updateErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": updateErr.Error()})
+			writeProjectGateError(w, updateErr)
 			return
 		}
 		if !found {
@@ -217,7 +225,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 		if skillLister != nil {
 			reconcileProjectSkill(r.Context(), skillLister, updated)
 		}
-		notify()
+		// ops.Update already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusOK, projectToView(updated))
 	})
 
@@ -273,39 +281,21 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, mcps McpSurf
 	// 1), the same reasoning as enrolment create.
 	rr.Handle(ClassGrant, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		var newPlaintext string
-		var ok bool
-		var genErr error
-		if err := store.With(func(s *Settings) {
-			newPlaintext, ok, genErr = s.RotateProjectToken(id)
-		}); err != nil {
-			slog.Error("rotate project token: save failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
-			return
-		}
-		if genErr != nil {
-			slog.Error("rotate project token: token generation failed", "error", genErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
+		// ProjectOps.RotateToken records the rotation itself (so it can
+		// attach the presence_id the gate minted) and withholds the new
+		// plaintext when that record cannot be written — the old token is
+		// already dead either way, so refusing here still means no project
+		// token reaches a holder unrecorded.
+		newPlaintext, ok, err := ops.RotateToken(r.Context(), id, auditViaHTTP, credIDOf(r))
+		if err != nil {
+			writeProjectGateError(w, err)
 			return
 		}
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		// The control_decision this route already writes says the caller was
-		// allowed to reach rotate_token; it does not say a project token was
-		// rotated, which is the fact an operator is reading the log for. The
-		// new plaintext is withheld when the act cannot be recorded — the old
-		// token is already dead either way, so refusing here still means no
-		// project token reaches a holder unrecorded.
-		if auditErr := recordProjectTokenRotated(rr.Issuance, id, auditViaHTTP, credIDOf(r)); auditErr != nil {
-			slog.Error("rotate project token: audit record failed", "project", id, "error", auditErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "the token was rotated but could not be recorded in the audit log, so it was not returned; rotate again",
-			})
-			return
-		}
-		notify()
+		// ops.RotateToken already fired ops.OnChange; notify() here would double it.
 		writeJSON(w, http.StatusOK, map[string]string{"token": newPlaintext})
 	})
 

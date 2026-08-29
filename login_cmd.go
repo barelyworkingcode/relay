@@ -29,7 +29,7 @@ func loginEnrol(store SettingsStore) {
 	if err != nil {
 		exitError("%v", err)
 	}
-	if err := recordBootstrapIssued(aud, expires, auditViaCLI); err != nil {
+	if err := recordBootstrapIssued(aud, expires, auditViaCLI, ""); err != nil {
 		refuseUnrecordedIssuance(err, "a login code was minted",
 			"`relay login enrol` again once the audit log is writable; the unprinted anchor expires in "+bootstrapCodeTTL.String())
 	}
@@ -77,7 +77,7 @@ func loginRevoke(store SettingsStore, args []string) {
 	if err != nil {
 		exitError("%v", err)
 	}
-	if err := recordPasskeyRevoked(aud, removed, auditViaCLI); err != nil {
+	if err := recordPasskeyRevoked(aud, removed, auditViaCLI, ""); err != nil {
 		warnUnrecordedRevocation(err, fmt.Sprintf("passkey %q (%s) was revoked", removed.Name, abbreviatePasskeyID(removed.ID)))
 	}
 

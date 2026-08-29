@@ -23,7 +23,7 @@ import (
 func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
-	ops := &EnrolmentOps{Store: store, OnChange: onChange}
+	ops := &EnrolmentOps{Store: store, OnChange: onChange, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
 	RegisterEnrolmentRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
 	return httptest.NewServer(mux), store

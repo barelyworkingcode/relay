@@ -44,9 +44,10 @@ type accServer struct {
 func accNewServer(t *testing.T, store SettingsStore, frontendToken string) *accServer {
 	t.Helper()
 
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
-	enrolOps := &EnrolmentOps{Store: store}
-	mcpOps := &McpOps{Store: store, Ctx: context.Background()}
+	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	enrolOps := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
+	mcpOps := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	extMgr := NewExternalMcpManager(nil)
 
 	dir := mkShortTempDir(t, "acc-fe-")
@@ -54,7 +55,7 @@ func accNewServer(t *testing.T, store SettingsStore, frontendToken string) *accS
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: frontendToken},
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		ops, enrolOps, &AuditOps{}, mcpOps,
+		ops, enrolOps, &AuditOps{}, mcpOps, projOps,
 		NewCredentialAuthorizer(store), nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

@@ -75,6 +75,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, nil,
 		&McpOps{Store: store, Ctx: context.Background()},
+		nil,
 		NewCredentialAuthorizer(store), auditor,
 	)
 	if err != nil {

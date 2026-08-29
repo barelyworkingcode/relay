@@ -196,6 +196,10 @@ func runTrayApp() {
 	// not running at all. The Tool Calls tab surfaces the disabled state.
 	audit := startAuditRecorder(store.Get())
 	app.audit = audit
+	// serviceOps is constructed above, before the audit recorder exists, so
+	// its Issuance field is wired here rather than in the literal (S7 will
+	// add the presence Gate alongside it, in the same place).
+	serviceOps.Issuance = issuanceAuditorOrNil(audit)
 
 	// A dead external MCP used to be invisible: every client got
 	// `read response: EOF` and nothing in relay said the server behind them was
@@ -265,6 +269,7 @@ func runTrayApp() {
 	mcpOps := &McpOps{
 		Store:           store,
 		Ctx:             ctx,
+		Issuance:        issuanceAuditorOrNil(audit),
 		NotifyReconcile: bridge.SendReconcile,
 		NotifyReloadMcp: bridge.SendReloadMcp,
 		OnChange: func() {
@@ -324,7 +329,19 @@ func runTrayApp() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		}
 	}
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, NewCredentialAuthorizer(store), controlAuditorOrNil(audit))
+	// projectOps is the one core behind both the Projects tab (via
+	// app.ipcCtx.ProjectOps) and RegisterProjectRoutes on the frontend
+	// server (ADR-014) — a project created from curl and one created from
+	// the tray share the presence gate and the audit record.
+	projectOps := &ProjectOps{
+		Store:    store,
+		Issuance: issuanceAuditorOrNil(audit),
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullProjects)
+		},
+	}
+	app.ipcCtx.ProjectOps = projectOps
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, NewCredentialAuthorizer(store), controlAuditorOrNil(audit))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -611,7 +628,7 @@ func (a *App) onMenuClick(itemID int) {
 // never reloaded by OpenSettings, so for that one the emit is the only
 // channel. Hence the two arms rather than a single call.
 func (a *App) showLoginCode() {
-	view, err := a.loginOps.MintBootstrap()
+	view, err := a.loginOps.MintBootstrap(a.ctx)
 	if err != nil {
 		slog.Error("failed to mint a login code from the tray", "error", err)
 		view = loginCodeView{Error: err.Error()}

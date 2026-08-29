@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"relaygo/bridge"
+	"relaygo/presence"
+	"relaygo/presence/presencetest"
 	"relaygo/sealed"
 )
 
@@ -33,6 +35,38 @@ var (
 	testSealKeyID = "0123456789abcdef"
 	testSealKey   = bytes.Repeat([]byte{0x42}, 32)
 )
+
+// allowGate returns a presence.Gate wired to presencetest.Allow() — the
+// hermetic seam ADR-017 implementation spec §6.8 requires. Every test that
+// exercises a gated core's SUCCESS path needs one; a test exercising a
+// refusal instead constructs its own presencetest.Deny() / NoSession() /
+// Recording, or leaves Gate nil to exercise §6.7's fail-closed default.
+func allowGate(t *testing.T) *presence.Gate {
+	t.Helper()
+	g, err := presence.NewGate(presencetest.Allow())
+	if err != nil {
+		t.Fatalf("presence.NewGate: %v", err)
+	}
+	return g
+}
+
+// enabledIssuanceRecorder returns an *AuditRecorder that is Ready() —
+// enabled and holding a live sink — so requireIssuanceAuditor (§7.4) does
+// not refuse it. Every test exercising a gated core's success path needs
+// one, since issuance auditing is now a hard dependency; a test exercising
+// AC-26 (auditing off refuses) passes nil instead.
+func enabledIssuanceRecorder(t *testing.T) *AuditRecorder {
+	t.Helper()
+	rec, err := NewAuditRecorder(nil, filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditRecorder: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("NewAuditRecorder returned nil for an enabled config")
+	}
+	t.Cleanup(rec.Close)
+	return rec
+}
 
 // testSealer returns a Sealer over the fixed test key. It needs no *testing.T
 // and no cleanup: it is pure in-memory AES-GCM, not a keychain item.

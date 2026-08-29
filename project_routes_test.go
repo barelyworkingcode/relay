@@ -31,8 +31,9 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
 	})
+	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
 	return httptest.NewServer(mux), store
 }
 
@@ -62,8 +63,9 @@ func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister Ski
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
 	})
+	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t), OnChange: onChange}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
 	return httptest.NewServer(mux), store
 }
 

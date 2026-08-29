@@ -22,8 +22,9 @@ func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 	store.With(func(s *Settings) {
 		s.ExternalMcps = []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}}
 	})
+	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
+	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL, store

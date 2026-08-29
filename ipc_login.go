@@ -43,7 +43,7 @@ func ipcRevokePasskey(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ID == "" {
 		return
 	}
-	removed, err := ctx.LoginOps.RevokePasskey(msg.ID)
+	removed, err := ctx.LoginOps.RevokePasskey(ctx.Ctx, msg.ID)
 	if err != nil {
 		ctx.UI.EmitEvent("onPasskeyError", err.Error())
 		return

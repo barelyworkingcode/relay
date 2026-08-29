@@ -219,10 +219,12 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
 
 	aud, closeAud := cliIssuanceAuditor(store)
-	ops := &EnrolmentOps{Store: store}
-	created, err := ops.Create(enrolmentFields{ClientID: "hermes-mail", ProjectIDs: []string{profile.ID}})
+	// EnrolmentOps.Create now records the issuance itself (so it can attach
+	// the presence_id the gate minted), so this no longer calls
+	// recordEnrolmentIssued a second time afterward.
+	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: aud}
+	_, err := ops.Create(context.Background(), enrolmentFields{ClientID: "hermes-mail", ProjectIDs: []string{profile.ID}}, auditViaIPC, "")
 	assertNoErr(t, err, "EnrolmentOps.Create")
-	assertNoErr(t, recordEnrolmentIssued(aud, store, created.Enrolment, auditViaIPC, ""), "recordEnrolmentIssued")
 	closeAud()
 
 	issued := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialIssued, "hermes-mail")
@@ -358,13 +360,13 @@ func aiPEMBody(t *testing.T, pem []byte) string {
 func TestIssuance_TrayAndSettingsWindowActsAreRecorded(t *testing.T) {
 	dir, store := aiHome(t)
 	rec := aiRecorderAt(t, filepath.Join(dir, "rec.jsonl"), nil)
-	ops := &LoginOps{Store: store, Audit: rec}
+	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
-	view, err := ops.MintBootstrap()
+	view, err := ops.MintBootstrap(context.Background())
 	assertNoErr(t, err, "MintBootstrap")
 
 	passkey := aiStorePasskey(t, store, "pk-ipc")
-	_, err = ops.RevokePasskey(passkey.ID)
+	_, err = ops.RevokePasskey(context.Background(), passkey.ID)
 	assertNoErr(t, err, "RevokePasskey")
 
 	session, sessionToken, err := aiMintLoginSession(store)
@@ -467,8 +469,9 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHT
 		Issuance:  issuance,
 	}
 	extMgr := NewExternalMcpManager(nil)
-	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store})
-	RegisterProjectRoutes(rr, store, extMgr, nil, nil, nil, nil)
+	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: rec, Issuance: issuance})
+	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuance}
+	RegisterProjectRoutes(rr, store, projOps, extMgr, nil, nil, nil, nil)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -626,6 +629,7 @@ func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, &AuditOps{Audit: rec},
 		&McpOps{Store: store, Ctx: context.Background()},
+		&ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(rec)},
 		NewCredentialAuthorizer(store), auditor,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
@@ -709,9 +713,9 @@ func TestIssuance_TrayWithholdsTheLoginCodeWhenTheRecordFails(t *testing.T) {
 	// deliberately not a refusal.
 	rec := newAuditRecorderWith((&AuditConfig{}).resolve(), "ai-broken", failingWriteCloser{})
 	t.Cleanup(rec.Close)
-	ops := &LoginOps{Store: store, Audit: rec}
+	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
-	view, err := ops.MintBootstrap()
+	view, err := ops.MintBootstrap(context.Background())
 	if err == nil {
 		t.Fatalf("MintBootstrap succeeded with an unwritable audit log and returned code %q", view.Code)
 	}

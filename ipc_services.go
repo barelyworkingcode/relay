@@ -24,7 +24,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	created, err := ctx.Ops.Create(msg.fields())
+	created, err := ctx.Ops.Create(ctx.Ctx, msg.fields(), auditViaIPC, "")
 	// Only errServiceProcess means the record landed; every other error means
 	// nothing was persisted, and announcing a row for it would add a blank
 	// service to the list.
@@ -48,7 +48,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 
 	// Remove blocks on the stopped process's exit, so it runs off the UI thread.
 	ctx.GoFunc(func() {
-		err := ctx.Ops.Remove(msg.ID)
+		err := ctx.Ops.Remove(ctx.Ctx, msg.ID, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onSettingsError", err.Error())
@@ -71,7 +71,7 @@ func ipcUpdateService(ctx *IPCContext, raw json.RawMessage) {
 	// whether it is running can change between any check here and Update's own.
 	// Branching on it would put a blocking Stop on the main thread.
 	ctx.GoFunc(func() {
-		_, err := ctx.Ops.Update(msg.ID, fields)
+		_, err := ctx.Ops.Update(ctx.Ctx, msg.ID, fields, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			switch {
 			case err != nil && errors.Is(err, errServiceProcess):

@@ -201,6 +201,11 @@ type IPCContext struct {
 	// four IPC commands (authenticate, reset-permissions) have no HTTP
 	// counterpart; see McpOps for why.
 	McpOps *McpOps
+	// ProjectOps is Ops's counterpart for the Projects tab (ADR-014) —
+	// ipc_projects.go's handlers are thin adapters over it too, so a
+	// project created from curl and one created from the tray share the
+	// presence gate and the audit record (ADR-017 decisions 2 and 3).
+	ProjectOps *ProjectOps
 }
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends
@@ -261,6 +266,7 @@ type ipcAddExternalMcpMsg struct {
 	Command     string            `json:"command"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
+	TccServices []string          `json:"tcc_services"`
 }
 
 type ipcIDMsg struct {

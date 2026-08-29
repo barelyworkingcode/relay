@@ -77,7 +77,7 @@ func RegisterMcpRoutes(rr *RouteRegistrar, ops *McpOps) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		created, err := ops.Add(body)
+		created, err := ops.Add(r.Context(), body, auditViaHTTP, credIDOf(r))
 		if err != nil && !errors.Is(err, ErrAuthRequired) {
 			writeMcpError(w, err)
 			return
@@ -88,7 +88,7 @@ func RegisterMcpRoutes(rr *RouteRegistrar, ops *McpOps) {
 	})
 
 	rr.Handle(ClassConfigure, "DELETE /api/mcps/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := ops.Remove(r.PathValue("id")); err != nil {
+		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeMcpError(w, err)
 			return
 		}

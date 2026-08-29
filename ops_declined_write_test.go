@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -109,8 +110,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			name: "ServiceOps.Update",
 			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedService(t, store) },
 			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
-				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}}
-				_, err := ops.Update("ghost", serviceFields{Command: "/bin/new"})
+				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+				_, err := ops.Update(context.Background(), "ghost", serviceFields{Command: "/bin/new"}, auditViaIPC, "")
 				return err
 			},
 			want: errServiceNotFound,
@@ -119,8 +120,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			name: "ServiceOps.Remove",
 			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedService(t, store) },
 			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
-				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}}
-				return ops.Remove("ghost")
+				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
 			},
 			want: errServiceNotFound,
 		},
@@ -137,7 +138,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			name: "McpOps.Remove",
 			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedMcp(t, store) },
 			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
-				return (&McpOps{Store: store}).Remove("ghost")
+				ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
 			},
 			want: errMcpNotFound,
 		},
@@ -262,16 +264,16 @@ func TestStartOAuthDoesNotResurrectAnMcpRemovedMidCeremony(t *testing.T) {
 	}
 
 	var before odwSnapshot
-	ops := &McpOps{Store: store}
+	ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	ops.StartFlow = func(mcpURL string, _ func(string)) (*oauthResult, error) {
-		if err := (&McpOps{Store: sealedSettingsStoreAt(dir)}).Remove("authy"); err != nil {
+		if err := (&McpOps{Store: sealedSettingsStoreAt(dir), Gate: ops.Gate, Issuance: ops.Issuance}).Remove(context.Background(), "authy", auditViaIPC, ""); err != nil {
 			t.Errorf("concurrent remove: %v", err)
 		}
 		before = odwSnap(t, dir)
 		return &oauthResult{AccessToken: "granted"}, nil
 	}
 
-	state, err := ops.StartOAuth("authy", func(string) {})
+	state, err := ops.StartOAuth(context.Background(), "authy", func(string) {}, auditViaIPC, "")
 	if !errors.Is(err, errMcpNotFound) {
 		t.Fatalf("StartOAuth error = %v, want one matching errMcpNotFound", err)
 	}

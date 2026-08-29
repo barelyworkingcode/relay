@@ -48,6 +48,14 @@ const (
 	// authorization and not the act. Built by audit_issuance.go.
 	AuditEventCredentialIssued  = "credential_issued"
 	AuditEventCredentialRevoked = "credential_revoked"
+
+	// ConfigChange records a gated act that mutates settings but issues
+	// nothing: registering or unregistering an MCP or service, starting an
+	// MCP's OAuth flow, or widening a project's grant shape. Calling one of
+	// these credential_issued would be a lie, and leaving it unrecorded
+	// would break the ADR's detection argument, which depends on every
+	// gated act leaving a record (ADR-017 implementation spec §7.5).
+	AuditEventConfigChange = "config_change"
 )
 
 // Denied means a known credential was refused a tool it may not use;
@@ -292,6 +300,14 @@ type AuditEvent struct {
 	// question an operator has of a cut record is whether it was cut, not
 	// which part of one sentence lost bytes.
 	IssuanceTruncated bool `json:"issuance_truncated,omitempty"`
+
+	// PresenceID is the nonce id (presence.Grant.ID()) that authorised a
+	// gated act, on credential_issued, credential_revoked and config_change
+	// alike. It is a nonce id, not a secret: it carries no plaintext and no
+	// hash, and it lets an operator confirm that a credential issuance has
+	// a matching presence event — the absence of one is the signal ADR-017
+	// exists to make detectable. Empty for an ungated record.
+	PresenceID string `json:"presence_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +720,14 @@ func (r *AuditRecorder) Enabled() bool { return r != nil && r.cfg.Enabled }
 // no run() to close done — so the durable path asks this first and reports the
 // recorder unavailable instead of deadlocking its caller.
 func (r *AuditRecorder) hasSink() bool { return r != nil && r.syncCh != nil }
+
+// Ready reports whether this recorder actually has somewhere to write --
+// enabled AND holding a live sink. requireIssuanceAuditor (audit_issuance.go)
+// uses this rather than Enabled alone: an operator can flip
+// "enabled": true in settings.json while the recorder actually constructed
+// at startup failed to open its file, and the two states must not be
+// conflated into "auditing is on".
+func (r *AuditRecorder) Ready() bool { return r.Enabled() && r.hasSink() }
 
 func (r *AuditRecorder) LogLists() bool { return r != nil && r.cfg.LogLists }
 

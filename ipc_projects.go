@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 )
 
@@ -50,14 +49,7 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		}
 	}
 
-	var created Project
-	var createErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		created, createErr = applyProjectCreate(s, *msg, mcpSurfacesFrom(ctx))
-	})
-	if !okSettings {
-		return
-	}
+	created, createErr := ctx.ProjectOps.Create(ctx.Ctx, *msg, mcpSurfacesFrom(ctx), auditViaIPC, "")
 	if createErr != nil {
 		ctx.UI.EmitEvent("onProjectError", createErr.Error())
 		return
@@ -86,17 +78,9 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 	// Shape/grant validation (including path) happens inside
 	// applyProjectUpdate against the fully-merged candidate — mirrors the
 	// HTTP PUT route.
-	var updated Project
-	var found bool
-	var updateErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		updated, found, updateErr = applyProjectUpdate(s, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
-			return mcpSurfacesFrom(ctx)
-		})
-	})
-	if !okSettings {
-		return
-	}
+	updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
+		return mcpSurfacesFrom(ctx)
+	}, auditViaIPC, "")
 	if updateErr != nil {
 		ctx.UI.EmitEvent("onProjectError", updateErr.Error())
 		return
@@ -158,30 +142,17 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var newPlaintext string
-	var found bool
-	var genErr error
-	okSettings := ctx.withSettings(func(s *Settings) {
-		newPlaintext, found, genErr = s.RotateProjectToken(msg.ID)
-	})
-	if !okSettings {
-		return
-	}
-	if genErr != nil {
-		slog.Error("rotate project token: token generation failed", "error", genErr)
-		ctx.UI.EmitEvent("onProjectError", "failed to generate token")
+	// ProjectOps.RotateToken records the rotation itself (so it can attach
+	// the presence_id the gate minted) and withholds the new plaintext when
+	// that record cannot be written — rotate again once the log is
+	// writable.
+	newPlaintext, found, err := ctx.ProjectOps.RotateToken(ctx.Ctx, msg.ID, auditViaIPC, "")
+	if err != nil {
+		ctx.UI.EmitEvent("onProjectError", err.Error())
 		return
 	}
 	if !found {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
-		return
-	}
-	// Withheld rather than shown when the record cannot be written. The old
-	// token is already dead and there is no undo for that, but the new one has
-	// not left this process yet, so refusing here still means no project token
-	// ever reaches a holder unrecorded — rotate again once the log is writable.
-	if auditErr := recordProjectTokenRotated(issuanceAuditorOrNil(ctx.Audit), msg.ID, auditViaIPC, ""); auditErr != nil {
-		ctx.UI.EmitEvent("onProjectError", fmt.Sprintf("the token was rotated but could not be recorded in the audit log (%v), so it was not shown; rotate again", auditErr))
 		return
 	}
 

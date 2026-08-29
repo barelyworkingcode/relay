@@ -168,6 +168,7 @@ type frontendRouteDeps struct {
 	enrolmentOps      *EnrolmentOps
 	auditOps          *AuditOps
 	mcpOps            *McpOps
+	projectOps        *ProjectOps
 	enhanced          *EnhancedServiceRegistry
 	// issuance is derived once here from auditOps' recorder so the socket mux,
 	// the TCP mux and the login routes cannot disagree about whether an
@@ -187,7 +188,7 @@ type frontendRouteDeps struct {
 // registrars unconditionally on every transport is safe — the per-route
 // class, not a call site here, decides what lands on TCP.
 func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
-	RegisterProjectRoutes(rr, deps.store, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
+	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	if deps.auditOps != nil {
 		RegisterAuditRoutes(rr, deps.auditOps)
 	}
@@ -269,12 +270,22 @@ func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
 // allows everything, which is what the hermetic route tests want. auditor
 // records every authorization decision; nil is safe and simply records
 // nothing.
-func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, authz Authorizer, auditor ControlAuditor) (*FrontendServer, error) {
+// projectOps is ops's counterpart for the Projects tab (ADR-014): the same
+// instance ipc_projects.go's handlers use, so a project created from curl
+// and one created from the tray share the presence gate and the audit
+// record (ADR-017 decisions 2 and 3). A nil projectOps is filled in with a
+// bare *ProjectOps{Store: store} so every existing caller that does not yet
+// wire one keeps working — ungated, since a nil Gate inside it refuses
+// every gated act rather than allowing one (§6.7's fail-closed rule).
+func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz Authorizer, auditor ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
 	if enhanced == nil {
 		return nil, errors.New("enhanced-services registry is nil")
+	}
+	if projectOps == nil {
+		projectOps = &ProjectOps{Store: store}
 	}
 
 	deps := frontendRouteDeps{
@@ -288,6 +299,7 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 		enrolmentOps:      enrolmentOps,
 		auditOps:          auditOps,
 		mcpOps:            mcpOps,
+		projectOps:        projectOps,
 		enhanced:          enhanced,
 		issuance:          issuanceAuditorOrNil(auditOps.recorder()),
 	}
