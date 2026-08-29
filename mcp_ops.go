@@ -31,8 +31,12 @@ func invalidMcp(reason string) error {
 	return &mcpValidationError{reason: reason}
 }
 
-// JSON tags match ipcAddExternalMcpMsg's because the settings UI's JS depends on them.
+// JSON tags match ipcAddExternalMcpMsg's because the settings UI's JS depends
+// on them. ID has no counterpart there -- the Settings window edits a record
+// in place and never re-derives its id -- so it is the CLI's own field,
+// optional and empty by default (Add falls back to slugify(DisplayName)).
 type mcpFields struct {
+	ID          string            `json:"id,omitempty"`
 	DisplayName string            `json:"display_name"`
 	Transport   string            `json:"transport"`
 	URL         string            `json:"url"`
@@ -42,11 +46,23 @@ type mcpFields struct {
 	TccServices []string          `json:"tcc_services,omitempty"`
 }
 
+// resolvedID is the id Add commits under: the caller's explicit choice when
+// given, slugify(DisplayName) otherwise -- the same fallback every other
+// door (HTTP, IPC) always used.
+func (f mcpFields) resolvedID() string {
+	if f.ID != "" {
+		return f.ID
+	}
+	return slugify(f.DisplayName)
+}
+
 // presenceDigest binds an mcp.register grant to exactly the record being
-// registered (§6.4): a caller cannot answer a prompt for one command and
-// have the grant spend on a different one.
-func (f mcpFields) presenceDigest() presence.Digest {
+// registered (§6.4), id included: Add upserts by id, so a grant answered for
+// one id must not be redeemable against a request that resolves to another
+// -- the exact substitution a caller-chosen id (resolvedID above) opens up.
+func (f mcpFields) presenceDigest(id string) presence.Digest {
 	return presence.NewDigestBuilder("mcp.register").
+		StringField("id", true, id).
 		StringField("display_name", true, f.DisplayName).
 		StringField("transport", true, f.Transport).
 		StringField("url", true, f.URL).
@@ -57,14 +73,18 @@ func (f mcpFields) presenceDigest() presence.Digest {
 		Build()
 }
 
-// mcpRegisterReason names the actual act (§6.5.2): a stdio MCP names the
-// command it runs -- the caller's choice of what relay executes -- and an
-// HTTP MCP names the endpoint it will be asked to connect to instead.
-func mcpRegisterReason(f mcpFields) string {
+// mcpRegisterReason names the actual act (§6.5.2) and the record it lands
+// on: id decides which record Add's upsert writes (persist -> UpsertExternalMcp),
+// so the prompt must name it -- a display name alone would let an operator
+// approve "register an MCP that runs X" without noticing id collides with a
+// different existing record. A stdio MCP names the command it runs -- the
+// caller's choice of what relay executes -- and an HTTP MCP names the
+// endpoint it will be asked to connect to instead.
+func mcpRegisterReason(id string, f mcpFields) string {
 	if f.Transport == "http" {
-		return fmt.Sprintf("register an MCP at %s", f.URL)
+		return fmt.Sprintf("register the MCP %q (%s) at %s", f.DisplayName, id, f.URL)
 	}
-	return fmt.Sprintf("register an MCP that runs %s", f.Command)
+	return fmt.Sprintf("register the MCP %q (%s) that runs %s", f.DisplayName, id, f.Command)
 }
 
 // The one core behind both the HTTP door (mcp_routes.go) and the WebView IPC
@@ -139,7 +159,7 @@ func (o *McpOps) Get(id string) (ExternalMcp, error) {
 }
 
 func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (ExternalMcp, error) {
-	id := slugify(f.DisplayName)
+	id := f.resolvedID()
 	if id == "" {
 		return ExternalMcp{}, invalidMcp("display name is required")
 	}
@@ -161,7 +181,7 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (Exte
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return ExternalMcp{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "mcp.register", f.presenceDigest(), mcpRegisterReason(f))
+	grant, err := requireGate(o.Gate, ctx, "mcp.register", f.presenceDigest(id), mcpRegisterReason(id, f))
 	if err != nil {
 		return ExternalMcp{}, err
 	}

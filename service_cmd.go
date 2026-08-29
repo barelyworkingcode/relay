@@ -41,9 +41,22 @@ func serviceRegister(store SettingsStore, args []string) {
 		exitError("--command is required")
 	}
 
+	// visited is which flags actually appeared on the command line, per
+	// flag.FlagSet.Visit — the CLI's only way to tell "the operator left
+	// this out" from "the operator set it to the zero value" for --workdir,
+	// --url and --autostart. A flag not in visited leaves the field nil, so
+	// ServiceOps.Update carries the stored value forward unchanged instead
+	// of clearing it (§6.4); one in visited is applied even at its zero
+	// value, which is what lets --autostart=false turn autostart off.
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+
 	// nil (flag absent) leaves the setting untouched on re-register (see
 	// ServiceOps.Update's own merge for FrontendConsumer); an explicit
-	// false opts the service out.
+	// false opts the service out. There is deliberately no way to turn it
+	// back on from the CLI (no --frontend-creds counterpart): the opt-out
+	// is the only control on the frontend socket credential and re-arming
+	// it is not a `register` concern.
 	var frontendConsumer *bool
 	if *noFrontendCreds {
 		f := false
@@ -55,23 +68,38 @@ func serviceRegister(store SettingsStore, args []string) {
 		exitError("%v", err)
 	}
 
-	resolvedWorkdir := *workdir
-	if resolvedWorkdir != "" {
-		abs, err := filepath.Abs(resolvedWorkdir)
-		if err != nil {
-			exitError("could not resolve workdir: %v", err)
+	var workingDir *string
+	if visited["workdir"] {
+		resolved := *workdir
+		if resolved != "" {
+			abs, err := filepath.Abs(resolved)
+			if err != nil {
+				exitError("could not resolve workdir: %v", err)
+			}
+			resolved = abs
 		}
-		resolvedWorkdir = abs
+		workingDir = &resolved
+	}
+
+	var serviceURL *string
+	if visited["url"] {
+		serviceURL = url
+	}
+
+	var autostartSet *bool
+	if visited["autostart"] {
+		autostartSet = autostart
 	}
 
 	fields := serviceFields{
+		ID:               opts.ID,
 		DisplayName:      opts.Name,
 		Command:          *command,
 		Args:             []string(opts.Args),
 		Env:              env,
-		WorkingDir:       resolvedWorkdir,
-		Autostart:        *autostart,
-		URL:              *url,
+		WorkingDir:       workingDir,
+		Autostart:        autostartSet,
+		URL:              serviceURL,
 		FrontendConsumer: frontendConsumer,
 	}
 

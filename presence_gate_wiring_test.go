@@ -402,3 +402,69 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 }
 
 const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond units
+
+// TestMcpFields_PresenceGrantBoundToID is the concrete form of the
+// substitution the id-in-digest fix closes: Add upserts by id, so a grant
+// approved for one id must never redeem against a request that resolves to
+// a different one, even when every other field (display_name, command, ...)
+// is byte-for-byte identical. Exercises the real Gate — Request to mint,
+// Redeem against a different id's digest — rather than only comparing
+// digests, so a regression that dropped id from the digest but happened to
+// leave two unequal-looking Digest values would still be caught here.
+func TestMcpFields_PresenceGrantBoundToID(t *testing.T) {
+	gate := allowGate(t)
+	same := mcpFields{DisplayName: "Same Name", Command: "/bin/true"}
+	digestA := same.presenceDigest("id-a")
+	digestB := same.presenceDigest("id-b")
+
+	grant, err := gate.Request(context.Background(), "mcp.register", digestA, "register the MCP")
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := gate.Redeem(grant, "mcp.register", digestB); !errors.Is(err, presence.ErrGrantInvalid) {
+		t.Fatalf("a grant minted for id %q redeemed against id %q: err = %v, want ErrGrantInvalid", "id-a", "id-b", err)
+	}
+
+	// Positive control: the same digest the grant was minted for still
+	// redeems, so the refusal above is the id binding and not a broken gate.
+	grant2, err := gate.Request(context.Background(), "mcp.register", digestA, "register the MCP")
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := gate.Redeem(grant2, "mcp.register", digestA); err != nil {
+		t.Fatalf("redeeming against the id it was minted for: %v", err)
+	}
+}
+
+// TestServiceFields_PresenceGrantBoundToID is TestMcpFields_PresenceGrantBoundToID's
+// argument for service.register, which has carried id in its digest since
+// before this change — this pins that it still does.
+func TestServiceFields_PresenceGrantBoundToID(t *testing.T) {
+	gate := allowGate(t)
+	same := serviceFields{DisplayName: "Same Name", Command: "/bin/true"}
+	digestA := same.presenceDigest("id-a")
+	digestB := same.presenceDigest("id-b")
+
+	grant, err := gate.Request(context.Background(), "service.register", digestA, "register the service")
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := gate.Redeem(grant, "service.register", digestB); !errors.Is(err, presence.ErrGrantInvalid) {
+		t.Fatalf("a grant minted for id %q redeemed against id %q: err = %v, want ErrGrantInvalid", "id-a", "id-b", err)
+	}
+}
+
+// TestServiceFields_DigestDistinguishesAbsentFromExplicitZeroValue is
+// AC-22d's argument applied to the update-path fix: a request that leaves
+// autostart out of the wire payload (Autostart == nil, "preserve whatever is
+// stored") and one that explicitly sets it false ("turn it off") are two
+// different acts on the record and must not share a grant.
+func TestServiceFields_DigestDistinguishesAbsentFromExplicitZeroValue(t *testing.T) {
+	off := false
+	absent := serviceFields{DisplayName: "Svc", Command: "/bin/x"}
+	explicitFalse := serviceFields{DisplayName: "Svc", Command: "/bin/x", Autostart: &off}
+
+	if absent.presenceDigest("svc") == explicitFalse.presenceDigest("svc") {
+		t.Fatal("autostart absent and autostart=false explicit produced the same digest")
+	}
+}

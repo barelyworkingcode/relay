@@ -6,15 +6,22 @@ import (
 	"fmt"
 )
 
+// fields always sets WorkingDir, Autostart and URL (never leaves them nil):
+// the Settings window's form carries the service's complete state on every
+// save, add or update, so every field it sends is an explicit value on the
+// wire already — there is no "the operator left this blank" case for IPC to
+// distinguish the way the CLI's absent flags need to. Only ServiceOps.Update
+// needs the nil case at all, and only the CLI (register with a flag left off
+// the command line) produces it.
 func (msg *ipcServiceMsg) fields() serviceFields {
 	return serviceFields{
 		DisplayName: msg.DisplayName,
 		Command:     msg.Command,
 		Args:        msg.Args,
 		Env:         msg.Env,
-		WorkingDir:  msg.WorkingDir,
-		Autostart:   msg.Autostart,
-		URL:         msg.URL,
+		WorkingDir:  &msg.WorkingDir,
+		Autostart:   &msg.Autostart,
+		URL:         &msg.URL,
 	}
 }
 

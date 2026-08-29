@@ -32,18 +32,21 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 }
 
 // registerOpts is the flag set `mcp register` and `service register` share.
-// There is deliberately no --id override: McpOps.Add and ServiceOps.Create
-// both derive the record's id from --name (slugify) unconditionally, the
-// same as every other door (HTTP, IPC) always has, so a flag that could
-// never take effect once brokered would be worse than no flag at all.
+// ID is optional: McpOps.Add and ServiceOps.Create/Update derive the id from
+// --name (slugify) when it is empty, matching every other door (HTTP, IPC).
+// A caller that wants to re-register under the exact id a project's grant
+// already names it by — rather than whatever --name happens to slugify to
+// today — supplies --id explicitly.
 type registerOpts struct {
 	Name     string
+	ID       string
 	Args     stringSlice
 	EnvPairs stringSlice
 }
 
 func addRegisterFlags(fs *flag.FlagSet, opts *registerOpts) {
 	fs.StringVar(&opts.Name, "name", "", "display name (required)")
+	fs.StringVar(&opts.ID, "id", "", "record id (default: slugified --name)")
 	fs.Var(&opts.Args, "args", "command arguments (repeatable)")
 	fs.Var(&opts.EnvPairs, "env", "environment KEY=VALUE (repeatable)")
 }

@@ -291,12 +291,15 @@ func adminMcpUnregister(ctx context.Context, r *appRouter, args json.RawMessage)
 // Create otherwise, matching how HTTP's two routes (POST /api/services,
 // PUT /api/services/{id}) already split this: `relay service register` has
 // always been the one command that covers both, so this is where that
-// convenience lives now that a single core backs every door. Registering
-// again with fewer flags than the first time no longer inherits the
-// missing ones from the stored record — that CLI-only merge
-// (MergeServiceDefaults) lived in the direct-mutation code path this
-// replaces, and Update's own semantics (every door's, not just the CLI's)
-// are what apply now: a flag omitted on update is a flag cleared.
+// convenience lives now that a single core backs every door. The id is
+// req.resolvedID() — the caller's explicit --id when given, slugify(name)
+// otherwise — so an operator re-registering under a stable id they chose
+// finds the same record Create originally wrote, not a second one under
+// whatever --name slugifies to today. ServiceOps.Update itself decides what
+// "fewer flags than the first time" means: a field the request leaves nil
+// (a CLI flag not repeated) carries the stored value forward unchanged, and
+// only a field the request actually sets is applied — including to its
+// zero value, so `--autostart=false` still turns autostart off.
 func adminServiceRegister(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	ops, err := requireServiceOps(r)
 	if err != nil {
@@ -306,7 +309,7 @@ func adminServiceRegister(ctx context.Context, r *appRouter, args json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	id := slugify(req.DisplayName)
+	id := req.resolvedID()
 	var config ServiceConfig
 	var opErr error
 	if _, getErr := ops.Get(id); getErr == nil {
