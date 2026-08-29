@@ -89,9 +89,16 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	if err := ctx.McpOps.Remove(ctx.Ctx, msg.ID, auditViaIPC, ""); err != nil {
-		ctx.UI.EmitEvent("onExternalMcpError", err.Error())
-		return
-	}
-	ctx.UI.EmitEvent("onExternalMcpRemoved", msg.ID)
+	// Off the main thread: McpOps.Remove is gated (mcp.unregister, §6.4 of
+	// the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes.
+	ctx.GoFunc(func() {
+		if err := ctx.McpOps.Remove(ctx.Ctx, msg.ID, auditViaIPC, ""); err != nil {
+			dispatchEmit(ctx, "onExternalMcpError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onExternalMcpRemoved", msg.ID)
+	})
 }

@@ -73,27 +73,38 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	// EnrolmentOps.Create now records the issuance itself (and undoes the
-	// create if that recording fails) so it can attach the presence_id the
-	// gate minted.
-	created, err := ctx.EnrolmentOps.Create(ctx.Ctx, enrolmentFields{
+	fields := enrolmentFields{
 		ClientID:   msg.ClientID,
 		ProjectIDs: msg.ProjectIDs,
 		Budget:     msg.Budget,
-	}, auditViaIPC, "")
-	// Only errEnrolmentBundle means the record landed; every other error
-	// means nothing was persisted, and announcing a row for it would add a
-	// credential-less enrolment to the list.
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
-		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
-		return
 	}
-	if err != nil {
-		ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment created but %v", err))
-	}
-	ctx.UI.EmitEvent("onEnrolmentCreated",
-		marshalForUI(created.Enrolment),
-		marshalForUI(enrolmentBundleView{Dir: created.Dir}))
+
+	// Off the main thread: EnrolmentOps.Create is gated (enrolment.create,
+	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes.
+	ctx.GoFunc(func() {
+		// EnrolmentOps.Create now records the issuance itself (and undoes
+		// the create if that recording fails) so it can attach the
+		// presence_id the gate minted.
+		created, err := ctx.EnrolmentOps.Create(ctx.Ctx, fields, auditViaIPC, "")
+		// Only errEnrolmentBundle means the record landed; every other
+		// error means nothing was persisted, and announcing a row for it
+		// would add a credential-less enrolment to the list.
+		if err != nil && !errors.Is(err, errEnrolmentBundle) {
+			dispatchEmit(ctx, "onEnrolmentError", err.Error())
+			return
+		}
+		ctx.Platform.DispatchToMain(func() {
+			if err != nil {
+				ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment created but %v", err))
+			}
+			ctx.UI.EmitEvent("onEnrolmentCreated",
+				marshalForUI(created.Enrolment),
+				marshalForUI(enrolmentBundleView{Dir: created.Dir}))
+		})
+	})
 }
 
 // ipcRevokeEnrolment goes through ctx.EnrolmentOps.Revoke, which goes
@@ -107,14 +118,18 @@ func ipcRevokeEnrolment(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.ClientID == "" {
 		return
 	}
-	// EnrolmentOps.Revoke now records the revocation itself, so it can
-	// attach the presence_id the gate minted.
-	revoked, err := ctx.EnrolmentOps.Revoke(ctx.Ctx, msg.ClientID, auditViaIPC, "")
-	if err != nil {
-		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
-		return
-	}
-	ctx.UI.EmitEvent("onEnrolmentRevoked", revoked.ClientID, revoked.Fingerprint)
+	// Off the main thread: EnrolmentOps.Revoke is gated (enrolment.revoke,
+	// §6.4); same reasoning as ipcCreateEnrolment above.
+	ctx.GoFunc(func() {
+		// EnrolmentOps.Revoke now records the revocation itself, so it can
+		// attach the presence_id the gate minted.
+		revoked, err := ctx.EnrolmentOps.Revoke(ctx.Ctx, msg.ClientID, auditViaIPC, "")
+		if err != nil {
+			dispatchEmit(ctx, "onEnrolmentError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onEnrolmentRevoked", revoked.ClientID, revoked.Fingerprint)
+	})
 }
 
 func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {

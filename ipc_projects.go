@@ -41,7 +41,9 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	// Validated before any mutation so a bad policy can't create a project
-	// that then has to be rolled back — mirrors the HTTP POST route.
+	// that then has to be rolled back — mirrors the HTTP POST route. Cheap
+	// and non-blocking, so it stays on the IPC thread rather than paying a
+	// GoFunc/DispatchToMain round trip for the common "bad input" case.
 	if msg.PermissionPolicy != nil {
 		if err := validatePermissionPolicy(msg.PermissionPolicy); err != nil {
 			ctx.UI.EmitEvent("onProjectError", err.Error())
@@ -49,19 +51,28 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		}
 	}
 
-	created, createErr := ctx.ProjectOps.Create(ctx.Ctx, *msg, mcpSurfacesFrom(ctx), auditViaIPC, "")
-	if createErr != nil {
-		ctx.UI.EmitEvent("onProjectError", createErr.Error())
-		return
-	}
+	surfaces := mcpSurfacesFrom(ctx)
+	// Off the main thread: ProjectOps.Create is gated (project.grant, §6.4
+	// of the ADR-017 implementation spec) whenever the request sets a
+	// grant-widening field, and Gate.Require blocks on LocalAuthentication's
+	// async completion handler, which needs the Cocoa run loop pumped to be
+	// delivered — the same deadlock showLoginCode's doc comment in
+	// trayapp.go describes.
+	ctx.GoFunc(func() {
+		created, createErr := ctx.ProjectOps.Create(ctx.Ctx, *msg, surfaces, auditViaIPC, "")
+		if createErr != nil {
+			dispatchEmit(ctx, "onProjectError", createErr.Error())
+			return
+		}
 
-	if ctx.SkillLister != nil && created.GenerateSkill {
-		ctx.GoFunc(func() {
-			reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, created)
-		})
-	}
+		if ctx.SkillLister != nil && created.GenerateSkill {
+			ctx.GoFunc(func() {
+				reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, created)
+			})
+		}
 
-	ctx.UI.EmitEvent("onProjectAdded", marshalForUI(projectToNativeView(created)))
+		dispatchEmit(ctx, "onProjectAdded", marshalForUI(projectToNativeView(created)))
+	})
 }
 
 func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
@@ -75,28 +86,34 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 	}
-	// Shape/grant validation (including path) happens inside
-	// applyProjectUpdate against the fully-merged candidate — mirrors the
-	// HTTP PUT route.
-	updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
-		return mcpSurfacesFrom(ctx)
-	}, auditViaIPC, "")
-	if updateErr != nil {
-		ctx.UI.EmitEvent("onProjectError", updateErr.Error())
-		return
-	}
-	if !found {
-		ctx.UI.EmitEvent("onProjectError", "project not found")
-		return
-	}
+	// Off the main thread: ProjectOps.Update is gated (project.grant, §6.4)
+	// whenever the patch widens the grant, and Gate.Require blocks on the
+	// same async LocalAuthentication completion the Cocoa run loop must
+	// pump — see ipcCreateProject just above.
+	ctx.GoFunc(func() {
+		// Shape/grant validation (including path) happens inside
+		// applyProjectUpdate against the fully-merged candidate — mirrors
+		// the HTTP PUT route.
+		updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
+			return mcpSurfacesFrom(ctx)
+		}, auditViaIPC, "")
+		if updateErr != nil {
+			dispatchEmit(ctx, "onProjectError", updateErr.Error())
+			return
+		}
+		if !found {
+			dispatchEmit(ctx, "onProjectError", "project not found")
+			return
+		}
 
-	if ctx.SkillLister != nil && updated.GenerateSkill {
-		ctx.GoFunc(func() {
-			reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, updated)
-		})
-	}
+		if ctx.SkillLister != nil && updated.GenerateSkill {
+			ctx.GoFunc(func() {
+				reconcileProjectSkill(ctx.Ctx, ctx.SkillLister, updated)
+			})
+		}
 
-	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(projectToNativeView(updated)))
+		dispatchEmit(ctx, "onProjectUpdated", marshalForUI(projectToNativeView(updated)))
+	})
 }
 
 func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
@@ -142,21 +159,26 @@ func ipcRotateProjectToken(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	// ProjectOps.RotateToken records the rotation itself (so it can attach
-	// the presence_id the gate minted) and withholds the new plaintext when
-	// that record cannot be written — rotate again once the log is
-	// writable.
-	newPlaintext, found, err := ctx.ProjectOps.RotateToken(ctx.Ctx, msg.ID, auditViaIPC, "")
-	if err != nil {
-		ctx.UI.EmitEvent("onProjectError", err.Error())
-		return
-	}
-	if !found {
-		ctx.UI.EmitEvent("onProjectError", "project not found")
-		return
-	}
+	// Off the main thread: RotateToken is gated (project.rotate_token,
+	// §6.4) and Gate.Require blocks on the same async LocalAuthentication
+	// completion the Cocoa run loop must pump — see ipcCreateProject above.
+	ctx.GoFunc(func() {
+		// ProjectOps.RotateToken records the rotation itself (so it can
+		// attach the presence_id the gate minted) and withholds the new
+		// plaintext when that record cannot be written — rotate again once
+		// the log is writable.
+		newPlaintext, found, err := ctx.ProjectOps.RotateToken(ctx.Ctx, msg.ID, auditViaIPC, "")
+		if err != nil {
+			dispatchEmit(ctx, "onProjectError", err.Error())
+			return
+		}
+		if !found {
+			dispatchEmit(ctx, "onProjectError", "project not found")
+			return
+		}
 
-	ctx.UI.EmitEvent("onProjectTokenRotated", msg.ID, newPlaintext)
+		dispatchEmit(ctx, "onProjectTokenRotated", msg.ID, newPlaintext)
+	})
 }
 
 // ipcRegenProjectSkill forces regeneration regardless of the GenerateSkill

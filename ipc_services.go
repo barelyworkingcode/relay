@@ -23,21 +23,32 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
+	fields := msg.fields()
 
-	created, err := ctx.Ops.Create(ctx.Ctx, msg.fields(), auditViaIPC, "")
-	// Only errServiceProcess means the record landed; every other error means
-	// nothing was persisted, and announcing a row for it would add a blank
-	// service to the list.
-	if err != nil && !errors.Is(err, errServiceProcess) {
-		ctx.UI.EmitEvent("onSettingsError", err.Error())
-		return
-	}
-	if err != nil {
-		ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but %v", err))
-	}
-
-	ctx.UpdateMenu()
-	ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeView(created)))
+	// Off the main thread: ServiceOps.Create is gated (service.register,
+	// §6.4 of the ADR-017 implementation spec), and Gate.Require blocks on
+	// LocalAuthentication's async completion handler, which needs the
+	// Cocoa run loop pumped to be delivered — the same deadlock
+	// showLoginCode's doc comment in trayapp.go describes. ipcUpdateService
+	// just below already runs off-thread for an unrelated reason; this
+	// keeps the two consistent.
+	ctx.GoFunc(func() {
+		created, err := ctx.Ops.Create(ctx.Ctx, fields, auditViaIPC, "")
+		// Only errServiceProcess means the record landed; every other error
+		// means nothing was persisted, and announcing a row for it would add
+		// a blank service to the list.
+		if err != nil && !errors.Is(err, errServiceProcess) {
+			dispatchEmit(ctx, "onSettingsError", err.Error())
+			return
+		}
+		ctx.Platform.DispatchToMain(func() {
+			if err != nil {
+				ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but %v", err))
+			}
+			ctx.UpdateMenu()
+			ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeView(created)))
+		})
+	})
 }
 
 func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
