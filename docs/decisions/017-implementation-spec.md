@@ -879,7 +879,7 @@ an argument to an operation without adding it here is a hole.
 | `service.register` | `ServiceOps.Create` / `Update` | `id`, `display_name`, `command`, `working_dir`, `url` (strings), `args` (sequence), `env` (map), `autostart` (bool), `frontend_consumer` (bool, absent-aware) |
 | `service.unregister` | `ServiceOps.Remove` | `id` (string) |
 | `project.rotate_token` | `ProjectOps.RotateToken` | `project_id` (string) |
-| `project.grant` | `ProjectOps.Create` / `Update` | `project_id` (string, absent on create), `allowed_mcp_ids` (set, absent-aware), `allowed_tools` (map of set, absent-aware), `access` (map, absent-aware), `context` (map of raw JSON, absent-aware), `allow_cwd_auth` (bool, absent-aware), `kind` (string), `path` (string) |
+| `project.grant` | `ProjectOps.Create` / `Update` | `project_id` (string, absent on create), `allowed_mcp_ids` (set, absent-aware), `allowed_tools` (map of set, absent-aware), `access` (map, absent-aware), `context` (map of raw JSON, absent-aware), `allow_external` (map of bool, absent-aware), `allow_cwd_auth` (bool, absent-aware), `kind` (string), `path` (string) |
 | `sealed.reset` | tray only | `settings_key_id`, `keychain_key_id` (strings, either may be absent) |
 
 Notes on the boundaries of that table, each of which is a decision:
@@ -896,7 +896,10 @@ Notes on the boundaries of that table, each of which is a decision:
   `allowed_models` or `shell_templates` is **not** gated — those do not widen the
   grant. `allow_cwd_auth` is in the gated set on its own line because turning it
   on hands the project's whole tool set to any process standing in the directory,
-  with no token at all.
+  with no token at all. `allow_external` (ADR-011 decision 2c) is gated on the
+  same footing as `allowed_tools`: an agent holding a project token whose
+  project it can edit does not need to mint anything to reach outbound, it
+  widens the grant it already has.
 - **`disabled_tools`** is not gated: it is a denylist and can only narrow.
 - **The `proxy` catch-all is not gated** and stays a named hole (§2).
 - **`service.restart` is not gated.** It changes no settings; it restarts what
@@ -1831,9 +1834,9 @@ method with `errPresenceGateNotWired`. *Fails if* any allows.
 only `name`, `chat_templates`, `session_folders`, `generate_skill`,
 `permission_policy`, `allowed_models` or `shell_templates` does **not** prompt. A
 project update setting any of `allowed_mcp_ids`, `allowed_tools`, `access`,
-`context`, `allow_cwd_auth`, `kind` or `path` **does**. *Fails if* either
-direction is wrong. `allow_cwd_auth` gets its own case: turning it on must
-prompt, in both the HTTP and the IPC door.
+`context`, `allow_external`, `allow_cwd_auth`, `kind` or `path` **does**. *Fails
+if* either direction is wrong. `allow_cwd_auth` gets its own case: turning it on
+must prompt, in both the HTTP and the IPC door.
 
 **AC-16d — `proxy` is not gated.** A request through the `/` catch-all raises no
 prompt. *Fails if* it does — the hole is deliberate and a gate there is a

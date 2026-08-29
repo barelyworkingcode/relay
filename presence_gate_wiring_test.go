@@ -355,6 +355,30 @@ func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 	}
 }
 
+// TestProjectOps_AllowExternalTurningOnIsGated is AC-16c's argument
+// extended to allow_external (ADR-011 decision 2c): it is the same
+// widening act as allowed_tools or allow_cwd_auth turning on — an agent
+// holding a project token whose project it can edit does not need to mint
+// anything to reach outbound, it just widens the grant it already has —
+// so it must be refused the same way.
+func TestProjectOps_AllowExternalTurningOnIsGated(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := mkStoreProject(t, store, ProjectKindLocal, "external-project", t.TempDir())
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	external := map[string]bool{"macmcp": true}
+	_, _, err = ops.Update(context.Background(), proj.ID, projectUpdateFields{AllowExternal: &external}, func() McpSurfaces { return nil }, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("turning on allow_external: err = %v, want presence.ErrRefused", err)
+	}
+	if store.Get().Projects[0].AllowExternal["macmcp"] {
+		t.Fatal("allow_external was set despite the gate refusing")
+	}
+}
+
 // TestCredentialOps_DigestBindsNameClassesAndTTL is AC-22d's argument for
 // credential.mint specifically: changing any digested field must move the
 // digest, so a grant answered for one mint cannot be redeemed for another.

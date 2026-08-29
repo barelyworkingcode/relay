@@ -142,6 +142,27 @@ func (b *DigestBuilder) StringMapField(name string, present bool, values map[str
 	return b.appendField(name, present, buf.Bytes())
 }
 
+// BoolMapField records a map of string to bool (allow_external: an MCP id
+// to whether it may reach outside the host). Keys are sorted, the same
+// element-boundary discipline every other collection kind here follows, so
+// the digest does not depend on Go's randomised map iteration order and so
+// a key that happens to look like an encoded bool cannot be crafted to
+// collide with a different map.
+func (b *DigestBuilder) BoolMapField(name string, present bool, values map[string]bool) *DigestBuilder {
+	keys := sortedKeysOf(values)
+	var buf bytes.Buffer
+	putUvarint(&buf, uint64(len(keys)))
+	for _, k := range keys {
+		putString(&buf, k)
+		val := byte(0x00)
+		if values[k] {
+			val = 0x01
+		}
+		buf.WriteByte(val)
+	}
+	return b.appendField(name, present, buf.Bytes())
+}
+
 // StringSetMapField records a map of string to a set of strings
 // (allowed_tools: an MCP id to its allowed tool-name patterns).
 func (b *DigestBuilder) StringSetMapField(name string, present bool, values map[string][]string) *DigestBuilder {
