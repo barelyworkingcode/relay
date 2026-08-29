@@ -91,14 +91,11 @@ subcommand keep working over SSH exactly as they do today.
 **The determination must rest on something the caller cannot fake.** `SSH_TTY`
 and `SSH_CONNECTION` are environment variables belonging to the caller and are
 worthless as a security signal — a rogue agent unsets them. Relay must never
-read them. §6.6 specifies the mechanism — the **peer's** kernel-supplied audit
-session — and the fallback.
-
-**And it must not be sold as more than it is.** The check answers "can this
-process display UI?", not "did this come from SSH?" — `open -a` from an SSH shell
-launches into the console session and passes it. The refusal is honesty and
-prompt-spam reduction; the security boundary is the password inside the prompt.
-§6.6.2.
+read them. §6.6 specifies the mechanism: the **peer's** kernel-supplied audit
+session. Named limitation, not designed around — `open -a` from an SSH shell
+launches into the console session and passes the check, so it is honesty and
+prompt-spam reduction rather than a boundary; the boundary is the password inside
+the prompt.
 
 ### 3.3 Break-glass: GUI-only reset, detect the mismatch
 
@@ -594,20 +591,11 @@ the ACL is satisfied by exactly the process the ADR is defending against.
 
 Store the item with no trusted-application list. The tray then gets one keychain
 consent dialog on first unlock per login session and the operator ticks *Always
-Allow*, which installs the same ACL by hand. Ergonomics are worse by one click
-per login; the security property is unchanged. **Do not fall back to storing the
-key in a file.**
-
-#### 5.3.5 The consent dialog is stronger than ADR-017 assumed
-
-Measured: the keychain consent dialog **requires the login password even to click
-Allow** — clicking Allow with an empty password was rejected, and Deny returned
-`-128`. So decision 4's ACL-fallback arm is a password boundary, not merely a
-click boundary. This does **not** change decision 4's requirement that the
-*gate* use LocalAuthentication: the two dialogs are answered in different places,
-the consent dialog governs decryption rather than the operation, and a design
-that satisfied the gate with a consent dialog would still be gating the wrong
-act. Record the finding; change nothing because of it.
+Allow*, which installs the same ACL by hand — and that dialog was measured to
+require the login password even to click Allow, so decision 4's ACL-fallback arm
+is a password boundary rather than merely a click boundary. Ergonomics are worse
+by one click per login; the security property is unchanged. **Do not fall back to
+storing the key in a file.**
 
 ### 5.4 Wiring into `FileSettingsStore`
 
@@ -655,48 +643,28 @@ reaching disk in the clear. This is acceptance criterion **AC-4**.
   combination. Degraded state (§5.6), named.
 - **No key, `sealed_key_id` present:** degraded state. **Never create one.**
 
-#### 5.5.1 Key substitution, and why "never silently create a key" is the single most important line in this spec
+#### 5.5.1 Never generate a replacement key
 
-**Measured: the ACL protects reading only.** An untrusted binary, running over
-SSH, ran `security delete-generic-password` against the Relay-only-ACL item and
-**deleted it silently, with no prompt**. Deletion is not itself the attack —
-ADR-017 decision 5 concedes `rm`, and losing the key is denial of service.
+The ACL protects reading, not deletion: any local process can delete the keychain
+item. Deletion is denial of service and is conceded. **Substitution is not**: if
+relay's answer to "the key I expected is gone" were to create a new one, an
+attacker could plant their own key and have relay re-seal every secret under it.
 
-**Substitution is the attack.** The attacker deletes relay's key, plants their
-own under the same service and account name, and waits. If relay's response to
-"the key I expected is gone" is to helpfully create a new one — or to adopt
-whatever key it now finds — it re-seals every secret under the attacker's key on
-the next write, and the attacker reads the whole store.
+Two rules close that, and both fall out of the key-id design decision 3 already
+requires:
 
-The owner's break-glass decision already defends this. This spec makes the
-defence explicit rather than incidental, and every clause is a requirement:
+1. **A missing or mismatched key is a loud, named refusal (§5.6). Relay never
+   generates a replacement and never adopts a key whose id is not the one
+   `settings.json` names.** There is no flag, prompt or affordance that accepts
+   one. Re-keying is the break-glass reset of §5.6 clause 5 and nothing else.
+2. **The key id is part of the AEAD's associated data.** §4.6's AAD becomes
+   `"relay-settings-v1\x00" + keyID + "\x00" + <field path>`, so a value cannot
+   be opened under a substituted key, and an envelope's `key` field cannot be
+   edited independently of its ciphertext.
 
-1. **A missing key where `settings.json` carries a `sealed_key_id` is a named,
-   loud refusal. Relay never generates a replacement.** An implementation that
-   creates a key when it cannot find one has handed the attacker the store. If
-   one line of this document survives review, it is this one.
-2. **A key-id mismatch is equally loud and refuses every sealed operation**,
-   while relay still starts and still serves the read half (§5.6).
-3. **The key id is part of the AEAD's associated data.** The AAD of §4.6 becomes
-   `"relay-settings-v1\x00" + keyID + "\x00" + <field path>`. So a sealed value
-   cannot be decrypted under a substituted key without the tag failing, and the
-   per-envelope `key` field cannot be edited independently of the ciphertext —
-   editing it changes the AAD and the open fails. The top-level `sealed_key_id`
-   is unsealed on purpose (decision 3 requires an operator to be able to read
-   it); editing it alone only changes which of §5.6's named messages the operator
-   sees, and never causes a wrong key to be used.
-4. **No adoption, ever.** There is no path — no flag, no env var, no prompt, no
-   "the key changed, re-seal?" affordance — by which relay accepts a key whose id
-   is not the one `settings.json` names. Re-keying is the break-glass reset of
-   §5.6 clause 5 and nothing else.
-
-**The trade, stated:** this downgrades key substitution to denial of service. An
-attacker who can write the login keychain can stop relay from unsealing; they
-cannot make relay re-seal for them. Denial of service is already an accepted
-residual risk (ADR-017 decision 5: "Destroy things. Revocation is gated; `rm` is
-not."), so the trade is inside the model rather than a new exposure.
-
-Acceptance criteria **AC-25e** and **AC-25f** measure both halves.
+**AC-25e** and **AC-25f** are the whole test surface for this. Build no other
+integrity machinery: no key rotation ceremony, no attestation, no tamper
+monitoring.
 
 ### 5.6 The degraded state: sealed store unavailable
 
@@ -1008,30 +976,20 @@ it must be approving the same act the gate is binding.
 a consent dialog is answered by clicking Allow. The consent dialog is the ACL's
 decryption fallback (§5.3) and nothing more; it governs decryption rather than
 the operation. Any implementation that satisfies the *gate* with a keychain
-prompt has not implemented decision 4 — even though §5.3.5 measured that dialog
+prompt has not implemented decision 4 — even though §5.3.4 notes that dialog
 to be stronger than ADR-017 assumed.
 
 ### 6.6 Refusing a caller that cannot be prompted
 
-**Correcting an earlier draft of this spec, and an easy wrong turn.** It is
-tempting to reason that under brokering the process that prompts is always the
-tray, so the tray need only consult its own session. The premise is right — the
-caller's environment must never enter the decision — but the conclusion is
-false: **the tray is always in the Aqua session with graphic access**, so a tray
-that consults itself always believes it can prompt.
+The owner chose refuse-over-SSH (§3.2), so this is core functionality, not
+hardening. **LocalAuthentication does not refuse a remote caller** — measured, an
+SSH-launched binary raised a live password prompt onto the physical console and
+blocked there. The refusal has to be built.
 
-Measured: an SSH-launched binary raised a live LocalAuthentication password
-prompt **onto the physical console** and blocked there. **LocalAuthentication
-does not refuse a remote caller.** The refusal must be built.
-
-That is worse than a bad error message. An SSH-capable attacker could otherwise
-raise unlimited prompts at whoever is sitting at the machine, under any app name
-it chooses (§8.1), which is exactly the prompt-spam ADR-017 decision 7 refuses.
-
-#### 6.6.1 The mechanism: the peer's audit session, from the kernel
-
-The tray asks about the **peer**, and the answer comes from the kernel rather
-than from the peer. Measured end to end, unprivileged:
+**Do not build it by asking the tray about its own session.** The tray is always
+in Aqua with graphic access, so it would always believe it can prompt and the
+check would fail open. Ask about the **peer**, and take the answer from the
+kernel:
 
 ```
 getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &audit_token_t, &len)
@@ -1040,61 +998,36 @@ getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &audit_token_t, &len)
   -> ai_flags & AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS
 ```
 
-| origin | measured |
-|---|---|
-| over SSH | `asid=100211, graphic=0, remote=1` |
-| in Aqua | `asid=100002, graphic=1, remote=0` |
+Measured: over SSH `asid=100211, graphic=0`; in Aqua `asid=100002, graphic=1`.
+Unprivileged, and unforgeable — `setaudit_addr` to set the bit or join another
+session returns EPERM for uid 501, and `sudo` inherits the audit session.
+`SSH_TTY` / `SSH_CONNECTION` belong to the caller and must not appear anywhere
+(**AC-19**).
 
-**Forgery failed, which is the property that matters.** `setaudit_addr` to set
-the graphic bit, and to join a fabricated session, both returned **EPERM** for
-uid 501. `sudo` does not help: it inherits the audit session.
+Keep it small: one darwin-only helper, `presence/session_darwin.go`, with a
+`!darwin` stub reporting "not determinable". Resolve it **once per connection**
+where `bridge.PeerPID` already is (`bridge/server.go`'s `handleConn`) and carry
+it on the context.
 
-`SSH_TTY` and `SSH_CONNECTION` must not appear anywhere in the implementation —
-they belong to the caller. **AC-19** greps for them and it is still exactly the
-right test.
-
-Wiring: resolve the peer's session **once per connection**, in the same place
-`bridge.PeerPID` is already resolved (`bridge/server.go`'s `handleConn`), and
-carry it on the context as `bridge.WithCallerSession`. The gate reads it:
+The gate reads it:
 
 | what the gate finds on the context | behaviour |
 |---|---|
 | session present, `graphic = 1` | prompt |
-| session present, `graphic = 0` | refuse with the §6.6.3 text; **do not prompt** |
-| **no session on the context at all** | prompt |
+| session present, `graphic = 0` | refuse with the text below, **without calling the provider** |
+| no session on the context at all | prompt |
 
-The third row covers the doors where there is no peer to ask about: the WebView
-IPC (in-process — it *is* the tray), the tray menu, and HTTP over the loopback
-TCP listener. The frontend HTTP socket is a Unix socket and does have a peer, so
-it gets the same treatment as the bridge. Prompting where the origin is not
-determinable is the right default: those doors are all either the tray itself or
-a browser whose user is at the screen by construction.
+The third row covers the doors with no peer to ask about: the WebView IPC (it
+*is* the tray), the tray menu, and HTTP on the loopback TCP mux. The frontend
+HTTP socket is a Unix socket and does have a peer, so it behaves like the bridge.
 
-#### 6.6.2 What this check is for, and what it is not
+**Named limitation, not designed around:** `open -a <bundle>` from an SSH shell
+launches into the console session and reports `graphic=1`, so this check answers
+"can this process display UI?" and not "did this come from SSH?". It is honesty
+and prompt-spam reduction; the boundary is the password inside the prompt. Say
+that once in `docs/presence-gate.md` and stop.
 
-**`open -a <bundle>` from an SSH shell launches a payload into the console Aqua
-session**, where it reports `graphic=1, remote=0` and is indistinguishable from a
-console-launched process. No root needed; an ad-hoc signature is sufficient.
-
-So the check soundly answers **"can this process display UI?"** and does **not**
-answer "did this request come from SSH?" or "is a human at the console?".
-
-**Spec it, build it, and document it as honesty and prompt-spam reduction — not
-as a security boundary.** The security boundary is the password inside the
-presence prompt. Write `docs/presence-gate.md` that way so that nobody later
-leans on the graphic-access bit as though it were an authorization input; it is
-a usability and anti-nuisance control that happens to be unforgeable.
-
-#### 6.6.3 The refusal
-
-The gate maps outcomes as follows:
-
-| result | gate behaviour |
-|---|---|
-| provider returns nil | proceed |
-| `LAErrorUserCancel` (`-2`) | refuse: `presence was refused` |
-| peer session has no graphic access | refuse with the text below, **without calling the provider at all** |
-| any other `LAError` | refuse, naming the numeric code |
+The refusal, shared by every gated operation:
 
 ```
 refused: this needs your confirmation on the Mac's screen, and the session this
@@ -1104,16 +1037,6 @@ refused: this needs your confirmation on the Mac's screen, and the session this
   Settings window.
   Read commands are unaffected: relay audit, relay grant, and every `list`.
 ```
-
-**Fallback, if `LOCAL_PEERTOKEN` or `A_GETSINFO_ADDR` ever stops working:** the
-gate stops consulting the session, calls `evaluatePolicy` and reports whatever
-the OS returns. Relay then never asks the question at all; it asks for presence
-and reports the answer. The cost is that a remote caller can raise a prompt on
-the console — the nuisance this section exists to prevent — while the security
-property is unchanged, because the refusal is still driven by the OS's answer and
-never by a signal the caller supplied. Write the provider so that swapping the
-mechanism is a change inside `presence/session_darwin.go` and nothing above it
-moves.
 
 ### 6.7 Structural unavoidability, and how it is proven
 
@@ -1377,6 +1300,7 @@ justification. **Follow-on, not this work.**
 `Project`, **including its plaintext `Token`**, to any holder of a service token.
 `ResolveProjectTemplate`'s own comment already asserts that "`ResolvePtyEnv` is
 the sole plaintext-token egress over the bridge" — it is not, and has not been.
+This is **issue #64**: a live leak, not a hypothetical.
 
 With `Secret` typed, `json.Marshal(proj)` stops compiling-through and starts
 erroring at runtime (§4.4), so this cannot be left alone. Fix: give both a
@@ -1415,59 +1339,19 @@ under this ADR.
   such a process can *become*: an agent with a mailbox cannot turn itself into an
   agent with a certificate.
 
-### 8.1 Residual risks this design does not close
+### 8.1 Two residual risks, recorded and not solved here
 
-ADR-017 has a "what an attacker can still do after all of this" section. Two
-entries must be added to it, both measured, and **neither is to be solved in this
-work.**
-
-**The presence prompt is impersonable, and this strengthens ADR-017's "wait for
-a prompt the owner is about to answer anyway" considerably.** Measured: an ad-hoc
-binary renamed `Relay` produced a dialog reading "**Relay** — Relay is trying to
-unseal the Relay credential store", pixel-identical to a genuine one. The name in
-the dialog comes from the process name, or from `CFBundleDisplayName` for a
-bundle — **never from the code signature**. No team id, no bundle id and no
-verified-developer marker appears anywhere in the dialog. So an
+**The presence prompt is impersonable** — the name in the dialog comes from the
+process name (or `CFBundleDisplayName`), never from the code signature, so an
 Accessibility-capable attacker on a developer machine can phish the login
-password with a convincing fake prompt, and a password once learned answers every
-real prompt thereafter.
+password with a convincing fake. Tracked as **issue #65** and explicitly not
+solved by this work. The only requirement it places on this spec is negative and
+is stated as **NC-7**: no document, comment, prompt string or UI copy may claim a
+user can tell a genuine Relay prompt from a fake one.
 
-Three requirements follow, and they are all about what the spec and the product
-may *say*:
-
-- **No document, comment, prompt string or UI copy produced by this work may
-  promise the user that they can tell a genuine Relay prompt from a fake one.**
-  They cannot. If such language appears in review, it is a defect.
-- Record the risk in `docs/presence-gate.md` beside ADR-017's existing
-  prompt-timing risk, which it subsumes and worsens: the attacker no longer has
-  to wait for the owner to be mid-enrolment; it can manufacture the moment.
-- **Do not design a mitigation.** It is a follow-on the coordinator is raising
-  with the owner separately.
-
-A related measurement that cuts the other way and is worth recording: synthetic
-`CGEvent` clicks and keystrokes **do** reach the LocalAuthentication password
-field — secure input blocks *reading*, not *writing* — so an attacker can drive
-the dialog. It still cannot answer it without the password. **ADR-017 decision
-4's framing survives intact**: "a LocalAuthentication prompt requiring the login
-password or biometry cannot be answered by something that does not know the
-secret, whatever it can click" is exactly what was measured. The genuinely new
-finding is impersonation, not clickability.
-
-**The sealing key can be deleted by any local process.** §5.5.1. Substitution is
-defended; deletion is denial of service and is already conceded by decision 5.
-
-### 8.2 Environment caveat: this VM is not a production Mac
-
-**SIP is disabled on this machine, and an unsigned binary executed here
-successfully.** Every measurement in this document was taken in that environment.
-
-Any acceptance criterion that rests on **signature enforcement** is therefore
-measuring something weaker here than it would on a production Mac, and must be
-re-measured on a SIP-enabled machine before anyone treats its result as a
-security property. Those criteria are flagged in place: **AC-24**, **AC-24b**,
-and the `-25308` rows of §5.3.2. Criteria resting on the *kernel* audit session
-(**AC-19b**) and on the *keychain ACL matching logic* are not affected by SIP,
-but the ease with which an attacker gets a binary running at all is.
+**The sealing key can be deleted by any local process**, which is denial of
+service and is already conceded by ADR-017 decision 5. Substitution is defended
+by §5.5.1 and needs nothing further.
 
 ---
 
@@ -1562,7 +1446,7 @@ to do the env work now rather than against populated envs later.
 | `presence/digest.go` | the §6.3 length-prefixed encoder |
 | `presence/localauth_darwin.go` | cgo LocalAuthentication provider; numeric `LAError` handling (§6.5) |
 | `presence/localauth_other.go` | `//go:build !darwin` stub |
-| `presence/session_darwin.go` | cgo `LOCAL_PEERTOKEN` → `audit_token_to_asid` → `auditon(A_GETSINFO_ADDR)` → graphic-access bit (§6.6.1) |
+| `presence/session_darwin.go` | cgo `LOCAL_PEERTOKEN` → `audit_token_to_asid` → `auditon(A_GETSINFO_ADDR)` → graphic-access bit (§6.6) |
 | `presence/session_other.go` | `//go:build !darwin` stub; reports "not determinable" |
 | `presence/presencetest/presencetest.go` | `Allow`, `Deny`, `NoSession`, recording fake; `init()` panics unless `testing.Testing()` |
 | `presence/presence_test.go`, `presence/digest_test.go` | nonce single-use/expiry/op-binding/digest-binding; digest determinism, absent-vs-empty, separator-injection resistance |
@@ -1601,12 +1485,12 @@ to do the env work now rather than against populated envs later.
 | `audit.go`, `audit_issuance.go` | `PresenceID`; `config_change` event; `requireIssuanceAuditor` |
 | `skills.go` | `proj.Token` → `proj.Token.Reveal()` |
 | `service_registry.go`, `external_mcp.go` | reveal env values at the point of spawn (§4.3) |
-| `bridge/server.go`, `bridge/types.go` | resolve the peer's audit session once per connection beside `PeerPID`; `WithCallerSession` (§6.6.1) |
+| `bridge/server.go`, `bridge/types.go` | resolve the peer's audit session once per connection beside `PeerPID`; `WithCallerSession` (§6.6) |
 | `CLAUDE.md` | the CLI table: which commands need the service; the SSH withdrawal; sealed config |
 | `docs/tokens.md` | the plaintext inventory becomes a sealed inventory; the one-writer section; the SSH withdrawal; a pointer to `docs/sealed-config.md` |
 | `docs/audit-log.md` | `config_change`, `presence_id`, issuance as a hard dependency |
 | `docs/decisions/016-…md` | a "superseded in part" note on decision 2's SSH affordance |
-| `docs/testing-roadmap.md` | the named gaps: `proxy`, no real Secure Enclave, no headless bootstrap, prompt impersonation, and every SIP-dependent criterion (§8.2) |
+| `docs/testing-roadmap.md` | the named gaps: `proxy`, no real Secure Enclave, no headless bootstrap, prompt impersonation (issue #65), and AC-24's SIP caveat |
 
 ### 10.3 Comments — what earns its place here
 
@@ -1682,7 +1566,7 @@ Blocks S4. *Small. One developer.*
 
 **S1 — the `presence` package.** `Provider`, `Gate`, `Grant`, `Digest`, the
 length-prefixed encoder, `GatedOps`, the darwin provider with §6.5.1's numeric
-error handling, the peer-session probe of §6.6.1, both `!darwin` stubs,
+error handling, the peer-session probe of §6.6, both `!darwin` stubs,
 `presencetest`, and the seam guard tests (**AC-17/18/19**). Wired into nothing.
 *Parallel with S2 and S3. The session probe and the LA provider are separable and
 can be two developers.*
@@ -1986,7 +1870,7 @@ concatenation would collide produce different digests.
 keychain-consent path reachable from `Gate.Require`, and the darwin provider
 calls `evaluatePolicy` with `LAPolicyDeviceOwnerAuthentication`. *Fails if* the
 gate is satisfied by anything that governs decryption rather than the operation.
-(§5.3.5 measured that the consent dialog also demands the password, which makes
+(§5.3.4 notes that the consent dialog also demands the password, which makes
 the ACL arm stronger than ADR-017 assumed — it does not make it an acceptable
 substitute for the gate, because it gates the wrong act.)
 
@@ -1996,30 +1880,20 @@ operation's `localizedReason` is a lowercase verb phrase that reads correctly in
 covers. *Fails if* any is capitalised, is a sentence, or is generic
 ("make a change", "continue").
 
-**AC-23c — Nothing claims the prompt is verifiable.** A grep of the new documents,
-comments, prompt strings and UI copy finds no claim that a user can distinguish a
-genuine Relay prompt from a fake one. *Fails on a hit* (§8.1, NC-7).
+**AC-24 — The ACL degrades in the safe direction (manual, `-tags=live`).**
+Re-sign `/Applications/Relay.app` ad-hoc and read the item: measured, this
+returns `-25308` where no interaction is possible and the keychain's own consent
+dialog where it is. A build with a different cdhash but the same team and bundle
+identifier still unlocks silently — the ACL is identity-bound, not path-bound,
+which is why AC-29 is not optional. *Fails if* the unlock stays silent for a
+different identity, or if relay fails open. *(SIP is disabled on this VM and an
+unsigned binary runs here, so this criterion measures something weaker than it
+would on a production Mac; re-measure before treating it as a security
+property.)*
 
-**AC-24 — The ACL degrades in the safe direction (manual, `-tags=live`).
-⚠ SIP-dependent — re-measure on a production Mac before treating the result as a
-security property (§8.2).** Re-sign `/Applications/Relay.app` ad-hoc, then read
-the item: measured, this returns `-25308` where no interaction is possible and
-the keychain's own consent dialog where it is. *Fails if* the unlock stays silent
-(the ACL was pinned to something forgeable), or if relay fails open and the
-sealed values become readable without either.
-
-**AC-24b — No dev-mode ACL relaxation exists. ⚠ SIP-dependent (§8.2).** A grep of
-non-test sources and `build.sh` finds no branch that weakens the ACL for an
-unsigned or ad-hoc build. *Fails on a hit.* The bundle is Developer ID signed
-(§9.2) and the ACL survives every rebuild under that identity (§5.3.2), so the
-problem such a branch would solve does not exist here.
-
-**AC-24c — The ACL is identity-bound, and the spec says so.** A build with a
-different cdhash but the same team and bundle identifier unlocks silently; a
-build with the same team and a different identifier does not. *Fails if* the
-implementation or its document claims the ACL is bound to
-`/Applications/Relay.app` — it is not, and believing otherwise is what makes
-AC-29 look optional.
+**AC-24b — No dev-mode ACL relaxation exists.** A grep of non-test sources and
+`build.sh` finds no branch that weakens the ACL for an unsigned or ad-hoc build.
+*Fails on a hit.*
 
 **AC-29 — No CLI code path can reach the keychain. ⚠ This is the criterion that
 makes §5.3.3 real.** A `go/ast` call-graph walk from every CLI entry point
@@ -2037,45 +1911,33 @@ not a check that could be inverted.
 **AC-19 — Relay never reads the caller's environment for this.** A grep of all
 non-test sources finds no `SSH_TTY` and no `SSH_CONNECTION`. *Fails on a hit.*
 
-**AC-19b — The determination comes from the kernel, about the peer.** With a
-bridge peer whose audit session reports `AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS`
-clear, every gated operation refuses within milliseconds with the §6.6.3 text,
-**and the presence provider is never called** (asserted with a counting fake).
-*Fails if* it queues, blocks, retries, produces a generic error, or raises a
-prompt. There must be no pending-approval list anywhere in the code.
+**AC-19b — A peer with no graphic access is refused, without a prompt.** Every
+gated operation refuses within milliseconds with the §6.6 text, **and the
+presence provider is never called** (asserted with a counting fake). *Fails if*
+it queues, blocks, retries, or raises a prompt on the console.
 
-**AC-19c — The tray does not consult itself.** A source-level check finds no path
-in which the graphic-access probe is run against relay's own pid or session
-rather than the peer's. *Fails on a hit* — this is the exact wrong turn §6.6
-documents, and it fails open by always believing a prompt is possible.
+**AC-19c — The probe asks about the peer, not about relay.** A source-level check
+finds no path running the graphic-access probe against relay's own pid or
+session. *Fails on a hit* — that is the wrong turn §6.6 documents, and it fails
+open.
 
 **AC-19d — No peer means prompt, not refuse.** A gated operation arriving with no
 caller session on the context (the WebView IPC, the tray menu, the loopback TCP
-listener) prompts. *Fails if* it refuses — that would break the Settings window
-and the browser view for no security gain.
+listener) prompts. *Fails if* it refuses — that breaks the Settings window and
+the browser view for no gain.
 
 **AC-19e — The read half survives.** `relay audit`, `relay grant` and every
 `list` succeed from a peer with no graphic access. *Fails if* any refuses.
 
 **AC-19f — `relay login enrol` refuses from a session with no graphic access.**
-Explicitly, as a named test, because ADR-016 decision 2's affordance is being
-withdrawn on purpose and this test is the record of that. *Fails if* it succeeds.
+A named test, because ADR-016 decision 2's affordance is withdrawn on purpose and
+this is the record of it. *Fails if* it succeeds.
 
-**AC-19g — `canEvaluatePolicy` gates nothing.** A source-level check finds no
-call to `canEvaluatePolicy` used as a pre-flight condition on any code path.
-*Fails on a hit.* It returned YES inside a LaunchDaemon with no session; anything
-built on it is built on a lie.
-
-**AC-19h — Errors are classified numerically.** The provider branches on the
-numeric `LAError` code and never on the message; everything outside
-`{success, -2}` is failure; `-1000` is not special-cased and is not counted
-toward any failed-attempt logic. *Fails if* any string comparison against an
-`LAError` message exists, or if removing the `-1000` case changes behaviour.
-
-**AC-19i — This is not claimed as a boundary.** `docs/presence-gate.md` states
-that the graphic-access check answers "can this process display UI?" and not "did
-this come from SSH?", and names `open -a` as the bypass. *Fails if* the document,
-a comment, or an error string presents it as a security boundary.
+**AC-19g — The provider classifies errors numerically and gates nothing on
+`canEvaluatePolicy`.** No call to `canEvaluatePolicy` is used as a pre-flight
+condition; the provider branches on the numeric `LAError` code and never on the
+message; everything outside `{success, -2}` is failure; removing the `-1000` case
+changes no behaviour. *Fails on any of the four.*
 
 ### Break-glass (decision 3, settled)
 
@@ -2117,11 +1979,6 @@ operations, and never seals or unseals anything with the foreign key — asserte
 by confirming `settings.json` is byte-identical after the run and that no
 envelope carries the foreign id. *Fails if* relay adopts it, re-seals under it,
 or offers any affordance to accept it.
-
-**AC-25g — The key id is bound to the ciphertext.** Editing an envelope's `key`
-field in `settings.json` makes that field fail to open with the "key or file has
-been altered" message, rather than silently opening or reporting a generic parse
-error. *Fails if* the AAD does not include the key id.
 
 ### Issuance auditing as a hard dependency
 
@@ -2181,13 +2038,11 @@ documented recovery.
 **NC-5** `proxy` remains ungated (AC-16d asserts it).
 **NC-6** No `relay run`, no `sandbox-exec` profile, no Secure Enclave code, and
 no `kSecAttrAccessControl` (§5.3.1 — it is unusable, not deferred).
-**NC-7** No mitigation for prompt impersonation (§8.1), and **no language
-anywhere** — document, comment, prompt string or UI copy — promising the user
-they can tell a genuine Relay prompt from a fake one. *A reviewer must reject
-such language on sight.*
+**NC-7** No mitigation for prompt impersonation (§8.1, issue #65), and no
+language anywhere — document, comment, prompt string or UI copy — claiming a user
+can tell a genuine Relay prompt from a fake one.
 **NC-8** No failed-attempt counting, lockout or rate limiting around the presence
-prompt. The OS owns that, and §6.5.1 shows relay cannot reliably tell a wrong
-password from a sessionless failure anyway.
+prompt, and no key-integrity machinery beyond §5.5.1's two rules.
 
 ### End-to-end, against the real machine
 
@@ -2205,7 +2060,7 @@ running from `/Applications/Relay.app`:
    project tokens still resolve, `relay audit` still records the calls.
 5. `relay credential mint --name t --class read` raises exactly one
    login-password prompt and mints; the audit record carries a `presence_id`.
-6. The same command over SSH refuses immediately with the §6.6.3 text and
+6. The same command over SSH refuses immediately with the §6.6 text and
    **raises no prompt on the console**.
 7. Deleting the keychain item and restarting produces AC-25b's named message,
    the read half still works, the tray offers the reset, and **no replacement key
