@@ -198,8 +198,10 @@ one per machine. There is **no bearer token anywhere on this path**: a stolen
 `settings.json` grants no remote access at all.
 
 Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
-persisted as `ca.key` / `ca.crt` (0600) in the config dir — not in
-`settings.json`, which is rewritten in full on every mutation. Client certs are
+persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the
+config dir — not in `settings.json`, which is rewritten in full on every
+mutation. The CA's private key is never written to disk as plaintext; only
+the tray, holding the keychain key, can open it. Client certs are
 long-lived because *revocation, not expiry, is the control*; revoking deletes
 the record and fires `SetEnrolmentRevocationHook` so the listener can close
 live connections.
@@ -308,7 +310,7 @@ The five-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
 the flow end to end, with worked examples:
 [`docs/auth-flow.html`](docs/auth-flow.html); brokering rationale: ADR-007):
 
-- **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Plaintext + SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
+- **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Sealed at rest (ADR-017; `docs/sealed-config.md`) alongside a clear SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
 - **Service token** (`RELAY_SERVICE_TOKEN`) — ephemeral, in-memory, full bridge access; lets a service authenticate its own bridge calls. **Never injected into a spawned child** — if a project token can't be resolved, the child gets no token (fail closed).
 - **Frontend token** (`RELAY_FRONTEND_TOKEN`) — frontend consumers dial `RELAY_FRONTEND_SOCKET` (0600), bearer-checked on every HTTP + WS before dispatch. It is no longer a credential of its own: relay records it as the `legacy-frontend-token` **control-plane credential** on every start, so it reaches exactly `read`+`configure`+`proxy`. Injected only into frontend consumers (`service register --no-frontend-creds` keeps it out of backends).
 - **Control-plane credential** (`settings.json` → `api_credentials`) — the API's authenticator (ADR-015). Names an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; absent means **nothing**, never everything. `frontendCredentialAuth` resolves any bearer to one of these before a handler runs (no credentials at all fails closed), and `RouteRegistrar` then checks the route's class — the first asks "is this anyone?", the second "may they do this?". `execute` and `proxy` routes are absent from the TCP mux entirely, not refused on it. Mint with `relay credential mint --name N --class read [--class …]`; the plaintext is printed **once**. A consumer that needs `grant` — including `POST /api/projects/{id}/rotate_token` — or `execute` over HTTP must mint its own.
@@ -464,16 +466,19 @@ the delete, so the WebView can never revoke an operator's own long-lived
 credential — that stays `relay credential revoke`.
 
 The tray's **Show Login Code...** item is the second presentation ADR-016
-decision 2 allows for the bootstrap anchor. It mints through the same
-`mintBootstrapCode` inside `store.With` the CLI uses (`LoginOps.MintBootstrap`)
-and shows the code in the Settings window, because relay is `LSUIElement` and
-that window is the only surface the tray has. A window that is not open yet
-gets the code seeded into its first paint (`renderSettingsDocument`); one
-already open gets an emit — Cocoa drops a script evaluated against a WebView
-that does not exist yet, and never reloads a window that does. Minting replaces
-rather than accumulates, so the panel says out loud that showing another code
-kills this one. The item is never the *only* source: the menu is unreachable
-over SSH and from the hermetic tier, which is why `relay login enrol` stays.
+decision 2 allows for the bootstrap anchor. It mints through the same gated
+core method `relay login enrol` uses (`LoginOps.MintBootstrap`, ADR-017
+decision 3 — a presence prompt either way) and shows the code in the Settings
+window, because relay is `LSUIElement` and that window is the only surface
+the tray has. A window that is not open yet gets the code seeded into its
+first paint (`renderSettingsDocument`); one already open gets an emit — Cocoa
+drops a script evaluated against a WebView that does not exist yet, and never
+reloads a window that does. Minting replaces rather than accumulates, so the
+panel says out loud that showing another code kills this one. The item is
+never the *only* source: the menu is unreachable from the hermetic tier,
+which is why `relay login enrol` stays as a second door — though both now
+demand the same presence prompt and both refuse identically over SSH, so
+neither reaches a fully headless install (`docs/tokens.md`).
 
 The Projects tab is native and co-equal with Eve's project dialog — both hit the
 same `Settings.*Project*` mutators (relay via `ipc_projects.go`, Eve via
