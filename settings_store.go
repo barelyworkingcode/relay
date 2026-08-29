@@ -49,7 +49,7 @@ func withDeclinable(store SettingsStore, fn func(s *Settings) error) error {
 	}
 	var refusal error
 	saveErr := store.With(func(s *Settings) {
-		before := deepCopySettings(s)
+		before := s.Clone()
 		if refusal = fn(s); refusal != nil {
 			*s = *before
 		}
@@ -301,25 +301,6 @@ func ensureAdminSecret(s *Settings) error {
 	return nil
 }
 
-// deepCopySettings goes through a JSON round-trip rather than a shallow
-// struct copy, deliberately: a shallow copy shares underlying slices and
-// maps and can silently corrupt state across callers. It panics on
-// marshal/unmarshal failure rather than returning an error — Settings is a
-// known JSON-safe struct, so failure here means a programming error (e.g. an
-// unmarshalable field was added), not a runtime condition callers should
-// handle.
-func deepCopySettings(s *Settings) *Settings {
-	data, err := json.Marshal(s)
-	if err != nil {
-		panic(fmt.Sprintf("deepCopySettings: marshal failed (programming error): %v", err))
-	}
-	var cp Settings
-	if err := json.Unmarshal(data, &cp); err != nil {
-		panic(fmt.Sprintf("deepCopySettings: unmarshal failed (programming error): %v", err))
-	}
-	return &cp
-}
-
 // EnsureInitialized creates a settings file that is not there yet. That is its
 // whole job, and a file that exists but cannot be read is not that case: it is
 // refused, loudly, with the file untouched.
@@ -389,7 +370,7 @@ func (ss *FileSettingsStore) Get() *Settings {
 	if ss.cache == nil {
 		ss.cache = ss.load()
 	}
-	return deepCopySettings(ss.cache)
+	return ss.cache.Clone()
 }
 
 func (ss *FileSettingsStore) Reload() *Settings {
@@ -397,7 +378,7 @@ func (ss *FileSettingsStore) Reload() *Settings {
 	defer ss.mu.Unlock()
 	s := ss.load()
 	ss.cache = s
-	return deepCopySettings(s)
+	return s.Clone()
 }
 
 // reloadIfChangedLocked brings the cache in line with the file and reports
@@ -475,7 +456,7 @@ func (ss *FileSettingsStore) ReloadIfChanged() *Settings {
 	if !ss.reloadIfChangedLocked() {
 		return nil
 	}
-	return deepCopySettings(ss.cache)
+	return ss.cache.Clone()
 }
 
 // With mutates a deep copy of the settings as they are ON DISK and updates
@@ -534,7 +515,7 @@ func (ss *FileSettingsStore) WithDeclinable(fn func(s *Settings) error) error {
 		slog.Error("refusing to save settings over a file that could not be read", "error", err)
 		return err
 	}
-	s := deepCopySettings(ss.cache)
+	s := ss.cache.Clone()
 	if err := fn(s); err != nil {
 		return err
 	}
