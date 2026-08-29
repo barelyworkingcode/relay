@@ -10,7 +10,7 @@ import (
 func newProjectsTestStore(t *testing.T) SettingsStore {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -48,7 +48,8 @@ func createTestProject(t *testing.T, store SettingsStore, name, path string, mcp
 func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
-	oldPlain, oldHash := proj.Token, proj.TokenHash
+	oldPlain, _ := proj.Token.Reveal()
+	oldHash := proj.TokenHash
 
 	var newPlain string
 	var ok bool
@@ -66,8 +67,9 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 		t.Fatalf("rotated token unchanged or empty: old=%q new=%q", oldPlain, newPlain)
 	}
 	after, _ := store.Get().findProjectByID(proj.ID)
-	if after.Token != newPlain {
-		t.Errorf("stored plaintext = %q; want %q", after.Token, newPlain)
+	afterPlain, _ := after.Token.Reveal()
+	if afterPlain != newPlain {
+		t.Errorf("stored plaintext = %q; want %q", afterPlain, newPlain)
 	}
 	if after.TokenHash == oldHash {
 		t.Errorf("hash unchanged after rotation: %q", oldHash)
@@ -80,7 +82,7 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 func TestRotateProjectToken_OldTokenRejectedOnNextAuth(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
-	oldPlain := proj.Token
+	oldPlain, _ := proj.Token.Reveal()
 
 	store.With(func(s *Settings) {
 		_, _, _ = s.RotateProjectToken(proj.ID)

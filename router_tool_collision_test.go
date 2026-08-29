@@ -136,15 +136,15 @@ func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, all
 			Name:          "collision",
 			Path:          "/tmp/collision",
 			AllowedMcpIDs: slices.Clone(allowedMcpIDs),
-			Token:         testToken,
+			Token:         NewSecret(testToken),
 			TokenHash:     hashToken(testToken),
 			DisabledTools: disabled,
 			Context:       collisionScopes(),
 		}},
-		AdminSecret: "supersecretadmin",
+		AdminSecret: NewSecret("supersecretadmin"),
 	}
 	return &appRouter{
-		store:    &FileSettingsStore{cache: s, dir: dir},
+		store:    &FileSettingsStore{cache: s, dir: dir, sealer: testSealer()},
 		tools:    tp,
 		services: NewServiceRegistry(),
 		onChange: func() {},
@@ -443,15 +443,15 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 				Name:          "solo",
 				Path:          "/tmp/solo",
 				AllowedMcpIDs: allowed,
-				Token:         testToken,
+				Token:         NewSecret(testToken),
 				TokenHash:     hashToken(testToken),
 				DisabledTools: disabled,
 				Context:       collisionScopes(),
 			}},
-			AdminSecret: "supersecretadmin",
+			AdminSecret: NewSecret("supersecretadmin"),
 		}
 		r := &appRouter{
-			store:    &FileSettingsStore{cache: s, dir: t.TempDir()},
+			store:    &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
 			tools:    tp,
 			services: NewServiceRegistry(),
 			onChange: func() {},
@@ -559,11 +559,11 @@ func newRealManagerCollisionRouter(t *testing.T, allowedMcpIDs []string) (*appRo
 			Name:          "collision",
 			Path:          "/tmp/collision",
 			AllowedMcpIDs: slices.Clone(allowedMcpIDs),
-			Token:         testToken,
+			Token:         NewSecret(testToken),
 			TokenHash:     hashToken(testToken),
 			Context:       collisionScopes(),
 		}},
-		AdminSecret: "supersecretadmin",
+		AdminSecret: NewSecret("supersecretadmin"),
 	}
 	return newTestRouter(t, s, mgr), a, b
 }

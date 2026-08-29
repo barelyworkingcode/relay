@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"relaygo/bridge"
+	"relaygo/sealed"
 )
 
 type fixedStore struct{ s *Settings }
@@ -18,6 +19,7 @@ func (f fixedStore) Get() *Settings                { return f.s }
 func (f fixedStore) Reload() *Settings             { return f.s }
 func (f fixedStore) ReloadIfChanged() *Settings    { return f.s }
 func (f fixedStore) With(fn func(*Settings)) error { fn(f.s); return nil }
+func (f fixedStore) Sealer() sealed.Sealer         { return nil }
 
 type recordingServiceManager struct {
 	noopServiceManager

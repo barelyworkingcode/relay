@@ -22,6 +22,8 @@ import (
 	"testing"
 	"text/tabwriter"
 	"time"
+
+	"relaygo/sealed"
 )
 
 // aiHome sandboxes the config dir and returns an initialised store rooted in
@@ -30,7 +32,7 @@ import (
 func aiHome(t *testing.T) (string, SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	return dir, store
 }
@@ -202,13 +204,26 @@ func aiPrintedToken(t *testing.T, printed string) string {
 	return ""
 }
 
-func TestIssuance_CLIEnrolCreateAndRevokeAreRecorded(t *testing.T) {
+// TestIssuance_EnrolCreateAndCLIRevokeAreRecorded exercises create through
+// EnrolmentOps — the tray/IPC door, and now the ONLY door: `relay enrol
+// create` itself refuses unconditionally, because signing a certificate
+// needs relay's CA key, which is sealed, and a CLI process holds no
+// sealer and must never be able to reach one (§5.3.3, §5.4) — see
+// TestSeal_NoCLIPathReachesTheKeychain (AC-29), which is what actually
+// pins this boundary. enrolCreate's own refusal calls exitError (os.Exit),
+// so — like every other exitError path in this package (enrol_cmd_test.go)
+// — it is not exercised in-process here. Revoke needs no key at all and
+// stays a real CLI path.
+func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	dir, store := aiHome(t)
 	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
 
-	aiQuiet(t, func() {
-		enrolCreate(store, []string{"--client-id", "hermes-mail", "--grant", profile.ID})
-	})
+	aud, closeAud := cliIssuanceAuditor(store)
+	ops := &EnrolmentOps{Store: store}
+	created, err := ops.Create(enrolmentFields{ClientID: "hermes-mail", ProjectIDs: []string{profile.ID}})
+	assertNoErr(t, err, "EnrolmentOps.Create")
+	assertNoErr(t, recordEnrolmentIssued(aud, store, created.Enrolment, auditViaIPC, ""), "recordEnrolmentIssued")
+	closeAud()
 
 	issued := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialIssued, "hermes-mail")
 	if issued.Credential != auditCredentialEnrolment {
@@ -217,8 +232,8 @@ func TestIssuance_CLIEnrolCreateAndRevokeAreRecorded(t *testing.T) {
 	if got := aiGrants(issued); got != profile.ID {
 		t.Errorf("grants = %q, want %q — an enrolment's record must name what it reaches", got, profile.ID)
 	}
-	if issued.Via != auditViaCLI {
-		t.Errorf("via = %q, want %q", issued.Via, auditViaCLI)
+	if issued.Via != auditViaIPC {
+		t.Errorf("via = %q, want %q", issued.Via, auditViaIPC)
 	}
 
 	enrolments := store.Reload().Enrolments
@@ -236,8 +251,23 @@ func TestIssuance_CLIEnrolCreateAndRevokeAreRecorded(t *testing.T) {
 
 	aiRefuseSecrets(t, aiLogText(t), map[string]string{
 		"client private key": aiPEMBody(t, keyPEM),
-		"CA private key":     aiPEMBody(t, aiRead(t, filepath.Join(dir, "ca.key"))),
+		"CA private key":     aiPEMBody(t, aiUnsealCAKeyPEM(t, dir, store)),
 	})
+}
+
+// aiUnsealCAKeyPEM reads and opens ca.key.sealed directly — relay never
+// writes a plaintext ca.key (§5.7), so this is what a test now has to do to
+// get the CA's own private key material to check it never appears in the
+// audit log.
+func aiUnsealCAKeyPEM(t *testing.T, dir string, store SettingsStore) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, caKeySealedFile))
+	assertNoErr(t, err, "read ca.key.sealed")
+	var env sealed.Envelope
+	assertNoErr(t, json.Unmarshal(data, &env), "parse ca.key.sealed")
+	keyPEM, err := store.Sealer().Unseal(env, []byte(caAADPrefix+"ca.key"))
+	assertNoErr(t, err, "unseal ca.key.sealed")
+	return keyPEM
 }
 
 func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
@@ -509,9 +539,10 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	logged, err := os.ReadFile(f.rec.Path())
 	assertNoErr(t, err, "read recorder log")
 	stored, _ := f.store.Reload().findProjectByID(local.ID)
+	storedToken, _ := stored.Token.Reveal()
 	aiRefuseSecrets(t, string(logged), map[string]string{
 		"rotated project token":  rotated.Token,
-		"stored project token":   stored.Token,
+		"stored project token":   storedToken,
 		"project token hash":     stored.TokenHash,
 		"operator bearer":        f.bearer,
 		"operator bearer's hash": f.hash,
@@ -584,7 +615,7 @@ func aiHexOf(b []byte) string {
 func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	sock := filepath.Join(mkShortTempDir(t, "ai-lr-sock-"), "frontend.sock")
 	auditor := &lrAuditor{}
@@ -642,7 +673,8 @@ func TestIssuance_HTTPRotateWithholdsTheTokenWhenTheRecordFails(t *testing.T) {
 		t.Fatalf("rotate_token: status %d, want 500 when the act cannot be recorded; body %s", resp.StatusCode, body)
 	}
 	stored, _ := f.store.Reload().findProjectByID(local.ID)
-	if strings.Contains(string(body), stored.Token) {
+	storedToken, _ := stored.Token.Reveal()
+	if strings.Contains(string(body), storedToken) {
 		t.Fatalf("the response carried the new project token even though the act was not recorded: %s", body)
 	}
 	if broken.calls != 1 {

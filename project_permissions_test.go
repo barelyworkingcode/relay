@@ -263,7 +263,15 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 	if stored.AllowExternal != nil {
 		t.Errorf("a cleared field left a map behind: %#v", stored.AllowExternal)
 	}
-	blob, err := json.Marshal(*stored)
+	// Marshalling a lone Project requires its Secret fields to be sealed
+	// first (§4.4) — wrap it in a throwaway Settings just to reach
+	// sealAllSecrets, since that is the only place the sealed set is
+	// enumerated.
+	sealMe := &Settings{Projects: []Project{*stored}}
+	if err := sealAllSecrets(sealMe, testSealer()); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	blob, err := json.Marshal(sealMe.Projects[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

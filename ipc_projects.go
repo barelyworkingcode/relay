@@ -69,7 +69,7 @@ func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
 		})
 	}
 
-	ctx.UI.EmitEvent("onProjectAdded", marshalForUI(created))
+	ctx.UI.EmitEvent("onProjectAdded", marshalForUI(projectToNativeView(created)))
 }
 
 func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
@@ -112,7 +112,7 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 		})
 	}
 
-	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
+	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(projectToNativeView(updated)))
 }
 
 func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
@@ -249,7 +249,7 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
 		return
 	}
-	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(updated))
+	ctx.UI.EmitEvent("onProjectUpdated", marshalForUI(projectToNativeView(updated)))
 }
 
 // ipcListMcpTools emits an empty list rather than an error when the MCP is

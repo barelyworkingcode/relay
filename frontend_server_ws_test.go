@@ -26,7 +26,7 @@ func startFrontendServerWith(t *testing.T, token string, enhanced *EnhancedServi
 	dir := mkShortTempDir(t, "fe-ws-")
 	sock := filepath.Join(dir, "frontend.sock")
 
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

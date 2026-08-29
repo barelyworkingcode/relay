@@ -52,7 +52,7 @@ func mcpRegister(store SettingsStore, args []string) {
 		DisplayName: opts.Name,
 		Command:     *command,
 		Args:        []string(opts.Args),
-		Env:         env,
+		Env:         secretMapFromPlain(env),
 		TccServices: parseTccServices(*tccServices),
 	}
 
@@ -120,10 +120,10 @@ func discoverHTTPWithAuth(name, id, mcpURL string) *ExternalMcp {
 			DisplayName: name,
 			Transport:   "http",
 			URL:         mcpURL,
-			OAuthState:  oauth,
+			OAuthState:  oauth.toOAuthState(),
 		}
 	}
-	result.OAuthState = oauth
+	result.OAuthState = oauth.toOAuthState()
 	return result
 }
 

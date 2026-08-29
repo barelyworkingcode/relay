@@ -219,9 +219,9 @@ func TestMcpRoutes_NeverLeaksOAuthSecrets(t *testing.T) {
 	if err := store.With(func(s *Settings) {
 		s.UpdateOAuthState(created.ID, &OAuthState{
 			ClientID:     "some-oauth-client-id",
-			ClientSecret: clientSecret,
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
+			ClientSecret: NewSecret(clientSecret),
+			AccessToken:  NewSecret(accessToken),
+			RefreshToken: NewSecret(refreshToken),
 			TokenExpiry:  "2099-01-01T00:00:00Z",
 		})
 	}); err != nil {

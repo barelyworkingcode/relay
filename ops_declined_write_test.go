@@ -16,7 +16,7 @@ import (
 func odwSandbox(t *testing.T) (string, *FileSettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestFrontendTokenMigrationThatFindsNothingToDoWritesNothing(t *testing.T) {
 	hooked := &odwHookStore{FileSettingsStore: store}
 	var before odwSnapshot
 	hooked.preWrite = func() {
-		ensureFrontendTokenIsCredential(NewSettingsStoreAt(dir), token)
+		ensureFrontendTokenIsCredential(sealedSettingsStoreAt(dir), token)
 		before = odwSnap(t, dir)
 	}
 
@@ -263,12 +263,12 @@ func TestStartOAuthDoesNotResurrectAnMcpRemovedMidCeremony(t *testing.T) {
 
 	var before odwSnapshot
 	ops := &McpOps{Store: store}
-	ops.StartFlow = func(mcpURL string, _ func(string)) (*OAuthState, error) {
-		if err := (&McpOps{Store: NewSettingsStoreAt(dir)}).Remove("authy"); err != nil {
+	ops.StartFlow = func(mcpURL string, _ func(string)) (*oauthResult, error) {
+		if err := (&McpOps{Store: sealedSettingsStoreAt(dir)}).Remove("authy"); err != nil {
 			t.Errorf("concurrent remove: %v", err)
 		}
 		before = odwSnap(t, dir)
-		return &OAuthState{AccessToken: "granted"}, nil
+		return &oauthResult{AccessToken: "granted"}, nil
 	}
 
 	state, err := ops.StartOAuth("authy", func(string) {})

@@ -46,7 +46,7 @@ func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 	cfg := stdioMcp("mcp-dies", bin)
 	// v2 context schema, so the assertion below is about the schema being
 	// rediscovered, not about it never having existed.
-	cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"}
+	cfg.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 	if err := m.startOne(ctx, &cfg); err != nil {
 		t.Fatalf("startOne: %v", err)
 	}

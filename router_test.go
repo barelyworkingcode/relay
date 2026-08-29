@@ -35,18 +35,18 @@ func makeSettings(perms map[string]Permission, disabled map[string][]string, ctx
 			Name:          "test",
 			Path:          "/tmp/test",
 			AllowedMcpIDs: allowed,
-			Token:         testToken,
+			Token:         NewSecret(testToken),
 			TokenHash:     hash,
 			DisabledTools: disabled,
 			Context:       ctx,
 		}},
-		AdminSecret: "supersecretadmin",
+		AdminSecret: NewSecret("supersecretadmin"),
 	}
 }
 
 func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRouter {
 	t.Helper()
-	store := &FileSettingsStore{cache: s, dir: t.TempDir()}
+	store := &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()}
 	return &appRouter{
 		store:    store,
 		tools:    mgr,

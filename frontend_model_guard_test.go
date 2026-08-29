@@ -244,7 +244,7 @@ func remoteProject(t *testing.T, store SettingsStore) Project {
 			Name:          "remote",
 			Kind:          ProjectKindRemote,
 			AllowedMcpIDs: []string{},
-			Token:         "tok-remote-session",
+			Token:         NewSecret("tok-remote-session"),
 			TokenHash:     hashToken("tok-remote-session"),
 		}
 		s.Projects = append(s.Projects, out)

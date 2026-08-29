@@ -79,10 +79,10 @@ func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache m
 	// remoteConfigViewOf).
 	remote := remoteConfigViewOf(settings, settings.Audit.resolve().Enabled)
 	return strings.NewReplacer(
-		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", settings.ExternalMcps),
-		"__SERVICES_JSON__", mustMarshalJSON("services", settings.Services),
+		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", externalMcpsToNativeView(settings.ExternalMcps)),
+		"__SERVICES_JSON__", mustMarshalJSON("services", serviceConfigsToNativeView(settings.Services)),
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
-		"__PROJECTS_JSON__", mustMarshalJSON("projects", projects),
+		"__PROJECTS_JSON__", mustMarshalJSON("projects", projectsToNativeView(projects)),
 		"__MCP_TOOL_CACHE_JSON__", mustMarshalJSON("mcp_tool_cache", toolCache),
 		"__MCP_SCOPE_FIELDS_JSON__", mustMarshalJSON("mcp_scope_fields", scopeFields),
 		"__ENROLMENTS_JSON__", mustMarshalJSON("enrolments", enrolments),

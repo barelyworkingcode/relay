@@ -248,7 +248,7 @@ type enrolmentBundle struct {
 // both claim a client id. The bundle is written last: a key on disk that no
 // enrolment references is a credential nobody knows to revoke.
 func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
-	ca, err := LoadOrCreateCA()
+	ca, err := LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, err
 	}

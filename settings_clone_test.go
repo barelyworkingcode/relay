@@ -61,6 +61,17 @@ func fillDistinct(v reflect.Value, counter *int) {
 		m.SetMapIndex(key, val)
 		v.Set(m)
 	case reflect.Struct:
+		// Secret's fields are unexported so that nothing outside
+		// Reveal()/String()/its JSON methods can touch the plaintext
+		// directly (settings_secret.go) — which also means reflect
+		// cannot Set them without the "obtained using unexported field"
+		// panic. NewSecret builds one through its normal exported
+		// constructor instead of walking its fields.
+		if v.Type() == reflect.TypeOf(Secret{}) {
+			*counter++
+			v.Set(reflect.ValueOf(NewSecret(fmt.Sprintf("s%d", *counter))))
+			return
+		}
 		for i := 0; i < v.NumField(); i++ {
 			fillDistinct(v.Field(i), counter)
 		}
@@ -76,6 +87,16 @@ func fillDistinct(v reflect.Value, counter *int) {
 // collection here has exactly one element to check.
 func checkIndependent(t *testing.T, path string, orig, clone reflect.Value) {
 	t.Helper()
+	// Opaque here for the same reason fillDistinct treats it specially:
+	// its fields are unexported, so reading them via reflect (Interface(),
+	// which map-key and pointer-follow both need) panics. Its own only
+	// pointer field is an envelope that is immutable once sealed and only
+	// ever replaced wholesale, never mutated in place — so a Clone that
+	// shares that pointer with the original cannot corrupt it the way a
+	// shared *bool or slice would, and there is nothing to check here.
+	if clone.Type() == reflect.TypeOf(Secret{}) {
+		return
+	}
 	switch clone.Kind() {
 	case reflect.Ptr:
 		if orig.IsNil() || clone.IsNil() {

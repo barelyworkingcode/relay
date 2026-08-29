@@ -437,7 +437,34 @@ func (s *oauthCallbackServer) Close() {
 	<-s.done // wait for Serve goroutine to exit
 }
 
-func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error) {
+// oauthResult is startOAuthFlow's return shape: plain strings, never
+// Secret. The CLI's own registration flow (mcp_cmd.go) needs this
+// plaintext to retry discovery with the token it just obtained, and it
+// must do that without ever calling Secret.Reveal — no CLI entry point
+// may reach that method (§5.3.3, AC-29). A caller that persists the
+// result wraps each bearer with NewSecret via toOAuthState, at the point
+// of writing — NewSecret is not on AC-29's forbidden list, only Reveal,
+// Unseal and NewKeychainKeyring are.
+type oauthResult struct {
+	ClientID, ClientSecret, AccessToken, RefreshToken, TokenExpiry string
+}
+
+// toOAuthState wraps r for persistence. A nil r (no OAuth applies) yields
+// a nil OAuthState, matching the pointer field it is assigned into.
+func (r *oauthResult) toOAuthState() *OAuthState {
+	if r == nil {
+		return nil
+	}
+	return &OAuthState{
+		ClientID:     r.ClientID,
+		ClientSecret: NewSecret(r.ClientSecret),
+		AccessToken:  NewSecret(r.AccessToken),
+		RefreshToken: NewSecret(r.RefreshToken),
+		TokenExpiry:  r.TokenExpiry,
+	}
+}
+
+func startOAuthFlow(mcpURL string, openBrowser func(string)) (*oauthResult, error) {
 	discovery, err := discoverOAuth(mcpURL)
 	if err != nil {
 		return nil, fmt.Errorf("OAuth discovery: %w", err)
@@ -494,7 +521,7 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthState, error
 		return nil, err
 	}
 
-	oauthState := &OAuthState{
+	oauthState := &oauthResult{
 		ClientID:     reg.ClientID,
 		ClientSecret: reg.ClientSecret,
 		AccessToken:  tokenResp.AccessToken,

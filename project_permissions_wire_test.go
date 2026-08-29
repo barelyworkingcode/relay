@@ -15,7 +15,7 @@ import (
 
 func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 	t.Helper()
-	store := NewSettingsStoreAt(t.TempDir())
+	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

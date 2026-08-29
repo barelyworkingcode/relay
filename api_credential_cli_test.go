@@ -381,13 +381,15 @@ func TestACCNoCredentialsAtAllRejectsEverything(t *testing.T) {
 func TestACCCredentialMintedByASeparateProcessAuthenticatesImmediately(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 
-	trayStore := NewSettingsStoreAt(dir)
+	trayStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, trayStore.EnsureInitialized(), "EnsureInitialized")
 	srv := accNewServer(t, trayStore, accLegacyToken)
 
-	// A second store over the same dir stands in for `relay credential mint`
-	// running in its own process.
-	cliStore := NewSettingsStoreAt(dir)
+	// A second store over the same dir stands in for a second process
+	// minting a credential — sealed, like the tray, since a CLI-shaped
+	// store (no sealer) now refuses every write by design (§5.4); brokering
+	// `relay credential mint` itself over admin_op is a later step.
+	cliStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, cliStore.EnsureInitialized(), "EnsureInitialized (cli)")
 	cred, plaintext, err := mintAPICredential(cliStore, credentialMintRequest{Name: "acc-cli", Classes: []string{"read"}})
 	assertNoErr(t, err, "mint from the CLI process")

@@ -303,7 +303,7 @@ func startEnumPeer(t *testing.T, mode string) *ExternalMcpManager {
 	m := NewExternalMcpManager(nil)
 	t.Cleanup(m.StopAll)
 	cfg := stdioMcp("macmcp", bin)
-	cfg.Env = map[string]string{"RELAY_TESTMCP_CONTEXT": mode}
+	cfg.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": mode})
 	if err := m.startOne(context.Background(), &cfg); err != nil {
 		t.Fatalf("start testmcp: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+			store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 			if err := store.EnsureInitialized(); err != nil {
 				t.Fatalf("EnsureInitialized: %v", err)
 			}
@@ -488,7 +488,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 }
 
 func TestEnumerateRoute_HTTPCarriesTheChosenDependencies(t *testing.T) {
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

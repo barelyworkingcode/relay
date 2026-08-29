@@ -28,7 +28,7 @@ func serviceViewOf(c ServiceConfig, running bool) serviceView {
 		DisplayName:      c.DisplayName,
 		Command:          c.Command,
 		Args:             c.Args,
-		Env:              c.Env,
+		Env:              revealEnvForUI(c.Env),
 		WorkingDir:       c.WorkingDir,
 		Autostart:        c.Autostart,
 		URL:              c.URL,

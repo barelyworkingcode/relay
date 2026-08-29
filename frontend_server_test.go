@@ -25,7 +25,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 	dir := mkShortTempDir(t, "fe-")
 	sock := filepath.Join(dir, "frontend.sock")
 
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestListenLoopback_RefusesNonLoopback(t *testing.T) {
 // handler — that property is gone on purpose.
 func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	dir := mkShortTempDir(t, "fe-tcp-")
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}

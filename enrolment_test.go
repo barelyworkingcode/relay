@@ -15,7 +15,7 @@ import (
 func newEnrolmentSandbox(t *testing.T) (string, SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	return dir, store
 }

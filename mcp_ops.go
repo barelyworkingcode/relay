@@ -67,10 +67,10 @@ type McpOps struct {
 	// property StartOAuth has to be held to — that a record deleted while all
 	// that was happening is not resurrected by the persist — is otherwise
 	// unreachable without standing up an OAuth server to make it happen in.
-	StartFlow func(mcpURL string, openURL func(string)) (*OAuthState, error)
+	StartFlow func(mcpURL string, openURL func(string)) (*oauthResult, error)
 }
 
-func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*OAuthState, error) {
+func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*oauthResult, error) {
 	if o.StartFlow != nil {
 		return o.StartFlow(mcpURL, openURL)
 	}
@@ -162,7 +162,7 @@ func (o *McpOps) persist(cfg ExternalMcp) error {
 	var secret string
 	if err := o.Store.With(func(s *Settings) {
 		s.UpsertExternalMcp(cfg)
-		secret = s.AdminSecret
+		secret, _ = s.AdminSecret.Reveal()
 	}); err != nil {
 		return fmt.Errorf("save mcp: %w", err)
 	}
@@ -186,7 +186,7 @@ func (o *McpOps) Remove(id string) error {
 			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
 		s.RemoveExternalMcp(id)
-		secret = s.AdminSecret
+		secret, _ = s.AdminSecret.Reveal()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {
@@ -235,8 +235,8 @@ func (o *McpOps) StartOAuth(id string, openURL func(string)) (*OAuthState, error
 		if _, idx := s.findMcpByID(id); idx < 0 {
 			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
-		s.UpdateOAuthState(id, oauth)
-		secret = s.AdminSecret
+		s.UpdateOAuthState(id, oauth.toOAuthState())
+		secret, _ = s.AdminSecret.Reveal()
 		return nil
 	}); err != nil {
 		if errors.Is(err, errMcpNotFound) {
@@ -253,7 +253,7 @@ func (o *McpOps) StartOAuth(id string, openURL func(string)) (*OAuthState, error
 			slog.Warn("mcp reload notify failed", "id", id, "error", err)
 		}
 	}
-	return oauth, nil
+	return oauth.toOAuthState(), nil
 }
 
 // ResetPermissions has no HTTP route (ADR-014 section 4): ResetMcpPermissions

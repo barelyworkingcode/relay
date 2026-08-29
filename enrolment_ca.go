@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -19,11 +20,16 @@ import (
 	"time"
 
 	"relaygo/bridge"
+	"relaygo/sealed"
 )
 
 const (
-	caKeyFile  = "ca.key"
-	caCertFile = "ca.crt"
+	caKeyFile = "ca.key"
+	// caKeySealedFile replaces caKeyFile once migration runs (§4.7 step 4)
+	// or a fresh CA is generated (§5.7 clause 3): relay never writes a
+	// plaintext ca.key again after either.
+	caKeySealedFile = "ca.key.sealed"
+	caCertFile      = "ca.crt"
 
 	caValidity = 20 * 365 * 24 * time.Hour
 
@@ -47,45 +53,86 @@ type RelayCA struct {
 
 var caMu sync.Mutex
 
-func caPaths() (keyPath, certPath string) {
+func caPaths() (keyPath, sealedKeyPath, certPath string) {
 	dir := bridge.ConfigDir()
-	return filepath.Join(dir, caKeyFile), filepath.Join(dir, caCertFile)
+	return filepath.Join(dir, caKeyFile), filepath.Join(dir, caKeySealedFile), filepath.Join(dir, caCertFile)
 }
 
-func LoadOrCreateCA() (*RelayCA, error) {
+// LoadOrCreateCA resolves relay's CA per §5.7: a sealed key wins if one
+// exists, a plaintext one is folded into ca.key.sealed and removed (§4.7),
+// and only when neither exists is a fresh CA generated — sealed from the
+// start, never as a plaintext ca.key.
+//
+// A nil sealer (the CLI's shape, or the tray degraded per §5.6) can still
+// read an already-parsed *RelayCA nothing here needs to open, but cannot
+// open ca.key.sealed or seal a freshly migrated or generated one; every
+// such path names the degraded state instead of falling through to
+// generating a new CA, which would silently invalidate every enrolment on
+// the host.
+func LoadOrCreateCA(sealer sealed.Sealer) (*RelayCA, error) {
 	caMu.Lock()
 	defer caMu.Unlock()
 
-	keyPath, certPath := caPaths()
-	ca, err := loadCA(keyPath, certPath)
-	if err == nil {
-		return ca, nil
+	keyPath, sealedKeyPath, certPath := caPaths()
+
+	if _, err := os.Stat(sealedKeyPath); err == nil {
+		return loadSealedCA(sealedKeyPath, certPath, sealer)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat %s: %w", sealedKeyPath, err)
 	}
-	if !os.IsNotExist(err) {
+
+	if _, err := os.Stat(keyPath); err == nil {
+		if sealer == nil {
+			return nil, fmt.Errorf("%w: ca.key exists in plaintext but there is no sealer to migrate it", errSealUnavailable)
+		}
+		if err := migrateCAKey(filepath.Dir(keyPath), sealer); err != nil {
+			return nil, err
+		}
+		return loadSealedCA(sealedKeyPath, certPath, sealer)
+	} else if !os.IsNotExist(err) {
 		// A present-but-unreadable CA is not something to paper over by
 		// minting a new one: that would silently invalidate every
 		// enrolment on the host. Surface it and let the operator decide.
 		return nil, err
 	}
-	return generateCA(keyPath, certPath)
+
+	if sealer == nil {
+		return nil, fmt.Errorf("%w: no CA exists yet and there is no sealer to create one under", errSealUnavailable)
+	}
+	return generateCA(sealedKeyPath, certPath, sealer)
 }
 
-func loadCA(keyPath, certPath string) (*RelayCA, error) {
-	keyPEM, err := os.ReadFile(keyPath)
+func loadSealedCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
+	if sealer == nil {
+		return nil, fmt.Errorf("%w: ca.key.sealed exists but there is no sealer to open it", errSealUnavailable)
+	}
+	data, err := os.ReadFile(sealedKeyPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s: %w", sealedKeyPath, err)
+	}
+	var env sealed.Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("%s is not a valid sealed envelope: %w", sealedKeyPath, err)
+	}
+	keyPEM, err := sealer.Unseal(env, []byte(caAADPrefix+"ca.key"))
+	if err != nil {
+		return nil, fmt.Errorf("%s could not be opened: %w", sealedKeyPath, err)
 	}
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, err
 	}
+	return parseCA(keyPEM, certPEM, sealedKeyPath, certPath)
+}
+
+func parseCA(keyPEM, certPEM []byte, keyName, certPath string) (*RelayCA, error) {
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
-		return nil, fmt.Errorf("ca key %s is not valid PEM", keyPath)
+		return nil, fmt.Errorf("ca key %s is not valid PEM", keyName)
 	}
 	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse ca key %s: %w", keyPath, err)
+		return nil, fmt.Errorf("parse ca key %s: %w", keyName, err)
 	}
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
@@ -98,7 +145,7 @@ func loadCA(keyPath, certPath string) (*RelayCA, error) {
 	return &RelayCA{key: key, cert: cert, certPEM: certPEM}, nil
 }
 
-func generateCA(keyPath, certPath string) (*RelayCA, error) {
+func generateCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ca key: %w", err)
@@ -133,11 +180,13 @@ func generateCA(keyPath, certPath string) (*RelayCA, error) {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 
-	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sealedKeyPath), 0700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
-	if err := atomicWriteFile(keyPath, keyPEM, 0600); err != nil {
-		return nil, fmt.Errorf("write ca key: %w", err)
+	// Sealed from the start: a freshly generated CA never has a plaintext
+	// ca.key written for it (§5.7 clause 3).
+	if err := sealCAKeyFile(filepath.Dir(sealedKeyPath), sealer, keyPEM); err != nil {
+		return nil, err
 	}
 	if err := atomicWriteFile(certPath, certPEM, 0600); err != nil {
 		return nil, fmt.Errorf("write ca certificate: %w", err)

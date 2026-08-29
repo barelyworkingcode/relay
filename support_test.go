@@ -22,7 +22,37 @@ import (
 	"time"
 
 	"relaygo/bridge"
+	"relaygo/sealed"
 )
+
+// testSealKeyID/testSealKey are a fixed, non-secret AES-256 key used by
+// every hermetic test that needs a working sealer — never the real login
+// keychain (headline rule above: no test may touch it), and never derived
+// from anything random, so a failure reproduces byte for byte.
+var (
+	testSealKeyID = "0123456789abcdef"
+	testSealKey   = bytes.Repeat([]byte{0x42}, 32)
+)
+
+// testSealer returns a Sealer over the fixed test key. It needs no *testing.T
+// and no cleanup: it is pure in-memory AES-GCM, not a keychain item.
+func testSealer() sealed.Sealer {
+	s, err := sealed.NewAESSealer(testSealKeyID, testSealKey)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+// sealedSettingsStoreAt is the hermetic-suite stand-in for the tray's own
+// NewSettingsStoreSealed: a store that can actually write, backed by
+// testSealer rather than the login keychain. Most tests that need a
+// SettingsStore at all want this one — plain NewSettingsStoreAt is for
+// tests specifically exercising the CLI's read-only shape (errSealerRequired)
+// or the degraded states in settings_store_sealed_test.go.
+func sealedSettingsStoreAt(dir string) *FileSettingsStore {
+	return NewSettingsStoreSealed(dir, testSealer())
+}
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
@@ -89,7 +119,7 @@ func mkShortTempDir(t *testing.T, prefix string) string {
 func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
 	t.Helper()
 	dir := mkSandboxRelayHome(t)
-	store := NewSettingsStoreAt(dir)
+	store := sealedSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("newSandboxRouter: EnsureInitialized: %v", err)
 	}

@@ -224,7 +224,7 @@ func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string
 	var secret string
 	if err := ctx.Store.With(func(s *Settings) {
 		fn(s)
-		secret = s.AdminSecret
+		secret, _ = s.AdminSecret.Reveal()
 	}); err != nil {
 		ctx.UI.EmitEvent("onSettingsError", err.Error())
 		return false

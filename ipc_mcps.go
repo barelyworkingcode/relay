@@ -52,7 +52,7 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 				ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 				return
 			}
-			ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(result))
+			ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(externalMcpToNativeView(result)))
 			if errors.Is(err, ErrAuthRequired) {
 				ctx.UI.EmitEvent("onOAuthRequired", result.ID)
 			}

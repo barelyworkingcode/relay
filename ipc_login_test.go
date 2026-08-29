@@ -73,7 +73,7 @@ func (p *ilPlatform) allJS() string {
 // newEnrolmentIPC. Nothing here can touch the real config dir.
 func ilIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI) {
 	t.Helper()
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	ui := &recordingUI{}
 	return &IPCContext{
@@ -467,7 +467,7 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 
 func ilTrayApp(t *testing.T) (*App, *ilPlatform, SettingsStore) {
 	t.Helper()
-	store := NewSettingsStoreAt(mkEmptySandboxRelayHome(t))
+	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	p := &ilPlatform{}
 	app := &App{

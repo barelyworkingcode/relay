@@ -37,7 +37,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 	}
 
 	ctx.UpdateMenu()
-	ctx.UI.EmitEvent("onServiceAdded", marshalForUI(created))
+	ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeView(created)))
 }
 
 func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {

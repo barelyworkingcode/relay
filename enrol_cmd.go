@@ -20,58 +20,27 @@ func runEnrolCommand(args []string) {
 	}, args)
 }
 
+// enrolCreate signs a new client certificate off relay's CA, which is now
+// sealed (§5.7) — a CLI process holds no sealer (§5.4) and this must never
+// change that by reaching toward one on any branch, dead or live: §5.3.3
+// requires the CLI binary be structurally unable to reach the keychain,
+// because it satisfies the ACL by code identity just as the tray does, and
+// AC-29's call-graph walk fails on the mere presence of a path, not on
+// whether this process could ever actually take it. So this refuses
+// outright rather than calling createEnrolment on a branch that can never
+// fire for a CLI-shaped store — brokering `enrol create` over admin_op
+// (S6) is what makes it work again.
 func enrolCreate(store SettingsStore, args []string) {
 	fs := flag.NewFlagSet("enrol create", flag.ExitOnError)
-	clientID := fs.String("client-id", "", "human-readable id for this enrolment (required, unique)")
+	fs.String("client-id", "", "human-readable id for this enrolment (required, unique)")
 	var grants stringSlice
-	// A remote-kind record is an ACCESS PROFILE on every operator-facing
-	// surface: it has no directory, no skills, no shell and no models, so
-	// calling it a project would invite the reader to expect all four. The
-	// stored kind, and every Go identifier, is unchanged.
 	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project")
-	windowSeconds := fs.Int("window-seconds", defaultEnrolmentWindowSeconds, "budget window in seconds")
-	maxCalls := fs.Int("max-calls", defaultEnrolmentMaxCalls, "max tool calls per window")
-	maxResultBytes := fs.Int64("max-result-bytes", defaultEnrolmentMaxResultBytes, "max cumulative result bytes per window")
+	fs.Int("window-seconds", defaultEnrolmentWindowSeconds, "budget window in seconds")
+	fs.Int("max-calls", defaultEnrolmentMaxCalls, "max tool calls per window")
+	fs.Int64("max-result-bytes", defaultEnrolmentMaxResultBytes, "max cumulative result bytes per window")
 	fs.Parse(args)
 
-	if *clientID == "" {
-		exitError("--client-id is required")
-	}
-	if len(grants) == 0 {
-		fmt.Println("note: no --grant given; this client is enrolled but can reach no access profile until one is added")
-	}
-
-	aud, closeAud := cliIssuanceAuditor(store)
-	defer closeAud()
-
-	bundle, err := createEnrolment(store, enrolmentRequest{
-		ClientID:   *clientID,
-		ProjectIDs: []string(grants),
-		Budget: EnrolmentBudget{
-			WindowSeconds:  *windowSeconds,
-			MaxCalls:       *maxCalls,
-			MaxResultBytes: *maxResultBytes,
-		},
-	})
-	if err != nil {
-		exitError("%v", err)
-	}
-
-	e := bundle.Enrolment
-	if err := recordEnrolmentIssued(aud, store, e, auditViaCLI, ""); err != nil {
-		exitError("enrolment %q was created but the audit log could not record it (%v); "+
-			"the enrolment and its bundle have been removed and this client can reach nothing", e.ClientID, err)
-	}
-
-	fmt.Printf("enrolled %q\n", e.ClientID)
-	fmt.Printf("  fingerprint: %s\n", e.Fingerprint)
-	fmt.Printf("  profiles:    %s\n", formatGrants(e.ProjectIDs))
-	fmt.Printf("  budget:      %d calls / %d bytes per %ds\n", e.Budget.MaxCalls, e.Budget.MaxResultBytes, e.Budget.WindowSeconds)
-	fmt.Printf("  bundle:      %s\n", bundle.Dir)
-	fmt.Println("    client.key  client private key (0600)")
-	fmt.Println("    client.crt  client certificate")
-	fmt.Println("    ca.crt      relay's CA certificate, for verifying the server")
-	fmt.Println("  move (don't copy) this directory to the client machine")
+	exitError("enrol create requires the service: it signs a certificate from relay's CA, and the CA's key is sealed and only readable by the running tray")
 }
 
 func enrolList(store SettingsStore) {

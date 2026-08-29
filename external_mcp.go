@@ -495,7 +495,11 @@ func (m *ExternalMcpManager) connectStdio(ctx context.Context, sup *mcpSuperviso
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
-	conn, err := spawnStdioConn(command, args, sup.cfg.Env, &sup.cfg)
+	env, err := revealEnvOrErr(sup.cfg.Env)
+	if err != nil {
+		return nil, fmt.Errorf("env: %w", err)
+	}
+	conn, err := spawnStdioConn(command, args, env, &sup.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1179,7 +1183,7 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 		DisplayName: displayName,
 		Command:     command,
 		Args:        args,
-		Env:         env,
+		Env:         secretMapFromPlain(env),
 	})
 }
 

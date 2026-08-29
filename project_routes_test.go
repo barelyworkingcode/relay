@@ -21,7 +21,7 @@ func (f schemaProviderFunc) AllMcpSurfaces() McpSurfaces { return f() }
 
 func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	t.Helper()
-	store := NewSettingsStoreAt(t.TempDir())
+	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -52,7 +52,7 @@ func (fixedTokenLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBu
 
 func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, onChange func()) (*httptest.Server, SettingsStore) {
 	t.Helper()
-	store := NewSettingsStoreAt(t.TempDir())
+	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	}
 	// projectView strips Token/TokenHash from every eve-facing project
 	// response; rotate_token is the sole exception.
-	if created.Token != "" || created.TokenHash != "" {
+	if tok, _ := created.Token.Reveal(); tok != "" || created.TokenHash != "" {
 		t.Fatalf("frontend create response leaked token/token_hash: %+v", created)
 	}
 	if created.Name != "Alpha" || created.Path != tmpDir {
@@ -193,7 +193,7 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
-	if created.Token != "" || created.TokenHash != "" {
+	if tok, _ := created.Token.Reveal(); tok != "" || created.TokenHash != "" {
 		t.Fatalf("create response leaked token: %+v", created)
 	}
 	if len(created.ShellTemplates) != 1 || created.ShellTemplates[0].Command != "ssh" {
@@ -551,7 +551,7 @@ func TestProjectRoutes_RotateToken_NewTokenInvalidatesOld(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
-	oldToken := created.Token
+	oldToken, _ := created.Token.Reveal()
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/rotate_token", nil)
 	if resp.StatusCode != http.StatusOK {
@@ -762,15 +762,19 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 	// from the store — otherwise this check would compare against an empty
 	// string and pass vacuously.
 	stored, _ := store.Get().findProjectByID(created.ID)
-	if stored == nil || stored.Token == "" {
+	if stored == nil {
+		t.Fatalf("project not found in store")
+	}
+	storedToken, _ := stored.Token.Reveal()
+	if storedToken == "" {
 		t.Fatalf("expected a stored project token to check against")
 	}
 	skillContent, err := os.ReadFile(skillFile)
 	if err != nil {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
-	if bytes.Contains(skillContent, []byte(stored.Token)) {
-		t.Errorf("SKILL.md leaks the project token (%d bytes) — content: %s", len(stored.Token), skillContent)
+	if bytes.Contains(skillContent, []byte(storedToken)) {
+		t.Errorf("SKILL.md leaks the project token (%d bytes) — content: %s", len(storedToken), skillContent)
 	}
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/rotate_token", nil)
