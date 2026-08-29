@@ -489,6 +489,17 @@ func TestRemoteDispatchTable_HoldsExactlyListToolsAndCallTool(t *testing.T) {
 	}
 }
 
+// AC-13: admin_op carries brokered mutation (ADR-017 decision 2) and must
+// have no code path on the remote listener at all — not a refusal on one.
+// The two-entry-count assertion above would already catch a third entry
+// landing here, but this asserts the specific one the design forbids by
+// name, so it fails on its own rather than as a side effect of a count.
+func TestRemoteDispatchTable_AdminOpIsUnreachable(t *testing.T) {
+	if _, ok := remoteHandlers[bridge.ReqAdminOp]; ok {
+		t.Fatal("admin_op is registered on the remote dispatch table; a VM must have no code path to it")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Grants (decision 2) and the call-time re-check (decision 3, point 3)
 // ---------------------------------------------------------------------------

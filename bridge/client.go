@@ -173,6 +173,25 @@ func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	return checkError(resp)
 }
 
+// AdminOp sends one brokered admin operation by name. It carries no token
+// and no cwd: brokered mutation is gated at the operation core the tray
+// dispatches into, not by anything a caller can present at this 0600 socket
+// (ADR-017 decision 2), so there is nothing here for either field to widen.
+func (c *Client) AdminOp(op string, args json.RawMessage) (json.RawMessage, error) {
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqAdminOp,
+		Name:      op,
+		Arguments: args,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("admin op %q failed: %w", op, err)
+	}
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
 func sendAdmin(reqType, name, token string) error {
 	c := NewClient(token)
 	resp, err := c.send(BridgeRequest{

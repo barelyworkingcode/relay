@@ -61,6 +61,11 @@ type stubRouter struct {
 	registerReqs []RegisterManifestRequest
 	registerToks []string
 	registerErr  error
+
+	adminOpNames []string
+	adminOpArgs  []json.RawMessage
+	adminOpResp  json.RawMessage
+	adminOpErr   error
 }
 
 func (s *stubRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
@@ -155,6 +160,14 @@ func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestReq
 	s.registerReqs = append(s.registerReqs, req)
 	s.registerToks = append(s.registerToks, token)
 	return s.registerErr
+}
+
+func (s *stubRouter) AdminOp(_ context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adminOpNames = append(s.adminOpNames, name)
+	s.adminOpArgs = append(s.adminOpArgs, args)
+	return s.adminOpResp, s.adminOpErr
 }
 
 // startTestBridge uses /tmp directly, not t.TempDir(): macOS caps a

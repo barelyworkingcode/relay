@@ -1189,3 +1189,15 @@ func (r *appRouter) RegisterManifest(_ context.Context, req bridge.RegisterManif
 		"actions", len(req.Manifest.Actions))
 	return nil
 }
+
+// AdminOp resolves name against adminOps and runs it. An op absent from the
+// table is refused the same way an unknown bridge request type is — there is
+// no default handler to fall back to, by construction, since the table's
+// entire point is to name only what a later step has deliberately wired in.
+func (r *appRouter) AdminOp(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	op, ok := adminOps[name]
+	if !ok {
+		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("unknown admin operation: %q", name))
+	}
+	return op(ctx, r, args)
+}

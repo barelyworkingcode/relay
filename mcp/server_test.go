@@ -64,6 +64,9 @@ func (s *stubRouter) ResolveProjectTemplate(context.Context, bridge.ShellTemplat
 func (s *stubRouter) RegisterManifest(context.Context, bridge.RegisterManifestRequest, string) error {
 	return nil
 }
+func (s *stubRouter) AdminOp(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
 
 func startBridgeForMCP(t *testing.T, router bridge.ToolRouter, token string) *bridge.Client {
 	t.Helper()
