@@ -153,6 +153,14 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqResolvePtyEnv:          {handle: handleResolvePtyEnv},
 	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
 	ReqRegisterManifest:       {handle: handleRegisterManifest},
+
+	// This is deliberate: unlike every requireAdmin entry above, admin_op
+	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
+	// socket's ambient trust twice, and admin_secret is a sealed value the
+	// caller can no longer read to present here anyway. The gate that
+	// matters lives inside the operation core this dispatches to, not on
+	// this transport.
+	ReqAdminOp: {handle: handleAdminOp},
 }
 
 func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeResponse {
@@ -273,6 +281,14 @@ func handleResolveProjectTemplate(ctx context.Context, req *BridgeRequest, route
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespProjectTemplate, Data: data}
+}
+
+func handleAdminOp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	result, err := router.AdminOp(ctx, req.Name, req.Arguments)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespResult, Result: result}
 }
 
 func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
