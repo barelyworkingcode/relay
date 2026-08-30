@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"relaygo/presence"
@@ -361,6 +363,65 @@ func TestGate_RetiredOpsNeverPrompt(t *testing.T) {
 			}
 			if n := recording.Calls(); n != 0 {
 				t.Errorf("%s: presence provider called %d time(s); a retired op must never prompt", tc.method, n)
+			}
+		})
+	}
+}
+
+// pgwUngatedCaseConfigChangeCredential names the auditCredential* value
+// each pgwUngatedCases row's config_change record carries, so
+// TestGate_RetiredOpsStillWriteConfigChange can assert it without
+// re-deriving it from the op's own core.
+var pgwUngatedCaseConfigChangeCredential = map[string]string{
+	"McpOps.Remove":     auditCredentialExternalMcp,
+	"ServiceOps.Remove": auditCredentialService,
+}
+
+// TestGate_RetiredOpsStillWriteConfigChange is AC-12: removing the gate
+// must not also remove the record. Each retired op must still write the
+// same config_change it did while gated -- event, credential, subject,
+// via and outcome unchanged -- with only presence_id now empty (§5.1,
+// §5.2, §3.4).
+func TestGate_RetiredOpsStillWriteConfigChange(t *testing.T) {
+	for _, tc := range pgwUngatedCases(t) {
+		t.Run(tc.method, func(t *testing.T) {
+			_, store := pgwSandbox(t)
+			tc.seed(t, store)
+
+			logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+			rec, err := NewAuditRecorder(nil, logPath)
+			assertNoErr(t, err, "NewAuditRecorder")
+			t.Cleanup(rec.Close)
+
+			if err := tc.run(t, store, allowGate(t), issuanceAuditorOrNil(rec)); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+			rec.Close() // flush and wait for the writer goroutine before reading
+
+			data, err := os.ReadFile(logPath)
+			assertNoErr(t, err, "read audit log")
+			events := aiParse(t, string(data))
+
+			var found *AuditEvent
+			for i := range events {
+				if events[i].Event == AuditEventConfigChange {
+					found = &events[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("%s: no config_change record written; events = %+v", tc.method, events)
+			}
+			if wantCred := pgwUngatedCaseConfigChangeCredential[tc.method]; found.Credential != wantCred {
+				t.Errorf("%s: credential = %q, want %q", tc.method, found.Credential, wantCred)
+			}
+			if found.Via != auditViaCLI {
+				t.Errorf("%s: via = %q, want %q", tc.method, found.Via, auditViaCLI)
+			}
+			if found.Outcome != "ok" {
+				t.Errorf("%s: outcome = %q, want %q", tc.method, found.Outcome, "ok")
+			}
+			if found.PresenceID != "" {
+				t.Errorf("%s: presence_id = %q, want empty (removal is not gated)", tc.method, found.PresenceID)
 			}
 		})
 	}
