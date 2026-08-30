@@ -158,10 +158,20 @@ type EnrolmentCreated struct {
 
 // remoteConfigFields is the PUT /api/remote and update_remote_config
 // request; JSON tags match ipcRemoteConfigMsg's.
+//
+// EnrolmentRequests/EnrolmentListen follow Enabled/Listen's own shape,
+// carrying the operator's say-so for the third listener (spec §1). Neither
+// door reimplements enrolment_requests:true-with-enabled:false as a
+// save-time refusal here: that check lives once, at resolve time
+// (RemoteConfig.resolveEnrolment), so a value this handler accepted and the
+// value the supervisor later refuses to serve can never disagree about
+// which one is authoritative.
 type remoteConfigFields struct {
-	Remove  bool   `json:"remove"`
-	Enabled bool   `json:"enabled"`
-	Listen  string `json:"listen"`
+	Remove            bool   `json:"remove"`
+	Enabled           bool   `json:"enabled"`
+	Listen            string `json:"listen"`
+	EnrolmentRequests bool   `json:"enrolment_requests"`
+	EnrolmentListen   string `json:"enrolment_listen"`
 }
 
 // The one core behind both the HTTP door (enrolment_routes.go) and the
@@ -617,9 +627,17 @@ func (o *EnrolmentOps) RemoteConfig() (remoteConfigView, error) {
 
 func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, error) {
 	listen := strings.TrimSpace(f.Listen)
-	if !f.Remove && listen != "" {
-		if err := validateRemoteListen(listen); err != nil {
-			return remoteConfigView{}, invalidEnrolment(err.Error())
+	enrolListen := strings.TrimSpace(f.EnrolmentListen)
+	if !f.Remove {
+		if listen != "" {
+			if err := validateRemoteListen(listen); err != nil {
+				return remoteConfigView{}, invalidEnrolment(err.Error())
+			}
+		}
+		if enrolListen != "" {
+			if err := validateRemoteListen(enrolListen); err != nil {
+				return remoteConfigView{}, invalidEnrolment(err.Error())
+			}
 		}
 	}
 
@@ -644,6 +662,18 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 			// `enabled: true` — opening a network listener is a thing the
 			// operator says, not a thing relay infers.
 			s.Remote.Enabled = nil
+		}
+		s.Remote.EnrolmentListen = enrolListen
+		if f.EnrolmentRequests {
+			enrolEnabled := true
+			s.Remote.EnrolmentRequests = &enrolEnabled
+		} else {
+			// Same discipline as Enabled, and for the same reason: opening
+			// the enrolment-request door is a thing the operator says, and
+			// enrolment_requests:true-with-enabled:false is refused where
+			// it has always been refused — at resolve time
+			// (RemoteConfig.resolveEnrolment) — not duplicated here.
+			s.Remote.EnrolmentRequests = nil
 		}
 	}); err != nil {
 		return remoteConfigView{}, fmt.Errorf("save remote config: %w", err)

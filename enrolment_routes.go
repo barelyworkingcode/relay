@@ -132,8 +132,12 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusOK, view)
 	})
 
-	// execute: the body sets the mTLS listener's bind address — the caller
-	// chooses what relay exposes (ADR-015 decision 1).
+	// execute: the body sets the mTLS listener's bind address, and now also
+	// the enrolment-request listener's (spec §1) — the caller chooses what
+	// relay exposes (ADR-015 decision 1). Still one route, one class: the
+	// enrolment fields ride remoteConfigFields unchanged, so this handler
+	// gains no new surface, only two more fields on the body it already
+	// decodes.
 	rr.Handle(ClassExecute, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
 		var body remoteConfigFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
