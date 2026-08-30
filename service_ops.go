@@ -148,10 +148,14 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 type ServiceOps struct {
 	Store    SettingsStore
 	Registry ServiceManager
-	// Gate is the presence check Create, Update and Remove demand before
-	// they touch the store (ADR-017 decisions 3 and 4): a service's
-	// `command` is what relay will run, the caller's choice (ADR-015
-	// decision 1). A nil Gate refuses all three — see requireGate.
+	// Gate is the presence check Create and Update demand before they
+	// touch the store (ADR-017 decisions 3 and 4): a service's `command`
+	// is what relay will run, the caller's choice (ADR-015 decision 1).
+	// Remove is deliberately ungated (ADR-018 step 3): removal narrows,
+	// never widens, and stopping a running service is already ungated
+	// `configure` (POST /api/services/{id}/stop) — only the record's
+	// deletion is new here, and it still calls requireIssuanceAuditor
+	// below. A nil Gate refuses Create and Update — see requireGate.
 	Gate *presence.Gate
 	// Issuance records the config_change every register/unregister leaves
 	// (§7.5) and is the hard dependency §7.4 checks before Gate.
@@ -296,12 +300,13 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 }
 
 func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
+	// No requireGate call here (ADR-018 step 3, §5.2): unregistering only
+	// narrows what the caller already reaches -- stopping the process is
+	// already ungated configure, and re-registering under the same id
+	// still hits Create/Update's gate. requireIssuanceAuditor and
+	// recordConfigChange below still run unconditionally, so the act is
+	// still detected -- only presence_id comes back empty.
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return err
-	}
-	grant, err := requireGate(o.Gate, ctx, "service.unregister",
-		singleStringDigest("service.unregister", "id", id), fmt.Sprintf("unregister the service %q", id))
-	if err != nil {
 		return err
 	}
 
@@ -317,7 +322,7 @@ func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
 		}
 		return fmt.Errorf("save service: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, grant.ID()); err != nil {
+	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, ""); err != nil {
 		slog.Error("service unregistered but not recorded in the audit log", "id", id, "error", err)
 	}
 	o.Registry.Stop(id)

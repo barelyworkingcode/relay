@@ -862,7 +862,11 @@ digest must too. That is what the `0x00`/`0x01` presence byte is for.
 ### 6.4 The gated operations, and the exact digest input for each
 
 This table is normative. A digest that omits a listed argument is a hole; adding
-an argument to an operation without adding it here is a hole.
+an argument to an operation without adding it here is a hole. Two rows —
+`mcp.unregister` and `service.unregister` — are struck through: ADR-018 step 3
+narrowed them out of `presence.GatedOps` (2026-08-29). They stay in this table,
+not deleted, because the record of what used to be gated and why is the point;
+see the note on each row and `docs/decisions/018-configuration-is-a-capability-of-an-identity.md`.
 
 | op name | core method | digested arguments (in this order) |
 |---|---|---|
@@ -874,10 +878,10 @@ an argument to an operation without adding it here is a hole.
 | `login.bootstrap.mint` | `LoginOps.MintBootstrap` | *(no arguments — digest over an empty field list)* |
 | `login.passkey.revoke` | `LoginOps.RevokePasskey` | `id` (string) |
 | `mcp.register` | `McpOps.Add` | `id`, `display_name`, `transport`, `url`, `command` (strings), `args` (sequence), `env` (map), `tcc_services` (set) |
-| `mcp.unregister` | `McpOps.Remove` | `id` (string) |
+| ~~`mcp.unregister`~~ | `McpOps.Remove` | `id` (string) — **narrowed out of the gated set by ADR-018 step 3 (2026-08-29): removal only narrows, never widens, so it no longer gates; `McpOps.Remove` still calls `requireIssuanceAuditor` and still records `config_change`, with `presence_id` empty. Row kept as the record of what was gated before the narrowing — see `docs/decisions/018-configuration-is-a-capability-of-an-identity.md`.** |
 | `mcp.oauth.start` | `McpOps.StartOAuth` | `id` (string) |
 | `service.register` | `ServiceOps.Create` / `Update` | `id`, `display_name`, `command` (strings), `working_dir`, `url` (strings, absent-aware), `args` (sequence, absent-aware), `env` (map, absent-aware), `autostart` (bool, absent-aware), `frontend_consumer` (bool, absent-aware) |
-| `service.unregister` | `ServiceOps.Remove` | `id` (string) |
+| ~~`service.unregister`~~ | `ServiceOps.Remove` | `id` (string) — **narrowed out of the gated set by ADR-018 step 3 (2026-08-29), same reasoning as `mcp.unregister` above.** |
 | `project.rotate_token` | `ProjectOps.RotateToken` | `project_id` (string) |
 | `project.grant` | `ProjectOps.Create` / `Update` | `project_id` (string, absent on create), `allowed_mcp_ids` (set, absent-aware), `allowed_tools` (map of set, absent-aware), `access` (map, absent-aware), `context` (map of raw JSON, absent-aware), `allow_external` (map of bool, absent-aware), `allow_cwd_auth` (bool, absent-aware), `kind` (string), `path` (string) |
 | `sealed.reset` | tray only | `settings_key_id`, `keychain_key_id` (strings, either may be absent) |

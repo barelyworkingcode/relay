@@ -44,20 +44,99 @@ import (
 // gatedIPCMethods maps an IPCContext field name to the gated core methods
 // reachable through it (ADR-017 implementation spec §6.4's table). A method
 // is listed here if and only if its core calls requireGate/Gate.Require --
-// including methods no current ipc_*.go handler reaches synchronously any
-// more (ServiceOps.Remove, McpOps.StartOAuth), so a future handler that
-// starts calling one directly is caught too. A method absent here because
-// it is genuinely ungated (ServiceOps.Start/Stop/SetAutostart,
-// LoginOps.Passkeys/Sessions/SignOut, EnrolmentOps.SetRemoteConfig,
-// McpOps.ResetPermissions, ...) must stay absent: adding an ungated method
-// would just make the test ignore real synchronous calls without proving
-// anything.
+// including methods no current ipc_*.go handler reaches synchronously at
+// all (LoginOps.MintBootstrap is only reached from trayapp.go's own menu
+// item today; EnrolmentOps.Sign and ServiceOps/McpOps.StartOAuth likewise
+// have no current WKWebView caller), so a future handler that starts
+// calling one directly is caught too. A method absent here because it is
+// genuinely ungated (ServiceOps.Start/Stop/SetAutostart/Remove,
+// McpOps.Remove, LoginOps.Passkeys/Sessions/SignOut,
+// EnrolmentOps.SetRemoteConfig, McpOps.ResetPermissions, ...) must stay
+// absent: adding an ungated method would just make the test ignore real
+// synchronous calls without proving anything. McpOps.Remove and
+// ServiceOps.Remove left this map when they left presence.GatedOps
+// (ADR-018 step 3): removal narrows, so neither blocks on
+// LocalAuthentication's async completion and neither can deadlock the
+// Cocoa run loop the way this file's guard exists to catch.
+//
+// This map is hand-written for readability, but kept honest by
+// TestIPC_GatedIPCMethodsMatchesTheDerivedMap below rather than by review:
+// it must equal what gate_ast_scan_test.go's scan finds, or this doc
+// comment's "if and only if" is a claim nothing checks.
 var gatedIPCMethods = map[string]map[string]bool{
 	"ProjectOps":   {"Create": true, "Update": true, "RotateToken": true},
-	"McpOps":       {"Add": true, "Remove": true, "StartOAuth": true},
-	"Ops":          {"Create": true, "Update": true, "Remove": true}, // ServiceOps
-	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true},
-	"LoginOps":     {"RevokePasskey": true},
+	"McpOps":       {"Add": true, "StartOAuth": true},
+	"Ops":          {"Create": true, "Update": true}, // ServiceOps
+	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true, "Sign": true},
+	"LoginOps":     {"RevokePasskey": true, "MintBootstrap": true},
+}
+
+// gatedIPCFieldForType translates a Go receiver type name -- the shape
+// gate_ast_scan_test.go's scan reports method names in -- to the
+// IPCContext field name that exposes it. Only ServiceOps differs (its
+// field is named Ops; see ipc_handlers.go's own comment on that field for
+// why). CredentialOps and sealed.reset's resetSealedStore have no
+// IPCContext field at all -- credential minting and the sealed-store reset
+// have no WKWebView door -- so they are absent here on purpose, not by
+// oversight.
+var gatedIPCFieldForType = map[string]string{
+	"ProjectOps":   "ProjectOps",
+	"McpOps":       "McpOps",
+	"ServiceOps":   "Ops",
+	"EnrolmentOps": "EnrolmentOps",
+	"LoginOps":     "LoginOps",
+}
+
+// TestIPC_GatedIPCMethodsMatchesTheDerivedMap is §4.4's fallback for
+// keeping a hand-written map honest: gatedIPCMethods must equal the map
+// derived from the same requireGate scan gate_structural_test.go's
+// gate-coverage guard uses, translated from Go type name to IPCContext
+// field name. A method retired from or added to the gated set updates one
+// source of truth (the requireGate call site); this test is what notices
+// gatedIPCMethods not having followed it.
+func TestIPC_GatedIPCMethodsMatchesTheDerivedMap(t *testing.T) {
+	sites := scanRequireGateCallSites(t, gateASTModuleRoot(t))
+
+	derived := map[string]map[string]bool{}
+	for _, s := range sites {
+		parts := strings.SplitN(s.method, ".", 2)
+		if len(parts) != 2 {
+			continue // a free function (resetSealedStore): no IPCContext field
+		}
+		field, known := gatedIPCFieldForType[parts[0]]
+		if !known {
+			continue // CredentialOps: no IPCContext door
+		}
+		if derived[field] == nil {
+			derived[field] = map[string]bool{}
+		}
+		derived[field][parts[1]] = true
+	}
+
+	if len(derived) != len(gatedIPCMethods) {
+		t.Fatalf("derived gatedIPCMethods has %d field(s), hand-written has %d", len(derived), len(gatedIPCMethods))
+	}
+	for field, methods := range gatedIPCMethods {
+		dm, ok := derived[field]
+		if !ok {
+			t.Errorf("gatedIPCMethods has field %q with no requireGate call site behind it", field)
+			continue
+		}
+		if len(dm) != len(methods) {
+			t.Errorf("gatedIPCMethods[%q] = %v, derived = %v", field, methods, dm)
+			continue
+		}
+		for m := range methods {
+			if !dm[m] {
+				t.Errorf("gatedIPCMethods[%q][%q] = true, but no requireGate call site found for %s.%s", field, m, field, m)
+			}
+		}
+	}
+	for field := range derived {
+		if _, ok := gatedIPCMethods[field]; !ok {
+			t.Errorf("requireGate call sites imply IPCContext field %q, missing from gatedIPCMethods", field)
+		}
+	}
 }
 
 func itsModuleRoot(t *testing.T) string {
