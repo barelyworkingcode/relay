@@ -164,8 +164,14 @@ of which the tool-calling core survives merged into the one client); and a
 small slice of per-operation gate wiring in `package main` — **measured, not
 the ~1,700-line/"roughly half" figure this ADR originally claimed.** Step 3's
 own measurement (its record: `docs/decisions/017-implementation-spec.md` §6.4,
-and the step-3 commit): `presence/` is 1,821 lines including tests and the
-`presencetest` seam, 749 non-test production Go, and **zero** functions or
+and the step-3 commit, `wc -l` over every file under `presence/`): 1,935 lines
+total including `localauth_darwin.h`/`.m` (1,897 counting `.go` files only),
+and 830 non-test production Go by filename convention — every `.go` file
+under `presence/` whose name does not end in `_test.go`. That count still
+includes `presencetest/presencetest.go` (83 lines): the file name does not
+end in `_test.go` even though the package is test-only support never linked
+into the release binary (`TestPresence_SeamIsNotLinkedIntoTheBinary`).
+**Zero** functions or
 types in `presence/` die under the full narrowing this ADR describes — only
 `GatedOps` string literals, one line each. The per-op digest builders do not
 collapse into a single check either (§2.4's argument, folded back in here):

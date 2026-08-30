@@ -249,12 +249,11 @@ func pgwAuditRecorderFor(t *testing.T, issuance IssuanceAuditor) *AuditRecorder 
 }
 
 // TestGate_EveryImplementedOpRefusesWithoutGate is AC-16b over every
-// gated operation that has a core as of S5. sealed.reset is absent: it is
-// tray-only (S7's Reset Sealed Store menu item) and has no core yet, so
-// there is nothing here for it to construct with a nil Gate. Whoever adds
-// its core in S7 must add its case here — TestGate_TableCoversGatedOps
-// below fails the day that is forgotten for any OTHER op, and is worth
-// extending to sealed.reset once it exists.
+// gated operation that has a core as of S5. sealed.reset is deliberately
+// absent: it is a free function (resetSealedStore) reachable from no door
+// but the tray's own "Reset Sealed Store…" menu item, not a method on an
+// ops core this table's context/store/gate/issuance run() shape could
+// construct.
 func TestGate_EveryImplementedOpRefusesWithoutGate(t *testing.T) {
 	for _, tc := range pgwCases(t) {
 		t.Run(tc.op, func(t *testing.T) {
