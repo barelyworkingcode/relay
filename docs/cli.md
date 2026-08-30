@@ -1181,6 +1181,12 @@ whole design spends its effort closing on the first one; see
 
 # Further reading
 
+- [`docs/install-single-machine.md`](install-single-machine.md) — the
+  task-ordered version of this document's worked example: start relay,
+  register an MCP, create a project, call a tool, on one Mac.
+- [`docs/install-remote-machine.md`](install-remote-machine.md) — the same
+  for a second machine: which command runs where, the enrolment-request
+  channel, and the operator-carried fallback.
 - [`docs/sealed-config.md`](sealed-config.md) — why project tokens, the
   admin secret, OAuth bearers and the CA key are sealed at rest, why the
   rest of `settings.json` deliberately is not, and the break-glass recovery
