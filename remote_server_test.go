@@ -76,6 +76,14 @@ type remoteFixtureOpts struct {
 	// conservative defaults, so a test can drive throttling deterministically
 	// without making hundreds of calls.
 	budget *EnrolmentBudget
+	// secondTool, when non-empty, names a second tool the mock macmcp
+	// connection exposes alongside "mail_search". Empty (the default) keeps
+	// every existing fixture consumer's "exactly one tool" assumption
+	// (remote_server_test.go's own ListTools assertions) intact; a test
+	// proving a narrow actually REMOVES a tool from ListTools — rather than
+	// merely returning a set that happens to still hold one entry — needs
+	// something to narrow away.
+	secondTool string
 }
 
 // newRemoteFixture builds a sandboxed relay install with one remote project,
@@ -124,7 +132,11 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	assertNoErr(t, createErr, "create remote project")
 
 	mgr := NewExternalMcpManager(nil)
-	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools("mail_search"),
+	toolNames := []string{"mail_search"}
+	if opts.secondTool != "" {
+		toolNames = append(toolNames, opts.secondTool)
+	}
+	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools(toolNames...),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			f.mcpCalls.Add(1)
 			return json.RawMessage(`{"content":[{"type":"text","text":"3 messages"}]}`), nil

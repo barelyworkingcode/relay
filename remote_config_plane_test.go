@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -68,11 +69,27 @@ func TestCliAdmin_BitOffMakesConfigRouteUnreachable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCliAdmin_NarrowsOwnGrantedTools(t *testing.T) {
-	f := newRemoteFixture(t, remoteFixtureOpts{})
+	// secondTool gives the fixture MCP a second tool ("mail_send") the
+	// stored "mail_*" pattern already grants, so ListTools returning
+	// exactly [mail_search] after narrowing is evidence the narrow REMOVED
+	// mail_send — not merely that the narrowed set happens to have one
+	// entry, which the fixture's single-tool default would prove
+	// identically with narrowing absent (Finding F).
+	f := newRemoteFixture(t, remoteFixtureOpts{secondTool: "mail_send"})
 	setCLIAdmin(t, f.store, "hermes-mail", true)
 	c := f.dial()
 
-	resp := c.roundTrip(`{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_search"]}}}`)
+	resp := c.roundTrip(`{"type":"ListTools"}`)
+	if resp.Type != bridge.RespTools {
+		t.Fatalf("ListTools before narrowing: %s %s", resp.Type, resp.Message)
+	}
+	var before []mcp.Tool
+	assertNoErr(t, json.Unmarshal(resp.Tools, &before), "parse tools")
+	if len(before) != 2 {
+		t.Fatalf("tool list before narrowing = %+v, want both mail_search and mail_send", before)
+	}
+
+	resp = c.roundTrip(`{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_search"]}}}`)
 	if resp.Type != bridge.RespResult {
 		t.Fatalf("NarrowGrant refused: %s %s", resp.Type, resp.Message)
 	}
@@ -92,7 +109,63 @@ func TestCliAdmin_NarrowsOwnGrantedTools(t *testing.T) {
 	var tools []mcp.Tool
 	assertNoErr(t, json.Unmarshal(resp.Tools, &tools), "parse tools")
 	if len(tools) != 1 || tools[0].Name != "mail_search" {
-		t.Fatalf("tool list after narrowing = %+v", tools)
+		t.Fatalf("tool list after narrowing = %+v, want exactly [mail_search] — mail_send must have disappeared", tools)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding A: a resend of an already-applied narrowing must not rewrite
+// settings.json or double the audit trail. narrowsOnly accepts "request
+// equals what is already stored" — that is not a widening — but
+// applyProjectUpdate's mutators write unconditionally once invoked, and
+// withDeclinable's only lever against a write is a callback error. Six
+// identical NarrowGrant requests must produce one write and one
+// config_change, not six.
+// ---------------------------------------------------------------------------
+
+func TestCliAdmin_RepeatedIdenticalNarrowingWritesNothingTheSecondTime(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+	setCLIAdmin(t, f.store, "hermes-mail", true)
+	c := f.dial()
+
+	const req = `{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_search"]}}}`
+
+	resp := c.roundTrip(req)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("first NarrowGrant refused: %s %s", resp.Type, resp.Message)
+	}
+
+	countConfigChanges := func() int {
+		n := 0
+		for _, e := range readLoggedEvents(t, f.audit) {
+			if e.Event == AuditEventConfigChange && e.Credential == auditCredentialProjectGrant {
+				n++
+			}
+		}
+		return n
+	}
+	if got := countConfigChanges(); got != 1 {
+		t.Fatalf("config_change count after the first narrowing = %d, want 1", got)
+	}
+
+	before := odwSnap(t, f.dir)
+
+	// Five more IDENTICAL requests — a resend, not a further narrowing.
+	for i := 0; i < 5; i++ {
+		resp = c.roundTrip(req)
+		if resp.Type != bridge.RespResult {
+			t.Fatalf("repeat NarrowGrant #%d refused: %s %s", i, resp.Type, resp.Message)
+		}
+		var result remoteNarrowGrantResult
+		assertNoErr(t, json.Unmarshal(resp.Result, &result), "parse remoteNarrowGrantResult")
+		if len(result.Changed) != 0 {
+			t.Errorf("repeat NarrowGrant #%d reported Changed = %v, want none", i, result.Changed)
+		}
+	}
+
+	before.assertUntouched(t, f.dir, "five identical resends of an already-applied narrowing")
+	if got := countConfigChanges(); got != 1 {
+		t.Fatalf("config_change count after five identical resends = %d, want still 1", got)
 	}
 }
 
@@ -325,13 +398,36 @@ func TestCliAdmin_NarrowGrantResultDoesNotDiscloseSiblingEnrolments(t *testing.T
 	}
 }
 
+// TestRemoteNarrowFields_NamesNoOtherIdentity is an INVENTORY, not a
+// denylist (Finding E): the earlier version banned four specific tag names
+// ("client_id", "enrolment", "project_id", "owner"), so a field tagged
+// e.g. "acting_as" or "target_project" — naming another object just as
+// surely, in a word the denylist did not happen to think of — would have
+// passed it silently. Asserting the exact field set instead means ANY
+// added field fails this test until someone updates the list on purpose,
+// which is where "does this name something other than the caller's own"
+// gets asked and answered.
 func TestRemoteNarrowFields_NamesNoOtherIdentity(t *testing.T) {
-	banned := map[string]bool{"client_id": true, "enrolment": true, "project_id": true, "owner": true}
+	want := map[string]bool{
+		"allowed_mcp_ids": true,
+		"allowed_tools":   true,
+		"access":          true,
+		"allow_external":  true,
+	}
 	typ := reflect.TypeOf(remoteNarrowFields{})
+	got := map[string]bool{}
 	for i := 0; i < typ.NumField(); i++ {
 		tag := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
-		if banned[tag] {
-			t.Errorf("remoteNarrowFields has a field tagged %q, which names an object other than the caller's own", tag)
+		got[tag] = true
+	}
+	for tag := range want {
+		if !got[tag] {
+			t.Errorf("remoteNarrowFields is missing the %q field", tag)
+		}
+	}
+	for tag := range got {
+		if !want[tag] {
+			t.Errorf("remoteNarrowFields has an unlisted field tagged %q — every field on the remote configuration surface must be named in this test's own list, on purpose, before it ships", tag)
 		}
 	}
 }
@@ -385,9 +481,23 @@ func TestCliAdmin_FlippingBitOffDeniesTheNextRequestNotTheConnection(t *testing.
 		t.Fatalf("first NarrowGrant refused: %s %s", resp.Type, resp.Message)
 	}
 
-	// Out of band relative to this connection: another process (a CLI
-	// invocation) toggles the bit while the connection stays open.
-	setCLIAdmin(t, f.store, "hermes-mail", false)
+	// Out of band, for real: written through a SECOND store instance
+	// pointed at the same file (f.cliWriter(), the same stand-in for "a
+	// separate `relay enrol update` process" that TestRemoteServer_
+	// AcceptsAnEnrolmentCreatedByAnotherProcess uses), not through f.store
+	// — the listener's own store, which shares its in-memory cache with
+	// the toggle if called directly and would prove only that the
+	// listener re-reads a change already sitting in its own process, not
+	// the freshSettings-vs-Get() property this criterion names.
+	setCLIAdmin(t, f.cliWriter(), "hermes-mail", false)
+
+	// Precondition: the listener's own cached settings must still show the
+	// bit on, or this test is back to exercising the in-process case and
+	// proves nothing about freshSettings.
+	if e := f.store.Get().FindEnrolment("hermes-mail"); e == nil || !e.CLIAdmin {
+		t.Fatal("the listener's cached settings already show cli_admin off; " +
+			"this test no longer reproduces the cross-process condition it was written for")
+	}
 
 	resp = c.roundTrip(`{"type":"NarrowGrant","arguments":{}}`)
 	if resp.Type != bridge.RespError || !strings.Contains(resp.Message, "cli-admin") {
@@ -598,6 +708,39 @@ func TestCliAdmin_RefusedConfigRequestWritesControlDecision(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Finding (class label): DescribeGrant's own class label has no assertion
+// anywhere — relabelling remoteConfigHandlers[bridge.ReqDescribeGrant] from
+// ClassRead to ClassConfigure leaves the suite green, because the read-only
+// entry's class is never surfaced back for a test to check. NarrowGrant's
+// label is already caught, the same way this one now is: a refusal writes
+// the entry's class into the control_decision record.
+// ---------------------------------------------------------------------------
+
+func TestCliAdmin_RefusedDescribeGrantRecordsItsOwnClass(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+	c := f.dial()
+
+	resp := c.roundTrip(`{"type":"DescribeGrant"}`)
+	if resp.Type != bridge.RespError {
+		t.Fatalf("expected a refusal, got %s", resp.Type)
+	}
+
+	events := readLoggedEvents(t, f.audit)
+	var found *AuditEvent
+	for i := range events {
+		if events[i].Event == AuditEventControlDecision && events[i].Method == bridge.ReqDescribeGrant {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no control_decision recorded for the refused DescribeGrant: %+v", events)
+	}
+	if found.Class != string(ClassRead) {
+		t.Errorf("class = %q, want %q — DescribeGrant is registered as read, not configure", found.Class, ClassRead)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // AC-24: no presence prompt is reachable from the remote listener
 // ---------------------------------------------------------------------------
 
@@ -694,5 +837,102 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 	}
 	if got := proj.AllowedTools["macmcp"]; len(got) != 1 || got[0] != "mail_search" {
 		t.Errorf("the kept MCP's allowlist changed: %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding C: NarrowForEnrolment's fail-closed issuance guard has no
+// coverage of its own. Every sibling core has this test (AC-6 has it for
+// EnrolmentOps.Update) — deleting requireIssuanceAuditor(o.Issuance) from
+// NarrowForEnrolment leaves the rest of the suite green, since
+// recordConfigChangeRemote returns nil for a nil auditor and a remote
+// narrowing would land silently unrecorded.
+// ---------------------------------------------------------------------------
+
+func TestNarrowForEnrolment_IssuanceAuditingOffRefusesBeforeTouchingStore(t *testing.T) {
+	dir, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	assertNoErr(t, store.With(func(s *Settings) {
+		p, _ := s.findProjectByID(mail.ID)
+		if p == nil {
+			t.Fatal("seeded project vanished")
+		}
+		p.AllowedMcpIDs = []string{"macmcp"}
+		p.AllowedTools = map[string][]string{"macmcp": {"mail_*"}}
+	}), "seed allowed_mcp_ids and allowed_tools")
+
+	before := odwSnap(t, dir)
+	ops := &ProjectOps{Store: store, Issuance: nil, OnChange: func() {}}
+	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
+
+	_, _, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
+		remoteNarrowFields{AllowedTools: &map[string][]string{"macmcp": {"mail_search"}}}, caller, surfaces)
+	if !errors.Is(err, errIssuanceAuditingRequired) {
+		t.Fatalf("NarrowForEnrolment with a nil Issuance: err = %v, want errIssuanceAuditingRequired", err)
+	}
+	before.assertUntouched(t, dir, "NarrowForEnrolment with issuance auditing unavailable")
+}
+
+// ---------------------------------------------------------------------------
+// Finding D: a nil RemoteConfigurer means the configuration table is
+// absent — handleRequest must treat every config request type as unknown,
+// fail-closed, without panicking the connection goroutine. This also pins
+// the ordering inside handleRequest: the cli-admin bit is checked BEFORE
+// the nil-configurer check, so a certificate without cli-admin gets the
+// cli-admin refusal even on a listener with no configurer wired at all —
+// the two refusals are never to be confused with each other.
+// ---------------------------------------------------------------------------
+
+func TestCliAdmin_NilConfigurerRefusesConfigRequestsWithoutPanicking(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	setCLIAdmin(t, f.store, "hermes-mail", true)
+
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, f.mgr.AllMcpSurfaces)
+	assertNoErr(t, err, "NewRemoteServer with a nil configurer")
+	f.server = rs
+	go rs.Serve()
+	t.Cleanup(rs.Close)
+
+	c := f.dial()
+	if c == nil {
+		t.Fatal("dial failed")
+	}
+
+	resp := c.roundTrip(`{"type":"DescribeGrant"}`)
+	if resp.Type != bridge.RespError {
+		t.Fatalf("DescribeGrant with no configurer wired = %s %s, want a refusal", resp.Type, resp.Message)
+	}
+	resp = c.roundTrip(`{"type":"NarrowGrant","arguments":{}}`)
+	if resp.Type != bridge.RespError {
+		t.Fatalf("NarrowGrant with no configurer wired = %s %s, want a refusal", resp.Type, resp.Message)
+	}
+
+	// The connection goroutine survived both refusals: an ordinary tool
+	// call still works on the same connection.
+	resp = c.roundTrip(`{"type":"ListTools"}`)
+	if resp.Type != bridge.RespTools {
+		t.Fatalf("ListTools after a nil-configurer refusal: %s %s", resp.Type, resp.Message)
+	}
+}
+
+func TestCliAdmin_BitIsCheckedBeforeTheNilConfigurerCheck(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	// cli_admin stays off — the fixture's default.
+
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, f.mgr.AllMcpSurfaces)
+	assertNoErr(t, err, "NewRemoteServer with a nil configurer")
+	f.server = rs
+	go rs.Serve()
+	t.Cleanup(rs.Close)
+
+	c := f.dial()
+	if c == nil {
+		t.Fatal("dial failed")
+	}
+
+	resp := c.roundTrip(`{"type":"NarrowGrant","arguments":{}}`)
+	if resp.Type != bridge.RespError || !strings.Contains(resp.Message, "cli-admin") {
+		t.Fatalf("NarrowGrant with the bit off AND no configurer wired = %s %q, want the cli-admin refusal (bit must be checked before the nil configurer)", resp.Type, resp.Message)
 	}
 }

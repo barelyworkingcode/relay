@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -120,4 +121,27 @@ func narrowsOnly(stored Project, f remoteNarrowFields) error {
 	}
 
 	return nil
+}
+
+// narrowingIsNoop reports whether every field f touches already reads,
+// byte for byte, what stored holds — the request narrows to exactly what
+// is already granted. narrowsOnly having accepted f only means f is not a
+// widening; a repeat of an already-applied narrowing (or a resend of the
+// same request) is equally accepted by that test, and it is this function's
+// job to tell the two apart. Only fields the request touches are compared:
+// an absent pointer is "no change" everywhere else in this package too.
+func narrowingIsNoop(stored Project, f remoteNarrowFields) bool {
+	if f.AllowedMcpIDs != nil && !slices.Equal(*f.AllowedMcpIDs, stored.AllowedMcpIDs) {
+		return false
+	}
+	if f.AllowedTools != nil && !maps.EqualFunc(*f.AllowedTools, stored.AllowedTools, slices.Equal) {
+		return false
+	}
+	if f.Access != nil && !maps.Equal(*f.Access, stored.Access) {
+		return false
+	}
+	if f.AllowExternal != nil && !maps.Equal(*f.AllowExternal, stored.AllowExternal) {
+		return false
+	}
+	return true
 }

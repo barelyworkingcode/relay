@@ -367,6 +367,18 @@ func narrowUpdateFields(f remoteNarrowFields) projectUpdateFields {
 // leave settings.json exactly as it was, not merely logically equivalent,
 // or a script hammering a refused NarrowGrant would spend the settings
 // file's one-writer-at-a-time window for nothing every time it tried.
+//
+// The same is true one step short of a refusal: narrowsOnly accepts a
+// request that asks for exactly what is already stored (that is not a
+// widening either), and applyProjectUpdate's mutators write unconditionally
+// once a non-nil field pointer reaches them. Left unchecked, a certificate
+// resending an already-applied NarrowGrant — deliberately, or simply
+// because it does not track what it already asked for — would reseal every
+// sealed token in the file and append a fresh config_change on every
+// resend, an unbounded write and an unbounded audit-log entry from a path
+// with no presence prompt to slow it down. narrowingIsNoop is the second
+// half of "leave settings.json exactly as it was": it stands between
+// narrowsOnly's yes and applyProjectUpdate's unconditional write.
 func (o *ProjectOps) NarrowForEnrolment(
 	ctx context.Context, projectID string, f remoteNarrowFields,
 	caller bridge.RemoteCaller, surfaces func() McpSurfaces,
@@ -376,8 +388,8 @@ func (o *ProjectOps) NarrowForEnrolment(
 	}
 
 	var updated Project
-	var found bool
-	if err := withDeclinable(o.Store, func(s *Settings) error {
+	var found, noop bool
+	err := withDeclinable(o.Store, func(s *Settings) error {
 		// Resolved INSIDE the callback, not from a value the caller
 		// captured earlier: the store's lock is what makes "narrower than
 		// what is stored right now" an answerable question rather than a
@@ -390,14 +402,29 @@ func (o *ProjectOps) NarrowForEnrolment(
 		if err := narrowsOnly(*proj, f); err != nil {
 			return err
 		}
+		if narrowingIsNoop(*proj, f) {
+			found, noop = true, true
+			updated = *proj
+			return errNarrowingIsNoop
+		}
 		var applyErr error
 		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(f), surfaces)
 		return applyErr
-	}); err != nil {
+	})
+	if err != nil && !noop {
 		return Project{}, nil, err
 	}
 	if !found {
 		return Project{}, nil, fmt.Errorf("project %q no longer exists", projectID)
+	}
+	if noop {
+		// Nothing changed: no write happened (withDeclinable declined it
+		// above) and there is nothing for the audit log to say — a record
+		// reading "cli_admin=on changed allowed_tools" would be false. This
+		// is reported to the caller as an ordinary success with an empty
+		// Changed list, not as an error: the caller asked for exactly what
+		// it already has, which is not a mistake.
+		return updated, nil, nil
 	}
 
 	changed := projectUpdateGrantFieldNames(narrowUpdateFields(f))
@@ -412,3 +439,9 @@ func (o *ProjectOps) NarrowForEnrolment(
 	o.notify()
 	return updated, changed, nil
 }
+
+// errNarrowingIsNoop is withDeclinable's only lever for skipping a write
+// that is not a refusal: a callback error is the sole signal it honours.
+// NarrowForEnrolment unwraps this one immediately and never returns it —
+// see narrowingIsNoop's doc comment for why the caller sees success.
+var errNarrowingIsNoop = errors.New("narrowing request matches the stored grant")
