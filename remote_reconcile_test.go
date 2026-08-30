@@ -653,6 +653,53 @@ func TestRemoteSupervisor_EnrolmentListenerFollowsItsOwnEnableBit(t *testing.T) 
 	}
 }
 
+// trayapp.go wires enrolmentOps.Requests = app.remote.EnrolTable() so the
+// listener (which writes into the table via NewEnrolmentRequestServer) and
+// EnrolmentOps.Approve/Refuse/PendingRequests (which read and mutate it
+// through EnrolTable()) share ONE table. Nothing pins that they are the
+// SAME instance -- if a future refactor ever built two, `relay enrol
+// requests` would read empty while requests kept lodging fine, and every
+// approval would fail with errEnrolmentRequestNotFound. This proves the
+// wiring directly, through the real listener and the real accessor, not by
+// inspecting a pointer: a request lodged over the network is visible
+// through EnrolmentOps.PendingRequests fed by sup.EnrolTable().
+func TestRemoteSupervisor_EnrolTableIsTheSameInstanceTheListenerWrites(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	sup := f.supervise()
+
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(true)
+		s.Remote.EnrolmentListen = "127.0.0.1:0"
+	}), "enable enrolment_requests")
+	assertNoErr(t, sup.Reconcile(), "reconcile")
+
+	addr := sup.EnrolAddr()
+	if addr == "" {
+		t.Fatal("the enrolment listener did not open")
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	assertNoErr(t, err, "dial the enrolment listener")
+	defer conn.Close()
+	c := &enrolTestClient{t: t, conn: conn, scanner: bufio.NewScanner(conn)}
+	resp := c.roundTrip(lodgeJSON(genClientCSRPEM(t, "wiring-check"), "wiring-check-label"))
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("lodge through the listener failed: %s %s", resp.Type, resp.Message)
+	}
+
+	ops := &EnrolmentOps{Store: f.store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: sup.EnrolTable()}
+	pending := ops.PendingRequests()
+	found := false
+	for _, r := range pending {
+		if r.Label == "wiring-check-label" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a request lodged through the listener is not visible through EnrolmentOps.PendingRequests fed by sup.EnrolTable() -- pending = %+v (the listener and EnrolTable() are not the same table)", pending)
+	}
+}
+
 // The bug §11.8 names: Reconcile's old single "nothing changed" comparison
 // covered only the tool-plane listener's address, so a change to only
 // remote.enrolment_listen matched it and was silently ignored. With two

@@ -356,6 +356,18 @@ var (
 	// panics, and every door that predates this slice leaves it nil.
 	errEnrolmentRequestsNotWired = errors.New("enrolment request table is not wired for this operation")
 	errEnrolmentRequestNotFound  = errors.New("enrolment request not found")
+
+	// errEnrolmentRequestExpired means completeSigning already committed
+	// the enrolment (the record is real, on disk, in `relay enrol list`)
+	// but MarkApproved found the row gone by the time it ran: the
+	// presence prompt held long enough for enrolmentRequestTTL to pass
+	// and some other table activity (another Lodge, a List/PendingRequests
+	// read) swept it in between. Threaded through exactly like
+	// errEnrolmentBundle -- a caller checks errors.Is and surfaces it
+	// rather than treating a non-nil error as "nothing happened" -- because
+	// the poll row missing that certificate is a fact the operator must be
+	// told, not a fact that unwinds the issuance that already happened.
+	errEnrolmentRequestExpired = errors.New("the pending request row expired before this approval could mark it collected")
 )
 
 // Approve is enrolment.sign's second door (spec §3) — NOT a new gated
@@ -418,7 +430,18 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	// never carry an approval the audit log could not record (AC-24). The
 	// bundle write may still have failed (§11.7) — the certificate is
 	// delivered from memory regardless.
-	o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM)
+	//
+	// MarkApproved's bool answers a question completeSigning cannot: is
+	// the row STILL THERE. The gate above can hold the operator's presence
+	// prompt open for as long as it takes a human to answer it, and the row
+	// this request lodged into has its own, independent 15-minute TTL —
+	// long enough for the two to race. When they do, the enrolment above
+	// has ALREADY committed (this line runs after it, never before), so
+	// the right answer is not to undo it; it is to say so, the same way an
+	// on-disk bundle failure already does with errEnrolmentBundle.
+	if marked := o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM); !marked {
+		err = errors.Join(err, errEnrolmentRequestExpired)
+	}
 	return created, err
 }
 

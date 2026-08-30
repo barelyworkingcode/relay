@@ -865,3 +865,121 @@ func TestEnrolment_PollReflectsPendingAndUnknown(t *testing.T) {
 		t.Fatalf("poll status for an unknown id = %q, want %q", unknown.Status, "unknown")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Finding 3: lastLodgeBySource must be swept, not just pending
+// ---------------------------------------------------------------------------
+
+// lastLodgeBySource is keyed by a value ONLY an unauthenticated network peer
+// mints (the source host of every Lodge), and grows by one entry per
+// distinct address forever unless something prunes it -- the exact anti-
+// pattern enrolment_budget.go's windowFor comment (§11.9) warns is
+// different from ITS case, because ITS keys can only be minted by an
+// already-enrolled caller. sweepLocked must prune entries older than
+// perSourceLodgeInterval, in the same critical section as every other
+// sweep in this file -- no timer, no goroutine.
+func TestEnrolment_SweepPrunesLastLodgeBySource(t *testing.T) {
+	table := newEnrolmentRequestTable()
+	now := time.Now()
+	table.setClock(func() time.Time { return now })
+
+	const hosts = 50
+	for i := 0; i < hosts; i++ {
+		addr := fmt.Sprintf("10.0.%d.%d:%d", i/256, i%256, 10000+i)
+		l, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("sweep-src-%d", i)), "", addr)
+		assertNoErr(t, err, "lodge %d", i)
+		// Refuse immediately: only lastLodgeBySource's growth is under
+		// test here, not the 8-row pending cap.
+		if !table.Refuse(nil, l.RequestID) {
+			t.Fatalf("refuse %d did not find the record it just lodged", i)
+		}
+	}
+
+	table.mu.Lock()
+	before := len(table.lastLodgeBySource)
+	table.mu.Unlock()
+	if before != hosts {
+		t.Fatalf("lastLodgeBySource has %d entries after %d distinct-source lodges, want %d -- refusing the pending row does not touch this map", before, hosts, hosts)
+	}
+
+	// Advance the clock past the window and drive a sweep the ordinary way
+	// -- inside the next Lodge, using the table's own injectable clock,
+	// never a real sleep.
+	now = now.Add(perSourceLodgeInterval + time.Second)
+	_, err := table.Lodge(genClientCSRPEM(t, "sweep-trigger"), "", "10.9.9.9:1")
+	assertNoErr(t, err, "triggering lodge")
+
+	table.mu.Lock()
+	after := len(table.lastLodgeBySource)
+	table.mu.Unlock()
+	// Only the triggering lodge's own host should remain: every entry
+	// older than perSourceLodgeInterval must be gone, not merely inert.
+	if after != 1 {
+		t.Fatalf("lastLodgeBySource has %d entries after the sweep, want 1 (only the triggering lodge's own host) -- the map is never reclaimed", after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4: an idempotent re-lodge must not reset the global limiter
+// ---------------------------------------------------------------------------
+
+// Lodge's deferred limiter update ran recordSuccess() on ANY nil-error
+// return, and the idempotent re-lodge path (spec §2, AC-10) returns nil --
+// so re-lodging a CSR the attacker already has a slot for zeroed
+// failures/nextAllowed for free, unlimited, forever, and the 2s->30s
+// escalation ceremonyLimiter exists to build never held. A re-lodge must be
+// neutral: it neither escalates the limiter nor resets it. Assertions read
+// the limiter's own fields directly, per the finding's instruction, rather
+// than inferring state from timing.
+func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
+	table := newEnrolmentRequestTable()
+	now := time.Now()
+	table.setClock(func() time.Time { return now })
+	table.limiter.now = func() time.Time { return now }
+
+	csr := genClientCSRPEM(t, "relimiter-client")
+	first, err := table.Lodge(csr, "", "10.0.0.1:1")
+	assertNoErr(t, err, "first lodge")
+
+	// Escalate the limiter past its grace with genuine failures -- exactly
+	// the shape an attacker grinding for a slot produces.
+	for i := 0; i <= ceremonyFailureGrace; i++ {
+		if _, err := table.Lodge([]byte("not a csr"), "", ""); err == nil {
+			t.Fatalf("malformed CSR %d unexpectedly accepted", i)
+		}
+	}
+	table.limiter.mu.Lock()
+	failuresBefore, nextAllowedBefore := table.limiter.failures, table.limiter.nextAllowed
+	table.limiter.mu.Unlock()
+	if failuresBefore <= ceremonyFailureGrace || nextAllowedBefore.IsZero() {
+		t.Fatalf("limiter did not escalate: failures=%d nextAllowed=%v", failuresBefore, nextAllowedBefore)
+	}
+
+	// Move past the penalty window so the door opens, then re-lodge the
+	// SAME CSR: idempotent, so it must succeed.
+	now = nextAllowedBefore.Add(time.Millisecond)
+	second, err := table.Lodge(csr, "", "10.0.0.1:1")
+	assertNoErr(t, err, "idempotent re-lodge after the penalty window")
+	if second.RequestID != first.RequestID {
+		t.Fatalf("re-lodge id = %s, want the original %s", second.RequestID, first.RequestID)
+	}
+
+	table.limiter.mu.Lock()
+	failuresAfter, nextAllowedAfter := table.limiter.failures, table.limiter.nextAllowed
+	table.limiter.mu.Unlock()
+	if failuresAfter != failuresBefore || !nextAllowedAfter.Equal(nextAllowedBefore) {
+		t.Fatalf("an idempotent re-lodge changed the limiter: failures %d -> %d, nextAllowed %v -> %v (want unchanged -- a re-lodge must be neutral)",
+			failuresBefore, failuresAfter, nextAllowedBefore, nextAllowedAfter)
+	}
+
+	// A genuine NEW insert, by contrast, DOES record success and resets it.
+	if _, err := table.Lodge(genClientCSRPEM(t, "relimiter-new"), "", "10.0.0.2:1"); err != nil {
+		t.Fatalf("genuine new lodge: %v", err)
+	}
+	table.limiter.mu.Lock()
+	failuresFinal, nextAllowedFinal := table.limiter.failures, table.limiter.nextAllowed
+	table.limiter.mu.Unlock()
+	if failuresFinal != 0 || !nextAllowedFinal.IsZero() {
+		t.Fatalf("a genuine new insert did not reset the limiter: failures=%d nextAllowed=%v, want zero", failuresFinal, nextAllowedFinal)
+	}
+}
