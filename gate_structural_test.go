@@ -241,6 +241,23 @@ func TestGate_AllowlistNamesOnlyRealFiles(t *testing.T) {
 	}
 }
 
+// TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11's floor: a
+// mutation-containment guard that keeps passing while its two sets quietly
+// shrink toward empty is worse than no guard, because "no violations found"
+// stops meaning anything once there is nothing left to violate. Pinned to
+// the count as of ADR-018 step 3 rather than to a literal list — the two
+// tests above already pin membership (allowlist) and reachability
+// (mutation-containment); this one exists only to catch a shrink neither of
+// those would.
+func TestGate_MutatorAndAllowlistSetsHaveNotShrunk(t *testing.T) {
+	if n := len(gatedMutatorNames); n < 14 {
+		t.Errorf("gatedMutatorNames has %d entries, want at least 14", n)
+	}
+	if n := len(gateAllowlistedFiles); n < 13 {
+		t.Errorf("gateAllowlistedFiles has %d entries, want at least 13", n)
+	}
+}
+
 // wantGatedOps pins presence.GatedOps itself (§4.1.3): a second, independent
 // literal that must equal it element-wise, in the same order. A change to
 // either the package's own list or this expectation then shows up as a diff
