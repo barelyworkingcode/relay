@@ -3216,7 +3216,10 @@ function dismissEnrolBundle() {
 function remoteDraft() {
     if (!state.remoteDraft) {
         const r = state.remote || {};
-        state.remoteDraft = { enabled: !!r.enabled, listen: r.listen || '' };
+        state.remoteDraft = {
+            enabled: !!r.enabled, listen: r.listen || '',
+            enrolmentRequests: !!r.enrolment_requests, enrolmentListen: r.enrolment_listen || '',
+        };
     }
     return state.remoteDraft;
 }
@@ -3225,10 +3228,10 @@ function remoteDraftSet(key, value) {
     const d = remoteDraft();
     d[key] = value;
     state.remoteDirty = true;
-    // The address field re-renders nothing (a repaint on every keystroke would
-    // fight the caret); the toggle does, because the consequence text below it
-    // changes with it.
-    if (key === 'enabled') render();
+    // The address fields re-render nothing (a repaint on every keystroke
+    // would fight the caret); the toggles do, because the consequence text
+    // below each changes with it.
+    if (key === 'enabled' || key === 'enrolmentRequests') render();
 }
 
 // remoteListenIsLoopback reports whether an address binds only this machine.
@@ -3291,6 +3294,30 @@ function renderRemoteListener() {
         html += '<div class="remote-note warn">' + esc(effective) + ' binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read — but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>';
     }
 
+    // The enrolment-request listener (spec §1): a separate, unauthenticated
+    // mailbox a network peer can drop a CSR into, never a door into a tool
+    // call — see renderPendingEnrolmentRequests' own help text for what it
+    // can and can't reach. Off by default, alongside the mTLS toggle rather
+    // than folded into it, because it is a second network door and opening
+    // one is always the operator's own act.
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += '<span>Accept enrolment requests on a separate listener</span>';
+    html += '<label class="switch"><input type="checkbox" ' + (d.enrolmentRequests ? 'checked' : '') + ' onchange="remoteDraftSet(\'enrolmentRequests\', this.checked)" /><span class="slider"></span></label>';
+    html += '</div>';
+
+    html += '<label>Enrolment listen address</label>';
+    html += '<input type="text" id="remoteEnrolmentListen" value="' + esc(d.enrolmentListen) + '" placeholder="' + esc(r.enrolment_effective || '') + '" oninput="remoteDraftSet(\'enrolmentListen\', this.value)" />';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || '') + '</code>. This listener takes no client certificate — see the Pending requests panel above for what it can reach.</p>';
+
+    if (d.enrolmentRequests && !d.enabled) {
+        html += '<div class="remote-note warn">Enrolment requests will not be served until the mTLS listener above is also on: the enrolment-request channel is a companion to it, never a replacement — see the panel above for the exact refusal.</div>';
+    }
+
+    const enrolEffective = (d.enrolmentListen || '').trim() || r.enrolment_effective || '';
+    if (d.enrolmentRequests && enrolEffective && !remoteListenIsLoopback(enrolEffective)) {
+        html += '<div class="remote-note warn">' + esc(enrolEffective) + ' binds beyond loopback: any machine that can reach it can lodge an enrolment request. Lodging alone never raises a prompt and reaches nothing but a bounded table — but the default binds loopback so that widening it is a deliberate act.</div>';
+    }
+
     html += '<div class="proj-form-actions">';
     html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
     if (r.configured) {
@@ -3308,6 +3335,8 @@ function saveRemoteConfig() {
         type: 'update_remote_config',
         enabled: !!d.enabled,
         listen: String(d.listen || '').trim(),
+        enrolment_requests: !!d.enrolmentRequests,
+        enrolment_listen: String(d.enrolmentListen || '').trim(),
     }));
 }
 

@@ -30,10 +30,15 @@ type ipcEnrolmentIDMsg struct {
 	ClientID string `json:"client_id"`
 }
 
+// ipcRemoteConfigMsg's JSON tags match remoteConfigFields' — see that
+// type's doc comment for why EnrolmentRequests/EnrolmentListen carry no
+// save-time refusal of their own.
 type ipcRemoteConfigMsg struct {
-	Remove  bool   `json:"remove"`
-	Enabled bool   `json:"enabled"`
-	Listen  string `json:"listen"`
+	Remove            bool   `json:"remove"`
+	Enabled           bool   `json:"enabled"`
+	Listen            string `json:"listen"`
+	EnrolmentRequests bool   `json:"enrolment_requests"`
+	EnrolmentListen   string `json:"enrolment_listen"`
 }
 
 // ipcEnrolmentRequestIDMsg is refuse_enrolment_request's whole body: the
@@ -128,18 +133,34 @@ type remoteConfigView struct {
 	// than surfacing loadCACertificateOnly's error, since a missing CA here
 	// is not a caller mistake to report as a failure.
 	CAFingerprint string `json:"ca_fingerprint,omitempty"`
+
+	// EnrolmentRequests/EnrolmentListen/EnrolmentEffective mirror
+	// Enabled/Listen/Effective for the third listener (spec §1).
+	// EnrolmentEffective is always populated — the address the listener
+	// would bind if turned on — so the tab can show it even while the
+	// listener is off, the same way Effective already does for the
+	// tool-plane one.
+	EnrolmentRequests  bool   `json:"enrolment_requests"`
+	EnrolmentListen    string `json:"enrolment_listen,omitempty"`
+	EnrolmentEffective string `json:"enrolment_effective"`
 }
 
 func remoteConfigViewOf(s *Settings, auditEnabled bool) remoteConfigView {
 	resolved := s.Remote.resolve()
 	v := remoteConfigView{
-		Configured:   s.Remote != nil,
-		Enabled:      resolved.Enabled,
-		Effective:    resolved.Listen,
-		AuditEnabled: auditEnabled,
+		Configured:         s.Remote != nil,
+		Enabled:            resolved.Enabled,
+		Effective:          resolved.Listen,
+		AuditEnabled:       auditEnabled,
+		EnrolmentEffective: defaultEnrolmentListen,
 	}
 	if s.Remote != nil {
 		v.Listen = s.Remote.Listen
+		v.EnrolmentRequests = boolOr(s.Remote.EnrolmentRequests, false)
+		v.EnrolmentListen = s.Remote.EnrolmentListen
+		if v.EnrolmentListen != "" {
+			v.EnrolmentEffective = v.EnrolmentListen
+		}
 	}
 	if fp, err := caFingerprintFromDisk(); err == nil {
 		v.CAFingerprint = fp
@@ -221,9 +242,11 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	view, err := ctx.EnrolmentOps.SetRemoteConfig(remoteConfigFields{
-		Remove:  msg.Remove,
-		Enabled: msg.Enabled,
-		Listen:  msg.Listen,
+		Remove:            msg.Remove,
+		Enabled:           msg.Enabled,
+		Listen:            msg.Listen,
+		EnrolmentRequests: msg.EnrolmentRequests,
+		EnrolmentListen:   msg.EnrolmentListen,
 	})
 	if err != nil {
 		ctx.UI.EmitEvent("onRemoteConfigError", err.Error())
