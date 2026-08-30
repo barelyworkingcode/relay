@@ -19,6 +19,11 @@ import (
 // deliberate act, never the default outcome of leaving a field unset.
 const defaultRemoteListen = "127.0.0.1:9910"
 
+// defaultEnrolmentListen is the enrolment-request listener's own default —
+// a distinct port from defaultRemoteListen, loopback for the same reason
+// (ADR-010 decision 9).
+const defaultEnrolmentListen = "127.0.0.1:9911"
+
 var (
 	// remoteHandshakeTimeout is the slowloris bound: a peer that connects
 	// and never speaks holds a goroutine and an fd until it expires.
@@ -34,9 +39,18 @@ var (
 // Enabled is a *bool so absent, false and true stay distinguishable: unlike
 // AuditConfig, a network listener defaults OFF, so a block that names a
 // listen address but omits `enabled` opens nothing.
+//
+// EnrolmentRequests and EnrolmentListen follow the identical discipline for
+// the enrolment-request channel (spec §1): a THIRD listener this same block
+// configures, never a mode of the first. EnrolmentRequests absent or false
+// means no enrolment listener at all — opening that network door is a thing
+// the operator says, not a thing relay infers, exactly like Enabled itself.
 type RemoteConfig struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Listen  string `json:"listen,omitempty"`
+
+	EnrolmentRequests *bool  `json:"enrolment_requests,omitempty"`
+	EnrolmentListen   string `json:"enrolment_listen,omitempty"`
 }
 
 type resolvedRemoteConfig struct {
@@ -56,6 +70,32 @@ func (c *RemoteConfig) resolve() resolvedRemoteConfig {
 		out.Listen = defaultRemoteListen
 	}
 	return out
+}
+
+// resolveEnrolment derives the enrolment-request listener's config from the
+// same block resolve() reads for the tool-plane listener. Unlike resolve(),
+// this can fail: enrolment_requests:true with enabled:false names a
+// configuration mistake rather than something to silently take at face
+// value — the enrolment channel is a companion to the tool-plane listener,
+// not a substitute for enabling it, and letting it start on its own would
+// mean "no remote access" in settings.json no longer implied "no network
+// door open."
+func (c *RemoteConfig) resolveEnrolment() (resolvedRemoteConfig, error) {
+	wantEnrolment := c != nil && boolOr(c.EnrolmentRequests, false)
+	if !wantEnrolment {
+		return resolvedRemoteConfig{Enabled: false, Listen: defaultEnrolmentListen}, nil
+	}
+	if !c.resolve().Enabled {
+		return resolvedRemoteConfig{}, fmt.Errorf(
+			"remote.enrolment_requests is true but remote.enabled is false: the enrolment-request channel " +
+				"is a companion to the remote tool-plane listener, not a replacement for it — set remote.enabled " +
+				"to true as well, or turn enrolment_requests off")
+	}
+	listen := c.EnrolmentListen
+	if listen == "" {
+		listen = defaultEnrolmentListen
+	}
+	return resolvedRemoteConfig{Enabled: true, Listen: listen}, nil
 }
 
 // RemoteToolRouter is a separate, two-method interface so the narrowing is

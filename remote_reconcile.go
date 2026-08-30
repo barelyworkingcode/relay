@@ -14,6 +14,14 @@ import (
 //
 // A nil *RemoteSupervisor is a valid "this process has no listener to
 // manage" value and every method tolerates it, exactly as RemoteServer does.
+//
+// This supervisor owns TWO listeners — the tool-plane RemoteServer and the
+// enrolment-request EnrolmentRequestServer (spec §1) — and converges both on
+// one tick. They are reconciled independently (reconcileToolListenerLocked /
+// reconcileEnrolmentListenerLocked), each against its own "did anything
+// change" comparison: a single combined check would repeat §11.8's bug,
+// where a change to only the enrolment address matched an unrelated
+// comparison and was silently ignored.
 type RemoteSupervisor struct {
 	ctx    context.Context
 	store  SettingsStore
@@ -28,18 +36,33 @@ type RemoteSupervisor struct {
 	// back to a bare `go`, for tests.
 	goFunc func(func())
 
+	// enrolTable is the pending enrolment-request table. Built once, here,
+	// and reused across every EnrolmentRequestServer this supervisor binds
+	// — including a rebind onto a new enrolment_listen address — because
+	// the pending requests it holds are real state that must survive a
+	// listener move exactly as an enrolment survives a tool-listener move.
+	enrolTable *enrolmentRequestTable
+
 	mu     sync.Mutex
 	server *RemoteServer
+	// enrolServer mirrors server for the enrolment-request listener.
+	enrolServer *EnrolmentRequestServer
 	// closed latches at shutdown so a reconcile racing cleanup cannot bind
 	// a fresh socket behind it.
 	closed bool
-	// lastReport debounces logging: a steady failure is loud once, then
-	// repeats at debug.
-	lastReport string
+	// lastReport / lastEnrolReport debounce logging per listener: a steady
+	// failure on one is loud once, then repeats at debug, independently of
+	// the other listener's own report state.
+	lastReport      string
+	lastEnrolReport string
 }
 
 func NewRemoteSupervisor(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces, goFunc func(func())) *RemoteSupervisor {
-	return &RemoteSupervisor{ctx: ctx, store: store, router: router, audit: audit, configurer: configurer, surfaces: surfaces, goFunc: goFunc}
+	return &RemoteSupervisor{
+		ctx: ctx, store: store, router: router, audit: audit,
+		configurer: configurer, surfaces: surfaces, goFunc: goFunc,
+		enrolTable: newEnrolmentRequestTable(),
+	}
 }
 
 // Addr reads the live socket, so a test binding :0 gets the assigned port.
@@ -61,6 +84,26 @@ func (sup *RemoteSupervisor) Server() *RemoteServer {
 	return sup.server
 }
 
+// EnrolAddr and EnrolServer mirror Addr and Server for the enrolment-request
+// listener.
+func (sup *RemoteSupervisor) EnrolAddr() string {
+	if sup == nil {
+		return ""
+	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	return sup.enrolServer.Addr()
+}
+
+func (sup *RemoteSupervisor) EnrolServer() *EnrolmentRequestServer {
+	if sup == nil {
+		return nil
+	}
+	sup.mu.Lock()
+	defer sup.mu.Unlock()
+	return sup.enrolServer
+}
+
 func (sup *RemoteSupervisor) Reconcile() error {
 	if sup == nil {
 		return nil
@@ -72,6 +115,18 @@ func (sup *RemoteSupervisor) Reconcile() error {
 	}
 
 	settings := freshSettings(sup.store)
+
+	toolErr := sup.reconcileToolListenerLocked(settings)
+	enrolErr := sup.reconcileEnrolmentListenerLocked(settings)
+	return errors.Join(toolErr, enrolErr)
+}
+
+// reconcileToolListenerLocked is the tool-plane RemoteServer's own
+// convergence step, unchanged in behaviour from before this supervisor grew
+// a second listener — only its "nothing changed" comparison (sup.server's
+// own Listen) is now scoped to this listener alone, never the enrolment
+// one's.
+func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *Settings) error {
 	desired := settings.Remote.resolve()
 
 	if !desired.Enabled {
@@ -134,6 +189,67 @@ func (sup *RemoteSupervisor) Reconcile() error {
 	return nil
 }
 
+// reconcileEnrolmentListenerLocked is reconcileToolListenerLocked's twin for
+// the enrolment-request listener. It has no revocation hook to move (this
+// listener holds no per-connection identity to revoke) and its own desired
+// config can itself be an error (resolveEnrolment refuses
+// enrolment_requests:true with enabled:false), which is reported and
+// returned exactly like a failed bind.
+func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *Settings) error {
+	desired, cfgErr := settings.Remote.resolveEnrolment()
+	if cfgErr != nil {
+		sup.stopEnrolLocked("enrolment-request configuration is invalid")
+		sup.reportEnrolLocked("", cfgErr)
+		return cfgErr
+	}
+
+	if !desired.Enabled {
+		sup.stopEnrolLocked("settings no longer enable the enrolment-request listener")
+		sup.reportEnrolLocked("", nil)
+		return nil
+	}
+
+	if !remoteAuditingLive(settings, sup.audit) {
+		err := errors.New("enrolment-request listener not serving: the tool-call audit log is not recording — " +
+			"set audit.enabled to true and relaunch relay so the recorder starts (it is built once, at launch), " +
+			"or turn off remote.enrolment_requests")
+		sup.stopEnrolLocked("auditing is no longer active")
+		sup.reportEnrolLocked(desired.Listen, err)
+		return err
+	}
+
+	if sup.enrolServer != nil && sup.enrolServer.cfg.Listen == desired.Listen {
+		sup.reportEnrolLocked(desired.Listen, nil)
+		return nil
+	}
+
+	ns, err := NewEnrolmentRequestServer(sup.ctx, sup.enrolTable, sup.audit, desired)
+	if err != nil {
+		err = fmt.Errorf("enrolment-request listener could not bind %s: %w", desired.Listen, err)
+		sup.reportEnrolLocked(desired.Listen, err)
+		return err
+	}
+	if ns == nil {
+		sup.stopEnrolLocked("settings disabled the enrolment-request listener mid-reconcile")
+		sup.reportEnrolLocked("", nil)
+		return nil
+	}
+
+	old := sup.enrolServer
+	sup.enrolServer = ns
+	sup.run(func() { _ = ns.Serve() })
+
+	if old != nil {
+		old.StopAccepting()
+		sup.run(old.Close)
+		slog.Warn("enrolment-request listener moved; connections on the old address were closed",
+			"from", old.cfg.Listen, "to", ns.Addr())
+	}
+
+	sup.reportEnrolLocked(desired.Listen, nil)
+	return nil
+}
+
 func (sup *RemoteSupervisor) StopAccepting() {
 	if sup == nil {
 		return
@@ -142,6 +258,7 @@ func (sup *RemoteSupervisor) StopAccepting() {
 	defer sup.mu.Unlock()
 	sup.closed = true
 	sup.server.StopAccepting()
+	sup.enrolServer.StopAccepting()
 }
 
 func (sup *RemoteSupervisor) Close() {
@@ -152,8 +269,11 @@ func (sup *RemoteSupervisor) Close() {
 	sup.closed = true
 	s := sup.server
 	sup.server = nil
+	es := sup.enrolServer
+	sup.enrolServer = nil
 	sup.mu.Unlock()
 	s.Close()
+	es.Close()
 }
 
 func (sup *RemoteSupervisor) stopLocked(why string) {
@@ -168,6 +288,20 @@ func (sup *RemoteSupervisor) stopLocked(why string) {
 	ClearEnrolmentRevocationHookFor(old)
 	sup.run(old.Close)
 	slog.Warn("remote listener stopped", "addr", old.cfg.Listen, "reason", why)
+}
+
+// stopEnrolLocked mirrors stopLocked for the enrolment-request listener.
+// No revocation hook to clear: this listener resolves no identity, so there
+// is nothing for a revocation to close early.
+func (sup *RemoteSupervisor) stopEnrolLocked(why string) {
+	if sup.enrolServer == nil {
+		return
+	}
+	old := sup.enrolServer
+	sup.enrolServer = nil
+	old.StopAccepting()
+	sup.run(old.Close)
+	slog.Warn("enrolment-request listener stopped", "addr", old.cfg.Listen, "reason", why)
 }
 
 func (sup *RemoteSupervisor) reportLocked(addr string, err error) {
@@ -185,6 +319,26 @@ func (sup *RemoteSupervisor) reportLocked(addr string, err error) {
 		return
 	}
 	slog.Error("remote listener not available", "listen", addr, "error", err)
+}
+
+// reportEnrolLocked mirrors reportLocked with its own debounce state
+// (lastEnrolReport), so a steady failure on one listener does not silence —
+// or get silenced by — a steady failure on the other.
+func (sup *RemoteSupervisor) reportEnrolLocked(addr string, err error) {
+	key := addr
+	if err != nil {
+		key += "\x00" + err.Error()
+	}
+	repeat := key == sup.lastEnrolReport
+	sup.lastEnrolReport = key
+	if err == nil {
+		return
+	}
+	if repeat {
+		slog.Debug("enrolment-request listener still not available", "listen", addr, "error", err)
+		return
+	}
+	slog.Error("enrolment-request listener not available", "listen", addr, "error", err)
 }
 
 func (sup *RemoteSupervisor) run(fn func()) {
