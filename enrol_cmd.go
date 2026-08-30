@@ -209,6 +209,16 @@ func enrolSign(store SettingsStore, args []string) {
 	fmt.Printf("signed enrolment %q\n", result.Enrolment.ClientID)
 	fmt.Printf("  fingerprint: %s\n", result.Enrolment.Fingerprint)
 	fmt.Printf("  profiles:    %s\n", formatGrants(result.Enrolment.ProjectIDs))
+
+	// Report a bundle failure before any line below claims a path: there is
+	// no certificate to name and, with --out, nothing safe to write — a
+	// stale client.crt already in that directory must survive this run.
+	if result.BundleError != "" {
+		fmt.Printf("  note: the enrolment record was created but writing its bundle to disk failed: %s\n", result.BundleError)
+		fmt.Println("  the record is real and counts against this client's grants; `relay enrol revoke` removes it")
+		return
+	}
+
 	if result.Dir != "" {
 		fmt.Printf("  certificate: %s\n", result.Dir)
 	}
@@ -220,11 +230,6 @@ func enrolSign(store SettingsStore, args []string) {
 			exitError("%v", err)
 		}
 		fmt.Printf("  copies also written to: %s\n", fields.OutDir)
-	}
-
-	if result.BundleError != "" {
-		fmt.Printf("  note: the enrolment record was created but writing its bundle to disk failed: %s\n", result.BundleError)
-		fmt.Println("  the record is real and counts against this client's grants; `relay enrol revoke` removes it")
 	}
 }
 

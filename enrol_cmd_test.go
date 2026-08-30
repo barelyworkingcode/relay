@@ -165,8 +165,13 @@ func TestParseEnrolSignFlags_RequiresClientIDAndCSR(t *testing.T) {
 	if _, err := parseEnrolSignFlags([]string{"--csr", csrPath}); err == nil {
 		t.Fatal("missing --client-id must be refused")
 	}
-	if _, err := parseEnrolSignFlags([]string{"--client-id", "hermes-mail"}); err == nil {
-		t.Fatal("missing --csr must be refused")
+	// Asserts the guard's own message, not merely "some error": readCSRFile("")
+	// also errors (os.Open("") fails), so a test that only checked err != nil
+	// would keep passing even with the *csrPath == "" guard removed, and would
+	// then be reporting a downstream file-open failure as if it were the
+	// intended refusal.
+	if _, err := parseEnrolSignFlags([]string{"--client-id", "hermes-mail"}); err == nil || !strings.Contains(err.Error(), "--csr is required") {
+		t.Fatalf("missing --csr: err = %v, want the \"--csr is required\" refusal", err)
 	}
 }
 
@@ -234,5 +239,58 @@ func TestEnrolSign_OutDirWritesByteIdenticalCopies(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "client.key")); err == nil {
 		t.Fatal("--out must never write a client.key")
+	}
+}
+
+// Regression: on the bundle-error path, CertPEM/CAPEM come back empty, so
+// --out must not write anything, and nothing printed before that point may
+// claim a certificate path — a stale client.crt in --out DIR from an
+// earlier, successful sign must survive a later, failed one untouched.
+func TestEnrolSign_BundleErrorLeavesOutDirUntouchedAndReportsFailureFirst(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := sealedSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	csrPath := writeTestCSRFile(t, "hermes-mail")
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	// Force signEnrolment down the bundle-error path: writeSignedCertBundle
+	// refuses when client.key already exists in the config-dir bundle
+	// location, so seed one there before signing.
+	bundleDir := filepath.Join(dir, enrolmentBundleDir, "hermes-mail")
+	assertNoErr(t, os.MkdirAll(bundleDir, 0700), "mkdir bundle dir")
+	assertNoErr(t, os.WriteFile(filepath.Join(bundleDir, "client.key"), []byte("stale key"), 0600), "seed stale client.key")
+
+	// outDir already holds a working client.crt/ca.crt from an earlier,
+	// successful sign.
+	outDir := t.TempDir()
+	existingCert := []byte("earlier working client.crt")
+	existingCA := []byte("earlier working ca.crt")
+	assertNoErr(t, os.WriteFile(filepath.Join(outDir, "client.crt"), existingCert, 0644), "seed existing client.crt")
+	assertNoErr(t, os.WriteFile(filepath.Join(outDir, "ca.crt"), existingCA, 0644), "seed existing ca.crt")
+
+	out := captureStdout(t, func() {
+		enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
+	})
+
+	gotCert, err := os.ReadFile(filepath.Join(outDir, "client.crt"))
+	assertNoErr(t, err, "read client.crt after bundle-error sign")
+	if string(gotCert) != string(existingCert) {
+		t.Fatalf("client.crt in --out DIR was overwritten on the bundle-error path: got %q, want unchanged %q", gotCert, existingCert)
+	}
+	gotCA, err := os.ReadFile(filepath.Join(outDir, "ca.crt"))
+	assertNoErr(t, err, "read ca.crt after bundle-error sign")
+	if string(gotCA) != string(existingCA) {
+		t.Fatalf("ca.crt in --out DIR was overwritten on the bundle-error path: got %q, want unchanged %q", gotCA, existingCA)
+	}
+
+	if strings.Contains(out, "copies also written to") {
+		t.Fatalf("output claims a write happened on the bundle-error path: %s", out)
+	}
+	if strings.Contains(out, "certificate:") {
+		t.Fatalf("output names a certificate path for a directory with no certificate: %s", out)
+	}
+	if !strings.Contains(out, "bundle to disk failed") {
+		t.Fatalf("output does not name the bundle failure: %s", out)
 	}
 }

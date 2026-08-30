@@ -122,6 +122,16 @@ func TestParseClientCSR_Negatives(t *testing.T) {
 
 	oversized := make([]byte, maxCSRBytes+1)
 
+	// A PEM block honestly labelled something other than "CERTIFICATE
+	// REQUEST" (and other than "CERTIFICATE", which gets its own message),
+	// wrapping bytes that ARE a valid PKCS#10 request. If the block-type
+	// check ever went missing, x509.ParseCertificateRequest would parse
+	// these bytes just fine and this case would silently start passing.
+	// Appended at the end of the table, not spliced in, so it cannot shift
+	// the indices tests[5:8] below relies on.
+	validBlock, _ := pem.Decode(validPEM)
+	mislabeledPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: validBlock.Bytes})
+
 	tests := []struct {
 		name    string
 		in      []byte
@@ -135,6 +145,7 @@ func TestParseClientCSR_Negatives(t *testing.T) {
 		{"RSA-2048 key", rsaPEM, "RSA-2048"},
 		{"Ed25519 key", edPEM, "Ed25519"},
 		{"ECDSA P-384 key", p384PEM, "P-384"},
+		{"a differently-labelled PEM block wrapping a valid request", mislabeledPEM, "unexpected PEM block type"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
