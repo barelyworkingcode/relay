@@ -226,6 +226,105 @@ considered ceiling — set your own at creation with the three flags above, or
 retune them later without touching the certificate (see "Changing a rule"
 below).
 
+### Approving a request from the machine itself
+
+Step 2 above assumes you generate the enrolment from this Mac and carry the
+result to the client. A client machine can instead lodge its own request
+over the network and wait for you to approve it — worth reaching for when
+handing a CSR file between machines is the inconvenient part, e.g. a fresh
+VM with no shared filesystem yet.
+
+**The operator-carried path above is the fallback that always works, and it
+is documented first for that reason.** It needs no listener, no network path
+between the two machines, and nothing to compare — you already hold the CSR.
+Reach for the request channel when carrying a file is the friction; reach
+for the fallback whenever the network path is down, untrusted, or not worth
+opening for one enrolment.
+
+**1. Turn the channel on**, if it is not already — absent or `false` means
+no enrolment listener at all, exactly like `remote.enabled` itself:
+
+    "remote": { "enabled": true, "listen": "127.0.0.1:9910",
+                "enrolment_requests": true, "enrolment_listen": "127.0.0.1:9911" }
+
+**2. Read the CA fingerprint off this Mac** — the tray shows it in
+Settings → Remote Clients, or read it directly:
+
+    relay enrol ca-fingerprint
+
+This is the value the client pins. Write it down or copy it to wherever the
+new machine can reach it; it never needs to touch the network between them.
+
+**3. On the new machine, lodge the request:**
+
+    relayremote request --addr 10.0.0.2:9911 --ca-fingerprint sha256:41c7… --label vm-mail-a
+
+It prints its own public-key hash on stderr and waits, polling every couple
+of seconds. Neither `--ca-fingerprint` nor `--tofu` has a default — the
+command refuses at flag parse without one of them, naming both. Use
+`--tofu` only from a terminal you are watching and prepared to compare by
+eye; a headless VM needs `--ca-fingerprint`, which is one string read off
+step 2.
+
+**4. Compare the public-key hash, then approve** from either door:
+
+    relay enrol requests
+    relay enrol approve --id req_9f2a41c7 --client-id vm-mail-a --grant <profile-id>
+
+or Settings → Remote Clients → Pending requests, which opens the same
+create-enrolment form pre-filled — you pick grants and budget the way you
+already know. Nothing about the request names its own grants; that choice is
+yours to make at approval, same as it always is.
+
+**5. The client collects the certificate on its next poll** and is told
+where to point `relayremote list` / `call` afterward.
+
+---
+
+**Lodging a request raises no prompt, ever — this is structural, not
+rate-limited.** A network peer that reaches the enrolment port can add a row
+to a bounded table (capped at 8) and nothing else. No dialog and no
+notification appears on your screen because a stranger lodged a request; the
+human always initiates approval, and *that* act is what raises the existing
+presence prompt — the same one `relay enrol sign` already asks for.
+
+**The transport is plain TCP, and that is deliberate.** Nothing on this wire
+is a secret in either direction: inbound is a CSR (public by construction,
+proof of possession of a key that never leaves the client), outbound is a
+certificate and a CA certificate (both public). TLS here would be decoration
+that reads as a security property it cannot provide — the client has no CA
+to verify a handshake against yet, so "encrypted" would not mean
+"authenticated," and a reviewer skimming past a TLS connection would assume
+it did. Plain TCP forces the real control, the fingerprint comparison, to be
+visible and mandatory instead of implied — which is why `--ca-fingerprint`
+or `--tofu` has no default: without one of them, nothing stands between this
+channel and an attacker on the network path.
+
+**Comparing the public-key hash alone does not close the man-in-the-middle
+— this is the one thing not to skim.** An attacker sitting on the network
+path can pass the real CSR straight through to the real relay, so the hash
+you compare at step 4 matches and you approve in good faith — and then hand
+its *own* CA certificate back to the waiting client instead of relay's.
+Every check the client runs against what it receives (chain, key-pairing)
+passes, because the certificate really is valid, just for the wrong CA.
+**Only the CA-fingerprint pin closes this gap.** Comparing the key hash
+proves the host is approving *this machine's* key; only the client's own
+comparison of relay's CA fingerprint — step 3's `--ca-fingerprint`, checked
+against step 2's value — proves the client is talking to the real relay.
+Skip the CA pin (use `--tofu` and click through without truly reading it)
+and every subsequent tool call, arguments included, goes to whoever answered
+the request instead of to your relay host.
+
+**The honest residual.** A flood of lodged requests holds all 8 table slots
+full for as long as it runs, and — because the table has no notion of
+identity to reserve a slot against — your own legitimate request is refused
+a slot for that same span. No prompt is involved anywhere in this (lodging
+never raises one), so this is an availability cost, not a phishing one, and
+recovery needs no channel at all: fall back to the operator-carried path
+above, which never touches this table.
+
+---
+
 ### 3. Point the client at it
 
     export RELAY_REMOTE_BUNDLE="…/enrolments/hermes-bob"
@@ -600,6 +699,80 @@ Deleting a profile that an enrolment still names leaves a dangling grant. It
 fails closed at call time, but see
 [#23](https://github.com/barelyworkingcode/relay/issues/23) — revoke the
 enrolment first.
+
+---
+
+## What a credential can reach, and how to store it
+
+Three files reach the client machine, and they answer different questions.
+
+**`client.key` + `client.crt`, together, are the credential.** Presenting
+them over the remote listener authenticates as the enrolment that was
+signed — every call runs *as that client*, in the audit log, reaching
+exactly the access profiles that enrolment names and nothing wider. There is
+no narrower identity underneath: two agents on the same VM are separated
+only by which key each one holds (see *Co-located agents are only as
+separate as the client machine makes them*, below).
+
+- **`client.key` is unrecoverable.** Relay never sees it on the CSR path
+  (`relay enrol sign` / `relayremote request`) and never keeps a copy on the
+  legacy path (`relay enrol create`) once the bundle is handed over. Lose it
+  and the remedy is the same as every other credential in
+  [`docs/tokens.md`](tokens.md) whose plaintext exists once: `relay enrol
+  revoke` and a fresh enrolment.
+- **It must stay `0600`, and the client refuses to run otherwise.**
+  `relayremote` checks the key's mode before it dials anything and refuses a
+  group- or world-readable key rather than warning and continuing — a
+  client that ran happily with a `0644` key would teach the operator that
+  `0644` is fine, and the lesson would be learned once and misapplied to
+  every bundle afterwards. `scp`, an archive extracted under a permissive
+  umask, or a copy through a shared directory are all ordinary ways for a
+  key to arrive wrong; `chmod 600` and rerun.
+- **`ca.crt` is a verifier, not a secret.** It is relay's own certificate
+  authority, public by construction — anyone may read it, and reading it
+  grants nothing. Its job is the opposite of secrecy: it is the value the
+  client pins so it can tell the real relay from an impostor on the network
+  (see *Approving a request from the machine itself*, above, and
+  [ADR-010](decisions/010-remote-client-transport-and-identity.md)).
+
+**A `cli-admin` enrolment reaches one thing more, and only to narrow it.**
+With the bit on, the certificate may call `DescribeGrant` and `NarrowGrant`
+over the remote listener — read its own posture back, and replace its own
+`allowed_mcp_ids` / `allowed_tools` / `access` / `allow_external` with a
+*strictly narrower* set. It can never widen anything on any axis, touch
+another enrolment's profile, register anything, or mint a credential. See
+*Letting the client narrow its own grant (cli-admin)*, below, for the full
+shape of what narrowing means here.
+
+Stepping a client up and back down is two discrete, gated acts:
+
+    relay enrol update --client-id hermes-bob --cli-admin
+
+is a grant change like any other and demands presence, exactly as if you had
+widened the profile by hand. So does turning it back off:
+
+    relay enrol update --client-id hermes-bob --cli-admin=false
+
+**Both directions are gated on purpose, not just the one that widens** — the
+human is being told what changed, not asked to approve only the direction
+that grows it. A toggle that only prompted going up would let something that
+already reached the socket flip the bit back on without a fresh prompt the
+moment it had been switched off quietly; gating every transition, whichever
+way, keeps every change of this bit a moment a human sees and answers.
+`cli-admin` is read fresh on every request relay resolves, so **off is live
+on the client's very next request, with no session to tear down** — there is
+no lingering grant to revoke, no connection to close, nothing left running
+under the wider bit once the toggle lands.
+
+**Native secret storage is a TODO, not built.** `client.key` stays a plain
+`0600` file on every platform today. Storing it in the OS keychain instead
+is a real future improvement — the macOS Keychain is a one-platform answer
+for a client that also targets Linux VMs and Windows, and the Linux
+equivalent (Secret Service, `libsecret`) needs a D-Bus session daemon that a
+headless VM typically does not have running. Building it for one platform
+and falling back to a file on the others is more surface than this
+zero-dependency client currently carries for the benefit, so it stays a
+`0600` file everywhere until that changes.
 
 ---
 

@@ -14,7 +14,7 @@ service management.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
 - `relay credential mint --name NAME --class CLASS [--class ...] [--ttl 12h] | list [--include-expired] | revoke --id ID` — control-plane API credentials (ADR-015, ADR-016). `--class` is one of `read`, `configure`, `grant`, `execute`, `proxy`; an unknown class or an empty set is refused. `--ttl` gives the credential an expiry; omitted means never. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
-- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | sign --client-id ID --csr PATH|- [--grant ...] | list | update ... | revoke --client-id ID` — remote-client enrolment. `create` generates the client's keypair on this host and emits a bundle containing the private key (legacy, deprecated in its own output). `sign` signs a CSR the client generated itself — relay only ever sees the public key, and returns certificates only. Host-side operator act only: no self-service enrolment, no bootstrap token. `update --cli-admin` (`--cli-admin=false` to withdraw it) toggles the enrolment's `cli_admin` bit — configuration authority over the remote listener, scoped to narrowing the enrolment's own already-granted access profiles, never widening them (ADR-018 decision 4). Rides on `update` rather than a new subcommand; gated in both directions, live on the client's next request.
+- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | sign --client-id ID --csr PATH|- [--grant ...] | list | update ... | revoke --client-id ID | requests [--json] | approve --id REQ --client-id ID --grant PROJECT_ID [--grant ...] | refuse --id REQ | ca-fingerprint` — remote-client enrolment. `create` generates the client's keypair on this host and emits a bundle containing the private key (legacy, deprecated in its own output). `sign` signs a CSR the client generated itself — relay only ever sees the public key, and returns certificates only. Host-side operator act only: no self-service enrolment, no bootstrap token. `update --cli-admin` (`--cli-admin=false` to withdraw it) toggles the enrolment's `cli_admin` bit — configuration authority over the remote listener, scoped to narrowing the enrolment's own already-granted access profiles, never widening them (ADR-018 decision 4). Rides on `update` rather than a new subcommand; gated in both directions, live on the client's next request. `requests`/`approve`/`refuse` are the network CSR path's operator surface (ADR-018 decision 8): `requests` lists what an unenrolled remote has lodged over the enrolment-request listener, `approve` signs one exactly as `sign` does — same op, same gate, same digest, over the request's *stored* CSR bytes — and `refuse` declines one without ever reaching the presence gate (declining a stranger is not the act it protects). `ca-fingerprint` prints relay's CA certificate hash, the value a client pins with `--ca-fingerprint`; it reads `ca.crt` straight off disk, like `list`, and works with the tray stopped. `requests`/`approve`/`refuse` are brokered like `create`/`sign`/`update`/`revoke`: the pending table lives only in the running tray's memory, so these need it up. See [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself).
 - `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one (and does **not** end sessions it already signed in — those are `relay credential revoke`, or Settings → Passkeys). The code is also mintable from the tray's **Show Login Code...** item, which goes through the same `mintBootstrapCode`. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
 
 ## Architecture
@@ -210,6 +210,30 @@ tab — are not all CSR-ready yet) but is marked deprecated in its own CLI
 output. `Enrolment.SPKISHA256` (CSR path only) refuses enrolling the same
 private key twice under two client ids.
 
+An unenrolled remote can also lodge its own CSR **over the network**,
+instead of an operator carrying it by hand, through a third listener
+(`enrolment_requests.go`, `enrolment_request_server.go`; ADR-018 decision
+8). That listener's entire capability is two methods, `Lodge` and `Poll`,
+over a bounded, in-memory, never-persisted table of at most 8 pending
+requests — it holds no reference to a router, the CA, the sealer or
+`settings.json`. **Lodging raises no prompt, ever**: no code on that path
+touches `presence.Gate`, so an unauthenticated network peer can only make a
+counter go up to its cap, never raise a dialog. The human approves from
+`relay enrol requests`/`approve`/`refuse` or Settings → Remote Clients →
+Pending requests, and *that* act reuses `enrolment.sign`'s existing gate and
+digest unchanged — there is no `enrolment.approve` entry in
+`presence.GatedOps`, deliberately, since a second op here would be exactly
+the second door into issuance ADR-018 forbids. The digest binds the
+*stored* CSR's public key, so a grant answered for one key is never
+redeemable for another. The listener itself is plain TCP, not mTLS: nothing
+on it is a secret in either direction (a self-signed CSR proves possession;
+the certificates it returns are public), so TLS here would be decoration
+that reads as a security property it cannot provide — the real control is
+the CA-fingerprint pin `relayremote request --ca-fingerprint` (or a watched
+`--tofu`) performs client-side, which is the only thing that stops an
+attacker who lets a real CSR through to relay from substituting its own CA
+on the way back. See [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself).
+
 Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
 persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the
 config dir — not in `settings.json`, which is rewritten in full on every
@@ -272,7 +296,8 @@ Config — absent block means **no listener at all**, and the default binds
 loopback so misconfiguration cannot expose the control plane to a LAN:
 
 ```json
-"remote": { "enabled": true, "listen": "127.0.0.1:9910" }
+"remote": { "enabled": true, "listen": "127.0.0.1:9910",
+            "enrolment_requests": true, "enrolment_listen": "127.0.0.1:9911" }
 ```
 
 The listener **refuses to start when auditing is disabled**: a remote grant is
@@ -282,21 +307,39 @@ a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
 connections.
 
+`enrolment_requests` and `enrolment_listen` configure the third listener
+(`EnrolmentRequestServer`, `enrolment_request_server.go`) on the same block:
+`enrolment_requests` absent or `false` opens no enrolment socket at all —
+opening that network door is a thing the operator says, not a thing relay
+infers — and `enrolment_requests: true` with `enabled: false` is refused at
+resolve time, naming why, since the request channel is a companion to the
+tool-plane listener rather than a substitute for turning it on.
+`enrolment_listen` defaults to `127.0.0.1:9910`'s neighbour, `127.0.0.1:9911`
+— loopback, same reasoning as `listen`. That listener carries its own,
+tighter bounds: at most 8 pending requests, a 15-minute TTL to be approved
+and another 15 minutes to be collected after approval, 16 concurrent
+connections, a 64-frames-then-redial cap per connection, and a 64 KiB frame
+limit (`enrolment_requests.go`, `enrolment_request_server.go`) — sized for a
+human walking to the Mac, an order of magnitude tighter than the login
+challenge table's 64-entry, 60-second shape, because nothing on this
+listener is machine-paced.
+
 **The listener follows settings; it is not frozen at startup.**
-`RemoteSupervisor` (`remote_reconcile.go`) converges on every settings poll and
-on every bridge-driven reconcile: it binds when the block is enabled, moves when
-`listen` changes, and closes when the block is disabled *or auditing stops being
-live* — so `audit.enabled: false` is a refusal at runtime and not only at
-launch. Convergence can never open a listener the configuration does not
-explicitly ask for (absent block and omitted `enabled` both resolve to
-disabled). A rebind binds the new address **before** closing the old listener,
-so a failed bind leaves the old one serving and says so loudly rather than
-leaving nothing behind and no error; live connections on the old address are
-then closed deliberately, because `listen` is the reachability control and a
-narrowed bind that left old sessions running would not have narrowed anything.
-The revocation hook is *owned* (`SetEnrolmentRevocationHookFor` /
-`ClearEnrolmentRevocationHookFor`) so a replaced listener's teardown cannot
-uninstall the live listener's hook.
+`RemoteSupervisor` (`remote_reconcile.go`) converges **both** listeners on
+every settings poll and on every bridge-driven reconcile: it binds each when
+its half of the block is enabled, moves either when its own `listen` changes,
+and closes either when its half is disabled *or auditing stops being live* —
+so `audit.enabled: false` is a refusal at runtime and not only at launch, for
+the enrolment-request listener exactly as for the tool-plane one. Convergence
+can never open a listener the configuration does not explicitly ask for
+(absent block and omitted `enabled` both resolve to disabled). A rebind binds
+the new address **before** closing the old listener, so a failed bind leaves
+the old one serving and says so loudly rather than leaving nothing behind and
+no error; live connections on the old address are then closed deliberately,
+because `listen` is the reachability control and a narrowed bind that left
+old sessions running would not have narrowed anything. The revocation hook is
+*owned* (`SetEnrolmentRevocationHookFor` / `ClearEnrolmentRevocationHookFor`)
+so a replaced listener's teardown cannot uninstall the live listener's hook.
 
 **Every authorization read on this path goes through `freshSettings`, never
 `store.Get()`.** `relay enrol create|revoke` runs in a CLI *process*, so a

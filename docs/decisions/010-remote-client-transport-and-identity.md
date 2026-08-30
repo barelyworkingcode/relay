@@ -395,7 +395,15 @@ Each of these is a decision already taken in a direction, not an unknown:
 
 - **A project-level volume ceiling** across every enrolment holding a grant.
   Protects the resource rather than bounding a single compromise (decision 7).
-- **A CSR enrolment flow**, so a client key never transits (decision 8).
+- **A CSR enrolment flow**, so a client key never transits (decision 8). **Now
+  delivered**, on both sides: `relay enrol sign` signs a CSR the client
+  generated itself (this ADR's decision 8, unchanged), and the missing half —
+  an unenrolled remote lodging that CSR over the network instead of an
+  operator carrying it by hand — is
+  [ADR-018 decision 8](018-configuration-is-a-capability-of-an-identity.md#8-the-enrolment-request-channel-is-a-mailbox-not-a-door).
+  The operator-carried path this ADR describes throughout stays exactly as
+  written below; the network path is an additional way to reach the same
+  `enrolment.sign` gate, not a replacement for it.
 - **Short-lived certificates with automated renewal**, which need an
   authenticated renewal path that does not become a replayable secret
   (decision 8). Revisit when the number of enrolments outgrows manual

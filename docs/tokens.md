@@ -363,6 +363,49 @@ mitigation for this, by decision (ADR-017 implementation spec §9.8, §3.2).
 `relay login revoke` is gated too (it destroys a login identity) and refuses
 the same way over SSH; only the read half, `relay login list`, is unaffected.
 
+## The enrolment request channel is not a credential
+
+`relayremote request` prints a request id, but it is **not** a sixth entry
+in this document's inventory and must never be listed alongside the five
+control-plane classes above or the certificate/enrolment pair
+[`docs/access-profiles.md`](access-profiles.md) describes. It authorises
+nothing at all — a request id names a row in an in-memory table, never an
+identity, and nobody redeems it for anything by presenting it.
+
+- **What it authorises.** Nothing. Lodging a request is an unauthenticated
+  act by design (`docs/decisions/018-configuration-is-a-capability-of-an-identity.md`
+  decision 8) — a network peer can add a row to a bounded table and reach
+  precisely that far. The id that comes back names the row so the same
+  caller can poll it; it does not open any door a stranger could not already
+  reach by lodging a fresh request.
+- **It cannot be presented in place of a certificate.** The remote listener
+  and the tool-plane listener take a certificate at the TLS handshake, never
+  a request id on the wire, and the enrolment-request listener itself holds
+  no method that accepts one as authority for anything — it can only be
+  polled. A request id proves nothing about the machine that holds it, which
+  is the opposite property a credential needs.
+- **Its loss costs nothing.** There is no plaintext to protect and nothing
+  to revoke: the id is not a secret before it is lodged, during the wait, or
+  after collection. Losing it means re-running `relayremote request` and
+  lodging a fresh one — the previous row simply expires at its own TTL.
+
+**What the channel records, and what it deliberately does not.** `relay
+audit` is ground truth for anything relay gates, and lodging is the one act
+here an unauthenticated caller drives at line rate — recording it would be
+exactly the audit-log amplification [above](#what-the-unauthenticated-surface-records-and-what-it-still-costs)
+already exists to avoid, so **lodging is never audited.** It is *counted*
+instead: a full table warns at most once per TTL, the same discipline the
+login challenge table uses for its own flood. **An operator's explicit
+refusal from the pending list IS audited**, as a genuine `ControlDecision`
+with `Allowed: false` — a human declining a stranger's request is an
+authorization decision no attacker can drive, unlike lodging it in the first
+place. **Approval is already audited**, by the same `credential_issued`
+record every `enrolment.sign` produces — approving a network request and
+signing a CSR handed to relay directly write the identical record, because
+they are the identical act underneath (see [`docs/presence-gate.md`](presence-gate.md)).
+**Expiry is logged, not audited** — a `slog.Info` line with a count, because
+a request nobody answered in time is not a decision anybody made.
+
 ## settings.json has one writer, and several goroutines
 
 Every credential in this document except the ephemeral ones lives in one
