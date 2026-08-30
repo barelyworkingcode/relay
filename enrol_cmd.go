@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"relaygo/presence"
 )
 
 // There is no self-service enrolment subcommand and no bootstrap token by
@@ -26,6 +28,10 @@ func runEnrolCommand(args []string) {
 		{"list", func(_ []string) { enrolList(store) }},
 		{"update", func(a []string) { enrolUpdate(store, a) }},
 		{"revoke", func(a []string) { enrolRevoke(store, a) }},
+		{"requests", func(a []string) { enrolRequests(a) }},
+		{"approve", func(a []string) { enrolApprove(a) }},
+		{"refuse", func(a []string) { enrolRefuse(a) }},
+		{"ca-fingerprint", func(_ []string) { enrolCAFingerprint() }},
 	}, args)
 }
 
@@ -415,6 +421,176 @@ func enrolRevoke(store SettingsStore, args []string) {
 	fmt.Printf("revoked enrolment %q\n", removed.ClientID)
 	fmt.Printf("  fingerprint: %s\n", removed.Fingerprint)
 	fmt.Println("  the certificate itself is unchanged and no access profile was touched; the record is what granted it access")
+}
+
+// enrolRequests lists live pending requests. Brokered like every mutation
+// below: the pending table is in-memory only, held by the running tray
+// process, so a CLI process reading settings.json directly (the way `enrol
+// list` does) could never see it — there is nothing on disk to read.
+func enrolRequests(args []string) {
+	fs := flag.NewFlagSet("enrol requests", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print machine-readable JSON")
+	fs.Parse(args)
+
+	client := requireService("relay enrol requests")
+	raw, err := client.AdminOp("enrolment.request.list", json.RawMessage("{}"))
+	if err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	var result enrolmentRequestListResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		exitError("parse response: %v", err)
+	}
+
+	if *asJSON {
+		out, err := json.MarshalIndent(result.Requests, "", "  ")
+		if err != nil {
+			exitError("%v", err)
+		}
+		fmt.Println(string(out))
+		return
+	}
+
+	if len(result.Requests) == 0 {
+		fmt.Println("no pending enrolment requests")
+		return
+	}
+	w := newTabWriter()
+	fmt.Fprintln(w, "REQUEST ID\tKEY\tLABEL\tFROM\tARRIVED\tEXPIRES\tSTATUS")
+	for _, req := range result.Requests {
+		label := req.Label
+		if label == "" {
+			label = "-"
+		}
+		status := "pending"
+		if req.Approved {
+			status = "approved: " + req.ApprovedClientID
+		}
+		// The full 64 hex characters, never truncated — FingerprintDER's
+		// stated reason applies identically to a request's own key: a
+		// prefix answers "probably that key" where the point is "that key".
+		fmt.Fprintf(w, "%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
+			req.RequestID, req.SPKISHA256, label, req.RemoteAddr, req.ArrivedAt, req.ExpiresAt, status)
+	}
+	w.Flush()
+}
+
+// parseEnrolApproveFlags builds the approve request from argv alone, no
+// store and no dial — matching parseEnrolSignFlags' own rationale. There is
+// no --csr flag: the CSR is the pending request's stored bytes, never
+// something this command could name (spec §3, approveFields' own doc
+// comment).
+func parseEnrolApproveFlags(args []string) approveFields {
+	fs := flag.NewFlagSet("enrol approve", flag.ExitOnError)
+	requestID := fs.String("id", "", "pending request id to approve (required)")
+	clientID := fs.String("client-id", "", "human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment")
+	shared := addEnrolGrantBudgetFlags(fs)
+	fs.Parse(args)
+
+	if *requestID == "" {
+		exitError("--id is required")
+	}
+	if *clientID == "" {
+		exitError("--client-id is required")
+	}
+	return approveFields{
+		RequestID:  *requestID,
+		ClientID:   *clientID,
+		ProjectIDs: []string(shared.grants),
+		Budget:     shared.budget(),
+	}
+}
+
+// enrolApproveSSHRefusalMessage corrects sshRefusalMessage's generic "there
+// is no queue and no pending-approval list" line for this one verb (§11.5):
+// unlike every other gated CLI mutation, an enrolment request DOES sit in a
+// queue once it is lodged, and a user reaches this command specifically
+// because a network request just arrived. The working door is named
+// instead of the generic advice.
+const enrolApproveSSHRefusalMessage = "refused: approving needs your confirmation on the Mac's screen, and the session this\n" +
+	"  command is running in cannot show a prompt (for example, you are over SSH).\n" +
+	"  The request is still waiting — it does not expire because this command refused.\n" +
+	"  Approve it from the Mac's own screen instead: open the Relay tray ->\n" +
+	"  Settings -> Remote Clients -> Pending requests.\n" +
+	"  Read commands are unaffected: relay enrol requests, relay audit, relay grant."
+
+// enrolApproveErrorText is adminOpErrorText with one substitution: a
+// no-session refusal on THIS verb gets enrolApproveSSHRefusalMessage rather
+// than the generic sshRefusalMessage, for the reason that constant's own
+// doc comment gives.
+func enrolApproveErrorText(err error) string {
+	if strings.Contains(err.Error(), presence.ErrNoSession.Error()) {
+		return enrolApproveSSHRefusalMessage
+	}
+	return adminOpErrorText(err)
+}
+
+// enrolApprove turns a pending network request into a signed certificate by
+// reusing enrolment.sign's own gate — approving IS signing, from the
+// operator's chair; see EnrolmentOps.Approve's doc comment for why no
+// separate op exists.
+func enrolApprove(args []string) {
+	fields := parseEnrolApproveFlags(args)
+
+	client := requireService("relay enrol approve")
+	req, err := json.Marshal(fields)
+	if err != nil {
+		exitError("%v", err)
+	}
+	raw, err := client.AdminOp("enrolment.request.approve", req)
+	if err != nil {
+		exitError("%s", enrolApproveErrorText(err))
+	}
+	var result enrolmentSignResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		exitError("parse response: %v", err)
+	}
+
+	fmt.Printf("approved enrolment request %q as %q\n", fields.RequestID, result.Enrolment.ClientID)
+	fmt.Printf("  fingerprint: %s\n", result.Enrolment.Fingerprint)
+	fmt.Printf("  profiles:    %s\n", formatGrants(result.Enrolment.ProjectIDs))
+
+	// Same shape as enrolSign's own bundle-error report: the record landed
+	// even though the host-side bundle write did not (§11.7) — the
+	// certificate is still delivered to the client on its next poll.
+	if result.BundleError != "" {
+		fmt.Printf("  note: the enrolment record was created but writing its bundle to disk failed: %s\n", result.BundleError)
+		fmt.Println("  the record is real and counts against this client's grants; the certificate is still")
+		fmt.Println("  delivered to the client on its next poll — `relay enrol revoke` removes the record")
+		return
+	}
+	fmt.Println("  the certificate is delivered to the client on its next poll; nothing further to do on this host")
+}
+
+func enrolRefuse(args []string) {
+	fs := flag.NewFlagSet("enrol refuse", flag.ExitOnError)
+	requestID := fs.String("id", "", "pending request id to refuse (required)")
+	fs.Parse(args)
+	if *requestID == "" {
+		exitError("--id is required")
+	}
+
+	client := requireService("relay enrol refuse")
+	body, err := json.Marshal(enrolmentRequestRefuseRequest{RequestID: *requestID})
+	if err != nil {
+		exitError("%v", err)
+	}
+	if _, err := client.AdminOp("enrolment.request.refuse", body); err != nil {
+		exitError("%s", adminOpErrorText(err))
+	}
+	fmt.Printf("refused enrolment request %q\n", *requestID)
+}
+
+// enrolCAFingerprint reads ca.crt straight off disk — no store, no dial, no
+// sealer, the same "works with the tray stopped" shape `relay enrol list`
+// and `relay audit` already have, since the certificate is public and the
+// key it corresponds to is not needed to fingerprint it.
+func enrolCAFingerprint() {
+	fp, err := caFingerprintFromDisk()
+	if err != nil {
+		exitError("%v", err)
+	}
+	fmt.Println(fp)
 }
 
 func formatGrants(ids []string) string {

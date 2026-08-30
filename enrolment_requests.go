@@ -86,9 +86,11 @@ func (e *enrolmentRateLimitedError) Unwrap() error { return errEnrolmentRateLimi
 
 // enrolmentRequestRecord is one lodged CSR. csrPEM is set once, at Lodge,
 // and NOTHING in this file mutates it afterward — no exported method
-// replaces it, which is what makes presenceDigest(csr) binding (§3, a
-// later slice) mean anything: the bytes a future approval signs over are
-// provably the bytes the requester submitted.
+// replaces it, which is what makes presenceDigest(csr) binding (§3) mean
+// anything: the bytes Approve signs over are provably the bytes the
+// requester submitted. The approved* fields below are the one thing that
+// DOES change after lodging, and MarkApproved is careful to touch only
+// those — never csrPEM, spkiSHA256, label, remoteAddr or arrivedAt.
 type enrolmentRequestRecord struct {
 	id         string
 	csrPEM     []byte
@@ -97,19 +99,56 @@ type enrolmentRequestRecord struct {
 	remoteAddr string
 	arrivedAt  time.Time
 	expiresAt  time.Time
+
+	// Set exactly once, by MarkApproved, after EnrolmentOps.Approve's gated
+	// sign has already committed (spec §3 step 4: "only then"). Zero value
+	// (approved == false) is every record's state from Lodge until then.
+	approved           bool
+	approvedClientID   string
+	approvedProjectIDs []string
+	approvedRelayAddr  string
+	approvedCertPEM    string
+	approvedCAPEM      string
 }
 
 // enrolmentRequestView is List's read-only projection: everything an
 // operator surface needs to show a pending request, and deliberately
 // nothing that could be used to reconstruct or replace the CSR.
 type enrolmentRequestView struct {
-	RequestID  string
-	SPKISHA256 string
+	RequestID        string
+	SPKISHA256       string
+	Label            string
+	RemoteAddr       string
+	ArrivedAt        time.Time
+	ExpiresAt        time.Time
+	Approved         bool
+	ApprovedClientID string
+}
+
+// pendingRecordView is what EnrolmentOps.Approve needs to read under the
+// table lock: the CSR bytes the requester submitted — unreachable any other
+// way, deliberately (spec §11.3) — plus the bookkeeping its approval reason
+// names. It has no method and no field that could feed a CSR back into the
+// table, so reading one can never become a write.
+type pendingRecordView struct {
+	CSRPEM     []byte
 	Label      string
 	RemoteAddr string
-	ArrivedAt  time.Time
-	ExpiresAt  time.Time
 }
+
+// EnrolmentRequestApprovalSink is what EnrolmentOps.Approve, Refuse and
+// PendingRequests need from the pending table (spec §3): read one record's
+// stored bytes, list every live row, mark one approved once a gated sign has
+// committed, and remove one on an operator's explicit refusal.
+// enrolmentRequestTable is the only implementation.
+type EnrolmentRequestApprovalSink interface {
+	Get(requestID string) (pendingRecordView, bool)
+	List() []enrolmentRequestView
+	MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) bool
+	Refuse(audit *AuditRecorder, requestID string) bool
+}
+
+var _ EnrolmentRequestApprovalSink = (*enrolmentRequestTable)(nil)
 
 // lodged is Lodge's success value.
 type lodged struct {
@@ -304,7 +343,8 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 }
 
 // Poll answers a request id with the ONE thing this listener knows about
-// it: whether a live pending row still exists. "unknown" covers expired,
+// it: whether a live pending row still exists, and — once EnrolmentOps.
+// Approve has run — the artifacts it produced. "unknown" covers expired,
 // never-existed and wrong-id as one answer — the same oracle-avoidance
 // rule presence.ErrGrantInvalid already follows — because a distinguishable
 // answer would let a caller learn which request ids ever existed.
@@ -318,11 +358,69 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 	if !ok {
 		return pollResult{Status: "unknown"}, nil
 	}
+	if r.approved {
+		return pollResult{
+			Status:     "approved",
+			ClientID:   r.approvedClientID,
+			ProjectIDs: r.approvedProjectIDs,
+			RelayAddr:  r.approvedRelayAddr,
+			CertPEM:    r.approvedCertPEM,
+			CAPEM:      r.approvedCAPEM,
+		}, nil
+	}
 	return pollResult{
 		Status:           "pending",
 		PollAfterSeconds: enrolPollAfterSeconds,
 		ExpiresInSeconds: secondsUntil(r.expiresAt, now),
 	}, nil
+}
+
+// Get reads one pending record's stored bytes under the table lock — the
+// accessor this file's own doc comment on csrPEM depends on: a copy leaves
+// the stored bytes untouched no matter what the caller does with it, and is
+// what makes the CSR EnrolmentOps.Approve signs over provably the bytes the
+// requester submitted. Sweeps first, so an id past its TTL answers "not
+// found" rather than handing back a CSR whose slot a flood could already be
+// reusing.
+func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	t.sweepLocked(now)
+
+	r, ok := t.pending[requestID]
+	if !ok {
+		return pendingRecordView{}, false
+	}
+	return pendingRecordView{
+		CSRPEM:     append([]byte(nil), r.csrPEM...),
+		Label:      r.label,
+		RemoteAddr: r.remoteAddr,
+	}, true
+}
+
+// MarkApproved transitions a pending record to "approved" — reachable only
+// after EnrolmentOps.Approve's gated sign has already committed (spec §3
+// step 4: "only then"). It never touches csrPEM, spkiSHA256, label,
+// remoteAddr or arrivedAt: the fields a requester controls stay exactly
+// what was lodged. expiresAt is reset to enrolmentCollectTTL — the ROW's
+// clock, not the certificate's: the enrolment is already real and on disk
+// regardless of whether this row is ever collected (spec §2).
+func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.pending[requestID]
+	if !ok {
+		return false
+	}
+	r.approved = true
+	r.approvedClientID = clientID
+	r.approvedProjectIDs = append([]string(nil), projectIDs...)
+	r.approvedRelayAddr = relayAddr
+	r.approvedCertPEM = certPEM
+	r.approvedCAPEM = caPEM
+	r.expiresAt = t.now().Add(enrolmentCollectTTL)
+	return true
 }
 
 // List is the read-only surface a later slice's EnrolmentOps.PendingRequests
@@ -337,12 +435,14 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 	out := make([]enrolmentRequestView, 0, len(t.pending))
 	for _, r := range t.pending {
 		out = append(out, enrolmentRequestView{
-			RequestID:  r.id,
-			SPKISHA256: r.spkiSHA256,
-			Label:      r.label,
-			RemoteAddr: r.remoteAddr,
-			ArrivedAt:  r.arrivedAt,
-			ExpiresAt:  r.expiresAt,
+			RequestID:        r.id,
+			SPKISHA256:       r.spkiSHA256,
+			Label:            r.label,
+			RemoteAddr:       r.remoteAddr,
+			ArrivedAt:        r.arrivedAt,
+			ExpiresAt:        r.expiresAt,
+			Approved:         r.approved,
+			ApprovedClientID: r.approvedClientID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ArrivedAt.Before(out[j].ArrivedAt) })

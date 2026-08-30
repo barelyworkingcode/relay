@@ -147,6 +147,13 @@ var errEnrolmentUnrecorded = errors.New("enrolment created but could not be reco
 type EnrolmentCreated struct {
 	Enrolment Enrolment
 	Dir       string
+	// CertPEM and CAPEM are populated by Sign and Approve (never by Create,
+	// whose caller has always read its bundle off Dir): the certificate,
+	// unlike the key, is public, and carrying it here is what lets Approve
+	// hand it back even when the bundle's on-disk write failed (§11.7) —
+	// the certificate exists in memory whether or not the write did.
+	CertPEM string
+	CAPEM   string
 }
 
 // remoteConfigFields is the PUT /api/remote and update_remote_config
@@ -176,7 +183,14 @@ type EnrolmentOps struct {
 	// they touch the store (ADR-017 decisions 3 and 4): an enrolment issues
 	// or destroys a remote identity. A nil Gate refuses all three — see
 	// requireGate.
-	Gate     *presence.Gate
+	Gate *presence.Gate
+	// Requests is the pending enrolment-request table Approve, Refuse and
+	// PendingRequests read and mutate (spec §3). Nil in every door that
+	// predates this slice — Create/Sign/Update/Revoke never touch it, so
+	// those keep working exactly as before with a zero Requests — and
+	// Approve/Refuse/PendingRequests refuse instead of panicking when it is
+	// unset (errEnrolmentRequestsNotWired).
+	Requests EnrolmentRequestApprovalSink
 	OnChange func()
 }
 
@@ -251,8 +265,8 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 // Sign issues a certificate over a CSR the client generated itself: the
 // private key it proves possession of never reaches this process (§0.1 —
 // "signLeaf takes *ecdsa.PublicKey, not crypto.PublicKey"). Order is
-// normative (§1.4): the CSR is parsed BEFORE the gate, so a malformed CSR
-// never makes an operator type a password for an act that was going to
+// normative (§1.4, §11.2): the CSR is parsed BEFORE the gate, so a malformed
+// CSR never makes an operator type a password for an act that was going to
 // refuse anyway.
 func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, credID string) (EnrolmentCreated, error) {
 	clientID := strings.TrimSpace(f.ClientID)
@@ -274,16 +288,28 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return EnrolmentCreated{}, err
 	}
 
-	bundle, err := signEnrolment(o.Store, enrolmentRequest{
-		ClientID:   clientID,
-		ProjectIDs: f.ProjectIDs,
-		Budget:     f.Budget,
-	}, csr)
+	return o.completeSigning(enrolmentRequest{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+}
+
+// completeSigning is the ordering §11.2 pins as normative — signEnrolment,
+// then recordEnrolmentIssued's fail-closed undo — shared verbatim by Sign
+// and Approve. Both callers have already parsed their own CSR, checked
+// requireIssuanceAuditor and redeemed their own presence grant over
+// "enrolment.sign" before reaching here; this is what runs identically once
+// they have, so neither can drift from the other on the part that is
+// actually fragile — getting the undo or the commit order wrong.
+func (o *EnrolmentOps) completeSigning(req enrolmentRequest, csr *x509.CertificateRequest, grant presence.Grant, via, credID string) (EnrolmentCreated, error) {
+	bundle, err := signEnrolment(o.Store, req, csr)
 	if err != nil && !errors.Is(err, errEnrolmentBundle) {
 		return EnrolmentCreated{}, err
 	}
 	bundleErr := err
-	created := EnrolmentCreated{Enrolment: bundle.Enrolment, Dir: bundle.Dir}
+	created := EnrolmentCreated{
+		Enrolment: bundle.Enrolment,
+		Dir:       bundle.Dir,
+		CertPEM:   string(bundle.CertPEM),
+		CAPEM:     string(bundle.CAPEM),
+	}
 
 	// Same fail-closed undo as Create: recordEnrolmentIssued's rationale now
 	// covers both artifacts a caller might hold — a key relay wrote, or a
@@ -296,6 +322,143 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return created, bundleErr // errEnrolmentBundle: the record landed, the bundle write didn't
 	}
 	return created, nil
+}
+
+// approveFields is Approve's request (spec §3). RequestID names the pending
+// record whose STORED bytes are the ones fed to the gate — there is no
+// field here that could carry a CSR, deliberately: a field like that would
+// make the presence digest's SPKI binding decorative (§11.3), since the
+// digest would no longer provably bind to what was lodged. An acceptance
+// test asserts this absence by reflection. Budget and ProjectIDs are the
+// human's choice at approval, same as Sign; CLIAdmin has no field here at
+// all — ADR-018 decision 6 keeps that a separate, discrete act from any
+// door (§3).
+type approveFields struct {
+	RequestID  string          `json:"request_id"`
+	ClientID   string          `json:"client_id"`
+	ProjectIDs []string        `json:"project_ids"`
+	Budget     EnrolmentBudget `json:"budget"`
+}
+
+// enrolmentApproveReason names the approval act distinctly from a plain
+// sign (spec §3): an operator looking at the presence prompt sees that the
+// CSR came from a network request, not a file handed to relay directly —
+// "approve an enrolment request from 10.0.0.5 and sign a certificate for
+// client ... with access to ...". The reason is not part of the digest
+// (presenceDigest never reads it), so this naming freedom costs nothing.
+func enrolmentApproveReason(remoteAddr, clientID string, projectIDs []string) string {
+	return fmt.Sprintf("approve an enrolment request from %s and %s", remoteAddr, enrolmentSignReason(clientID, projectIDs))
+}
+
+var (
+	// errEnrolmentRequestsNotWired mirrors errPresenceGateNotWired's
+	// discipline: a caller with no Requests table refuses rather than
+	// panics, and every door that predates this slice leaves it nil.
+	errEnrolmentRequestsNotWired = errors.New("enrolment request table is not wired for this operation")
+	errEnrolmentRequestNotFound  = errors.New("enrolment request not found")
+)
+
+// Approve is enrolment.sign's second door (spec §3) — NOT a new gated
+// operation: presence.GatedOps gains no "enrolment.approve" entry (that
+// would be exactly the second door into issuance ADR-018 forbids), and this
+// asks the SAME gate under the SAME op name and the SAME digest shape Sign
+// does, differing only in where the CSR bytes and the reason come from.
+//
+// Order matches Sign's, applied to a stored record instead of a request
+// field (§11.2, §3 steps 1-4): read the pending record under the table
+// lock (1), ParseClientCSR the STORED bytes before anything else runs (2),
+// requireIssuanceAuditor, then the gate over norm.presenceDigest(csr) (3),
+// then completeSigning — the identical signEnrolment/recordEnrolmentIssued
+// body Sign uses (4) — and only once THAT has committed does MarkApproved
+// run, so a failed audit-log undo (errEnrolmentUnrecorded, never
+// errEnrolmentBundle) can never leave a poll answering "approved" for an
+// enrolment that was just revoked (AC-24).
+func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID string) (EnrolmentCreated, error) {
+	if o.Requests == nil {
+		return EnrolmentCreated{}, errEnrolmentRequestsNotWired
+	}
+	requestID := strings.TrimSpace(f.RequestID)
+	if requestID == "" {
+		return EnrolmentCreated{}, invalidEnrolment("request id is required")
+	}
+	clientID := strings.TrimSpace(f.ClientID)
+	if clientID == "" {
+		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+	}
+
+	rec, found := o.Requests.Get(requestID)
+	if !found {
+		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
+	}
+
+	// The stored bytes, never anything approveFields could carry — see its
+	// own doc comment.
+	csr, err := ParseClientCSR(rec.CSRPEM)
+	if err != nil {
+		return EnrolmentCreated{}, invalidEnrolment(err.Error())
+	}
+
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return EnrolmentCreated{}, err
+	}
+	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget, CSRPEM: string(rec.CSRPEM)}
+	reason := enrolmentApproveReason(rec.RemoteAddr, clientID, f.ProjectIDs)
+	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), reason)
+	if err != nil {
+		return EnrolmentCreated{}, err
+	}
+
+	created, err := o.completeSigning(enrolmentRequest{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		return EnrolmentCreated{}, err
+	}
+	// Reachable only once completeSigning's own fail-closed undo has
+	// already succeeded (err here is nil or errEnrolmentBundle — never
+	// errEnrolmentUnrecorded, which returned above): the poll response must
+	// never carry an approval the audit log could not record (AC-24). The
+	// bundle write may still have failed (§11.7) — the certificate is
+	// delivered from memory regardless.
+	o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM)
+	return created, err
+}
+
+// relayAddr is what an approved poll response's relay_addr carries: the
+// TOOL-plane listener's address (§5), not the enrolment-request listener's
+// — a client that just collected a certificate has no other way to learn
+// where to point relayremote list/call next.
+func (o *EnrolmentOps) relayAddr() string {
+	return o.Store.Get().Remote.resolve().Listen
+}
+
+// Refuse is the operator's explicit decline (spec §2, §3) — deliberately
+// NOT gated by presence.Gate: declining a stranger's request from the list
+// is not the act ADR-017 decision 3 protects (issue #68's boundary), and
+// the table's own Refuse method already records it as a genuine,
+// human-driven ControlDecision, unlike lodging.
+func (o *EnrolmentOps) Refuse(requestID string) error {
+	if o.Requests == nil {
+		return errEnrolmentRequestsNotWired
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return invalidEnrolment("request id is required")
+	}
+	if !o.Requests.Refuse(o.Audit, requestID) {
+		return fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
+	}
+	return nil
+}
+
+// PendingRequests is the read-only surface `relay enrol requests` and,
+// later, Settings -> Remote Clients' pending panel use. A nil Requests
+// table (every door that predates this slice) reads as "nothing pending"
+// rather than refusing: listing is not a mutation and has nothing to fail
+// closed about.
+func (o *EnrolmentOps) PendingRequests() []enrolmentRequestView {
+	if o.Requests == nil {
+		return []enrolmentRequestView{}
+	}
+	return o.Requests.List()
 }
 
 // enrolmentUpdateReason names the actual act (§6.5.2), special-casing

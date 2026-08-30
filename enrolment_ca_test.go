@@ -225,3 +225,34 @@ func TestRelayCA_SignClientCSR_RefusesNonECDSAKey(t *testing.T) {
 		t.Fatal("SignClientCSR must refuse a non-ECDSA public key")
 	}
 }
+
+// AC-30: `relay enrol ca-fingerprint`'s value (caFingerprintFromDisk, which
+// reads ca.crt straight off disk with no sealer at all) and the value a
+// client pins (RelayCA.CertFingerprint, from the loaded CA the tray holds)
+// are byte-identical for the same CA.
+func TestCAFingerprint_DiskReadMatchesLoadedCA(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+
+	ca, err := LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "LoadOrCreateCA")
+
+	fromDisk, err := caFingerprintFromDisk()
+	assertNoErr(t, err, "caFingerprintFromDisk")
+
+	if fromDisk != ca.CertFingerprint() {
+		t.Fatalf("caFingerprintFromDisk() = %q, want %q (RelayCA.CertFingerprint of the same CA)", fromDisk, ca.CertFingerprint())
+	}
+	if !strings.HasPrefix(fromDisk, "sha256:") {
+		t.Fatalf("fingerprint %q lacks the sha256: prefix", fromDisk)
+	}
+}
+
+// caFingerprintFromDisk must never need a sealer: it is the one enrol
+// subcommand a CLI process can answer without dialing the tray.
+func TestCAFingerprint_RefusesNamingTheFixWhenNoCAExistsYet(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+	_, err := caFingerprintFromDisk()
+	if err == nil || !strings.Contains(err.Error(), "relay enrol") {
+		t.Fatalf("err = %v, want a refusal naming a `relay enrol` command to run first", err)
+	}
+}

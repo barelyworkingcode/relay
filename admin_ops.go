@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // adminOpHandler executes one brokered admin operation. args is the
@@ -22,19 +23,22 @@ type adminOpHandler func(ctx context.Context, r *appRouter, args json.RawMessage
 // remove (§7.2's operation table is normative for the op name -> core
 // mapping).
 var adminOps = map[string]adminOpHandler{
-	"credential.mint":      adminCredentialMint,
-	"credential.revoke":    adminCredentialRevoke,
-	"enrolment.create":     adminEnrolmentCreate,
-	"enrolment.sign":       adminEnrolmentSign,
-	"enrolment.update":     adminEnrolmentUpdate,
-	"enrolment.revoke":     adminEnrolmentRevoke,
-	"login.bootstrap.mint": adminLoginBootstrapMint,
-	"login.passkey.revoke": adminLoginPasskeyRevoke,
-	"mcp.register":         adminMcpRegister,
-	"mcp.unregister":       adminMcpUnregister,
-	"service.register":     adminServiceRegister,
-	"service.unregister":   adminServiceUnregister,
-	"service.restart":      adminServiceRestart,
+	"credential.mint":           adminCredentialMint,
+	"credential.revoke":         adminCredentialRevoke,
+	"enrolment.create":          adminEnrolmentCreate,
+	"enrolment.sign":            adminEnrolmentSign,
+	"enrolment.update":          adminEnrolmentUpdate,
+	"enrolment.revoke":          adminEnrolmentRevoke,
+	"enrolment.request.list":    adminEnrolmentRequestList,
+	"enrolment.request.approve": adminEnrolmentRequestApprove,
+	"enrolment.request.refuse":  adminEnrolmentRequestRefuse,
+	"login.bootstrap.mint":      adminLoginBootstrapMint,
+	"login.passkey.revoke":      adminLoginPasskeyRevoke,
+	"mcp.register":              adminMcpRegister,
+	"mcp.unregister":            adminMcpUnregister,
+	"service.register":          adminServiceRegister,
+	"service.unregister":        adminServiceUnregister,
+	"service.restart":           adminServiceRestart,
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the
@@ -256,6 +260,92 @@ func adminEnrolmentRevoke(ctx context.Context, r *appRouter, args json.RawMessag
 		return nil, err
 	}
 	return marshalAdminResult(removed)
+}
+
+// enrolmentRequestListItem is the CLI-facing projection of
+// enrolmentRequestView: JSON tags for `relay enrol requests --json`, and a
+// timestamp format (RFC3339) rather than time.Time's own, matching every
+// other admin_op result that carries one.
+type enrolmentRequestListItem struct {
+	RequestID        string `json:"request_id"`
+	SPKISHA256       string `json:"spki_sha256"`
+	Label            string `json:"label,omitempty"`
+	RemoteAddr       string `json:"remote_addr"`
+	ArrivedAt        string `json:"arrived_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Approved         bool   `json:"approved"`
+	ApprovedClientID string `json:"approved_client_id,omitempty"`
+}
+
+type enrolmentRequestListResult struct {
+	Requests []enrolmentRequestListItem `json:"requests"`
+}
+
+func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	views := ops.PendingRequests()
+	items := make([]enrolmentRequestListItem, 0, len(views))
+	for _, v := range views {
+		items = append(items, enrolmentRequestListItem{
+			RequestID:        v.RequestID,
+			SPKISHA256:       v.SPKISHA256,
+			Label:            v.Label,
+			RemoteAddr:       v.RemoteAddr,
+			ArrivedAt:        v.ArrivedAt.UTC().Format(time.RFC3339),
+			ExpiresAt:        v.ExpiresAt.UTC().Format(time.RFC3339),
+			Approved:         v.Approved,
+			ApprovedClientID: v.ApprovedClientID,
+		})
+	}
+	return marshalAdminResult(enrolmentRequestListResult{Requests: items})
+}
+
+// adminEnrolmentRequestApprove answers with enrolmentSignResult — the exact
+// shape adminEnrolmentSign already returns (Enrolment, Dir, the certificate
+// bytes, and BundleError when writeSignedCertBundle failed) — because
+// approving is enrolment.sign's second door, not a different result shape.
+func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[approveFields]("enrolment.request.approve", args)
+	if err != nil {
+		return nil, err
+	}
+	created, err := ops.Approve(ctx, req, auditViaCLI, "")
+	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		return nil, err
+	}
+	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
+	if err != nil {
+		result.BundleError = err.Error()
+	}
+	return marshalAdminResult(result)
+}
+
+type enrolmentRequestRefuseRequest struct {
+	RequestID string `json:"request_id"`
+}
+
+func adminEnrolmentRequestRefuse(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[enrolmentRequestRefuseRequest]("enrolment.request.refuse", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := ops.Refuse(req.RequestID); err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(struct {
+		RequestID string `json:"request_id"`
+	}{RequestID: req.RequestID})
 }
 
 func adminLoginBootstrapMint(ctx context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {

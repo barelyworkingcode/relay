@@ -504,6 +504,40 @@ func TestRemoteServer_CSRSignedClientListsToolsAndCallsTool(t *testing.T) {
 	}
 }
 
+// AC-33: the operator-carried path (relay enrol sign, in EnrolmentOps.Sign's
+// shape) still produces a bundle a client installs and calls tools with,
+// with the enrolment-request channel disabled entirely — this fixture's
+// settings never set remote.enrolment_requests at all, so resolveEnrolment
+// resolves to no listener, and no EnrolmentRequestServer exists anywhere in
+// this test's process. Sign and Approve share one body (enrolment_ops.go's
+// completeSigning); this is the proof that body owes nothing to the request
+// channel's own machinery.
+func TestRemoteServer_CSRSignedClientWorksWithTheRequestChannelDisabled(t *testing.T) {
+	f, key := newRemoteFixtureCSRSigned(t, remoteFixtureOpts{})
+
+	resolved, err := f.store.Get().Remote.resolveEnrolment()
+	assertNoErr(t, err, "resolveEnrolment")
+	if resolved.Enabled {
+		t.Fatal("the enrolment-request channel must be disabled for this regression to mean anything")
+	}
+
+	c := f.dialWithClientKey(key)
+	if c == nil {
+		t.Fatal("CSR-signed client could not complete the handshake")
+	}
+	resp := c.roundTrip(`{"type":"ListTools"}`)
+	if resp.Type != bridge.RespTools {
+		t.Fatalf("ListTools returned %s: %s", resp.Type, resp.Message)
+	}
+	resp = c.roundTrip(`{"type":"CallTool","name":"mail_search","arguments":{"q":"invoice"}}`)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("CallTool returned %s: %s", resp.Type, resp.Message)
+	}
+	if !strings.Contains(string(resp.Result), "3 messages") {
+		t.Errorf("result did not come from the MCP: %s", resp.Result)
+	}
+}
+
 // An enrolment holding exactly one grant may leave project_id off; holding
 // several, it must say which. Guessing would make the choice relay's.
 func TestRemoteServer_ProjectIDIsOptionalForOneGrantAndRequiredForSeveral(t *testing.T) {
