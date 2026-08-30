@@ -241,14 +241,45 @@ func TestGate_AllowlistNamesOnlyRealFiles(t *testing.T) {
 	}
 }
 
-// TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11's floor: a
+// wantGatedMutatorNames pins gatedMutatorNames' key set (§4.1's "does not
+// shrink" rule, most pointedly for RemoveExternalMcp and RemoveService: a
+// retired op's mutator stays listed, because the mutation-containment
+// property this file proves does not depend on whether the op that reaches
+// it still needs a prompt). A count floor is not enough here — dropping any
+// ONE entry still leaves the set well above a loose minimum, and produces
+// zero violations from TestGate_NoDoorReachesAGatedMutationOutsideItsCore
+// today, since nothing outside the allowlisted cores currently calls any
+// mutator by name. Pinning the literal set is what makes a silent drop
+// visible.
+var wantGatedMutatorNames = []string{
+	"With", "WithDeclinable", "withDeclinable",
+	"MintFor",
+	"AddAPICredential", "RemoveAPICredential",
+	"RotateProjectToken",
+	"UpsertExternalMcp", "RemoveExternalMcp",
+	"UpsertService", "RemoveService",
+	"AddEnrolment", "RemoveEnrolment",
+	"mintBootstrapCode",
+	"applyProjectCreate", "applyProjectUpdate",
+	"UpdateProjectAllowedTools", "UpdateProjectAccess", "UpdateProjectContext",
+	"UpdateProjectMcps", "SetProjectAllowCwdAuth", "UpdateProjectAllowExternal",
+	"UpdateProjectKind", "UpdateProjectPath",
+}
+
+// wantGateAllowlistedFiles pins gateAllowlistedFiles' key set the same way.
+var wantGateAllowlistedFiles = []string{
+	"credential_ops.go", "project_ops.go", "mcp_ops.go", "service_ops.go",
+	"enrolment_ops.go", "login_ops.go",
+	"settings.go", "settings_store.go", "api_credential.go", "enrolment.go", "project_apply.go",
+	"project_routes.go", "ipc_handlers.go", "trayapp.go", "frontend_server.go", "login_routes.go",
+}
+
+// TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a
 // mutation-containment guard that keeps passing while its two sets quietly
-// shrink toward empty is worse than no guard, because "no violations found"
-// stops meaning anything once there is nothing left to violate. Pinned to
-// the count as of ADR-018 step 3 rather than to a literal list — the two
-// tests above already pin membership (allowlist) and reachability
-// (mutation-containment); this one exists only to catch a shrink neither of
-// those would.
+// shrink is worse than no guard, because "no violations found" stops
+// meaning anything once there is nothing left to violate. Compares both
+// maps' key sets to the pinned literals above, in both directions, so a
+// drop and a stray addition are equally visible.
 func TestGate_MutatorAndAllowlistSetsHaveNotShrunk(t *testing.T) {
 	if n := len(gatedMutatorNames); n < 14 {
 		t.Errorf("gatedMutatorNames has %d entries, want at least 14", n)
@@ -256,6 +287,43 @@ func TestGate_MutatorAndAllowlistSetsHaveNotShrunk(t *testing.T) {
 	if n := len(gateAllowlistedFiles); n < 13 {
 		t.Errorf("gateAllowlistedFiles has %d entries, want at least 13", n)
 	}
+
+	if len(gatedMutatorNames) != len(wantGatedMutatorNames) {
+		t.Errorf("gatedMutatorNames has %d entries, wantGatedMutatorNames has %d", len(gatedMutatorNames), len(wantGatedMutatorNames))
+	}
+	for _, name := range wantGatedMutatorNames {
+		if !gatedMutatorNames[name] {
+			t.Errorf("wantGatedMutatorNames has %q, missing from gatedMutatorNames", name)
+		}
+	}
+	for name := range gatedMutatorNames {
+		if !containsString(wantGatedMutatorNames, name) {
+			t.Errorf("gatedMutatorNames has %q, missing from wantGatedMutatorNames", name)
+		}
+	}
+
+	if len(gateAllowlistedFiles) != len(wantGateAllowlistedFiles) {
+		t.Errorf("gateAllowlistedFiles has %d entries, wantGateAllowlistedFiles has %d", len(gateAllowlistedFiles), len(wantGateAllowlistedFiles))
+	}
+	for _, name := range wantGateAllowlistedFiles {
+		if _, ok := gateAllowlistedFiles[name]; !ok {
+			t.Errorf("wantGateAllowlistedFiles has %q, missing from gateAllowlistedFiles", name)
+		}
+	}
+	for name := range gateAllowlistedFiles {
+		if !containsString(wantGateAllowlistedFiles, name) {
+			t.Errorf("gateAllowlistedFiles has %q, missing from wantGateAllowlistedFiles", name)
+		}
+	}
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // wantGatedOps pins presence.GatedOps itself (§4.1.3): a second, independent
