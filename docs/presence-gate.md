@@ -56,7 +56,11 @@ what runs.** Concretely:
   grant list, because replacing a grant list is exactly "widens one."
   `enrolment.sign`'s digest binds one field `enrolment.create` does not: the
   CSR's own public key, so a presence grant answered for one key is not
-  redeemable for another (ADR-018 decision 6 step 1).
+  redeemable for another (ADR-018 decision 6 step 1). `enrolment.sign` now
+  has a second door onto the same gate — approving a network-lodged
+  enrolment request (ADR-018 decision 8) — deliberately the **same** op with
+  the **same** digest, not a new `enrolment.approve` entry: a second op here
+  would be exactly the second door into issuance the ADR forbids.
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
   login identity.

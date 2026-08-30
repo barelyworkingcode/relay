@@ -9,7 +9,10 @@ implemented the one slice the owner scoped as safe without the local
 identity binding below: retiring `mcp.unregister` and `service.unregister`
 from the gated set. `project.grant` — the operation this ADR's `cli-admin`
 narrowing was mainly about — stays fully gated; see the Open questions entry
-on local identity binding for why.
+on local identity binding for why. Decision 8, the enrolment-request
+channel, is also implemented — see [`docs/access-profiles.md`](../access-profiles.md#approving-a-request-from-the-machine-itself)
+for the operator's walkthrough and [`docs/tokens.md`](../tokens.md#the-enrolment-request-channel-is-not-a-credential)
+for why the request id it mints is not a credential.
 **Date:** 2026-08-29
 
 ## Context
@@ -156,6 +159,61 @@ ADR-017 is about, and privileged local acts still gate on presence per decision
 1. The CLI becomes the skill's API, so its refusals must stay legible and its
 reads machine-parseable (`--json`).
 
+### 8. The enrolment-request channel is a mailbox, not a door
+
+Decision 6 step 1 needed a way for an unenrolled remote to lodge its CSR so
+the local human can approve it. What it is: **a third listener beside
+`RemoteServer`, never a mode of it** — same shape as decision 1's own
+argument for why the tool plane is a listener next to the bridge socket
+rather than a request type folded into it, applied one step further out.
+Its whole capability is two methods, `Lodge` and `Poll`, over a bounded,
+in-memory, never-persisted table; it holds no reference to a router, the CA,
+the sealer or `settings.json`, so there is nothing on this listener a
+network peer could reach beyond adding a row to that table and reading it
+back.
+
+Two properties everything about this channel follows from:
+
+- **P1 — lodging raises no prompt, ever.** A network peer can put a row in
+  the table and nothing else; the human *initiates* approval, and that act
+  alone raises the existing, unchanged `enrolment.sign` presence prompt. This
+  is a structural answer to "cannot spam prompts," not a rate-limited one —
+  no code path from an unauthenticated lodge reaches `presence.Gate` at all.
+- **P2 — nothing on this channel is a secret, in either direction.** Inbound
+  is a CSR, self-signed and therefore proof of possession by construction;
+  outbound is a client certificate and a CA certificate, public verifiers
+  useless without a private key that never leaves the client. A channel
+  carrying only public artifacts in both directions is a mailbox, not a
+  door, and is confined the way a mailbox is: bounded capacity, no admission
+  requirement to use it, and nothing behind it worth stealing.
+
+**The transport is plain TCP, deliberately.** Once P2 holds, TLS on this
+listener buys nothing real: the client has no CA to verify a handshake
+against at lodge time, so pinning one would need `InsecureSkipVerify` plus a
+hand-rolled peer check — the exact pattern relay's own client-side guard
+refuses to allow anywhere in non-test code, for the reason that a "just for
+testing" escape hatch is the version of an insecure default that survives
+into production. TLS here would be decoration that *reads* as a security
+property without providing one, which is worse than its plain-TCP absence: a
+reviewer skimming past an encrypted connection would assume the server was
+authenticated, and it structurally cannot be at this point in the exchange.
+Plain TCP keeps the real control — comparing relay's CA fingerprint against
+a value obtained out of band — visible and mandatory instead of implied.
+Approving a request still binds to the exact key that lodged it: the
+digest a human's presence grant redeems is built over the CSR's own stored
+public key, so an approval answered for one key can never be spent on
+another, and comparing the public-key hash alone does not, on its own,
+close a man-in-the-middle on the network path — only the client's own CA
+pin does that, which is why `--ca-fingerprint` (or an explicit, watched
+`--tofu`) is mandatory on the client with no default.
+
+This closes the acceptance bar the open question below was written against,
+verbatim: *"it must not become a way to spam prompts or a second door into
+issuance."* Neither half is possible by construction — P1 removes the first,
+and reusing `enrolment.sign`'s existing gate and digest for the approval
+(no new `enrolment.approve` entry in `presence.GatedOps`) removes the
+second.
+
 ## What this retires, adds, and reworks
 
 **Retires or shrinks** (to be scoped precisely as part of building this, not
@@ -219,12 +277,6 @@ waste, but it is revision.
   fully gated (unnarrowed) until this binding exists; the narrowing to
   `allow_cwd_auth`-only described above did not ship in step 3 and is blocked
   on this open question being closed first.
-- **The enrolment-request channel (decision 6, step 1).** An unenrolled remote
-  needs a way to lodge its CSR so the local human can approve it. What that
-  channel is — a dedicated, rate-limited, unauthenticated enrolment endpoint in
-  the spirit of ADR-010's budgeted enrolment, versus an operator carrying the
-  CSR by hand — is not decided. It must not become a way to spam prompts or a
-  second door into issuance.
 - **Timed auto-off** (decision 6) is deferred to a later iteration by choice.
 
 ## See also
