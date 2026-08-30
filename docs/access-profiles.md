@@ -653,18 +653,29 @@ This is a grant change like any other and prompts for presence, in both
 directions — turning it off prompts too, because a compromised host process
 could otherwise flip it back on silently.
 
-With the bit on, `hermes-bob`'s own certificate may:
+With the bit on, `hermes-bob`'s own certificate may reach two requests over
+the remote listener that `list`/`call` never touch — `relayremote grant
+describe` and `relayremote grant narrow`, run from the enrolled machine
+itself:
 
-- ask its own posture back (`DescribeGrant`) — the same view `relay grant`
-  shows you;
-- replace its own `allowed_mcp_ids` / `allowed_tools` / `access` /
-  `allow_external` with a **strictly narrower** set on `NarrowGrant`.
+    relayremote grant describe --bundle <dir> --addr <addr>
+    relayremote grant narrow --read-only macmcp --bundle <dir> --addr <addr>
+
+- `describe` asks its own posture back (`DescribeGrant`) — the same view
+  `relay grant` shows you;
+- `narrow` replaces its own `allowed_mcp_ids` / `allowed_tools` / `access` /
+  `allow_external` with a **strictly narrower** set (`NarrowGrant`), via
+  `--mcp-ids`, `--tools`, `--read-only` and `--no-external` (at least one is
+  required; each narrows exactly one axis).
 
 It can never:
 
-- widen anything, on any axis — `access` accepts only `read`,
-  `allow_external` accepts only `false`, an MCP or tool pattern must already
-  be granted;
+- widen anything, on any axis — `--read-only` and `--no-external` are bare,
+  comma-separated MCP-id sets with no value syntax for anything but `read` /
+  `false`, so a widening on either axis cannot be *expressed* from this flag
+  surface, let alone sent; `--mcp-ids` and `--tools` can still name something
+  wider than the stored grant, and relay's own check refuses that, naming the
+  field and the offending value;
 - touch another enrolment's profile, register anything, mint a credential, or
   flip `allow_cwd_auth` (structurally absent from the wire request, and
   refused on a remote profile even if it were sent).
@@ -740,12 +751,13 @@ separate as the client machine makes them*, below).
 
 **A `cli-admin` enrolment reaches one thing more, and only to narrow it.**
 With the bit on, the certificate may call `DescribeGrant` and `NarrowGrant`
-over the remote listener — read its own posture back, and replace its own
-`allowed_mcp_ids` / `allowed_tools` / `access` / `allow_external` with a
-*strictly narrower* set. It can never widen anything on any axis, touch
-another enrolment's profile, register anything, or mint a credential. See
-*Letting the client narrow its own grant (cli-admin)*, below, for the full
-shape of what narrowing means here.
+over the remote listener — `relayremote grant describe` and `relayremote
+grant narrow`, from the enrolled machine — to read its own posture back, and
+replace its own `allowed_mcp_ids` / `allowed_tools` / `access` /
+`allow_external` with a *strictly narrower* set. It can never widen anything
+on any axis, touch another enrolment's profile, register anything, or mint a
+credential. See *Letting the client narrow its own grant (cli-admin)*, below,
+for the full shape of what narrowing means here.
 
 Stepping a client up and back down is two discrete, gated acts:
 

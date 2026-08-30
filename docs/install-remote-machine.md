@@ -290,6 +290,10 @@ approved enrolment request "req_3e4501d2142dc76a99399399b16c727b" as "vm-agent"
   the certificate is delivered to the client on its next poll; nothing further to do on this host
 ```
 
+If the presence prompt sits open long enough to cross the request's own
+15-minute TTL, this reports differently — see [When it does not
+work](#when-it-does-not-work).
+
 **Or do it from the window.** Settings → Remote Clients → **Pending
 requests** shows the same fields — key hash in full, the label marked
 *(supplied by the requesting machine)*, origin address, arrival and expiry —
@@ -489,13 +493,22 @@ With the bit on, that certificate may ask its own posture back
 (`DescribeGrant`) and replace its own MCP list, tool patterns, access mode and
 external-access flag with a **strictly narrower** set (`NarrowGrant`). It can
 never widen anything on any axis, and never touch another enrolment's profile.
-It is a sandbox on a sandbox.
+It is a sandbox on a sandbox. **From the client machine itself:**
 
-> **`relayremote` does not implement these two requests.** Its wire vocabulary
-> is `ListTools`, `CallTool`, and the two enrolment-request messages — there
-> is no `relayremote narrow` verb. A client that wants to use `cli_admin`
-> speaks relay's remote wire protocol itself. Turning the bit on for a machine
-> that only runs `relayremote` grants an authority nothing on it can exercise.
+```
+relayremote grant describe
+relayremote grant narrow --read-only macmcp
+```
+
+(both read `RELAY_REMOTE_BUNDLE`/`RELAY_REMOTE_ADDR` from the environment, set
+above). `describe` prints the same posture `relay grant` would show you.
+`narrow` takes at least one of `--mcp-ids`, `--tools`, `--read-only`,
+`--no-external`, each narrowing exactly one axis; `--read-only` and
+`--no-external` are bare comma-separated MCP-id sets with no value syntax for
+anything but `read` / `false`, so a widening on either axis cannot be sent,
+not merely refused. Narrowing has no undo from this program — relay refuses
+anything wider than what is already stored, and restoring access is an
+operator act on the host: `relay grant`, or the Projects tab.
 
 Take it back the moment the setup is done:
 
@@ -562,11 +575,6 @@ it is on but the mTLS listener beside it is not, so relay refuses to serve
 either; `enrolment_listen` is loopback and you are on another host; the
 address is firewalled. Exit code 8.
 
-> The multi-line form of this message currently renders as a single line with
-> `?` in place of each newline, because the client sanitises control
-> characters out of listener-supplied text and applies it to its own text too.
-> The content is right; the layout is not.
-
 ### `error: relay unreachable: cannot reach relay at 10.0.0.2:9910: … connection refused`
 
 This is the **tool plane**, not the enrolment channel — a different port and a
@@ -593,11 +601,21 @@ resume later with:
 
 ### `relay no longer has a record of this request (expired, already collected, or an unrecognised id).`
 
-Exit code 10. This is also what you see **after the operator refuses** —
-refusing deletes the row, so the client cannot tell a refusal from an expiry
-from a typo'd id. `client.key` is untouched either way; re-run without
-`--resume` to lodge a fresh request. If you expected it to have been collected
-already, check `relay enrol list` on the Mac.
+Exit code 10. The row is genuinely gone: it expired 15 minutes after arrival
+(or, if it had already been approved, 15 minutes after that without being
+collected), it was already collected, or the `--resume` id was never a real
+one. `client.key` is untouched; re-run without `--resume` to lodge a fresh
+request. If you expected it to have been collected already, check `relay
+enrol list` on the Mac.
+
+### `the operator refused this request. client.key was not touched; re-run relayremote request to lodge a fresh one.`
+
+Also exit code 10, but a distinct message from the one above: refusing an
+enrolment request keeps its row until the row's own TTL rather than deleting
+it, specifically so the client's next poll can say "refused" rather than
+falling through to "no record of this request" and reading as an expiry or a
+typo'd id. `client.key` is untouched; re-run without `--resume` to lodge a
+fresh request.
 
 ### `error: bridge error (code -32603): enrolment request not found: req_…`
 
@@ -605,6 +623,34 @@ already, check `relay enrol list` on the Mac.
 after arrival, and `relay enrol requests` only ever shows live ones. The table
 lives in the running tray's memory and is never persisted, so restarting relay
 empties it.
+
+### `note: the pending request row expired before this approval finished …`
+
+Rare, and not an error — it is part of `relay enrol approve`'s own success
+output, printed when the presence prompt sat open long enough (past the
+request's 15-minute TTL) to cross paths with some other table activity that
+swept the row while the prompt was still open. By the time it prints, the
+enrolment has **already committed**: it is real, signed, and in `relay enrol
+list`. What is gone is only the row the client would have collected it
+through — its next poll now sees "unknown", not "approved", because there is
+no row left to answer either way. The output names both facts and the two
+ways to recover:
+
+```
+approved enrolment request "req_3e4501d2142dc76a99399399b16c727b" as "vm-agent"
+  fingerprint: sha256:…
+  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
+  note: the pending request row expired before this approval finished (the presence prompt
+  was open long enough to cross its TTL) — the client's poll will now see "unknown", not "approved"
+  the enrolment itself is real and already recorded; see it in `relay enrol list`
+  the client cannot collect it through this request anymore: deliver the certificate via the
+  operator-carried path (`relay enrol sign` + `relayremote install --from`), or run
+  `relay enrol revoke --client-id vm-agent` to undo it
+```
+
+Recover with one of the two named paths: hand the client its certificate the
+operator-carried way (Path B, above), or `relay enrol revoke --client-id
+vm-agent` to undo the enrolment and let the client lodge a fresh request.
 
 ### `refused: approving needs your confirmation on the Mac's screen, ...`
 
