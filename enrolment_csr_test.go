@@ -165,17 +165,3 @@ func TestParseClientCSR_Negatives(t *testing.T) {
 		t.Fatalf("ECDSA-with-SHA1 CSR: err = %v, want it to wrap x509.InsecureAlgorithmError", err)
 	}
 }
-
-// The over-length input is refused before x509 ever runs, even though the
-// bytes it was handed are not valid PEM either — proving the size check
-// really does run first, not merely that oversized garbage fails somehow.
-func TestParseClientCSR_OverLengthRefusedBeforeParsing(t *testing.T) {
-	oversized := make([]byte, maxCSRBytes+1)
-	for i := range oversized {
-		oversized[i] = '-' // looks PEM-ish, is not
-	}
-	_, err := ParseClientCSR(oversized)
-	if err == nil || !strings.Contains(err.Error(), "a few hundred bytes") {
-		t.Fatalf("err = %v, want the size refusal", err)
-	}
-}

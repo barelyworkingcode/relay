@@ -671,8 +671,10 @@ func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
 func TestSignEnrolment_ClientIDCollisionRefusedButCSR_CNCollisionAloneSucceeds(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	seeded, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "seed existing enrolment")
+	certBefore, err := os.ReadFile(seeded.CertPath)
+	assertNoErr(t, err, "read seeded client.crt")
 
 	// --client-id collides: refused, store and bundle both untouched.
 	csrSameClientID := parseCSRForTest(t, genClientCSRPEM(t, "some-other-cn"))
@@ -682,6 +684,11 @@ func TestSignEnrolment_ClientIDCollisionRefusedButCSR_CNCollisionAloneSucceeds(t
 	}
 	if len(store.Get().Enrolments) != 1 {
 		t.Fatalf("a refused sign must not add a second enrolment: %+v", store.Get().Enrolments)
+	}
+	certAfter, err := os.ReadFile(seeded.CertPath)
+	assertNoErr(t, err, "read client.crt after refused collision")
+	if string(certAfter) != string(certBefore) {
+		t.Fatal("a refused --client-id collision must not write a new client.crt over the existing one")
 	}
 
 	// The CSR's own CN collides with the existing enrolment's client id,
