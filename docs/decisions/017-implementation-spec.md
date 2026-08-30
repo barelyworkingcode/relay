@@ -1189,11 +1189,19 @@ what makes sealing it free.
 | `login.bootstrap.mint` | `relay login enrol` | ✔ | `LoginOps.MintBootstrap` |
 | `login.passkey.revoke` | `relay login revoke` | ✔ | `LoginOps.RevokePasskey` |
 | `mcp.register` | `relay mcp register` | ✔ | `McpOps.Add` |
-| `mcp.unregister` | `relay mcp unregister` | ✔ | `McpOps.Remove` |
+| `mcp.unregister` | `relay mcp unregister` | ✘ | `McpOps.Remove` |
 | `service.register` | `relay service register` | ✔ | `ServiceOps.Create`/`Update` |
-| `service.unregister` | `relay service unregister` | ✔ | `ServiceOps.Remove` |
+| `service.unregister` | `relay service unregister` | ✘ | `ServiceOps.Remove` |
 | `service.restart` | `relay service restart` | ✘ | `ServiceOps` (registry only) |
 | `project.rotate_token` | — (IPC + HTTP today) | ✔ | `ProjectOps.RotateToken` |
+
+`mcp.unregister` and `service.unregister` are ✘ here for the same reason
+§6.4 marks them narrowed out: ADR-018 step 3 (2026-08-29) removed both from
+`presence.GatedOps`, since removal only narrows and never widens. `admin_op`
+still brokers them and each core still calls `requireIssuanceAuditor` and
+still writes `config_change`, so this table's other two properties —
+brokering (§7) and issuance auditing — are unaffected; only the presence
+gate is gone. See §6.4 for the per-op detail.
 
 Read commands keep their direct reads and are **not** in this table:
 `relay audit`, `relay grant`, `relay credential list`, `relay enrol list`,
@@ -2025,10 +2033,14 @@ record (`credential_issued`, `credential_revoked` or `config_change`) carries a
 `presence_id` equal to the `Grant.ID()` that authorised it. *Fails if* any is
 empty, or if two acts share one.
 
-**AC-27b — Gated non-issuances are recorded.** `mcp.register`,
+**AC-27b — Non-issuance config changes are recorded.** `mcp.register`,
 `mcp.unregister`, `mcp.oauth.start`, `service.register`, `service.unregister`
 and `project.grant` each write a `config_change` record. *Fails if* any leaves no
-record — that is the gap that would break the ADR's detection argument.
+record — that is the gap that would break the ADR's detection argument. Since
+ADR-018 step 3 (2026-08-29), `mcp.unregister` and `service.unregister` are no
+longer gated (§6.4, §7.2) and record with an empty `presence_id`, same as
+`NarrowForEnrolment` (`docs/audit-log.md`); the other four stay gated and still
+carry one, per AC-27.
 
 **AC-27c — No record carries a secret.** No issuance or `config_change` record
 contains a plaintext, a hash, a public key coordinate or an envelope. *Fails on
