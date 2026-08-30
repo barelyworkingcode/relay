@@ -113,13 +113,24 @@ let state = {
     enrolments: ENROLMENTS_INIT,
     remote: REMOTE_INIT,                    // remoteConfigView from Go, or null
     enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
-    enrolForm: null,                        // null = list, object = create form
+    enrolForm: null,                        // null = list, object = create form; object.request_id set = approving a pending request
     enrolmentError: null,
     enrolBundle: null,                      // {client_id, dir} — DIRECTORY only, never key material
     enrolRevoked: null,                     // {client_id, fingerprint} shown after a revoke
     remoteDraft: null,                      // uncommitted edit of the remote block
     remoteDirty: false,
     remoteError: null,
+
+    // Pending enrolment requests (spec §3). NOT seeded by the initial
+    // payload the way enrolments are — this table lives only in the running
+    // tray process and a network peer can change it between one paint and
+    // the next, so a value seeded once would go stale in a way nothing here
+    // would ever correct. Fetched fresh every time the tab is shown
+    // (list_enrolment_requests) and kept live afterward by
+    // onEnrolmentRequestsChanged, which the tray also pushes on its own
+    // poll tick so a request that arrives while the tab is already open
+    // still appears.
+    pendingEnrolmentRequests: [],
 
     // Passkeys tab. Seeded like enrolments, and for the same reason — a
     // credential you cannot see is one you will not revoke.
@@ -158,6 +169,10 @@ function showPage(page) {
     // The Tool Calls tab is the only one not seeded by the initial payload:
     // the log can be large, so it's fetched the first time it's shown.
     if (page === 'audit' && !state.auditLoaded) queryAudit();
+    // Pending enrolment requests are never seeded (state.pendingEnrolmentRequests'
+    // own comment) — refetched on every visit, not just the first, since a
+    // network peer can change the table while the operator is on another tab.
+    if (page === 'remote') listEnrolmentRequests();
     render();
 }
 
@@ -2844,18 +2859,86 @@ function enrolBudgetText(b) {
     return (b.max_calls || 0) + ' calls / ' + enrolBytes(b.max_result_bytes) + ' per ' + (b.window_seconds || 0) + 's';
 }
 
+// renderCAFingerprintLine is the header line spec §6 calls for: relay's CA
+// certificate fingerprint, the value `relayremote request --ca-fingerprint`
+// must be given and the one comparison that closes the request channel's
+// MITM ("only the CA pin stops this"). Read from state.remote.ca_fingerprint
+// — the same field the approval panel below reads, so the two are never two
+// different numbers on screen.
+function renderCAFingerprintLine() {
+    const fp = state.remote && state.remote.ca_fingerprint;
+    if (!fp) {
+        return '<p class="proj-section-help">Relay\'s CA fingerprint is not available yet — create or sign one enrolment to generate the CA, then it will show here.</p>';
+    }
+    return '<p class="proj-section-help">Relay\'s CA fingerprint (clients pin this — <code>relayremote request --ca-fingerprint ' + esc(fp) + '</code>): <code>' + esc(fp) + '</code></p>';
+}
+
+// renderPendingEnrolmentRequests is the Pending requests panel (spec §3),
+// shown above the enrolment list. Every row an unauthenticated network peer
+// can cause to exist here carries exactly four things, key first and in
+// full (spec: "the point is 'that key'"), and nothing that could read as
+// relay's own assertion about who is asking — see renderPendingRequestFields.
+function renderPendingEnrolmentRequests() {
+    const list = state.pendingEnrolmentRequests || [];
+    let html = '<div class="proj-section" style="margin-top:0">';
+    html += '<div class="proj-section-title">Pending requests' + (list.length ? ' <span class="remote-state on">' + list.length + '</span>' : '') + '</div>';
+    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else — see ADR-018. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen below, by you, at approval.</p>';
+    if (!list.length) {
+        html += '<div class="empty-state">No pending enrolment requests.</div>';
+    }
+    for (const r of list) {
+        html += '<div class="enrol-card">';
+        html += '<div class="enrol-card-header">';
+        html += '<span class="enrol-card-name">' + esc(r.request_id) + '</span>';
+        if (r.approved) {
+            html += '<span class="remote-state on">approved: ' + esc(r.approved_client_id) + '</span>';
+        } else {
+            html += '<span>';
+            html += '<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm(\'' + esc(r.request_id) + '\')">Approve…</button> ';
+            html += '<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest(\'' + esc(r.request_id) + '\')">Refuse</button>';
+            html += '</span>';
+        }
+        html += '</div>';
+        html += renderPendingRequestFields(r);
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// renderPendingRequestFields is the exact four things spec §3 names, key
+// first and never truncated. label is marked "supplied by the requesting
+// machine" so it can never read as relay's own assertion — it is hostile
+// input from an unauthenticated peer, already restricted server-side to
+// [A-Za-z0-9._-]{1,64} and rendered here as text via esc(), never as markup.
+function renderPendingRequestFields(r) {
+    let html = '<div class="enrol-fp"><span class="enrol-fp-label">key: </span>sha256:' + esc(r.spki_sha256) + '</div>';
+    html += '<div class="enrol-meta">';
+    html += '<span>label: <strong>' + (r.label ? esc(r.label) : '(none)') + '</strong> <em>(supplied by the requesting machine)</em></span>';
+    html += '</div>';
+    html += '<div class="enrol-meta">';
+    html += '<span>from: <strong>' + esc(r.remote_addr) + '</strong></span>';
+    html += '<span>arrived: <strong>' + esc(r.arrived_at) + '</strong></span>';
+    html += '<span>expires: <strong>' + esc(r.expires_at) + '</strong></span>';
+    html += '</div>';
+    return html;
+}
+
 function renderEnrolments() {
     if (state.enrolForm) return renderEnrolmentForm();
 
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
     html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += renderCAFingerprintLine();
 
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
         html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + '</strong>. Its calls remain in the Tool Calls log under fingerprint <code>' + esc(state.enrolRevoked.fingerprint) + '</code> — now the only thing that names them.</div>';
     }
     if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + '</div>';
+
+    html += renderPendingEnrolmentRequests();
 
     const list = state.enrolments || [];
     if (!list.length) {
@@ -2923,14 +3006,40 @@ function renderEnrolBundleBanner(b) {
 function renderEnrolmentForm() {
     const f = state.enrolForm;
     const d = state.enrolmentBudgetDefaults || {};
-    let html = '<h2>New Enrolment</h2>';
+    const approving = !!f.request_id;
+    let html = '<h2>' + (approving ? 'Approve Enrolment Request' : 'New Enrolment') + '</h2>';
     if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + '</div>';
+
+    // Approving pre-fills nothing but the identity this certificate is over
+    // — grants and budget are the human's choice below, same as a plain
+    // create (spec §3: "the request carries no grant field and no budget
+    // field"). The request's own fields render read-only above the form so
+    // the operator is looking at exactly what they are about to sign over.
+    if (approving && f.pendingRequest) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Request ' + esc(f.request_id) + '</div>';
+        html += renderPendingRequestFields(f.pendingRequest);
+        html += '<p class="proj-section-help">Approving raises the same presence prompt <code>relay enrol sign</code> already uses — there is no second door into issuance. The certificate is issued over exactly the public key above; nothing chosen below can redirect it to a different key.</p>';
+        // The client pins this value at collection time (spec §6: "only the
+        // CA pin stops this") — repeated here, not just in the tab header,
+        // because this is the panel open at the moment it needs relaying to
+        // whoever is running `relayremote request` on the other machine.
+        html += renderCAFingerprintLine();
+        html += '</div>';
+    }
 
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += '<p class="proj-section-help">The client id is the certificate\'s Common Name and the bundle\'s directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>';
     html += '<label>Client id</label>';
-    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="hermes-mail" />';
+    // The label the request arrived with is offered only as a PLACEHOLDER,
+    // never a pre-filled value: it is hostile input (supplied by the
+    // requesting machine), and the client id is the human's naming
+    // decision, not an echo of it — matching `relay enrol approve
+    // --client-id`'s own help text ("this, not the request's label, names
+    // the enrolment").
+    const idPlaceholder = (approving && f.pendingRequest && f.pendingRequest.label) || 'hermes-mail';
+    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="' + esc(idPlaceholder) + '" />';
     html += '</div>';
 
     // ---- Grants ----
@@ -2970,7 +3079,7 @@ function renderEnrolmentForm() {
     html += '</div>';
 
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveEnrolment()">Create &amp; issue certificate</button>';
+    html += '<button class="btn btn-primary" onclick="saveEnrolment()">' + (approving ? 'Approve &amp; issue certificate' : 'Create &amp; issue certificate') + '</button>';
     html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
     html += '</div>';
     return html;
@@ -2982,6 +3091,40 @@ function newEnrolment() {
     state.enrolBundle = null;
     state.enrolRevoked = null;
     render();
+}
+
+// approveEnrolmentRequestForm opens the SAME create-enrolment form
+// newEnrolment does, pre-filled with the pending request's identity (spec
+// §3: "Approving opens the existing create-enrolment form pre-filled, so
+// the human picks grants and budget in the UI they already know"). f.request_id
+// is what saveEnrolment below reads to send an approval instead of a plain
+// create; f.pendingRequest carries the request's own fields so the form can
+// show them without a second round trip.
+function approveEnrolmentRequestForm(requestID) {
+    const r = (state.pendingEnrolmentRequests || []).find(x => x.request_id === requestID);
+    if (!r) return;
+    state.enrolForm = {
+        client_id: '', project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '',
+        request_id: requestID, pendingRequest: r,
+    };
+    state.enrolmentError = null;
+    state.enrolBundle = null;
+    state.enrolRevoked = null;
+    render();
+}
+
+// refuseEnrolmentRequest is the operator's explicit decline (spec §2, §3) —
+// deliberately not routed through the presence-gated approval path at all;
+// EnrolmentOps.Refuse never raises the prompt (see its own doc comment).
+function refuseEnrolmentRequest(requestID) {
+    const msg = 'Refuse enrolment request "' + requestID + '"?\n\n'
+        + 'The request is removed. Re-lodging from the client machine starts a fresh one.';
+    if (!confirm(msg)) return;
+    ipc(JSON.stringify({ type: 'refuse_enrolment_request', request_id: requestID }));
+}
+
+function listEnrolmentRequests() {
+    ipc(JSON.stringify({ type: 'list_enrolment_requests' }));
 }
 
 function cancelEnrolment() {
@@ -3018,15 +3161,31 @@ function saveEnrolment() {
         return (raw === '' || isNaN(n) || n < 0) ? 0 : n;
     };
     state.enrolmentError = null;
+    const budget = {
+        window_seconds: num('enrolWindow'),
+        max_calls: num('enrolMaxCalls'),
+        max_result_bytes: num('enrolMaxBytes'),
+    };
+    // f.request_id set = this form was opened via "Approve…" on a pending
+    // request (approveEnrolmentRequestForm), not "+ New Enrolment" — same
+    // fields, different IPC message, so the tray core that runs is
+    // EnrolmentOps.Approve (spec §3's second door onto enrolment.sign)
+    // rather than Create.
+    if (f.request_id) {
+        ipc(JSON.stringify({
+            type: 'approve_enrolment_request',
+            request_id: f.request_id,
+            client_id: clientID,
+            project_ids: f.project_ids,
+            budget: budget,
+        }));
+        return;
+    }
     ipc(JSON.stringify({
         type: 'create_enrolment',
         client_id: clientID,
         project_ids: f.project_ids,
-        budget: {
-            window_seconds: num('enrolWindow'),
-            max_calls: num('enrolMaxCalls'),
-            max_result_bytes: num('enrolMaxBytes'),
-        },
+        budget: budget,
     }));
 }
 
@@ -3203,6 +3362,18 @@ window.onRemoteConfigUpdated = function(view) {
 
 window.onRemoteConfigError = function(msg) {
     state.remoteError = msg || 'could not save the remote block';
+    if (state.page === 'remote') render('push');
+};
+
+// onEnrolmentRequestsChanged is the Pending requests panel's one data
+// source: fired in answer to list_enrolment_requests, after an approve or a
+// refuse, and on the tray's own poll tick while this window is open (so a
+// request that arrives while the operator is already looking at this tab
+// still appears). render('push') is a no-op while the approve/create form
+// is open (the render() guard for state.enrolForm), so a background refresh
+// can never wipe an in-progress approval.
+window.onEnrolmentRequestsChanged = function(list) {
+    state.pendingEnrolmentRequests = list || [];
     if (state.page === 'remote') render('push');
 };
 
@@ -4813,7 +4984,7 @@ if (LOGIN_CODE_INIT) showPage('passkeys'); else render();
 Object.assign(window, {
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
-    cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, newEnrolment, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
+    approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});

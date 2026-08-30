@@ -364,9 +364,12 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRevealAuditLog: ipcRevealAuditLog,
 
 	// Remote Clients (ipc_enrolments.go)
-	MsgCreateEnrolment:    ipcCreateEnrolment,
-	MsgRevokeEnrolment:    ipcRevokeEnrolment,
-	MsgUpdateRemoteConfig: ipcUpdateRemoteConfig,
+	MsgCreateEnrolment:         ipcCreateEnrolment,
+	MsgRevokeEnrolment:         ipcRevokeEnrolment,
+	MsgUpdateRemoteConfig:      ipcUpdateRemoteConfig,
+	MsgListEnrolmentRequests:   ipcListEnrolmentRequests,
+	MsgApproveEnrolmentRequest: ipcApproveEnrolmentRequest,
+	MsgRefuseEnrolmentRequest:  ipcRefuseEnrolmentRequest,
 
 	// Passkeys (ipc_login.go)
 	MsgListPasskeys:  ipcListPasskeys,
