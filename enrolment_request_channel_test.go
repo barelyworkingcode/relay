@@ -866,6 +866,62 @@ func TestEnrolment_PollReflectsPendingAndUnknown(t *testing.T) {
 	}
 }
 
+// A refused requester's next poll must report the refusal specifically,
+// never fall through to "unknown" -- which reads as expired, already
+// collected, or a mistyped id, and invites a pointless retry instead of a
+// question to the operator.
+func TestEnrolment_RefusalReportsRefusedNotUnknown(t *testing.T) {
+	audit := newTestAudit(t, nil)
+	table := newEnrolmentRequestTable()
+	res, err := table.Lodge(genClientCSRPEM(t, "refusal-client"), "", "10.0.0.1:1")
+	assertNoErr(t, err, "lodge")
+
+	if !table.Refuse(audit, res.RequestID) {
+		t.Fatal("Refuse reported the record was not found")
+	}
+
+	poll, perr := table.Poll(res.RequestID)
+	assertNoErr(t, perr, "poll")
+	if poll.Status != "refused" {
+		t.Fatalf("poll status after refusal = %q, want %q -- a refused requester must not see the same "+
+			"answer as an expired or unrecognised id", poll.Status, "refused")
+	}
+	if poll.ClientID != "" || poll.CertPEM != "" || poll.CAPEM != "" {
+		t.Fatalf("a refused poll carries approval fields nothing has populated: %+v", poll)
+	}
+}
+
+// A refused row is not evicted -- it lives out its ORIGINAL TTL exactly
+// like an untouched pending row, then is swept lazily like every other
+// expiry.
+func TestEnrolment_RefusedRowExpiresAtTTL(t *testing.T) {
+	table := newEnrolmentRequestTable()
+	now := time.Now()
+	table.setClock(func() time.Time { return now })
+
+	res, err := table.Lodge(genClientCSRPEM(t, "refusal-ttl-client"), "", "10.0.0.1:1")
+	assertNoErr(t, err, "lodge")
+	if !table.Refuse(nil, res.RequestID) {
+		t.Fatal("Refuse reported the record was not found")
+	}
+
+	// Still short of the TTL: the poll must still answer "refused", not
+	// "unknown" -- refusing must not have shortened the row's life.
+	now = now.Add(enrolmentRequestTTL - time.Second)
+	poll, perr := table.Poll(res.RequestID)
+	assertNoErr(t, perr, "poll before TTL")
+	if poll.Status != "refused" {
+		t.Fatalf("poll status just before TTL = %q, want %q", poll.Status, "refused")
+	}
+
+	now = now.Add(2 * time.Second)
+	poll, perr = table.Poll(res.RequestID)
+	assertNoErr(t, perr, "poll after TTL")
+	if poll.Status != "unknown" {
+		t.Fatalf("poll status past TTL = %q, want %q -- a refused row expires exactly like any other", poll.Status, "unknown")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Finding 3: lastLodgeBySource must be swept, not just pending
 // ---------------------------------------------------------------------------

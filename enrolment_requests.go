@@ -88,9 +88,10 @@ func (e *enrolmentRateLimitedError) Unwrap() error { return errEnrolmentRateLimi
 // and NOTHING in this file mutates it afterward — no exported method
 // replaces it, which is what makes presenceDigest(csr) binding (§3) mean
 // anything: the bytes Approve signs over are provably the bytes the
-// requester submitted. The approved* fields below are the one thing that
-// DOES change after lodging, and MarkApproved is careful to touch only
-// those — never csrPEM, spkiSHA256, label, remoteAddr or arrivedAt.
+// requester submitted. The approved* fields and refused below are the only
+// things that DO change after lodging, and MarkApproved/Refuse are careful
+// to touch only those — never csrPEM, spkiSHA256, label, remoteAddr,
+// arrivedAt or expiresAt.
 type enrolmentRequestRecord struct {
 	id         string
 	csrPEM     []byte
@@ -109,6 +110,14 @@ type enrolmentRequestRecord struct {
 	approvedRelayAddr  string
 	approvedCertPEM    string
 	approvedCAPEM      string
+
+	// refused is set exactly once, by Refuse, on the operator's explicit
+	// decline. It does NOT remove the row: the requester's next poll must
+	// be able to answer "refused" specifically rather than fall through to
+	// "unknown" and read as an expired or mistyped id. The row still lives
+	// out its original expiresAt, exactly like an untouched pending row —
+	// refusing does not extend or shorten its life.
+	refused bool
 }
 
 // enrolmentRequestView is List's read-only projection: everything an
@@ -139,7 +148,8 @@ type pendingRecordView struct {
 // EnrolmentRequestApprovalSink is what EnrolmentOps.Approve, Refuse and
 // PendingRequests need from the pending table (spec §3): read one record's
 // stored bytes, list every live row, mark one approved once a gated sign has
-// committed, and remove one on an operator's explicit refusal.
+// committed, and mark one refused on an operator's explicit decline — a
+// refusal is recorded on the row, never a deletion of it.
 // enrolmentRequestTable is the only implementation.
 type EnrolmentRequestApprovalSink interface {
 	Get(requestID string) (pendingRecordView, bool)
@@ -158,11 +168,11 @@ type lodged struct {
 	ExpiresInSeconds int
 }
 
-// pollResult is Poll's value. Status is one of "pending" or "unknown" in
-// this slice; "approved" and "refused" are reachable only once a later
-// slice (EnrolmentOps.Approve/Refuse, spec §3) starts producing them — the
-// remaining fields exist now so that wire shape never has to change under
-// relayRemote, which hand-mirrors it.
+// pollResult is Poll's value: "pending" and "unknown" from this file alone;
+// "refused" once this file's own Refuse has marked a row; "approved" once
+// EnrolmentOps.Approve (a later slice, spec §3) has called MarkApproved.
+// The fields beyond Status are populated only for "approved" — a "refused"
+// answer carries nothing else, matching spec §5's wire example.
 type pollResult struct {
 	Status           string
 	PollAfterSeconds int
@@ -300,8 +310,14 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 	// Idempotent re-lodge: a retry over an already-pending key is free,
 	// consumes no second slot, and does not extend the original expiry —
 	// so "flood the table with one key" is impossible; a distinct slot
-	// needs a distinct keypair.
+	// needs a distinct keypair. A REFUSED row is skipped here on purpose:
+	// it is a decided record, not a live one, so re-lodging the same key
+	// after a refusal gets a genuinely fresh request rather than being
+	// folded back into the old, dying, refused answer.
 	for _, r := range t.pending {
+		if r.refused {
+			continue
+		}
 		if r.spkiSHA256 == spki {
 			out = lodged{
 				RequestID:        r.id,
@@ -321,9 +337,15 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		}
 	}
 
-	if len(t.pending) >= maxPendingEnrolmentRequests {
+	// The cap counts LIVE rows only — pending, and approved-but-uncollected
+	// — never refused ones. A refused row holds no slot: it is a decided
+	// record kept only so a poll can answer truthfully, and counting it
+	// against the cap would let a burst of refusals starve genuine lodges
+	// for the refused rows' own remaining TTL on top of the flood itself.
+	live := t.liveCountLocked()
+	if live >= maxPendingEnrolmentRequests {
 		t.warnTableFullLocked(now)
-		err = fmt.Errorf("%w: %d pending requests already (cap is %d)", errEnrolmentTableFull, len(t.pending), maxPendingEnrolmentRequests)
+		err = fmt.Errorf("%w: %d pending requests already (cap is %d)", errEnrolmentTableFull, live, maxPendingEnrolmentRequests)
 		return lodged{}, err
 	}
 
@@ -354,10 +376,14 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 
 // Poll answers a request id with the ONE thing this listener knows about
 // it: whether a live pending row still exists, and — once EnrolmentOps.
-// Approve has run — the artifacts it produced. "unknown" covers expired,
-// never-existed and wrong-id as one answer — the same oracle-avoidance
-// rule presence.ErrGrantInvalid already follows — because a distinguishable
-// answer would let a caller learn which request ids ever existed.
+// Approve or this file's own Refuse has run — the outcome it produced.
+// "unknown" covers expired, never-existed and wrong-id as one answer — the
+// same oracle-avoidance rule presence.ErrGrantInvalid already follows —
+// because a distinguishable answer would let a caller learn which request
+// ids ever existed. A row a requester was told about and can poll for is
+// exempt from that rule by construction: reporting "refused" for a request
+// only its own lodger holds the id to does not let anyone learn anything
+// about a DIFFERENT id.
 func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -368,7 +394,8 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 	if !ok {
 		return pollResult{Status: "unknown"}, nil
 	}
-	if r.approved {
+	switch {
+	case r.approved:
 		return pollResult{
 			Status:     "approved",
 			ClientID:   r.approvedClientID,
@@ -377,12 +404,15 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 			CertPEM:    r.approvedCertPEM,
 			CAPEM:      r.approvedCAPEM,
 		}, nil
+	case r.refused:
+		return pollResult{Status: "refused"}, nil
+	default:
+		return pollResult{
+			Status:           "pending",
+			PollAfterSeconds: enrolPollAfterSeconds,
+			ExpiresInSeconds: secondsUntil(r.expiresAt, now),
+		}, nil
 	}
-	return pollResult{
-		Status:           "pending",
-		PollAfterSeconds: enrolPollAfterSeconds,
-		ExpiresInSeconds: secondsUntil(r.expiresAt, now),
-	}, nil
 }
 
 // Get reads one pending record's stored bytes under the table lock — the
@@ -391,7 +421,9 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 // what makes the CSR EnrolmentOps.Approve signs over provably the bytes the
 // requester submitted. Sweeps first, so an id past its TTL answers "not
 // found" rather than handing back a CSR whose slot a flood could already be
-// reusing.
+// reusing. A REFUSED row also answers "not found": it is a decided record,
+// not an actionable one, and Approve must not be able to sign over a CSR
+// the operator already declined.
 func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -399,7 +431,7 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 	t.sweepLocked(now)
 
 	r, ok := t.pending[requestID]
-	if !ok {
+	if !ok || r.refused {
 		return pendingRecordView{}, false
 	}
 	return pendingRecordView{
@@ -416,11 +448,21 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 // what was lodged. expiresAt is reset to enrolmentCollectTTL — the ROW's
 // clock, not the certificate's: the enrolment is already real and on disk
 // regardless of whether this row is ever collected (spec §2).
+//
+// This is subtle: Approve reads the record through Get before the gated
+// sign runs, and Get already refuses a refused row — so reaching here with
+// r.refused true means an operator refused this exact request WHILE the
+// gate was open (a race, not the common case). The sign has already
+// committed by the time this runs, so undoing it is not on the table; but
+// letting it silently overwrite the operator's refusal would make the row
+// answer "approved" for a request the operator just declined by name. It
+// answers false instead, exactly like the swept-row race already does, and
+// EnrolmentOps.Approve reports errEnrolmentRequestExpired.
 func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.pending[requestID]
-	if !ok {
+	if !ok || r.refused {
 		return false
 	}
 	r.approved = true
@@ -435,7 +477,10 @@ func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, project
 
 // List is the read-only surface a later slice's EnrolmentOps.PendingRequests
 // (§3) uses to show the operator every live row. Sweeps first, exactly like
-// Poll and Lodge — expiry is lazy everywhere, never a timer goroutine.
+// Poll and Lodge — expiry is lazy everywhere, never a timer goroutine. A
+// refused row is omitted: the operator already decided it, and showing it
+// alongside genuinely undecided rows would read as still awaiting action.
+// It stays in the table for Poll and Get alone until its own TTL sweeps it.
 func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -444,6 +489,9 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 
 	out := make([]enrolmentRequestView, 0, len(t.pending))
 	for _, r := range t.pending {
+		if r.refused {
+			continue
+		}
 		out = append(out, enrolmentRequestView{
 			RequestID:        r.id,
 			SPKISHA256:       r.spkiSHA256,
@@ -459,27 +507,55 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 	return out
 }
 
-// Refuse removes a pending record and records the operator's decision. It
-// is the one mutation on this table an authenticated human drives — spec
-// §2: "an operator's explicit refusal IS audited... a genuine authorization
-// decision by the human, not attacker-drivable." It is deliberately NOT
-// gated by presence.Gate: declining a stranger's request from the list
-// never reaches the gate that protects SIGNING (issue #68's boundary,
-// carried over unchanged from enrolment.sign's own doc comment) — the human
-// saying no to a request is not the act ADR-017 decision 3 protects.
+// liveCountLocked counts rows still eligible to hold a slot: pending and
+// approved-but-uncollected. A refused row holds no slot — see Lodge's
+// fullness check — so it is excluded here identically to List, for the
+// same reason: it is a decided record, not a live one.
+func (t *enrolmentRequestTable) liveCountLocked() int {
+	n := 0
+	for _, r := range t.pending {
+		if !r.refused {
+			n++
+		}
+	}
+	return n
+}
+
+// Refuse marks a pending record refused and records the operator's
+// decision — it does NOT remove the row. The row stays so the requester's
+// next poll can answer "refused" specifically rather than fall through to
+// "unknown", which reads as expired, already collected, or a mistyped id
+// and invites a pointless retry instead of a question to the operator; the
+// row still expires at its own original TTL, exactly like any other.
+//
+// This is the one mutation on this table an authenticated human drives —
+// spec §2: "an operator's explicit refusal IS audited... a genuine
+// authorization decision by the human, not attacker-drivable." It is
+// deliberately NOT gated by presence.Gate: declining a stranger's request
+// from the list never reaches the gate that protects SIGNING (issue #68's
+// boundary, carried over unchanged from enrolment.sign's own doc comment)
+// — the human saying no to a request is not the act ADR-017 decision 3
+// protects.
+//
+// A record already approved, or already refused, is not actionable again:
+// refusing the former would contradict a certificate that already exists,
+// and re-refusing the latter would write a second, redundant audit record
+// for a decision already made. Both report false, identically to an id
+// that was never lodged.
 //
 // audit may be nil (a caller with no recorder wired); RecordDecision is a
 // no-op on a nil *AuditRecorder boxed correctly, but this checks explicitly
 // so a nil audit never gets a method call at all.
 func (t *enrolmentRequestTable) Refuse(audit *AuditRecorder, requestID string) bool {
 	t.mu.Lock()
-	_, found := t.pending[requestID]
-	if found {
-		delete(t.pending, requestID)
+	r, found := t.pending[requestID]
+	actionable := found && !r.approved && !r.refused
+	if actionable {
+		r.refused = true
 	}
 	t.mu.Unlock()
 
-	if !found {
+	if !actionable {
 		return false
 	}
 	if audit != nil {
