@@ -200,6 +200,55 @@ func (ca *RelayCA) CertPEM() []byte {
 	return out
 }
 
+// CertFingerprint is FingerprintCert applied to the CA's own certificate —
+// the value a client's --ca-fingerprint pin is checked against (§6), so
+// this and `relay enrol ca-fingerprint`'s output must be byte-identical for
+// the same CA. It never touches ca.key: the certificate is public, and
+// nothing here needs the sealer that protects the key.
+func (ca *RelayCA) CertFingerprint() string {
+	return FingerprintCert(ca.cert)
+}
+
+// loadCACertificateOnly reads and parses ca.crt directly, without opening
+// ca.key.sealed at all: a CLI process holds no sealer (enrol_cmd.go's
+// standing rule — never reach toward one, dead or live) and does not need
+// one here, because the certificate is stored clear (§5.7) and public by
+// construction (§6). Refuses distinctly when no CA has been generated yet,
+// naming the fix, rather than the bare os.IsNotExist a caller would
+// otherwise have to translate itself.
+func loadCACertificateOnly() (*x509.Certificate, error) {
+	_, _, certPath := caPaths()
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no CA certificate exists yet at %s: run `relay enrol create` or `relay enrol sign` once to generate one", certPath)
+		}
+		return nil, fmt.Errorf("read %s: %w", certPath, err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("%s is not valid PEM", certPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", certPath, err)
+	}
+	return cert, nil
+}
+
+// caFingerprintFromDisk is `relay enrol ca-fingerprint`'s whole
+// implementation: read the certificate straight off disk and fingerprint
+// it, with no store, no dial and no sealer — the same "read commands work
+// with the tray stopped" shape `relay enrol list` and `relay audit` already
+// have.
+func caFingerprintFromDisk() (string, error) {
+	cert, err := loadCACertificateOnly()
+	if err != nil {
+		return "", err
+	}
+	return FingerprintCert(cert), nil
+}
+
 func (ca *RelayCA) Pool() *x509.CertPool {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.cert)

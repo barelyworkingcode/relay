@@ -251,6 +251,16 @@ type enrolmentBundle struct {
 	KeyPath    string
 	CertPath   string
 	CACertPath string
+	// CertPEM and CAPEM are the certificate bytes signEnrolment already
+	// holds in memory once ca.SignClientCSR returns, kept here so a caller
+	// can hand them back even when the write below (writeSignedCertBundle)
+	// fails: the certificate exists — the record already committed — and
+	// only the on-host copy is missing (spec §11.7's "the poll response
+	// must still deliver the certificate"). createEnrolment leaves both
+	// empty; a host-generated bundle's caller reads the key and cert off
+	// Dir instead, the same as it always has.
+	CertPEM []byte
+	CAPEM   []byte
 }
 
 // commitEnrolment builds the Enrolment record and persists it inside
@@ -345,7 +355,12 @@ func signEnrolment(store SettingsStore, req enrolmentRequest, csr *x509.Certific
 		return nil, err
 	}
 
-	bundle, err := writeSignedCertBundle(enrolment, certPEM, ca.CertPEM())
+	caPEM := ca.CertPEM()
+	bundle, err := writeSignedCertBundle(enrolment, certPEM, caPEM)
+	// The certificate exists in memory whether or not the write below
+	// succeeded — see enrolmentBundle's own doc comment on CertPEM/CAPEM.
+	bundle.CertPEM = certPEM
+	bundle.CAPEM = caPEM
 	if err != nil {
 		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
 	}

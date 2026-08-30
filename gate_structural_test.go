@@ -367,10 +367,14 @@ func TestGate_GatedOpsMatchesPinnedList(t *testing.T) {
 // for why enrolment.update -- and by the same reasoning project.grant and
 // service.register -- gate as a whole request rather than per field).
 var wantGateCallSites = map[string][]string{
-	"credential.mint":      {"CredentialOps.Mint"},
-	"credential.revoke":    {"CredentialOps.Revoke"},
-	"enrolment.create":     {"EnrolmentOps.Create"},
-	"enrolment.sign":       {"EnrolmentOps.Sign"},
+	"credential.mint":   {"CredentialOps.Mint"},
+	"credential.revoke": {"CredentialOps.Revoke"},
+	"enrolment.create":  {"EnrolmentOps.Create"},
+	// Approve reuses this exact op and digest shape rather than adding
+	// "enrolment.approve" — the second door into issuance ADR-018 forbids
+	// (spec §3, §11.4) — so this op has two call sites, the same shape
+	// service.register and project.grant already have below.
+	"enrolment.sign":       {"EnrolmentOps.Approve", "EnrolmentOps.Sign"},
 	"enrolment.update":     {"EnrolmentOps.Update"},
 	"enrolment.revoke":     {"EnrolmentOps.Revoke"},
 	"login.bootstrap.mint": {"LoginOps.MintBootstrap"},

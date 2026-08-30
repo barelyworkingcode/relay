@@ -8,11 +8,15 @@ package main
 // and in audit_issuance_test.go.
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"relaygo/presence"
 )
 
 // Creates an enrolment via the same path the tray's EnrolmentOps.Create
@@ -292,5 +296,127 @@ func TestEnrolSign_BundleErrorLeavesOutDirUntouchedAndReportsFailureFirst(t *tes
 	}
 	if !strings.Contains(out, "bundle to disk failed") {
 		t.Fatalf("output does not name the bundle failure: %s", out)
+	}
+}
+
+// AC-3 (spec §3), CLI half: requests, approve, refuse.
+
+func TestParseEnrolApproveFlags_RequiresIDAndClientID(t *testing.T) {
+	got := parseEnrolApproveFlags([]string{"--id", "req_123", "--client-id", "hermes-mail", "--grant", "proj-a"})
+	if got.RequestID != "req_123" || got.ClientID != "hermes-mail" {
+		t.Fatalf("got = %+v", got)
+	}
+	if !slices.Equal(got.ProjectIDs, []string{"proj-a"}) {
+		t.Fatalf("ProjectIDs = %v, want [proj-a]", got.ProjectIDs)
+	}
+}
+
+// §11.5: over SSH, approve must name the tray as the working door, not the
+// generic "there is no queue and no pending-approval list" line — that
+// sentence is false for this one verb, since a request DOES sit in a queue.
+func TestEnrolApproveErrorText_NamesTheTrayNotTheGenericQueueMessage(t *testing.T) {
+	wireErr := errors.New("bridge error (code -32603): " + presence.ErrNoSession.Error())
+	got := enrolApproveErrorText(wireErr)
+	if !strings.Contains(got, "Pending requests") {
+		t.Fatalf("enrolApproveErrorText did not name the tray's pending-requests panel: %q", got)
+	}
+	if strings.Contains(got, "no pending-approval list") {
+		t.Fatalf("enrolApproveErrorText kept the generic (now-false for this verb) line: %q", got)
+	}
+}
+
+func TestEnrolApproveErrorText_PassesThroughEverythingElse(t *testing.T) {
+	wireErr := errors.New(`bridge error (code -32602): request id is required`)
+	got := enrolApproveErrorText(wireErr)
+	if got != wireErr.Error() {
+		t.Fatalf("got = %q, want unchanged %q", got, wireErr.Error())
+	}
+}
+
+// End-to-end: requests, approve and refuse each dispatch through a real
+// admin_op round trip into EnrolmentOps.
+func TestEnrolRequestsApproveRefuse_CLIDispatchThroughTheBroker(t *testing.T) {
+	store := newCLISandboxStore(t)
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	table := newEnrolmentRequestTable()
+	csrPEM := genClientCSRPEM(t, "hermes-mail")
+	l, err := table.Lodge(csrPEM, "vm-a", "10.0.0.5:41233")
+	assertNoErr(t, err, "Lodge")
+
+	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
+		r.enrolmentOps.Requests = table
+	}))
+
+	out := captureStdout(t, func() {
+		enrolRequests([]string{})
+	})
+	if !strings.Contains(out, l.RequestID) || !strings.Contains(out, "vm-a") {
+		t.Fatalf("enrol requests output = %q, want it to name the pending request and its label", out)
+	}
+
+	out = captureStdout(t, func() {
+		enrolApprove([]string{"--id", l.RequestID, "--client-id", "hermes-mail", "--grant", profile.ID})
+	})
+	if !strings.Contains(out, "hermes-mail") {
+		t.Fatalf("enrol approve output = %q, want it to name the client id", out)
+	}
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil {
+		t.Fatal("approval did not land in the store")
+	}
+	if !stored.GrantsProject(profile.ID) {
+		t.Fatalf("approved enrolment does not grant %s: %+v", profile.ID, stored)
+	}
+
+	poll, perr := table.Poll(l.RequestID)
+	assertNoErr(t, perr, "Poll")
+	if poll.Status != "approved" {
+		t.Fatalf("poll status = %q, want approved", poll.Status)
+	}
+
+	// A second, distinct request is refused instead of approved.
+	l2, err := table.Lodge(genClientCSRPEM(t, "hermes-refuse"), "", "10.0.0.6:1")
+	assertNoErr(t, err, "Lodge second")
+	out = captureStdout(t, func() {
+		enrolRefuse([]string{"--id", l2.RequestID})
+	})
+	if !strings.Contains(out, l2.RequestID) {
+		t.Fatalf("enrol refuse output = %q, want it to name the request id", out)
+	}
+	if _, ok := table.Get(l2.RequestID); ok {
+		t.Fatal("refuse must remove the pending record")
+	}
+}
+
+func TestEnrolRequests_JSONFlagPrintsMachineReadableOutput(t *testing.T) {
+	store := newCLISandboxStore(t)
+	table := newEnrolmentRequestTable()
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	assertNoErr(t, err, "Lodge")
+	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
+		r.enrolmentOps.Requests = table
+	}))
+
+	out := captureStdout(t, func() {
+		enrolRequests([]string{"--json"})
+	})
+	var items []enrolmentRequestListItem
+	assertNoErr(t, json.Unmarshal([]byte(out), &items), "parse --json output")
+	if len(items) != 1 || items[0].RequestID != l.RequestID {
+		t.Fatalf("items = %+v, want exactly the one lodged request", items)
+	}
+}
+
+// AC-30's CLI half: `relay enrol ca-fingerprint` needs no broker at all.
+func TestEnrolCAFingerprint_ReadsDirectlyWithNoBrokerNeeded(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+	_, err := LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "LoadOrCreateCA")
+
+	out := captureStdout(t, func() {
+		enrolCAFingerprint()
+	})
+	if !strings.HasPrefix(strings.TrimSpace(out), "sha256:") {
+		t.Fatalf("enrol ca-fingerprint output = %q, want a sha256: fingerprint", out)
 	}
 }

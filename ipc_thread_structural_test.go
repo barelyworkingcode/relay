@@ -46,9 +46,9 @@ import (
 // is listed here if and only if its core calls requireGate/Gate.Require --
 // including methods no current ipc_*.go handler reaches synchronously at
 // all (LoginOps.MintBootstrap is only reached from trayapp.go's own menu
-// item today; EnrolmentOps.Sign and ServiceOps/McpOps.StartOAuth likewise
-// have no current WKWebView caller), so a future handler that starts
-// calling one directly is caught too. A method absent here because it is
+// item today; EnrolmentOps.Sign, EnrolmentOps.Approve and ServiceOps/
+// McpOps.StartOAuth likewise have no current WKWebView caller), so a future
+// handler that starts calling one directly is caught too. A method absent here because it is
 // genuinely ungated (ServiceOps.Start/Stop/SetAutostart/Remove,
 // McpOps.Remove, LoginOps.Passkeys/Sessions/SignOut,
 // EnrolmentOps.SetRemoteConfig, McpOps.ResetPermissions, ...) must stay
@@ -67,7 +67,7 @@ var gatedIPCMethods = map[string]map[string]bool{
 	"ProjectOps":   {"Create": true, "Update": true, "RotateToken": true},
 	"McpOps":       {"Add": true, "StartOAuth": true},
 	"Ops":          {"Create": true, "Update": true}, // ServiceOps
-	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true, "Sign": true},
+	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true, "Sign": true, "Approve": true},
 	"LoginOps":     {"RevokePasskey": true, "MintBootstrap": true},
 }
 
