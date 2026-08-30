@@ -208,7 +208,7 @@ func TestAdRemoteListenerStillRefusesWithAuditExplicitlyDisabled(t *testing.T) {
 	_, store := adRemoteStore(t, &AuditConfig{Enabled: &off})
 	rec := adStartRecorder(t, store.Get())
 
-	rs, err := NewRemoteServer(context.Background(), store, &appRouter{store: store, audit: rec}, rec)
+	rs, err := NewRemoteServer(context.Background(), store, &appRouter{store: store, audit: rec}, rec, nil, nil)
 	if rs != nil {
 		rs.Close()
 		t.Fatal("a remote listener was bound while auditing was explicitly disabled")
@@ -225,7 +225,7 @@ func TestAdRemoteListenerStartsWithNoAuditBlock(t *testing.T) {
 	_, store := adRemoteStore(t, nil)
 	rec := adStartRecorder(t, store.Get())
 
-	rs, err := NewRemoteServer(context.Background(), store, &appRouter{store: store, audit: rec}, rec)
+	rs, err := NewRemoteServer(context.Background(), store, &appRouter{store: store, audit: rec}, rec, nil, nil)
 	if err != nil {
 		t.Fatalf("a remote listener was refused on an install that never wrote an audit block: %v", err)
 	}

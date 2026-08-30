@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"relaygo/bridge"
 	"relaygo/presence"
 )
 
@@ -308,4 +309,93 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	}
 	o.notify()
 	return newPlaintext, true, nil
+}
+
+// DescribeGrant is the RemoteConfigurer half of ADR-018 decision 4's read
+// side: the caller's own posture, built through the same newGrantView
+// `relay grant` uses, so an operator and the enrolment describing itself
+// read the identical record (ADR-018 decision 5, symmetrically).
+func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
+	return newGrantView(s, *proj)
+}
+
+// narrowUpdateFields carries a NarrowGrant request's already-validated
+// fields into applyProjectUpdate's patch shape. The two structs' pointer
+// fields share exactly the same underlying types by construction — see
+// remoteNarrowFields' own doc comment — so this is a relabelling, not a
+// conversion, and it sets nothing narrowsOnly did not already clear.
+func narrowUpdateFields(f remoteNarrowFields) projectUpdateFields {
+	return projectUpdateFields{
+		AllowedMcpIDs: f.AllowedMcpIDs,
+		AllowedTools:  f.AllowedTools,
+		Access:        f.Access,
+		AllowExternal: f.AllowExternal,
+	}
+}
+
+// NarrowForEnrolment is the one core behind the remote listener's
+// configuration plane. It is deliberately NOT gated: narrowsOnly makes a
+// widening unrepresentable, so this is not one of the acts ADR-017
+// decision 3 names, and a presence prompt reachable from a VM would be a
+// prompt the caller cannot see and the host did not ask for (§9.2) — a
+// certificate resolved by TLS is the authorization, the same way a project
+// token already is for CallTool.
+//
+// It reuses applyProjectUpdate rather than writing a second merge path, so
+// every existing validation rule — validateProjectShape,
+// validateProjectPermissions, validateToolPattern, ValidateProjectGrants —
+// applies identically to a remote's own edit and to an operator's.
+//
+// This is deliberate: the mutation goes through withDeclinable, not the
+// plain Store.With every other ops core here uses. Store.With resaves
+// (and reseals every sealed token) even when its callback changes nothing
+// — the right default for a door a human just drove, and the wrong one for
+// a request a VM can send at will: a widening this function refuses must
+// leave settings.json exactly as it was, not merely logically equivalent,
+// or a script hammering a refused NarrowGrant would spend the settings
+// file's one-writer-at-a-time window for nothing every time it tried.
+func (o *ProjectOps) NarrowForEnrolment(
+	ctx context.Context, projectID string, f remoteNarrowFields,
+	caller bridge.RemoteCaller, surfaces func() McpSurfaces,
+) (Project, []string, error) {
+	if err := requireIssuanceAuditor(o.Issuance); err != nil {
+		return Project{}, nil, err
+	}
+
+	var updated Project
+	var found bool
+	if err := withDeclinable(o.Store, func(s *Settings) error {
+		// Resolved INSIDE the callback, not from a value the caller
+		// captured earlier: the store's lock is what makes "narrower than
+		// what is stored right now" an answerable question rather than a
+		// race with whatever else touched this project between the request
+		// arriving and this closure running.
+		proj, _ := s.findProjectByID(projectID)
+		if proj == nil {
+			return fmt.Errorf("project %q no longer exists", projectID)
+		}
+		if err := narrowsOnly(*proj, f); err != nil {
+			return err
+		}
+		var applyErr error
+		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(f), surfaces)
+		return applyErr
+	}); err != nil {
+		return Project{}, nil, err
+	}
+	if !found {
+		return Project{}, nil, fmt.Errorf("project %q no longer exists", projectID)
+	}
+
+	changed := projectUpdateGrantFieldNames(narrowUpdateFields(f))
+	// Reported and not undone, the same balance EnrolmentOps.Update and
+	// Revoke strike: a narrowing act has no side artifact to roll back, and
+	// refusing to narrow because the log is broken would make a failing
+	// disk the reason a remote keeps a grant it was trying to shed.
+	if auditErr := recordConfigChangeRemote(o.Issuance, auditCredentialProjectGrant, projectID, changed, caller); auditErr != nil {
+		slog.Error("a remote narrowed its own grant but the change was not recorded in the audit log",
+			"project_id", projectID, "client_id", caller.ClientID, "error", auditErr)
+	}
+	o.notify()
+	return updated, changed, nil
 }

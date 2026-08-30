@@ -66,11 +66,15 @@ var gateAllowlistedFiles = map[string]string{
 	// The six gated cores (ADR-017 implementation spec S5): each holds a
 	// presence.Gate field and calls Require before touching the store.
 	"credential_ops.go": "the CredentialOps core: Gate.Require runs before Mint/Revoke touch the store",
-	"project_ops.go":    "the ProjectOps core: Gate.Require runs before Create/Update/RotateToken touch the store",
-	"mcp_ops.go":        "the McpOps core: Gate.Require runs before Add/Remove/StartOAuth touch the store",
-	"service_ops.go":    "the ServiceOps core: Gate.Require runs before Create/Update/Remove touch the store",
-	"enrolment_ops.go":  "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
-	"login_ops.go":      "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
+	"project_ops.go": "the ProjectOps core: Gate.Require runs before Create/Update/RotateToken touch the store; " +
+		"NarrowForEnrolment also calls applyProjectUpdate and withDeclinable, but is deliberately UNGATED (ADR-018 " +
+		"decision 4) — grant_narrowing.go's narrowsOnly makes a widening unrepresentable before this file is ever " +
+		"reached, so it is not one of the acts ADR-017 decision 3 gates, and gating a route a VM can reach would put " +
+		"a presence prompt on the host's screen that the caller cannot see and the human did not ask for",
+	"mcp_ops.go":       "the McpOps core: Gate.Require runs before Add/Remove/StartOAuth touch the store",
+	"service_ops.go":   "the ServiceOps core: Gate.Require runs before Create/Update/Remove touch the store",
+	"enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
+	"login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
 
 	// Where the mutators themselves, and the free functions a core
 	// delegates to, are defined.

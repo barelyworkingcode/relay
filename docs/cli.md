@@ -263,6 +263,23 @@ clear fields already in `settings.json` and reads through the same
 permission-derivation code the router uses at call time — it does not, and
 cannot, print a project's token.
 
+An access profile's record also names every enrolment that reaches it, and
+marks a `cli_admin` one loudly — the same posture `DescribeGrant` shows the
+enrolment itself (ADR-018 decision 5, symmetrically). An enrolment with the
+bit off is still listed, never omitted:
+
+```
+ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
+  macmcp         access=read   outbound=blocked  tools=mail_*
+                 scope: (none set)
+  enrolments:
+    hermes-mail          ** CLI-ADMIN: ON — this certificate may narrow this profile's own grant **
+    hermes-ro            cli-admin: off
+```
+
+`--json` carries the same enrolments as a structured `enrolments` array on
+each record.
+
 ## `relay audit`
 
 Tails the tool-call audit log — relay's own ground truth for anything it
@@ -597,6 +614,17 @@ Needs service: yes. Prompts: yes. Works over SSH: no. It is gated even
 though it only replaces an existing grant list, because replacing a grant
 list is exactly the "widens one" case the gate exists for. Toggling
 `cli-admin` is gated the same way, in both directions.
+
+With `cli_admin` on, the enrolment's own certificate reaches a second
+request table over the remote listener — `DescribeGrant` (its own posture,
+the same view `relay grant` shows) and `NarrowGrant` (replace its own
+`allowed_mcp_ids` / `allowed_tools` / `access` / `allow_external` with a
+strictly narrower set — never wider, on any axis, and never another
+enrolment's profile). Neither is a CLI subcommand; both are wire requests
+the client sends itself. `relay grant` names every enrolment reaching a
+profile and marks a `cli_admin` one loudly, and `relay audit --grep
+cli_admin` finds both the toggle and every narrowing an enrolment made of
+its own grant.
 
 ### `enrol revoke`
 

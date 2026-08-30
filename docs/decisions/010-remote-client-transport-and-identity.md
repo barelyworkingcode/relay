@@ -63,6 +63,12 @@ request types are not refused by a check inside a shared handler — they are
 absent from the remote dispatch table, so there is no code path from a remote
 connection to `ResolvePtyEnv` or `RegisterManifest` at all.
 
+**Amended by [ADR-018](018-configuration-is-a-capability-of-an-identity.md):**
+a *second* dispatch table (`DescribeGrant`, `NarrowGrant`) is consulted, but
+only for an enrolment whose record carries `cli_admin` — the two-entry table
+above is unchanged, both in size and in what it holds, and stays the property
+this decision names.
+
 This is deliberately *not* implemented as `if isRemote { … }` guards added to
 `bridge/server.go`. A shared handler with per-request transport checks makes
 every future request type a decision someone must remember to get right, and

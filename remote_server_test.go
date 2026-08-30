@@ -256,10 +256,24 @@ func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFix
 	return f, key
 }
 
-// start binds and serves, failing the test if construction refused.
+// configurer builds a real *ProjectOps wired to this fixture's store and
+// audit recorder. No Gate: NarrowForEnrolment is deliberately ungated (see
+// its own doc comment), so there is nothing here for one to gate.
+func (f *remoteFixture) configurer() RemoteConfigurer {
+	return &ProjectOps{
+		Store:    f.store,
+		Issuance: issuanceAuditorOrNil(f.audit),
+		OnChange: func() {},
+	}
+}
+
+// start binds and serves, failing the test if construction refused. Wires a
+// real configurer and surfaces provider — not nil — so any test using this
+// fixture can exercise cli-admin's configuration plane; a test that never
+// sends DescribeGrant/NarrowGrant is unaffected by their presence.
 func (f *remoteFixture) start() {
 	f.t.Helper()
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, f.configurer(), f.mgr.AllMcpSurfaces)
 	assertNoErr(f.t, err, "NewRemoteServer")
 	if rs == nil {
 		f.t.Fatal("NewRemoteServer returned no listener for an enabled remote block")
@@ -789,7 +803,7 @@ func TestRemoteServer_RevokingAnEnrolmentClosesItsLiveConnection(t *testing.T) {
 func TestRemoteServer_DoesNotStartWhenTheConfigBlockIsAbsent(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{noRemoteBlock: true, skipServe: true})
 
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 	assertNoErr(t, err, "NewRemoteServer with no remote block")
 	if rs != nil {
 		rs.Close()
@@ -808,7 +822,7 @@ func TestRemoteServer_DoesNotStartWhenDisabledOrUnstated(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newRemoteFixture(t, opts)
-			rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+			rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 			assertNoErr(t, err, "NewRemoteServer")
 			if rs != nil {
 				rs.Close()
@@ -858,7 +872,7 @@ func TestRemoteCertHosts(t *testing.T) {
 func TestRemoteServer_RefusesToServeWhenAuditingIsDisabled(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{disableAudit: true, skipServe: true})
 
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 	if err == nil {
 		if rs != nil {
 			rs.Close()
@@ -879,7 +893,7 @@ func TestRemoteServer_RefusesToServeWhenAuditingIsDisabled(t *testing.T) {
 func TestRemoteServer_AuditRefusalDoesNotAffectLocalCallers(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{disableAudit: true, skipServe: true})
 
-	if _, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit); err == nil {
+	if _, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil); err == nil {
 		t.Fatal("expected the remote listener to refuse")
 	}
 	// The same router, called locally with a project token, keeps working.

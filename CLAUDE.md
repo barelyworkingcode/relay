@@ -231,10 +231,15 @@ fails closed).
 
 `RemoteServer` (`remote_server.go`) is a **second listener beside**
 `BridgeServer` — never a mode of it. Its dispatch table (`remoteHandlers`) has
-exactly two entries, `ListTools` and `CallTool`: the other eight bridge request
-types have no code path from a remote connection at all, so a new admin op is
-unreachable from a VM until someone deliberately adds it to a list that is
-visibly a security boundary.
+exactly two entries, `ListTools` and `CallTool`, and a second table
+(`remoteConfigHandlers`, `DescribeGrant`/`NarrowGrant`), consulted only for a
+`cli_admin` enrolment: the other eight bridge request types have no code path
+from a remote connection at all, so a new admin op is unreachable from a VM
+until someone deliberately adds it to a list that is visibly a security
+boundary. The configuration table is itself filtered through the class–
+transport matrix (`buildRemoteConfigHandlers`), so an `execute`- or
+`proxy`-class entry added to it later is absent from the table rather than
+refused inside it — see ADR-018.
 
 Mutual TLS against relay's own CA (`tls.RequireAndVerifyClientCert`). The peer
 certificate is fingerprinted and resolved to an enrolment **before any request

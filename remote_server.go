@@ -94,6 +94,100 @@ func handleRemoteCallTool(ctx context.Context, req *bridge.RemoteRequest, router
 	return bridge.BridgeResponse{Type: bridge.RespResult, Result: result}
 }
 
+// RemoteConfigurer is the two-method surface the configuration plane holds,
+// narrow for the same compile-time reason RemoteToolRouter is: this file
+// cannot call ProjectOps.Update even by accident, because it holds nothing
+// with that method.
+type RemoteConfigurer interface {
+	DescribeGrant(s *Settings, proj *Project) grantView
+	NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (Project, []string, error)
+}
+
+var _ RemoteConfigurer = (*ProjectOps)(nil)
+
+// remoteConfigHandler mirrors remoteHandler's shape: everything a config
+// handler needs, resolved once by handleRequest and handed down rather than
+// re-resolved.
+type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *Settings, proj *Project, caller bridge.RemoteCaller) bridge.BridgeResponse
+
+// remoteConfigEntry pairs a handler with the capability class its operation
+// carries. buildRemoteConfigHandlers refuses to install an entry whose
+// class is not reachable on TCP, so an execute- or proxy-class operation
+// added here later is absent from the table rather than refused inside it.
+type remoteConfigEntry struct {
+	class   CapabilityClass
+	handler remoteConfigHandler
+}
+
+// buildRemoteConfigHandlers drops any entry whose class ClassReachableOn
+// refuses for TransportTCP — the exact structural shape RouteRegistrar.Handle
+// (capability.go) uses, applied to this dispatch table for the first time
+// (ADR-010 decision 4's "route" meant a map entry before RouteRegistrar
+// existed; this is the same idea, catching up).
+func buildRemoteConfigHandlers(entries map[string]remoteConfigEntry) map[string]remoteConfigEntry {
+	out := make(map[string]remoteConfigEntry, len(entries))
+	for reqType, entry := range entries {
+		if !ClassReachableOn(entry.class, TransportTCP) {
+			continue
+		}
+		out[reqType] = entry
+	}
+	return out
+}
+
+// remoteConfigHandlers is consulted ONLY for an enrolment whose record
+// carries cli_admin. It is a separate table from remoteHandlers, not extra
+// entries in it: the tool plane and the configuration plane are different
+// grants, and a table that mixed them would make "what can a certificate
+// without cli-admin reach" a question about a field rather than about a map.
+var remoteConfigHandlers = buildRemoteConfigHandlers(map[string]remoteConfigEntry{
+	bridge.ReqDescribeGrant: {ClassRead, handleRemoteDescribeGrant},
+	bridge.ReqNarrowGrant:   {ClassConfigure, handleRemoteNarrowGrant},
+})
+
+func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() McpSurfaces, settings *Settings, proj *Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
+	data, err := json.Marshal(configurer.DescribeGrant(settings, proj))
+	if err != nil {
+		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "describe grant: "+err.Error())
+	}
+	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
+}
+
+// remoteNarrowGrantResult carries what changed and the resulting posture —
+// the same grantView DescribeGrant and `relay grant` show — so a caller
+// narrowing its own grant sees the result without a second round trip.
+type remoteNarrowGrantResult struct {
+	Changed []string  `json:"changed"`
+	Grant   grantView `json:"grant"`
+}
+
+func handleRemoteNarrowGrant(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *Settings, proj *Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
+	f, err := decodeRemoteNarrowFields(req.Arguments)
+	if err != nil {
+		// Strict decoding: a client sending allow_cwd_auth or any other
+		// field this struct doesn't declare lands here loudly.
+		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "narrow grant: "+err.Error())
+	}
+	updated, changed, err := configurer.NarrowForEnrolment(ctx, proj.ID, f, caller, surfaces)
+	if err != nil {
+		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
+	}
+	data, err := json.Marshal(remoteNarrowGrantResult{Changed: changed, Grant: configurer.DescribeGrant(settings, &updated)})
+	if err != nil {
+		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "narrow grant: "+err.Error())
+	}
+	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
+}
+
+// cliAdminRequiredMessage names the permission (§4.5 of the spec this
+// implements): it discloses nothing a client binary and its docs don't
+// already say, and the caller is a legitimate party that needs to know what
+// to ask the human for.
+func cliAdminRequiredMessage(clientID string) string {
+	return fmt.Sprintf("this request needs the cli-admin permission on enrolment %q, which is not set; "+
+		"a human must turn it on with 'relay enrol update --client-id %s --cli-admin' on the host", clientID, clientID)
+}
+
 // A nil *RemoteServer is a valid "no listener configured" value and every
 // method tolerates it, so callers need no branch for the disabled case.
 type RemoteServer struct {
@@ -101,6 +195,15 @@ type RemoteServer struct {
 	store  SettingsStore
 	cfg    resolvedRemoteConfig
 	audit  *AuditRecorder
+	// configurer is nil in every deployment that never wires one, and a nil
+	// value means the configuration table is absent — handleRequest treats
+	// every config request type as unknown, fail-closed. Deliberately not a
+	// *ProjectOps: see RemoteConfigurer's own doc comment.
+	configurer RemoteConfigurer
+	// surfaces resolves live MCP schemas for NarrowForEnrolment's validation.
+	// A read-only capability, unlike configurer: this cannot register, remove
+	// or reconfigure an MCP, only see what one currently declares.
+	surfaces func() McpSurfaces
 
 	listener net.Listener
 	ctx      context.Context
@@ -130,7 +233,7 @@ type remoteConn struct {
 	fingerprint string
 }
 
-func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder) (*RemoteServer, error) {
+func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces) (*RemoteServer, error) {
 	// freshSettings, not Get(): the operator who just edited settings.json is
 	// the same operator watching the listener come up.
 	settings := freshSettings(store)
@@ -171,14 +274,16 @@ func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteTool
 
 	sctx, cancel := context.WithCancel(ctx)
 	s := &RemoteServer{
-		router:   router,
-		store:    store,
-		cfg:      cfg,
-		audit:    audit,
-		listener: ln,
-		ctx:      sctx,
-		cancel:   cancel,
-		conns:    map[string]map[*remoteConn]struct{}{},
+		router:     router,
+		store:      store,
+		cfg:        cfg,
+		audit:      audit,
+		configurer: configurer,
+		surfaces:   surfaces,
+		listener:   ln,
+		ctx:        sctx,
+		cancel:     cancel,
+		conns:      map[string]map[*remoteConn]struct{}{},
 	}
 
 	// Installed with an owner because a rebind (RemoteSupervisor) binds the
@@ -321,6 +426,15 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 		})
 }
 
+// handleRequest resolves the caller BEFORE choosing a dispatch table
+// (decode -> resolveCaller -> pick table -> dispatch): which table applies
+// depends on enrolment.CLIAdmin, read fresh on every request, never cached
+// from handleConn's one-time resolution — see resolveCaller's own doc
+// comment for why that placement matters. The cost, stated plainly: an
+// unknown request type now pays one freshSettings stat before being
+// refused, and a revoked certificate sending one gets "this certificate is
+// no longer enrolled" rather than "not available to remote clients" — both
+// are refusals, and neither leaks anything the other didn't.
 func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line string) bridge.BridgeResponse {
 	req, err := bridge.DecodeRemoteRequest([]byte(line))
 	if err != nil {
@@ -329,74 +443,142 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "remote request: "+err.Error())
 	}
 
-	h, ok := remoteHandlers[req.Type]
-	if !ok {
-		slog.Warn("remote: request type is not available on the remote listener", "type", req.Type)
-		return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound,
-			"request type is not available to remote clients: "+req.Type)
-	}
-
-	token, err := s.resolveGrant(fingerprint, req.ProjectID)
+	settings, enrolment, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
 	if err != nil {
 		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
 	}
 
-	return h(ctx, req, s.router, token)
+	if h, ok := remoteHandlers[req.Type]; ok {
+		token, err := revealProjectToken(proj)
+		if err != nil {
+			return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
+		}
+		return h(ctx, req, s.router, token)
+	}
+
+	if entry, ok := remoteConfigHandlers[req.Type]; ok {
+		caller, _ := bridge.RemoteCallerFromContext(ctx)
+		if !enrolment.CLIAdmin {
+			s.recordConfigRefusal(entry.class, req.Type, caller)
+			return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound, cliAdminRequiredMessage(enrolment.ClientID))
+		}
+		// A nil configurer means the configuration table is absent (fail
+		// closed) — no different, from the wire, than a type nobody
+		// registered. Not a ControlDecision: there is no operation this
+		// listener actually carries to measure the refusal against, the
+		// same reasoning ADR-015 gives for an unmatched TCP route.
+		if s.configurer == nil {
+			slog.Warn("remote: configuration request type has no configurer wired", "type", req.Type)
+			return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound,
+				"request type is not available to remote clients: "+req.Type)
+		}
+		return entry.handler(ctx, req, s.configurer, s.surfaces, settings, proj, caller)
+	}
+
+	slog.Warn("remote: request type is not available on the remote listener", "type", req.Type)
+	return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound,
+		"request type is not available to remote clients: "+req.Type)
 }
 
-func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, error) {
+// recordConfigRefusal is the control_decision half of refusing a config
+// request for want of cli-admin: the request named a real operation on a
+// real table, so — unlike an unregistered request type — this IS an
+// authorization decision, and ADR-015's record is what answers "did this
+// identity try" after the fact.
+func (s *RemoteServer) recordConfigRefusal(class CapabilityClass, reqType string, caller bridge.RemoteCaller) {
+	s.audit.RecordDecision(ControlDecision{
+		Method:      reqType,
+		Class:       class,
+		Transport:   TransportTCP,
+		Allowed:     false,
+		Reason:      "cli-admin is not set on this enrolment",
+		ClientID:    caller.ClientID,
+		Fingerprint: caller.Fingerprint,
+	})
+}
+
+// resolveCaller is resolveGrant's shared middle: the audit-live check, the
+// fingerprint -> enrolment resolution, the project_id defaulting,
+// GrantsProject, and the IsRemote() re-check. The enrolment and project it
+// returns are the ONLY objects a remote request can act on — the
+// configuration plane's self-scoping (§4.2) rests on this being the single
+// place identity and target are resolved, for both the tool plane and the
+// configuration plane alike.
+//
+// Re-resolved from current on-disk settings on every call, never cached: a
+// revocation, or a cli_admin toggle, must take effect on the NEXT request,
+// not the next reconnect (handleConn resolves the enrolment once too, at
+// the TLS handshake, but only to decide whether to accept the connection at
+// all — never consult that copy for an authorization decision made later in
+// the connection's life).
+func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*Settings, *Enrolment, *Project, error) {
 	settings := s.currentSettings()
 
 	if !remoteAuditingLive(settings, s.audit) {
-		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("remote calls are refused while the tool-call audit log is disabled"))
 	}
 
-	// Re-resolved from current on-disk settings on every request, never
-	// cached: a revocation must take effect on the next call, not the
-	// next reconnect.
 	enrolment := settings.FindEnrolmentByFingerprint(fingerprint)
 	if enrolment == nil {
-		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("this certificate is no longer enrolled"))
 	}
 
 	if projectID == "" {
 		switch len(enrolment.ProjectIDs) {
 		case 0:
-			return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 				fmt.Errorf("enrolment %q holds no grants", enrolment.ClientID))
 		case 1:
 			projectID = enrolment.ProjectIDs[0]
 		default:
-			return "", jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
+			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
 				fmt.Errorf("project_id is required: enrolment %q holds %d grants", enrolment.ClientID, len(enrolment.ProjectIDs)))
 		}
 	}
 
 	if !enrolment.GrantsProject(projectID) {
-		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("enrolment %q does not grant project %q", enrolment.ClientID, projectID))
 	}
 
 	proj, _ := settings.findProjectByID(projectID)
 	if proj == nil {
-		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("project %q no longer exists", projectID))
 	}
 	// IsRemote(), never a Kind comparison: the zero value is local and must
 	// stay unreadable as remote.
 	if !proj.IsRemote() {
-		return "", jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
+		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("project %q is not a remote project: a grant that went stale is refused at call time rather than honoured", projectID))
 	}
+	return settings, enrolment, proj, nil
+}
+
+// resolveGrant is resolveCaller plus the one thing the tool plane still
+// needs beyond it: the plaintext token. Kept as its own three-line entry
+// point rather than inlined at its one call site, so a future caller that
+// only wants a token — never the enrolment or project — has one.
+func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, error) {
+	_, _, proj, err := s.resolveCaller(fingerprint, projectID)
+	if err != nil {
+		return "", err
+	}
+	return revealProjectToken(proj)
+}
+
+// revealProjectToken is resolveGrant's and handleRequest's shared final
+// step for the tool plane: turning an already-resolved, already-authorized
+// project into the plaintext token CallTool/ListTools need. Never put on
+// the wire — resolved server-side only.
+func revealProjectToken(proj *Project) (string, error) {
 	token, ok := proj.Token.Reveal()
 	if !ok || token == "" {
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeInternalError,
-			fmt.Errorf("project %q has no token: the sealed store may be unavailable", projectID))
+			fmt.Errorf("project %q has no token: the sealed store may be unavailable", proj.ID))
 	}
-	// Resolved server-side, never put on the wire: not a credential the
-	// client holds.
 	return token, nil
 }
 
