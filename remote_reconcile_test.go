@@ -17,6 +17,7 @@ package main
 // the sandbox.
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"net"
@@ -592,5 +593,170 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	assertNoErr(t, sup.Reconcile(), "reconcile after disabling")
 	if owner := enrolmentRevocationHookOwner(); owner != nil {
 		t.Errorf("a stopped listener left its revocation hook installed: %v", owner)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The enrolment-request listener: a SECOND listener this same supervisor
+// converges, independently (spec §1, §11.8)
+// ---------------------------------------------------------------------------
+
+// Enabling remote.enrolment_requests opens the enrolment-request listener on
+// its own address; disabling it closes it — the identical discipline the
+// tool-plane listener already has, applied to its own bit and its own
+// address rather than reusing the tool-plane's.
+func TestRemoteSupervisor_EnrolmentListenerFollowsItsOwnEnableBit(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	sup := f.supervise()
+
+	assertNoErr(t, sup.Reconcile(), "reconcile with enrolment_requests absent")
+	if addr := sup.EnrolAddr(); addr != "" {
+		t.Fatalf("the enrolment listener opened at %s with enrolment_requests absent", addr)
+	}
+	// The tool-plane listener DID open (this fixture's remote.enabled
+	// defaults to true) — proving the two listeners are independent.
+	if sup.Addr() == "" {
+		t.Fatal("the tool-plane listener did not open")
+	}
+
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(true)
+		s.Remote.EnrolmentListen = "127.0.0.1:0"
+	}), "enable enrolment_requests")
+	assertNoErr(t, sup.Reconcile(), "reconcile after enabling enrolment_requests")
+	addr := sup.EnrolAddr()
+	if addr == "" {
+		t.Fatal("enabling enrolment_requests did not open a listener")
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	assertNoErr(t, err, "dial the enrolment listener")
+	defer conn.Close()
+	c := &enrolTestClient{t: t, conn: conn, scanner: bufio.NewScanner(conn)}
+	resp := c.roundTrip(lodgeJSON(genClientCSRPEM(t, "sup-enrol"), ""))
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("the newly opened enrolment listener refused a lodge: %s %s", resp.Type, resp.Message)
+	}
+
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(false)
+	}), "disable enrolment_requests")
+	assertNoErr(t, sup.Reconcile(), "reconcile after disabling enrolment_requests")
+	if got := sup.EnrolAddr(); got != "" {
+		t.Fatalf("disabling enrolment_requests left a listener at %s", got)
+	}
+	assertNothingListensAt(t, addr, "after disabling enrolment_requests")
+
+	// And the tool-plane listener is untouched by any of this.
+	if sup.Addr() == "" {
+		t.Fatal("the tool-plane listener was closed by an enrolment-only change")
+	}
+}
+
+// The bug §11.8 names: Reconcile's old single "nothing changed" comparison
+// covered only the tool-plane listener's address, so a change to only
+// remote.enrolment_listen matched it and was silently ignored. With two
+// independent comparisons, a change to only the enrolment address moves
+// only that listener.
+func TestRemoteSupervisor_ChangingOnlyTheEnrolmentAddressMovesOnlyThatListener(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	sup := f.supervise()
+
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(true)
+		s.Remote.EnrolmentListen = "127.0.0.1:0"
+	}), "enable enrolment_requests")
+	assertNoErr(t, sup.Reconcile(), "initial reconcile with both listeners")
+
+	toolAddr := sup.Addr()
+	enrolAddr := sup.EnrolAddr()
+	if toolAddr == "" || enrolAddr == "" {
+		t.Fatalf("both listeners did not open: tool=%q enrol=%q", toolAddr, enrolAddr)
+	}
+	c := f.dialAddr(toolAddr, f.bundle)
+	if c == nil {
+		t.Fatal("could not connect to the tool-plane listener")
+	}
+	if resp := c.roundTrip(`{"type":"ListTools"}`); resp.Type != bridge.RespTools {
+		t.Fatalf("baseline ListTools on the tool-plane listener failed: %s", resp.Message)
+	}
+
+	movedEnrol := freeLoopbackAddr(t)
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentListen = movedEnrol
+	}), "move only the enrolment address")
+
+	assertNoErr(t, sup.Reconcile(), "reconcile after moving only the enrolment address")
+
+	if got := sup.EnrolAddr(); got != movedEnrol {
+		t.Fatalf("enrolment listener is at %q, want the newly configured %q — this is §11.8's bug if it fails", got, movedEnrol)
+	}
+	assertNothingListensAt(t, enrolAddr, "after moving only the enrolment address")
+
+	// The TOOL listener must be completely undisturbed: same address, same
+	// live connection still being served.
+	if got := sup.Addr(); got != toolAddr {
+		t.Fatalf("the tool-plane listener moved to %q when only the enrolment address changed", got)
+	}
+	if resp := c.roundTrip(`{"type":"ListTools"}`); resp.Type != bridge.RespTools {
+		t.Fatalf("the tool-plane listener's live connection was disturbed by an enrolment-only address change: %s %s", resp.Type, resp.Message)
+	}
+}
+
+// Disabling auditing at runtime stops BOTH listeners — the enrolment
+// channel's own hard dependency (spec §1) is enforced by this same
+// supervisor tick, exactly as it already is for the tool-plane listener.
+func TestRemoteSupervisor_DisablingAuditingStopsBothListeners(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
+	sup := f.supervise()
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(true)
+		s.Remote.EnrolmentListen = "127.0.0.1:0"
+	}), "enable enrolment_requests")
+	assertNoErr(t, sup.Reconcile(), "initial reconcile")
+
+	toolAddr := sup.Addr()
+	enrolAddr := sup.EnrolAddr()
+	if toolAddr == "" || enrolAddr == "" {
+		t.Fatal("both listeners did not open")
+	}
+
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Audit = &AuditConfig{Enabled: ptr(false)}
+	}), "disable auditing")
+	err := sup.Reconcile()
+	if err == nil {
+		t.Fatal("disabling auditing reported no error")
+	}
+	if got := sup.Addr(); got != "" {
+		t.Fatalf("disabling auditing left the tool-plane listener at %s", got)
+	}
+	if got := sup.EnrolAddr(); got != "" {
+		t.Fatalf("disabling auditing left the enrolment listener at %s", got)
+	}
+	assertNothingListensAt(t, toolAddr, "tool-plane listener after auditing was disabled")
+	assertNothingListensAt(t, enrolAddr, "enrolment listener after auditing was disabled")
+}
+
+// enrolment_requests:true with remote.enabled:false is refused AT RECONCILE,
+// flowing through the supervisor exactly as resolveEnrolment's own unit
+// test (TestEnrolment_AC7_ConfigResolution) proves it is refused in
+// isolation — this is the integration half.
+func TestRemoteSupervisor_EnrolmentRequestsTrueWithDisabledRemoteRefusesAtReconcile(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{enabled: ptr(false), skipServe: true})
+	sup := f.supervise()
+	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+		s.Remote.EnrolmentRequests = ptr(true)
+	}), "enable enrolment_requests with remote.enabled false")
+
+	err := sup.Reconcile()
+	if err == nil {
+		t.Fatal("enrolment_requests:true with enabled:false reported no error")
+	}
+	if !strings.Contains(err.Error(), "enrolment_requests is true but remote.enabled is false") {
+		t.Fatalf("error does not name the misconfiguration: %v", err)
+	}
+	if got := sup.EnrolAddr(); got != "" {
+		t.Fatalf("a refused configuration still opened a listener at %s", got)
 	}
 }
