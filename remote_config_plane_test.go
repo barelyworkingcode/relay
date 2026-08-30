@@ -536,3 +536,56 @@ func TestCliAdmin_NoPresencePromptReachableFromRemoteListener(t *testing.T) {
 		t.Fatalf("the presence provider was called %d time(s) from the remote listener; want 0", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// NarrowForEnrolment reuses applyProjectUpdate rather than writing the
+// narrowed fields to the store directly (SPEC-step2-cli-admin.md §4.3).
+// narrowsOnly alone cannot observe this: it only judges whether a REQUEST is
+// narrower than what is stored, never what the mutator that applies an
+// accepted request actually does to the record. A direct field write would
+// still satisfy every narrowsOnly rule while skipping SyncProjectToken's own
+// pruning of a dropped MCP's now-orphaned allowed_tools/access entries.
+// ---------------------------------------------------------------------------
+
+func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+
+	// Widened behind the guards, the same way TestRemoteServer_
+	// RefusesAProjectThatIsNoLongerRemote seeds a stale record: standing in
+	// for a grant an operator already validated through PUT
+	// /api/projects/{id}, which is the only door that can ever put a
+	// project in this shape.
+	assertNoErr(t, store.With(func(s *Settings) {
+		p, _ := s.findProjectByID(mail.ID)
+		if p == nil {
+			t.Fatal("seeded project vanished")
+		}
+		p.AllowedMcpIDs = []string{"macmcp", "other"}
+		p.AllowedTools = map[string][]string{"macmcp": {"mail_search"}, "other": {"other_tool"}}
+		p.Access = map[string]string{"macmcp": AccessRead, "other": AccessRead}
+	}), "widen behind the guards")
+
+	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
+	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
+
+	narrowedIDs := []string{"macmcp"}
+	_, _, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
+		remoteNarrowFields{AllowedMcpIDs: &narrowedIDs}, caller, surfaces)
+	assertNoErr(t, err, "NarrowForEnrolment dropping an MCP")
+
+	proj, _ := store.Get().findProjectByID(mail.ID)
+	if proj == nil {
+		t.Fatal("the project vanished")
+	}
+	if _, stale := proj.AllowedTools["other"]; stale {
+		t.Error("a dropped MCP's allowed_tools entry survived narrowing: NarrowForEnrolment must reuse applyProjectUpdate (SyncProjectToken prunes it), not write AllowedMcpIDs to the store directly")
+	}
+	if _, stale := proj.Access["other"]; stale {
+		t.Error("a dropped MCP's access entry survived narrowing")
+	}
+	if got := proj.AllowedTools["macmcp"]; len(got) != 1 || got[0] != "mail_search" {
+		t.Errorf("the kept MCP's allowlist changed: %v", got)
+	}
+}
