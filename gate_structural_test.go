@@ -1,14 +1,22 @@
 package main
 
-// AC-15 (ADR-017 implementation spec §6.7): the gate lives inside each
-// operation core, never on a door, so a door that reaches around a core
-// cannot invoke a gated operation even by accident. This file is the
-// build-time proof: it parses every non-test .go file in package main and
+// AC-15 (ADR-017 implementation spec §6.7): this file proves ONE property,
+// and it is narrower than its name suggests -- mutation containment, not
+// gate coverage. It parses every non-test .go file in package main and
 // finds every call to store.With, store.WithDeclinable, withDeclinable, and
 // to each mutator in the gated set (§6.7's own list). Every call site found
 // must be in a file on gateAllowlistedFiles below; anything else fails the
-// suite by name, which is the property that answers "a NEW route
-// registered without the gate cannot reach a gated operation."
+// suite by name. That answers "a NEW route registered without the gate
+// cannot reach a gated operation" -- it says nothing about whether the
+// operation core it lands in actually calls the gate. That second property
+// -- gate COVERAGE -- is proven separately, by
+// TestGate_RequireGateCallSitesAreComplete below, derived from source via
+// gate_ast_scan_test.go's scan rather than reviewed into this file's
+// allowlist. Neither test stands in for the other: this one does not
+// weaken when an op retires from the gated set (`McpOps.Remove` still calls
+// `RemoveExternalMcp` from `mcp_ops.go`, still allowlisted, still the only
+// door to that mutator); the other one is what would catch the retirement
+// being wrong.
 
 import (
 	"fmt"
@@ -21,6 +29,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"relaygo/presence"
 )
 
 // gatedMutatorNames is §6.7's list verbatim, plus the generic settings-write
@@ -71,8 +81,12 @@ var gateAllowlistedFiles = map[string]string{
 		"decision 4) — grant_narrowing.go's narrowsOnly makes a widening unrepresentable before this file is ever " +
 		"reached, so it is not one of the acts ADR-017 decision 3 gates, and gating a route a VM can reach would put " +
 		"a presence prompt on the host's screen that the caller cannot see and the human did not ask for",
-	"mcp_ops.go":       "the McpOps core: Gate.Require runs before Add/Remove/StartOAuth touch the store",
-	"service_ops.go":   "the ServiceOps core: Gate.Require runs before Create/Update/Remove touch the store",
+	"mcp_ops.go": "the McpOps core: Gate.Require runs before Add and StartOAuth touch the store; Remove is deliberately " +
+		"ungated (ADR-018 step 3 -- removal narrows, re-registering under the same id still hits Add's gate) and still " +
+		"calls requireIssuanceAuditor",
+	"service_ops.go": "the ServiceOps core: Gate.Require runs before Create/Update touch the store; Remove is deliberately " +
+		"ungated (ADR-018 step 3 -- removal narrows, and stopping a running service is already ungated configure via " +
+		"POST /api/services/{id}/stop) and still calls requireIssuanceAuditor",
 	"enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
 	"login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
 
@@ -223,6 +237,134 @@ func TestGate_AllowlistNamesOnlyRealFiles(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
 			t.Errorf("gateAllowlistedFiles names %q, which does not exist: %v", name, err)
+		}
+	}
+}
+
+// wantGatedOps pins presence.GatedOps itself (§4.1.3): a second, independent
+// literal that must equal it element-wise, in the same order. A change to
+// either the package's own list or this expectation then shows up as a diff
+// a reviewer reads, rather than the two silently moving together.
+var wantGatedOps = []string{
+	"credential.mint",
+	"credential.revoke",
+	"enrolment.create",
+	"enrolment.update",
+	"enrolment.revoke",
+	"enrolment.sign",
+	"login.bootstrap.mint",
+	"login.passkey.revoke",
+	"mcp.register",
+	"mcp.oauth.start",
+	"service.register",
+	"project.rotate_token",
+	"project.grant",
+	"sealed.reset",
+}
+
+func TestGate_GatedOpsMatchesPinnedList(t *testing.T) {
+	if len(presence.GatedOps) != len(wantGatedOps) {
+		t.Fatalf("presence.GatedOps has %d entries, wantGatedOps has %d", len(presence.GatedOps), len(wantGatedOps))
+	}
+	for i, op := range wantGatedOps {
+		if presence.GatedOps[i] != op {
+			t.Errorf("presence.GatedOps[%d] = %q, want %q", i, presence.GatedOps[i], op)
+		}
+	}
+}
+
+// wantGateCallSites pins the op -> {receiver.method} map every requireGate
+// call site in the tree must produce (§4.1.2's fourth direction): the
+// surviving gated set written down at the method level, not just the op
+// level, so a future retirement is a diff to THIS map rather than a
+// subtraction nothing notices. service.register and project.grant each
+// have two call sites (Create and Update share one op, per §1.3's argument
+// for why enrolment.update -- and by the same reasoning project.grant and
+// service.register -- gate as a whole request rather than per field).
+var wantGateCallSites = map[string][]string{
+	"credential.mint":      {"CredentialOps.Mint"},
+	"credential.revoke":    {"CredentialOps.Revoke"},
+	"enrolment.create":     {"EnrolmentOps.Create"},
+	"enrolment.sign":       {"EnrolmentOps.Sign"},
+	"enrolment.update":     {"EnrolmentOps.Update"},
+	"enrolment.revoke":     {"EnrolmentOps.Revoke"},
+	"login.bootstrap.mint": {"LoginOps.MintBootstrap"},
+	"login.passkey.revoke": {"LoginOps.RevokePasskey"},
+	"mcp.register":         {"McpOps.Add"},
+	"mcp.oauth.start":      {"McpOps.StartOAuth"},
+	"service.register":     {"ServiceOps.Create", "ServiceOps.Update"},
+	"project.rotate_token": {"ProjectOps.RotateToken"},
+	"project.grant":        {"ProjectOps.Create", "ProjectOps.Update"},
+	"sealed.reset":         {"resetSealedStore"},
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestGate_RequireGateCallSitesAreComplete is §4.1.2's gate-coverage guard,
+// derived from source rather than reviewed into gate_structural_test.go's
+// allowlist above (which proves a different property -- see this file's
+// doc comment). It asserts all four directions at once:
+//
+//  1. every op in presence.GatedOps has at least one requireGate call site
+//     (catches deleting the call while leaving the string);
+//  2. every requireGate op literal is in presence.GatedOps (catches a typo
+//     or an orphaned op -- ErrUnknownOp only catches these at runtime);
+//  3. the op argument is always a string literal, never computed -- enforced
+//     by scanRequireGateCallSites itself, which fails the suite by name on
+//     anything else rather than skipping it;
+//  4. the resulting op -> {receiver.method} map equals wantGateCallSites
+//     exactly, so the surviving set is written down and any future
+//     retirement is a two-place, reviewable diff rather than a silent
+//     subtraction.
+func TestGate_RequireGateCallSitesAreComplete(t *testing.T) {
+	root := gsModuleRoot(t)
+	sites := scanRequireGateCallSites(t, root)
+
+	gotByOp := map[string][]string{}
+	for _, s := range sites {
+		gotByOp[s.op] = append(gotByOp[s.op], s.method)
+	}
+	for op := range gotByOp {
+		sort.Strings(gotByOp[op])
+	}
+
+	gated := map[string]bool{}
+	for _, op := range presence.GatedOps {
+		gated[op] = true
+	}
+
+	// Direction 1.
+	for op := range gated {
+		if len(gotByOp[op]) == 0 {
+			t.Errorf("presence.GatedOps has %q with no requireGate call site", op)
+		}
+	}
+	// Direction 2.
+	for op := range gotByOp {
+		if !gated[op] {
+			t.Errorf("requireGate is called with op %q, which is not in presence.GatedOps", op)
+		}
+	}
+
+	// Direction 4.
+	if len(gotByOp) != len(wantGateCallSites) {
+		t.Fatalf("found requireGate call sites for %d op(s), wantGateCallSites has %d", len(gotByOp), len(wantGateCallSites))
+	}
+	for op, wantMethods := range wantGateCallSites {
+		want := append([]string(nil), wantMethods...)
+		sort.Strings(want)
+		if got := gotByOp[op]; !equalStringSlices(got, want) {
+			t.Errorf("requireGate call sites for %q = %v, want %v", op, got, want)
 		}
 	}
 }

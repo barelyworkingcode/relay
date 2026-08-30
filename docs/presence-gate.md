@@ -60,13 +60,14 @@ what runs.** Concretely:
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
   login identity.
-- **Registering or unregistering an MCP or a service, and starting an MCP's
-  OAuth ceremony** (`mcp.register`, `mcp.unregister`, `mcp.oauth.start`,
-  `service.register`, `service.unregister`) — the caller chooses what runs,
-  or what bearer relay will hold and present upstream on the caller's say-so.
-  `mcp.oauth.start` earns its place on this list for the same reason
-  `oauth_state` values are sealed: it persists a bearer relay presents to a
-  third party, and it opens a browser at a URL the caller chose.
+- **Registering an MCP or a service, and starting an MCP's OAuth ceremony**
+  (`mcp.register`, `mcp.oauth.start`, `service.register`) — the caller
+  chooses what runs, or what bearer relay will hold and present upstream on
+  the caller's say-so. `mcp.oauth.start` earns its place on this list for
+  the same reason `oauth_state` values are sealed: it persists a bearer
+  relay presents to a third party, and it opens a browser at a URL the
+  caller chose. Unregistering either kind is deliberately **not** gated —
+  see "What is not gated, and why removal is not escalation" below.
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
 - **Widening a project's grant shape** (`project.grant`) — see below.
@@ -102,6 +103,54 @@ manifest — describing blast radius at the route level rather than at the
 mount level — which is a cross-repository protocol change tracked separately
 and is explicitly out of scope here. `proxy` stays reachable exactly as it
 was before this work, with no new gate and no removed one.
+
+## What is not gated, and why removal is not escalation
+
+The rule stated above is deliberately narrower than "every mutation":
+**obtaining or widening** a capability is the privileged act; **using** one,
+including narrowing or destroying it, is not (ADR-018 decision 1). That is
+already relay's practice — a project's `NarrowForEnrolment` path is ungated
+because a widening is unrepresentable before it is ever reached
+(`grant_narrowing.go`) — and ADR-018 step 3 applies the same rule to two
+operations that used to be gated by an earlier, more conservative reading:
+**`mcp.unregister`** (`McpOps.Remove`) and **`service.unregister`**
+(`ServiceOps.Remove`).
+
+Removing an MCP or a service registration only shrinks what a caller
+already reaches. It cannot be used to escalate: re-registering under the
+same id, pointed at a different command, still has to pass through
+`mcp.register` or `service.register`'s gate — the digest binds the id, so a
+grant approved for one command can never be redeemed for another
+(`mcpRegisterReason` exists to surface exactly this substitution). Stopping
+a running service is already ungated `configure`
+(`POST /api/services/{id}/stop`), so unregistering it removes only the
+record, not a control that was ever behind a prompt.
+
+**What does not change:** `requireIssuanceAuditor` still runs first, and
+`recordConfigChange` still writes a `config_change` record naming the event,
+the id, and how the act was reached. Only `presence_id` comes back empty —
+the record still exists and is still greppable, and `docs/audit-log.md`
+names both ops as the two that legitimately carry no `presence_id`. Removing
+the gate must not turn "refuses when auditing is off" into "proceeds
+silently": both methods still refuse with `errIssuanceAuditingRequired` when
+there is no sink to record into, before anything is touched.
+
+**What does change:** both commands now work over SSH (§"Why the peer's
+audit session decides..." below no longer applies to them — there is no
+prompt for a session to fail to display), and a local process can call
+either without a password. This is a genuine, named cost, not an oversight:
+see ADR-018's step-3 record for the escalation analysis
+(`docs/decisions/018-configuration-is-a-capability-of-an-identity.md`) and
+`docs/decisions/017-implementation-spec.md` §6.4, whose rows for these two
+ops are marked narrowed rather than deleted — the record of what used to be
+gated, and why, is kept.
+
+**`project.grant` stays gated**, unlike these two. It is not a narrowing —
+an update can widen `allowed_tools`, `access`, `allow_external` or
+`allow_cwd_auth` — so decision 1's rule keeps it on the gated list. Narrowing
+it to fire only on `allow_cwd_auth` is a real, separate change blocked on a
+local identity binding for `cli-admin` that does not exist yet (ADR-018's
+Open questions); it is not part of this step.
 
 ## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 

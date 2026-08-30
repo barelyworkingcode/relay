@@ -520,6 +520,18 @@ and `presence_id` is absent too: `NarrowForEnrolment` is ungated by design
 is no presence grant to name. The first row still carries one, because the
 toggle that grants `cli_admin` in the first place is a human, gated act.
 
+Two more ops carry no `presence_id`, for the same reason as
+`NarrowForEnrolment` rather than by omission: `mcp.unregister` and
+`service.unregister` (ADR-018 step 3) are pure removals, and decision 1's
+rule is that obtaining or widening a capability is the privileged act,
+never narrowing or destroying one. Both still write this same
+`config_change` record — the event, the id, and `via` — with
+`requireIssuanceAuditor` still enforced ahead of the write, so a `config_change`
+for either op with no matching presence event is not the detection signal
+it would be for `mcp.register` or `service.register`; it is simply what an
+unregister looks like now. `docs/presence-gate.md#what-is-not-gated-and-why-removal-is-not-escalation`
+has the escalation argument in full.
+
 ```
 relay audit --grep cli_admin        # every toggle and every remote narrowing
 relay audit --kind remote --event config_change   # only what a VM changed about itself

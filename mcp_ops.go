@@ -101,11 +101,14 @@ func mcpRegisterReason(id string, f mcpFields) string {
 type McpOps struct {
 	Store SettingsStore
 	Ctx   context.Context
-	// Gate is the presence check Add, Remove and StartOAuth demand before
-	// they touch the store (ADR-017 decisions 3 and 4): the caller chooses
-	// what relay runs or connects to, and that is exactly the act ADR-015
-	// decision 1 already treats as execute-class. A nil Gate refuses all
-	// three rather than allowing any — see requireGate.
+	// Gate is the presence check Add and StartOAuth demand before they
+	// touch the store (ADR-017 decisions 3 and 4): the caller chooses what
+	// relay runs or connects to, and that is exactly the act ADR-015
+	// decision 1 already treats as execute-class. Remove is deliberately
+	// ungated (ADR-018 step 3): removal narrows, never widens — the only
+	// way back to a running MCP is Add, which still gates — and it still
+	// calls requireIssuanceAuditor below. A nil Gate refuses Add and
+	// StartOAuth rather than allowing either — see requireGate.
 	Gate *presence.Gate
 	// Issuance records the config_change every register/unregister/OAuth
 	// start leaves (§7.5) and is also the hard dependency §7.4 checks
@@ -261,12 +264,12 @@ func (o *McpOps) persist(cfg ExternalMcp, via, credID, presenceID string) error 
 }
 
 func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
+	// No requireGate call here (ADR-018 step 3, §5.1): unregistering only
+	// narrows what the caller already reaches, and re-registering under
+	// the same id still hits Add's gate. requireIssuanceAuditor and
+	// recordConfigChange below still run unconditionally, so the act is
+	// still detected -- only presence_id comes back empty.
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return err
-	}
-	grant, err := requireGate(o.Gate, ctx, "mcp.unregister",
-		singleStringDigest("mcp.unregister", "id", id), fmt.Sprintf("unregister the MCP %q", id))
-	if err != nil {
 		return err
 	}
 
@@ -284,7 +287,7 @@ func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
 		}
 		return fmt.Errorf("save mcp: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, grant.ID()); err != nil {
+	if err := recordConfigChange(o.Issuance, auditCredentialExternalMcp, id, nil, via, credID, ""); err != nil {
 		slog.Error("mcp unregistered but not recorded in the audit log", "id", id, "error", err)
 	}
 	o.notify()

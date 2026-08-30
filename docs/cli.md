@@ -38,9 +38,14 @@ login-password prompt, answered at the Mac's own screen, before the tray
 commits anything. The rule (from [`docs/presence-gate.md`](presence-gate.md)):
 *any operation that issues a credential, widens one, or chooses what runs.*
 Concretely, every command in the table below marked **prompts: yes**.
-`service restart` is the one mutating, brokered command that is *not*
-gated — it restarts a process from a configuration that was already approved
-when it was registered, and changes no settings.
+`service restart` is not gated — it restarts a process from a configuration
+that was already approved when it was registered, and changes no settings.
+`mcp unregister` and `service unregister` are not gated either (ADR-018
+step 3): removal only narrows what a caller already reaches, and
+re-registering under the same id still has to pass the register command's
+gate. All three are still brokered — they still need the service running —
+and `mcp unregister`/`service unregister` still leave an audit record; see
+[`docs/presence-gate.md`](presence-gate.md#what-is-not-gated-and-why-removal-is-not-escalation).
 
 Two consequences follow immediately, and both are covered in full below:
 
@@ -69,10 +74,10 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay login revoke` | yes | **yes** | no |
 | `relay mcp list` | no | no | yes |
 | `relay mcp register` | yes | **yes** | no |
-| `relay mcp unregister` | yes | **yes** | no |
+| `relay mcp unregister` | yes | no | yes |
 | `relay service list` | no | no | yes |
 | `relay service register` | yes | **yes** | no |
-| `relay service unregister` | yes | **yes** | no |
+| `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
 | `relay mcpExec` / `relay mcp call` | yes (dials the bridge) | no | yes |
 | `relay mcp --token TOKEN` (stdio server) | yes | no | yes |
@@ -177,9 +182,7 @@ Every gated command has its own version of this reason string:
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
-| `mcp unregister` | `unregister the MCP "ID"` |
 | `service register` | `register the service "NAME" (id) that runs COMMAND` |
-| `service unregister` | `unregister the service "ID"` |
 
 ## Privileged commands over SSH refuse — they do not queue
 
@@ -794,7 +797,12 @@ Usage of mcp unregister:
 ```
 
 Either `--id` or `--name` resolves to the same record (`ResolveMcpID`
-matches on both). Needs service: yes. Prompts: yes. Works over SSH: no.
+matches on both). Needs service: yes. **Prompts: no.** Works over SSH: yes.
+Unregistering only narrows what a caller already reaches — re-registering
+under the same id still has to pass `mcp register`'s gate — so this command
+is not presence-gated (ADR-018 step 3); it still writes a `config_change`
+audit record and still refuses if issuance auditing is off, just with no
+`presence_id` on the record.
 
 ### `mcp list`
 
@@ -892,7 +900,13 @@ Usage of service unregister:
     	service display name
 ```
 
-Needs service: yes. Prompts: yes. Works over SSH: no.
+Needs service: yes. **Prompts: no.** Works over SSH: yes. Not presence-gated
+(ADR-018 step 3), on the same footing as `mcp unregister`: removing a
+service record only narrows what a caller already reaches, and stopping the
+running process is already ungated `configure`
+(`POST /api/services/{id}/stop`). Still writes a `config_change` audit
+record, still refuses if issuance auditing is off, just with no
+`presence_id`.
 
 ### `service restart`
 

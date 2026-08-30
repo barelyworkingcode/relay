@@ -3,11 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
-	"strconv"
 	"testing"
 
 	"relaygo/presence"
@@ -107,85 +103,28 @@ func TestEnrolmentSignFields_PresenceGrantBoundToCSRPublicKey(t *testing.T) {
 	}
 }
 
-// requireGateOpLiteralIn parses file and returns the string literal passed
-// as requireGate's op argument (its third parameter) inside the named
-// method on recvType. This exists because that literal is invisible to
-// every black-box test: Gate.Require uses the identical (possibly wrong)
-// op string for both minting and redeeming its own nonce in the same call,
-// so a grant requested and redeemed under a wrong-but-still-gated op name
-// succeeds exactly as if it had been asked for correctly — nothing observed
-// from outside Require distinguishes the two. Reading the literal back out
-// of the source is what makes the op name provable rather than reviewed.
-func requireGateOpLiteralIn(t *testing.T, file, recvType, funcName string) string {
-	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, file, nil, 0)
-	assertNoErr(t, err, "parse %s", file)
-
-	var target *ast.FuncDecl
-	for _, decl := range f.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Name.Name != funcName || fd.Recv == nil || len(fd.Recv.List) != 1 {
-			continue
-		}
-		if funcRecvTypeName(fd.Recv.List[0].Type) == recvType {
-			target = fd
-			break
-		}
-	}
-	if target == nil {
-		t.Fatalf("%s: no method %s.%s found", file, recvType, funcName)
-	}
-
-	var op string
-	var found bool
-	ast.Inspect(target.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		ident, ok := call.Fun.(*ast.Ident)
-		if !ok || ident.Name != "requireGate" {
-			return true
-		}
-		if len(call.Args) < 3 {
-			t.Fatalf("%s: requireGate call in %s.%s has %d args, want at least 3", file, recvType, funcName, len(call.Args))
-		}
-		lit, ok := call.Args[2].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			t.Fatalf("%s: requireGate's op argument in %s.%s is not a string literal (%T)", file, recvType, funcName, call.Args[2])
-		}
-		unquoted, uerr := strconv.Unquote(lit.Value)
-		assertNoErr(t, uerr, "unquote op literal %s", lit.Value)
-		op = unquoted
-		found = true
-		return false
-	})
-	if !found {
-		t.Fatalf("%s: no requireGate call found in %s.%s", file, recvType, funcName)
-	}
-	return op
-}
-
-// funcRecvTypeName strips a leading pointer star, if any, so "*EnrolmentOps"
-// and "EnrolmentOps" both report as "EnrolmentOps".
-func funcRecvTypeName(expr ast.Expr) string {
-	if star, ok := expr.(*ast.StarExpr); ok {
-		expr = star.X
-	}
-	if ident, ok := expr.(*ast.Ident); ok {
-		return ident.Name
-	}
-	return ""
-}
-
 // Regression: changing requireGate's op argument inside Sign from
 // "enrolment.sign" to any other member of presence.GatedOps (e.g.
 // "enrolment.create") leaves every behavioural test in this suite green —
-// see requireGateOpLiteralIn's doc comment for why. This is the assertion
-// that actually pins it.
+// Gate.Require uses the identical (possibly wrong) op string for both
+// minting and redeeming its own nonce in the same call, so nothing observed
+// from outside Require distinguishes a wrong-but-still-gated op from a
+// correct one. Reading the literal back out of the source, via the shared
+// scan in gate_ast_scan_test.go, is what makes the op name provable rather
+// than reviewed.
 func TestEnrolmentOpsSign_AsksTheGateUnderItsOwnOpName(t *testing.T) {
-	got := requireGateOpLiteralIn(t, "enrolment_ops.go", "EnrolmentOps", "Sign")
+	sites := scanRequireGateCallSites(t, gateASTModuleRoot(t))
+	var got string
+	var found bool
+	for _, s := range sites {
+		if s.method == "EnrolmentOps.Sign" {
+			got, found = s.op, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no requireGate call site found for EnrolmentOps.Sign")
+	}
 	if got != "enrolment.sign" {
 		t.Fatalf("EnrolmentOps.Sign asks the gate under op %q, want %q", got, "enrolment.sign")
 	}

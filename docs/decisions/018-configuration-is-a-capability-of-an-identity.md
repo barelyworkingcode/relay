@@ -1,10 +1,15 @@
 # ADR-018: Configuration Is a Capability of an Identity, and the Two Clients Are One
 
-**Status:** Proposed. **Not implemented.** This records a design the owner and
-the assistant converged on in discussion, so the reasoning survives and the
-open questions are written down while they are known. It **narrows a decision
-ADR-017 just shipped** — see "What this reworks" — so it should be reviewed
-against that record before any code is written.
+**Status:** Proposed. **Partially implemented.** This records a design the
+owner and the assistant converged on in discussion, so the reasoning survives
+and the open questions are written down while they are known. It **narrows a
+decision ADR-017 just shipped** — see "What this reworks" — so it should be
+reviewed against that record before any code is written. Step 3 (2026-08-29)
+implemented the one slice the owner scoped as safe without the local
+identity binding below: retiring `mcp.unregister` and `service.unregister`
+from the gated set. `project.grant` — the operation this ADR's `cli-admin`
+narrowing was mainly about — stays fully gated; see the Open questions entry
+on local identity binding for why.
 **Date:** 2026-08-29
 
 ## Context
@@ -24,11 +29,10 @@ Two facts about what exists today shape this:
   and `CallTool`. The *backend* is already one process — the tray runs both
   listeners — so what is split is the clients, not the server.
 - **ADR-017 gates every privileged operation on per-operation user presence**,
-  with a single-use nonce bound to the operation and a digest of its arguments
-  (~1,700 lines in `presence/`, plus gate wiring across ~10 cores). That is the
-  right boundary for a direct human at a CLI. It is the wrong shape for an agent
-  performing a multi-step setup, which would face a password prompt on every
-  project it creates and every MCP it registers.
+  with a single-use nonce bound to the operation and a digest of its arguments.
+  That is the right boundary for a direct human at a CLI. It is the wrong shape
+  for an agent performing a multi-step setup, which would face a password
+  prompt on every project it creates and every MCP it registers.
 
 The tension the owner surfaced: an agent that a user *trusts to configure relay*
 should authenticate once and then work, locally or remotely, without a prompt
@@ -156,10 +160,28 @@ reads machine-parseable (`--json`).
 
 **Retires or shrinks** (to be scoped precisely as part of building this, not
 promised here): the `relayRemote` duplicate transport/auth stack (~6,600 lines,
-of which the tool-calling core survives merged into the one client); and roughly
-half the per-operation presence machinery (~1,700 lines in `presence/` plus gate
-wiring across ~10 cores), as most per-op argument-digest binding collapses to a
-single gate on granting `cli-admin`.
+of which the tool-calling core survives merged into the one client); and a
+small slice of per-operation gate wiring in `package main` — **measured, not
+the ~1,700-line/"roughly half" figure this ADR originally claimed.** Step 3's
+own measurement (its record: `docs/decisions/017-implementation-spec.md` §6.4,
+and the step-3 commit): `presence/` is 1,821 lines including tests and the
+`presencetest` seam, 749 non-test production Go, and **zero** functions or
+types in `presence/` die under the full narrowing this ADR describes — only
+`GatedOps` string literals, one line each. The per-op digest builders do not
+collapse into a single check either (§2.4's argument, folded back in here):
+every surviving op's digest must keep binding every field the request can
+carry, not just the field that triggers the gate, so `projectUpdateFields.presenceDigest`
+and its siblings survive at full size regardless of how few fields end up
+gating. Recommended-scope deletion for step 3 (retiring `mcp.unregister` and
+`service.unregister` only) was ~15 lines of production Go, all of it inline
+`requireGate` calls and their matching `GatedOps` strings — no `presenceDigest`
+method or reason function existed to delete for either op. The full narrowing
+this ADR describes, including the `project.grant` change decision 2's open
+question blocks on, is estimated at ~70-120 lines, not ~1,700, and it is not
+concentrated in `presence/` — that package's shared machinery (`Gate`, the
+nonce table, `DigestBuilder`, `CallerSession`, the LocalAuthentication bridge,
+every seam guard) serves a gated set of size one exactly as it serves one of
+sixteen.
 
 **Adds:** the CSR signing path (`relay enrol sign` and the client's key
 generation), the `cli-admin` permission plumbing, and the narrow
@@ -182,7 +204,15 @@ waste, but it is revision.
   specific credential the agent holds, or a rogue local process inherits config
   authority while the bit is on. What that local credential is, and how it is
   delivered to the agent without becoming the next stealable secret, is not
-  settled.
+  settled. **This is a confirmed blocker, not a remaining detail:** step 3
+  (2026-08-29) measured it directly — `bridge/client.go`'s `AdminOp` carries no
+  token and no cwd on the local socket, `grep CLIAdmin` returns nothing outside
+  `remote_server.go`, and retiring `project.grant`'s gate locally today would
+  move its authority check to nothing, handing any same-user process the exact
+  ambient window this decision's own wording forbids. `project.grant` stays
+  fully gated (unnarrowed) until this binding exists; the narrowing to
+  `allow_cwd_auth`-only described above did not ship in step 3 and is blocked
+  on this open question being closed first.
 - **The enrolment-request channel (decision 6, step 1).** An unenrolled remote
   needs a way to lodge its CSR so the local human can approve it. What that
   channel is — a dedicated, rate-limited, unauthenticated enrolment endpoint in

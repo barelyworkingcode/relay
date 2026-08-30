@@ -45,9 +45,12 @@ type pgwCase struct {
 	run  func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
 }
 
-// pgwCases covers every gated operation that has a core as of S5.
-// sealed.reset has no core until S7 (it is tray-only) and is deliberately
-// absent — see the comment on TestGate_EveryImplementedOpRefusesWithoutGate.
+// pgwCases covers every gated operation exercisable through this table's
+// generic context/store/gate/issuance run() shape. sealed.reset is
+// deliberately absent: it is a free function (resetSealedStore) reachable
+// from no door but the tray's own "Reset Sealed Store…" menu item, not a
+// method on an ops core any of the other rows' shape could construct — see
+// the comment on TestGate_EveryImplementedOpRefusesWithoutGate.
 func pgwCases(t *testing.T) []pgwCase {
 	noSeed := func(*testing.T, SettingsStore) {}
 	return []pgwCase{
@@ -137,16 +140,6 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Add(context.Background(), mcpFields{DisplayName: "pgw-mcp", Command: buildTestMcpBinary(t)}, auditViaCLI, "")
 			return err
 		}},
-		{"mcp.unregister",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.UpsertExternalMcp(ExternalMcp{ID: "pgw-mcp", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
-				}), "seed mcp")
-			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
-				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance}
-				return ops.Remove(context.Background(), "pgw-mcp", auditViaCLI, "")
-			}},
 		{"mcp.oauth.start",
 			func(t *testing.T, store SettingsStore) {
 				assertNoErr(t, store.With(func(s *Settings) {
@@ -165,16 +158,6 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Create(context.Background(), serviceFields{DisplayName: "pgw-svc", Command: "/bin/true"}, auditViaCLI, "")
 			return err
 		}},
-		{"service.unregister",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.UpsertService(ServiceConfig{ID: "pgw-svc", DisplayName: "pgw", Command: "/bin/true"})
-				}), "seed service")
-			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
-				ops := &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance}
-				return ops.Remove(context.Background(), "pgw-svc", auditViaCLI, "")
-			}},
 		{"project.rotate_token",
 			func(t *testing.T, store SettingsStore) {
 				mkStoreProject(t, store, ProjectKindLocal, "pgw-project", t.TempDir())
@@ -190,6 +173,58 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Create(context.Background(), projectCreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
 		}},
+	}
+}
+
+// pgwUngatedCase is one core method that calls requireIssuanceAuditor but
+// never requireGate — the shape a retired op takes on (§4.2). method names
+// the method the way gate_ast_scan_test.go's scan reports it
+// ("Receiver.Method"), which is what lets
+// TestGate_EveryIssuanceAuditorCallSiteHasACase compare this table against
+// source instead of against itself.
+type pgwUngatedCase struct {
+	method string
+	seed   func(t *testing.T, store SettingsStore)
+	run    func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
+}
+
+// pgwUngatedCases covers every core method retired from presence.GatedOps
+// by ADR-018 step 3: removal only narrows what a caller already reaches
+// (re-registering under the same id still hits the register op's gate), so
+// it never needed the gate — but requireIssuanceAuditor and
+// recordConfigChange still run, with an empty presence_id (§5.1, §5.2).
+//
+// ProjectOps.NarrowForEnrolment is NOT a row here even though it also
+// calls requireIssuanceAuditor and never requireGate: it predates this
+// step (§3.6, untouched), its signature (a project id and a
+// bridge.RemoteCaller, not this table's context/store/gate/issuance shape)
+// does not fit either table, and its issuance-off behaviour already has a
+// dedicated regression —
+// TestNarrowForEnrolment_IssuanceAuditingOffRefusesBeforeTouchingStore in
+// remote_config_plane_test.go. TestGate_EveryIssuanceAuditorCallSiteHasACase
+// accounts for it by name instead of by a row here.
+func pgwUngatedCases(t *testing.T) []pgwUngatedCase {
+	return []pgwUngatedCase{
+		{"McpOps.Remove",
+			func(t *testing.T, store SettingsStore) {
+				assertNoErr(t, store.With(func(s *Settings) {
+					s.UpsertExternalMcp(ExternalMcp{ID: "pgw-ungated-mcp", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
+				}), "seed mcp")
+			},
+			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance}
+				return ops.Remove(context.Background(), "pgw-ungated-mcp", auditViaCLI, "")
+			}},
+		{"ServiceOps.Remove",
+			func(t *testing.T, store SettingsStore) {
+				assertNoErr(t, store.With(func(s *Settings) {
+					s.UpsertService(ServiceConfig{ID: "pgw-ungated-svc", DisplayName: "pgw", Command: "/bin/true"})
+				}), "seed service")
+			},
+			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+				ops := &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance}
+				return ops.Remove(context.Background(), "pgw-ungated-svc", auditViaCLI, "")
+			}},
 	}
 }
 
@@ -252,12 +287,38 @@ func TestGate_EveryImplementedOpSucceedsWithAnAllowingGate(t *testing.T) {
 	}
 }
 
-// TestGate_IssuanceAuditingOffRefusesBeforeThePrompt is AC-26 and AC-26b:
-// with no sink to record into, every gated op refuses before it ever asks
-// for presence — a Recording provider proves zero calls reached it.
-func TestGate_IssuanceAuditingOffRefusesBeforeThePrompt(t *testing.T) {
+// pgwAuditingCase is the shape TestGate_IssuanceAuditingOffRefusesBeforeThePrompt
+// needs from either table: a label for the subtest name, the seed, and the
+// run closure. pgwCase and pgwUngatedCase both convert into this — the
+// point of §4.2's rewrite is that this test's coverage must not shrink when
+// an op leaves pgwCases, so it iterates the union of both tables rather
+// than pgwCases alone.
+type pgwAuditingCase struct {
+	label string
+	seed  func(t *testing.T, store SettingsStore)
+	run   func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
+}
+
+func pgwAllAuditingCases(t *testing.T) []pgwAuditingCase {
+	var out []pgwAuditingCase
 	for _, tc := range pgwCases(t) {
-		t.Run(tc.op, func(t *testing.T) {
+		out = append(out, pgwAuditingCase{label: tc.op, seed: tc.seed, run: tc.run})
+	}
+	for _, tc := range pgwUngatedCases(t) {
+		out = append(out, pgwAuditingCase{label: tc.method, seed: tc.seed, run: tc.run})
+	}
+	return out
+}
+
+// TestGate_IssuanceAuditingOffRefusesBeforeThePrompt is AC-26 and AC-26b,
+// widened by §4.2 to pgwCases ∪ pgwUngatedCases: with no sink to record
+// into, EVERY op that reaches requireIssuanceAuditor refuses before it ever
+// asks for presence — gated or not, since a retired op still calls
+// requireIssuanceAuditor (§3.4) — and a Recording provider proves zero
+// calls reached it.
+func TestGate_IssuanceAuditingOffRefusesBeforeThePrompt(t *testing.T) {
+	for _, tc := range pgwAllAuditingCases(t) {
+		t.Run(tc.label, func(t *testing.T) {
 			dir, store := pgwSandbox(t)
 			tc.seed(t, store)
 			before := odwSnap(t, dir)
@@ -268,13 +329,90 @@ func TestGate_IssuanceAuditingOffRefusesBeforeThePrompt(t *testing.T) {
 
 			err = tc.run(t, store, gate, nil)
 			if !errors.Is(err, errIssuanceAuditingRequired) {
-				t.Fatalf("%s with auditing off: err = %v, want errIssuanceAuditingRequired", tc.op, err)
+				t.Fatalf("%s with auditing off: err = %v, want errIssuanceAuditingRequired", tc.label, err)
 			}
 			if recording.Calls() != 0 {
-				t.Errorf("%s: presence provider called %d time(s) with auditing off; must refuse before prompting", tc.op, recording.Calls())
+				t.Errorf("%s: presence provider called %d time(s) with auditing off; must refuse before prompting", tc.label, recording.Calls())
 			}
-			before.assertUntouched(t, dir, tc.op+" (auditing off)")
+			before.assertUntouched(t, dir, tc.label+" (auditing off)")
 		})
+	}
+}
+
+// TestGate_RetiredOpsNeverPrompt is AC-4: a retired op behind a REAL Gate
+// wrapping a Recording provider must both succeed and never touch the
+// provider — proof of removal, not merely the absence of an assertion (the
+// same argument TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt already
+// makes for the configure subset, applied here to mcp.unregister and
+// service.unregister).
+func TestGate_RetiredOpsNeverPrompt(t *testing.T) {
+	for _, tc := range pgwUngatedCases(t) {
+		t.Run(tc.method, func(t *testing.T) {
+			_, store := pgwSandbox(t)
+			tc.seed(t, store)
+
+			recording := presencetest.NewRecording(nil)
+			gate, err := presence.NewGate(recording)
+			assertNoErr(t, err, "NewGate")
+
+			if err := tc.run(t, store, gate, pgwWithIssuance(t)); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+			if n := recording.Calls(); n != 0 {
+				t.Errorf("%s: presence provider called %d time(s); a retired op must never prompt", tc.method, n)
+			}
+		})
+	}
+}
+
+// TestGate_EveryIssuanceAuditorCallSiteHasACase is §4.2's fifth guard: an
+// AST scan of every requireIssuanceAuditor call site must equal the union
+// of pgwCases' and pgwUngatedCases' methods (plus the two documented
+// exemptions below), so a future op that reaches requireIssuanceAuditor
+// without landing in either table goes unnoticed by neither
+// TestGate_IssuanceAuditingOffRefusesBeforeThePrompt nor this one.
+//
+// Two exemptions, both named rather than silently absorbed:
+//
+//   - resetSealedStore (sealed.reset) calls requireGate but never
+//     requireIssuanceAuditor — it is the tray-only break-glass recovery for a
+//     degraded sealed store (ADR-017 §5.6 clause 5), and the record its own
+//     act would need to write may itself be part of what is degraded. It is
+//     excluded from the "want" side entirely.
+//   - ProjectOps.NarrowForEnrolment calls requireIssuanceAuditor and never
+//     requireGate but has no row in either table — see pgwUngatedCases' doc
+//     comment for why. It is added to "want" by name.
+func TestGate_EveryIssuanceAuditorCallSiteHasACase(t *testing.T) {
+	root := gsModuleRoot(t)
+
+	got := map[string]bool{}
+	for _, m := range scanRequireIssuanceAuditorCallSites(t, root) {
+		got[m] = true
+	}
+
+	want := map[string]bool{}
+	for op, methods := range wantGateCallSites {
+		if op == "sealed.reset" {
+			continue
+		}
+		for _, m := range methods {
+			want[m] = true
+		}
+	}
+	for _, uc := range pgwUngatedCases(t) {
+		want[uc.method] = true
+	}
+	want["ProjectOps.NarrowForEnrolment"] = true
+
+	for m := range want {
+		if !got[m] {
+			t.Errorf("%s is expected (by pgwCases, pgwUngatedCases, or a documented exemption) to call requireIssuanceAuditor, but no call site was found", m)
+		}
+	}
+	for m := range got {
+		if !want[m] {
+			t.Errorf("%s calls requireIssuanceAuditor but is accounted for by neither pgwCases nor pgwUngatedCases nor a documented exemption", m)
+		}
 	}
 }
 
@@ -287,8 +425,13 @@ func pgwWithIssuance(t *testing.T) IssuanceAuditor {
 
 // TestGate_TableCoversGatedOps requires pgwCases' key set to equal
 // presence.GatedOps minus sealed.reset exactly (which has no core to test
-// yet — see the comment on TestGate_EveryImplementedOpRefusesWithoutGate).
-// Adding a gated op without adding a case here fails this test by name.
+// through this table's shape — see the comment on
+// TestGate_EveryImplementedOpRefusesWithoutGate: it is a free function with
+// a tray-only door, not an op with no core yet). Adding a gated op without
+// adding a case here fails this test by name. Strengthened (§4.3) with the
+// wantGatedOps literal comparison and a disjointness check between
+// pgwCases and pgwUngatedCases at the method level, so neither table can
+// silently claim a method the other one already covers.
 func TestGate_TableCoversGatedOps(t *testing.T) {
 	have := map[string]bool{}
 	for _, tc := range pgwCases(t) {
@@ -308,6 +451,41 @@ func TestGate_TableCoversGatedOps(t *testing.T) {
 	}
 	for op := range have {
 		t.Errorf("pgwCases has %q, which is not in presence.GatedOps", op)
+	}
+
+	// wantGatedOps literal comparison: pgwCases' key set must equal the
+	// pinned list minus sealed.reset, not merely equal presence.GatedOps
+	// (which gate_structural_test.go's own TestGate_GatedOpsMatchesPinnedList
+	// pins independently) — two routes to the same fact rather than one
+	// indirect one.
+	haveFromWant := map[string]bool{}
+	for _, tc := range pgwCases(t) {
+		haveFromWant[tc.op] = true
+	}
+	for _, op := range wantGatedOps {
+		if op == "sealed.reset" {
+			continue
+		}
+		if !haveFromWant[op] {
+			t.Errorf("wantGatedOps has %q with no case in pgwCases", op)
+		}
+		delete(haveFromWant, op)
+	}
+	for op := range haveFromWant {
+		t.Errorf("pgwCases has %q, which is not in wantGatedOps", op)
+	}
+
+	// Disjointness: no core method may be claimed by both tables.
+	gatedMethods := map[string]bool{}
+	for _, methods := range wantGateCallSites {
+		for _, m := range methods {
+			gatedMethods[m] = true
+		}
+	}
+	for _, uc := range pgwUngatedCases(t) {
+		if gatedMethods[uc.method] {
+			t.Errorf("%s is claimed by both the gated call-site map and pgwUngatedCases", uc.method)
+		}
 	}
 }
 
