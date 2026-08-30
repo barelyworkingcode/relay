@@ -682,7 +682,9 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		{"allowed_mcp_ids", func(f *projectUpdateFields) { f.AllowedMcpIDs = ptr([]string{"fsmcp"}) }},
 		{"allowed_tools", func(f *projectUpdateFields) { f.AllowedTools = ptr(map[string][]string{"macmcp": {"*"}}) }},
 		{"access", func(f *projectUpdateFields) { f.Access = ptr(map[string]string{"macmcp": "write"}) }},
-		{"context", func(f *projectUpdateFields) { f.Context = ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":2}`)}) }},
+		{"context", func(f *projectUpdateFields) {
+			f.Context = ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":2}`)})
+		}},
 		{"allow_external", func(f *projectUpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
 		{"allow_cwd_auth", func(f *projectUpdateFields) { f.AllowCwdAuth = ptr(true) }},
 		{"kind", func(f *projectUpdateFields) { f.Kind = ptr(ProjectKindRemote) }},
