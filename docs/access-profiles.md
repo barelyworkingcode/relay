@@ -372,6 +372,8 @@ grant"; the last two are behavioural and answer "what happened".
     ACCESS PROFILE  Hermes — Bob INBOX  (id: hermes-bob)
       macmcp         access=read   outbound=blocked  tools=mail_*
                      scope: mail_accounts = ["Bob"]
+      enrolments:
+        hermes-bob           cli-admin: off
 
 This is the operator's view and it prints the **real values**, always,
 whatever any field's `disclose` says — it is your machine and your grant. A
@@ -381,6 +383,7 @@ scope that reaches further than a folder is called out on its own line:
       fsmcp          access=write  outbound=blocked  tools=fs_*
                      scope: allowed_dirs = ["/"]
                      ** ALLOWED_DIRS IS UNRESTRICTED (THE WHOLE FILESYSTEM) **
+      no enrolments reach this profile
 
 Run it with no `--project` to sweep every record on the machine, and `--json`
 for a shape you can diff between reviews. Like `relay audit`, it reads
