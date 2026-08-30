@@ -828,6 +828,11 @@ you lack.
 
 ## See also
 
+- [install-remote-machine.md](install-remote-machine.md) — the step-by-step
+  version of this document: which command runs on which machine, and what
+  each one prints
+- [install-single-machine.md](install-single-machine.md) — getting relay
+  doing something useful on one Mac first
 - [ADR-011](decisions/011-resource-scope.md) — the design and its reasoning
 - [ADR-010](decisions/010-remote-client-transport-and-identity.md) — the
   certificate, the listener, the budget
