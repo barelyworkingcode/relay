@@ -153,6 +153,44 @@ func TestCliAdmin_WideningRefusedOnEveryAxis(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Finding 1 (security): an escaped glob must not widen the stored grant.
+// path.Match treats '\' as an escape, same as '*', '?' and '['; a requested
+// pattern containing one can match a NAME hasGlobMeta calls literal while
+// the pattern itself, once stored, matches a different, wider set of tool
+// names than what was validated.
+// ---------------------------------------------------------------------------
+
+func TestCliAdmin_EscapedGlobCannotWidenGrant(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+	// Stored grant: "mail_?x" matches any 7-character name of that shape
+	// (e.g. "mail_ax") but NOT "mail_x" (6 characters — "?" requires
+	// exactly one character in that position).
+	assertNoErr(t, f.store.With(func(s *Settings) {
+		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_?x"}})
+	}), "seed stored pattern")
+	setCLIAdmin(t, f.store, "hermes-mail", true)
+	c := f.dial()
+
+	before := odwSnap(t, f.dir)
+	// "mail_\x" (a backslash-escaped "x") reads, to toolAllowedByPatterns,
+	// as the literal NAME "mail_\x" — which "mail_?x" matches, since "?"
+	// matches any single character including "\". narrowsOnly's
+	// literal-tool-name branch is meant to accept only a requested pattern
+	// whose OWN matched set is a subset of what's stored. But once stored,
+	// "mail_\x" is not a literal name any more — path.Match reads it as a
+	// PATTERN where "\x" escapes to the literal character "x", so the
+	// stored pattern matches the tool named "mail_x". "mail_?x" does not
+	// match "mail_x": the request would reach a tool its own stored grant
+	// denies.
+	resp := c.roundTrip(`{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_\\x"]}}}`)
+	if resp.Type != bridge.RespError {
+		t.Fatalf("escaped-glob pattern %q was accepted: %s %s (this widens the stored grant — see the test's own comment)",
+			`mail_\x`, resp.Type, resp.Message)
+	}
+	before.assertUntouched(t, f.dir, "escaped-glob widening attempt")
+}
+
+// ---------------------------------------------------------------------------
 // AC-11 / AC-12: bit on => still no command registration, no minting
 // ---------------------------------------------------------------------------
 
@@ -216,6 +254,75 @@ func TestCliAdmin_CannotTouchAnotherEnrolmentsProfile(t *testing.T) {
 		t.Errorf("refusal message = %q, want it to name the missing grant", resp.Message)
 	}
 	before.assertUntouched(t, f.dir, "A narrowing B's profile")
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2: DescribeGrant/NarrowGrant must not disclose sibling enrolments.
+// grantView.Enrolments is built for the operator-facing `relay grant`; going
+// over the wire verbatim to a remote caller lets enrolment A, describing its
+// OWN posture, learn the client_id and cli_admin state of every other
+// enrolment granting the same profile. The reachability boundary (A cannot
+// ACT on B) still holds — this is about what A can learn about B.
+// ---------------------------------------------------------------------------
+
+func TestCliAdmin_DescribeGrantDoesNotDiscloseSiblingEnrolments(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+	setCLIAdmin(t, f.store, "hermes-mail", true)
+	// B grants the SAME profile A holds, so A's own posture and the
+	// operator's `relay grant` view of that profile both name B.
+	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
+	assertNoErr(t, err, "createEnrolment for sibling B")
+
+	c := f.dial() // dials as A (hermes-mail)
+	resp := c.roundTrip(`{"type":"DescribeGrant"}`)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("DescribeGrant refused: %s %s", resp.Type, resp.Message)
+	}
+	if strings.Contains(string(resp.Result), "hermes-cal") {
+		t.Fatalf("DescribeGrant result names sibling enrolment hermes-cal: %s", resp.Result)
+	}
+	var view grantView
+	assertNoErr(t, json.Unmarshal(resp.Result, &view), "parse grantView")
+	if len(view.Enrolments) != 0 {
+		t.Fatalf("DescribeGrant.Enrolments = %+v, want empty — a remote caller's own posture, not sibling enumeration", view.Enrolments)
+	}
+
+	// The operator-facing view is untouched: relay grant still names both
+	// A and B on the same profile.
+	opView := newGrantView(f.store.Get(), f.project)
+	var sawMail, sawCal bool
+	for _, e := range opView.Enrolments {
+		if e.ClientID == "hermes-mail" {
+			sawMail = true
+		}
+		if e.ClientID == "hermes-cal" {
+			sawCal = true
+		}
+	}
+	if !sawMail || !sawCal {
+		t.Fatalf("newGrantView (relay grant) Enrolments = %+v, want both hermes-mail and hermes-cal", opView.Enrolments)
+	}
+}
+
+func TestCliAdmin_NarrowGrantResultDoesNotDiscloseSiblingEnrolments(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+	setCLIAdmin(t, f.store, "hermes-mail", true)
+	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
+	assertNoErr(t, err, "createEnrolment for sibling B")
+
+	c := f.dial()
+	resp := c.roundTrip(`{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_search"]}}}`)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("NarrowGrant refused: %s %s", resp.Type, resp.Message)
+	}
+	if strings.Contains(string(resp.Result), "hermes-cal") {
+		t.Fatalf("NarrowGrant result names sibling enrolment hermes-cal: %s", resp.Result)
+	}
+	var result remoteNarrowGrantResult
+	assertNoErr(t, json.Unmarshal(resp.Result, &result), "parse remoteNarrowGrantResult")
+	if len(result.Grant.Enrolments) != 0 {
+		t.Fatalf("NarrowGrant result Grant.Enrolments = %+v, want empty", result.Grant.Enrolments)
+	}
 }
 
 func TestRemoteNarrowFields_NamesNoOtherIdentity(t *testing.T) {
