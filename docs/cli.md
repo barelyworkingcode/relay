@@ -144,8 +144,8 @@ relay mcp register --id fsmcp3 --name "fsMCP v3 (testfolder)" \
   --command /Users/admin/.local/bin/fsmcp3 --args --root --args /Users/admin/source/barelyworkingcode/testfolder
 ```
 
-That prompt would read "...that runs /Users/admin/.local/bin/fsmcp3
---root /Users/admin/source/barelyworkingcode/testfolder" — recognizably the
+That prompt would read "...that runs /Users/admin/.local/bin/fsmcp3" — the
+reason string names the command only, never its arguments — recognizably the
 record as it already is — and approving it changes nothing an operator did
 not already expect.
 
@@ -182,7 +182,7 @@ Every gated command has its own version of this reason string:
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
-| `service register` | `register the service "NAME" (id) that runs COMMAND` |
+| `service register` | `register the service "NAME" (id) that runs COMMAND` (or, when the id already exists and this is an update, `update the service "ID" to run COMMAND`) |
 
 ## Privileged commands over SSH refuse — they do not queue
 
@@ -248,6 +248,8 @@ ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
             "Archive",
             "INBOX"
           ]
+  enrolments:
+    hermes               cli-admin: off
 
 This is the grant as stored. Whether each MCP still declares these scope
 fields is a live question — a value relay cannot place in an MCP's current
@@ -568,12 +570,12 @@ mode combination:
 
 ```
 $ relay enrol list
-CLIENT ID        PROFILES                              CALLS/WINDOW  BYTES/WINDOW  CREATED               FINGERPRINT
-hermes           477d9a17-da03-45eb-a433-764f93fe96fc  120/3600s     67108864      2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
-hermes-files     59c19c5b-b248-493c-a094-4397a56c8693  120/3600s     67108864      2026-08-26T14:32:16Z  sha256:9820e514f38b35d2b1af8687260125853b9e7577b3e37036224ad438f1379bb1
-hermes-files-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  120/3600s     67108864      2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
-hermes-v3        b0000000-0000-4000-8000-000000000001  120/3600s     67108864      2026-08-26T18:55:54Z  sha256:79129197d148052d196e1d4ad2fbc4b4a64d770024601043a7943f5b9b5fcaa0
-hermes-v3-ro     b0000000-0000-4000-8000-000000000002  120/3600s     67108864      2026-08-26T19:08:37Z  sha256:46c0903492ef4d091cfc704d92fa079cd882d4c53ed750a513a1001853adbff3
+CLIENT ID        PROFILES                              CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  CREATED               FINGERPRINT
+hermes           477d9a17-da03-45eb-a433-764f93fe96fc  -          120/3600s     67108864      2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+hermes-files     59c19c5b-b248-493c-a094-4397a56c8693  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:9820e514f38b35d2b1af8687260125853b9e7577b3e37036224ad438f1379bb1
+hermes-files-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
+hermes-v3        b0000000-0000-4000-8000-000000000001  -          120/3600s     67108864      2026-08-26T18:55:54Z  sha256:79129197d148052d196e1d4ad2fbc4b4a64d770024601043a7943f5b9b5fcaa0
+hermes-v3-ro     b0000000-0000-4000-8000-000000000002  -          120/3600s     67108864      2026-08-26T19:08:37Z  sha256:46c0903492ef4d091cfc704d92fa079cd882d4c53ed750a513a1001853adbff3
 ```
 
 The fingerprint is printed in full (all 64 hex characters), deliberately: an
@@ -1056,6 +1058,8 @@ ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
             "Archive",
             "INBOX"
           ]
+  enrolments:
+    hermes               cli-admin: off
 ```
 
 **6. Confirm it in the audit log — ground truth, never the agent's own
