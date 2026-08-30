@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"strconv"
 	"testing"
 
 	"relaygo/presence"
@@ -100,6 +104,132 @@ func TestEnrolmentSignFields_PresenceGrantBoundToCSRPublicKey(t *testing.T) {
 	assertNoErr(t, err, "Request")
 	if err := gate.Redeem(grant, "enrolment.sign", digestA); err != nil {
 		t.Fatalf("redeeming against the SAME digest failed: %v", err)
+	}
+}
+
+// requireGateOpLiteralIn parses file and returns the string literal passed
+// as requireGate's op argument (its third parameter) inside the named
+// method on recvType. This exists because that literal is invisible to
+// every black-box test: Gate.Require uses the identical (possibly wrong)
+// op string for both minting and redeeming its own nonce in the same call,
+// so a grant requested and redeemed under a wrong-but-still-gated op name
+// succeeds exactly as if it had been asked for correctly — nothing observed
+// from outside Require distinguishes the two. Reading the literal back out
+// of the source is what makes the op name provable rather than reviewed.
+func requireGateOpLiteralIn(t *testing.T, file, recvType, funcName string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, file, nil, 0)
+	assertNoErr(t, err, "parse %s", file)
+
+	var target *ast.FuncDecl
+	for _, decl := range f.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != funcName || fd.Recv == nil || len(fd.Recv.List) != 1 {
+			continue
+		}
+		if funcRecvTypeName(fd.Recv.List[0].Type) == recvType {
+			target = fd
+			break
+		}
+	}
+	if target == nil {
+		t.Fatalf("%s: no method %s.%s found", file, recvType, funcName)
+	}
+
+	var op string
+	var found bool
+	ast.Inspect(target.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "requireGate" {
+			return true
+		}
+		if len(call.Args) < 3 {
+			t.Fatalf("%s: requireGate call in %s.%s has %d args, want at least 3", file, recvType, funcName, len(call.Args))
+		}
+		lit, ok := call.Args[2].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			t.Fatalf("%s: requireGate's op argument in %s.%s is not a string literal (%T)", file, recvType, funcName, call.Args[2])
+		}
+		unquoted, uerr := strconv.Unquote(lit.Value)
+		assertNoErr(t, uerr, "unquote op literal %s", lit.Value)
+		op = unquoted
+		found = true
+		return false
+	})
+	if !found {
+		t.Fatalf("%s: no requireGate call found in %s.%s", file, recvType, funcName)
+	}
+	return op
+}
+
+// funcRecvTypeName strips a leading pointer star, if any, so "*EnrolmentOps"
+// and "EnrolmentOps" both report as "EnrolmentOps".
+func funcRecvTypeName(expr ast.Expr) string {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	if ident, ok := expr.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return ""
+}
+
+// Regression: changing requireGate's op argument inside Sign from
+// "enrolment.sign" to any other member of presence.GatedOps (e.g.
+// "enrolment.create") leaves every behavioural test in this suite green —
+// see requireGateOpLiteralIn's doc comment for why. This is the assertion
+// that actually pins it.
+func TestEnrolmentOpsSign_AsksTheGateUnderItsOwnOpName(t *testing.T) {
+	got := requireGateOpLiteralIn(t, "enrolment_ops.go", "EnrolmentOps", "Sign")
+	if got != "enrolment.sign" {
+		t.Fatalf("EnrolmentOps.Sign asks the gate under op %q, want %q", got, "enrolment.sign")
+	}
+}
+
+// Regression: enrolmentSignReason is the sentence shown on the macOS
+// presence prompt before an operator authorises a sign. Swapping it for
+// enrolmentCreateReason at the call site must not leave the suite green —
+// this pins both branches via presencetest.Recording.Reasons().
+func TestEnrolmentOpsSign_PresenceReasonNamesTheGrantsOrTheirAbsence(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	profileA := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profileB := mkStoreProject(t, store, ProjectKindRemote, "Calendar", "")
+
+	recording := presencetest.NewRecording(nil)
+	gate, err := presence.NewGate(recording)
+	assertNoErr(t, err, "NewGate")
+
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	_, err = ops.Sign(context.Background(), enrolmentSignFields{
+		ClientID:   "hermes-mail",
+		ProjectIDs: []string{profileA.ID, profileB.ID},
+		CSRPEM:     string(genClientCSRPEM(t, "hermes-mail")),
+	}, auditViaCLI, "")
+	assertNoErr(t, err, "Sign with grants")
+
+	_, err = ops.Sign(context.Background(), enrolmentSignFields{
+		ClientID: "hermes-nogrant",
+		CSRPEM:   string(genClientCSRPEM(t, "hermes-nogrant")),
+	}, auditViaCLI, "")
+	assertNoErr(t, err, "Sign with no grants")
+
+	reasons := recording.Reasons()
+	if len(reasons) != 2 {
+		t.Fatalf("Reasons() = %v, want 2 entries", reasons)
+	}
+	wantWithGrants := `sign a certificate for client "hermes-mail" with access to ` + joinWithAnd([]string{profileA.ID, profileB.ID})
+	if reasons[0] != wantWithGrants {
+		t.Fatalf("reason[0] = %q, want %q", reasons[0], wantWithGrants)
+	}
+	wantNoGrants := `sign a certificate for client "hermes-nogrant" with no project access`
+	if reasons[1] != wantNoGrants {
+		t.Fatalf("reason[1] = %q, want %q", reasons[1], wantNoGrants)
 	}
 }
 

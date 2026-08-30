@@ -78,15 +78,11 @@ var (
 func sharedRefusalTestCSRFile(t *testing.T) string {
 	t.Helper()
 	sharedRefusalTestCSRPathOnce.Do(func() {
-		f, err := os.CreateTemp("", "enrol-sign-refusal-*.csr")
-		if err != nil {
-			t.Fatalf("create shared CSR fixture: %v", err)
-		}
-		defer f.Close()
-		if _, err := f.Write(genClientCSRPEM(t, "cli-refuse-test")); err != nil {
+		path := filepath.Join(t.TempDir(), "enrol-sign-refusal.csr")
+		if err := os.WriteFile(path, genClientCSRPEM(t, "cli-refuse-test"), 0644); err != nil {
 			t.Fatalf("write shared CSR fixture: %v", err)
 		}
-		sharedRefusalTestCSRPath = f.Name()
+		sharedRefusalTestCSRPath = path
 	})
 	return sharedRefusalTestCSRPath
 }

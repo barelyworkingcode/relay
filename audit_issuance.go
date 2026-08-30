@@ -185,10 +185,10 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // cannot be written, revokes what was just created.
 //
 // This is deliberate, and is the one issuing path that needs an undo: the
-// artifact an enrolment produces is a client private key already written to
-// disk, so withholding the bundle path from the caller would not withhold the
-// credential. revokeEnrolment removes the record AND the emitted bundle,
-// which is what makes the refusal real.
+// artifact is a credential the client already holds — a key relay wrote, or
+// a certificate over a key the client generated — so withholding the bundle
+// path would not withhold the credential. revokeEnrolment removes the
+// record AND the emitted bundle, which is what makes the refusal real.
 func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, via, credID, presenceID string) error {
 	err := recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialEnrolment,
