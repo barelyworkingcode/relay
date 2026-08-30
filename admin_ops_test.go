@@ -20,6 +20,7 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 		"credential.mint",
 		"credential.revoke",
 		"enrolment.create",
+		"enrolment.sign",
 		"enrolment.update",
 		"enrolment.revoke",
 		"login.bootstrap.mint",

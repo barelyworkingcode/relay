@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -90,6 +91,40 @@ func enrolmentCreateReason(clientID string, projectIDs []string) string {
 		return fmt.Sprintf("create an enrolment for client %q with no project access", clientID)
 	}
 	return fmt.Sprintf("create an enrolment for client %q with access to %s", clientID, joinWithAnd(projectIDs))
+}
+
+// enrolmentSignFields is the sign request — a separate type from
+// enrolmentFields, deliberately: enrolmentFields is the HTTP/IPC create
+// body and carries a digest bound to enrolment.create. A sign request that
+// decoded into it would be one field away from being handed to Create.
+type enrolmentSignFields struct {
+	ClientID   string          `json:"client_id"`
+	ProjectIDs []string        `json:"project_ids"`
+	Budget     EnrolmentBudget `json:"budget"`
+	CSRPEM     string          `json:"csr_pem"`
+}
+
+// presenceDigest binds an enrolment.sign grant to exactly the client id,
+// grant list, budget and the CSR's own public key — the one addition over
+// enrolment.create's digest, and the point of the operation: a presence
+// grant answered for one public key must not be redeemable for another.
+func (f enrolmentSignFields) presenceDigest(csr *x509.CertificateRequest) presence.Digest {
+	return presence.NewDigestBuilder("enrolment.sign").
+		StringField("client_id", true, f.ClientID).
+		StringSetField("project_ids", true, f.ProjectIDs).
+		DurationField("budget.window_seconds", true, time.Duration(f.Budget.WindowSeconds)).
+		DurationField("budget.max_calls", true, time.Duration(f.Budget.MaxCalls)).
+		DurationField("budget.max_result_bytes", true, time.Duration(f.Budget.MaxResultBytes)).
+		StringField("csr_spki_sha256", true, SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)).
+		Build()
+}
+
+// enrolmentSignReason names the actual act, mirroring enrolmentCreateReason.
+func enrolmentSignReason(clientID string, projectIDs []string) string {
+	if len(projectIDs) == 0 {
+		return fmt.Sprintf("sign a certificate for client %q with no project access", clientID)
+	}
+	return fmt.Sprintf("sign a certificate for client %q with access to %s", clientID, joinWithAnd(projectIDs))
 }
 
 // errEnrolmentUnrecorded means the create committed to settings, the audit
@@ -198,6 +233,56 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 	// is revoked if the record cannot be written (recordEnrolmentIssued's
 	// own undo): the client key on disk is the credential, so an unrecorded
 	// create must not stand.
+	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
+		return EnrolmentCreated{}, fmt.Errorf("%w: %v", errEnrolmentUnrecorded, auditErr)
+	}
+	o.notify()
+	if bundleErr != nil {
+		return created, bundleErr // errEnrolmentBundle: the record landed, the bundle write didn't
+	}
+	return created, nil
+}
+
+// Sign issues a certificate over a CSR the client generated itself: the
+// private key it proves possession of never reaches this process (§0.1 —
+// "signLeaf takes *ecdsa.PublicKey, not crypto.PublicKey"). Order is
+// normative (§1.4): the CSR is parsed BEFORE the gate, so a malformed CSR
+// never makes an operator type a password for an act that was going to
+// refuse anyway.
+func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, credID string) (EnrolmentCreated, error) {
+	clientID := strings.TrimSpace(f.ClientID)
+	if clientID == "" {
+		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+	}
+
+	csr, err := ParseClientCSR([]byte(f.CSRPEM))
+	if err != nil {
+		return EnrolmentCreated{}, invalidEnrolment(err.Error())
+	}
+
+	if err := requireIssuanceAuditor(o.auditor()); err != nil {
+		return EnrolmentCreated{}, err
+	}
+	norm := enrolmentSignFields{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget, CSRPEM: f.CSRPEM}
+	grant, err := requireGate(o.Gate, ctx, "enrolment.sign", norm.presenceDigest(csr), enrolmentSignReason(clientID, f.ProjectIDs))
+	if err != nil {
+		return EnrolmentCreated{}, err
+	}
+
+	bundle, err := signEnrolment(o.Store, enrolmentRequest{
+		ClientID:   clientID,
+		ProjectIDs: f.ProjectIDs,
+		Budget:     f.Budget,
+	}, csr)
+	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		return EnrolmentCreated{}, err
+	}
+	bundleErr := err
+	created := EnrolmentCreated{Enrolment: bundle.Enrolment, Dir: bundle.Dir}
+
+	// Same fail-closed undo as Create: recordEnrolmentIssued's rationale now
+	// covers both artifacts a caller might hold — a key relay wrote, or a
+	// certificate over a key the client generated (audit_issuance.go).
 	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
 		return EnrolmentCreated{}, fmt.Errorf("%w: %v", errEnrolmentUnrecorded, auditErr)
 	}

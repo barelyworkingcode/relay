@@ -102,6 +102,17 @@ func pgwCases(t *testing.T) []pgwCase {
 				_, err := ops.Revoke(context.Background(), "pgw-revoke", auditViaCLI, "")
 				return err
 			}},
+		{"enrolment.sign",
+			func(t *testing.T, store SettingsStore) {
+				mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			},
+			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+				profile := store.Get().Projects[0]
+				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
+				csrPEM := genClientCSRPEM(t, "pgw-sign-client")
+				_, err := ops.Sign(context.Background(), enrolmentSignFields{ClientID: "pgw-sign-client", ProjectIDs: []string{profile.ID}, CSRPEM: string(csrPEM)}, auditViaCLI, "")
+				return err
+			}},
 		{"login.bootstrap.mint", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &LoginOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
 			_, err := ops.MintBootstrap(context.Background(), auditViaCLI)

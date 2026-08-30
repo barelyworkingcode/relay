@@ -358,6 +358,10 @@ type Enrolment struct {
 	ProjectIDs []string        `json:"project_ids"`
 	Budget     EnrolmentBudget `json:"budget"`
 	CreatedAt  string          `json:"created_at"`
+	// SPKISHA256 is the hex SHA-256 of the certificate's SubjectPublicKeyInfo,
+	// set only by the CSR path. Absent on every record written before this
+	// field existed, and absent never collides.
+	SPKISHA256 string `json:"spki_sha256,omitempty"`
 }
 
 // GrantsProject is checked before resolving a request's project id —
