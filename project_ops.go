@@ -77,6 +77,17 @@ func (f projectCreateFields) presenceDigest() presence.Digest {
 // presenceDigest binds a project.grant grant to exactly the fields id's
 // update touches, absent-aware (§6.4): a grant answered for one field must
 // not be spendable on a request that also, or instead, touches another.
+//
+// This is deliberate: keep binding all eight fields below even after a
+// future change narrows project.grant's GATE to fire only on
+// allow_cwd_auth (ADR-018, blocked on the local cli-admin identity binding
+// — see docs/decisions/018-configuration-is-a-capability-of-an-identity.md).
+// The prompt authorises the request, not the reason the request was
+// privileged, so shrinking this digest to the field that triggers the gate
+// would let a grant answered for "turn on directory auth" redeem against
+// "turn on directory auth AND set allowed_tools to * AND repoint path at
+// /". Narrowing what gates and narrowing what the digest binds are two
+// different questions; only the first one changes.
 func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
 	b := presence.NewDigestBuilder("project.grant").StringField("project_id", true, id)
 	if f.AllowedMcpIDs != nil {

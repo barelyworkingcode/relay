@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -591,6 +592,52 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 }
 
 const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond units
+
+// TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields is AC-9,
+// standing guard over §2.4's trap: projectUpdateFields.presenceDigest must
+// keep binding all eight grant-shape fields even though a future narrowing
+// of project.grant's GATE to fire only on allow_cwd_auth (ADR-018, blocked
+// on the local cli-admin identity binding) will make it look natural to
+// shrink the digest to match. Changing any one of the eight, holding the
+// rest fixed, must move the digest — the prompt authorises the request,
+// not the reason the request was privileged.
+func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
+	base := projectUpdateFields{
+		AllowedMcpIDs: ptr([]string{"macmcp"}),
+		AllowedTools:  ptr(map[string][]string{"macmcp": {"mail_*"}}),
+		Access:        ptr(map[string]string{"macmcp": "read"}),
+		Context:       ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":1}`)}),
+		AllowExternal: ptr(map[string]bool{"macmcp": false}),
+		AllowCwdAuth:  ptr(false),
+		Kind:          ptr(ProjectKindLocal),
+		Path:          ptr("/tmp/base"),
+	}
+	baseDigest := base.presenceDigest("proj-x")
+
+	variants := []struct {
+		name   string
+		mutate func(f *projectUpdateFields)
+	}{
+		{"allowed_mcp_ids", func(f *projectUpdateFields) { f.AllowedMcpIDs = ptr([]string{"fsmcp"}) }},
+		{"allowed_tools", func(f *projectUpdateFields) { f.AllowedTools = ptr(map[string][]string{"macmcp": {"*"}}) }},
+		{"access", func(f *projectUpdateFields) { f.Access = ptr(map[string]string{"macmcp": "write"}) }},
+		{"context", func(f *projectUpdateFields) { f.Context = ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":2}`)}) }},
+		{"allow_external", func(f *projectUpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
+		{"allow_cwd_auth", func(f *projectUpdateFields) { f.AllowCwdAuth = ptr(true) }},
+		{"kind", func(f *projectUpdateFields) { f.Kind = ptr(ProjectKindRemote) }},
+		{"path", func(f *projectUpdateFields) { f.Path = ptr("/tmp/other") }},
+	}
+	for _, v := range variants {
+		variant := base
+		v.mutate(&variant)
+		if variant.presenceDigest("proj-x") == baseDigest {
+			t.Errorf("changing %s alone did not move the digest", v.name)
+		}
+	}
+	if base.presenceDigest("proj-x") != base.presenceDigest("proj-x") {
+		t.Fatal("presenceDigest is not deterministic over the same request")
+	}
+}
 
 // TestMcpFields_PresenceGrantBoundToID is the concrete form of the
 // substitution the id-in-digest fix closes: Add upserts by id, so a grant
