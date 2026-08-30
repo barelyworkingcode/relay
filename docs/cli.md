@@ -443,6 +443,7 @@ relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID...]
 relay enrol list
 relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--max-result-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
+                    [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
 ```
 
@@ -565,13 +566,21 @@ Needs service: no. Prompts: no. Works over SSH: yes.
 Every flag is optional; an unset one leaves the stored value alone.
 `--grant`, passed at all, **replaces the whole grant list** — same rule as
 `create`. `--clear-grants` empties it explicitly and is mutually exclusive
-with `--grant`.
+with `--grant`. `--cli-admin` (`--cli-admin=false` to withdraw it) lets this
+certificate narrow its own access profiles over the remote listener
+(ADR-018 decision 4) — never widen them, and never anything outside its own
+sandbox. It rides on `enrol update` rather than a new subcommand: `enrol
+update` is already the one door for "change what this certificate reaches
+without touching the certificate". Turning it off prompts too, same as
+turning it on.
 
 ```
 $ relay enrol update -h
 Usage of enrol update:
   -clear-grants
     	remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant
+  -cli-admin
+    	let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.
   -client-id string
     	client id of the enrolment to update (required)
   -grant value
@@ -586,7 +595,8 @@ Usage of enrol update:
 
 Needs service: yes. Prompts: yes. Works over SSH: no. It is gated even
 though it only replaces an existing grant list, because replacing a grant
-list is exactly the "widens one" case the gate exists for.
+list is exactly the "widens one" case the gate exists for. Toggling
+`cli-admin` is gated the same way, in both directions.
 
 ### `enrol revoke`
 

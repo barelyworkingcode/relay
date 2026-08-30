@@ -362,6 +362,10 @@ type Enrolment struct {
 	// set only by the CSR path. Absent on every record written before this
 	// field existed, and absent never collides.
 	SPKISHA256 string `json:"spki_sha256,omitempty"`
+	// CLIAdmin lets this certificate reach the remote listener's configuration
+	// plane, scoped to the access profiles it already holds. Absent means off,
+	// so every record written before this field existed round-trips unchanged.
+	CLIAdmin bool `json:"cli_admin,omitempty"`
 }
 
 // GrantsProject is checked before resolving a request's project id —

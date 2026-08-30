@@ -27,6 +27,9 @@ type enrolmentView struct {
 	// client cert, CA cert) failed to write. The mutation still succeeded,
 	// so this rides on a 2xx — same shape as serviceView.ProcessError.
 	BundleError string `json:"bundle_error,omitempty"`
+	// CLIAdmin mirrors Enrolment.CLIAdmin: read-only here, there is no
+	// HTTP or IPC update door for an enrolment.
+	CLIAdmin bool `json:"cli_admin,omitempty"`
 }
 
 func enrolmentViewOf(e Enrolment) enrolmentView {
@@ -36,6 +39,7 @@ func enrolmentViewOf(e Enrolment) enrolmentView {
 		ProjectIDs:  e.ProjectIDs,
 		Budget:      e.Budget,
 		CreatedAt:   e.CreatedAt,
+		CLIAdmin:    e.CLIAdmin,
 	}
 }
 

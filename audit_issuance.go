@@ -77,6 +77,11 @@ type CredentialIssuance struct {
 	// Grants is the class set for an api_credential, the granted
 	// access-profile ids for an enrolment, or the changed field names for a
 	// config_change project grant. Nil for a kind that has none of these.
+	// For an enrolment's config_change on cli_admin the entry carries the
+	// resulting state (e.g. "cli_admin=on") rather than the bare field
+	// name: for a boolean the direction IS the content, and a record
+	// saying only "cli_admin changed" cannot answer the question it
+	// exists for.
 	Grants []string
 
 	// Via is one of the auditVia* values.
