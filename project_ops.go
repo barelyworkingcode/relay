@@ -314,9 +314,22 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 // DescribeGrant is the RemoteConfigurer half of ADR-018 decision 4's read
 // side: the caller's own posture, built through the same newGrantView
 // `relay grant` uses, so an operator and the enrolment describing itself
-// read the identical record (ADR-018 decision 5, symmetrically).
+// read the identical record for everything BUT Enrolments (ADR-018
+// decision 5, symmetrically).
+//
+// Enrolments is cleared before returning: newGrantView populates it with
+// every enrolment granting this profile, for the operator-facing `relay
+// grant` — going out over the wire verbatim would let a remote caller
+// describing its OWN posture enumerate its siblings, learning their
+// client_id and cli_admin state. The reachability boundary (a caller
+// cannot ACT on another enrolment's grant) already holds; this is what
+// keeps the read side to "the caller's own posture" the spec defines it
+// as. handleRemoteNarrowGrant's result rides through this same method, so
+// it is covered without a separate fix.
 func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
-	return newGrantView(s, *proj)
+	v := newGrantView(s, *proj)
+	v.Enrolments = nil
+	return v
 }
 
 // narrowUpdateFields carries a NarrowGrant request's already-validated

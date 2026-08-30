@@ -44,10 +44,18 @@ func decodeRemoteNarrowFields(raw json.RawMessage) (remoteNarrowFields, error) {
 }
 
 // hasGlobMeta reports whether pattern is anything path.Match would treat as
-// more than a literal tool name — the three characters it gives special
-// meaning.
+// more than a literal tool name — the four characters it gives special
+// meaning: *, ?, [ and \. \ is easy to miss because it doesn't look like a
+// wildcard: as an escape it changes what NAME a pattern matches without
+// ever opening a class or repeating anything, so a pattern built entirely
+// from \-escapes still reads, to a human, as a literal string — while
+// path.Match reads it as a pattern whose matched set differs from the
+// literal string's. Treating it as ordinary here let a requested pattern
+// pass narrowsOnly's literal-name check against the unescaped name while
+// the pattern actually stored, once escapes are honoured, matched a wider
+// set than what was validated.
 func hasGlobMeta(pattern string) bool {
-	return strings.ContainsAny(pattern, "*?[")
+	return strings.ContainsAny(pattern, "*?[\\")
 }
 
 // narrowsOnly is the one check standing between a remote's own request and
