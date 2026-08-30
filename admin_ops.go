@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // adminOpHandler executes one brokered admin operation. args is the
@@ -23,6 +25,7 @@ var adminOps = map[string]adminOpHandler{
 	"credential.mint":      adminCredentialMint,
 	"credential.revoke":    adminCredentialRevoke,
 	"enrolment.create":     adminEnrolmentCreate,
+	"enrolment.sign":       adminEnrolmentSign,
 	"enrolment.update":     adminEnrolmentUpdate,
 	"enrolment.revoke":     adminEnrolmentRevoke,
 	"login.bootstrap.mint": adminLoginBootstrapMint,
@@ -164,6 +167,53 @@ func adminEnrolmentCreate(ctx context.Context, r *appRouter, args json.RawMessag
 	if err != nil {
 		result.BundleError = err.Error()
 	}
+	return marshalAdminResult(result)
+}
+
+// enrolmentSignResult carries what enrolSign needs to print and, when
+// --out was given, write: the record, and the certificate bytes
+// themselves. Certificates are public; there is no field here, and none is
+// to be added, that could carry a private key.
+type enrolmentSignResult struct {
+	Enrolment   Enrolment `json:"enrolment"`
+	Dir         string    `json:"dir,omitempty"`
+	CertPEM     string    `json:"cert_pem"`
+	CAPEM       string    `json:"ca_pem"`
+	BundleError string    `json:"bundle_error,omitempty"`
+}
+
+func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[enrolmentSignFields]("enrolment.sign", args)
+	if err != nil {
+		return nil, err
+	}
+	created, err := ops.Sign(ctx, req, auditViaCLI, "")
+	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		return nil, err
+	}
+	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir}
+	if err != nil {
+		result.BundleError = err.Error()
+		return marshalAdminResult(result)
+	}
+	// The bundle landed: read the certificates back off disk (public
+	// files, readable by the same process that just wrote them) so the CLI
+	// can print and optionally copy them without ever touching the config
+	// dir itself.
+	certPEM, err := os.ReadFile(filepath.Join(created.Dir, "client.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("enrolment.sign: read issued certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(filepath.Join(created.Dir, "ca.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("enrolment.sign: read ca certificate: %w", err)
+	}
+	result.CertPEM = string(certPEM)
+	result.CAPEM = string(caPEM)
 	return marshalAdminResult(result)
 }
 

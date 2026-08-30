@@ -14,7 +14,7 @@ service management.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
 - `relay credential mint --name NAME --class CLASS [--class ...] [--ttl 12h] | list [--include-expired] | revoke --id ID` — control-plane API credentials (ADR-015, ADR-016). `--class` is one of `read`, `configure`, `grant`, `execute`, `proxy`; an unknown class or an empty set is refused. `--ttl` gives the credential an expiry; omitted means never. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
-- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | list | revoke --client-id ID` — remote-client enrolment. Signs a client certificate off relay's own CA and emits a bundle to copy to the client machine. Host-side operator act only: no self-service enrolment, no bootstrap token.
+- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | sign --client-id ID --csr PATH|- [--grant ...] | list | update ... | revoke --client-id ID` — remote-client enrolment. `create` generates the client's keypair on this host and emits a bundle containing the private key (legacy, deprecated in its own output). `sign` signs a CSR the client generated itself — relay only ever sees the public key, and returns certificates only. Host-side operator act only: no self-service enrolment, no bootstrap token.
 - `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one (and does **not** end sessions it already signed in — those are `relay credential revoke`, or Settings → Passkeys). The code is also mintable from the tray's **Show Login Code...** item, which goes through the same `mintBootstrapCode`. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
 
 ## Architecture
@@ -196,6 +196,19 @@ client certificate to the remote projects it may use. It is keyed by
 enrolment, granted, audited, and revoked independently, and nothing may assume
 one per machine. There is **no bearer token anywhere on this path**: a stolen
 `settings.json` grants no remote access at all.
+
+**The client's private key is generated on the client, not on relay**
+(ADR-018 decision 6 step 1). `relayremote enrol` generates the keypair and a
+CSR; `relay enrol sign` (`enrolment_csr.go`, `RelayCA.SignClientCSR`) signs
+the CSR's own public key and returns only certificates — the private key
+never crosses to this host, and relay never writes one for a CSR enrolment
+(`writeSignedCertBundle` refuses if `client.key` is already present in the
+target directory). `relay enrol create` is the legacy path that still
+generates the key on this host and emits it in the bundle; it stays
+functionally unchanged for now (three doors — CLI, HTTP, the Remote Clients
+tab — are not all CSR-ready yet) but is marked deprecated in its own CLI
+output. `Enrolment.SPKISHA256` (CSR path only) refuses enrolling the same
+private key twice under two client ids.
 
 Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
 persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the

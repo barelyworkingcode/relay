@@ -231,6 +231,29 @@ func (ca *RelayCA) IssueClientCert(clientID string) (keyPEM, certPEM []byte, fin
 	return keyPEM, certPEM, FingerprintDER(der), nil
 }
 
+// SignClientCSR is IssueClientCert minus key generation: the CSR's own
+// public key crosses into the certificate and nothing else from the
+// request does. Subject, serial, validity, KeyUsage and ExtKeyUsage are
+// all relay's, byte-identical to IssueClientCert, so the two paths issue
+// certificates a caller cannot tell apart by shape — only by whether relay
+// or the client generated the key underneath.
+func (ca *RelayCA) SignClientCSR(csr *x509.CertificateRequest, clientID string) (certPEM []byte, fingerprint string, err error) {
+	pub, ok := csr.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, "", fmt.Errorf("csr public key is %T, not *ecdsa.PublicKey — ParseClientCSR should have refused this already", csr.PublicKey)
+	}
+	der, err := ca.signLeaf(pub, pkix.Name{
+		CommonName:         clientID,
+		Organization:       []string{"relay"},
+		OrganizationalUnit: []string{"relay-enrolment"},
+	}, clientCertValidity, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return certPEM, FingerprintDER(der), nil
+}
+
 func (ca *RelayCA) IssueServerCert(hosts ...string) (tls.Certificate, error) {
 	if len(hosts) == 0 {
 		hosts = []string{"127.0.0.1", "::1", "localhost"}
@@ -313,4 +336,14 @@ func FingerprintCert(cert *x509.Certificate) string {
 		return ""
 	}
 	return FingerprintDER(cert.Raw)
+}
+
+// SPKISHA256Hex is the hex SHA-256 of a certificate request's
+// SubjectPublicKeyInfo — the value bound into both the presence digest and
+// the stored Enrolment.SPKISHA256 field, so the same private key cannot be
+// enrolled twice under two client ids (§1.4, §1.5 of the CSR enrolment
+// spec).
+func SPKISHA256Hex(rawSPKI []byte) string {
+	sum := sha256.Sum256(rawSPKI)
+	return hex.EncodeToString(sum[:])
 }

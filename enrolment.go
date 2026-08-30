@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -126,6 +127,19 @@ func (s *Settings) ValidateEnrolment(e *Enrolment) error {
 	if other := s.FindEnrolmentByFingerprint(e.Fingerprint); other != nil {
 		return fmt.Errorf("certificate %s is already enrolled as %q", e.Fingerprint, other.ClientID)
 	}
+	// A duplicate SPKI (the CSR path only) means the SAME private key was
+	// enrolled twice under two client ids: FindEnrolmentByFingerprint alone
+	// cannot catch this, since the fingerprint hashes the whole certificate
+	// (serial included), and two certificates over one key get two
+	// different fingerprints — two live identities, two budgets, and
+	// revoking one would leave the other working.
+	if e.SPKISHA256 != "" {
+		for i := range s.Enrolments {
+			if s.Enrolments[i].SPKISHA256 == e.SPKISHA256 {
+				return fmt.Errorf("this certificate's public key is already enrolled as %q: revoke it first, or sign against that client id instead", s.Enrolments[i].ClientID)
+			}
+		}
+	}
 	return s.ValidateEnrolmentGrants(e)
 }
 
@@ -239,30 +253,18 @@ type enrolmentBundle struct {
 	CACertPath string
 }
 
-// createEnrolment has no self-service path and no bootstrap token,
-// deliberately: an endpoint reachable by presenting a secret would
-// reintroduce a replayable credential at the point where the result is a
-// new identity, not a single call.
-//
-// Validation happens inside store.With so two concurrent creates cannot
-// both claim a client id. The bundle is written last: a key on disk that no
-// enrolment references is a credential nobody knows to revoke.
-func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
-	ca, err := LoadOrCreateCA(store.Sealer())
-	if err != nil {
-		return nil, err
-	}
-	keyPEM, certPEM, fingerprint, err := ca.IssueClientCert(req.ClientID)
-	if err != nil {
-		return nil, err
-	}
-
+// commitEnrolment builds the Enrolment record and persists it inside
+// store.With, after ValidateEnrolment passes — the shared middle of the
+// host-generated (createEnrolment) and CSR (signEnrolment) paths. spki is
+// "" for the former; the CSR's SPKI hash for the latter.
+func commitEnrolment(store SettingsStore, req enrolmentRequest, fingerprint, spki string) (Enrolment, error) {
 	enrolment := Enrolment{
 		ClientID:    req.ClientID,
 		Fingerprint: fingerprint,
 		ProjectIDs:  req.ProjectIDs,
 		Budget:      normalizeEnrolmentBudget(req.Budget),
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		SPKISHA256:  spki,
 	}
 	if enrolment.ProjectIDs == nil {
 		enrolment.ProjectIDs = []string{}
@@ -277,9 +279,35 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 		return nil
 	}); err != nil {
 		if validationErr != nil {
-			return nil, invalidEnrolment(validationErr.Error())
+			return Enrolment{}, invalidEnrolment(validationErr.Error())
 		}
-		return nil, fmt.Errorf("failed to save settings: %w", err)
+		return Enrolment{}, fmt.Errorf("failed to save settings: %w", err)
+	}
+	return enrolment, nil
+}
+
+// createEnrolment has no self-service path and no bootstrap token,
+// deliberately: an endpoint reachable by presenting a secret would
+// reintroduce a replayable credential at the point where the result is a
+// new identity, not a single call.
+//
+// Validation happens inside store.With (via commitEnrolment) so two
+// concurrent creates cannot both claim a client id. The bundle is written
+// last: a key on disk that no enrolment references is a credential nobody
+// knows to revoke.
+func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
+	ca, err := LoadOrCreateCA(store.Sealer())
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, certPEM, fingerprint, err := ca.IssueClientCert(req.ClientID)
+	if err != nil {
+		return nil, err
+	}
+
+	enrolment, err := commitEnrolment(store, req, fingerprint, "")
+	if err != nil {
+		return nil, err
 	}
 
 	bundle, err := writeEnrolmentBundle(enrolment, keyPEM, certPEM, ca.CertPEM())
@@ -290,6 +318,35 @@ func createEnrolment(store SettingsStore, req enrolmentRequest) (*enrolmentBundl
 		// caller "nothing happened," which is false — errEnrolmentBundle is
 		// what lets a caller hand back the record that landed instead of
 		// silently orphaning it.
+		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
+	}
+	return bundle, nil
+}
+
+// signEnrolment is createEnrolment's CSR counterpart: the CSR (already
+// validated by ParseClientCSR, before the caller ever reached the gate)
+// supplies the public key, relay's CA signs it, and no client private key
+// ever exists in this process's address space. Same errEnrolmentBundle
+// semantics as create: a failed bundle write does not unwind a committed
+// record.
+func signEnrolment(store SettingsStore, req enrolmentRequest, csr *x509.CertificateRequest) (*enrolmentBundle, error) {
+	ca, err := LoadOrCreateCA(store.Sealer())
+	if err != nil {
+		return nil, err
+	}
+	certPEM, fingerprint, err := ca.SignClientCSR(csr, req.ClientID)
+	if err != nil {
+		return nil, err
+	}
+
+	spki := SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
+	enrolment, err := commitEnrolment(store, req, fingerprint, spki)
+	if err != nil {
+		return nil, err
+	}
+
+	bundle, err := writeSignedCertBundle(enrolment, certPEM, ca.CertPEM())
+	if err != nil {
 		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
 	}
 	return bundle, nil
@@ -375,17 +432,34 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 	return before, after, nil
 }
 
+// writeBundleFiles is the write step writeEnrolmentBundle and
+// writeSignedCertBundle share: create dir 0700, then write each file 0600
+// via atomicWriteFile.
+func writeBundleFiles(dir string, files map[string][]byte) error {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create bundle dir: %w", err)
+	}
+	for path, data := range files {
+		if err := atomicWriteFile(path, data, 0600); err != nil {
+			return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+		}
+	}
+	return nil
+}
+
 // writeEnrolmentBundle emits the three files a client needs — its key, its
 // certificate, and the CA certificate it verifies the server with — into
 // <config>/enrolments/<client-id>/, 0700 dir and 0600 files.
 //
-// The private key is generated on the host and travels to the client once.
-// That is the weakest step in this design and it is deliberate: a CSR flow,
-// where the client generates its key and only a signing request crosses the
-// gap, never exposes the key at all, and is the obvious upgrade if these
-// machines ever stop being the same person's. Until then the mitigation is
-// that the key sits in a 0600 file under a 0700 directory, and the operator
-// is expected to move rather than copy it.
+// This is the legacy host-generated path: the private key is generated on
+// the host and travels to the client once, which is the liability ADR-018
+// decision 6 step 1 retires. writeSignedCertBundle — fed by a CSR the
+// client generated itself, so the key never leaves that machine — is the
+// one to use going forward; this stays only because create's three doors
+// (CLI, HTTP, the Remote Clients tab) are not all CSR-ready yet. Until
+// every caller moves, the mitigation is that the key sits in a 0600 file
+// under a 0700 directory, and the operator is expected to move rather than
+// copy it.
 func writeEnrolmentBundle(e Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmentBundle, error) {
 	dir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, e.ClientID)
 	// b is built and returned even on failure below: the settings record for
@@ -399,17 +473,47 @@ func writeEnrolmentBundle(e Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmen
 		CertPath:   filepath.Join(dir, "client.crt"),
 		CACertPath: filepath.Join(dir, "ca.crt"),
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return b, fmt.Errorf("create bundle dir: %w", err)
-	}
-	for path, data := range map[string][]byte{
+	if err := writeBundleFiles(dir, map[string][]byte{
 		b.KeyPath:    keyPEM,
 		b.CertPath:   certPEM,
 		b.CACertPath: caPEM,
-	} {
-		if err := atomicWriteFile(path, data, 0600); err != nil {
-			return b, fmt.Errorf("write %s: %w", filepath.Base(path), err)
-		}
+	}); err != nil {
+		return b, err
+	}
+	return b, nil
+}
+
+// writeSignedCertBundle is signEnrolment's write step: certificate and CA
+// certificate only — client.crt and ca.crt, 0700 dir / 0600 files, sharing
+// writeBundleFiles with the legacy path above. The returned bundle's
+// KeyPath is left empty rather than given a nillable key parameter: a
+// function whose key argument is sometimes nil is one `if` away from
+// writing an empty client.key, and a reader at the call site could not
+// tell which mode it was in.
+//
+// This refuses outright if client.key already exists in the target
+// directory: a stale key would make a CSR-issued bundle indistinguishable
+// from a relay-generated one, and the caller carrying a CSR onto this host
+// is asserting the opposite — that the key never left the client machine.
+func writeSignedCertBundle(e Enrolment, certPEM, caPEM []byte) (*enrolmentBundle, error) {
+	dir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, e.ClientID)
+	b := &enrolmentBundle{
+		Enrolment:  e,
+		Dir:        dir,
+		CertPath:   filepath.Join(dir, "client.crt"),
+		CACertPath: filepath.Join(dir, "ca.crt"),
+	}
+	keyPath := filepath.Join(dir, "client.key")
+	if _, err := os.Stat(keyPath); err == nil {
+		return b, fmt.Errorf("%s already exists: a stale key here would make this CSR-issued bundle indistinguishable from a relay-generated one — remove it first if you mean to re-issue over it", keyPath)
+	} else if !os.IsNotExist(err) {
+		return b, fmt.Errorf("stat %s: %w", keyPath, err)
+	}
+	if err := writeBundleFiles(dir, map[string][]byte{
+		b.CertPath:   certPEM,
+		b.CACertPath: caPEM,
+	}); err != nil {
+		return b, err
 	}
 	return b, nil
 }

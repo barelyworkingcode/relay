@@ -61,6 +61,7 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay credential revoke` | yes | **yes** | no |
 | `relay enrol list` | no | no | yes |
 | `relay enrol create` | yes | **yes** | no |
+| `relay enrol sign` | yes | **yes** | no |
 | `relay enrol update` | yes | **yes** | no |
 | `relay enrol revoke` | yes | **yes** | no |
 | `relay login list` | no | no | yes |
@@ -170,6 +171,7 @@ Every gated command has its own version of this reason string:
 | `credential mint` | `mint a control-plane credential named "NAME" with classes read and configure` |
 | `credential revoke` | `revoke the control-plane credential "ID"` |
 | `enrol create` | `create an enrolment for client "ID" with access to PROFILE` |
+| `enrol sign` | `sign a certificate for client "ID" with access to PROFILE` |
 | `enrol update` | `update the enrolment "ID"'s grant` |
 | `enrol revoke` | `revoke the enrolment "ID"` |
 | `login enrol` | `mint a login bootstrap code` |
@@ -419,15 +421,25 @@ revoked credential "5d6dad87-4a31-40f6-88f8-9193adcba554"
 ## `relay enrol`
 
 Remote-client enrolment: signs a client certificate off relay's own CA and
-issues a bundle to copy to the client machine (see
+hands back a certificate the client can use (see
 [`docs/decisions/009-remote-projects.md`](decisions/009-remote-projects.md)
 and [`docs/decisions/011-resource-scope.md`](decisions/011-resource-scope.md)
 for the remote model this feeds). There is no self-service path and no
 bootstrap token by design — every enrolment is a host-side operator act.
 
+Two ways to get there. `enrol create` generates the client's private key on
+this host and emits a bundle containing it — the legacy path, kept working
+but deprecated in its own output. `enrol sign` takes a certificate signing
+request the client generated on its own machine (`relayremote enrol`) and
+returns only certificates: the private key never leaves the client, and
+never exists in this process at all. Prefer `sign`.
+
 ```
 relay enrol create --client-id ID --grant PROFILE-ID [--grant PROFILE-ID...]
                     [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID...]
+                  [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+                  [--out DIR]
 relay enrol list
 relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--max-result-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
@@ -479,7 +491,54 @@ created enrolment "hermes"
   profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
   bundle:      /Users/admin/Library/Application Support/relay/enrolments/hermes
   copy this directory to the client machine; the private key inside it is never recoverable
+  this bundle's private key was generated on this host — prefer `relay enrol sign`, where the key never leaves the client machine.
 ```
+
+### `enrol sign`
+
+The CSR flow (ADR-018 decision 6 step 1): the client generates its own
+keypair and sends only a signing request across, so relay never holds — and
+never writes to disk — a private key it did not generate itself.
+
+| Flag | Meaning |
+|---|---|
+| `--client-id` | Human-readable, unique id for this enrolment (required). Names the enrolment; the CSR's own CN is advisory and is overridden. |
+| `--csr` | Path to the signing request, or `-` for stdin (required). |
+| `--grant` | Repeatable. Id of an **access profile** this certificate may use — never a local project. |
+| `--window-seconds` | Budget window, seconds (default 3600). |
+| `--max-calls` | Max tool calls per window (default 120). |
+| `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+| `--out` | Also write `client.crt` and `ca.crt` into this directory, for copying to the client machine. |
+
+Needs service: yes. Prompts: yes. Works over SSH: no — and a CSR's natural
+habitat is an SSH session or a USB stick carried to this machine, so expect
+to run this one at the Mac's own screen even when the CSR itself arrived
+over the network.
+
+The client side of this flow is `relayremote enrol` (generates the keypair
+and the CSR) and `relayremote install` (installs the certificate this
+command hands back) — see relayRemote's own docs.
+
+```
+relay enrol sign --client-id hermes --csr client.csr --grant 477d9a17-da03-45eb-a433-764f93fe96fc --out ./signed
+```
+
+Illustrative output:
+
+```
+signed enrolment "hermes"
+  fingerprint: sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
+  certificate: /Users/admin/Library/Application Support/relay/enrolments/hermes
+  copy client.crt and ca.crt to the client machine, beside the client.key it generated;
+  no private key was written on this host
+  copies also written to: ./signed
+```
+
+Nothing under `<config>/enrolments/hermes/` for a CSR enrolment is a
+secret: `client.crt` and `ca.crt` only. `--out` copies are public
+certificates too, so they are written `0644` rather than the config-dir
+copy's `0600`.
 
 ### `enrol list`
 
@@ -987,7 +1046,9 @@ table, covered under `relay audit` above.)
   the CLI does.
 - **An enrolment's private key**, after the moment `enrol create` writes its
   bundle to disk. The bundle directory is the only copy; losing it means
-  revoking and re-enrolling.
+  revoking and re-enrolling. `enrol sign` never has one to withhold in the
+  first place — the client generated its own key, and relay only ever sees
+  the public half in the CSR.
 
 None of this is enforced by convention — `Secret.MarshalJSON` refuses to
 serialize a field that has not been through the sealing step, so a stray

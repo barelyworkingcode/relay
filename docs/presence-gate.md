@@ -49,11 +49,14 @@ what runs.** Concretely:
   `credential.revoke`) — the first issues authority outright; revocation is
   gated on the same footing because an unforgeable act must not be
   reversible by an agent that merely holds the socket.
-- **Creating, updating, or revoking an enrolment** (`enrolment.create`,
-  `enrolment.update`, `enrolment.revoke`) — issues or destroys a remote
-  identity. `enrolment.update` is gated even though it only *replaces* an
-  existing grant list, because replacing a grant list is exactly "widens
-  one."
+- **Creating, signing, updating, or revoking an enrolment**
+  (`enrolment.create`, `enrolment.sign`, `enrolment.update`,
+  `enrolment.revoke`) — issues or destroys a remote identity.
+  `enrolment.update` is gated even though it only *replaces* an existing
+  grant list, because replacing a grant list is exactly "widens one."
+  `enrolment.sign`'s digest binds one field `enrolment.create` does not: the
+  CSR's own public key, so a presence grant answered for one key is not
+  redeemable for another (ADR-018 decision 6 step 1).
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
   login identity.
