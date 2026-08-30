@@ -539,6 +539,51 @@ already have on disk.
 
 ---
 
+## Letting the client narrow its own grant (cli-admin)
+
+Normally only you edit a profile. `cli-admin` (ADR-018) lets one enrolment's
+own certificate reach a second, small door over the remote listener and
+narrow **its own** profile — without you re-typing the change yourself:
+
+    relay enrol update --client-id hermes-bob --cli-admin
+
+This is a grant change like any other and prompts for presence, in both
+directions — turning it off prompts too, because a compromised host process
+could otherwise flip it back on silently.
+
+With the bit on, `hermes-bob`'s own certificate may:
+
+- ask its own posture back (`DescribeGrant`) — the same view `relay grant`
+  shows you;
+- replace its own `allowed_mcp_ids` / `allowed_tools` / `access` /
+  `allow_external` with a **strictly narrower** set on `NarrowGrant`.
+
+It can never:
+
+- widen anything, on any axis — `access` accepts only `read`,
+  `allow_external` accepts only `false`, an MCP or tool pattern must already
+  be granted;
+- touch another enrolment's profile, register anything, mint a credential, or
+  flip `allow_cwd_auth` (structurally absent from the wire request, and
+  refused on a remote profile even if it were sent).
+
+So `cli-admin` is a **sandbox on a sandbox**: the certificate can shrink what
+it already holds, on its own, and cannot grow it or reach anything else.
+Restoring a narrowed profile is your act — edit it by hand, the same as any
+other change in this document.
+
+`relay grant --project <profile>` names every enrolment reaching a profile
+and marks a `cli_admin` one loudly, so the posture is visible without
+cross-referencing `relay enrol list`. Every narrowing is a `config_change` in
+`relay audit`, attributed to the enrolment's certificate, not to you — see
+[`docs/audit-log.md`](audit-log.md).
+
+Turn it off the moment the client's own setup is done:
+
+    relay enrol update --client-id hermes-bob --cli-admin=false
+
+---
+
 ## Taking it away
 
 **Revoke the credential**, leaving the profile alone:

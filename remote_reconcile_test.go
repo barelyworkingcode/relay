@@ -40,7 +40,7 @@ import (
 // leaves a listener replaced must not leak its owner into the next test.
 func (f *remoteFixture) supervise() *RemoteSupervisor {
 	f.t.Helper()
-	sup := NewRemoteSupervisor(context.Background(), f.store, f.router, f.audit, nil)
+	sup := NewRemoteSupervisor(context.Background(), f.store, f.router, f.audit, nil, nil, nil)
 	f.t.Cleanup(func() {
 		sup.Close()
 		SetEnrolmentRevocationHook(nil)

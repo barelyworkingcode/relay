@@ -474,7 +474,7 @@ func runTrayApp() {
 	// made `remote.listen` the one setting in relay that needed a quit, and
 	// made `audit.enabled: false` a refusal that only held until the next
 	// launch. statusPoller drives the convergence from here on.
-	app.remote = NewRemoteSupervisor(ctx, store, router, audit, app.goFunc)
+	app.remote = NewRemoteSupervisor(ctx, store, router, audit, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
 	app.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
 
 	// Set up tray icon.

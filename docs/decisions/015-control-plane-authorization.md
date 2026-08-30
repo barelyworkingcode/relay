@@ -78,7 +78,10 @@ never registered on that listener has no code path to reach. Relay already
 applies exactly this reasoning to `RemoteServer`, whose dispatch table holds
 only `ListTools` and `CallTool` so that a new admin operation is unreachable
 from a VM until someone deliberately adds it to a list that is visibly a
-security boundary (ADR-010). The same shape, for the same reason.
+security boundary (ADR-010). The same shape, for the same reason. ADR-018
+applies this exact function — `ClassReachableOn` — to build `RemoteServer`'s
+second, `cli_admin`-gated dispatch table, the first time this class–transport
+matrix governs anything beside `RouteRegistrar` itself.
 
 The justification for treating the two listeners differently is not vague
 trust. The Unix socket is 0600: the kernel refuses a connection from any other

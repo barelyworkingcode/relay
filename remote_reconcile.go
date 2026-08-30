@@ -19,6 +19,11 @@ type RemoteSupervisor struct {
 	store  SettingsStore
 	router RemoteToolRouter
 	audit  *AuditRecorder
+	// configurer and surfaces are threaded straight through to every
+	// RemoteServer this supervisor binds — see RemoteConfigurer's own doc
+	// comment for why they are two narrow things and not a *ProjectOps.
+	configurer RemoteConfigurer
+	surfaces   func() McpSurfaces
 	// goFunc runs the accept loop under the owner's waitgroup; nil falls
 	// back to a bare `go`, for tests.
 	goFunc func(func())
@@ -33,8 +38,8 @@ type RemoteSupervisor struct {
 	lastReport string
 }
 
-func NewRemoteSupervisor(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, goFunc func(func())) *RemoteSupervisor {
-	return &RemoteSupervisor{ctx: ctx, store: store, router: router, audit: audit, goFunc: goFunc}
+func NewRemoteSupervisor(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces, goFunc func(func())) *RemoteSupervisor {
+	return &RemoteSupervisor{ctx: ctx, store: store, router: router, audit: audit, configurer: configurer, surfaces: surfaces, goFunc: goFunc}
 }
 
 // Addr reads the live socket, so a test binding :0 gets the assigned port.
@@ -93,7 +98,7 @@ func (sup *RemoteSupervisor) Reconcile() error {
 
 	// Bind before tearing down: the old listener's teardown below
 	// compare-and-clears and leaves the new one's hook alone.
-	ns, err := NewRemoteServer(sup.ctx, sup.store, sup.router, sup.audit)
+	ns, err := NewRemoteServer(sup.ctx, sup.store, sup.router, sup.audit, sup.configurer, sup.surfaces)
 	if err != nil {
 		err = fmt.Errorf("remote listener could not bind %s: %w", desired.Listen, err)
 		sup.reportLocked(desired.Listen, err)

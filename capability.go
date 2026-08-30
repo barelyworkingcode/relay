@@ -66,6 +66,14 @@ type ControlDecision struct {
 	CredID    string
 	Allowed   bool
 	Reason    string
+
+	// ClientID and Fingerprint attribute a decision made on the remote
+	// listener to the enrolment's certificate rather than to a control-plane
+	// credential — the same pair AuditActor already carries for a tool call
+	// (audit_call.go). Empty for every HTTP decision, where CredID already
+	// names the caller.
+	ClientID    string
+	Fingerprint string
 }
 
 // ClassReachableOn reports whether a class may be ROUTED on a transport.
