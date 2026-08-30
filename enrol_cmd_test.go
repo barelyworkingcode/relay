@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"relaygo/presence"
 )
@@ -385,6 +386,56 @@ func TestEnrolRequestsApproveRefuse_CLIDispatchThroughTheBroker(t *testing.T) {
 	}
 	if _, ok := table.Get(l2.RequestID); ok {
 		t.Fatal("refuse must remove the pending record")
+	}
+}
+
+// Finding 5, the CLI-visible half: if the pending row is swept while the
+// presence prompt is open (a request lodged ~14 minutes ago, answered two
+// minutes later, crossing the 15-minute TTL), the enrolment still commits
+// -- but `relay enrol approve`'s own output must say so plainly, naming the
+// expiry and the recovery paths, and must NOT claim the client will collect
+// the certificate on its next poll: there is no row left to poll.
+func TestEnrolApprove_RowSweptDuringPresencePromptSaysSoAndDoesNotClaimDelivery(t *testing.T) {
+	store := newCLISandboxStore(t)
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+
+	table := newEnrolmentRequestTable()
+	now := time.Now()
+	table.setClock(func() time.Time { return now })
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "10.0.0.5:41233")
+	assertNoErr(t, err, "Lodge")
+
+	// 14 minutes pass before the operator runs `relay enrol approve`.
+	now = now.Add(14 * time.Minute)
+	sink := &sweptDuringApprovalSink{enrolmentRequestTable: table, now: &now}
+
+	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
+		r.enrolmentOps.Requests = sink
+	}))
+
+	out := captureStdout(t, func() {
+		enrolApprove([]string{"--id", l.RequestID, "--client-id", "hermes-mail", "--grant", profile.ID})
+	})
+
+	if !strings.Contains(out, "hermes-mail") {
+		t.Fatalf("enrol approve output = %q, want it to name the client id", out)
+	}
+	if strings.Contains(out, "delivered to the client on its next poll") {
+		t.Fatalf("enrol approve output = %q, must NOT claim the client will collect it -- the row is gone", out)
+	}
+	if !strings.Contains(out, "expired") {
+		t.Fatalf("enrol approve output = %q, want it to name the expiry plainly", out)
+	}
+	if !strings.Contains(out, "relay enrol list") {
+		t.Fatalf("enrol approve output = %q, want it to point at `relay enrol list` for the real, recorded enrolment", out)
+	}
+
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil {
+		t.Fatal("the enrolment must be real and recorded even though the pending row expired")
+	}
+	if !stored.GrantsProject(profile.ID) {
+		t.Fatalf("approved enrolment does not grant %s: %+v", profile.ID, stored)
 	}
 }
 

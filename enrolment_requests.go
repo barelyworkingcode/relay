@@ -258,10 +258,19 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 	// structural refusal (table full, per-source throttle) counts as a
 	// failure exactly as a malformed CSR does, because both are the shape
 	// an attacker grinding for a slot produces.
+	//
+	// This is deliberate: a nil error alone is NOT "record success" — the
+	// idempotent re-lodge below also returns nil and must stay neutral.
+	// Rewarding it would let an attacker re-lodge the CSR it already has a
+	// slot for, for free, forever, and the escalation this limiter exists
+	// to build (2s -> 30s) would never hold: every "attempt" would zero
+	// failures/nextAllowed right back out.
+	var inserted bool
 	defer func() {
-		if err != nil {
+		switch {
+		case err != nil:
 			t.limiter.recordFailure()
-		} else {
+		case inserted:
 			t.limiter.recordSuccess()
 		}
 	}()
@@ -329,6 +338,7 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		expiresAt:  now.Add(enrolmentRequestTTL),
 	}
 	t.pending[id] = rec
+	inserted = true
 	if sourceHost != "" {
 		t.lastLodgeBySource[sourceHost] = now
 	}
@@ -504,6 +514,23 @@ func (t *enrolmentRequestTable) sweepLocked(now time.Time) {
 	if expired > 0 {
 		// Logged, not audited: an expiry is not a decision (spec §2).
 		slog.Info("enrolment: pending requests expired", "count", expired)
+	}
+
+	// This is subtle, and deliberately the opposite of
+	// enrolmentBudgets.windowFor's own comment (enrolment_budget.go),
+	// which argues AGAINST ever reclaiming a window because its keys are
+	// certificate fingerprints only an ENROLLED caller can mint — nothing
+	// unauthenticated can grow that map. lastLodgeBySource's keys are the
+	// opposite: a source host string an unauthenticated network peer
+	// supplies on every Lodge, one new key per distinct address, forever.
+	// Left unswept it is exactly the memory-exhaustion primitive that
+	// comment warns is a different case; an entry past the window it
+	// gates can never again affect a throttle decision, so it is safe to
+	// drop the moment it ages out.
+	for host, last := range t.lastLodgeBySource {
+		if now.Sub(last) >= perSourceLodgeInterval {
+			delete(t.lastLodgeBySource, host)
+		}
 	}
 }
 

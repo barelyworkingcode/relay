@@ -184,6 +184,12 @@ type enrolmentSignResult struct {
 	CertPEM     string    `json:"cert_pem"`
 	CAPEM       string    `json:"ca_pem"`
 	BundleError string    `json:"bundle_error,omitempty"`
+	// RequestExpired is set only by adminEnrolmentRequestApprove (Sign has
+	// no pending row to expire): the row was swept between lodge and
+	// approve, but the enrolment above committed anyway. enrolApprove must
+	// say so plainly rather than claim the client will collect a row that
+	// no longer exists.
+	RequestExpired bool `json:"request_expired,omitempty"`
 }
 
 func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -317,12 +323,15 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 		return nil, err
 	}
 	created, err := ops.Approve(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+	if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) {
 		return nil, err
 	}
 	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
-	if err != nil {
+	if errors.Is(err, errEnrolmentBundle) {
 		result.BundleError = err.Error()
+	}
+	if errors.Is(err, errEnrolmentRequestExpired) {
+		result.RequestExpired = true
 	}
 	return marshalAdminResult(result)
 }

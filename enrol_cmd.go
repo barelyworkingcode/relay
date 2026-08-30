@@ -559,6 +559,22 @@ func enrolApprove(args []string) {
 		fmt.Println("  delivered to the client on its next poll — `relay enrol revoke` removes the record")
 		return
 	}
+	// The pending row and the enrolment it produced are two different
+	// things (spec §2's "approved but never collected" case, arriving
+	// early): the row can expire mid-approval if the presence prompt sat
+	// open long enough, but the enrolment above already committed. Saying
+	// "delivered on its next poll" here would be false — there is no row
+	// left for the client to poll — and would send the operator away
+	// thinking nothing more is needed.
+	if result.RequestExpired {
+		fmt.Println("  note: the pending request row expired before this approval finished (the presence prompt")
+		fmt.Println("  was open long enough to cross its TTL) — the client's poll will now see \"unknown\", not \"approved\"")
+		fmt.Println("  the enrolment itself is real and already recorded; see it in `relay enrol list`")
+		fmt.Println("  the client cannot collect it through this request anymore: deliver the certificate via the")
+		fmt.Println("  operator-carried path (`relay enrol sign` + `relayremote install --from`), or run")
+		fmt.Println("  `relay enrol revoke --client-id " + result.Enrolment.ClientID + "` to undo it")
+		return
+	}
 	fmt.Println("  the certificate is delivered to the client on its next poll; nothing further to do on this host")
 }
 

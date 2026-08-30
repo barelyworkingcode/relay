@@ -371,6 +371,70 @@ func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *te
 }
 
 // ---------------------------------------------------------------------------
+// Finding 5: the row can be swept while the presence prompt is open
+// ---------------------------------------------------------------------------
+
+// sweptDuringApprovalSink wraps a real enrolmentRequestTable and reproduces
+// the race Finding 5 names: a request lodged ~14 minutes ago, answered two
+// minutes later, crossing the 15-minute TTL while the human was looking at
+// the presence prompt. Get() is the read Approve makes at the top, before
+// the gate; some OTHER activity on the table (another Lodge, a Settings
+// panel calling List) sweeps the now-expired row during the gap before
+// MarkApproved runs at the bottom -- simulated here by advancing the shared
+// clock and forcing a sweep inside Get() itself, rather than sleeping.
+type sweptDuringApprovalSink struct {
+	*enrolmentRequestTable
+	now *time.Time
+}
+
+func (s *sweptDuringApprovalSink) Get(requestID string) (pendingRecordView, bool) {
+	rec, ok := s.enrolmentRequestTable.Get(requestID)
+	*s.now = s.now.Add(2 * time.Minute)
+	s.enrolmentRequestTable.List() // sweepLocked with the advanced clock
+	return rec, ok
+}
+
+func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+
+	table := newEnrolmentRequestTable()
+	now := time.Now()
+	table.setClock(func() time.Time { return now })
+
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	assertNoErr(t, err, "Lodge")
+
+	// 14 minutes pass before the operator answers the presence prompt.
+	now = now.Add(14 * time.Minute)
+
+	sink := &sweptDuringApprovalSink{enrolmentRequestTable: table, now: &now}
+	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: sink}
+
+	created, err := ops.Approve(context.Background(), approveFields{
+		RequestID: l.RequestID, ClientID: "hermes-mail", ProjectIDs: []string{profile.ID},
+	}, auditViaCLI, "")
+
+	if !errors.Is(err, errEnrolmentRequestExpired) {
+		t.Fatalf("err = %v, want errEnrolmentRequestExpired", err)
+	}
+	if created.CertPEM == "" || created.CAPEM == "" {
+		t.Fatal("the certificate must still be delivered even though the row was swept mid-approval")
+	}
+	if store.Get().FindEnrolment("hermes-mail") == nil {
+		t.Fatal("the enrolment must be real and recorded even though the row expired")
+	}
+
+	// The row is gone: the client's next poll sees unknown, never approved
+	// -- there is nothing left to reflect an approval onto.
+	poll, perr := table.Poll(l.RequestID)
+	assertNoErr(t, perr, "Poll")
+	if poll.Status != "unknown" {
+		t.Fatalf("poll status = %q, want unknown -- the row was swept, so the client must not see approved", poll.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Refuse and PendingRequests: lighter coverage for the two siblings
 // ---------------------------------------------------------------------------
 
