@@ -84,6 +84,19 @@ func (sup *RemoteSupervisor) Server() *RemoteServer {
 	return sup.server
 }
 
+// EnrolTable exposes the pending enrolment-request table as the sink
+// EnrolmentOps.Approve/Refuse/PendingRequests need (spec §3). The table is
+// built once, in NewRemoteSupervisor, and outlives every rebind of the
+// listener around it (see enrolTable's own doc comment), so returning it
+// here is a one-time read at wiring time, not something Reconcile can race:
+// the pointer this returns never changes for the supervisor's lifetime.
+func (sup *RemoteSupervisor) EnrolTable() EnrolmentRequestApprovalSink {
+	if sup == nil {
+		return nil
+	}
+	return sup.enrolTable
+}
+
 // EnrolAddr and EnrolServer mirror Addr and Server for the enrolment-request
 // listener.
 func (sup *RemoteSupervisor) EnrolAddr() string {

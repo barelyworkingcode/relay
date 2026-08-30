@@ -4,12 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 const (
 	MsgCreateEnrolment    = "create_enrolment"
 	MsgRevokeEnrolment    = "revoke_enrolment"
 	MsgUpdateRemoteConfig = "update_remote_config"
+
+	// Pending requests (spec §3): the Remote Clients tab's own doors onto
+	// the pending table, thin adapters over EnrolmentOps exactly like the
+	// three above are over Create/Revoke/SetRemoteConfig.
+	MsgListEnrolmentRequests   = "list_enrolment_requests"
+	MsgApproveEnrolmentRequest = "approve_enrolment_request"
+	MsgRefuseEnrolmentRequest  = "refuse_enrolment_request"
 )
 
 type ipcCreateEnrolmentMsg struct {
@@ -26,6 +34,67 @@ type ipcRemoteConfigMsg struct {
 	Remove  bool   `json:"remove"`
 	Enabled bool   `json:"enabled"`
 	Listen  string `json:"listen"`
+}
+
+// ipcEnrolmentRequestIDMsg is refuse_enrolment_request's whole body: the
+// pending record it names, nothing else.
+type ipcEnrolmentRequestIDMsg struct {
+	RequestID string `json:"request_id"`
+}
+
+// ipcApproveEnrolmentRequestMsg is approve_enrolment_request's body —
+// approveFields' own JSON shape (enrolment_ops.go), repeated here rather
+// than reused directly so this door's wire type can evolve independently of
+// the CLI's, the way ipcCreateEnrolmentMsg already stands apart from
+// enrolmentFields. There is deliberately no field that could carry a CSR:
+// see approveFields' own doc comment for why that field must not exist on
+// ANY caller of Approve, this one included.
+type ipcApproveEnrolmentRequestMsg struct {
+	RequestID  string          `json:"request_id"`
+	ClientID   string          `json:"client_id"`
+	ProjectIDs []string        `json:"project_ids"`
+	Budget     EnrolmentBudget `json:"budget"`
+}
+
+// pendingEnrolmentRequestView is the Pending requests panel's projection of
+// enrolmentRequestView (enrolment_requests.go): JSON tags matching this
+// file's other view types, and by construction no field that could carry
+// the CSR the record holds — TestPendingEnrolmentRequestView_CarriesNoCSRBytes
+// pins that by reflection AND by marshalling a populated value, so a field
+// added here under a name that dodges the reflection scan (or a stray
+// %v-style dump) still fails the marshal check. The request carries no
+// grant and no budget field either (spec §3): those are the human's choice
+// at approval, never the network peer's.
+type pendingEnrolmentRequestView struct {
+	RequestID        string `json:"request_id"`
+	SPKISHA256       string `json:"spki_sha256"`
+	Label            string `json:"label"`
+	RemoteAddr       string `json:"remote_addr"`
+	ArrivedAt        string `json:"arrived_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Approved         bool   `json:"approved"`
+	ApprovedClientID string `json:"approved_client_id,omitempty"`
+}
+
+func pendingEnrolmentRequestViewOf(v enrolmentRequestView) pendingEnrolmentRequestView {
+	return pendingEnrolmentRequestView{
+		RequestID:        v.RequestID,
+		SPKISHA256:       v.SPKISHA256,
+		Label:            v.Label,
+		RemoteAddr:       v.RemoteAddr,
+		ArrivedAt:        v.ArrivedAt.UTC().Format(time.RFC3339),
+		ExpiresAt:        v.ExpiresAt.UTC().Format(time.RFC3339),
+		Approved:         v.Approved,
+		ApprovedClientID: v.ApprovedClientID,
+	}
+}
+
+func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView) []pendingEnrolmentRequestView {
+	out := make([]pendingEnrolmentRequestView, 0, len(views))
+	for _, v := range views {
+		out = append(out, pendingEnrolmentRequestViewOf(v))
+	}
+	return out
 }
 
 // enrolmentBundleView is everything the UI is told about an emitted
@@ -48,6 +117,17 @@ type remoteConfigView struct {
 	Listen       string `json:"listen"`
 	Effective    string `json:"effective"`
 	AuditEnabled bool   `json:"audit_enabled"`
+	// CAFingerprint is relay's CA certificate SHA-256 (spec §6) — the value
+	// `relayremote request --ca-fingerprint` must be given, and the one
+	// thing that closes the request channel's MITM (§6: "only the CA pin
+	// stops this"). Read straight off disk, exactly like `relay enrol
+	// ca-fingerprint`, so this and that command are byte-identical for the
+	// same CA (AC-30) with no sealer and no CA generation on this path.
+	// Empty when no CA has been generated yet (no enrolment created or
+	// signed on this install): the tab shows that as an explanation rather
+	// than surfacing loadCACertificateOnly's error, since a missing CA here
+	// is not a caller mistake to report as a failure.
+	CAFingerprint string `json:"ca_fingerprint,omitempty"`
 }
 
 func remoteConfigViewOf(s *Settings, auditEnabled bool) remoteConfigView {
@@ -60,6 +140,9 @@ func remoteConfigViewOf(s *Settings, auditEnabled bool) remoteConfigView {
 	}
 	if s.Remote != nil {
 		v.Listen = s.Remote.Listen
+	}
+	if fp, err := caFingerprintFromDisk(); err == nil {
+		v.CAFingerprint = fp
 	}
 	return v
 }
@@ -147,4 +230,88 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.UI.EmitEvent("onRemoteConfigUpdated", marshalForUI(view))
+}
+
+// emitPendingEnrolmentRequests is the one place that reads
+// EnrolmentOps.PendingRequests and projects it for the WebView — every
+// handler below that changes the table's contents ends by calling this
+// rather than building its own event, so the panel can never drift from
+// what a plain list actually shows. Not gated: PendingRequests is a read
+// (EnrolmentOps.PendingRequests's own doc comment), so this never needs
+// ctx.GoFunc on its own account.
+func emitPendingEnrolmentRequests(ctx *IPCContext) {
+	ctx.UI.EmitEvent("onEnrolmentRequestsChanged",
+		marshalForUI(pendingEnrolmentRequestViewsOf(ctx.EnrolmentOps.PendingRequests())))
+}
+
+// ipcListEnrolmentRequests answers the Remote Clients tab's Pending requests
+// panel. Fetched on demand (tab open) rather than seeded into the first
+// paint, the way the Tool Calls tab's log is: the table is held by the
+// running tray process alone (never settings.json), and a network peer can
+// change it between one paint and the next, so a value seeded once would
+// go stale in a way nothing here would ever correct.
+func ipcListEnrolmentRequests(ctx *IPCContext, _ json.RawMessage) {
+	emitPendingEnrolmentRequests(ctx)
+}
+
+// ipcApproveEnrolmentRequest turns a pending network request into a signed
+// certificate, exactly like ipcCreateEnrolment does for an operator-typed
+// request — Approve reuses enrolment.sign's own gate rather than opening a
+// second door into issuance, see EnrolmentOps.Approve's own doc comment.
+func ipcApproveEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcApproveEnrolmentRequestMsg](raw, MsgApproveEnrolmentRequest)
+	if !ok || msg.RequestID == "" || msg.ClientID == "" {
+		return
+	}
+	fields := approveFields{
+		RequestID:  msg.RequestID,
+		ClientID:   msg.ClientID,
+		ProjectIDs: msg.ProjectIDs,
+		Budget:     msg.Budget,
+	}
+
+	// Off the main thread: EnrolmentOps.Approve is gated (enrolment.sign,
+	// spec §3), and Gate.Require blocks on LocalAuthentication's async
+	// completion handler exactly as EnrolmentOps.Create's does — the
+	// approval is a gated call fired from a UI click, precisely the shape
+	// §11.6 warns deadlocks the Cocoa run loop if it runs on the main
+	// thread. Same fix as ipcCreateEnrolment: ctx.GoFunc, then
+	// DispatchToMain before any UI touch.
+	ctx.GoFunc(func() {
+		created, err := ctx.EnrolmentOps.Approve(ctx.Ctx, fields, auditViaIPC, "")
+		// Only errEnrolmentBundle means the record landed; every other
+		// error means nothing was persisted, and announcing a row for it
+		// would add a credential-less enrolment to the list — same rule
+		// ipcCreateEnrolment follows.
+		if err != nil && !errors.Is(err, errEnrolmentBundle) {
+			dispatchEmit(ctx, "onEnrolmentError", err.Error())
+			return
+		}
+		ctx.Platform.DispatchToMain(func() {
+			if err != nil {
+				ctx.UI.EmitEvent("onEnrolmentError", fmt.Sprintf("enrolment request approved but %v", err))
+			}
+			ctx.UI.EmitEvent("onEnrolmentCreated",
+				marshalForUI(created.Enrolment),
+				marshalForUI(enrolmentBundleView{Dir: created.Dir}))
+			emitPendingEnrolmentRequests(ctx)
+		})
+	})
+}
+
+// ipcRefuseEnrolmentRequest is the operator's explicit decline (spec §2,
+// §3). Deliberately NOT run through ctx.GoFunc: EnrolmentOps.Refuse never
+// calls requireGate (see its own doc comment — declining a stranger's
+// request is not the act presence.Gate protects), so there is no
+// LocalAuthentication completion handler to deadlock the run loop against.
+func ipcRefuseEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcEnrolmentRequestIDMsg](raw, MsgRefuseEnrolmentRequest)
+	if !ok || msg.RequestID == "" {
+		return
+	}
+	if err := ctx.EnrolmentOps.Refuse(msg.RequestID); err != nil {
+		ctx.UI.EmitEvent("onEnrolmentError", err.Error())
+		return
+	}
+	emitPendingEnrolmentRequests(ctx)
 }

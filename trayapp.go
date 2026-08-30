@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -108,11 +109,12 @@ func (a *App) goFunc(fn func()) {
 
 // Menu item IDs.
 const (
-	menuIDSettings         = 2
-	menuIDExit             = 3
-	menuIDLoginCode        = 4
-	menuIDResetSealedStore = 5
-	menuIDSvcBase          = 100 // service items start here
+	menuIDSettings          = 2
+	menuIDExit              = 3
+	menuIDLoginCode         = 4
+	menuIDResetSealedStore  = 5
+	menuIDPendingEnrolments = 6
+	menuIDSvcBase           = 100 // service items start here
 )
 
 func runTrayApp() {
@@ -477,6 +479,15 @@ func runTrayApp() {
 	app.remote = NewRemoteSupervisor(ctx, store, router, audit, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
 	app.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
 
+	// Wires the Remote Clients tab's Pending requests panel and the tray's
+	// passive count line onto the SAME pending-enrolment-request table the
+	// listener above just started serving — the table is built once, inside
+	// the supervisor, and outlives every rebind of the listener around it
+	// (RemoteSupervisor.EnrolTable's own doc comment), so this assignment
+	// needs no further synchronization: nothing reads enrolmentOps.Requests
+	// before this line runs.
+	enrolmentOps.Requests = app.remote.EnrolTable()
+
 	// Set up tray icon.
 	slog.Info("setting up tray icon")
 	rgba, w, h := CreateIconRGBA()
@@ -592,6 +603,7 @@ func (a *App) statusPoller() {
 			}
 			a.updateMenuWithSettings(cur)
 			a.pushServiceStatus()
+			a.pushEnrolmentRequests()
 		})
 		// Service status polling makes HTTP calls per service — must stay
 		// off-main. pushServiceStatusBatch hops to main itself for the emit.
@@ -602,6 +614,39 @@ func (a *App) statusPoller() {
 // updateMenu rebuilds the tray menu JSON and pushes it to the platform.
 func (a *App) updateMenu() {
 	a.updateMenuWithSettings(a.store.Get())
+}
+
+// countUnapprovedEnrolmentRequests is the tray's "Pending enrolment
+// requests: N" — rows still waiting for a human decision, which is what
+// "pending" means to the operator reading the menu bar. An already-approved
+// row (spec §2: "approved, not yet collected") is not counted here: it
+// needs nothing further from this menu, and folding it in would make the
+// number go up on an act the operator already took.
+func countUnapprovedEnrolmentRequests(views []enrolmentRequestView) int {
+	n := 0
+	for _, v := range views {
+		if !v.Approved {
+			n++
+		}
+	}
+	return n
+}
+
+// pushEnrolmentRequests refreshes the Remote Clients tab's Pending requests
+// panel on every poll tick, the same way pushServiceStatus refreshes
+// service state: a network peer's Lodge never calls into the tray (P1 —
+// the pending table has no callback hook by design, see
+// enrolmentRequestTable's own doc comment), so this tick is the only path
+// by which an open Settings window learns a new request arrived without
+// the operator switching tabs away and back. Gated on settingsOpen like
+// every other tick-driven emit, and on a nil EnrolmentOps for the same
+// reason updateMenuWithSettings guards it.
+func (a *App) pushEnrolmentRequests() {
+	if !a.settingsOpen.Load() || a.ipcCtx == nil || a.ipcCtx.EnrolmentOps == nil {
+		return
+	}
+	a.emitSettingsEvent("onEnrolmentRequestsChanged",
+		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests())))
 }
 
 func (a *App) updateMenuWithSettings(s *Settings) {
@@ -661,6 +706,29 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 		}
 	}
 
+	// The tray's ENTIRE surface for the enrolment-request channel (spec §2's
+	// headline): a count, and nothing else. It is enabled (clickable) so
+	// that clicking it opens Settings — the same act "Settings..." below
+	// already performs — but that click carries no request id and calls no
+	// gated core method; the click handler for this ID is a bare
+	// openSettingsWindow, same as menuIDSettings'. What makes this the
+	// "no prompt is reachable from the network" property is not that the
+	// line is inert, but that NOTHING behind it can mint or approve: a
+	// network peer can grow this number to its cap and no further, and
+	// every code path from here ends at a window, never a presence prompt.
+	// Shown only when there is something to act on, matching the sealed-
+	// store warning above: a permanent "Pending enrolment requests: 0" line
+	// would be noise on every install that never enables the channel.
+	if a.ipcCtx != nil && a.ipcCtx.EnrolmentOps != nil {
+		if n := countUnapprovedEnrolmentRequests(a.ipcCtx.EnrolmentOps.PendingRequests()); n > 0 {
+			items = append(items, menuItem{
+				Title:   fmt.Sprintf("Pending enrolment requests: %d", n),
+				ID:      menuIDPendingEnrolments,
+				Enabled: true,
+			})
+		}
+	}
+
 	items = append(items,
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true},
 		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
@@ -695,6 +763,12 @@ func (a *App) onMenuClick(itemID int) {
 
 	case itemID == menuIDResetSealedStore:
 		a.confirmAndResetSealedStore()
+
+	case itemID == menuIDPendingEnrolments:
+		// Opens Settings and nothing else — see the menu item's own
+		// comment. Approving or refusing a request happens from the
+		// Remote Clients tab this opens, never from the tray itself.
+		a.openSettingsWindow()
 
 	case itemID == menuIDExit:
 		a.cleanup()
