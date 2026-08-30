@@ -372,6 +372,9 @@ type enrolmentUpdateRequest struct {
 	ClientID   string                `json:"client_id"`
 	ProjectIDs *[]string             `json:"project_ids,omitempty"`
 	Budget     enrolmentBudgetUpdate `json:"budget"`
+	// CLIAdmin is a pointer for the same nil-means-no-change reason as
+	// ProjectIDs and every budget field.
+	CLIAdmin *bool `json:"cli_admin,omitempty"`
 }
 
 // updateEnrolment changes budget and/or grants without touching the
@@ -419,6 +422,13 @@ func updateEnrolment(store SettingsStore, req enrolmentUpdateRequest) (before, a
 		e.Budget = candidate.Budget
 		if req.ProjectIDs != nil {
 			e.ProjectIDs = candidate.ProjectIDs
+		}
+		// Applied outside the grants branch above: a cli-admin-only toggle
+		// must not be refused because an unrelated grant names a
+		// since-deleted profile (the dangling-grant case this function's
+		// own doc comment protects).
+		if req.CLIAdmin != nil {
+			e.CLIAdmin = *req.CLIAdmin
 		}
 		after = *e
 		return nil

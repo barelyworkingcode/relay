@@ -258,19 +258,33 @@ func enrolList(store SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCALLS/WINDOW\tBYTES/WINDOW\tCREATED\tFINGERPRINT")
+	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tCREATED\tFINGERPRINT")
 	for _, e := range s.Enrolments {
 		// Printed in full, and last, so all 64 hex characters cost nothing
 		// in readability: a revoked client's audit history stays legible
 		// after its enrolment is gone, and a listing that shortened it
 		// would be the obvious place for someone to copy the short form
 		// from.
-		fmt.Fprintf(w, "%s\t%s\t%d/%ds\t%d\t%s\t%s\n",
-			e.ClientID, formatGrants(e.ProjectIDs),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%ds\t%d\t%s\t%s\n",
+			e.ClientID, formatGrants(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
 			e.Budget.MaxCalls, e.Budget.WindowSeconds, e.Budget.MaxResultBytes,
 			e.CreatedAt, e.Fingerprint)
 	}
 	w.Flush()
+}
+
+func formatCLIAdmin(on bool) string {
+	if on {
+		return "on"
+	}
+	return "-"
+}
+
+func formatCLIAdminState(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 // parseEnrolUpdateFlags builds the update request from argv alone, with no
@@ -289,6 +303,7 @@ func parseEnrolUpdateFlags(args []string) enrolmentUpdateRequest {
 	var grants stringSlice
 	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); passing --grant at all REPLACES the whole grant list, same as create")
 	clearGrants := fs.Bool("clear-grants", false, "remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant")
+	cliAdmin := fs.Bool("cli-admin", false, "let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.")
 	fs.Parse(args)
 
 	req := enrolmentUpdateRequest{ClientID: *clientID}
@@ -307,6 +322,9 @@ func parseEnrolUpdateFlags(args []string) enrolmentUpdateRequest {
 			req.Budget.MaxResultBytes = &v
 		case "grant":
 			grantFlagSet = true
+		case "cli-admin":
+			v := *cliAdmin
+			req.CLIAdmin = &v
 		}
 	})
 	if grantFlagSet && *clearGrants {
@@ -321,7 +339,7 @@ func parseEnrolUpdateFlags(args []string) enrolmentUpdateRequest {
 		req.ProjectIDs = &ids
 	}
 	if !anyFlagSet {
-		exitError("nothing to update: pass at least one of --window-seconds, --max-calls, --max-result-bytes, --grant, --clear-grants")
+		exitError("nothing to update: pass at least one of --window-seconds, --max-calls, --max-result-bytes, --grant, --clear-grants, --cli-admin")
 	}
 	return req
 }
@@ -356,7 +374,16 @@ func enrolUpdate(store SettingsStore, args []string) {
 	if !slices.Equal(before.ProjectIDs, after.ProjectIDs) {
 		fmt.Printf("  profiles:    %s -> %s\n", formatGrants(before.ProjectIDs), formatGrants(after.ProjectIDs))
 	}
-	if before.Budget == after.Budget && slices.Equal(before.ProjectIDs, after.ProjectIDs) {
+	if before.CLIAdmin != after.CLIAdmin {
+		fmt.Printf("  cli-admin:   %s -> %s\n", formatCLIAdminState(before.CLIAdmin), strings.ToUpper(formatCLIAdminState(after.CLIAdmin)))
+		if after.CLIAdmin {
+			fmt.Println("               this certificate may now narrow its own access profiles over the")
+			fmt.Println("               remote listener. It still cannot register a command, mint a")
+			fmt.Println("               credential, or touch any other enrolment. Turn it off when done:")
+			fmt.Printf("               relay enrol update --client-id %s --cli-admin=false\n", after.ClientID)
+		}
+	}
+	if before.Budget == after.Budget && slices.Equal(before.ProjectIDs, after.ProjectIDs) && before.CLIAdmin == after.CLIAdmin {
 		fmt.Println("  no effective change (requested values match what was already stored)")
 	}
 	fmt.Printf("  fingerprint (unchanged): %s\n", after.Fingerprint)

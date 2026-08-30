@@ -82,6 +82,11 @@ func (r enrolmentUpdateRequest) presenceDigest() presence.Digest {
 	} else {
 		b.DurationField("budget.max_result_bytes", false, 0)
 	}
+	if r.CLIAdmin != nil {
+		b.BoolField("cli_admin", true, *r.CLIAdmin)
+	} else {
+		b.BoolField("cli_admin", false, false)
+	}
 	return b.Build()
 }
 
@@ -293,6 +298,21 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 	return created, nil
 }
 
+// enrolmentUpdateReason names the actual act (§6.5.2), special-casing
+// cli-admin the way projectGrantUpdateReason special-cases allow_cwd_auth:
+// both carry outsized blast radius for a single boolean, and turning either
+// off is still gated — the human is being told what changed, not asked to
+// approve only the direction that widens.
+func enrolmentUpdateReason(req enrolmentUpdateRequest) string {
+	if req.CLIAdmin != nil {
+		if *req.CLIAdmin {
+			return fmt.Sprintf("grant the enrolment %q configuration authority over its own access profiles (cli-admin)", req.ClientID)
+		}
+		return fmt.Sprintf("withdraw configuration authority (cli-admin) from the enrolment %q", req.ClientID)
+	}
+	return fmt.Sprintf("update the enrolment %q's grant", req.ClientID)
+}
+
 // Update changes budget and/or grants without touching the certificate
 // (updateEnrolment's own doc comment on why that's a different operation
 // from revoke+recreate). Gated because a grant-list replacement is exactly
@@ -307,8 +327,7 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, v
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return Enrolment{}, Enrolment{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "enrolment.update", req.presenceDigest(),
-		fmt.Sprintf("update the enrolment %q's grant", req.ClientID))
+	grant, err := requireGate(o.Gate, ctx, "enrolment.update", req.presenceDigest(), enrolmentUpdateReason(req))
 	if err != nil {
 		return Enrolment{}, Enrolment{}, err
 	}
@@ -329,6 +348,16 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, v
 		PresenceID: grant.ID(),
 	}); auditErr != nil {
 		slog.Error("enrolment updated but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
+	}
+	if req.CLIAdmin != nil {
+		cliAdminGrant := "cli_admin=off"
+		if after.CLIAdmin {
+			cliAdminGrant = "cli_admin=on"
+		}
+		if auditErr := recordConfigChange(o.auditor(), auditCredentialEnrolment, after.ClientID,
+			[]string{cliAdminGrant}, via, credID, grant.ID()); auditErr != nil {
+			slog.Error("enrolment cli-admin toggled but not recorded in the audit log", "client_id", after.ClientID, "error", auditErr)
+		}
 	}
 	o.notify()
 	return before, after, nil
