@@ -161,6 +161,24 @@ type enrolmentRequestPollResult struct {
 	RelayAddr        string   `json:"relay_addr,omitempty"`
 	CertPEM          string   `json:"cert_pem,omitempty"`
 	CAPEM            string   `json:"ca_pem,omitempty"`
+
+	// Projects carries each granted id with its display name, BESIDE
+	// project_ids and never instead of it, so a client reading ids today is
+	// unaffected. Without it the requesting machine can only print a UUID:
+	// ListTools returns tools with no project identity and DescribeGrant is
+	// gated on cli_admin, which a plain registration does not hold.
+	//
+	// omitempty is load-bearing, not cosmetic. It is what makes "a pending,
+	// refused or unknown poll carries no name" true on the wire rather than
+	// only in the struct — see approvedProject in enrolment_requests.go for
+	// why that confinement is what keeps ADR-018 §8 P2 intact with host
+	// configuration metadata on this channel.
+	Projects []enrolmentPollProject `json:"projects,omitempty"`
+}
+
+type enrolmentPollProject struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // enrolmentRateLimitResult is the one extra field a refusal carries beyond
@@ -219,6 +237,7 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 		RelayAddr:        res.RelayAddr,
 		CertPEM:          res.CertPEM,
 		CAPEM:            res.CAPEM,
+		Projects:         pollProjects(res.Projects),
 	})
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment poll: "+merr.Error())
@@ -226,21 +245,38 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 	return bridge.BridgeResponse{Type: bridge.RespResult, Result: data}
 }
 
-// enrolmentErrorResponse classifies a Lodge failure and, for a rate-limit
-// refusal specifically, attaches retry_after_seconds to Result — the one
-// case this listener puts data alongside an error.
+// pollProjects maps the table's projections onto the wire type. A nil in
+// gives a nil out, which omitempty then drops entirely — the shape a
+// pending, refused or unknown answer must have.
+func pollProjects(projects []approvedProject) []enrolmentPollProject {
+	if len(projects) == 0 {
+		return nil
+	}
+	out := make([]enrolmentPollProject, 0, len(projects))
+	for _, p := range projects {
+		out = append(out, enrolmentPollProject{ID: p.ID, Name: p.Name})
+	}
+	return out
+}
+
+// enrolmentErrorResponse classifies a Lodge failure. Every deliberate
+// throttle answers codeEnrolmentThrottled — a refusal for rate is not a
+// malformed request, and a client told CodeInvalidParams has nothing but the
+// message text to tell the two apart. The two that know how long the caller
+// should wait attach retry_after_seconds to Result — the one case this
+// listener puts data alongside an error.
 func enrolmentErrorResponse(err error) bridge.BridgeResponse {
 	var limited *enrolmentRateLimitedError
 	if errors.As(err, &limited) {
-		resp := bridge.ErrorResponse(codeEnrolmentThrottled, err.Error())
-		if data, merr := json.Marshal(enrolmentRateLimitResult{
-			RetryAfterSeconds: retryAfterSeconds(limited.RetryAfter),
-		}); merr == nil {
-			resp.Result = data
-		}
-		return resp
+		return enrolmentThrottledResponse(err, limited.RetryAfter)
+	}
+	var source *enrolmentSourceThrottledError
+	if errors.As(err, &source) {
+		return enrolmentThrottledResponse(err, source.RetryAfter)
 	}
 	if errors.Is(err, errEnrolmentTableFull) {
+		// No retry_after_seconds: a full table empties when rows expire or
+		// an operator acts, not on a clock this listener can quote.
 		return bridge.ErrorResponse(codeEnrolmentThrottled, err.Error())
 	}
 	// A missing CA is relay's own state, not a malformed request: the
@@ -250,6 +286,16 @@ func enrolmentErrorResponse(err error) bridge.BridgeResponse {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, err.Error())
 	}
 	return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, err.Error())
+}
+
+func enrolmentThrottledResponse(err error, retryAfter time.Duration) bridge.BridgeResponse {
+	resp := bridge.ErrorResponse(codeEnrolmentThrottled, err.Error())
+	if data, merr := json.Marshal(enrolmentRateLimitResult{
+		RetryAfterSeconds: retryAfterSeconds(retryAfter),
+	}); merr == nil {
+		resp.Result = data
+	}
+	return resp
 }
 
 func retryAfterSeconds(d time.Duration) int {

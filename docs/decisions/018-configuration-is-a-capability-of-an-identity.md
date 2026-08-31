@@ -210,6 +210,42 @@ Two properties everything about this channel follows from:
   door, and is confined the way a mailbox is: bounded capacity, no admission
   requirement to use it, and nothing behind it worth stealing.
 
+  > **Narrowed in its justification, not in its property.** The approved
+  > poll payload now also carries each granted access profile's **display
+  > name** beside the id it already carried, because nothing else the
+  > client can reach ever tells it one — `ListTools` returns tools with no
+  > project identity, and `DescribeGrant` is gated on `cli_admin`, which a
+  > plain registration does not and should not hold. Without a name the
+  > operator who granted "Hermes Mail Inbox" on the Mac is shown a UUID on
+  > the other machine with nothing to match it against, which defeats the
+  > point of reporting what the grant reaches (ADR-019 §5.7).
+  >
+  > **A display name is not covered by the sentence above.** "Public
+  > verifiers useless without a private key" is an argument about
+  > certificates; a project name is host configuration metadata and that
+  > argument does not reach it. P2's property still holds, on a different
+  > and narrower ground — **where the name may appear, not what it is**:
+  >
+  > - it is disclosed only in an **approved** payload, which exists only
+  >   because a human read that name on the approval sheet and deliberately
+  >   granted that profile to that exact key;
+  > - its recipient already holds the profile id and a certificate that can
+  >   call the profile's tools, so the name tells it nothing it could not
+  >   already infer from what it was just handed;
+  > - a `pending`, `refused` or `unknown` poll — the answers an
+  >   unauthenticated peer holding a guessed request id can actually reach —
+  >   carries no name at all, and that is enforced in code and asserted
+  >   against the marshalled JSON, not merely intended.
+  >
+  > The third point is the whole of the narrowing. Move the name into a
+  > branch a pending row can reach and this stops being a mailbox that
+  > answers a stranger with nothing, so P2 is then genuinely weakened rather
+  > than restated. The rest of the channel is unchanged: inbound is still a
+  > self-signed CSR, and the plain-TCP argument below is untouched — a
+  > profile name is not a secret whose confidentiality TLS would be
+  > protecting, and the CA certificate this listener already hands to any
+  > caller remains the reason encrypting it would buy nothing.
+
 **The transport is plain TCP, deliberately.** Once P2 holds, TLS on this
 listener buys nothing real: the client has no CA to verify a handshake
 against at lodge time, so pinning one would need `InsecureSkipVerify` plus a

@@ -11,7 +11,10 @@ package main
 // this file imports "relaygo/presence" or calls anything shaped like
 // Gate.Require. P2 (nothing on this channel is a secret) holds because the
 // CSR is proof-of-possession by construction (enrolment_csr.go) and nothing
-// here ever computes or stores a bearer value.
+// here ever computes or stores a bearer value. The one thing on this channel
+// that is neither a public verifier nor a peer's own input is the granted
+// profiles' display names, and it is confined by where it may appear rather
+// than by what it is — see approvedProject.
 
 import (
 	"crypto/rand"
@@ -108,6 +111,24 @@ func (e *enrolmentRateLimitedError) Error() string {
 
 func (e *enrolmentRateLimitedError) Unwrap() error { return errEnrolmentRateLimited }
 
+// enrolmentSourceThrottledError is the per-source window's refusal. It is a
+// TYPE rather than a fmt.Errorf string so the listener can answer it with
+// codeEnrolmentThrottled beside the other two throttles: as a bare error it
+// fell through to CodeInvalidParams, which told the operator their
+// well-formed request was "malformed" and left the client string-matching
+// this message to tell a throttle from a genuinely bad frame.
+//
+// The message text is deliberately unchanged from the string this replaced —
+// a client matching it must keep working until it can read the code instead.
+type enrolmentSourceThrottledError struct {
+	Host       string
+	RetryAfter time.Duration
+}
+
+func (e *enrolmentSourceThrottledError) Error() string {
+	return fmt.Sprintf("too many enrolment requests from %s; wait a moment and try again", e.Host)
+}
+
 // enrolmentRequestRecord is one lodged CSR. csrPEM is set once, at Lodge,
 // and NOTHING in this file mutates it afterward — no exported method
 // replaces it, which is what makes presenceDigest(csr) binding (§3) mean
@@ -128,12 +149,12 @@ type enrolmentRequestRecord struct {
 	// Set exactly once, by MarkApproved, after EnrolmentOps.Approve's gated
 	// sign has already committed (spec §3 step 4: "only then"). Zero value
 	// (approved == false) is every record's state from Lodge until then.
-	approved           bool
-	approvedClientID   string
-	approvedProjectIDs []string
-	approvedRelayAddr  string
-	approvedCertPEM    string
-	approvedCAPEM      string
+	approved          bool
+	approvedClientID  string
+	approvedProjects  []approvedProject
+	approvedRelayAddr string
+	approvedCertPEM   string
+	approvedCAPEM     string
 
 	// The comparison-code material (spec §3). sasCommit, sasNonce and
 	// requestedProfile are set at Lodge and never written again; sasOpen
@@ -225,7 +246,7 @@ const (
 type EnrolmentRequestApprovalSink interface {
 	Get(requestID string) (pendingRecordView, bool)
 	List() []enrolmentRequestView
-	MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) markApprovedOutcome
+	MarkApproved(requestID, clientID string, projects []approvedProject, relayAddr, certPEM, caPEM string) markApprovedOutcome
 	Refuse(audit *AuditRecorder, requestID string) bool
 }
 
@@ -248,6 +269,53 @@ type lodged struct {
 	SASNonce string
 }
 
+// approvedProject is one granted access profile as the approved poll reports
+// it: the id a call must name, and the display name the operator read on the
+// approval sheet. Name is never empty — a project with no name, or one gone
+// from settings between the sign and this read, degrades to its own id (see
+// EnrolmentOps.approvedProjects), because a blank rendered beside an id reads
+// as a bug rather than as an absent name.
+//
+// ADR-018 §8 P2 — nothing on this channel is a secret in either direction —
+// still holds, and the argument for a NAME is not the one P2's own sentence
+// makes for the two certificates. A display name is host configuration
+// metadata, not a public verifier useless without a private key. What confines
+// it is WHERE it may appear:
+//
+//   - only an approved payload carries one, and an approved payload exists
+//     only because a human read that name on the approval sheet and deliberately
+//     granted that project to this exact key;
+//   - its recipient already holds the project id and a certificate that can
+//     call that project's tools, so the name tells it nothing it could not
+//     already infer from what it was just given;
+//   - the answers an unauthorised caller holding a guessed request id can
+//     actually reach — pending, refused, unknown — carry no name at all.
+//
+// The third point is a property of code, not of intent: Poll populates this in
+// its approved branch alone, and enrolmentRequestPollResult.Projects is
+// omitempty, so the other three answers have no `projects` key on the wire.
+// Moving this field into a branch a pending row can reach would put host
+// configuration in front of an unauthenticated peer and is the way this
+// narrowing becomes an erosion.
+type approvedProject struct {
+	ID   string
+	Name string
+}
+
+// approvedProjectIDs is the ids alone, for the wire's existing project_ids
+// field. Derived rather than stored so the ids and the named pairs cannot
+// disagree about what was granted.
+func approvedProjectIDs(projects []approvedProject) []string {
+	if len(projects) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(projects))
+	for _, p := range projects {
+		out = append(out, p.ID)
+	}
+	return out
+}
+
 // pollResult is Poll's value: "pending" and "unknown" from this file alone;
 // "refused" once this file's own Refuse has marked a row; "approved" once
 // EnrolmentOps.Approve (a later slice, spec §3) has called MarkApproved.
@@ -262,6 +330,10 @@ type pollResult struct {
 	RelayAddr        string
 	CertPEM          string
 	CAPEM            string
+
+	// Projects is ProjectIDs with each id's display name beside it. Set in
+	// the approved branch of Poll and nowhere else — see approvedProject.
+	Projects []approvedProject
 }
 
 // enrolmentRequestTable is the pending table itself: record type,
@@ -505,7 +577,10 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	sourceHost := addrHost(remoteAddr)
 	if sourceHost != "" {
 		if last, ok := t.lastLodgeBySource[sourceHost]; ok && now.Sub(last) < perSourceLodgeInterval {
-			err = fmt.Errorf("too many enrolment requests from %s; wait a moment and try again", sourceHost)
+			err = &enrolmentSourceThrottledError{
+				Host:       sourceHost,
+				RetryAfter: perSourceLodgeInterval - now.Sub(last),
+			}
 			return lodged{}, err
 		}
 	}
@@ -607,7 +682,8 @@ func (t *enrolmentRequestTable) Poll(requestID, sasOpen string) (pollResult, err
 		return pollResult{
 			Status:     "approved",
 			ClientID:   r.approvedClientID,
-			ProjectIDs: r.approvedProjectIDs,
+			ProjectIDs: approvedProjectIDs(r.approvedProjects),
+			Projects:   append([]approvedProject(nil), r.approvedProjects...),
 			RelayAddr:  r.approvedRelayAddr,
 			CertPEM:    r.approvedCertPEM,
 			CAPEM:      r.approvedCAPEM,
@@ -727,7 +803,7 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 // keep them distinct all the way out to EnrolmentOps.Approve, which reports
 // errEnrolmentRequestExpired for the former and errEnrolmentRequestRefused
 // for the latter.
-func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) markApprovedOutcome {
+func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projects []approvedProject, relayAddr, certPEM, caPEM string) markApprovedOutcome {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.pending[requestID]
@@ -739,7 +815,7 @@ func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, project
 	}
 	r.approved = true
 	r.approvedClientID = clientID
-	r.approvedProjectIDs = append([]string(nil), projectIDs...)
+	r.approvedProjects = append([]approvedProject(nil), projects...)
 	r.approvedRelayAddr = relayAddr
 	r.approvedCertPEM = certPEM
 	r.approvedCAPEM = caPEM
