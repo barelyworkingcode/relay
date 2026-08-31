@@ -435,6 +435,75 @@ func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(
 }
 
 // ---------------------------------------------------------------------------
+// Issue #93: the row can be REFUSED, not just swept, while the presence
+// prompt is open — and must not be reported as the same thing.
+// ---------------------------------------------------------------------------
+
+// refusedDuringApprovalSink wraps a real enrolmentRequestTable and reproduces
+// the refusal race issue #93 names: the operator declines this exact
+// request, by name, from the pending list, in the gap between Approve's
+// Get() (the read before the gate) and its later MarkApproved (the write
+// after the gate, once the sign has already committed). Unlike
+// sweptDuringApprovalSink, this drives the table's own Refuse — the same
+// method `relay enrol refuse` and the Settings UI call — rather than
+// advancing a clock, because the fact under test is a decision, not a TTL.
+type refusedDuringApprovalSink struct {
+	*enrolmentRequestTable
+	requestID string
+}
+
+func (s *refusedDuringApprovalSink) Get(requestID string) (pendingRecordView, bool) {
+	rec, ok := s.enrolmentRequestTable.Get(requestID)
+	if !s.enrolmentRequestTable.Refuse(nil, s.requestID) {
+		panic("refusedDuringApprovalSink: Refuse did not take -- test setup is broken")
+	}
+	return rec, ok
+}
+
+func TestEnrolmentOpsApprove_RowRefusedDuringPresencePromptStillDeliversAndSaysSoDistinctlyFromExpiry(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
+
+	sink := &refusedDuringApprovalSink{enrolmentRequestTable: table, requestID: l.RequestID}
+	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: sink}
+
+	created, err := ops.Approve(context.Background(), approveFields{
+		RequestID: l.RequestID, ClientID: "hermes-mail", ProjectIDs: []string{profile.ID},
+	}, auditViaCLI, "")
+
+	// The bug: MarkApproved answered false for a refused row exactly as for
+	// a swept one, so Approve reported errEnrolmentRequestExpired here --
+	// false on every count (the row didn't expire, it still exists, and the
+	// poll answers "refused"). This must be errEnrolmentRequestRefused, and
+	// must NOT also satisfy errEnrolmentRequestExpired -- the two sentinels
+	// stay distinct rather than collapsing back into one message.
+	if !errors.Is(err, errEnrolmentRequestRefused) {
+		t.Fatalf("err = %v, want errEnrolmentRequestRefused", err)
+	}
+	if errors.Is(err, errEnrolmentRequestExpired) {
+		t.Fatalf("err = %v, must NOT also be errEnrolmentRequestExpired -- a refusal is not an expiry", err)
+	}
+
+	// The sign already committed: the enrolment is real regardless of the
+	// race, exactly as the swept-row case proves.
+	if created.CertPEM == "" || created.CAPEM == "" {
+		t.Fatal("the certificate must still be delivered even though the row was refused mid-approval")
+	}
+	if store.Get().FindEnrolment("hermes-mail") == nil {
+		t.Fatal("the enrolment must be real and recorded even though the row was refused mid-approval")
+	}
+
+	// The row was refused, not swept: the client's next poll must say so
+	// specifically, never fall through to "unknown".
+	poll, perr := table.Poll(l.RequestID)
+	assertNoErr(t, perr, "Poll")
+	if poll.Status != "refused" {
+		t.Fatalf("poll status = %q, want refused -- the row still exists and was decided, not expired", poll.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Refuse and PendingRequests: lighter coverage for the two siblings
 // ---------------------------------------------------------------------------
 

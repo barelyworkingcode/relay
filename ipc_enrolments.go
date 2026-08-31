@@ -302,11 +302,12 @@ func ipcApproveEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
 	// DispatchToMain before any UI touch.
 	ctx.GoFunc(func() {
 		created, err := ctx.EnrolmentOps.Approve(ctx.Ctx, fields, auditViaIPC, "")
-		// Only errEnrolmentBundle and errEnrolmentRequestExpired mean the
-		// record landed; every other error means nothing was persisted,
-		// and announcing a row for it would add a credential-less
-		// enrolment to the list — same rule ipcCreateEnrolment follows.
-		if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) {
+		// Only errEnrolmentBundle, errEnrolmentRequestExpired and
+		// errEnrolmentRequestRefused mean the record landed; every other
+		// error means nothing was persisted, and announcing a row for it
+		// would add a credential-less enrolment to the list — same rule
+		// ipcCreateEnrolment follows.
+		if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
 			dispatchEmit(ctx, "onEnrolmentError", err.Error())
 			return
 		}

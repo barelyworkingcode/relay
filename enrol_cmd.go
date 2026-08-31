@@ -575,6 +575,19 @@ func enrolApprove(args []string) {
 		fmt.Println("  `relay enrol revoke --client-id " + result.Enrolment.ClientID + "` to undo it")
 		return
 	}
+	// The row can also be found REFUSED rather than gone (issue #93): the
+	// operator declined this exact request from the pending list while
+	// THIS approval's own presence prompt was still open. The enrolment
+	// above already committed by the time that refusal landed, so it must
+	// be named as what it is — the operator's own decision, not a TTL —
+	// or `relay enrol revoke` reads as fixing an expiry nobody caused.
+	if result.RequestRefused {
+		fmt.Println("  note: you refused this exact request from the pending list while this approval's presence")
+		fmt.Println("  prompt was still open — the certificate was signed and committed anyway, for the CSR that")
+		fmt.Println("  refusal named. It is real and already recorded; see it in `relay enrol list`. If your refusal")
+		fmt.Println("  still stands, run `relay enrol revoke --client-id " + result.Enrolment.ClientID + "` to undo it")
+		return
+	}
 	fmt.Println("  the certificate is delivered to the client on its next poll; nothing further to do on this host")
 }
 

@@ -378,6 +378,18 @@ var (
 	// the poll row missing that certificate is a fact the operator must be
 	// told, not a fact that unwinds the issuance that already happened.
 	errEnrolmentRequestExpired = errors.New("the pending request row expired before this approval could mark it collected")
+
+	// errEnrolmentRequestRefused means completeSigning already committed the
+	// enrolment (the record is real, on disk, in `relay enrol list`) but
+	// MarkApproved found the row refused by the time it ran: the operator
+	// declined this exact request, by name, from the pending list while
+	// THIS approval's presence prompt was still open. Threaded through
+	// exactly like errEnrolmentRequestExpired, and never collapsed into it
+	// -- the row did not expire (it still exists) and the client's poll
+	// answers "refused", not "unknown", so telling the operator "expired"
+	// here would name a fact that did not happen and hide the one that did
+	// (issue #93).
+	errEnrolmentRequestRefused = errors.New("the operator refused this request while its approval was already in flight")
 )
 
 // Approve is enrolment.sign's second door (spec §3) — NOT a new gated
@@ -441,16 +453,21 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	// bundle write may still have failed (§11.7) — the certificate is
 	// delivered from memory regardless.
 	//
-	// MarkApproved's bool answers a question completeSigning cannot: is
-	// the row STILL THERE. The gate above can hold the operator's presence
-	// prompt open for as long as it takes a human to answer it, and the row
-	// this request lodged into has its own, independent 15-minute TTL —
-	// long enough for the two to race. When they do, the enrolment above
-	// has ALREADY committed (this line runs after it, never before), so
-	// the right answer is not to undo it; it is to say so, the same way an
+	// MarkApproved's outcome answers a question completeSigning cannot: is
+	// the row STILL THERE, and if not, why. The gate above can hold the
+	// operator's presence prompt open for as long as it takes a human to
+	// answer it, and in that window either the row's own independent
+	// 15-minute TTL can pass, or the operator can refuse this exact request
+	// from the pending list — two different races with two different facts
+	// to report. Either way the enrolment above has ALREADY committed (this
+	// line runs after it, never before), so the right answer is never to
+	// undo it; it is to say which of the two happened, the same way an
 	// on-disk bundle failure already does with errEnrolmentBundle.
-	if marked := o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM); !marked {
+	switch o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM) {
+	case markApprovedRowGone:
 		err = errors.Join(err, errEnrolmentRequestExpired)
+	case markApprovedRowRefused:
+		err = errors.Join(err, errEnrolmentRequestRefused)
 	}
 	return created, err
 }

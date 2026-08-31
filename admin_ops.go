@@ -190,6 +190,12 @@ type enrolmentSignResult struct {
 	// say so plainly rather than claim the client will collect a row that
 	// no longer exists.
 	RequestExpired bool `json:"request_expired,omitempty"`
+	// RequestRefused is RequestExpired's sibling, set when the row was
+	// instead found refused: the operator declined this exact request
+	// while THIS approval's presence prompt was still open. Kept as its
+	// own field rather than folded into RequestExpired -- the two rows
+	// differ in every fact enrolApprove's note is built from (issue #93).
+	RequestRefused bool `json:"request_refused,omitempty"`
 }
 
 func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -323,7 +329,7 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 		return nil, err
 	}
 	created, err := ops.Approve(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) {
+	if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
 		return nil, err
 	}
 	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
@@ -332,6 +338,9 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 	}
 	if errors.Is(err, errEnrolmentRequestExpired) {
 		result.RequestExpired = true
+	}
+	if errors.Is(err, errEnrolmentRequestRefused) {
+		result.RequestRefused = true
 	}
 	return marshalAdminResult(result)
 }
