@@ -478,13 +478,43 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	// line runs after it, never before), so the right answer is never to
 	// undo it; it is to say which of the two happened, the same way an
 	// on-disk bundle failure already does with errEnrolmentBundle.
-	switch o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM) {
+	switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
 	case markApprovedRowGone:
 		err = errors.Join(err, errEnrolmentRequestExpired)
 	case markApprovedRowRefused:
 		err = errors.Join(err, errEnrolmentRequestRefused)
 	}
 	return created, err
+}
+
+// approvedProjects pairs each granted id with the display name the operator
+// saw on the approval sheet, so the requesting machine's closing report can
+// name what its grant reaches instead of printing a bare UUID it has no way
+// to resolve (spec §5.7): nothing else the client can reach carries a project
+// name, and DescribeGrant is gated on cli_admin, which a plain registration
+// does not hold.
+//
+// A project that is unnamed, or gone from settings between the sign and this
+// read, degrades to its own id. Never to an empty string: the client prints
+// "name  (id)", and a blank there reads as a broken relay rather than as a
+// project nobody named.
+//
+// Only the approved payload carries these — see approvedProject's own comment
+// for why that keeps ADR-018 §8 P2 intact.
+func (o *EnrolmentOps) approvedProjects(ids []string) []approvedProject {
+	if len(ids) == 0 {
+		return nil
+	}
+	s := o.Store.Get()
+	out := make([]approvedProject, 0, len(ids))
+	for _, id := range ids {
+		name := id
+		if proj, _ := s.findProjectByID(id); proj != nil && strings.TrimSpace(proj.Name) != "" {
+			name = proj.Name
+		}
+		out = append(out, approvedProject{ID: id, Name: name})
+	}
+	return out
 }
 
 // sasIncompleteDetail names which of the two happened, because the operator

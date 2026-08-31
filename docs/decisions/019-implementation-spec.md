@@ -128,7 +128,18 @@ type EnrolmentRequestPollWire struct {
 
 ### 2.4 Poll result — host → client
 
-Shape is **unchanged**. In particular:
+Shape gains **one field**, `projects`, and is otherwise unchanged:
+
+```go
+    // Set in the APPROVED payload only; omitempty, so a pending, refused
+    // or unknown answer has no `projects` key at all. Carried BESIDE
+    // project_ids, never instead of it.
+    Projects []enrolmentPollProject `json:"projects,omitempty"`  // {id, name}
+```
+
+Each entry pairs a granted id with the access profile's display name, so §5.7's closing report can say `access: Hermes Mail Inbox  (proj_mail)` rather than a bare UUID — nothing else the client can reach carries a project name. `name` is never empty: an unnamed profile, or one gone from settings between the sign and the read, degrades to its own id. See [ADR-018 §8](018-configuration-is-a-capability-of-an-identity.md#8-the-enrolment-request-channel-is-a-mailbox-not-a-door)'s narrowing note on P2 for why host configuration metadata on this channel is confined by *where* it appears rather than by what it is.
+
+In particular:
 
 > **The poll response never carries the SAS.** Relay must not echo the code it displays. If it did, a man-in-the-middle would simply forward relay's value to the client and the comparison would be a comparison of one number with itself. This is an acceptance criterion (AC-14), not a style note.
 
@@ -335,7 +346,7 @@ type EnrolmentRequestSink interface {
 }
 ```
 
-Still exactly two methods, still exactly two handlers in `enrolmentRequestHandlers`. `enrolmentRequestLodgeResult` gains `ca_pem` and `sas_nonce`. `enrolmentRequestPollResult` is unchanged. This file continues to import neither `crypto/tls` nor `relaygo/presence`.
+Still exactly two methods, still exactly two handlers in `enrolmentRequestHandlers`. `enrolmentRequestLodgeResult` gains `ca_pem` and `sas_nonce`. `enrolmentRequestPollResult` gains `projects` (§2.4), populated in the approved branch alone. This file continues to import neither `crypto/tls` nor `relaygo/presence`.
 
 ### 4.5 `remote_reconcile.go` — modified
 
