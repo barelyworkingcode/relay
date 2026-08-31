@@ -514,6 +514,17 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .remote-state.on { color: var(--ok); border: 1px solid var(--ok); }
 .remote-state.off { color: var(--text-2); border: 1px solid var(--border); }
 .remote-state.absent { color: var(--text-3); border: 1px dashed var(--border); }
+/* The comparison code, and the largest thing on a pending row: the operator
+   is being asked to read six characters off one screen and match them to six
+   on another, and a code rendered at body size is a code nobody compares. */
+.enrol-sas { border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
+.enrol-sas-code { font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: 6px; color: var(--text); }
+.enrol-sas-state { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.enrol-sas-help { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+.enrol-sas.waiting { border-style: dashed; border-color: var(--border); }
+.enrol-sas.failed { border-color: var(--danger); }
+.enrol-sas.failed .enrol-sas-state { color: var(--danger); }
+.enrol-sas.legacy { border-style: dashed; border-color: var(--border); }
 .remote-note { font-size: 11px; color: var(--text-2); margin-top: 8px; }
 .remote-note.warn { color: var(--warn); }
 .remote-note.danger { color: var(--danger); }
@@ -567,7 +578,8 @@ window.__RELAY_INIT__ = {
   enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
   passkeys: __PASSKEYS_JSON__,
   loginSessions: __LOGIN_SESSIONS_JSON__,
-  loginCode: __LOGIN_CODE_JSON__
+  loginCode: __LOGIN_CODE_JSON__,
+  initialPage: __INITIAL_PAGE_JSON__
 };
 </script>
 <!--RELAY_BUNDLE-->

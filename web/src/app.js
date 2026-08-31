@@ -30,6 +30,10 @@ const LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
 // code was minted. Null on every ordinary open, and never persisted anywhere:
 // it lives in this page for two minutes and is not recoverable afterwards.
 const LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
+// The page the tray wants this window to open on. Seeded into the first paint
+// rather than emitted, because a window that is not up yet has no document to
+// receive an emit — see App.openRemoteClientsPage for the other arm.
+const INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
 
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
@@ -196,6 +200,7 @@ const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args":
 // form is open or the DOM hasn't rendered the form's inputs yet.
 function render(source) {
     if (state.projectForm) captureProjectFormInputs();
+    if (state.enrolForm) captureEnrolFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
     if (state.page === 'services') {
@@ -2888,13 +2893,21 @@ function renderPendingEnrolmentRequests() {
     }
     for (const r of list) {
         html += '<div class="enrol-card">';
+        html += renderRequestComparison(r);
         html += '<div class="enrol-card-header">';
         html += '<span class="enrol-card-name">' + esc(r.request_id) + '</span>';
         if (r.approved) {
             html += '<span class="remote-state on">approved: ' + esc(r.approved_client_id) + '</span>';
         } else {
             html += '<span>';
-            html += '<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm(\'' + esc(r.request_id) + '\')">Approve…</button> ';
+            if (enrolRequestApprovable(r)) {
+                html += '<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm(\'' + esc(r.request_id) + '\')">Approve…</button> ';
+            } else {
+                // Disabled and carrying no handler: approving a row with no
+                // completed comparison is approving without the control, and
+                // the host refuses it from every door anyway.
+                html += '<button class="btn btn-sm btn-primary" disabled title="This request has no completed comparison code, so it cannot be approved.">Approve…</button> ';
+            }
             html += '<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest(\'' + esc(r.request_id) + '\')">Refuse</button>';
             html += '</span>';
         }
@@ -2904,6 +2917,41 @@ function renderPendingEnrolmentRequests() {
     }
     html += '</div>';
     return html;
+}
+
+// enrolRequestApprovable is the one rule the Approve control obeys: a row
+// that committed to a comparison must have opened it, and opened it
+// correctly. A legacy `relayremote request` row carries no comparison and is
+// approvable exactly as it always was — that is what keeps the
+// operator-carried and carried-pin paths working. This mirrors, and never
+// replaces, EnrolmentOps.Approve's own refusal: the host enforces the
+// comparison independently of anything rendered here.
+function enrolRequestApprovable(r) {
+    if (r.is_legacy_request) return true;
+    return !!r.sas_ready && !r.sas_failed;
+}
+
+// renderRequestComparison is the comparison code and its three non-code
+// states, rendered above everything else on the row and repeated at the top
+// of the approval sheet so the operator is looking at it at the moment they
+// decide. The code is derived host-side from the CA, the CSR's public key and
+// two nonces; it is not a secret and not a password — its whole job is to be
+// read aloud and compared.
+function renderRequestComparison(r) {
+    if (r.is_legacy_request) {
+        return '<div class="enrol-sas legacy"><div class="enrol-sas-state">carried-pin request (<code>relayremote request</code>)</div>'
+            + '<div class="enrol-sas-help">There is no comparison code on this path. The control here is the CA fingerprint the operator carried to that machine, shown in the tab header.</div></div>';
+    }
+    if (r.sas_failed) {
+        return '<div class="enrol-sas failed"><div class="enrol-sas-state">Comparison failed</div>'
+            + '<div class="enrol-sas-help">That machine failed its comparison handshake; this request cannot be approved. Refuse it and register again — if it fails a second time, something is on the network path.</div></div>';
+    }
+    if (!r.sas_ready) {
+        return '<div class="enrol-sas waiting"><div class="enrol-sas-state">Waiting for the comparison code…</div>'
+            + '<div class="enrol-sas-help">Waiting for that machine to complete the comparison handshake. Approving is disabled until it does.</div></div>';
+    }
+    return '<div class="enrol-sas"><div class="enrol-sas-code">' + esc(r.sas) + '</div>'
+        + '<div class="enrol-sas-help">Compare this with the code shown on the machine asking. If they differ, Refuse — something is on the network path.</div></div>';
 }
 
 // renderPendingRequestFields is the exact four things spec §3 names, key
@@ -2916,6 +2964,13 @@ function renderPendingRequestFields(r) {
     html += '<div class="enrol-meta">';
     html += '<span>label: <strong>' + (r.label ? esc(r.label) : '(none)') + '</strong> <em>(supplied by the requesting machine)</em></span>';
     html += '</div>';
+    // Marked as a request, never as a grant: it is the same hostile input the
+    // label is, and nothing on this path acts on it.
+    if (r.requested_profile) {
+        html += '<div class="enrol-meta">';
+        html += '<span>asked for: <strong>' + esc(r.requested_profile) + '</strong> <em>(a request from that machine, not a grant)</em></span>';
+        html += '</div>';
+    }
     html += '<div class="enrol-meta">';
     html += '<span>from: <strong>' + esc(r.remote_addr) + '</strong></span>';
     html += '<span>arrived: <strong>' + esc(r.arrived_at) + '</strong></span>';
@@ -3018,6 +3073,10 @@ function renderEnrolmentForm() {
     if (approving && f.pendingRequest) {
         html += '<div class="proj-section">';
         html += '<div class="proj-section-title">Request ' + esc(f.request_id) + '</div>';
+        // The code repeats here, above the identity section: this is the panel
+        // open at the moment the decision is made, and a comparison the
+        // operator has to scroll back to is a comparison nobody makes.
+        html += renderRequestComparison(f.pendingRequest);
         html += renderPendingRequestFields(f.pendingRequest);
         html += '<p class="proj-section-help">Approving raises the same presence prompt <code>relay enrol sign</code> already uses — there is no second door into issuance. The certificate is issued over exactly the public key above; nothing chosen below can redirect it to a different key.</p>';
         // The client pins this value at collection time (spec §6: "only the
@@ -3032,14 +3091,16 @@ function renderEnrolmentForm() {
     html += '<div class="proj-section-title">Identity</div>';
     html += '<p class="proj-section-help">The client id is the certificate\'s Common Name and the bundle\'s directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>';
     html += '<label>Client id</label>';
-    // The label the request arrived with is offered only as a PLACEHOLDER,
-    // never a pre-filled value: it is hostile input (supplied by the
-    // requesting machine), and the client id is the human's naming
-    // decision, not an echo of it — matching `relay enrol approve
-    // --client-id`'s own help text ("this, not the request's label, names
-    // the enrolment").
+    // The value, when there is one, is the HOST's collision-free suggestion
+    // (suggested_client_id), never an echo of the request's label: the host
+    // owns its own client_id namespace and resolving a collision is not
+    // something an operator can do by typing. The label survives only as the
+    // placeholder, for a request the host had no suggestion for.
     const idPlaceholder = (approving && f.pendingRequest && f.pendingRequest.label) || 'hermes-mail';
     html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="' + esc(idPlaceholder) + '" />';
+    if (approving && f.client_id) {
+        html += '<p class="proj-section-help">Relay suggests this; it is yours to change. It names the enrolment in <code>relay enrol list</code> and in every audit record.</p>';
+    }
     html += '</div>';
 
     // ---- Grants ----
@@ -3057,12 +3118,27 @@ function renderEnrolmentForm() {
         html += '<div><div>' + esc(p.name) + '</div><div class="desc">' + esc(p.id) + '</div></div>';
         html += '</label>';
     }
-    if (grantable.length && f.project_ids.length === 0) {
+    // The requested profile renders read-only beside the list and its
+    // checkbox is NEVER pre-ticked: it is an unauthenticated peer's request,
+    // and a pre-ticked box is a grant issued by a machine rather than by the
+    // operator. Approving without touching the list issues nothing.
+    if (approving && f.pendingRequest && f.pendingRequest.requested_profile) {
+        html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + '</code> — a request from that machine, not a grant. Nothing is ticked for you; tick it above only if you mean to.</p>';
+    }
+    if (f.project_ids.length === 0) {
         // Same note `relay enrol create` prints: enrolling with nothing is
         // legal and is the expected "enrol now, widen deliberately later"
         // resting state. Say so rather than emitting a certificate that
         // silently reaches nothing.
         html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
+        // Never pre-ticked, and the only way past the requirement. A newly
+        // signed enrolment holding nothing connects successfully and lists
+        // zero tools, which reads as a broken install rather than an
+        // incomplete one — so the operator says which they mean.
+        html += '<label class="proj-tool-row">';
+        html += '<input type="checkbox" ' + (f.no_grant ? 'checked' : '') + ' onchange="toggleEnrolNoGrant(this.checked)" />';
+        html += '<div><div>Enrol with no access for now (nothing will work until I grant a profile)</div></div>';
+        html += '</label>';
     }
     html += '</div>';
 
@@ -3079,14 +3155,15 @@ function renderEnrolmentForm() {
     html += '</div>';
 
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveEnrolment()">' + (approving ? 'Approve &amp; issue certificate' : 'Create &amp; issue certificate') + '</button>';
+    const grantChosen = f.project_ids.length > 0 || !!f.no_grant;
+    html += '<button class="btn btn-primary"' + (grantChosen ? '' : ' disabled') + ' onclick="saveEnrolment()">' + (approving ? 'Approve &amp; issue certificate' : 'Create &amp; issue certificate') + '</button>';
     html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
     html += '</div>';
     return html;
 }
 
 function newEnrolment() {
-    state.enrolForm = { client_id: '', project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '' };
+    state.enrolForm = { client_id: '', project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '', no_grant: false };
     state.enrolmentError = null;
     state.enrolBundle = null;
     state.enrolRevoked = null;
@@ -3103,8 +3180,22 @@ function newEnrolment() {
 function approveEnrolmentRequestForm(requestID) {
     const r = (state.pendingEnrolmentRequests || []).find(x => x.request_id === requestID);
     if (!r) return;
+    // Belt and braces with the disabled button in the row above, and with
+    // EnrolmentOps.Approve's own refusal on the host below. The failure mode
+    // being guarded is a silent widening — a future edit that re-enables the
+    // button would otherwise open a sheet with nothing behind it on this side
+    // — so the rule is asserted at the door as well as on the control.
+    if (!enrolRequestApprovable(r)) {
+        state.enrolmentError = 'this request has not completed its comparison handshake, so it cannot be approved';
+        render();
+        return;
+    }
     state.enrolForm = {
-        client_id: '', project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '',
+        // The host's own suggestion, not the request's label — see the form's
+        // client-id help text. Absent (an unusable label, or every suffix to
+        // -99 taken) leaves the field empty rather than guessing.
+        client_id: r.suggested_client_id || '',
+        project_ids: [], window_seconds: '', max_calls: '', max_result_bytes: '', no_grant: false,
         request_id: requestID, pendingRequest: r,
     };
     state.enrolmentError = null;
@@ -3139,7 +3230,37 @@ function toggleEnrolGrant(projectID, checked) {
     const i = f.project_ids.indexOf(projectID);
     if (checked && i < 0) f.project_ids.push(projectID);
     if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    // Ticking a profile answers the question the checkbox asks, so the
+    // checkbox stops claiming the opposite.
+    if (f.project_ids.length > 0) f.no_grant = false;
     render();
+}
+
+function toggleEnrolNoGrant(checked) {
+    const f = state.enrolForm;
+    if (!f) return;
+    f.no_grant = !!checked;
+    render();
+}
+
+// captureEnrolFormInputs is the enrolment form's half of what
+// captureProjectFormInputs does for the project form: the client id and the
+// three budget fields live only in the DOM between renders, and every
+// checkbox on this form re-renders it. Without this, ticking a profile
+// erases whatever the operator had typed above it. Empty is treated as
+// "leave it", the same guard captureProjectFormInputs uses, so a field the
+// browser has not rendered yet cannot blank a stored value.
+function captureEnrolFormInputs() {
+    const f = state.enrolForm;
+    if (!f) return;
+    const val = function(id) {
+        const el = document.getElementById(id);
+        return el && typeof el.value === 'string' ? el.value : '';
+    };
+    f.client_id = val('enrolClientId') || f.client_id;
+    f.window_seconds = val('enrolWindow') || f.window_seconds;
+    f.max_calls = val('enrolMaxCalls') || f.max_calls;
+    f.max_result_bytes = val('enrolMaxBytes') || f.max_result_bytes;
 }
 
 function saveEnrolment() {
@@ -3152,6 +3273,15 @@ function saveEnrolment() {
         return;
     }
     f.client_id = clientID;
+    // ADR-019 §7: never the silent default. Zero profiles is a legal and
+    // sometimes correct answer, but it is one the operator has to give out
+    // loud — the certificate issued below connects successfully and reaches
+    // nothing, which reads on the client machine as a broken install.
+    if (f.project_ids.length === 0 && !f.no_grant) {
+        state.enrolmentError = 'choose at least one access profile, or tick "Enrol with no access for now"';
+        render();
+        return;
+    }
     // A blank or unparseable field sends 0, which normalizeEnrolmentBudget
     // reads as "unset" and fills with the conservative default. Zero never
     // means unlimited anywhere on this path.
@@ -5003,8 +5133,13 @@ window.onServiceActionResult = function(result) {
 };
 
 // A tray-minted code arrives with the first paint, so the window opens on the
-// tab that shows it rather than on Services with the code out of sight.
-if (LOGIN_CODE_INIT) showPage('passkeys'); else render();
+// tab that shows it rather than on Services with the code out of sight. A
+// tray-selected page does the same for a pending enrolment request, and loses
+// to the code: the code is unrecoverable once this window closes and the
+// request is not.
+if (LOGIN_CODE_INIT) showPage('passkeys');
+else if (INITIAL_PAGE) showPage(INITIAL_PAGE);
+else render();
 
 // Inline on* handlers in rendered HTML resolve against window. Bundling scopes
 // these declarations to the module, so re-expose every top-level function (and
@@ -5013,7 +5148,7 @@ if (LOGIN_CODE_INIT) showPage('passkeys'); else render();
 Object.assign(window, {
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
-    approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
+    approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});

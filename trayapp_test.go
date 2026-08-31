@@ -23,6 +23,7 @@ type recordingPlatform struct {
 	menus    []string
 	settings int
 	urls     []string
+	notes    []notifyCall
 }
 
 func (p *recordingPlatform) Init()                      {}
@@ -37,6 +38,11 @@ func (p *recordingPlatform) OpenSettings(string)      { p.mu.Lock(); p.settings+
 func (p *recordingPlatform) EvalSettingsJS(string)    {}
 func (p *recordingPlatform) DispatchToMain(fn func()) { fn() }
 func (p *recordingPlatform) OpenURL(u string)         { p.mu.Lock(); p.urls = append(p.urls, u); p.mu.Unlock() }
+func (p *recordingPlatform) Notify(title, body string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.notes = append(p.notes, notifyCall{title, body})
+}
 
 func (p *recordingPlatform) menuCount() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.menus) }
 func (p *recordingPlatform) lastMenu() string {

@@ -456,7 +456,7 @@ func enrolRequests(args []string) {
 		return
 	}
 	w := newTabWriter()
-	fmt.Fprintln(w, "REQUEST ID\tKEY\tLABEL\tFROM\tARRIVED\tEXPIRES\tSTATUS")
+	fmt.Fprintln(w, "REQUEST ID\tSAS\tKEY\tLABEL\tFROM\tARRIVED\tEXPIRES\tSTATUS")
 	for _, req := range result.Requests {
 		label := req.Label
 		if label == "" {
@@ -469,10 +469,28 @@ func enrolRequests(args []string) {
 		// The full 64 hex characters, never truncated — FingerprintDER's
 		// stated reason applies identically to a request's own key: a
 		// prefix answers "probably that key" where the point is "that key".
-		fmt.Fprintf(w, "%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
-			req.RequestID, req.SPKISHA256, label, req.RemoteAddr, req.ArrivedAt, req.ExpiresAt, status)
+		fmt.Fprintf(w, "%s\t%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
+			req.RequestID, enrolRequestSASColumn(req), req.SPKISHA256, label, req.RemoteAddr, req.ArrivedAt, req.ExpiresAt, status)
 	}
 	w.Flush()
+}
+
+// enrolRequestSASColumn renders the comparison code's three non-code states
+// as words rather than a blank cell, because a blank one reads as "nothing to
+// compare" for all three and only one of them means that. A legacy
+// `relayremote request` row shows "-": it carries no comparison and never
+// will, and the control there is the CA fingerprint the operator carried.
+func enrolRequestSASColumn(req enrolmentRequestListItem) string {
+	switch {
+	case req.IsLegacyRequest:
+		return "-"
+	case req.SASFailed:
+		return "FAILED"
+	case req.SASReady && req.SAS != "":
+		return req.SAS
+	default:
+		return "(waiting)"
+	}
 }
 
 // parseEnrolApproveFlags builds the approve request from argv alone, no
@@ -480,10 +498,23 @@ func enrolRequests(args []string) {
 // no --csr flag: the CSR is the pending request's stored bytes, never
 // something this command could name (spec §3, approveFields' own doc
 // comment).
+// enrolApproveNoGrantMessage is what `relay enrol approve` says when no
+// --grant was named (ADR-019 §7: never the silent default). An enrolment
+// holding nothing connects successfully and lists zero tools, which reads on
+// the client machine as a broken install rather than an incomplete one — so
+// the operator says which they meant. The fix is one flag, either way.
+const enrolApproveNoGrantMessage = "--grant is required: approving with no access profile issues a certificate that can reach nothing,\n" +
+	"  which reads on the client machine as a broken install rather than a deliberate one.\n" +
+	"  Name the profile it should reach:  relay enrol approve --id ID --client-id NAME --grant PROFILE_ID\n" +
+	"  Or enrol it with no access on purpose, and grant later with `relay enrol update`:\n" +
+	"    relay enrol approve --id ID --client-id NAME --no-grant\n" +
+	"  See the profiles you can name with: relay grant"
+
 func parseEnrolApproveFlags(args []string) approveFields {
 	fs := flag.NewFlagSet("enrol approve", flag.ExitOnError)
 	requestID := fs.String("id", "", "pending request id to approve (required)")
 	clientID := fs.String("client-id", "", "human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment")
+	noGrant := fs.Bool("no-grant", false, "enrol this machine with no access at all (nothing will work until `relay enrol update --grant` adds one); mutually exclusive with --grant")
 	shared := addEnrolGrantBudgetFlags(fs)
 	fs.Parse(args)
 
@@ -492,6 +523,12 @@ func parseEnrolApproveFlags(args []string) approveFields {
 	}
 	if *clientID == "" {
 		exitError("--client-id is required")
+	}
+	if len(shared.grants) > 0 && *noGrant {
+		exitError("--grant and --no-grant are mutually exclusive")
+	}
+	if len(shared.grants) == 0 && !*noGrant {
+		exitError("%s", enrolApproveNoGrantMessage)
 	}
 	return approveFields{
 		RequestID:  *requestID,

@@ -551,6 +551,27 @@ func (o *EnrolmentOps) Refuse(requestID string) error {
 	return nil
 }
 
+// lodgeGenerationReader is enrolmentRequestTable's monotonic insert counter,
+// asked for through an interface rather than added to
+// EnrolmentRequestApprovalSink: approving needs nothing from it, and the
+// table's own doc comment forbids growing anything notification-shaped in
+// the other direction. A sink that does not implement it reads as "nothing
+// has ever arrived".
+type lodgeGenerationReader interface {
+	LodgeGeneration() uint64
+}
+
+// LodgeGeneration is the pull the tray's notifier reads on the poll it
+// already runs. It is deliberately the only new fact crossing this boundary:
+// a counter, read on a timer, never a callback the lodge path could invoke.
+func (o *EnrolmentOps) LodgeGeneration() uint64 {
+	r, ok := o.Requests.(lodgeGenerationReader)
+	if !ok {
+		return 0
+	}
+	return r.LodgeGeneration()
+}
+
 // PendingRequests is the read-only surface `relay enrol requests` and,
 // later, Settings -> Remote Clients' pending panel use. A nil Requests
 // table (every door that predates this slice) reads as "nothing pending"

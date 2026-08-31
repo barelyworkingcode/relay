@@ -42,6 +42,10 @@ const remoteAbsent = `{configured:false, enabled:false, listen:'', effective:'12
 const remoteAuditOff = `{configured:true, enabled:true, listen:'127.0.0.1:9910', effective:'127.0.0.1:9910', audit_enabled:false}`
 
 // A pending request exactly as the IPC door projects it (pendingEnrolmentRequestView).
+// is_legacy_request marks it as a `relayremote request` row -- the shape this
+// fixture has always described, and the one whose Approve stays enabled with
+// no comparison code. Rows carrying a comparison live in
+// settings_enrolments_sas_ui_test.go.
 const pendingRequestFixture = `[{
 	request_id: 'req_9f2a41c7',
 	spki_sha256: '8b03d1e2f3a4b5c6d7e8f900112233445566778899aabbccddeeff001122ee',
@@ -49,7 +53,8 @@ const pendingRequestFixture = `[{
 	remote_addr: '10.0.0.5:41233',
 	arrived_at: '2026-08-30T09:14:02Z',
 	expires_at: '2026-08-30T09:29:02Z',
-	approved: false
+	approved: false,
+	is_legacy_request: true
 }]`
 
 // seedRemoteVM loads the app bundle, switches to the Remote Clients tab, and
