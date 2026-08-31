@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework EventKit -framework Contacts
+#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework EventKit -framework Contacts -framework UserNotifications
 #include "cocoa_darwin.h"
 #include <stdlib.h>
 */
@@ -109,6 +109,14 @@ func (p *DarwinPlatform) OpenURL(url string) {
 	C.cocoa_open_url(cs)
 }
 
+func (p *DarwinPlatform) Notify(title, body string) {
+	ct := C.CString(title)
+	defer C.free(unsafe.Pointer(ct))
+	cb := C.CString(body)
+	defer C.free(unsafe.Pointer(cb))
+	C.cocoa_notify(ct, cb)
+}
+
 //export goOnMenuClick
 func goOnMenuClick(itemID C.int) {
 	if appInstance != nil {
@@ -127,6 +135,13 @@ func goOnSettingsIpc(msg *C.char) {
 func goOnSettingsClose() {
 	if appInstance != nil {
 		appInstance.onSettingsClose()
+	}
+}
+
+//export goOnNotificationClick
+func goOnNotificationClick() {
+	if appInstance != nil {
+		appInstance.onNotificationClick()
 	}
 }
 

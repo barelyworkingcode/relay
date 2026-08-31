@@ -287,6 +287,16 @@ type enrolmentRequestListItem struct {
 	ExpiresAt        string `json:"expires_at"`
 	Approved         bool   `json:"approved"`
 	ApprovedClientID string `json:"approved_client_id,omitempty"`
+
+	// The comparison code and its states, so `relay enrol requests` renders
+	// the same three answers the Settings panel does — see
+	// enrolRequestSASColumn. IsLegacyRequest marks a `relayremote request`
+	// row, which has no comparison and never gains one.
+	SAS              string `json:"sas,omitempty"`
+	SASReady         bool   `json:"sas_ready"`
+	SASFailed        bool   `json:"sas_failed"`
+	IsLegacyRequest  bool   `json:"is_legacy_request"`
+	RequestedProfile string `json:"requested_profile,omitempty"`
 }
 
 type enrolmentRequestListResult struct {
@@ -310,6 +320,11 @@ func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessag
 			ExpiresAt:        v.ExpiresAt.UTC().Format(time.RFC3339),
 			Approved:         v.Approved,
 			ApprovedClientID: v.ApprovedClientID,
+			SAS:              v.SAS,
+			SASReady:         v.SASReady,
+			SASFailed:        v.SASFailed,
+			IsLegacyRequest:  v.IsLegacyRequest,
+			RequestedProfile: v.RequestedProfile,
 		})
 	}
 	return marshalAdminResult(enrolmentRequestListResult{Requests: items})

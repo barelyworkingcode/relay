@@ -79,6 +79,29 @@ type pendingEnrolmentRequestView struct {
 	ExpiresAt        string `json:"expires_at"`
 	Approved         bool   `json:"approved"`
 	ApprovedClientID string `json:"approved_client_id,omitempty"`
+
+	// The comparison code and its two failure states (spec §6.2). SAS is
+	// empty until the requesting machine has opened its commitment, which
+	// is why SASReady exists as its own bool rather than being inferred
+	// from a non-empty string: "no code yet" and "this row will never have
+	// one" are different sentences on screen and only one of them is an
+	// error. IsLegacyRequest marks a `relayremote request` row, which
+	// carries no comparison at all and stays approvable exactly as before.
+	SAS             string `json:"sas,omitempty"`
+	SASReady        bool   `json:"sas_ready"`
+	SASFailed       bool   `json:"sas_failed"`
+	IsLegacyRequest bool   `json:"is_legacy_request"`
+
+	// RequestedProfile is hostile input from an unauthenticated peer, shown
+	// as a request and never acted on — see the panel's own rendering,
+	// which never pre-ticks it.
+	RequestedProfile string `json:"requested_profile,omitempty"`
+
+	// SuggestedClientID is the host's collision-free suggestion for the
+	// approval sheet's client-id field. Advisory: ValidateEnrolment inside
+	// store.With is still the authority on uniqueness, and empty means "no
+	// suggestion", never a chosen id.
+	SuggestedClientID string `json:"suggested_client_id,omitempty"`
 }
 
 func pendingEnrolmentRequestViewOf(v enrolmentRequestView) pendingEnrolmentRequestView {
@@ -91,13 +114,24 @@ func pendingEnrolmentRequestViewOf(v enrolmentRequestView) pendingEnrolmentReque
 		ExpiresAt:        v.ExpiresAt.UTC().Format(time.RFC3339),
 		Approved:         v.Approved,
 		ApprovedClientID: v.ApprovedClientID,
+		SAS:              v.SAS,
+		SASReady:         v.SASReady,
+		SASFailed:        v.SASFailed,
+		IsLegacyRequest:  v.IsLegacyRequest,
+		RequestedProfile: v.RequestedProfile,
 	}
 }
 
-func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView) []pendingEnrolmentRequestView {
+// pendingEnrolmentRequestViewsOf takes the settings snapshot the suggestion
+// is computed against rather than a store, so the projection stays a pure
+// function of what the caller already read — the count in the tray menu and
+// the rows in the panel come from one read, never two.
+func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView, s *Settings) []pendingEnrolmentRequestView {
 	out := make([]pendingEnrolmentRequestView, 0, len(views))
 	for _, v := range views {
-		out = append(out, pendingEnrolmentRequestViewOf(v))
+		pv := pendingEnrolmentRequestViewOf(v)
+		pv.SuggestedClientID = suggestClientID(s, v.Label)
+		out = append(out, pv)
 	}
 	return out
 }
@@ -264,7 +298,7 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 // ctx.GoFunc on its own account.
 func emitPendingEnrolmentRequests(ctx *IPCContext) {
 	ctx.UI.EmitEvent("onEnrolmentRequestsChanged",
-		marshalForUI(pendingEnrolmentRequestViewsOf(ctx.EnrolmentOps.PendingRequests())))
+		marshalForUI(pendingEnrolmentRequestViewsOf(ctx.EnrolmentOps.PendingRequests(), ctx.Store.Get())))
 }
 
 // ipcListEnrolmentRequests answers the Remote Clients tab's Pending requests

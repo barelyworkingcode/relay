@@ -42,15 +42,21 @@ func mustMarshalJSON(label string, v interface{}) string {
 // value" without anyone opening the editor first, and a list that had to
 // round-trip for that would render the reassuring answer first.
 func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView) string {
-	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil)
+	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil, "")
 }
 
-// renderSettingsDocument is renderSettingsHTML plus the one thing only the
+// renderSettingsDocument is renderSettingsHTML plus the two things only the
 // tray can supply: a bootstrap code minted moments ago by the menu item that
-// opened this window. It is seeded into the first paint rather than emitted,
-// because a window that is not up yet has no document to receive an emit —
-// see App.showLoginCode. nil is the ordinary case and every other caller's.
-func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView) string {
+// opened this window, and the page that menu item wants the window to open
+// on. Both are seeded into the first paint rather than emitted, because a
+// window that is not up yet has no document to receive an emit — see
+// App.showLoginCode and App.openRemoteClientsPage. nil and "" are the
+// ordinary case and every other caller's.
+//
+// initialPage is one of web/src/app.js's showPage ids and is set only from a
+// constant in this repository; it never carries anything a network peer
+// supplied.
+func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
@@ -97,5 +103,6 @@ func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache m
 		"__PASSKEYS_JSON__", mustMarshalJSON("passkeys", passkeyViews(settings)),
 		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, time.Now())),
 		"__LOGIN_CODE_JSON__", mustMarshalJSON("login_code", loginCode),
+		"__INITIAL_PAGE_JSON__", mustMarshalJSON("initial_page", initialPage),
 	).Replace(settingsHTML)
 }
