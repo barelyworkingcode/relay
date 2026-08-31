@@ -12,9 +12,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
@@ -72,6 +76,14 @@ type remoteFixtureOpts struct {
 	// conservative defaults, so a test can drive throttling deterministically
 	// without making hundreds of calls.
 	budget *EnrolmentBudget
+	// secondTool, when non-empty, names a second tool the mock macmcp
+	// connection exposes alongside "mail_search". Empty (the default) keeps
+	// every existing fixture consumer's "exactly one tool" assumption
+	// (remote_server_test.go's own ListTools assertions) intact; a test
+	// proving a narrow actually REMOVES a tool from ListTools — rather than
+	// merely returning a set that happens to still hold one entry — needs
+	// something to narrow away.
+	secondTool string
 }
 
 // newRemoteFixture builds a sandboxed relay install with one remote project,
@@ -120,7 +132,11 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	assertNoErr(t, createErr, "create remote project")
 
 	mgr := NewExternalMcpManager(nil)
-	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools("mail_search"),
+	toolNames := []string{"mail_search"}
+	if opts.secondTool != "" {
+		toolNames = append(toolNames, opts.secondTool)
+	}
+	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools(toolNames...),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			f.mcpCalls.Add(1)
 			return json.RawMessage(`{"content":[{"type":"text","text":"3 messages"}]}`), nil
@@ -154,10 +170,122 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	return f
 }
 
-// start binds and serves, failing the test if construction refused.
+// newRemoteFixtureCSRSigned is newRemoteFixture's CSR-signed twin: instead
+// of createEnrolment generating the client's key on this host, the key is
+// generated here (standing in for relayremote's own machine) and only its
+// CSR crosses into EnrolmentOps.Sign, exactly as `relay enrol sign` drives
+// it. The certificate that comes back is what the fixture dials
+// RemoteServer with, proving a CSR-signed enrolment authenticates and can
+// call a tool (acceptance criteria 1 and 24's relay-side half) — the one
+// newRemoteFixture, built entirely around createEnrolment, cannot reach.
+// newRemoteFixture itself is untouched: it is the legacy-path regression
+// test and stays exactly as it is.
+func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFixture, *ecdsa.PrivateKey) {
+	t.Helper()
+	dir := mkEmptySandboxRelayHome(t)
+	store := sealedSettingsStoreAt(dir)
+	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
+
+	f := &remoteFixture{t: t, dir: dir, store: store}
+
+	listen := opts.listen
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	enabled := opts.enabled
+	if enabled == nil && !opts.noRemoteBlock && !opts.omitEnabled {
+		enabled = ptr(true)
+	}
+
+	var createErr error
+	assertNoErr(t, store.With(func(s *Settings) {
+		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: "macmcp", DisplayName: "macMCP"})
+		if !opts.noRemoteBlock {
+			s.Remote = &RemoteConfig{Enabled: enabled, Listen: listen}
+		}
+		f.project, createErr = s.CreateProjectWithTokenKind(
+			ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
+		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_*"}})
+		if p, _ := s.findProjectByID(f.project.ID); p != nil {
+			f.project = *p
+		}
+		for i := 0; i < opts.extraProjects; i++ {
+			if _, err := s.CreateProjectWithTokenKind(
+				ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
+				createErr = err
+			}
+		}
+	}), "seed settings")
+	assertNoErr(t, createErr, "create remote project")
+
+	mgr := NewExternalMcpManager(nil)
+	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools("mail_search"),
+		func(context.Context, string, interface{}) (json.RawMessage, error) {
+			f.mcpCalls.Add(1)
+			return json.RawMessage(`{"content":[{"type":"text","text":"3 messages"}]}`), nil
+		}))
+
+	if !opts.disableAudit {
+		f.audit = newTestAudit(t, nil)
+	}
+	f.mgr = mgr
+	f.router = &appRouter{
+		store:    store,
+		tools:    mgr,
+		services: &fakeServiceReloader{},
+		enhanced: NewEnhancedServiceRegistry(nil),
+		audit:    f.audit,
+	}
+
+	// Stand in for relayremote's GenerateKeyAndCSR: a P-256 key generated
+	// here, in this process, never written to relay's own disk.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assertNoErr(t, err, "generate client key")
+	csrPEM := genCSRPEMFromKey(t, key, 0, "hermes-mail")
+
+	grants := []string{f.project.ID}
+	signFields := enrolmentSignFields{ClientID: "hermes-mail", ProjectIDs: grants, CSRPEM: string(csrPEM)}
+	if opts.budget != nil {
+		signFields.Budget = *opts.budget
+	}
+	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(f.audit)}
+	created, err := ops.Sign(context.Background(), signFields, auditViaCLI, "")
+	assertNoErr(t, err, "EnrolmentOps.Sign")
+	f.bundle = &enrolmentBundle{
+		Enrolment:  created.Enrolment,
+		Dir:        created.Dir,
+		CertPath:   created.Dir + "/client.crt",
+		CACertPath: created.Dir + "/ca.crt",
+		// KeyPath is deliberately left empty: signEnrolment never writes a
+		// client.key, so there is nothing on this host's disk to point at
+		// — the private key above never leaves this test's memory.
+	}
+
+	if opts.skipServe {
+		return f, key
+	}
+	f.start()
+	return f, key
+}
+
+// configurer builds a real *ProjectOps wired to this fixture's store and
+// audit recorder. No Gate: NarrowForEnrolment is deliberately ungated (see
+// its own doc comment), so there is nothing here for one to gate.
+func (f *remoteFixture) configurer() RemoteConfigurer {
+	return &ProjectOps{
+		Store:    f.store,
+		Issuance: issuanceAuditorOrNil(f.audit),
+		OnChange: func() {},
+	}
+}
+
+// start binds and serves, failing the test if construction refused. Wires a
+// real configurer and surfaces provider — not nil — so any test using this
+// fixture can exercise cli-admin's configuration plane; a test that never
+// sends DescribeGrant/NarrowGrant is unaffected by their presence.
 func (f *remoteFixture) start() {
 	f.t.Helper()
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, f.configurer(), f.mgr.AllMcpSurfaces)
 	assertNoErr(f.t, err, "NewRemoteServer")
 	if rs == nil {
 		f.t.Fatal("NewRemoteServer returned no listener for an enabled remote block")
@@ -185,6 +313,26 @@ func (f *remoteFixture) dial() *remoteTestClient {
 	f.t.Helper()
 	cert, err := tls.LoadX509KeyPair(f.bundle.CertPath, f.bundle.KeyPath)
 	assertNoErr(f.t, err, "load client keypair from bundle")
+	return f.dialWith(&tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      f.caPool(),
+	})
+}
+
+// dialWithClientKey connects with the CSR-signed certificate off disk (the
+// only thing signEnrolment wrote) paired with key, held only in memory —
+// standing in for the client machine that generated it and never sent it
+// anywhere. tls.X509KeyPair, not tls.LoadX509KeyPair: there is no
+// client.key file for this identity to read.
+func (f *remoteFixture) dialWithClientKey(key *ecdsa.PrivateKey) *remoteTestClient {
+	f.t.Helper()
+	certPEM, err := os.ReadFile(f.bundle.CertPath)
+	assertNoErr(f.t, err, "read client.crt from bundle")
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	assertNoErr(f.t, err, "MarshalECPrivateKey")
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	assertNoErr(f.t, err, "X509KeyPair from the CSR-signed certificate and its in-memory key")
 	return f.dialWith(&tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      f.caPool(),
@@ -301,6 +449,92 @@ func TestRemoteServer_EnrolledClientListsToolsAndCallsTool(t *testing.T) {
 	}
 	if last.Actor.ProjectID != f.project.ID {
 		t.Errorf("project = %q, want the granted project %q", last.Actor.ProjectID, f.project.ID)
+	}
+}
+
+// AC-1 / AC-24 (relay-side half): a remote enrolled entirely via CSR — key
+// generated off-host, only the CSR signed by EnrolmentOps.Sign — completes
+// a real mTLS handshake against RemoteServer and calls a tool, exactly as
+// the createEnrolment-based fixture above does. This is the hermetically
+// reachable half of the end-to-end acceptance criterion that was going
+// untaken: remoteFixture already proves the mTLS handshake works, but every
+// existing fixture built its identity with createEnrolment, so nothing
+// exercised RemoteServer against a certificate that came out of Sign.
+func TestRemoteServer_CSRSignedClientListsToolsAndCallsTool(t *testing.T) {
+	f, key := newRemoteFixtureCSRSigned(t, remoteFixtureOpts{})
+	c := f.dialWithClientKey(key)
+	if c == nil {
+		t.Fatal("CSR-signed client could not complete the handshake")
+	}
+
+	resp := c.roundTrip(`{"type":"ListTools"}`)
+	if resp.Type != bridge.RespTools {
+		t.Fatalf("ListTools returned %s: %s", resp.Type, resp.Message)
+	}
+	var tools []mcp.Tool
+	assertNoErr(t, json.Unmarshal(resp.Tools, &tools), "parse tools")
+	if len(tools) != 1 || tools[0].Name != "mail_search" {
+		t.Fatalf("tool list = %+v, want the one tool the grant allows", tools)
+	}
+
+	resp = c.roundTrip(`{"type":"CallTool","name":"mail_search","arguments":{"q":"invoice"}}`)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("CallTool returned %s: %s", resp.Type, resp.Message)
+	}
+	if !strings.Contains(string(resp.Result), "3 messages") {
+		t.Errorf("result did not come from the MCP: %s", resp.Result)
+	}
+	if f.mcpCalls.Load() != 1 {
+		t.Errorf("MCP was invoked %d times, want 1", f.mcpCalls.Load())
+	}
+
+	events := readLoggedEvents(t, f.audit)
+	if len(events) == 0 {
+		t.Fatal("a remote tool call was not recorded at all")
+	}
+	last := events[len(events)-1]
+	if last.Actor.Kind != AuditActorRemote || last.Actor.ClientID != "hermes-mail" {
+		t.Errorf("actor = %+v, want the CSR-signed client attested from the certificate", last.Actor)
+	}
+	if last.Actor.Fingerprint != f.bundle.Enrolment.Fingerprint {
+		t.Errorf("fingerprint = %q, want the full enrolled fingerprint %q", last.Actor.Fingerprint, f.bundle.Enrolment.Fingerprint)
+	}
+	if last.Actor.ProjectID != f.project.ID {
+		t.Errorf("project = %q, want the granted project %q", last.Actor.ProjectID, f.project.ID)
+	}
+}
+
+// AC-33: the operator-carried path (relay enrol sign, in EnrolmentOps.Sign's
+// shape) still produces a bundle a client installs and calls tools with,
+// with the enrolment-request channel disabled entirely — this fixture's
+// settings never set remote.enrolment_requests at all, so resolveEnrolment
+// resolves to no listener, and no EnrolmentRequestServer exists anywhere in
+// this test's process. Sign and Approve share one body (enrolment_ops.go's
+// completeSigning); this is the proof that body owes nothing to the request
+// channel's own machinery.
+func TestRemoteServer_CSRSignedClientWorksWithTheRequestChannelDisabled(t *testing.T) {
+	f, key := newRemoteFixtureCSRSigned(t, remoteFixtureOpts{})
+
+	resolved, err := f.store.Get().Remote.resolveEnrolment()
+	assertNoErr(t, err, "resolveEnrolment")
+	if resolved.Enabled {
+		t.Fatal("the enrolment-request channel must be disabled for this regression to mean anything")
+	}
+
+	c := f.dialWithClientKey(key)
+	if c == nil {
+		t.Fatal("CSR-signed client could not complete the handshake")
+	}
+	resp := c.roundTrip(`{"type":"ListTools"}`)
+	if resp.Type != bridge.RespTools {
+		t.Fatalf("ListTools returned %s: %s", resp.Type, resp.Message)
+	}
+	resp = c.roundTrip(`{"type":"CallTool","name":"mail_search","arguments":{"q":"invoice"}}`)
+	if resp.Type != bridge.RespResult {
+		t.Fatalf("CallTool returned %s: %s", resp.Type, resp.Message)
+	}
+	if !strings.Contains(string(resp.Result), "3 messages") {
+		t.Errorf("result did not come from the MCP: %s", resp.Result)
 	}
 }
 
@@ -615,7 +849,7 @@ func TestRemoteServer_RevokingAnEnrolmentClosesItsLiveConnection(t *testing.T) {
 func TestRemoteServer_DoesNotStartWhenTheConfigBlockIsAbsent(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{noRemoteBlock: true, skipServe: true})
 
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 	assertNoErr(t, err, "NewRemoteServer with no remote block")
 	if rs != nil {
 		rs.Close()
@@ -634,7 +868,7 @@ func TestRemoteServer_DoesNotStartWhenDisabledOrUnstated(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newRemoteFixture(t, opts)
-			rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+			rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 			assertNoErr(t, err, "NewRemoteServer")
 			if rs != nil {
 				rs.Close()
@@ -684,7 +918,7 @@ func TestRemoteCertHosts(t *testing.T) {
 func TestRemoteServer_RefusesToServeWhenAuditingIsDisabled(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{disableAudit: true, skipServe: true})
 
-	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit)
+	rs, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil)
 	if err == nil {
 		if rs != nil {
 			rs.Close()
@@ -705,7 +939,7 @@ func TestRemoteServer_RefusesToServeWhenAuditingIsDisabled(t *testing.T) {
 func TestRemoteServer_AuditRefusalDoesNotAffectLocalCallers(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{disableAudit: true, skipServe: true})
 
-	if _, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit); err == nil {
+	if _, err := NewRemoteServer(context.Background(), f.store, f.router, f.audit, nil, nil); err == nil {
 		t.Fatal("expected the remote listener to refuse")
 	}
 	// The same router, called locally with a project token, keeps working.

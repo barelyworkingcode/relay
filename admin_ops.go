@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 // adminOpHandler executes one brokered admin operation. args is the
@@ -20,18 +23,22 @@ type adminOpHandler func(ctx context.Context, r *appRouter, args json.RawMessage
 // remove (§7.2's operation table is normative for the op name -> core
 // mapping).
 var adminOps = map[string]adminOpHandler{
-	"credential.mint":      adminCredentialMint,
-	"credential.revoke":    adminCredentialRevoke,
-	"enrolment.create":     adminEnrolmentCreate,
-	"enrolment.update":     adminEnrolmentUpdate,
-	"enrolment.revoke":     adminEnrolmentRevoke,
-	"login.bootstrap.mint": adminLoginBootstrapMint,
-	"login.passkey.revoke": adminLoginPasskeyRevoke,
-	"mcp.register":         adminMcpRegister,
-	"mcp.unregister":       adminMcpUnregister,
-	"service.register":     adminServiceRegister,
-	"service.unregister":   adminServiceUnregister,
-	"service.restart":      adminServiceRestart,
+	"credential.mint":           adminCredentialMint,
+	"credential.revoke":         adminCredentialRevoke,
+	"enrolment.create":          adminEnrolmentCreate,
+	"enrolment.sign":            adminEnrolmentSign,
+	"enrolment.update":          adminEnrolmentUpdate,
+	"enrolment.revoke":          adminEnrolmentRevoke,
+	"enrolment.request.list":    adminEnrolmentRequestList,
+	"enrolment.request.approve": adminEnrolmentRequestApprove,
+	"enrolment.request.refuse":  adminEnrolmentRequestRefuse,
+	"login.bootstrap.mint":      adminLoginBootstrapMint,
+	"login.passkey.revoke":      adminLoginPasskeyRevoke,
+	"mcp.register":              adminMcpRegister,
+	"mcp.unregister":            adminMcpUnregister,
+	"service.register":          adminServiceRegister,
+	"service.unregister":        adminServiceUnregister,
+	"service.restart":           adminServiceRestart,
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the
@@ -167,6 +174,65 @@ func adminEnrolmentCreate(ctx context.Context, r *appRouter, args json.RawMessag
 	return marshalAdminResult(result)
 }
 
+// enrolmentSignResult carries what enrolSign needs to print and, when
+// --out was given, write: the record, and the certificate bytes
+// themselves. Certificates are public; there is no field here, and none is
+// to be added, that could carry a private key.
+type enrolmentSignResult struct {
+	Enrolment   Enrolment `json:"enrolment"`
+	Dir         string    `json:"dir,omitempty"`
+	CertPEM     string    `json:"cert_pem"`
+	CAPEM       string    `json:"ca_pem"`
+	BundleError string    `json:"bundle_error,omitempty"`
+	// RequestExpired is set only by adminEnrolmentRequestApprove (Sign has
+	// no pending row to expire): the row was swept between lodge and
+	// approve, but the enrolment above committed anyway. enrolApprove must
+	// say so plainly rather than claim the client will collect a row that
+	// no longer exists.
+	RequestExpired bool `json:"request_expired,omitempty"`
+	// RequestRefused is RequestExpired's sibling, set when the row was
+	// instead found refused: the operator declined this exact request
+	// while THIS approval's presence prompt was still open. Kept as its
+	// own field rather than folded into RequestExpired -- the two rows
+	// differ in every fact enrolApprove's note is built from (issue #93).
+	RequestRefused bool `json:"request_refused,omitempty"`
+}
+
+func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[enrolmentSignFields]("enrolment.sign", args)
+	if err != nil {
+		return nil, err
+	}
+	created, err := ops.Sign(ctx, req, auditViaCLI, "")
+	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		return nil, err
+	}
+	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir}
+	if err != nil {
+		result.BundleError = err.Error()
+		return marshalAdminResult(result)
+	}
+	// The bundle landed: read the certificates back off disk (public
+	// files, readable by the same process that just wrote them) so the CLI
+	// can print and optionally copy them without ever touching the config
+	// dir itself.
+	certPEM, err := os.ReadFile(filepath.Join(created.Dir, "client.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("enrolment.sign: read issued certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(filepath.Join(created.Dir, "ca.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("enrolment.sign: read ca certificate: %w", err)
+	}
+	result.CertPEM = string(certPEM)
+	result.CAPEM = string(caPEM)
+	return marshalAdminResult(result)
+}
+
 type enrolmentUpdateResult struct {
 	Before Enrolment `json:"before"`
 	After  Enrolment `json:"after"`
@@ -206,6 +272,98 @@ func adminEnrolmentRevoke(ctx context.Context, r *appRouter, args json.RawMessag
 		return nil, err
 	}
 	return marshalAdminResult(removed)
+}
+
+// enrolmentRequestListItem is the CLI-facing projection of
+// enrolmentRequestView: JSON tags for `relay enrol requests --json`, and a
+// timestamp format (RFC3339) rather than time.Time's own, matching every
+// other admin_op result that carries one.
+type enrolmentRequestListItem struct {
+	RequestID        string `json:"request_id"`
+	SPKISHA256       string `json:"spki_sha256"`
+	Label            string `json:"label,omitempty"`
+	RemoteAddr       string `json:"remote_addr"`
+	ArrivedAt        string `json:"arrived_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Approved         bool   `json:"approved"`
+	ApprovedClientID string `json:"approved_client_id,omitempty"`
+}
+
+type enrolmentRequestListResult struct {
+	Requests []enrolmentRequestListItem `json:"requests"`
+}
+
+func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	views := ops.PendingRequests()
+	items := make([]enrolmentRequestListItem, 0, len(views))
+	for _, v := range views {
+		items = append(items, enrolmentRequestListItem{
+			RequestID:        v.RequestID,
+			SPKISHA256:       v.SPKISHA256,
+			Label:            v.Label,
+			RemoteAddr:       v.RemoteAddr,
+			ArrivedAt:        v.ArrivedAt.UTC().Format(time.RFC3339),
+			ExpiresAt:        v.ExpiresAt.UTC().Format(time.RFC3339),
+			Approved:         v.Approved,
+			ApprovedClientID: v.ApprovedClientID,
+		})
+	}
+	return marshalAdminResult(enrolmentRequestListResult{Requests: items})
+}
+
+// adminEnrolmentRequestApprove answers with enrolmentSignResult — the exact
+// shape adminEnrolmentSign already returns (Enrolment, Dir, the certificate
+// bytes, and BundleError when writeSignedCertBundle failed) — because
+// approving is enrolment.sign's second door, not a different result shape.
+func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[approveFields]("enrolment.request.approve", args)
+	if err != nil {
+		return nil, err
+	}
+	created, err := ops.Approve(ctx, req, auditViaCLI, "")
+	if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+		return nil, err
+	}
+	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
+	if errors.Is(err, errEnrolmentBundle) {
+		result.BundleError = err.Error()
+	}
+	if errors.Is(err, errEnrolmentRequestExpired) {
+		result.RequestExpired = true
+	}
+	if errors.Is(err, errEnrolmentRequestRefused) {
+		result.RequestRefused = true
+	}
+	return marshalAdminResult(result)
+}
+
+type enrolmentRequestRefuseRequest struct {
+	RequestID string `json:"request_id"`
+}
+
+func adminEnrolmentRequestRefuse(_ context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[enrolmentRequestRefuseRequest]("enrolment.request.refuse", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := ops.Refuse(req.RequestID); err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(struct {
+		RequestID string `json:"request_id"`
+	}{RequestID: req.RequestID})
 }
 
 func adminLoginBootstrapMint(ctx context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {

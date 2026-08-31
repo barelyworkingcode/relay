@@ -63,6 +63,12 @@ request types are not refused by a check inside a shared handler — they are
 absent from the remote dispatch table, so there is no code path from a remote
 connection to `ResolvePtyEnv` or `RegisterManifest` at all.
 
+**Amended by [ADR-018](018-configuration-is-a-capability-of-an-identity.md):**
+a *second* dispatch table (`DescribeGrant`, `NarrowGrant`) is consulted, but
+only for an enrolment whose record carries `cli_admin` — the two-entry table
+above is unchanged, both in size and in what it holds, and stays the property
+this decision names.
+
 This is deliberately *not* implemented as `if isRemote { … }` guards added to
 `bridge/server.go`. A shared handler with per-request transport checks makes
 every future request type a decision someone must remember to get right, and
@@ -389,7 +395,15 @@ Each of these is a decision already taken in a direction, not an unknown:
 
 - **A project-level volume ceiling** across every enrolment holding a grant.
   Protects the resource rather than bounding a single compromise (decision 7).
-- **A CSR enrolment flow**, so a client key never transits (decision 8).
+- **A CSR enrolment flow**, so a client key never transits (decision 8). **Now
+  delivered**, on both sides: `relay enrol sign` signs a CSR the client
+  generated itself (this ADR's decision 8, unchanged), and the missing half —
+  an unenrolled remote lodging that CSR over the network instead of an
+  operator carrying it by hand — is
+  [ADR-018 decision 8](018-configuration-is-a-capability-of-an-identity.md#8-the-enrolment-request-channel-is-a-mailbox-not-a-door).
+  The operator-carried path this ADR describes throughout stays exactly as
+  written below; the network path is an additional way to reach the same
+  `enrolment.sign` gate, not a replacement for it.
 - **Short-lived certificates with automated renewal**, which need an
   authenticated renewal path that does not become a replayable secret
   (decision 8). Revisit when the number of enrolments outgrows manual

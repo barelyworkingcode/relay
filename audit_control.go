@@ -55,6 +55,14 @@ func (r *AuditRecorder) RecordDecision(d ControlDecision) {
 	}
 	method, methodTruncated := capControlString(d.Method, auditMaxControlMethodBytes)
 	path, pathTruncated := capControlString(d.Path, auditMaxControlPathBytes)
+	// A remote-listener decision names an enrolment's certificate, not a
+	// control-plane credential — there is no CredID for it to name at all,
+	// the same attested-identity pair the tool-call audit path already
+	// carries for a remote caller (audit_call.go).
+	actor := AuditActor{Kind: AuditActorControl, Auth: AuditAuthToken, CredID: d.CredID}
+	if d.Transport == TransportTCP && d.ClientID != "" {
+		actor = AuditActor{Kind: AuditActorRemote, Auth: AuditAuthMTLS, ClientID: d.ClientID, Fingerprint: d.Fingerprint}
+	}
 	r.Record(AuditEvent{
 		ID:              newAuditID(),
 		TS:              time.Now().UTC(),
@@ -67,10 +75,6 @@ func (r *AuditRecorder) RecordDecision(d ControlDecision) {
 		Transport:       string(d.Transport),
 		Outcome:         outcome,
 		Error:           reason,
-		Actor: AuditActor{
-			Kind:   AuditActorControl,
-			Auth:   AuditAuthToken,
-			CredID: d.CredID,
-		},
+		Actor:           actor,
 	})
 }

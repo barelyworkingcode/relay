@@ -387,7 +387,11 @@ handler runs:
   are two views of the same boundary.
 - `actor.kind` is `control`, a fourth actor alongside `project` / `service` /
   `remote`: this credential is capability-classed, not a tool caller, and
-  `--kind control` selects the set.
+  `--kind control` selects the set. A request refused on the remote
+  listener's configuration plane for want of `cli_admin` (ADR-018) is the
+  exception: it carries `actor.kind: "remote"` with `client_id`/
+  `fingerprint` instead of `cred_id`, since the enrolment's certificate is
+  the identity there, not a control-plane credential.
 - `actor.cred_id` names the credential the bearer resolved to. It is attached
   as soon as the bearer resolves — before the class check — so a credential
   that authenticates but lacks the class it asked for is still named in its
@@ -451,6 +455,15 @@ issuance is initiated from a CLI process that reaches no route at all, and the
 two HTTP routes that issue would otherwise record "this caller may call
 rotate_token" and never "a project token was rotated".
 
+A third event, `config_change`, shares this section and the same
+fail-closed path (`RecordIssuance`): a gated act that mutates settings but
+issues nothing a holder could authenticate with — registering an MCP or
+service, widening a project's grant shape, toggling an enrolment's
+`cli_admin` bit, or an enrolment narrowing its own grant over the remote
+listener. Calling one of these `credential_issued` would be a lie; leaving
+it unrecorded would leave a gap in the one place ADR-017's detection
+argument rests on.
+
 ```json
 {"id":"…","ts":"…","event":"credential_issued","actor":{"kind":"operator","auth":"none","pid":41221,"proc":"relay","parent":"claude"},
  "credential":"api_credential","subject":"cred_5e2a","subject_name":"ci-deploy","grants":["read","grant"],"via":"cli","outcome":"ok"}
@@ -475,15 +488,54 @@ rotate_token" and never "a project token was rotated".
 - **`via`** is how the act was initiated: `cli`, `ipc` (the Settings window),
   `tray` (the menu item), or `http`.
 - **`actor.kind`** is `operator` for every door authorized by ownership of the
-  config dir — the CLI and the tray's own windows — and `control` with a
-  `cred_id` for an HTTP door, matching the `control_decision` beside it. For an
-  `operator` record `actor.parent` is the field that matters: it names the
-  shell or the agent that ran `relay credential mint`.
+  config dir — the CLI and the tray's own windows — `control` with a
+  `cred_id` for an HTTP door, matching the `control_decision` beside it, and
+  `remote` with `client_id`/`fingerprint` for an act reached over the remote
+  listener's configuration plane (ADR-018) — an enrolment narrowing its own
+  grant via `NarrowGrant`. For an `operator` record `actor.parent` is the
+  field that matters: it names the shell or the agent that ran `relay
+  credential mint`.
 - `subject`, `subject_name` and `grants` are capped at 256 bytes each, with at
   most 64 grant entries, and a cut record carries `issuance_truncated: true`.
   An enrolment's client id arrives in the body of `POST /api/enrolments`, so
   these are caller-shaped in the same way `path` and `method` are, and are
   bounded for the same reason.
+
+A `cli_admin` toggle and a remote narrowing both land here, and both are
+greppable by name — the entry in `grants` carries the **resulting state**
+(`cli_admin=on`), not just the field name, because for a boolean the
+direction IS the content:
+
+```json
+{"id":"…","ts":"…","event":"config_change","actor":{"kind":"operator","auth":"none","pid":41221,"proc":"relay","parent":"claude"},
+ "credential":"enrolment","subject":"hermes-mail","grants":["cli_admin=on"],"via":"cli","presence_id":"p_9a2…","outcome":"ok"}
+{"id":"…","ts":"…","event":"config_change","actor":{"kind":"remote","auth":"mtls","client_id":"hermes-mail","fingerprint":"sha256:91f6…"},
+ "credential":"project_grant","subject":"477d9a17-da03-45eb-a433-764f93fe96fc","grants":["allowed_tools"],"via":"remote","outcome":"ok"}
+```
+
+The second row is deliberately **not** attributed to the tray process —
+`actor.pid` is absent, `actor.client_id` names the certificate that acted,
+and `presence_id` is absent too: `NarrowForEnrolment` is ungated by design
+(a widening is unrepresentable before this record is ever written), so there
+is no presence grant to name. The first row still carries one, because the
+toggle that grants `cli_admin` in the first place is a human, gated act.
+
+Two more ops carry no `presence_id`, for the same reason as
+`NarrowForEnrolment` rather than by omission: `mcp.unregister` and
+`service.unregister` (ADR-018 step 3) are pure removals, and decision 1's
+rule is that obtaining or widening a capability is the privileged act,
+never narrowing or destroying one. Both still write this same
+`config_change` record — the event, the id, and `via` — with
+`requireIssuanceAuditor` still enforced ahead of the write, so a `config_change`
+for either op with no matching presence event is not the detection signal
+it would be for `mcp.register` or `service.register`; it is simply what an
+unregister looks like now. `docs/presence-gate.md#what-is-not-gated-and-why-removal-is-not-escalation`
+has the escalation argument in full.
+
+```
+relay audit --grep cli_admin        # every toggle and every remote narrowing
+relay audit --kind remote --event config_change   # only what a VM changed about itself
+```
 
 **Nothing here is ever a plaintext, a hash, or key material.** The record is
 built from one struct (`CredentialIssuance`) that has no field able to carry

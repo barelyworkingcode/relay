@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"relaygo/bridge"
 	"relaygo/presence"
 )
 
@@ -76,6 +77,17 @@ func (f projectCreateFields) presenceDigest() presence.Digest {
 // presenceDigest binds a project.grant grant to exactly the fields id's
 // update touches, absent-aware (§6.4): a grant answered for one field must
 // not be spendable on a request that also, or instead, touches another.
+//
+// This is deliberate: keep binding all eight fields below even after a
+// future change narrows project.grant's GATE to fire only on
+// allow_cwd_auth (ADR-018, blocked on the local cli-admin identity binding
+// — see docs/decisions/018-configuration-is-a-capability-of-an-identity.md).
+// The prompt authorises the request, not the reason the request was
+// privileged, so shrinking this digest to the field that triggers the gate
+// would let a grant answered for "turn on directory auth" redeem against
+// "turn on directory auth AND set allowed_tools to * AND repoint path at
+// /". Narrowing what gates and narrowing what the digest binds are two
+// different questions; only the first one changes.
 func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
 	b := presence.NewDigestBuilder("project.grant").StringField("project_id", true, id)
 	if f.AllowedMcpIDs != nil {
@@ -309,3 +321,200 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	o.notify()
 	return newPlaintext, true, nil
 }
+
+// DescribeGrant is the RemoteConfigurer half of ADR-018 decision 4's read
+// side: the caller's own posture, built through the same newGrantView
+// `relay grant` uses, so an operator and the enrolment describing itself
+// read the identical record for everything BUT Enrolments (ADR-018
+// decision 5, symmetrically).
+//
+// Enrolments is cleared before returning: newGrantView populates it with
+// every enrolment granting this profile, for the operator-facing `relay
+// grant` — going out over the wire verbatim would let a remote caller
+// describing its OWN posture enumerate its siblings, learning their
+// client_id and cli_admin state. The reachability boundary (a caller
+// cannot ACT on another enrolment's grant) already holds; this is what
+// keeps the read side to "the caller's own posture" the spec defines it
+// as. handleRemoteNarrowGrant's result rides through this same method, so
+// it is covered without a separate fix.
+func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
+	v := newGrantView(s, *proj)
+	v.Enrolments = nil
+	return v
+}
+
+// narrowUpdateFields carries a NarrowGrant request's already-validated
+// fields into applyProjectUpdate's patch shape. AllowedMcpIDs is a
+// relabelling — narrowsOnly already proved the requested list widens
+// nothing. AllowedTools/Access/AllowExternal are NOT: the wire semantics
+// for a set pointer is whole-map replace (applyProjectUpdate's
+// candidate.AllowedTools = *f.AllowedTools and siblings), but a remote
+// only ever names the MCP ids it means to touch, so a map built from the
+// request alone would drop every id it didn't mention — narrowing an MCP
+// the caller never named, down to nothing, as a side effect of narrowing
+// one it did. mergeNarrowedMap folds the request's per-key overrides onto
+// what's already stored so an untouched id keeps its stored value; keys
+// for an MCP falling out of the resulting allowed_mcp_ids are left for
+// SyncProjectToken's existing pruning rather than carried forward stale.
+func narrowUpdateFields(stored Project, f remoteNarrowFields) projectUpdateFields {
+	resultMcpIDs := stored.AllowedMcpIDs
+	if f.AllowedMcpIDs != nil {
+		resultMcpIDs = *f.AllowedMcpIDs
+	}
+	return projectUpdateFields{
+		AllowedMcpIDs: f.AllowedMcpIDs,
+		AllowedTools:  mergeNarrowedMap(stored.AllowedTools, f.AllowedTools, resultMcpIDs),
+		Access:        mergeNarrowedMap(stored.Access, f.Access, resultMcpIDs),
+		AllowExternal: mergeNarrowedMap(stored.AllowExternal, f.AllowExternal, resultMcpIDs),
+	}
+}
+
+// mergeNarrowedMap merges a NarrowGrant request's per-MCP overrides onto
+// what's stored: an id in keep but not in req keeps its stored value, an
+// id in req is set to req's value, and an id outside keep is dropped
+// (falling out of allowed_mcp_ids, handled here rather than left for
+// applyProjectUpdate to reconcile against a stale carried-forward entry).
+// req == nil means the request doesn't touch this field at all, which
+// must stay nil so applyProjectUpdate's own nil-check leaves it alone —
+// merging would turn "not in the request" into "set to a copy of
+// stored," a write with nothing behind it.
+func mergeNarrowedMap[V any](stored map[string]V, req *map[string]V, keep []string) *map[string]V {
+	if req == nil {
+		return nil
+	}
+	keepSet := make(map[string]bool, len(keep))
+	for _, id := range keep {
+		keepSet[id] = true
+	}
+	merged := make(map[string]V, len(stored))
+	for id, v := range stored {
+		if keepSet[id] {
+			merged[id] = v
+		}
+	}
+	for id, v := range *req {
+		merged[id] = v
+	}
+	return &merged
+}
+
+// remoteNarrowFieldNames lists the fields a NarrowGrant request touches,
+// for the audit record and the caller's Changed list — presence, not
+// content, so it reads the request directly rather than narrowUpdateFields'
+// merged (and therefore always-non-nil-when-touched, identically) result.
+func remoteNarrowFieldNames(f remoteNarrowFields) []string {
+	var names []string
+	if f.AllowedMcpIDs != nil {
+		names = append(names, "allowed_mcp_ids")
+	}
+	if f.AllowedTools != nil {
+		names = append(names, "allowed_tools")
+	}
+	if f.Access != nil {
+		names = append(names, "access")
+	}
+	if f.AllowExternal != nil {
+		names = append(names, "allow_external")
+	}
+	return names
+}
+
+// NarrowForEnrolment is the one core behind the remote listener's
+// configuration plane. It is deliberately NOT gated: narrowsOnly makes a
+// widening unrepresentable, so this is not one of the acts ADR-017
+// decision 3 names, and a presence prompt reachable from a VM would be a
+// prompt the caller cannot see and the host did not ask for (§9.2) — a
+// certificate resolved by TLS is the authorization, the same way a project
+// token already is for CallTool.
+//
+// It reuses applyProjectUpdate rather than writing a second merge path, so
+// every existing validation rule — validateProjectShape,
+// validateProjectPermissions, validateToolPattern, ValidateProjectGrants —
+// applies identically to a remote's own edit and to an operator's.
+//
+// This is deliberate: the mutation goes through withDeclinable, not the
+// plain Store.With every other ops core here uses. Store.With resaves
+// (and reseals every sealed token) even when its callback changes nothing
+// — the right default for a door a human just drove, and the wrong one for
+// a request a VM can send at will: a widening this function refuses must
+// leave settings.json exactly as it was, not merely logically equivalent,
+// or a script hammering a refused NarrowGrant would spend the settings
+// file's one-writer-at-a-time window for nothing every time it tried.
+//
+// The same is true one step short of a refusal: narrowsOnly accepts a
+// request that asks for exactly what is already stored (that is not a
+// widening either), and applyProjectUpdate's mutators write unconditionally
+// once a non-nil field pointer reaches them. Left unchecked, a certificate
+// resending an already-applied NarrowGrant — deliberately, or simply
+// because it does not track what it already asked for — would reseal every
+// sealed token in the file and append a fresh config_change on every
+// resend, an unbounded write and an unbounded audit-log entry from a path
+// with no presence prompt to slow it down. narrowingIsNoop is the second
+// half of "leave settings.json exactly as it was": it stands between
+// narrowsOnly's yes and applyProjectUpdate's unconditional write.
+func (o *ProjectOps) NarrowForEnrolment(
+	ctx context.Context, projectID string, f remoteNarrowFields,
+	caller bridge.RemoteCaller, surfaces func() McpSurfaces,
+) (Project, []string, error) {
+	if err := requireIssuanceAuditor(o.Issuance); err != nil {
+		return Project{}, nil, err
+	}
+
+	var updated Project
+	var found, noop bool
+	err := withDeclinable(o.Store, func(s *Settings) error {
+		// Resolved INSIDE the callback, not from a value the caller
+		// captured earlier: the store's lock is what makes "narrower than
+		// what is stored right now" an answerable question rather than a
+		// race with whatever else touched this project between the request
+		// arriving and this closure running.
+		proj, _ := s.findProjectByID(projectID)
+		if proj == nil {
+			return fmt.Errorf("project %q no longer exists", projectID)
+		}
+		if err := narrowsOnly(*proj, f); err != nil {
+			return err
+		}
+		if narrowingIsNoop(*proj, f) {
+			found, noop = true, true
+			updated = *proj
+			return errNarrowingIsNoop
+		}
+		var applyErr error
+		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(*proj, f), surfaces)
+		return applyErr
+	})
+	if err != nil && !noop {
+		return Project{}, nil, err
+	}
+	if !found {
+		return Project{}, nil, fmt.Errorf("project %q no longer exists", projectID)
+	}
+	if noop {
+		// Nothing changed: no write happened (withDeclinable declined it
+		// above) and there is nothing for the audit log to say — a record
+		// reading "cli_admin=on changed allowed_tools" would be false. This
+		// is reported to the caller as an ordinary success with an empty
+		// Changed list, not as an error: the caller asked for exactly what
+		// it already has, which is not a mistake.
+		return updated, nil, nil
+	}
+
+	changed := remoteNarrowFieldNames(f)
+	// Reported and not undone, the same balance EnrolmentOps.Update and
+	// Revoke strike: a narrowing act has no side artifact to roll back, and
+	// refusing to narrow because the log is broken would make a failing
+	// disk the reason a remote keeps a grant it was trying to shed.
+	if auditErr := recordConfigChangeRemote(o.Issuance, auditCredentialProjectGrant, projectID, changed, caller); auditErr != nil {
+		slog.Error("a remote narrowed its own grant but the change was not recorded in the audit log",
+			"project_id", projectID, "client_id", caller.ClientID, "error", auditErr)
+	}
+	o.notify()
+	return updated, changed, nil
+}
+
+// errNarrowingIsNoop is withDeclinable's only lever for skipping a write
+// that is not a refusal: a callback error is the sole signal it honours.
+// NarrowForEnrolment unwraps this one immediately and never returns it —
+// see narrowingIsNoop's doc comment for why the caller sees success.
+var errNarrowingIsNoop = errors.New("narrowing request matches the stored grant")

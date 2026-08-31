@@ -892,7 +892,7 @@ window.__RELAY_INIT__ = {
     // remoteConfigView from Go, or null
     enrolmentBudgetDefaults: ENROLMENT_BUDGET_DEFAULTS_INIT,
     enrolForm: null,
-    // null = list, object = create form
+    // null = list, object = create form; object.request_id set = approving a pending request
     enrolmentError: null,
     enrolBundle: null,
     // {client_id, dir} — DIRECTORY only, never key material
@@ -902,6 +902,16 @@ window.__RELAY_INIT__ = {
     // uncommitted edit of the remote block
     remoteDirty: false,
     remoteError: null,
+    // Pending enrolment requests (spec §3). NOT seeded by the initial
+    // payload the way enrolments are — this table lives only in the running
+    // tray process and a network peer can change it between one paint and
+    // the next, so a value seeded once would go stale in a way nothing here
+    // would ever correct. Fetched fresh every time the tab is shown
+    // (list_enrolment_requests) and kept live afterward by
+    // onEnrolmentRequestsChanged, which the tray also pushes on its own
+    // poll tick so a request that arrives while the tab is already open
+    // still appears.
+    pendingEnrolmentRequests: [],
     // Passkeys tab. Seeded like enrolments, and for the same reason — a
     // credential you cannot see is one you will not revoke.
     passkeys: PASSKEYS_INIT,
@@ -935,6 +945,7 @@ window.__RELAY_INIT__ = {
       el.classList.toggle("active", pages[i] === page);
     });
     if (page === "audit" && !state.auditLoaded) queryAudit();
+    if (page === "remote") listEnrolmentRequests();
     render();
   }
   var JSON_PLACEHOLDER = JSON.stringify({ "my-server": { "command": "npx", "args": ["-y", "@example/server"], "env": { "API_KEY": "..." } } }, null, 2);
@@ -2795,16 +2806,64 @@ window.__RELAY_INIT__ = {
     b = b || {};
     return (b.max_calls || 0) + " calls / " + enrolBytes(b.max_result_bytes) + " per " + (b.window_seconds || 0) + "s";
   }
+  function renderCAFingerprintLine() {
+    const fp = state.remote && state.remote.ca_fingerprint;
+    if (!fp) {
+      return `<p class="proj-section-help">Relay's CA fingerprint is not available yet \u2014 create or sign one enrolment to generate the CA, then it will show here.</p>`;
+    }
+    return `<p class="proj-section-help">Relay's CA fingerprint (clients pin this \u2014 <code>relayremote request --ca-fingerprint ` + esc(fp) + "</code>): <code>" + esc(fp) + "</code></p>";
+  }
+  function renderPendingEnrolmentRequests() {
+    const list = state.pendingEnrolmentRequests || [];
+    let html = '<div class="proj-section" style="margin-top:0">';
+    html += '<div class="proj-section-title">Pending requests' + (list.length ? ' <span class="remote-state on">' + list.length + "</span>" : "") + "</div>";
+    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else \u2014 see ADR-018. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen below, by you, at approval.</p>';
+    if (!list.length) {
+      html += '<div class="empty-state">No pending enrolment requests.</div>';
+    }
+    for (const r of list) {
+      html += '<div class="enrol-card">';
+      html += '<div class="enrol-card-header">';
+      html += '<span class="enrol-card-name">' + esc(r.request_id) + "</span>";
+      if (r.approved) {
+        html += '<span class="remote-state on">approved: ' + esc(r.approved_client_id) + "</span>";
+      } else {
+        html += "<span>";
+        html += `<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm('` + esc(r.request_id) + `')">Approve\u2026</button> `;
+        html += `<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest('` + esc(r.request_id) + `')">Refuse</button>`;
+        html += "</span>";
+      }
+      html += "</div>";
+      html += renderPendingRequestFields(r);
+      html += "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+  function renderPendingRequestFields(r) {
+    let html = '<div class="enrol-fp"><span class="enrol-fp-label">key: </span>sha256:' + esc(r.spki_sha256) + "</div>";
+    html += '<div class="enrol-meta">';
+    html += "<span>label: <strong>" + (r.label ? esc(r.label) : "(none)") + "</strong> <em>(supplied by the requesting machine)</em></span>";
+    html += "</div>";
+    html += '<div class="enrol-meta">';
+    html += "<span>from: <strong>" + esc(r.remote_addr) + "</strong></span>";
+    html += "<span>arrived: <strong>" + esc(r.arrived_at) + "</strong></span>";
+    html += "<span>expires: <strong>" + esc(r.expires_at) + "</strong></span>";
+    html += "</div>";
+    return html;
+  }
   function renderEnrolments() {
     if (state.enrolForm) return renderEnrolmentForm();
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
     html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += renderCAFingerprintLine();
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
       html += '<div class="audit-note">Revoked <strong>' + esc(state.enrolRevoked.client_id) + "</strong>. Its calls remain in the Tool Calls log under fingerprint <code>" + esc(state.enrolRevoked.fingerprint) + "</code> \u2014 now the only thing that names them.</div>";
     }
     if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + "</div>";
+    html += renderPendingEnrolmentRequests();
     const list = state.enrolments || [];
     if (!list.length) {
       html += '<div class="empty-state">No enrolled clients. Click <strong>+ New Enrolment</strong>, or run <code>relay enrol create</code>.</div>';
@@ -2855,13 +2914,23 @@ window.__RELAY_INIT__ = {
   function renderEnrolmentForm() {
     const f = state.enrolForm;
     const d = state.enrolmentBudgetDefaults || {};
-    let html = "<h2>New Enrolment</h2>";
+    const approving = !!f.request_id;
+    let html = "<h2>" + (approving ? "Approve Enrolment Request" : "New Enrolment") + "</h2>";
     if (state.enrolmentError) html += '<div class="proj-error">' + esc(state.enrolmentError) + "</div>";
+    if (approving && f.pendingRequest) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Request ' + esc(f.request_id) + "</div>";
+      html += renderPendingRequestFields(f.pendingRequest);
+      html += '<p class="proj-section-help">Approving raises the same presence prompt <code>relay enrol sign</code> already uses \u2014 there is no second door into issuance. The certificate is issued over exactly the public key above; nothing chosen below can redirect it to a different key.</p>';
+      html += renderCAFingerprintLine();
+      html += "</div>";
+    }
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += `<p class="proj-section-help">The client id is the certificate's Common Name and the bundle's directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>`;
     html += "<label>Client id</label>";
-    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="hermes-mail" />';
+    const idPlaceholder = approving && f.pendingRequest && f.pendingRequest.label || "hermes-mail";
+    html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="' + esc(idPlaceholder) + '" />';
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Granted Access Profiles</div>';
@@ -2892,7 +2961,7 @@ window.__RELAY_INIT__ = {
     html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || "") + '" />';
     html += "</div>";
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveEnrolment()">Create &amp; issue certificate</button>';
+    html += '<button class="btn btn-primary" onclick="saveEnrolment()">' + (approving ? "Approve &amp; issue certificate" : "Create &amp; issue certificate") + "</button>";
     html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
     html += "</div>";
     return html;
@@ -2903,6 +2972,31 @@ window.__RELAY_INIT__ = {
     state.enrolBundle = null;
     state.enrolRevoked = null;
     render();
+  }
+  function approveEnrolmentRequestForm(requestID) {
+    const r = (state.pendingEnrolmentRequests || []).find((x) => x.request_id === requestID);
+    if (!r) return;
+    state.enrolForm = {
+      client_id: "",
+      project_ids: [],
+      window_seconds: "",
+      max_calls: "",
+      max_result_bytes: "",
+      request_id: requestID,
+      pendingRequest: r
+    };
+    state.enrolmentError = null;
+    state.enrolBundle = null;
+    state.enrolRevoked = null;
+    render();
+  }
+  function refuseEnrolmentRequest(requestID) {
+    const msg = 'Refuse enrolment request "' + requestID + '"?\n\nThe request is removed. Re-lodging from the client machine starts a fresh one.';
+    if (!confirm(msg)) return;
+    ipc(JSON.stringify({ type: "refuse_enrolment_request", request_id: requestID }));
+  }
+  function listEnrolmentRequests() {
+    ipc(JSON.stringify({ type: "list_enrolment_requests" }));
   }
   function cancelEnrolment() {
     state.enrolForm = null;
@@ -2933,15 +3027,26 @@ window.__RELAY_INIT__ = {
       return raw === "" || isNaN(n) || n < 0 ? 0 : n;
     };
     state.enrolmentError = null;
+    const budget = {
+      window_seconds: num("enrolWindow"),
+      max_calls: num("enrolMaxCalls"),
+      max_result_bytes: num("enrolMaxBytes")
+    };
+    if (f.request_id) {
+      ipc(JSON.stringify({
+        type: "approve_enrolment_request",
+        request_id: f.request_id,
+        client_id: clientID,
+        project_ids: f.project_ids,
+        budget
+      }));
+      return;
+    }
     ipc(JSON.stringify({
       type: "create_enrolment",
       client_id: clientID,
       project_ids: f.project_ids,
-      budget: {
-        window_seconds: num("enrolWindow"),
-        max_calls: num("enrolMaxCalls"),
-        max_result_bytes: num("enrolMaxBytes")
-      }
+      budget
     }));
   }
   function revokeEnrolment(clientID) {
@@ -2958,7 +3063,12 @@ window.__RELAY_INIT__ = {
   function remoteDraft() {
     if (!state.remoteDraft) {
       const r = state.remote || {};
-      state.remoteDraft = { enabled: !!r.enabled, listen: r.listen || "" };
+      state.remoteDraft = {
+        enabled: !!r.enabled,
+        listen: r.listen || "",
+        enrolmentRequests: !!r.enrolment_requests,
+        enrolmentListen: r.enrolment_listen || ""
+      };
     }
     return state.remoteDraft;
   }
@@ -2966,7 +3076,7 @@ window.__RELAY_INIT__ = {
     const d = remoteDraft();
     d[key] = value;
     state.remoteDirty = true;
-    if (key === "enabled") render();
+    if (key === "enabled" || key === "enrolmentRequests") render();
   }
   function remoteListenIsLoopback(addr) {
     addr = String(addr || "");
@@ -3011,6 +3121,20 @@ window.__RELAY_INIT__ = {
     if (effective && !remoteListenIsLoopback(effective)) {
       html += '<div class="remote-note warn">' + esc(effective) + " binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read \u2014 but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>";
     }
+    html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+    html += "<span>Accept enrolment requests on a separate listener</span>";
+    html += '<label class="switch"><input type="checkbox" ' + (d.enrolmentRequests ? "checked" : "") + ` onchange="remoteDraftSet('enrolmentRequests', this.checked)" /><span class="slider"></span></label>`;
+    html += "</div>";
+    html += "<label>Enrolment listen address</label>";
+    html += '<input type="text" id="remoteEnrolmentListen" value="' + esc(d.enrolmentListen) + '" placeholder="' + esc(r.enrolment_effective || "") + `" oninput="remoteDraftSet('enrolmentListen', this.value)" />`;
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || "") + "</code>. This listener takes no client certificate \u2014 see the Pending requests panel above for what it can reach.</p>";
+    if (d.enrolmentRequests && !d.enabled) {
+      html += '<div class="remote-note warn">Enrolment requests will not be served until the mTLS listener above is also on: the enrolment-request channel is a companion to it, never a replacement \u2014 see the panel above for the exact refusal.</div>';
+    }
+    const enrolEffective = (d.enrolmentListen || "").trim() || r.enrolment_effective || "";
+    if (d.enrolmentRequests && enrolEffective && !remoteListenIsLoopback(enrolEffective)) {
+      html += '<div class="remote-note warn">' + esc(enrolEffective) + " binds beyond loopback: any machine that can reach it can lodge an enrolment request. Lodging alone never raises a prompt and reaches nothing but a bounded table \u2014 but the default binds loopback so that widening it is a deliberate act.</div>";
+    }
     html += '<div class="proj-form-actions">';
     html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
     if (r.configured) {
@@ -3026,7 +3150,9 @@ window.__RELAY_INIT__ = {
     ipc(JSON.stringify({
       type: "update_remote_config",
       enabled: !!d.enabled,
-      listen: String(d.listen || "").trim()
+      listen: String(d.listen || "").trim(),
+      enrolment_requests: !!d.enrolmentRequests,
+      enrolment_listen: String(d.enrolmentListen || "").trim()
     }));
   }
   function removeRemoteConfig() {
@@ -3064,6 +3190,10 @@ window.__RELAY_INIT__ = {
   };
   window.onRemoteConfigError = function(msg) {
     state.remoteError = msg || "could not save the remote block";
+    if (state.page === "remote") render("push");
+  };
+  window.onEnrolmentRequestsChanged = function(list) {
+    state.pendingEnrolmentRequests = list || [];
     if (state.page === "remote") render("push");
   };
   var LOGIN_CODE_MENU_ITEM = "Show Login Code...";
@@ -4339,21 +4469,27 @@ That browser's credential stops authenticating on its next request and it has to
     renderPasskeys,
     revokePasskey,
     signOutLogin,
+    approveEnrolmentRequestForm,
     cancelEnrolment,
     dismissEnrolBundle,
     enrolBudgetText,
     enrolBytes,
     enrolGrantNames,
     enrolGrantSummary,
+    listEnrolmentRequests,
     newEnrolment,
+    refuseEnrolmentRequest,
     remoteDraft,
     remoteDraftSet,
     remoteGrantableProjects,
     remoteListenIsLoopback,
     removeRemoteConfig,
+    renderCAFingerprintLine,
     renderEnrolBundleBanner,
     renderEnrolmentForm,
     renderEnrolments,
+    renderPendingEnrolmentRequests,
+    renderPendingRequestFields,
     renderRemoteListener,
     revokeEnrolment,
     saveEnrolment,

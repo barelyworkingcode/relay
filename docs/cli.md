@@ -38,9 +38,14 @@ login-password prompt, answered at the Mac's own screen, before the tray
 commits anything. The rule (from [`docs/presence-gate.md`](presence-gate.md)):
 *any operation that issues a credential, widens one, or chooses what runs.*
 Concretely, every command in the table below marked **prompts: yes**.
-`service restart` is the one mutating, brokered command that is *not*
-gated — it restarts a process from a configuration that was already approved
-when it was registered, and changes no settings.
+`service restart` is not gated — it restarts a process from a configuration
+that was already approved when it was registered, and changes no settings.
+`mcp unregister` and `service unregister` are not gated either (ADR-018
+step 3): removal only narrows what a caller already reaches, and
+re-registering under the same id still has to pass the register command's
+gate. All three are still brokered — they still need the service running —
+and `mcp unregister`/`service unregister` still leave an audit record; see
+[`docs/presence-gate.md`](presence-gate.md#what-is-not-gated-and-why-removal-is-not-escalation).
 
 Two consequences follow immediately, and both are covered in full below:
 
@@ -61,6 +66,7 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay credential revoke` | yes | **yes** | no |
 | `relay enrol list` | no | no | yes |
 | `relay enrol create` | yes | **yes** | no |
+| `relay enrol sign` | yes | **yes** | no |
 | `relay enrol update` | yes | **yes** | no |
 | `relay enrol revoke` | yes | **yes** | no |
 | `relay login list` | no | no | yes |
@@ -68,10 +74,10 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay login revoke` | yes | **yes** | no |
 | `relay mcp list` | no | no | yes |
 | `relay mcp register` | yes | **yes** | no |
-| `relay mcp unregister` | yes | **yes** | no |
+| `relay mcp unregister` | yes | no | yes |
 | `relay service list` | no | no | yes |
 | `relay service register` | yes | **yes** | no |
-| `relay service unregister` | yes | **yes** | no |
+| `relay service unregister` | yes | no | yes |
 | `relay service restart` | yes | no | yes |
 | `relay mcpExec` / `relay mcp call` | yes (dials the bridge) | no | yes |
 | `relay mcp --token TOKEN` (stdio server) | yes | no | yes |
@@ -138,8 +144,8 @@ relay mcp register --id fsmcp3 --name "fsMCP v3 (testfolder)" \
   --command /Users/admin/.local/bin/fsmcp3 --args --root --args /Users/admin/source/barelyworkingcode/testfolder
 ```
 
-That prompt would read "...that runs /Users/admin/.local/bin/fsmcp3
---root /Users/admin/source/barelyworkingcode/testfolder" — recognizably the
+That prompt would read "...that runs /Users/admin/.local/bin/fsmcp3" — the
+reason string names the command only, never its arguments — recognizably the
 record as it already is — and approving it changes nothing an operator did
 not already expect.
 
@@ -170,14 +176,13 @@ Every gated command has its own version of this reason string:
 | `credential mint` | `mint a control-plane credential named "NAME" with classes read and configure` |
 | `credential revoke` | `revoke the control-plane credential "ID"` |
 | `enrol create` | `create an enrolment for client "ID" with access to PROFILE` |
+| `enrol sign` | `sign a certificate for client "ID" with access to PROFILE` |
 | `enrol update` | `update the enrolment "ID"'s grant` |
 | `enrol revoke` | `revoke the enrolment "ID"` |
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
-| `mcp unregister` | `unregister the MCP "ID"` |
-| `service register` | `register the service "NAME" (id) that runs COMMAND` |
-| `service unregister` | `unregister the service "ID"` |
+| `service register` | `register the service "NAME" (id) that runs COMMAND` (or, when the id already exists and this is an update, `update the service "ID" to run COMMAND`) |
 
 ## Privileged commands over SSH refuse — they do not queue
 
@@ -243,6 +248,8 @@ ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
             "Archive",
             "INBOX"
           ]
+  enrolments:
+    hermes               cli-admin: off
 
 This is the grant as stored. Whether each MCP still declares these scope
 fields is a live question — a value relay cannot place in an MCP's current
@@ -260,6 +267,23 @@ otherwise let a client under-report (see `docs/tokens.md` and
 clear fields already in `settings.json` and reads through the same
 permission-derivation code the router uses at call time — it does not, and
 cannot, print a project's token.
+
+An access profile's record also names every enrolment that reaches it, and
+marks a `cli_admin` one loudly — the same posture `DescribeGrant` shows the
+enrolment itself (ADR-018 decision 5, symmetrically). An enrolment with the
+bit off is still listed, never omitted:
+
+```
+ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
+  macmcp         access=read   outbound=blocked  tools=mail_*
+                 scope: (none set)
+  enrolments:
+    hermes-mail          ** CLI-ADMIN: ON — this certificate may narrow this profile's own grant **
+    hermes-ro            cli-admin: off
+```
+
+`--json` carries the same enrolments as a structured `enrolments` array on
+each record.
 
 ## `relay audit`
 
@@ -419,18 +443,29 @@ revoked credential "5d6dad87-4a31-40f6-88f8-9193adcba554"
 ## `relay enrol`
 
 Remote-client enrolment: signs a client certificate off relay's own CA and
-issues a bundle to copy to the client machine (see
+hands back a certificate the client can use (see
 [`docs/decisions/009-remote-projects.md`](decisions/009-remote-projects.md)
 and [`docs/decisions/011-resource-scope.md`](decisions/011-resource-scope.md)
 for the remote model this feeds). There is no self-service path and no
 bootstrap token by design — every enrolment is a host-side operator act.
 
+Two ways to get there. `enrol create` generates the client's private key on
+this host and emits a bundle containing it — the legacy path, kept working
+but deprecated in its own output. `enrol sign` takes a certificate signing
+request the client generated on its own machine (`relayremote enrol`) and
+returns only certificates: the private key never leaves the client, and
+never exists in this process at all. Prefer `sign`.
+
 ```
 relay enrol create --client-id ID --grant PROFILE-ID [--grant PROFILE-ID...]
                     [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+relay enrol sign --client-id ID --csr PATH|- [--grant PROFILE-ID...]
+                  [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+                  [--out DIR]
 relay enrol list
 relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--max-result-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
+                    [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
 ```
 
@@ -479,7 +514,54 @@ created enrolment "hermes"
   profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
   bundle:      /Users/admin/Library/Application Support/relay/enrolments/hermes
   copy this directory to the client machine; the private key inside it is never recoverable
+  this bundle's private key was generated on this host — prefer `relay enrol sign`, where the key never leaves the client machine.
 ```
+
+### `enrol sign`
+
+The CSR flow (ADR-018 decision 6 step 1): the client generates its own
+keypair and sends only a signing request across, so relay never holds — and
+never writes to disk — a private key it did not generate itself.
+
+| Flag | Meaning |
+|---|---|
+| `--client-id` | Human-readable, unique id for this enrolment (required). Names the enrolment; the CSR's own CN is advisory and is overridden. |
+| `--csr` | Path to the signing request, or `-` for stdin (required). |
+| `--grant` | Repeatable. Id of an **access profile** this certificate may use — never a local project. |
+| `--window-seconds` | Budget window, seconds (default 3600). |
+| `--max-calls` | Max tool calls per window (default 120). |
+| `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+| `--out` | Also write `client.crt` and `ca.crt` into this directory, for copying to the client machine. |
+
+Needs service: yes. Prompts: yes. Works over SSH: no — and a CSR's natural
+habitat is an SSH session or a USB stick carried to this machine, so expect
+to run this one at the Mac's own screen even when the CSR itself arrived
+over the network.
+
+The client side of this flow is `relayremote enrol` (generates the keypair
+and the CSR) and `relayremote install` (installs the certificate this
+command hands back) — see relayRemote's own docs.
+
+```
+relay enrol sign --client-id hermes --csr client.csr --grant 477d9a17-da03-45eb-a433-764f93fe96fc --out ./signed
+```
+
+Illustrative output:
+
+```
+signed enrolment "hermes"
+  fingerprint: sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
+  certificate: /Users/admin/Library/Application Support/relay/enrolments/hermes
+  copy client.crt and ca.crt to the client machine, beside the client.key it generated;
+  no private key was written on this host
+  copies also written to: ./signed
+```
+
+Nothing under `<config>/enrolments/hermes/` for a CSR enrolment is a
+secret: `client.crt` and `ca.crt` only. `--out` copies are public
+certificates too, so they are written `0644` rather than the config-dir
+copy's `0600`.
 
 ### `enrol list`
 
@@ -488,12 +570,12 @@ mode combination:
 
 ```
 $ relay enrol list
-CLIENT ID        PROFILES                              CALLS/WINDOW  BYTES/WINDOW  CREATED               FINGERPRINT
-hermes           477d9a17-da03-45eb-a433-764f93fe96fc  120/3600s     67108864      2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
-hermes-files     59c19c5b-b248-493c-a094-4397a56c8693  120/3600s     67108864      2026-08-26T14:32:16Z  sha256:9820e514f38b35d2b1af8687260125853b9e7577b3e37036224ad438f1379bb1
-hermes-files-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  120/3600s     67108864      2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
-hermes-v3        b0000000-0000-4000-8000-000000000001  120/3600s     67108864      2026-08-26T18:55:54Z  sha256:79129197d148052d196e1d4ad2fbc4b4a64d770024601043a7943f5b9b5fcaa0
-hermes-v3-ro     b0000000-0000-4000-8000-000000000002  120/3600s     67108864      2026-08-26T19:08:37Z  sha256:46c0903492ef4d091cfc704d92fa079cd882d4c53ed750a513a1001853adbff3
+CLIENT ID        PROFILES                              CLI-ADMIN  CALLS/WINDOW  BYTES/WINDOW  CREATED               FINGERPRINT
+hermes           477d9a17-da03-45eb-a433-764f93fe96fc  -          120/3600s     67108864      2026-08-26T00:02:54Z  sha256:a44f923fa5f84970facc53f83d16c72cc2123dd8104703162a59f761fbb5dc31
+hermes-files     59c19c5b-b248-493c-a094-4397a56c8693  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:9820e514f38b35d2b1af8687260125853b9e7577b3e37036224ad438f1379bb1
+hermes-files-ro  aaaabf48-95c9-4d72-97b8-7060138930f1  -          120/3600s     67108864      2026-08-26T14:32:16Z  sha256:d1846a1b393e738dfe7043a5299cd1f67a9c203bdb01d27cb070c19228f4c6ca
+hermes-v3        b0000000-0000-4000-8000-000000000001  -          120/3600s     67108864      2026-08-26T18:55:54Z  sha256:79129197d148052d196e1d4ad2fbc4b4a64d770024601043a7943f5b9b5fcaa0
+hermes-v3-ro     b0000000-0000-4000-8000-000000000002  -          120/3600s     67108864      2026-08-26T19:08:37Z  sha256:46c0903492ef4d091cfc704d92fa079cd882d4c53ed750a513a1001853adbff3
 ```
 
 The fingerprint is printed in full (all 64 hex characters), deliberately: an
@@ -506,13 +588,21 @@ Needs service: no. Prompts: no. Works over SSH: yes.
 Every flag is optional; an unset one leaves the stored value alone.
 `--grant`, passed at all, **replaces the whole grant list** — same rule as
 `create`. `--clear-grants` empties it explicitly and is mutually exclusive
-with `--grant`.
+with `--grant`. `--cli-admin` (`--cli-admin=false` to withdraw it) lets this
+certificate narrow its own access profiles over the remote listener
+(ADR-018 decision 4) — never widen them, and never anything outside its own
+sandbox. It rides on `enrol update` rather than a new subcommand: `enrol
+update` is already the one door for "change what this certificate reaches
+without touching the certificate". Turning it off prompts too, same as
+turning it on.
 
 ```
 $ relay enrol update -h
 Usage of enrol update:
   -clear-grants
     	remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant
+  -cli-admin
+    	let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.
   -client-id string
     	client id of the enrolment to update (required)
   -grant value
@@ -527,7 +617,19 @@ Usage of enrol update:
 
 Needs service: yes. Prompts: yes. Works over SSH: no. It is gated even
 though it only replaces an existing grant list, because replacing a grant
-list is exactly the "widens one" case the gate exists for.
+list is exactly the "widens one" case the gate exists for. Toggling
+`cli-admin` is gated the same way, in both directions.
+
+With `cli_admin` on, the enrolment's own certificate reaches a second
+request table over the remote listener — `DescribeGrant` (its own posture,
+the same view `relay grant` shows) and `NarrowGrant` (replace its own
+`allowed_mcp_ids` / `allowed_tools` / `access` / `allow_external` with a
+strictly narrower set — never wider, on any axis, and never another
+enrolment's profile). Neither is a CLI subcommand; both are wire requests
+the client sends itself. `relay grant` names every enrolment reaching a
+profile and marks a `cli_admin` one loudly, and `relay audit --grep
+cli_admin` finds both the toggle and every narrowing an enrolment made of
+its own grant.
 
 ### `enrol revoke`
 
@@ -697,7 +799,12 @@ Usage of mcp unregister:
 ```
 
 Either `--id` or `--name` resolves to the same record (`ResolveMcpID`
-matches on both). Needs service: yes. Prompts: yes. Works over SSH: no.
+matches on both). Needs service: yes. **Prompts: no.** Works over SSH: yes.
+Unregistering only narrows what a caller already reaches — re-registering
+under the same id still has to pass `mcp register`'s gate — so this command
+is not presence-gated (ADR-018 step 3); it still writes a `config_change`
+audit record and still refuses if issuance auditing is off, just with no
+`presence_id` on the record.
 
 ### `mcp list`
 
@@ -795,7 +902,13 @@ Usage of service unregister:
     	service display name
 ```
 
-Needs service: yes. Prompts: yes. Works over SSH: no.
+Needs service: yes. **Prompts: no.** Works over SSH: yes. Not presence-gated
+(ADR-018 step 3), on the same footing as `mcp unregister`: removing a
+service record only narrows what a caller already reaches, and stopping the
+running process is already ungated `configure`
+(`POST /api/services/{id}/stop`). Still writes a `config_change` audit
+record, still refuses if issuance auditing is off, just with no
+`presence_id`.
 
 ### `service restart`
 
@@ -945,6 +1058,8 @@ ACCESS PROFILE  Hermes Mail  (id: 477d9a17-da03-45eb-a433-764f93fe96fc)
             "Archive",
             "INBOX"
           ]
+  enrolments:
+    hermes               cli-admin: off
 ```
 
 **6. Confirm it in the audit log — ground truth, never the agent's own
@@ -987,7 +1102,9 @@ table, covered under `relay audit` above.)
   the CLI does.
 - **An enrolment's private key**, after the moment `enrol create` writes its
   bundle to disk. The bundle directory is the only copy; losing it means
-  revoking and re-enrolling.
+  revoking and re-enrolling. `enrol sign` never has one to withhold in the
+  first place — the client generated its own key, and relay only ever sees
+  the public half in the CSR.
 
 None of this is enforced by convention — `Secret.MarshalJSON` refuses to
 serialize a field that has not been through the sealing step, so a stray
@@ -1068,6 +1185,12 @@ whole design spends its effort closing on the first one; see
 
 # Further reading
 
+- [`docs/install-single-machine.md`](install-single-machine.md) — the
+  task-ordered version of this document's worked example: start relay,
+  register an MCP, create a project, call a tool, on one Mac.
+- [`docs/install-remote-machine.md`](install-remote-machine.md) — the same
+  for a second machine: which command runs where, the enrolment-request
+  channel, and the operator-carried fallback.
 - [`docs/sealed-config.md`](sealed-config.md) — why project tokens, the
   admin secret, OAuth bearers and the CA key are sealed at rest, why the
   rest of `settings.json` deliberately is not, and the break-glass recovery

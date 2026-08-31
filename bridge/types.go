@@ -29,6 +29,14 @@ const (
 	// remoteHandlers — a VM has no code path to it at all, not a refusal on
 	// one.
 	ReqAdminOp = "admin_op"
+
+	// ReqDescribeGrant and ReqNarrowGrant are the configuration plane ADR-018
+	// decision 4 opens for an enrolment holding cli_admin. Neither has a field
+	// naming an enrolment or a project owner: the acting identity is the TLS
+	// certificate and the target is RemoteRequest.ProjectID, honoured only when
+	// the resolved enrolment already holds that grant.
+	ReqDescribeGrant = "DescribeGrant"
+	ReqNarrowGrant   = "NarrowGrant"
 )
 
 const (

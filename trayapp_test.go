@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -248,5 +249,64 @@ func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
 	}
 	if reg.closeFrontendCount != 1 {
 		t.Errorf("CloseFrontendChannel called %d times, want exactly 1", reg.closeFrontendCount)
+	}
+}
+
+// TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount is the
+// tray's whole surface for the enrolment-request channel (spec §2): a
+// count built from the SAME table EnrolmentOps.PendingRequests reads, shown
+// only when there is something pending, and a click that reaches nothing
+// but Settings.
+func TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount(t *testing.T) {
+	// updateMenuWithSettings -> renderSettingsDocument -> remoteConfigViewOf
+	// reads ca.crt off disk (caFingerprintFromDisk); sandbox first so that
+	// read never touches the real ConfigDir (headline testing rule).
+	mkEmptySandboxRelayHome(t)
+	rp := &recordingPlatform{}
+	table := newEnrolmentRequestTable()
+	s := &Settings{}
+	app := &App{
+		platform: rp,
+		registry: &trayRegistry{},
+		store:    fixedStore{s: s},
+		extMgr:   NewExternalMcpManager(nil),
+		ipcCtx:   &IPCContext{EnrolmentOps: &EnrolmentOps{Requests: table}},
+	}
+
+	app.updateMenuWithSettings(s)
+	if strings.Contains(rp.lastMenu(), "Pending enrolment requests") {
+		t.Fatalf("menu shows a pending line with nothing pending: %s", rp.lastMenu())
+	}
+
+	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	assertNoErr(t, err, "Lodge 1")
+	if _, err := table.Lodge(genClientCSRPEM(t, "hermes-cal"), "", "10.0.0.6:1"); err != nil {
+		t.Fatalf("Lodge 2: %v", err)
+	}
+	// The poller suppresses a repaint whose JSON is unchanged from the last
+	// push; force one so this assertion observes the new count rather than
+	// the cached string from the call above.
+	app.lastMenuJSON = ""
+	app.updateMenuWithSettings(s)
+	if !strings.Contains(rp.lastMenu(), "Pending enrolment requests: 2") {
+		t.Fatalf("menu does not show 2 pending requests: %s", rp.lastMenu())
+	}
+
+	// Approving one drops the count to 1: an approved-but-not-yet-collected
+	// row needs nothing further from this menu (countUnapprovedEnrolmentRequests's
+	// own doc comment) — it is real and already on disk, per spec §2.
+	table.MarkApproved(l1.RequestID, "hermes-mail", nil, "127.0.0.1:9910", "cert", "ca")
+	app.lastMenuJSON = ""
+	app.updateMenuWithSettings(s)
+	if !strings.Contains(rp.lastMenu(), "Pending enrolment requests: 1") {
+		t.Fatalf("menu does not show 1 pending request after an approval: %s", rp.lastMenu())
+	}
+
+	// A click on the line opens Settings and nothing else: no request id is
+	// carried on this path, and no gated core method is anywhere near it —
+	// the structural answer to "a network peer cannot spam prompts" (spec §2).
+	app.onMenuClick(menuIDPendingEnrolments)
+	if rp.settings != 1 {
+		t.Fatalf("clicking the pending line opened Settings %d times, want 1", rp.settings)
 	}
 }

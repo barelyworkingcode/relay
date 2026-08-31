@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // parseCertPEM decodes a single PEM certificate for assertions.
@@ -142,5 +147,112 @@ func TestIssueServerCert_VerifiesAgainstCAForLoopback(t *testing.T) {
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		t.Fatalf("default server certificate does not verify for localhost: %v", err)
+	}
+}
+
+// AC-23: SignClientCSR overrides subject, EKU, serial and validity exactly
+// like IssueClientCert, and only the CSR's own public key crosses into the
+// certificate — no SAN, extension or subject component the CSR requested
+// survives.
+func TestRelayCA_SignClientCSR_OverridesEverythingButThePublicKey(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+	ca, err := LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "LoadOrCreateCA")
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assertNoErr(t, err, "generate client key")
+	tmpl := &x509.CertificateRequest{
+		Subject:        pkix.Name{CommonName: "csr-supplied-cn", Organization: []string{"csr-supplied-org"}},
+		DNSNames:       []string{"evil.example"},
+		EmailAddresses: []string{"evil@example.com"},
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	assertNoErr(t, err, "CreateCertificateRequest")
+	csr, err := x509.ParseCertificateRequest(der)
+	assertNoErr(t, err, "ParseCertificateRequest")
+
+	before := time.Now()
+	certPEM, fingerprint, err := ca.SignClientCSR(csr, "hermes-mail")
+	assertNoErr(t, err, "SignClientCSR")
+
+	cert := parseCertPEM(t, certPEM)
+	if cert.Subject.CommonName != "hermes-mail" {
+		t.Fatalf("CommonName = %q, want the --client-id, not the CSR's own CN", cert.Subject.CommonName)
+	}
+	if len(cert.Subject.Organization) != 1 || cert.Subject.Organization[0] != "relay" {
+		t.Fatalf("Organization = %v, want [relay]", cert.Subject.Organization)
+	}
+	if len(cert.Subject.OrganizationalUnit) != 1 || cert.Subject.OrganizationalUnit[0] != "relay-enrolment" {
+		t.Fatalf("OrganizationalUnit = %v, want [relay-enrolment]", cert.Subject.OrganizationalUnit)
+	}
+	if len(cert.DNSNames) != 0 || len(cert.EmailAddresses) != 0 {
+		t.Fatalf("a SAN carried over from the CSR: dns=%v email=%v", cert.DNSNames, cert.EmailAddresses)
+	}
+	if len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Fatalf("ExtKeyUsage = %v, want [ClientAuth]", cert.ExtKeyUsage)
+	}
+	if !cert.BasicConstraintsValid || cert.IsCA {
+		t.Fatalf("BasicConstraintsValid/IsCA = %v/%v, want true/false", cert.BasicConstraintsValid, cert.IsCA)
+	}
+	if cert.SerialNumber == nil || cert.SerialNumber.Sign() == 0 {
+		t.Fatal("serial number is zero")
+	}
+	wantNotAfter := before.Add(clientCertValidity)
+	if diff := cert.NotAfter.Sub(wantNotAfter); diff < -time.Hour || diff > time.Hour {
+		t.Fatalf("NotAfter = %s, want ~= now + clientCertValidity (%s)", cert.NotAfter, wantNotAfter)
+	}
+	if string(cert.RawSubjectPublicKeyInfo) != string(csr.RawSubjectPublicKeyInfo) {
+		t.Fatal("the certificate's public key is not byte-identical to the CSR's")
+	}
+	if fingerprint != FingerprintCert(cert) {
+		t.Fatalf("returned fingerprint %q != FingerprintCert(cert) %q", fingerprint, FingerprintCert(cert))
+	}
+}
+
+// SignClientCSR refuses a non-ECDSA public key rather than panicking or
+// silently mis-issuing — belt and braces behind ParseClientCSR's own
+// refusal, since signLeaf itself only accepts *ecdsa.PublicKey.
+func TestRelayCA_SignClientCSR_RefusesNonECDSAKey(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+	ca, err := LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "LoadOrCreateCA")
+
+	// A CertificateRequest built by hand, bypassing ParseClientCSR, with an
+	// Ed25519 public key set directly — SignClientCSR must not trust that
+	// its caller already validated the key type.
+	csr := &x509.CertificateRequest{PublicKey: []byte("not an ecdsa key")}
+	if _, _, err := ca.SignClientCSR(csr, "hermes-mail"); err == nil {
+		t.Fatal("SignClientCSR must refuse a non-ECDSA public key")
+	}
+}
+
+// AC-30: `relay enrol ca-fingerprint`'s value (caFingerprintFromDisk, which
+// reads ca.crt straight off disk with no sealer at all) and the value a
+// client pins (RelayCA.CertFingerprint, from the loaded CA the tray holds)
+// are byte-identical for the same CA.
+func TestCAFingerprint_DiskReadMatchesLoadedCA(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+
+	ca, err := LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "LoadOrCreateCA")
+
+	fromDisk, err := caFingerprintFromDisk()
+	assertNoErr(t, err, "caFingerprintFromDisk")
+
+	if fromDisk != ca.CertFingerprint() {
+		t.Fatalf("caFingerprintFromDisk() = %q, want %q (RelayCA.CertFingerprint of the same CA)", fromDisk, ca.CertFingerprint())
+	}
+	if !strings.HasPrefix(fromDisk, "sha256:") {
+		t.Fatalf("fingerprint %q lacks the sha256: prefix", fromDisk)
+	}
+}
+
+// caFingerprintFromDisk must never need a sealer: it is the one enrol
+// subcommand a CLI process can answer without dialing the tray.
+func TestCAFingerprint_RefusesNamingTheFixWhenNoCAExistsYet(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+	_, err := caFingerprintFromDisk()
+	if err == nil || !strings.Contains(err.Error(), "relay enrol") {
+		t.Fatalf("err = %v, want a refusal naming a `relay enrol` command to run first", err)
 	}
 }
