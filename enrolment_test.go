@@ -1,7 +1,12 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -583,5 +588,222 @@ func TestSettings_OmitsEnrolmentsWhenNoneExist(t *testing.T) {
 	assertNoErr(t, err, "read settings.json")
 	if strings.Contains(string(raw), "enrolments") {
 		t.Fatalf("settings.json grew an enrolments key with no enrolments:\n%s", raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// signEnrolment — the CSR path: relay never generates or sees a client
+// private key, and the bundle it writes has no key at all.
+// ---------------------------------------------------------------------------
+
+func parseCSRForTest(t *testing.T, csrPEM []byte) *x509.CertificateRequest {
+	t.Helper()
+	csr, err := ParseClientCSR(csrPEM)
+	assertNoErr(t, err, "ParseClientCSR")
+	return csr
+}
+
+// The happy path: signEnrolment persists the record, and the bundle it
+// writes to disk is client.crt and ca.crt only — no client.key, and the
+// returned bundle's KeyPath is empty.
+func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
+
+	bundle, err := signEnrolment(store, enrolmentRequest{
+		ClientID:   "hermes-mail",
+		ProjectIDs: []string{mail.ID},
+	}, csr)
+	assertNoErr(t, err, "signEnrolment")
+
+	if bundle.KeyPath != "" {
+		t.Fatalf("KeyPath = %q, want empty — the CSR path never writes a key", bundle.KeyPath)
+	}
+	entries, err := os.ReadDir(bundle.Dir)
+	assertNoErr(t, err, "read bundle dir")
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"ca.crt", "client.crt"}) {
+		t.Fatalf("bundle dir contains %v, want exactly [ca.crt client.crt]", names)
+	}
+	for _, path := range []string{bundle.CertPath, bundle.CACertPath} {
+		info, err := os.Stat(path)
+		assertNoErr(t, err, "stat %s", path)
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Fatalf("%s mode = %#o, want 0600", path, perm)
+		}
+	}
+	if info, err := os.Stat(bundle.Dir); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("bundle dir %s: err=%v mode=%v, want 0700", bundle.Dir, err, info.Mode().Perm())
+	}
+
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil {
+		t.Fatal("enrolment was not persisted")
+	}
+	if stored.SPKISHA256 == "" {
+		t.Fatal("SPKISHA256 was not recorded for a CSR-signed enrolment")
+	}
+	if stored.SPKISHA256 != SPKISHA256Hex(csr.RawSubjectPublicKeyInfo) {
+		t.Fatalf("SPKISHA256 = %q, want the CSR's own SPKI hash", stored.SPKISHA256)
+	}
+	if stored.Fingerprint != bundle.Enrolment.Fingerprint {
+		t.Fatalf("stored fingerprint %q != bundle's %q", stored.Fingerprint, bundle.Enrolment.Fingerprint)
+	}
+	certPEM, err := os.ReadFile(bundle.CertPath)
+	assertNoErr(t, err, "read client cert")
+	if got := FingerprintCert(parseCertPEM(t, certPEM)); got != stored.Fingerprint {
+		t.Fatalf("recorded fingerprint %q != emitted certificate's %q", stored.Fingerprint, got)
+	}
+	if resolved := store.Get().FindEnrolmentByFingerprint(stored.Fingerprint); resolved == nil || resolved.ClientID != "hermes-mail" {
+		t.Fatalf("FindEnrolmentByFingerprint did not resolve the signed enrolment: %+v", resolved)
+	}
+}
+
+// AC-20: --client-id naming an existing enrolment is refused — and this is
+// independent of the CSR's own CN. A CSR whose CN collides with an
+// existing enrolment but whose --client-id does not succeeds, and the
+// issued certificate's CN is --client-id, never the CSR's.
+func TestSignEnrolment_ClientIDCollisionRefusedButCSR_CNCollisionAloneSucceeds(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	seeded, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "seed existing enrolment")
+	certBefore, err := os.ReadFile(seeded.CertPath)
+	assertNoErr(t, err, "read seeded client.crt")
+
+	// --client-id collides: refused, store and bundle both untouched.
+	csrSameClientID := parseCSRForTest(t, genClientCSRPEM(t, "some-other-cn"))
+	_, err = signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}, csrSameClientID)
+	if err == nil || !strings.Contains(err.Error(), "hermes-mail") {
+		t.Fatalf("a --client-id collision must be refused naming it, got: %v", err)
+	}
+	if len(store.Get().Enrolments) != 1 {
+		t.Fatalf("a refused sign must not add a second enrolment: %+v", store.Get().Enrolments)
+	}
+	certAfter, err := os.ReadFile(seeded.CertPath)
+	assertNoErr(t, err, "read client.crt after refused collision")
+	if string(certAfter) != string(certBefore) {
+		t.Fatal("a refused --client-id collision must not write a new client.crt over the existing one")
+	}
+
+	// The CSR's own CN collides with the existing enrolment's client id,
+	// but --client-id names something else entirely: this succeeds, and
+	// the issued certificate's CN is --client-id, not the CSR's CN.
+	csrCNCollides := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
+	bundle, err := signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail-2", ProjectIDs: []string{mail.ID}}, csrCNCollides)
+	assertNoErr(t, err, "a CSR CN colliding with another enrolment's client id must not block a distinct --client-id")
+
+	certPEM, err := os.ReadFile(bundle.CertPath)
+	assertNoErr(t, err, "read issued cert")
+	cert := parseCertPEM(t, certPEM)
+	if cert.Subject.CommonName != "hermes-mail-2" {
+		t.Fatalf("issued certificate CN = %q, want the --client-id %q, not the CSR's own CN", cert.Subject.CommonName, "hermes-mail-2")
+	}
+}
+
+// AC-21: signing two different CSRs generated from the SAME private key
+// under two different client ids — the second is refused, naming the
+// first client id.
+func TestSignEnrolment_DuplicateSPKIRefusedNamingFirstClientID(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assertNoErr(t, err, "generate shared key")
+	csrA := parseCSRForTest(t, genCSRPEMFromKey(t, key, 0, "hermes-a"))
+	csrB := parseCSRForTest(t, genCSRPEMFromKey(t, key, 0, "hermes-b"))
+
+	_, err = signEnrolment(store, enrolmentRequest{ClientID: "hermes-a", ProjectIDs: []string{mail.ID}}, csrA)
+	assertNoErr(t, err, "sign the first client over the shared key")
+
+	_, err = signEnrolment(store, enrolmentRequest{ClientID: "hermes-b", ProjectIDs: []string{mail.ID}}, csrB)
+	if err == nil {
+		t.Fatal("signing a second CSR over the SAME private key under a different client id must be refused")
+	}
+	if !strings.Contains(err.Error(), "hermes-a") {
+		t.Fatalf("refusal must name the first client id (hermes-a), got: %v", err)
+	}
+	if got := len(store.Get().Enrolments); got != 1 {
+		t.Fatalf("want 1 enrolment after the refused duplicate-key sign, got %d", got)
+	}
+}
+
+// writeSignedCertBundle refuses outright when client.key already exists in
+// the target directory: a stale key would make a CSR-issued bundle
+// indistinguishable from a relay-generated one.
+func TestWriteSignedCertBundle_RefusesWhenClientKeyAlreadyExists(t *testing.T) {
+	dir, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	// Seed a stale client.key the way createEnrolment would have left one.
+	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "seed a host-generated enrolment with a client.key")
+	// Revoke the record but leave the key file behind, simulating an
+	// operator who deleted only the settings entry.
+	assertNoErr(t, store.With(func(s *Settings) { s.Enrolments = nil }), "clear the record, leaving the bundle dir")
+
+	keyPath := filepath.Join(dir, enrolmentBundleDir, "hermes-mail", "client.key")
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("test setup: stale client.key not present: %v", err)
+	}
+
+	e := Enrolment{ClientID: "hermes-mail"}
+	_, err = writeSignedCertBundle(e, []byte("cert"), []byte("ca"))
+	if err == nil || !strings.Contains(err.Error(), "client.key") {
+		t.Fatalf("want a refusal naming client.key, got: %v", err)
+	}
+}
+
+// AC-2: after a successful sign, the sandbox config dir contains no file
+// whose CONTENT carries a "PRIVATE KEY" PEM header, other than
+// ca.key.sealed (an opaque, encrypted envelope). Asserted by content, not
+// by filename.
+func TestSignEnrolment_LeavesNoPrivateKeyMaterialInTheSandbox(t *testing.T) {
+	dir, store := newEnrolmentSandbox(t)
+	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
+	_, err := signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}, csr)
+	assertNoErr(t, err, "signEnrolment")
+
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Base(path) == caKeySealedFile {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), "PRIVATE KEY") {
+			t.Errorf("%s contains a PRIVATE KEY PEM header, and it is not ca.key.sealed", path)
+		}
+		return nil
+	})
+	assertNoErr(t, err, "walk sandbox dir")
+}
+
+// AC-22: a grant naming a local (non-remote) project is refused by
+// ValidateEnrolmentGrants on the CSR path too — unchanged behaviour,
+// reused rather than reimplemented.
+func TestSignEnrolment_RefusesLocalProjectGrant(t *testing.T) {
+	dir, store := newEnrolmentSandbox(t)
+	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", dir)
+	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
+
+	_, err := signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{local.ID}}, csr)
+	if err == nil || !strings.Contains(err.Error(), local.ID) {
+		t.Fatalf("a grant naming a local project must be refused naming it, got: %v", err)
+	}
+	if len(store.Get().Enrolments) != 0 {
+		t.Fatal("a refused sign must not persist an enrolment")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, enrolmentBundleDir, "hermes-mail")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused sign left a bundle behind: %v", statErr)
 	}
 }

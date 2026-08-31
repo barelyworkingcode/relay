@@ -74,12 +74,28 @@ type grantMcpView struct {
 	Warnings []string          `json:"warnings,omitempty"`
 }
 
+// grantEnrolmentView is one enrolment reaching a profile, and whether it
+// currently holds configuration authority over its own grant (ADR-018).
+// CLIAdmin has no omitempty: AC-22 requires an enrolment with the bit off
+// to show as off, never be silently dropped from the list the way an
+// omitted false would read.
+type grantEnrolmentView struct {
+	ClientID string `json:"client_id"`
+	CLIAdmin bool   `json:"cli_admin"`
+}
+
 type grantView struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
 	Kind string         `json:"kind"`
 	Path string         `json:"path,omitempty"`
 	Mcps []grantMcpView `json:"mcps"`
+	// Enrolments lists every enrolment whose ProjectIDs names this record,
+	// so `relay grant` answers "who can reach this and can any of them
+	// reconfigure it" in the same place it answers "what does this reach"
+	// (ADR-018 decision 5). Empty for a local project, which no enrolment
+	// can grant (ValidateEnrolmentGrants).
+	Enrolments []grantEnrolmentView `json:"enrolments,omitempty"`
 }
 
 func newGrantView(s *Settings, p Project) grantView {
@@ -121,6 +137,12 @@ func newGrantView(s *Settings, p Project) grantView {
 		}
 		out.Mcps = append(out.Mcps, row)
 	}
+	for _, e := range s.Enrolments {
+		if e.GrantsProject(p.ID) {
+			out.Enrolments = append(out.Enrolments, grantEnrolmentView{ClientID: e.ClientID, CLIAdmin: e.CLIAdmin})
+		}
+	}
+	sort.Slice(out.Enrolments, func(i, j int) bool { return out.Enrolments[i].ClientID < out.Enrolments[j].ClientID })
 	return out
 }
 
@@ -154,6 +176,26 @@ func grantToolText(tok *StoredToken, p Project, mcpID string) string {
 	return "all tools"
 }
 
+// printGrantEnrolments names every enrolment reaching an access profile and
+// marks a cli-admin one loudly (AC-22): a certificate that can narrow this
+// profile's own grant is a fact the operator reading `relay grant` needs on
+// the same screen as the grant itself, not one they have to cross-reference
+// against `relay enrol list` to find.
+func printGrantEnrolments(w io.Writer, enrolments []grantEnrolmentView) {
+	if len(enrolments) == 0 {
+		fmt.Fprintln(w, "  no enrolments reach this profile")
+		return
+	}
+	fmt.Fprintln(w, "  enrolments:")
+	for _, e := range enrolments {
+		state := "cli-admin: off"
+		if e.CLIAdmin {
+			state = "** CLI-ADMIN: ON — this certificate may narrow this profile's own grant **"
+		}
+		fmt.Fprintf(w, "    %-20s %s\n", e.ClientID, state)
+	}
+}
+
 func printGrantViews(w io.Writer, views []grantView) {
 	warned := false
 	for i, v := range views {
@@ -167,22 +209,25 @@ func printGrantViews(w io.Writer, views []grantView) {
 		fmt.Fprintln(w, header+")")
 		if len(v.Mcps) == 0 {
 			fmt.Fprintf(w, "  no MCPs granted — this %s reaches nothing\n", v.Kind)
-			continue
+		} else {
+			for _, m := range v.Mcps {
+				fmt.Fprintf(w, "  %-14s access=%-5s  outbound=%-7s  tools=%s\n", m.Mcp, m.Access, m.Outbound, m.Tools)
+				for _, name := range sortedKeys(m.Scope) {
+					fmt.Fprintf(w, "  %-14s scope: %s = %s\n", "", name, m.Scope[name])
+				}
+				if len(m.Scope) == 0 {
+					fmt.Fprintf(w, "  %-14s scope: (none set)\n", "")
+				}
+				// Spelled out, not abbreviated: an operator's eye can slide
+				// over a single character like "/".
+				for _, warning := range m.Warnings {
+					fmt.Fprintf(w, "  %-14s ** %s **\n", "", strings.ToUpper(warning))
+					warned = true
+				}
+			}
 		}
-		for _, m := range v.Mcps {
-			fmt.Fprintf(w, "  %-14s access=%-5s  outbound=%-7s  tools=%s\n", m.Mcp, m.Access, m.Outbound, m.Tools)
-			for _, name := range sortedKeys(m.Scope) {
-				fmt.Fprintf(w, "  %-14s scope: %s = %s\n", "", name, m.Scope[name])
-			}
-			if len(m.Scope) == 0 {
-				fmt.Fprintf(w, "  %-14s scope: (none set)\n", "")
-			}
-			// Spelled out, not abbreviated: an operator's eye can slide over
-			// a single character like "/".
-			for _, warning := range m.Warnings {
-				fmt.Fprintf(w, "  %-14s ** %s **\n", "", strings.ToUpper(warning))
-				warned = true
-			}
+		if v.Kind == "access profile" {
+			printGrantEnrolments(w, v.Enrolments)
 		}
 	}
 	fmt.Fprintln(w)

@@ -36,10 +36,21 @@ const enrolmentsFixture = `[{
 	created_at: '2026-08-20T09:14:00Z'
 }]`
 
-const remoteEnabled = `{configured:true, enabled:true, listen:'127.0.0.1:9910', effective:'127.0.0.1:9910', audit_enabled:true}`
+const remoteEnabled = `{configured:true, enabled:true, listen:'127.0.0.1:9910', effective:'127.0.0.1:9910', audit_enabled:true, ca_fingerprint:'sha256:41c7f0a1b2c3d4e5f60718293a4b5c6d7e8f9001122334455667788990011ff'}`
 const remoteDisabled = `{configured:true, enabled:false, listen:'127.0.0.1:9910', effective:'127.0.0.1:9910', audit_enabled:true}`
 const remoteAbsent = `{configured:false, enabled:false, listen:'', effective:'127.0.0.1:9910', audit_enabled:true}`
 const remoteAuditOff = `{configured:true, enabled:true, listen:'127.0.0.1:9910', effective:'127.0.0.1:9910', audit_enabled:false}`
+
+// A pending request exactly as the IPC door projects it (pendingEnrolmentRequestView).
+const pendingRequestFixture = `[{
+	request_id: 'req_9f2a41c7',
+	spki_sha256: '8b03d1e2f3a4b5c6d7e8f900112233445566778899aabbccddeeff001122ee',
+	label: 'vm-mail-a',
+	remote_addr: '10.0.0.5:41233',
+	arrived_at: '2026-08-30T09:14:02Z',
+	expires_at: '2026-08-30T09:29:02Z',
+	approved: false
+}]`
 
 // seedRemoteVM loads the app bundle, switches to the Remote Clients tab, and
 // installs the two browser affordances the shim lacks: confirm() (captured, so
@@ -63,10 +74,22 @@ func seedRemoteVM(t *testing.T, projectsJSON, enrolmentsJSON, remoteJSON string)
 		window.state.enrolBundle = null;
 		window.state.enrolRevoked = null;
 		window.state.enrolmentBudgetDefaults = {window_seconds:60, max_calls:60, max_result_bytes:8388608};
+		window.state.pendingEnrolmentRequests = [];
 		return true;
 	})()`
 	if _, err := vm.RunString(script); err != nil {
 		t.Fatalf("seeding remote state: %v", err)
+	}
+	return vm
+}
+
+// seedRemoteVMWithPending is seedRemoteVM plus a seeded pending-requests
+// list, for the panel spec §3 describes.
+func seedRemoteVMWithPending(t *testing.T, projectsJSON, enrolmentsJSON, remoteJSON, pendingJSON string) *goja.Runtime {
+	t.Helper()
+	vm := seedRemoteVM(t, projectsJSON, enrolmentsJSON, remoteJSON)
+	if _, err := vm.RunString(`window.state.pendingEnrolmentRequests = ` + pendingJSON + `;`); err != nil {
+		t.Fatalf("seeding pending requests: %v", err)
 	}
 	return vm
 }
@@ -553,5 +576,208 @@ func TestRemoteTab_ShowPageRendersWithoutThrowing(t *testing.T) {
 		return window.state.page + ':' + (document.getElementById('content').innerHTML.indexOf('Remote Clients') >= 0);
 	})()`); got != "remote:true" {
 		t.Errorf("showPage('remote') = %q, want remote:true", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pending requests panel (spec §3) and the CA fingerprint header line
+// ---------------------------------------------------------------------------
+
+// Switching to the tab fetches the live pending list — it is never seeded
+// into the first paint (state.pendingEnrolmentRequests' own comment), so a
+// tab open with nothing fetched yet would show a stale or empty panel.
+func TestRemoteTab_ShowPageFetchesPendingRequests(t *testing.T) {
+	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)
+	got := evalString(t, vm, `(function(){
+		window.showPage('remote');
+		return window.__sent[window.__sent.length - 1];
+	})()`)
+	if !strings.Contains(got, `"type":"list_enrolment_requests"`) {
+		t.Errorf("showPage('remote') did not fetch pending requests: %s", got)
+	}
+}
+
+// The panel shows exactly the four things spec §3 names, key first and in
+// full, and marks the label as machine-supplied rather than relay's own
+// assertion.
+func TestRemoteTab_PendingRequestShowsTheFourFields(t *testing.T) {
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, pendingRequestFixture)
+	html := evalString(t, vm, `window.renderEnrolments()`)
+
+	for _, want := range []string{
+		"req_9f2a41c7",
+		"sha256:8b03d1e2f3a4b5c6d7e8f900112233445566778899aabbccddeeff001122ee", // full, untruncated
+		"vm-mail-a",
+		"supplied by the requesting machine",
+		"10.0.0.5:41233",
+		"2026-08-30T09:14:02Z",
+		"2026-08-30T09:29:02Z",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("pending request card is missing %q\n%s", want, html)
+		}
+	}
+	// No grant or budget field anywhere near the row (spec §3: "the request
+	// carries no grant field and no budget field").
+	if strings.Contains(html, "project_ids") || strings.Contains(html, "max_calls") {
+		t.Errorf("pending request card renders a grant or budget field it does not have\n%s", html)
+	}
+}
+
+// A hostile label is rendered as TEXT, never as markup — esc() is the only
+// path from r.label to the page.
+func TestRemoteTab_PendingRequestLabelIsEscapedNotInjected(t *testing.T) {
+	hostile := `[{
+		request_id: 'req_evil', spki_sha256: 'aa'.repeat(32),
+		label: '<img src=x onerror=alert(1)>', remote_addr: '10.0.0.9:1',
+		arrived_at: '2026-08-30T09:14:02Z', expires_at: '2026-08-30T09:29:02Z', approved: false
+	}]`
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, hostile)
+	html := evalString(t, vm, `window.renderEnrolments()`)
+	if strings.Contains(html, "<img src=x") {
+		t.Fatalf("a hostile label rendered as markup, not text:\n%s", html)
+	}
+	if !strings.Contains(html, "&lt;img") {
+		t.Fatalf("hostile label was not escaped:\n%s", html)
+	}
+}
+
+// An already-approved row shows as approved rather than offering Approve/Refuse
+// again — spec §2's "approved, not yet collected" state.
+func TestRemoteTab_ApprovedPendingRequestShowsApprovedState(t *testing.T) {
+	approved := `[{
+		request_id: 'req_done', spki_sha256: 'bb'.repeat(32), label: '',
+		remote_addr: '10.0.0.5:1', arrived_at: '2026-08-30T09:00:00Z',
+		expires_at: '2026-08-30T09:15:00Z', approved: true, approved_client_id: 'hermes-mail'
+	}]`
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, approved)
+	html := evalString(t, vm, `window.renderEnrolments()`)
+	if !strings.Contains(html, "approved: hermes-mail") {
+		t.Errorf("approved row does not say what it was approved as\n%s", html)
+	}
+	if strings.Contains(html, `onclick="approveEnrolmentRequestForm('req_done')"`) {
+		t.Errorf("an already-approved row still offers Approve\n%s", html)
+	}
+}
+
+// Approve… opens the SAME form "+ New Enrolment" does, pre-filled with the
+// request's identity, and Refuse sends refuse_enrolment_request after a
+// confirmation.
+func TestRemoteTab_ApproveOpensCreateFormPrefilled(t *testing.T) {
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, pendingRequestFixture)
+	html := evalString(t, vm, `(function(){
+		window.approveEnrolmentRequestForm('req_9f2a41c7');
+		return window.renderEnrolmentForm();
+	})()`)
+	for _, want := range []string{
+		"Approve Enrolment Request",
+		"req_9f2a41c7",
+		"Approve &amp; issue certificate",
+		"vm-mail-a", // offered as a placeholder, not a value — see the next test
+		// The client is required to pin this at collection time (spec §6),
+		// so it must be readable on the approval panel itself, not only in
+		// the tab's header line.
+		"sha256:41c7f0a1b2c3d4e5f60718293a4b5c6d7e8f9001122334455667788990011ff",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("approve form is missing %q\n%s", want, html)
+		}
+	}
+}
+
+// The label is offered only as a placeholder, never pre-filled as the
+// client id's value: it is hostile input, and the client id is the human's
+// naming decision (spec §3), matching `relay enrol approve --client-id`'s
+// own help text.
+func TestRemoteTab_ApproveFormDoesNotPrefillClientIDFromLabel(t *testing.T) {
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, pendingRequestFixture)
+	got := evalString(t, vm, `(function(){
+		window.approveEnrolmentRequestForm('req_9f2a41c7');
+		return window.state.enrolForm.client_id;
+	})()`)
+	if got != "" {
+		t.Errorf("client_id was pre-filled with %q, want empty (label is a placeholder only)", got)
+	}
+}
+
+// Submitting the approve form sends approve_enrolment_request, not
+// create_enrolment, carrying the request id and the grants/budget the
+// operator picked in this form — never anything the request itself named.
+func TestRemoteTab_ApproveFormSubmitsApproveEnrolmentRequest(t *testing.T) {
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, pendingRequestFixture)
+	got := evalString(t, vm, `(function(){
+		window.approveEnrolmentRequestForm('req_9f2a41c7');
+		window.toggleEnrolGrant('p_mail', true);
+		document.getElementById('enrolClientId').value = 'hermes-mail';
+		document.getElementById('enrolMaxCalls').value = '30';
+		window.saveEnrolment();
+		return window.__sent[window.__sent.length - 1];
+	})()`)
+	for _, want := range []string{
+		`"type":"approve_enrolment_request"`,
+		`"request_id":"req_9f2a41c7"`,
+		`"client_id":"hermes-mail"`,
+		`"project_ids":["p_mail"]`,
+		`"max_calls":30`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("approve payload missing %s in %s", want, got)
+		}
+	}
+	if strings.Contains(got, `"type":"create_enrolment"`) {
+		t.Error("approving a request sent create_enrolment instead")
+	}
+}
+
+func TestRemoteTab_RefuseSendsRefuseEnrolmentRequestAfterConfirmation(t *testing.T) {
+	vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, pendingRequestFixture)
+	got := evalString(t, vm, `(function(){
+		window.__confirmAnswer = false;
+		window.refuseEnrolmentRequest('req_9f2a41c7');
+		var declined = window.__sent.length;
+		window.__confirmAnswer = true;
+		window.refuseEnrolmentRequest('req_9f2a41c7');
+		return JSON.stringify({ declinedSent: declined, accepted: window.__sent[window.__sent.length - 1] });
+	})()`)
+	if !strings.Contains(got, `"declinedSent":0`) {
+		t.Error("declining the refuse confirmation still sent a refusal")
+	}
+	for _, want := range []string{`\"type\":\"refuse_enrolment_request\"`, `\"request_id\":\"req_9f2a41c7\"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refuse payload missing %s in %s", want, got)
+		}
+	}
+}
+
+// The tray's push (onEnrolmentRequestsChanged) updates the panel live, and
+// the CA fingerprint header line renders the value the approval panel also
+// reads — one number, not two.
+func TestRemoteTab_OnEnrolmentRequestsChangedUpdatesPanel(t *testing.T) {
+	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)
+	got := evalString(t, vm, `(function(){
+		window.onEnrolmentRequestsChanged(`+pendingRequestFixture+`);
+		return JSON.stringify({ count: window.state.pendingEnrolmentRequests.length, showsID: window.renderEnrolments().indexOf('req_9f2a41c7') >= 0 });
+	})()`)
+	if !strings.Contains(got, `"count":1`) || !strings.Contains(got, `"showsID":true`) {
+		t.Errorf("onEnrolmentRequestsChanged did not update the panel: %s", got)
+	}
+}
+
+func TestRemoteTab_CAFingerprintHeaderLine(t *testing.T) {
+	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)
+	html := evalString(t, vm, `window.renderEnrolments()`)
+	if !strings.Contains(html, "sha256:41c7f0a1b2c3d4e5f60718293a4b5c6d7e8f9001122334455667788990011ff") {
+		t.Errorf("CA fingerprint header line is missing\n%s", html)
+	}
+}
+
+func TestRemoteTab_CAFingerprintAbsentExplainsWhy(t *testing.T) {
+	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteDisabled) // no ca_fingerprint field
+	html := evalString(t, vm, `window.renderEnrolments()`)
+	if strings.Contains(html, "sha256:") {
+		t.Errorf("a fingerprint appeared with none seeded\n%s", html)
+	}
+	if !strings.Contains(html, "not available yet") {
+		t.Errorf("absence of a CA fingerprint is not explained\n%s", html)
 	}
 }

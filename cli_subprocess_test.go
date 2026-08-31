@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -65,11 +66,33 @@ type brokeredCLICommand struct {
 	args []string
 }
 
-func brokeredCLICommands() []brokeredCLICommand {
+// sharedRefusalTestCSRPath writes one valid CSR fixture, once per test
+// binary run, for the "relay enrol sign" row below: brokeredCLICommands
+// builds its table without a *testing.T, so the CSR has to already exist
+// on disk under a stable path before any subtest reads it via --csr.
+var (
+	sharedRefusalTestCSRPathOnce sync.Once
+	sharedRefusalTestCSRPath     string
+)
+
+func sharedRefusalTestCSRFile(t *testing.T) string {
+	t.Helper()
+	sharedRefusalTestCSRPathOnce.Do(func() {
+		path := filepath.Join(t.TempDir(), "enrol-sign-refusal.csr")
+		if err := os.WriteFile(path, genClientCSRPEM(t, "cli-refuse-test"), 0644); err != nil {
+			t.Fatalf("write shared CSR fixture: %v", err)
+		}
+		sharedRefusalTestCSRPath = path
+	})
+	return sharedRefusalTestCSRPath
+}
+
+func brokeredCLICommands(t *testing.T) []brokeredCLICommand {
 	return []brokeredCLICommand{
 		{"relay credential mint", []string{"credential", "mint", "--name", "x", "--class", "read"}},
 		{"relay credential revoke", []string{"credential", "revoke", "--id", "x"}},
 		{"relay enrol create", []string{"enrol", "create", "--client-id", "x"}},
+		{"relay enrol sign", []string{"enrol", "sign", "--client-id", "x", "--csr", sharedRefusalTestCSRFile(t)}},
 		{"relay enrol update", []string{"enrol", "update", "--client-id", "x", "--max-calls", "5"}},
 		{"relay enrol revoke", []string{"enrol", "revoke", "--client-id", "x"}},
 		{"relay login enrol", []string{"login", "enrol"}},
@@ -87,7 +110,7 @@ func brokeredCLICommands() []brokeredCLICommand {
 // says "requires the service" — never a settings or generic bridge error —
 // and leaves the (empty) config dir exactly as it found it.
 func TestBrokeredCommands_RefuseByNameAndTouchNothing(t *testing.T) {
-	for _, c := range brokeredCLICommands() {
+	for _, c := range brokeredCLICommands(t) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := mkShortTempDir(t, "relay-refuse-")
 			out, code := runCLISubprocess(t, dir, c.args...)

@@ -212,6 +212,7 @@ func cloneRemoteConfig(c *RemoteConfig) *RemoteConfig {
 	}
 	cp := *c
 	cp.Enabled = cloneBoolPtr(c.Enabled)
+	cp.EnrolmentRequests = cloneBoolPtr(c.EnrolmentRequests)
 	return &cp
 }
 

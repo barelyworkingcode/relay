@@ -14,13 +14,14 @@ import (
 	"relaygo/jsonrpc"
 )
 
-// FrameConn is the newline-delimited-JSON transport shared by BridgeServer
-// and RemoteServer, and nothing else: ADR-010 decision 1 wants the two
-// dispatch tables visibly distinct — a request type reachable from a VM must
-// be a line someone deliberately added to a two-entry list — while the
-// framing underneath has no security content and is exactly the code that
-// rots when copied. Serve takes the per-line handler as a parameter and knows
-// nothing about request types, tokens, or identity.
+// FrameConn is the newline-delimited-JSON transport shared by BridgeServer,
+// RemoteServer and EnrolmentRequestServer, and nothing else: ADR-010
+// decision 1 wants dispatch tables visibly distinct — a request type
+// reachable from a VM must be a line someone deliberately added to a
+// two-entry list — while the framing underneath has no security content and
+// is exactly the code that rots when copied. Serve takes the per-line
+// handler as a parameter and knows nothing about request types, tokens, or
+// identity.
 type FrameConn struct {
 	conn    net.Conn
 	scanner *bufio.Scanner
@@ -33,6 +34,14 @@ type FrameConn struct {
 	// slowloris vector decision 9 calls out, so RemoteServer sets it.
 	idle time.Duration
 
+	// maxMessage is the frame-size ceiling this connection was built with —
+	// MaxMessageSize by default, or a caller-chosen smaller value from
+	// NewFrameConnWithLimit. Recorded per-instance, not read from the
+	// package constant at report time, so reportReadEnd's message names the
+	// bound that actually applied rather than always naming the tool
+	// plane's 10 MiB ceiling.
+	maxMessage int
+
 	// writeMu serializes writes: progress frames are emitted from the
 	// external-MCP reader goroutine while the main goroutine is blocked inside
 	// the in-flight call, so the terminal response and any progress frames
@@ -42,7 +51,27 @@ type FrameConn struct {
 
 // NewFrameConn wraps an accepted connection. idle <= 0 disables deadlines.
 func NewFrameConn(conn net.Conn, name string, idle time.Duration) *FrameConn {
-	c := &FrameConn{conn: conn, scanner: NewScanner(conn), name: name, idle: idle}
+	return newFrameConn(conn, name, idle, MaxMessageSize)
+}
+
+// NewFrameConnWithLimit is NewFrameConn with a caller-chosen frame-size
+// ceiling smaller than MaxMessageSize. The enrolment-request listener uses
+// this to refuse an oversized frame at the scanner itself — before a CSR's
+// PEM bytes are even handed to a request handler — rather than sharing the
+// tool-plane listeners' 10 MiB ceiling, which is sized for legitimate tool
+// results, not an unauthenticated peer's opening frame.
+func NewFrameConnWithLimit(conn net.Conn, name string, idle time.Duration, maxMessageBytes int) *FrameConn {
+	return newFrameConn(conn, name, idle, maxMessageBytes)
+}
+
+func newFrameConn(conn net.Conn, name string, idle time.Duration, maxMessageBytes int) *FrameConn {
+	scanner := bufio.NewScanner(conn)
+	initial := 64 * 1024
+	if maxMessageBytes < initial {
+		initial = maxMessageBytes
+	}
+	scanner.Buffer(make([]byte, initial), maxMessageBytes)
+	c := &FrameConn{conn: conn, scanner: scanner, name: name, idle: idle, maxMessage: maxMessageBytes}
 	c.touch()
 	return c
 }
@@ -92,8 +121,8 @@ func (c *FrameConn) reportReadEnd(ctx context.Context) {
 	switch err := c.scanner.Err(); {
 	case err == nil:
 	case errors.Is(err, bufio.ErrTooLong):
-		_ = c.WriteFrame(ErrorResponse(jsonrpc.CodeInvalidParams, fmt.Sprintf("message exceeds maximum size of %d bytes", MaxMessageSize)))
-		slog.Warn(c.name+": dropping connection, message exceeds size limit", "max_bytes", MaxMessageSize)
+		_ = c.WriteFrame(ErrorResponse(jsonrpc.CodeInvalidParams, fmt.Sprintf("message exceeds maximum size of %d bytes", c.maxMessage)))
+		slog.Warn(c.name+": dropping connection, message exceeds size limit", "max_bytes", c.maxMessage)
 	case ctx.Err() != nil:
 		// Closed by shutdown (the close-on-cancel goroutine in each server's
 		// handler); the resulting read error is expected, not a failure.

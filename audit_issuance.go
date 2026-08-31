@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"relaygo/bridge"
 )
 
 // The vocabulary of things relay issues. Each names a kind of credential, not
@@ -34,6 +36,12 @@ const (
 	auditViaIPC  = "ipc"
 	auditViaTray = "tray"
 	auditViaHTTP = "http"
+	// auditViaRemote is the enrolment-certificate door: the remote listener's
+	// configuration plane (ADR-018 decision 4). Unlike every other `via`, the
+	// caller here is attested by TLS rather than by ownership of the config
+	// dir or a resolved control-plane credential, so issuanceActor gives it
+	// its own branch rather than folding it into the operator default.
+	auditViaRemote = "remote"
 )
 
 // Subject, Name and Grants can all be caller-chosen — an enrolment's client id
@@ -77,6 +85,11 @@ type CredentialIssuance struct {
 	// Grants is the class set for an api_credential, the granted
 	// access-profile ids for an enrolment, or the changed field names for a
 	// config_change project grant. Nil for a kind that has none of these.
+	// For an enrolment's config_change on cli_admin the entry carries the
+	// resulting state (e.g. "cli_admin=on") rather than the bare field
+	// name: for a boolean the direction IS the content, and a record
+	// saying only "cli_admin changed" cannot answer the question it
+	// exists for.
 	Grants []string
 
 	// Via is one of the auditVia* values.
@@ -87,9 +100,18 @@ type CredentialIssuance struct {
 	// ownership of the config dir, where there is no credential to name.
 	CredID string
 
+	// ClientID and Fingerprint attribute an act to the enrolment certificate
+	// that made it, set only for Via == auditViaRemote. A remote act has no
+	// control-plane credential and no config-dir ownership to name — the
+	// certificate IS the identity, resolved by TLS before the request was
+	// ever read.
+	ClientID    string
+	Fingerprint string
+
 	// PresenceID is the nonce id (presence.Grant.ID()) that authorised this
 	// act, when it was gated (ADR-017 implementation spec §7.5). Empty for
-	// an ungated issuance — nothing here changes for those.
+	// an ungated issuance — nothing here changes for those. Always empty
+	// for Via == auditViaRemote: NarrowForEnrolment is deliberately ungated.
 	PresenceID string
 }
 
@@ -166,6 +188,23 @@ func recordConfigChange(a IssuanceAuditor, credential, subject string, grants []
 	})
 }
 
+// recordConfigChangeRemote is recordConfigChange's counterpart for an act
+// reached over the remote listener: the acting identity is the enrolment's
+// certificate, not a CLI process or an HTTP credential, so the record
+// carries ClientID/Fingerprint instead of a CredID, and there is no presence
+// grant to name — the caller (NarrowForEnrolment) is deliberately ungated.
+func recordConfigChangeRemote(a IssuanceAuditor, credential, subject string, grants []string, caller bridge.RemoteCaller) error {
+	return recordIssuance(a, CredentialIssuance{
+		ConfigChange: true,
+		Credential:   credential,
+		Subject:      subject,
+		Grants:       grants,
+		Via:          auditViaRemote,
+		ClientID:     caller.ClientID,
+		Fingerprint:  caller.Fingerprint,
+	})
+}
+
 // recordIssuance is the front door every issuing site calls.
 //
 // This is deliberate: a nil auditor returns nil rather than an error. Auditing
@@ -185,10 +224,10 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // cannot be written, revokes what was just created.
 //
 // This is deliberate, and is the one issuing path that needs an undo: the
-// artifact an enrolment produces is a client private key already written to
-// disk, so withholding the bundle path from the caller would not withhold the
-// credential. revokeEnrolment removes the record AND the emitted bundle,
-// which is what makes the refusal real.
+// artifact is a credential the client already holds — a key relay wrote, or
+// a certificate over a key the client generated — so withholding the bundle
+// path would not withhold the credential. revokeEnrolment removes the
+// record AND the emitted bundle, which is what makes the refusal real.
 func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, via, credID, presenceID string) error {
 	err := recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialEnrolment,
@@ -342,6 +381,9 @@ func capIssuanceGrants(grants []string) ([]string, bool) {
 func issuanceActor(iss CredentialIssuance) AuditActor {
 	if iss.Via == auditViaHTTP {
 		return AuditActor{Kind: AuditActorControl, Auth: AuditAuthToken, CredID: iss.CredID}
+	}
+	if iss.Via == auditViaRemote {
+		return AuditActor{Kind: AuditActorRemote, Auth: AuditAuthMTLS, ClientID: iss.ClientID, Fingerprint: iss.Fingerprint}
 	}
 	pid := os.Getpid()
 	proc, parent := ProcessNames(pid)
