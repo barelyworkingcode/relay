@@ -388,6 +388,16 @@ identity, and nobody redeems it for anything by presenting it.
   to revoke: the id is not a secret before it is lodged, during the wait, or
   after collection. Losing it means re-running `relayremote request` and
   lodging a fresh one — the previous row simply expires at its own TTL.
+- **Nor is the six-character comparison code** `relayremote register` prints
+  (ADR-019 decision 3). It is not presented to anything and authorises
+  nothing: both ends *derive* it independently from material they already
+  hold, and comparing the two is an act performed by a human between two
+  screens. Relay deliberately never echoes it to the client — if it did, a
+  man-in-the-middle could forward relay's value and the comparison would be a
+  comparison of one number with itself. It is short-lived, worthless once the
+  request is approved or expires, and knowing it lets an attacker do nothing
+  it could not already do: the guess it would have to win is against a value
+  neither side could choose after committing.
 
 **What the channel records, and what it deliberately does not.** `relay
 audit` is ground truth for anything relay gates, and lodging is the one act
@@ -395,7 +405,11 @@ here an unauthenticated caller drives at line rate — recording it would be
 exactly the audit-log amplification [above](#what-the-unauthenticated-surface-records-and-what-it-still-costs)
 already exists to avoid, so **lodging is never audited.** It is *counted*
 instead: a full table warns at most once per TTL, the same discipline the
-login challenge table uses for its own flood. **An operator's explicit
+login challenge table uses for its own flood. That count is also what the
+tray's `Pending enrolment requests: N` line and its (coalesced, rate-limited)
+notification are derived from — a read on a timer, never a call from the
+lodge path, which is what keeps ADR-018 §8 P1's structural proof intact while
+the banner exists at all. **An operator's explicit
 refusal from the pending list IS audited**, as a genuine `ControlDecision`
 with `Allowed: false` — a human declining a stranger's request is an
 authorization decision no attacker can drive, unlike lodging it in the first
