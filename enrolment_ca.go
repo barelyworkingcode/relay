@@ -217,6 +217,19 @@ func (ca *RelayCA) CertFingerprint() string {
 // naming the fix, rather than the bare os.IsNotExist a caller would
 // otherwise have to translate itself.
 func loadCACertificateOnly() (*x509.Certificate, error) {
+	certPEM, err := caCertPEMFromDisk()
+	if err != nil {
+		return nil, err
+	}
+	return parseCACertificatePEM(certPEM)
+}
+
+// caCertPEMFromDisk returns ca.crt's bytes verbatim — the PEM a client is
+// handed at lodge time and computes the comparison code over, so it must be
+// the file, not a re-encoding of a parse of it. Same "read commands work
+// with the tray stopped" shape as caFingerprintFromDisk, and like it this
+// never touches ca.key.sealed: the certificate is public and stored clear.
+func caCertPEMFromDisk() ([]byte, error) {
 	_, _, certPath := caPaths()
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
@@ -225,6 +238,11 @@ func loadCACertificateOnly() (*x509.Certificate, error) {
 		}
 		return nil, fmt.Errorf("read %s: %w", certPath, err)
 	}
+	return certPEM, nil
+}
+
+func parseCACertificatePEM(certPEM []byte) (*x509.Certificate, error) {
+	_, _, certPath := caPaths()
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return nil, fmt.Errorf("%s is not valid PEM", certPath)
@@ -234,6 +252,33 @@ func loadCACertificateOnly() (*x509.Certificate, error) {
 		return nil, fmt.Errorf("parse %s: %w", certPath, err)
 	}
 	return cert, nil
+}
+
+// caSPKIFromDisk is the CA's RawSubjectPublicKeyInfo — what the comparison
+// code binds, rather than the whole certificate DER --ca-fingerprint pins.
+// Binding the key keeps the code stable across a cosmetic re-issue over the
+// same key, and an attacker cannot exploit the difference: a leaf only
+// verifies under the CA certificate carrying the key that signed it.
+func caSPKIFromDisk() ([]byte, error) {
+	cert, err := loadCACertificateOnly()
+	if err != nil {
+		return nil, err
+	}
+	return cert.RawSubjectPublicKeyInfo, nil
+}
+
+// caMaterialFromDisk reads both halves in one pass, for the reconcile tick
+// that pushes them into the pending-request table.
+func caMaterialFromDisk() (certPEM, spki []byte, err error) {
+	certPEM, err = caCertPEMFromDisk()
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := parseCACertificatePEM(certPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	return certPEM, cert.RawSubjectPublicKeyInfo, nil
 }
 
 // caFingerprintFromDisk is `relay enrol ca-fingerprint`'s whole

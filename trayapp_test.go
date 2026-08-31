@@ -278,9 +278,9 @@ func TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount(t *testing.
 		t.Fatalf("menu shows a pending line with nothing pending: %s", rp.lastMenu())
 	}
 
-	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge 1")
-	if _, err := table.Lodge(genClientCSRPEM(t, "hermes-cal"), "", "10.0.0.6:1"); err != nil {
+	if _, err := table.Lodge(genClientCSRPEM(t, "hermes-cal"), "", "", "", "10.0.0.6:1"); err != nil {
 		t.Fatalf("Lodge 2: %v", err)
 	}
 	// The poller suppresses a repaint whose JSON is unchanged from the last

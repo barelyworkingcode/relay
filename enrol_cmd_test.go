@@ -341,7 +341,7 @@ func TestEnrolRequestsApproveRefuse_CLIDispatchThroughTheBroker(t *testing.T) {
 	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
 	table := newEnrolmentRequestTable()
 	csrPEM := genClientCSRPEM(t, "hermes-mail")
-	l, err := table.Lodge(csrPEM, "vm-a", "10.0.0.5:41233")
+	l, err := table.Lodge(csrPEM, "vm-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
 
 	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
@@ -369,14 +369,14 @@ func TestEnrolRequestsApproveRefuse_CLIDispatchThroughTheBroker(t *testing.T) {
 		t.Fatalf("approved enrolment does not grant %s: %+v", profile.ID, stored)
 	}
 
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "approved" {
 		t.Fatalf("poll status = %q, want approved", poll.Status)
 	}
 
 	// A second, distinct request is refused instead of approved.
-	l2, err := table.Lodge(genClientCSRPEM(t, "hermes-refuse"), "", "10.0.0.6:1")
+	l2, err := table.Lodge(genClientCSRPEM(t, "hermes-refuse"), "", "", "", "10.0.0.6:1")
 	assertNoErr(t, err, "Lodge second")
 	out = captureStdout(t, func() {
 		enrolRefuse([]string{"--id", l2.RequestID})
@@ -402,7 +402,7 @@ func TestEnrolApprove_RowSweptDuringPresencePromptSaysSoAndDoesNotClaimDelivery(
 	table := newEnrolmentRequestTable()
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "10.0.0.5:41233")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
 
 	// 14 minutes pass before the operator runs `relay enrol approve`.
@@ -450,7 +450,7 @@ func TestEnrolApprove_RowRefusedDuringPresencePromptNamesTheRefusalNotAnExpiry(t
 	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
 
 	table := newEnrolmentRequestTable()
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "10.0.0.5:41233")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
 
 	sink := &refusedDuringApprovalSink{enrolmentRequestTable: table, requestID: l.RequestID}
@@ -484,7 +484,7 @@ func TestEnrolApprove_RowRefusedDuringPresencePromptNamesTheRefusalNotAnExpiry(t
 		t.Fatalf("approved enrolment does not grant %s: %+v", profile.ID, stored)
 	}
 
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "refused" {
 		t.Fatalf("poll status = %q, want refused -- the row still exists and was decided, not expired", poll.Status)
@@ -494,7 +494,7 @@ func TestEnrolApprove_RowRefusedDuringPresencePromptNamesTheRefusalNotAnExpiry(t
 func TestEnrolRequests_JSONFlagPrintsMachineReadableOutput(t *testing.T) {
 	store := newCLISandboxStore(t)
 	table := newEnrolmentRequestTable()
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge")
 	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
 		r.enrolmentOps.Requests = table

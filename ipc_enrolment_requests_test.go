@@ -62,7 +62,7 @@ func TestPendingEnrolmentRequestView_CarriesNoCSRBytes(t *testing.T) {
 
 	table := newEnrolmentRequestTable()
 	csrPEM := genClientCSRPEM(t, "hermes-mail")
-	l, err := table.Lodge(csrPEM, "vm-mail-a", "10.0.0.5:41233")
+	l, err := table.Lodge(csrPEM, "vm-mail-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
 
 	views := table.List()
@@ -95,9 +95,9 @@ func TestPendingEnrolmentRequestView_CarriesNoCSRBytes(t *testing.T) {
 func TestIPCListEnrolmentRequests_EmitsCurrentTable(t *testing.T) {
 	ipc, _, ui, table := newEnrolmentRequestsIPC(t)
 
-	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-mail-a", "10.0.0.5:41233")
+	l1, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-mail-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge 1")
-	l2, err := table.Lodge(genClientCSRPEM(t, "hermes-cal"), "", "10.0.0.6:9000")
+	l2, err := table.Lodge(genClientCSRPEM(t, "hermes-cal"), "", "", "", "10.0.0.6:9000")
 	assertNoErr(t, err, "Lodge 2")
 
 	ipcListEnrolmentRequests(ipc, mustRaw(t, map[string]interface{}{}))
@@ -158,7 +158,7 @@ func TestIPCApproveEnrolmentRequest_PersistsAndEmitsBundleAndRefreshesList(t *te
 	ipc, store, ui, table := newEnrolmentRequestsIPC(t)
 	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
 
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-mail-a", "10.0.0.5:41233")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-mail-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
 
 	ipcApproveEnrolmentRequest(ipc, mustRaw(t, map[string]interface{}{
@@ -203,7 +203,7 @@ func TestIPCApproveEnrolmentRequest_PersistsAndEmitsBundleAndRefreshesList(t *te
 
 func TestIPCApproveEnrolmentRequest_RequiresRequestIDAndClientID(t *testing.T) {
 	ipc, _, ui, table := newEnrolmentRequestsIPC(t)
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge")
 
 	// Missing client_id: ignored before ever reaching EnrolmentOps.Approve,
@@ -245,7 +245,7 @@ func TestIPCApproveEnrolmentRequest_UnknownRequestIDRefuses(t *testing.T) {
 
 func TestIPCRefuseEnrolmentRequest_RemovesRowAndRefreshesList(t *testing.T) {
 	ipc, _, ui, table := newEnrolmentRequestsIPC(t)
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge")
 
 	ipcRefuseEnrolmentRequest(ipc, mustRaw(t, map[string]interface{}{"request_id": l.RequestID}))

@@ -390,6 +390,15 @@ var (
 	// here would name a fact that did not happen and hide the one that did
 	// (issue #93).
 	errEnrolmentRequestRefused = errors.New("the operator refused this request while its approval was already in flight")
+
+	// errEnrolmentRequestSASIncomplete is the host's own enforcement of the
+	// comparison, independent of anything the client claims it did: a row
+	// that lodged a commitment and never opened it, or opened it wrongly,
+	// is unapprovable from EVERY door — CLI, IPC and HTTP alike. A row
+	// lodged WITHOUT a commitment (`relayremote request`) is untouched by
+	// this and stays approvable exactly as before; its control is the CA
+	// fingerprint the operator carried.
+	errEnrolmentRequestSASIncomplete = errors.New("this request has not completed its comparison handshake, so it cannot be approved")
 )
 
 // Approve is enrolment.sign's second door (spec §3) — NOT a new gated
@@ -423,6 +432,12 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	rec, found := o.Requests.Get(requestID)
 	if !found {
 		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
+	}
+
+	// Before the gate, deliberately: an operator should not be asked for
+	// Touch ID for an act that is going to be refused either way.
+	if rec.SASCommit != "" && (rec.SASOpen == "" || rec.SASFailed) {
+		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestSASIncomplete, sasIncompleteDetail(rec))
 	}
 
 	// The stored bytes, never anything approveFields could carry — see its
@@ -470,6 +485,43 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 		err = errors.Join(err, errEnrolmentRequestRefused)
 	}
 	return created, err
+}
+
+// sasIncompleteDetail names which of the two happened, because the operator
+// acts differently on each: a machine that never finished the handshake may
+// simply need re-running, and one whose commitment did not open is a fact
+// about the network path.
+func sasIncompleteDetail(rec pendingRecordView) string {
+	if rec.SASFailed {
+		return "the requesting machine failed its comparison handshake — refuse this request and register again, and if it fails a second time something is on the network path between that machine and this one"
+	}
+	return "the requesting machine has not yet completed its comparison handshake; wait for its next poll, or refuse the request"
+}
+
+// suggestClientID is advisory only. ValidateEnrolment's uniqueness check
+// inside store.With stays the authority — this runs outside any lock, so
+// two operators approving at once can still both be offered the same name,
+// and the loser is refused loudly there rather than quietly overwriting.
+// Returns "" when the label is unusable or every suffix to -99 is taken,
+// which the caller renders as "no suggestion", never as a chosen id.
+func suggestClientID(s *Settings, label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" || !isSafeID(label) || len(label) > maxEnrolmentLabelBytes {
+		return ""
+	}
+	if s == nil {
+		return label
+	}
+	if e := s.FindEnrolment(label); e == nil {
+		return label
+	}
+	for n := 2; n <= 99; n++ {
+		candidate := fmt.Sprintf("%s-%d", label, n)
+		if e := s.FindEnrolment(candidate); e == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // relayAddr is what an approved poll response's relay_addr carries: the

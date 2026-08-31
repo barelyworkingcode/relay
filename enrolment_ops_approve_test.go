@@ -27,7 +27,7 @@ import (
 func aoLodge(t *testing.T, cn, remoteAddr string) (*enrolmentRequestTable, lodged) {
 	t.Helper()
 	table := newEnrolmentRequestTable()
-	l, err := table.Lodge(genClientCSRPEM(t, cn), "", remoteAddr)
+	l, err := table.Lodge(genClientCSRPEM(t, cn), "", "", "", remoteAddr)
 	assertNoErr(t, err, "Lodge")
 	return table, l
 }
@@ -79,7 +79,7 @@ func TestEnrolmentOpsApprove_SignsOverTheStoredCSRsPublicKey(t *testing.T) {
 	}
 
 	// The poll response must reflect the approval (spec §5).
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "approved" {
 		t.Fatalf("poll status = %q, want approved", poll.Status)
@@ -133,9 +133,9 @@ func TestEnrolmentRequestTable_NoExportedMethodCanReplaceStoredCSRBytes(t *testi
 // key, using the exact bytes Approve itself would read via Get.
 func TestEnrolmentRequestApproval_GrantCannotBeRedeemedForADifferentKey(t *testing.T) {
 	table := newEnrolmentRequestTable()
-	lodgedA, err := table.Lodge(genClientCSRPEM(t, "hermes-a"), "", "10.0.0.5:1")
+	lodgedA, err := table.Lodge(genClientCSRPEM(t, "hermes-a"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "lodge A")
-	lodgedB, err := table.Lodge(genClientCSRPEM(t, "hermes-b"), "", "10.0.0.6:1")
+	lodgedB, err := table.Lodge(genClientCSRPEM(t, "hermes-b"), "", "", "", "10.0.0.6:1")
 	assertNoErr(t, err, "lodge B")
 
 	recA, ok := table.Get(lodgedA.RequestID)
@@ -275,7 +275,7 @@ func TestEnrolmentOpsApprove_DuplicateSPKIRefusedNamingTheExistingClient(t *test
 	// (only into other PENDING rows), so it succeeds -- the refusal must come
 	// from ValidateEnrolment inside Approve's own commitEnrolment.
 	table := newEnrolmentRequestTable()
-	l, err := table.Lodge(genCSRPEMFromKey(t, key, 0, "hermes-second"), "", "10.0.0.5:1")
+	l, err := table.Lodge(genCSRPEMFromKey(t, key, 0, "hermes-second"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "lodge a second CSR over the same key")
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: table}
@@ -320,7 +320,7 @@ func TestEnrolmentOpsApprove_UnrecordedIssuanceRevokesAndPollNeverApproves(t *te
 		t.Fatal("the emitted certificate directory was not removed")
 	}
 
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "pending" {
 		t.Fatalf("poll status = %q, want pending -- MarkApproved must never run when completeSigning's own undo fired", poll.Status)
@@ -360,7 +360,7 @@ func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *te
 		t.Fatal("the enrolment record must have landed even though the bundle write failed")
 	}
 
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "approved" {
 		t.Fatalf("poll status = %q, want approved -- the poll response must still deliver the certificate (spec §11.7)", poll.Status)
@@ -402,7 +402,7 @@ func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
 
-	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "10.0.0.5:1")
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "Lodge")
 
 	// 14 minutes pass before the operator answers the presence prompt.
@@ -427,7 +427,7 @@ func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(
 
 	// The row is gone: the client's next poll sees unknown, never approved
 	// -- there is nothing left to reflect an approval onto.
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "unknown" {
 		t.Fatalf("poll status = %q, want unknown -- the row was swept, so the client must not see approved", poll.Status)
@@ -496,7 +496,7 @@ func TestEnrolmentOpsApprove_RowRefusedDuringPresencePromptStillDeliversAndSaysS
 
 	// The row was refused, not swept: the client's next poll must say so
 	// specifically, never fall through to "unknown".
-	poll, perr := table.Poll(l.RequestID)
+	poll, perr := table.Poll(l.RequestID, "")
 	assertNoErr(t, perr, "Poll")
 	if poll.Status != "refused" {
 		t.Fatalf("poll status = %q, want refused -- the row still exists and was decided, not expired", poll.Status)
