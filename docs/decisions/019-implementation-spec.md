@@ -858,6 +858,8 @@ macOS notifications can be denied in System Settings, suppressed in Focus, and a
 
 ADR-018 §8, `docs/access-profiles.md` and `CLAUDE.md` all state, in strong terms, that no notification appears because a stranger lodged a request. That is now false wherever the listener is on. ADR-019 §4 writes the weakening down honestly, but **the documents have not been updated and a document that still promises the old property is worse than no document at all** — an operator reading it will conclude a banner means something has gone badly wrong. AC-50 exists for this and it should be treated as a blocking criterion, not a docs-tidy afterthought.
 
+**AC-50 is now met.** The four places that asserted the old property were corrected: ADR-018 §8 P1 (a marked narrowing, restating that no path from a lodge reaches `presence.Gate` as the part that survives), `docs/access-profiles.md`, `docs/install-remote-machine.md` and `CLAUDE.md`. Each says instead that a lodge may raise a coalesced, rate-limited, dismissible notification and never a prompt, and each also says the banner is not guaranteed (§9.4) so the tray line is the surface to rely on.
+
 ### 9.7 Eight concurrent rows is the attacker's parallelism, and the bound depends on it
 
 The 2^-27 figure in §3.3 is 2^-30 multiplied by the eight-row table cap. That cap is load-bearing for the *security* claim now, not only for the availability claim it was originally sized for. If anyone later raises `maxPendingEnrolmentRequests` for convenience, the SAS margin degrades linearly. The constant needs a comment saying so, and a reviewer needs to know that "8" is now two arguments, not one.

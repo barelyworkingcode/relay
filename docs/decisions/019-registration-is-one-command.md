@@ -1,7 +1,22 @@
 # ADR-019: Registering a Machine Is One Command and One Comparison
 
-**Status:** Proposed. Design agreed with the owner; not yet built.
+**Status:** Accepted. **Implemented** across both repositories.
 **Date:** 2026-08-30
+
+The build is specified in
+[019-implementation-spec.md](019-implementation-spec.md), which was measured
+against the code where this document was not. Where the two disagreed on a
+*fact*, the spec won and this document has been corrected below; every such
+correction is marked. Where they disagreed on a *decision*, this document
+won — with one exception, spec §9.1, where §3's original security argument
+did not hold and the protocol changed to make this decision's own claim true.
+That change is folded into §3 below rather than left in a footnote, because
+the mechanism is the decision here.
+
+The operator-facing consequences live in
+[`docs/install-remote-machine.md`](../install-remote-machine.md),
+[`docs/access-profiles.md`](../access-profiles.md) and relayRemote's
+`README.md`.
 
 ## Context
 
@@ -104,6 +119,14 @@ value is grindable and the attacker is reduced to one blind guess per lodged
 row. The bounded pending table caps its parallelism at eight, which puts the
 margin at roughly one in 134 million per approval.
 
+**`maxPendingEnrolmentRequests = 8` is therefore load-bearing for the security
+bound, not only for availability.** It was sized for a human walking to a Mac;
+it is now also the attacker's parallelism against a 30-bit comparison, and the
+claimed margin is the product of the two. Raising it for convenience degrades
+that margin linearly, and the constant carries a comment saying so. Anyone
+proposing a larger table is proposing a weaker comparison and should say which
+number they are trading.
+
 This is the construction Bluetooth numeric comparison actually uses. An earlier
 draft of this decision cited Bluetooth as the precedent while omitting the
 commitment — which is the part that does the work. Six characters is safe
@@ -132,6 +155,30 @@ without an answer, there is no flag that skips it, and a non-interactive caller
 must supply `--ca-fingerprint` exactly as before. What is retired is the
 *hand-carried* fingerprint as the only path, not the pin as a control.
 
+**As built**, that resolves into four rules, and `relayremote request` keeps
+ADR-018 §8's wording untouched in all four:
+
+- interactive `register` prints the code at lodge and requires a typed `y` to
+  *"the Mac showed `7K3P4Q`. Did it match? [y/N]"* before a byte reaches disk;
+- `register --ca-fingerprint sha256:…` checks the pin programmatically and
+  reads no confirmation. It is a *stronger* check supplied out of band, not a
+  way to skip one — prompting a human to eyeball a code a machine has already
+  proven equal is how you train people to answer `y` without looking;
+- `register` with a non-terminal stdin and no `--ca-fingerprint` is refused
+  before a key is generated and before anything is dialled;
+- `--tofu` does not exist on `register` and is refused at flag parse with a
+  message naming the code as what replaced it and `relayremote request` as
+  where `--tofu` still lives.
+
+**And the host enforces the comparison independently of the client.** A row
+that carries a commitment but was never opened, or whose opening failed, is
+refused by `EnrolmentOps.Approve` from every door — CLI, IPC, HTTP — *before*
+the presence gate is reached, and the pending panel renders no enabled Approve
+control for it. An operator cannot click past a comparison the client never
+completed, and is not asked for Touch ID for an act that is going to be
+refused. A legacy `relayremote request` row carries no commitment, shows `-`
+in the SAS column, and approves exactly as it always did.
+
 ### 4. A lodge may raise a notification, never a prompt
 
 ADR-018 §8 property P1 stands where it matters — **no code path from an
@@ -152,10 +199,33 @@ unbounded:
   exists only where an operator turned it on;
 - notifications coalesce to one regardless of how many requests are pending,
   so a flood produces one banner, not a stream;
-- notifications are rate-limited independently of the table;
+- notifications are rate-limited independently of the table — **as built, at
+  most one a minute and six in a rolling hour**, and a flood that trips the
+  limit is swallowed rather than queued to fire later, because a queue turns a
+  cap into a delay;
+- only a **new** row can raise one: the banner is driven by a lodge-generation
+  counter, so re-lodges, polls, refusals and throttles move nothing;
+- none is raised while the Settings window is open, since the panel already
+  updates live and a banner over the window you are looking at is noise;
 - once the bounded pending table is full, lodging is refused and no further
   notification is raised — the existing availability residual is unchanged and
-  gains no new phishing dimension.
+  gains no new phishing dimension;
+- the body carries a count and nothing else. No label, no requested profile,
+  no comparison code, no request id: nothing an unauthenticated peer supplied
+  reaches an operator's screen through it.
+
+Worst case for an attacker holding an open enrolment port: **six dismissible
+banners an hour, permanently.**
+
+**The notification is a discoverability improvement and never a delivery
+guarantee, and no document may promise it.** macOS notifications can be denied
+in System Settings, suppressed by Focus, and are unavailable entirely to a
+process with no bundle identifier — a bare `./relay` in a terminal, or the test
+binary. There is no way to force one. The tray's `Pending enrolment requests:
+N` line is the reliable surface and stays for that reason; it must not be
+removed as redundant. The structural mechanism is also what keeps P1's proof
+intact: the banner is raised by the tray's existing two-second poll *reading* a
+counter, never by the lodge path *calling* anything.
 
 The distinction that makes this acceptable: a notification is dismissible and
 blocks nothing, while `presence.Gate` takes the screen and asks for a password.
@@ -196,38 +266,71 @@ The second only exists when an enrolment holds more than one grant, and relay
 honours the id only if the enrolment actually holds it (ADR-010 §2). The first
 is the real identity switch.
 
-    ~/.config/relayremote/
-      config.json                 { "default": "hermes-mail" }
-      registrations/
-        hermes-mail/
-          client.key   0600
-          client.crt
-          ca.crt
-          registration.json
+    $XDG_CONFIG_HOME/relayremote/          0700   (falls back to ~/.config)
+      config.json                          0644   { "version": 1, "default": "hermes-mail" }
+      registrations/                       0700
+        hermes-mail/                       0700
+          client.key                       0600
+          client.csr                       0644
+          client.crt                       0644
+          ca.crt                           0644
+          registration.json                0644
+          pending.json                     0600   (only while a registration is in flight)
         hermes-cal/
           …
 
 `registration.json` records the name, the host-assigned client id, the tool and
-enrolment addresses, the CA fingerprint, the grants observed at registration,
-and a default project.
+enrolment addresses, the CA fingerprint, the certificate fingerprint, the
+grants observed at registration, a default project, and the code that was
+compared. **A registration directory is deliberately shaped exactly like a
+bundle directory**, so `--bundle` at that path also works and the existing
+loader is reused unmodified rather than reimplemented.
 
     relayremote register "Hermes Mail" --host 192.168.64.1
     relayremote register "Hermes Cal"  --host 192.168.64.1
 
     relayremote registrations
-      NAME          CLIENT ID     HOST                 PROFILES              DEFAULT
-    * hermes-mail   hermes-mail   192.168.64.1:9910    mail                  yes
-      hermes-cal    hermes-cal    192.168.64.1:9910    calendar, contacts
+      NAME         CLIENT ID    HOST            PROFILES                              DEFAULT
+      hermes-cal   hermes-cal   127.0.0.1:9910  b0000000-0000-4000-8000-000000000001
+    * hermes-mail  hermes-mail  127.0.0.1:9910  477d9a17-da03-45eb-a433-764f93fe96fc  yes
 
-    relayremote --as hermes-cal call --tool calendar_list_events
+    relayremote --as hermes-cal call --tool fs_list
     relayremote use hermes-cal          # move the default pointer
 
-Selection resolves in one order, most explicit first: `--as NAME`, then
-`RELAY_REMOTE_REGISTRATION`, then the `default` pointer, then — if exactly one
-registration exists — that one. With several registrations and no selector the
-command **errors and lists the names**; it does not pick. Guessing which
-identity to act as is the one thing this store must never do, because the
-identities differ precisely in what they may reach.
+(**Corrected against the build.** An earlier draft of this table showed
+`PROFILES` as friendly names — `mail`, `calendar, contacts`. It shows the
+profile **ids**, because the ids are what the client was told and what
+`--project` takes; the client never learns relay's display names. A directory
+holding a key but no certificate renders `(registration in progress)`, which is
+a state the operator did not choose to create and must not read as a broken
+row.)
+
+Selection resolves in one order, most explicit first, and it is nine rows
+rather than the four this decision first wrote — because `--bundle` and
+`RELAY_REMOTE_BUNDLE` had to keep working untouched and they sit inside the
+same order:
+
+| # | condition | result |
+|---|---|---|
+| 0 | `--bundle` and `--as` both passed | **error** |
+| 1 | `--bundle DIR` passed | bundle mode |
+| 2 | `--as NAME` passed | that registration |
+| 3 | `RELAY_REMOTE_REGISTRATION` set | that registration |
+| 4 | `RELAY_REMOTE_BUNDLE` set | bundle mode |
+| 5 | `config.json`'s `default` names one that exists | that one |
+| 6 | exactly one registration exists | that one |
+| 7 | several, no selector | **error**, listing every name |
+| 8 | none, and no bundle | today's error, plus a line naming `register` |
+
+Row 3 above row 4 is deliberate: `RELAY_REMOTE_REGISTRATION` is the more
+specific variable and a user who sets it means it. Rows 1 and 2 above both
+environment variables is the ordinary flag-beats-environment rule.
+
+Row 7 is the one this store must never get wrong. It **errors and lists the
+names**; it does not pick. Guessing which identity to act as is the one thing
+this store must never do, because the identities differ precisely in what they
+may reach — and a wrong guess is silent, since relay answers the wrong identity
+perfectly well.
 
 **Which axis to reach for.** One registration holding several grants is right
 when one agent legitimately needs both surfaces — ADR-010's `hermes-triage
@@ -262,12 +365,36 @@ zero tools, which reads as a broken install rather than an incomplete one. So:
 
 - the approval sheet makes choosing an access profile a required step, with
   "none for now" available but never the silent default;
+- **`relay enrol approve` takes the same rule**, which this decision did not
+  originally say and the build made explicit: with no `--grant` it refuses,
+  naming `--no-grant` as the way to say "no access, on purpose". It is a
+  behaviour change to an existing command; the failure is loud and the fix is
+  one flag. A door that could issue an empty grant silently would put the
+  whole of this section behind whichever door the operator happened to use;
 - `register` ends by reporting what the grant actually reaches, not "done".
 
 `register` may carry a requested-profile hint, which is **displayed to the
 human as a request and never honoured automatically**. Nothing about a lodged
 request names its own grants; that choice stays the operator's, exactly as
 `docs/access-profiles.md` already states.
+
+**The address in that report comes from `--host`, never from the wire.** Relay
+reports its own `remote.listen`, which is very often `127.0.0.1:9910` or
+`0.0.0.0:9910` and meaningless to a remote machine; and following a host
+supplied over an unauthenticated channel would be a redirection primitive even
+after the comparison has closed, because it decides where the *next* connection
+goes. Only the port is ever taken from the wire, and the port resolves
+most-explicit-first: a `--port` the operator actually typed, then the port of
+the reported `relay_addr`, then 9910. A `relay_addr` naming some other host is
+printed as a note and not followed.
+
+**A registration that is on disk but whose tool plane cannot be reached is a
+success, not a failure**, and says so: the certificate is real and filed, and
+the client exits with a code of its own (12) naming the two likely fixes —
+widen `remote.listen` past loopback, or pass `--server-name`, since relay's
+server certificate carries only the names in `remote.listen`. This is the
+single most common way a first registration half-works, and a script needs to
+tell it apart from a registration that did not happen.
 
 ## Consequences
 
@@ -280,8 +407,12 @@ request names its own grants; that choice stays the operator's, exactly as
   *prompt*, ever" (§4). The prompt-spam property that P1 existed to buy is
   untouched.
 - **A network peer can raise a banner on the operator's Mac** where the
-  enrolment listener is enabled. Coalesced, rate-limited, and bounded by the
-  pending table, but real.
+  enrolment listener is enabled. Coalesced, rate-limited to six an hour, and
+  bounded by the pending table, but real. The reverse is also true and matters
+  more for the documents: **the operator may see no banner at all** — denied,
+  suppressed by Focus, or unavailable to a process with no bundle identifier —
+  so the tray's `Pending enrolment requests: N` line, not the banner, is the
+  surface anything may rely on.
 - **The operator-carried path is unchanged and remains the fallback that
   always works.** It needs no listener, no network path, and nothing to
   compare. Everything here is about making the network path pleasant, not
@@ -291,12 +422,29 @@ request names its own grants; that choice stays the operator's, exactly as
   `registration.json` is a cache of the host's answer, not a source of truth,
   and any grant list in it is advisory. Relay re-checks at call time (ADR-010
   §3, point 3), which is what makes a stale local record fail closed.
-- **`--tofu` loses its reason to exist on the interactive path** and should be
-  reconsidered rather than carried forward by default: the SAS comparison is
-  what it was approximating, done better.
+
+  Two rules follow, and both are enforced rather than intended. **Nothing read
+  from `registration.json` may relax a check**: TLS verifies against `ca.crt`
+  on disk exactly as `--bundle` mode does, and the `ca_fingerprint` field is
+  display only. And **a corrupt cache is still a usable registration** — a
+  truncated or unparseable `registration.json` beside a valid key, certificate
+  and CA warns and keeps working, because refusing to run on a damaged cache
+  turns a cosmetic problem into an outage on the machine that is hardest to
+  reach. What is lost with the file is the *routing*, not the identity: the
+  address and the default project lived there, so that run needs `--addr`, and
+  `--project` if the enrolment holds several grants.
+- **`--tofu` is retired from the interactive path and kept where it still
+  means something.** It does not exist on `register` and is refused at flag
+  parse there, naming the comparison code as what replaced it; it stays on
+  `relayremote request` unchanged, because on that verb it is still the only
+  alternative to a hand-carried fingerprint. The comparison is what `--tofu`
+  was approximating, done better — but only `register` has one to offer.
 
 ## See also
 
+- [019-implementation-spec.md](019-implementation-spec.md) — the build, the
+  wire changes field by field, the acceptance criteria, and §9's list of what
+  this decision got wrong.
 - [ADR-010](010-remote-client-transport-and-identity.md) — the certificate-as-
   identity model §1 and §2 restate, and the enrolment-keyed-by-certificate
   reasoning §5 extends.
