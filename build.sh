@@ -33,7 +33,7 @@ for arg in "$@"; do
     esac
 done
 
-# Regenerate the settings UI bundle (web/src/* -> web/dist/settings.html) FIRST,
+# Regenerate the settings UI bundle (web/src/* -> internal/webassets/settings.html) FIRST,
 # so BOTH the test suite and the build below embed the current source rather than
 # a stale committed artifact. esbuild runs in-process via web/gen; no Node.
 echo "Bundling settings UI..."
@@ -61,7 +61,7 @@ STAGE="/tmp/relay-build-$$"
 
 # Build Go binary with CGO enabled
 echo "Building relay..."
-CGO_ENABLED=1 go build -o relay .
+CGO_ENABLED=1 go build -o relay ./cmd/relay
 
 # Build bundle in /tmp
 # Use cat to copy binary -- breaks provenance chain that cp preserves
