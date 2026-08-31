@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework EventKit -framework Contacts
+#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework EventKit -framework Contacts -framework UserNotifications
 #include "cocoa_darwin.h"
 #include <stdlib.h>
 */
@@ -109,6 +109,14 @@ func (p *DarwinPlatform) OpenURL(url string) {
 	C.cocoa_open_url(cs)
 }
 
+func (p *DarwinPlatform) Notify(title, body string) {
+	ct := C.CString(title)
+	defer C.free(unsafe.Pointer(ct))
+	cb := C.CString(body)
+	defer C.free(unsafe.Pointer(cb))
+	C.cocoa_notify(ct, cb)
+}
+
 //export goOnMenuClick
 func goOnMenuClick(itemID C.int) {
 	if appInstance != nil {
@@ -128,6 +136,22 @@ func goOnSettingsClose() {
 	if appInstance != nil {
 		appInstance.onSettingsClose()
 	}
+}
+
+//export goOnNotificationClick
+func goOnNotificationClick() {
+	if appInstance != nil {
+		appInstance.onNotificationClick()
+	}
+}
+
+// goOnNotificationsDenied is the only route Objective-C has into relay's
+// slog output. It carries no appInstance check on purpose: a denial is worth
+// recording whether or not the tray finished coming up.
+//
+//export goOnNotificationsDenied
+func goOnNotificationsDenied(detail *C.char) {
+	reportNotificationsDenied(C.GoString(detail))
 }
 
 //export goOnAppTerminate

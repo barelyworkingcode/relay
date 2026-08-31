@@ -231,6 +231,22 @@ func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *Settings
 		return err
 	}
 
+	// On every tick, not only at bind, so a break-glass CA regeneration
+	// reaches the table that derives the comparison code — and so a CA
+	// that vanished makes a commitment-bearing lodge refuse rather than
+	// answer with a code over a certificate that is no longer on disk.
+	// Bytes, never the *RelayCA: see setCACert.
+	//
+	// Ordering is safe. resolveEnrolment already refuses
+	// enrolment_requests:true with enabled:false, so the tool-plane
+	// listener converges first in this same tick and NewRemoteServer's
+	// LoadOrCreateCA has already written ca.crt.
+	if certPEM, spki, err := caMaterialFromDisk(); err == nil {
+		sup.enrolTable.setCACert(certPEM, spki)
+	} else {
+		sup.enrolTable.setCACert(nil, nil)
+	}
+
 	if sup.enrolServer != nil && sup.enrolServer.cfg.Listen == desired.Listen {
 		sup.reportEnrolLocked(desired.Listen, nil)
 		return nil

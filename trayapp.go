@@ -72,6 +72,12 @@ type App struct {
 	// lastMenuJSON and svcMenuMap.
 	pendingLoginCode *loginCodeView
 
+	// pendingSettingsPage is the page a tray action wants the next Settings
+	// window to open on, waiting for the same first paint and for the same
+	// reason pendingLoginCode does. Main-thread only. Empty is the ordinary
+	// case: the window opens where it always did.
+	pendingSettingsPage string
+
 	// lastStatusBatchDigest fingerprints the most recently emitted service-
 	// status batch (FetchedAt zeroed). Identical batches across ticks are
 	// suppressed so the inspector's WebView doesn't re-render every 2s for
@@ -90,6 +96,12 @@ type App struct {
 	// delete the keychain item the running store's key lives in — every
 	// ordinary seal and unseal goes through the store's own sealer instead.
 	sealedKeyring sealed.Keyring
+
+	// enrolNotifier raises the coalesced, rate-limited banner for newly
+	// lodged enrolment requests. Built lazily on the main thread by
+	// updateMenuWithSettings, the only place that drives it, so a test that
+	// constructs an App literal can install its own clock and sink first.
+	enrolNotifier *pendingEnrolmentNotifier
 
 	// configDir is where settings.json, ca.key.sealed and ca.crt live.
 	// resetSealedStore is the one place outside FileSettingsStore itself
@@ -646,7 +658,7 @@ func (a *App) pushEnrolmentRequests() {
 		return
 	}
 	a.emitSettingsEvent("onEnrolmentRequestsChanged",
-		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests())))
+		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests(), a.store.Get())))
 }
 
 func (a *App) updateMenuWithSettings(s *Settings) {
@@ -720,7 +732,17 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 	// store warning above: a permanent "Pending enrolment requests: 0" line
 	// would be noise on every install that never enables the channel.
 	if a.ipcCtx != nil && a.ipcCtx.EnrolmentOps != nil {
-		if n := countUnapprovedEnrolmentRequests(a.ipcCtx.EnrolmentOps.PendingRequests()); n > 0 {
+		views := a.ipcCtx.EnrolmentOps.PendingRequests()
+		n := countUnapprovedEnrolmentRequests(views)
+		// The notification is derived from THIS read, on the timer that
+		// already runs, so the banner and the line below can never disagree.
+		// It is a pull: nothing on the lodge path calls into the tray, and
+		// LodgeGeneration is the only fact a network peer can move.
+		if a.enrolNotifier == nil {
+			a.enrolNotifier = newPendingEnrolmentNotifier(nil, a.platform.Notify)
+		}
+		a.enrolNotifier.tick(a.ipcCtx.EnrolmentOps.LodgeGeneration(), n, len(views), maxPendingEnrolmentRequests, a.settingsOpen.Load())
+		if n > 0 {
 			items = append(items, menuItem{
 				Title:   fmt.Sprintf("Pending enrolment requests: %d", n),
 				ID:      menuIDPendingEnrolments,
@@ -752,6 +774,41 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 	a.platform.UpdateMenu(jsonStr)
 }
 
+// settingsPageRemoteClients is web/src/app.js's showPage id for the Remote
+// Clients tab. The sidebar's own onclick attributes in web/shell.html use the
+// same string; changing one without the other opens the window on nothing.
+const settingsPageRemoteClients = "remote"
+
+// openRemoteClientsPage is the whole of what the pending-enrolments menu line
+// and the notification banner do when clicked: put the window that can show
+// the request on screen, on the page that shows it. It carries no request id
+// and calls no gated core method — the approval still happens from the panel,
+// behind enrolment.sign's own prompt.
+//
+// Two arms, for the reason showLoginCode's doc comment gives in full: a
+// window that is not up yet has no document to receive an emit, because
+// cocoa_settings_eval_js drops a script when no WebView exists and
+// OpenSettings loads its document asynchronously — so a cold open can only be
+// told through its first paint. A window that IS up is never reloaded by
+// OpenSettings, so for that one the emit is the only channel. Getting this
+// wrong is not cosmetic here: the banner exists to put the operator in front
+// of the request, and landing them on Services is landing them nowhere.
+func (a *App) openRemoteClientsPage() {
+	if a.settingsOpen.Load() {
+		a.emitSettingsEvent("showPage", settingsPageRemoteClients)
+	} else {
+		a.pendingSettingsPage = settingsPageRemoteClients
+	}
+	a.openSettingsWindow()
+}
+
+// onNotificationClick is the banner's click handler, reached from Cocoa's
+// UNUserNotificationCenter delegate. Same act as the tray line, deliberately:
+// two surfaces, one destination, nothing gated behind either.
+func (a *App) onNotificationClick() {
+	a.openRemoteClientsPage()
+}
+
 // onMenuClick is called from the platform menu action on the main thread.
 func (a *App) onMenuClick(itemID int) {
 	switch {
@@ -768,7 +825,7 @@ func (a *App) onMenuClick(itemID int) {
 		// Opens Settings and nothing else — see the menu item's own
 		// comment. Approving or refusing a request happens from the
 		// Remote Clients tab this opens, never from the tray itself.
-		a.openSettingsWindow()
+		a.openRemoteClientsPage()
 
 	case itemID == menuIDExit:
 		a.cleanup()

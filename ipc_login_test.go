@@ -52,6 +52,7 @@ func (p *ilPlatform) OpenSettings(html string) {
 func (p *ilPlatform) EvalSettingsJS(js string) { p.mu.Lock(); p.js = append(p.js, js); p.mu.Unlock() }
 func (p *ilPlatform) DispatchToMain(fn func()) { fn() }
 func (p *ilPlatform) OpenURL(string)           {}
+func (p *ilPlatform) Notify(string, string)    {}
 
 func (p *ilPlatform) lastDoc(t *testing.T) string {
 	t.Helper()
@@ -416,7 +417,7 @@ func TestILPasskeyHandlers_NeverEmitKeyMaterial(t *testing.T) {
 
 	surfaces := map[string]string{
 		"IPC events":  emittedJSON(t, ui),
-		"first paint": renderSettingsDocument(store.Get(), nil, nil, nil, nil),
+		"first paint": renderSettingsDocument(store.Get(), nil, nil, nil, nil, ""),
 	}
 	needles := []string{
 		ilXMarker, ilYMarker,
@@ -452,7 +453,7 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 	ilSeedPasskey(t, store, id, "MacBook Touch ID", 0, false)
 	session := ilSeedSession(t, store, id, loginCredentialTTL)
 
-	html := renderSettingsDocument(store.Get(), nil, nil, nil, nil)
+	html := renderSettingsDocument(store.Get(), nil, nil, nil, nil, "")
 
 	for _, want := range []string{"MacBook Touch ID", abbreviatePasskeyID(id), session.Name, "loginCode: null"} {
 		if !strings.Contains(html, want) {

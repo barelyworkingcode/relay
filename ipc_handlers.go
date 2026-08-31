@@ -19,7 +19,12 @@ func (a *App) openSettingsWindow() {
 	// reappearing would read as a code that still works.
 	code := a.pendingLoginCode
 	a.pendingLoginCode = nil
-	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code)
+	// Consumed for the same reason the code above is: a page selected for
+	// THIS open must not survive into the next one, or every subsequent
+	// "Settings..." click reopens on a tab nobody asked for.
+	page := a.pendingSettingsPage
+	a.pendingSettingsPage = ""
+	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code, page)
 	a.platform.OpenSettings(html)
 	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch

@@ -56,6 +56,7 @@ func buildPage(html string) string {
 		"__PASSKEYS_JSON__", fixturePasskeys,
 		"__LOGIN_SESSIONS_JSON__", fixtureLoginSessions,
 		"__LOGIN_CODE_JSON__", fixtureLoginCode,
+		"__INITIAL_PAGE_JSON__", `""`,
 	).Replace(html)
 
 	// window.webkit must exist before the page's ipc() runs, so the mock goes

@@ -390,6 +390,15 @@ var (
 	// here would name a fact that did not happen and hide the one that did
 	// (issue #93).
 	errEnrolmentRequestRefused = errors.New("the operator refused this request while its approval was already in flight")
+
+	// errEnrolmentRequestSASIncomplete is the host's own enforcement of the
+	// comparison, independent of anything the client claims it did: a row
+	// that lodged a commitment and never opened it, or opened it wrongly,
+	// is unapprovable from EVERY door — CLI, IPC and HTTP alike. A row
+	// lodged WITHOUT a commitment (`relayremote request`) is untouched by
+	// this and stays approvable exactly as before; its control is the CA
+	// fingerprint the operator carried.
+	errEnrolmentRequestSASIncomplete = errors.New("this request has not completed its comparison handshake, so it cannot be approved")
 )
 
 // Approve is enrolment.sign's second door (spec §3) — NOT a new gated
@@ -423,6 +432,12 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	rec, found := o.Requests.Get(requestID)
 	if !found {
 		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
+	}
+
+	// Before the gate, deliberately: an operator should not be asked for
+	// Touch ID for an act that is going to be refused either way.
+	if rec.SASCommit != "" && (rec.SASOpen == "" || rec.SASFailed) {
+		return EnrolmentCreated{}, fmt.Errorf("%w: %s", errEnrolmentRequestSASIncomplete, sasIncompleteDetail(rec))
 	}
 
 	// The stored bytes, never anything approveFields could carry — see its
@@ -463,13 +478,80 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	// line runs after it, never before), so the right answer is never to
 	// undo it; it is to say which of the two happened, the same way an
 	// on-disk bundle failure already does with errEnrolmentBundle.
-	switch o.Requests.MarkApproved(requestID, clientID, f.ProjectIDs, o.relayAddr(), created.CertPEM, created.CAPEM) {
+	switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
 	case markApprovedRowGone:
 		err = errors.Join(err, errEnrolmentRequestExpired)
 	case markApprovedRowRefused:
 		err = errors.Join(err, errEnrolmentRequestRefused)
 	}
 	return created, err
+}
+
+// approvedProjects pairs each granted id with the display name the operator
+// saw on the approval sheet, so the requesting machine's closing report can
+// name what its grant reaches instead of printing a bare UUID it has no way
+// to resolve (spec §5.7): nothing else the client can reach carries a project
+// name, and DescribeGrant is gated on cli_admin, which a plain registration
+// does not hold.
+//
+// A project that is unnamed, or gone from settings between the sign and this
+// read, degrades to its own id. Never to an empty string: the client prints
+// "name  (id)", and a blank there reads as a broken relay rather than as a
+// project nobody named.
+//
+// Only the approved payload carries these — see approvedProject's own comment
+// for why that keeps ADR-018 §8 P2 intact.
+func (o *EnrolmentOps) approvedProjects(ids []string) []approvedProject {
+	if len(ids) == 0 {
+		return nil
+	}
+	s := o.Store.Get()
+	out := make([]approvedProject, 0, len(ids))
+	for _, id := range ids {
+		name := id
+		if proj, _ := s.findProjectByID(id); proj != nil && strings.TrimSpace(proj.Name) != "" {
+			name = proj.Name
+		}
+		out = append(out, approvedProject{ID: id, Name: name})
+	}
+	return out
+}
+
+// sasIncompleteDetail names which of the two happened, because the operator
+// acts differently on each: a machine that never finished the handshake may
+// simply need re-running, and one whose commitment did not open is a fact
+// about the network path.
+func sasIncompleteDetail(rec pendingRecordView) string {
+	if rec.SASFailed {
+		return "the requesting machine failed its comparison handshake — refuse this request and register again, and if it fails a second time something is on the network path between that machine and this one"
+	}
+	return "the requesting machine has not yet completed its comparison handshake; wait for its next poll, or refuse the request"
+}
+
+// suggestClientID is advisory only. ValidateEnrolment's uniqueness check
+// inside store.With stays the authority — this runs outside any lock, so
+// two operators approving at once can still both be offered the same name,
+// and the loser is refused loudly there rather than quietly overwriting.
+// Returns "" when the label is unusable or every suffix to -99 is taken,
+// which the caller renders as "no suggestion", never as a chosen id.
+func suggestClientID(s *Settings, label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" || !isSafeID(label) || len(label) > maxEnrolmentLabelBytes {
+		return ""
+	}
+	if s == nil {
+		return label
+	}
+	if e := s.FindEnrolment(label); e == nil {
+		return label
+	}
+	for n := 2; n <= 99; n++ {
+		candidate := fmt.Sprintf("%s-%d", label, n)
+		if e := s.FindEnrolment(candidate); e == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // relayAddr is what an approved poll response's relay_addr carries: the
@@ -497,6 +579,27 @@ func (o *EnrolmentOps) Refuse(requestID string) error {
 		return fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
 	}
 	return nil
+}
+
+// lodgeGenerationReader is enrolmentRequestTable's monotonic insert counter,
+// asked for through an interface rather than added to
+// EnrolmentRequestApprovalSink: approving needs nothing from it, and the
+// table's own doc comment forbids growing anything notification-shaped in
+// the other direction. A sink that does not implement it reads as "nothing
+// has ever arrived".
+type lodgeGenerationReader interface {
+	LodgeGeneration() uint64
+}
+
+// LodgeGeneration is the pull the tray's notifier reads on the poll it
+// already runs. It is deliberately the only new fact crossing this boundary:
+// a counter, read on a timer, never a callback the lodge path could invoke.
+func (o *EnrolmentOps) LodgeGeneration() uint64 {
+	r, ok := o.Requests.(lodgeGenerationReader)
+	if !ok {
+		return 0
+	}
+	return r.LodgeGeneration()
 }
 
 // PendingRequests is the read-only surface `relay enrol requests` and,
