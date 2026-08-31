@@ -671,7 +671,7 @@ func TestEnrolment_AC13_LodgingIsUnaudited_FullTableWarnsOncePerTTL(t *testing.T
 	}
 }
 
-// AC-14: an operator refusal writes exactly one ControlDecision with
+// AC-14: an operator refusal writes exactly one control.ControlDecision with
 // Allowed:false; an expiry writes none.
 func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 	t.Run("refusal", func(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // loginOwnerHandle is the WebAuthn user handle every passkey relay registers
@@ -50,7 +52,7 @@ const (
 	loginVerifyPath = "/relay/login/verify"
 
 	// loginAuditMaxReasonBytes bounds the one caller-adjacent value on this
-	// path the way ControlDecision.Path and .Method are already bounded: a
+	// path the way control.ControlDecision.Path and .Method are already bounded: a
 	// refusal naming a credential id carries whatever length was registered.
 	loginAuditMaxReasonBytes = 1024
 )
@@ -59,7 +61,7 @@ const (
 // configure, never grant, execute or proxy. It is a floor to be narrowed by
 // measuring what the view actually reaches, and never a set to be widened by
 // one.
-var loginCredentialClasses = []CapabilityClass{ClassRead, ClassConfigure}
+var loginCredentialClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure}
 
 var (
 	errLoginCeremonyUnknown = errors.New("login: unknown ceremony")
@@ -72,7 +74,7 @@ var (
 type loginRoutes struct {
 	store    SettingsStore
 	verifier *WebAuthnVerifier
-	auditor  ControlAuditor
+	auditor  control.ControlAuditor
 	// issuance records the two credentials this surface hands out — a
 	// registered passkey and the credential an assertion mints — which the
 	// ceremony's own control_decision row does not name. Set by the frontend
@@ -81,7 +83,7 @@ type loginRoutes struct {
 	issuance IssuanceAuditor
 }
 
-func newLoginRoutes(store SettingsStore, verifier *WebAuthnVerifier, auditor ControlAuditor) *loginRoutes {
+func newLoginRoutes(store SettingsStore, verifier *WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
 	return &loginRoutes{store: store, verifier: verifier, auditor: auditor}
 }
 
@@ -159,9 +161,9 @@ type loginRegisteredResponse struct {
 }
 
 type loginSignedInResponse struct {
-	Token   string            `json:"token"`
-	Expires string            `json:"expires"`
-	Classes []CapabilityClass `json:"classes"`
+	Token   string                    `json:"token"`
+	Expires string                    `json:"expires"`
+	Classes []control.CapabilityClass `json:"classes"`
 }
 
 func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
@@ -426,7 +428,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 }
 
 // loginCredentialName names the record for the ceremony that produced it, so
-// ControlDecision.CredID attributes one browser session rather than a role.
+// control.ControlDecision.CredID attributes one browser session rather than a role.
 func loginCredentialName(credentialID string) string {
 	return fmt.Sprintf("%s%s %s", loginCredentialPrefix, abbreviatePasskeyID(credentialID), time.Now().UTC().Format(time.RFC3339))
 }
@@ -439,7 +441,7 @@ func loginCredentialName(credentialID string) string {
 // point 10 all belong in it.
 //
 // Class is left empty deliberately. These routes are not registered through
-// RouteRegistrar and there is no class that means "none"; naming one here
+// control.RouteRegistrar and there is no class that means "none"; naming one here
 // would put in a record the hole in the vocabulary ADR-016 decision 5 refuses
 // to put in the route table.
 //
@@ -463,10 +465,10 @@ func (lr *loginRoutes) recordLoginOutcome(credID string, allowed bool, err error
 		}
 		reason, _ = capControlString(loginAuditReason(err), loginAuditMaxReasonBytes)
 	}
-	lr.auditor.RecordDecision(ControlDecision{
+	lr.auditor.RecordDecision(control.ControlDecision{
 		Method:    http.MethodPost,
 		Path:      loginVerifyPath,
-		Transport: TransportTCP,
+		Transport: control.TransportTCP,
 		CredID:    credID,
 		Allowed:   allowed,
 		Reason:    reason,
@@ -578,7 +580,7 @@ func decodeLoginField(encoded string) ([]byte, error) {
 }
 
 // loginStatus maps every login failure to a refusal, following
-// controlStatus's convention in capability.go: an error this function does
+// control.AuthorizationStatus's convention: an error this function does
 // not recognize is still a refusal and never something a caller could mistake
 // for a server fault.
 func loginStatus(err error) int {

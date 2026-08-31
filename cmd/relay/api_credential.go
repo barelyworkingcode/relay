@@ -10,17 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/google/uuid"
-)
-
-// errNoCredential and errClassNotGranted are the only two authorization
-// outcomes an Authorizer may return short of nil (ADR-015). Developer A's
-// HTTP layer maps them to 401 and 403 respectively; anything else it sees
-// maps to 403 too, since an authorization decision that errors is a refusal,
-// never a 500.
-var (
-	errNoCredential    = errors.New("no credential")
-	errClassNotGranted = errors.New("class not granted")
 )
 
 // AddAPICredential appends unconditionally. Does not save; use within
@@ -92,7 +83,7 @@ func (s *Settings) AuthenticateAPICredential(plaintext string) *APICredential {
 
 // Mint creates a credential that never expires. Does not save; use within
 // store.With.
-func (s *Settings) Mint(name string, classes []CapabilityClass) (APICredential, string, error) {
+func (s *Settings) Mint(name string, classes []control.CapabilityClass) (APICredential, string, error) {
 	return s.MintFor(name, classes, 0)
 }
 
@@ -203,7 +194,7 @@ func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICre
 // land on it rather than mint something inert; a caller that means "now" has
 // no reason to mint at all. Callers that take a lifetime from an operator
 // refuse a negative one at the point of entry instead.
-func (s *Settings) MintFor(name string, classes []CapabilityClass, ttl time.Duration) (APICredential, string, error) {
+func (s *Settings) MintFor(name string, classes []control.CapabilityClass, ttl time.Duration) (APICredential, string, error) {
 	plaintext, err := generateRandomHex(32)
 	if err != nil {
 		return APICredential{}, "", err
@@ -251,14 +242,14 @@ const legacyFrontendCredentialName = "legacy-frontend-token"
 // read+configure+proxy credential that lets an existing frontend consumer
 // (Eve, relayScheduler) keep authenticating with RELAY_FRONTEND_TOKEN
 // unchanged (ADR-015 decision 3, ADR-016 decision 4). It grants
-// exactly ClassRead, ClassConfigure and ClassProxy — never ClassGrant or
-// ClassExecute — which is a deliberate narrowing: creating an enrolment,
+// exactly control.ClassRead, control.ClassConfigure and control.ClassProxy — never control.ClassGrant or
+// control.ClassExecute — which is a deliberate narrowing: creating an enrolment,
 // registering an MCP, or writing a service's command stops being reachable
 // with the legacy token, and any consumer that needs those must mint its own
 // credential naming them explicitly.
 //
-// ClassProxy is what keeps those consumers reaching the proxied surface,
-// which registers under that class. The surface is not ClassExecute for the
+// control.ClassProxy is what keeps those consumers reaching the proxied surface,
+// which registers under that class. The surface is not control.ClassExecute for the
 // reason ADR-016 decision 4 gives: execute would also hand the legacy token
 // POST /api/mcps and PUT /api/services/{id}.
 //
@@ -274,7 +265,7 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 		return false
 	}
 	hash := hashToken(frontendToken)
-	classes := []CapabilityClass{ClassRead, ClassConfigure, ClassProxy}
+	classes := []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
 	for i := range s.APICredentials {
 		if s.APICredentials[i].Name != legacyFrontendCredentialName {
 			continue
@@ -300,7 +291,7 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 	return true
 }
 
-// credentialAuthorizer implements Authorizer (capability.go) against
+// credentialAuthorizer implements control.Authorizer against
 // Settings.APICredentials.
 type credentialAuthorizer struct {
 	store SettingsStore
@@ -327,14 +318,14 @@ func bearerToken(r *http.Request) (string, bool) {
 // store.Get(): a credential minted moments ago by a CLI or IPC process in
 // this same install must authenticate on its very next request, the same
 // reasoning RemoteServer.currentSettings applies to enrolments (issue #21).
-func (a *credentialAuthorizer) Authorize(r *http.Request, class CapabilityClass) error {
+func (a *credentialAuthorizer) Authorize(r *http.Request, class control.CapabilityClass) error {
 	token, ok := bearerToken(r)
 	if !ok {
-		return errNoCredential
+		return control.ErrNoCredential
 	}
 	cred := freshSettings(a.store).AuthenticateAPICredential(token)
 	if cred == nil {
-		return errNoCredential
+		return control.ErrNoCredential
 	}
 	// This is subtle: *http.Request is passed by pointer but WithContext
 	// returns a copy, so the only way to hand the resolved id back to the
@@ -343,11 +334,11 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class CapabilityClass)
 	// request the caller would have to remember to use. Attached as soon as
 	// the bearer resolves to a credential, before the class check, so a
 	// class refusal still names the credential that attempted it — only an
-	// unresolved bearer (errNoCredential) leaves the context untouched,
+	// unresolved bearer (control.ErrNoCredential) leaves the context untouched,
 	// since there is no credential to name.
 	*r = *r.WithContext(withAPICredentialID(r.Context(), cred.ID))
 	if !cred.Grants(class) {
-		return errClassNotGranted
+		return control.ErrClassNotGranted
 	}
 	return nil
 }
@@ -355,7 +346,7 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class CapabilityClass)
 type apiCredentialCtxKey struct{}
 
 // withAPICredentialID carries the resolved credential's id for the
-// integrator's audit call (ControlDecision.CredID) — never the token or its
+// integrator's audit call (control.ControlDecision.CredID) — never the token or its
 // hash, which have no reason to exist past the Authorize call that consumed
 // them.
 func withAPICredentialID(ctx context.Context, id string) context.Context {

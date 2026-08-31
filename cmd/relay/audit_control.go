@@ -1,14 +1,25 @@
 package main
 
-import "time"
+import (
+	"time"
 
-// Compile-time proof that *AuditRecorder satisfies capability.go's
-// ControlAuditor, so a signature drift on either side fails the build rather
+	"github.com/barelyworkingcode/relay/internal/control"
+)
+
+// Compile-time proof that *AuditRecorder satisfies control.ControlAuditor, so
+// a signature drift on either side fails the build rather
 // than surfacing only when the two packages are wired together.
-var _ ControlAuditor = (*AuditRecorder)(nil)
+var _ control.ControlAuditor = (*AuditRecorder)(nil)
 
-// ControlDecision.Path and .Method are read straight off the request line
-// (r.URL.Path, r.Method) before RouteRegistrar.authorize has resolved a
+func controlAuditorOrNil(rec *AuditRecorder) control.ControlAuditor {
+	if rec == nil {
+		return nil
+	}
+	return rec
+}
+
+// control.ControlDecision.Path and .Method are read straight off the request line
+// (r.URL.Path, r.Method) before control.RouteRegistrar.authorize has resolved a
 // credential, let alone checked its class — a caller holding no class at all,
 // or the wrong one, still reaches this record on every refusal. Bounded here,
 // generously past any real relay or proxied-service route: a control-plane
@@ -40,10 +51,10 @@ func capControlString(s string, maxBytes int) (string, bool) {
 // local record (Record, not RecordDurable) — ADR-010's fail-closed rule is
 // scoped to remote tool calls and does not extend here.
 //
-// ControlDecision carries no token, hash, or header value, only a
+// control.ControlDecision carries no token, hash, or header value, only a
 // credential id — there is nothing else this method could leak even by
 // accident.
-func (r *AuditRecorder) RecordDecision(d ControlDecision) {
+func (r *AuditRecorder) RecordDecision(d control.ControlDecision) {
 	if !r.Enabled() {
 		return
 	}
@@ -60,7 +71,7 @@ func (r *AuditRecorder) RecordDecision(d ControlDecision) {
 	// the same attested-identity pair the tool-call audit path already
 	// carries for a remote caller (audit_call.go).
 	actor := AuditActor{Kind: AuditActorControl, Auth: AuditAuthToken, CredID: d.CredID}
-	if d.Transport == TransportTCP && d.ClientID != "" {
+	if d.Transport == control.TransportTCP && d.ClientID != "" {
 		actor = AuditActor{Kind: AuditActorRemote, Auth: AuditAuthMTLS, ClientID: d.ClientID, Fingerprint: d.Fingerprint}
 	}
 	r.Record(AuditEvent{

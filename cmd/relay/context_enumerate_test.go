@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -469,7 +470,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 				t.Fatalf("EnsureInitialized: %v", err)
 			}
 			mux := http.NewServeMux()
-			RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, c.enum, nil, nil)
+			RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, c.enum, nil, nil)
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 
@@ -494,7 +495,7 @@ func TestEnumerateRoute_HTTPCarriesTheChosenDependencies(t *testing.T) {
 	}
 	enum := okEnum("INBOX")
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, enum, nil, nil)
+	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, &ProjectOps{Store: store}, schemaProviderFunc(enumSurfaces), nil, enum, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

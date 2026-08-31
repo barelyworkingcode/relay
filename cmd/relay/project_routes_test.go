@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -33,7 +34,7 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	})
 	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
+	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, ops, schemaProviderFunc(testSchemas), nil, nil, nil, nil)
 	return httptest.NewServer(mux), store
 }
 
@@ -65,7 +66,7 @@ func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister Ski
 	})
 	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t), OnChange: onChange}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
+	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, ops, schemaProviderFunc(testSchemas), tools, nil, lister, onChange)
 	return httptest.NewServer(mux), store
 }
 

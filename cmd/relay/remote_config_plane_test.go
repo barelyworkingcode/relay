@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
@@ -595,7 +596,7 @@ func TestCliAdmin_InFlightRequestCompletesAfterBitFlips(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildRemoteConfigHandlers_DropsExecuteAndProxyClasses(t *testing.T) {
-	for _, class := range []CapabilityClass{ClassExecute, ClassProxy} {
+	for _, class := range []control.CapabilityClass{control.ClassExecute, control.ClassProxy} {
 		got := buildRemoteConfigHandlers(map[string]remoteConfigEntry{
 			"Fake": {class, handleRemoteDescribeGrant},
 		})
@@ -604,8 +605,8 @@ func TestBuildRemoteConfigHandlers_DropsExecuteAndProxyClasses(t *testing.T) {
 		}
 	}
 	for reqType, entry := range remoteConfigHandlers {
-		if !ClassReachableOn(entry.class, TransportTCP) {
-			t.Errorf("%s has class %q, which ClassReachableOn refuses on TCP", reqType, entry.class)
+		if !control.ClassReachableOn(entry.class, control.TransportTCP) {
+			t.Errorf("%s has class %q, which control.ClassReachableOn refuses on TCP", reqType, entry.class)
 		}
 	}
 }
@@ -689,7 +690,7 @@ func TestCliAdmin_RefusedConfigRequestWritesControlDecision(t *testing.T) {
 	events := readLoggedEvents(t, f.audit)
 	var found *AuditEvent
 	for i := range events {
-		if events[i].Event == AuditEventControlDecision && events[i].Class == string(ClassConfigure) {
+		if events[i].Event == AuditEventControlDecision && events[i].Class == string(control.ClassConfigure) {
 			found = &events[i]
 		}
 	}
@@ -699,8 +700,8 @@ func TestCliAdmin_RefusedConfigRequestWritesControlDecision(t *testing.T) {
 	if found.Outcome != AuditOutcomeDenied {
 		t.Errorf("outcome = %q, want %q", found.Outcome, AuditOutcomeDenied)
 	}
-	if found.Transport != string(TransportTCP) {
-		t.Errorf("transport = %q, want %q", found.Transport, TransportTCP)
+	if found.Transport != string(control.TransportTCP) {
+		t.Errorf("transport = %q, want %q", found.Transport, control.TransportTCP)
 	}
 	if found.Actor.ClientID != "hermes-mail" {
 		t.Errorf("actor.client_id = %q, want hermes-mail", found.Actor.ClientID)
@@ -710,7 +711,7 @@ func TestCliAdmin_RefusedConfigRequestWritesControlDecision(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Finding (class label): DescribeGrant's own class label has no assertion
 // anywhere — relabelling remoteConfigHandlers[bridge.ReqDescribeGrant] from
-// ClassRead to ClassConfigure leaves the suite green, because the read-only
+// control.ClassRead to control.ClassConfigure leaves the suite green, because the read-only
 // entry's class is never surfaced back for a test to check. NarrowGrant's
 // label is already caught, the same way this one now is: a refusal writes
 // the entry's class into the control_decision record.
@@ -735,8 +736,8 @@ func TestCliAdmin_RefusedDescribeGrantRecordsItsOwnClass(t *testing.T) {
 	if found == nil {
 		t.Fatalf("no control_decision recorded for the refused DescribeGrant: %+v", events)
 	}
-	if found.Class != string(ClassRead) {
-		t.Errorf("class = %q, want %q — DescribeGrant is registered as read, not configure", found.Class, ClassRead)
+	if found.Class != string(control.ClassRead) {
+		t.Errorf("class = %q, want %q — DescribeGrant is registered as read, not configure", found.Class, control.ClassRead)
 	}
 }
 

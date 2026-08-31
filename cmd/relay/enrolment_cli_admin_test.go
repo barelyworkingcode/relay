@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -271,7 +272,7 @@ func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterEnrolmentRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
+	RegisterEnrolmentRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // credIDOf names the control-plane credential a request resolved to, or "" if
-// none did — the same value RouteRegistrar.authorize reads for its own record.
+// none did — the same value control.RouteRegistrar.authorize reads for its own record.
 func credIDOf(r *http.Request) string {
 	id, _ := APICredentialIDFromContext(r.Context())
 	return id
@@ -74,8 +76,8 @@ func writeEnrolmentError(w http.ResponseWriter, err error) {
 // ops is the same instance the Remote Clients tab's IPC handlers use, so an
 // enrolment created from curl and one created from the tray share validation,
 // the CA, and the revocation hook.
-func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
-	rr.Handle(ClassRead, "GET /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
+func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
+	rr.Handle(control.ClassRead, "GET /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
 		list := ops.List()
 		out := make([]enrolmentView, 0, len(list))
 		for _, e := range list {
@@ -84,7 +86,7 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusOK, out)
 	})
 
-	rr.Handle(ClassRead, "GET /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		e, err := ops.Get(r.PathValue("id"))
 		if err != nil {
 			writeEnrolmentError(w, err)
@@ -93,7 +95,7 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusOK, enrolmentViewOf(e))
 	})
 
-	rr.Handle(ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {
 		var body enrolmentFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -113,7 +115,7 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 		writeJSON(w, http.StatusCreated, withBundleError(createdViewOf(created), err))
 	})
 
-	rr.Handle(ClassGrant, "DELETE /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassGrant, "DELETE /api/enrolments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		// EnrolmentOps.Revoke now records the revocation itself, so it can
 		// attach the presence_id the gate minted.
 		if _, err := ops.Revoke(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
@@ -123,7 +125,7 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	rr.Handle(ClassRead, "GET /api/remote", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/remote", func(w http.ResponseWriter, r *http.Request) {
 		view, err := ops.RemoteConfig()
 		if err != nil {
 			writeEnrolmentError(w, err)
@@ -138,7 +140,7 @@ func RegisterEnrolmentRoutes(rr *RouteRegistrar, ops *EnrolmentOps) {
 	// enrolment fields ride remoteConfigFields unchanged, so this handler
 	// gains no new surface, only two more fields on the body it already
 	// decodes.
-	rr.Handle(ClassExecute, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassExecute, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
 		var body remoteConfigFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})

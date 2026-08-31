@@ -35,7 +35,7 @@ const (
 	AuditEventMcpDown = "mcp_down"
 	AuditEventMcpUp   = "mcp_up"
 
-	// ControlDecision is a control-plane authorization outcome, ALLOWED and
+	// control.ControlDecision is a control-plane authorization outcome, ALLOWED and
 	// REFUSED alike, given the same standing as a tool-call denial (ADR-015).
 	// Built by audit_control.go, never by router instrumentation.
 	AuditEventControlDecision = "control_decision"
@@ -154,7 +154,7 @@ type AuditActor struct {
 	RemoteAddr  string `json:"remote_addr,omitempty"`
 
 	// CredID identifies the control-plane credential (ADR-015). Deliberately
-	// never the token or its hash — ControlDecision has no such field to
+	// never the token or its hash — control.ControlDecision has no such field to
 	// leak, and this must stay that way.
 	CredID string `json:"cred_id,omitempty"`
 }
@@ -261,7 +261,7 @@ type AuditEvent struct {
 	// authorization decision was about. Reason for a refusal rides in Error,
 	// same as every other outcome this log records.
 	//
-	// Class and Transport are plain strings rather than capability.go's
+	// Class and Transport are plain strings rather than control's
 	// CapabilityClass/Transport types — this file's on-disk shape does not
 	// depend on the authorization package's types.
 	//

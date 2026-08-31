@@ -4,7 +4,7 @@ package main
 // each other and never against relay's own patterns, so nothing but
 // http.ServeMux's preference for the more specific pattern stopped a
 // manifest claiming /api/projects. These tests pin the check, and pin that
-// the set it checks against is derived from what RouteRegistrar was actually
+// the set it checks against is derived from what control.RouteRegistrar was actually
 // asked to register rather than written down beside it.
 
 import (
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // esrRegistryFromRealRoutes returns the registry a real FrontendServer
@@ -83,7 +85,7 @@ func TestReservedRoutes_LegitimateServicesStillRegister(t *testing.T) {
 }
 
 // /relay/ is refused by a constant, not by the accumulated set: the login
-// routes are registered outside RouteRegistrar and so appear in no set. The
+// routes are registered outside control.RouteRegistrar and so appear in no set. The
 // two checks share a loop, and this pins that the constant still answers
 // first and in its own words.
 func TestReservedRoutes_RelayPrefixIsStillRefusedInItsOwnWords(t *testing.T) {
@@ -101,7 +103,7 @@ func TestReservedRoutes_RelayPrefixIsStillRefusedInItsOwnWords(t *testing.T) {
 }
 
 // The set is accumulated from registration, so a pattern no production file
-// mentions is reserved the moment RouteRegistrar sees it. A hand-maintained
+// mentions is reserved the moment control.RouteRegistrar sees it. A hand-maintained
 // list cannot pass this.
 func TestReservedRoutes_TrackRegistrationRatherThanAList(t *testing.T) {
 	reg := NewEnhancedServiceRegistry(nil)
@@ -112,8 +114,8 @@ func TestReservedRoutes_TrackRegistrationRatherThanAList(t *testing.T) {
 	}
 	reg.Forget("early")
 
-	rr := &RouteRegistrar{Mux: http.NewServeMux(), Transport: TransportSocket, Reserve: reg}
-	rr.Handle(ClassRead, "GET "+novel, func(w http.ResponseWriter, _ *http.Request) {})
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: http.NewServeMux(), Transport: control.TransportSocket, Reserve: reg}
+	rr.Handle(control.ClassRead, "GET "+novel, func(w http.ResponseWriter, _ *http.Request) {})
 
 	err := reg.RegisterManifest("late", "/tmp/late.sock", "tok", newManifest(novel))
 	if err == nil {
@@ -125,15 +127,15 @@ func TestReservedRoutes_TrackRegistrationRatherThanAList(t *testing.T) {
 }
 
 // A route absent from a listener is still a route relay serves, so the
-// reservation happens before RouteRegistrar's transport check — otherwise
+// reservation happens before control.RouteRegistrar's transport check — otherwise
 // building only the TCP mux would leave every execute-class path claimable.
 func TestReservedRoutes_AnExecuteRouteAbsentFromTCPIsStillReserved(t *testing.T) {
 	reg := NewEnhancedServiceRegistry(nil)
 	const novel = "/api/an-execute-route-tcp-never-carries"
 
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{Mux: mux, Transport: TransportTCP, Reserve: reg}
-	rr.Handle(ClassExecute, "POST "+novel, func(w http.ResponseWriter, _ *http.Request) {})
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportTCP, Reserve: reg}
+	rr.Handle(control.ClassExecute, "POST "+novel, func(w http.ResponseWriter, _ *http.Request) {})
 
 	probe, err := http.NewRequest("POST", "http://unix"+novel, nil)
 	assertNoErr(t, err, "new request")

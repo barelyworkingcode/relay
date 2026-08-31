@@ -23,6 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -432,7 +433,7 @@ func aiRecorderAt(t *testing.T, path string, cfg *AuditConfig) *AuditRecorder {
 // ---------------------------------------------------------------------------
 
 // aiHTTP mounts the enrolment and project routes through the real
-// RouteRegistrar with a real credential authorizer, so the credential a
+// control.RouteRegistrar with a real credential authorizer, so the credential a
 // request resolves to is the one attributed in the record.
 type aiHTTPFixture struct {
 	srv    *httptest.Server
@@ -457,17 +458,16 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHT
 	var cred APICredential
 	assertNoErr(t, store.With(func(s *Settings) {
 		var err error
-		cred, bearer, err = s.Mint("ai-operator", []CapabilityClass{ClassRead, ClassConfigure, ClassGrant})
+		cred, bearer, err = s.Mint("ai-operator", []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant})
 		assertNoErr(t, err, "Mint")
 	}), "store.With mint")
 
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext,
 		Mux:       mux,
-		Transport: TransportSocket,
+		Transport: control.TransportSocket,
 		Authz:     NewCredentialAuthorizer(store),
 		Auditor:   controlAuditorOrNil(rec),
-		Issuance:  issuance,
 	}
 	extMgr := NewExternalMcpManager(nil)
 	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: rec, Issuance: issuance})

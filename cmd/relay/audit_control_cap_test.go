@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // acc2LongLegitimatePath is a realistic proxied-service path: several
@@ -48,11 +50,11 @@ func TestControlAudit_LongPathBoundsSerializedRecordSize(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
 	hugePath := "/" + strings.Repeat("A", 400_000)
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "GET",
 		Path:      hugePath,
-		Class:     ClassRead,
-		Transport: TransportSocket,
+		Class:     control.ClassRead,
+		Transport: control.TransportSocket,
 		CredID:    "cred-attacker",
 		Allowed:   false,
 		Reason:    "class not granted",
@@ -86,11 +88,11 @@ func TestControlAudit_LongPathBoundsSerializedRecordSize(t *testing.T) {
 func TestControlAudit_RealisticLongPathIsNotTruncated(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "GET",
 		Path:      acc2LongLegitimatePath,
-		Class:     ClassConfigure,
-		Transport: TransportSocket,
+		Class:     control.ClassConfigure,
+		Transport: control.TransportSocket,
 		CredID:    "cred-eve",
 		Allowed:   true,
 	})
@@ -111,13 +113,13 @@ func TestControlAudit_PathTruncationIsVisibleInTheRecord(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
 	hugePath := "/" + strings.Repeat("Z", 10_000)
-	rec.RecordDecision(ControlDecision{
-		Method: "POST", Path: hugePath, Class: ClassExecute,
-		Transport: TransportSocket, CredID: "cred-attacker", Allowed: false, Reason: "class not granted",
+	rec.RecordDecision(control.ControlDecision{
+		Method: "POST", Path: hugePath, Class: control.ClassExecute,
+		Transport: control.TransportSocket, CredID: "cred-attacker", Allowed: false, Reason: "class not granted",
 	})
-	rec.RecordDecision(ControlDecision{
-		Method: "GET", Path: acc2LongLegitimatePath, Class: ClassRead,
-		Transport: TransportSocket, CredID: "cred-eve", Allowed: true,
+	rec.RecordDecision(control.ControlDecision{
+		Method: "GET", Path: acc2LongLegitimatePath, Class: control.ClassRead,
+		Transport: control.TransportSocket, CredID: "cred-eve", Allowed: true,
 	})
 
 	events := readLoggedEvents(t, rec)
@@ -169,13 +171,13 @@ func TestControlAudit_MethodCapBoundsSerializedRecordAndIsVisible(t *testing.T) 
 	rec := newTestAudit(t, nil)
 
 	hugeMethod := strings.Repeat("M", 50_000)
-	rec.RecordDecision(ControlDecision{
-		Method: hugeMethod, Path: "/", Class: ClassConfigure,
-		Transport: TransportSocket, CredID: "cred-attacker", Allowed: false, Reason: "class not granted",
+	rec.RecordDecision(control.ControlDecision{
+		Method: hugeMethod, Path: "/", Class: control.ClassConfigure,
+		Transport: control.TransportSocket, CredID: "cred-attacker", Allowed: false, Reason: "class not granted",
 	})
-	rec.RecordDecision(ControlDecision{
-		Method: "DELETE", Path: "/api/enrolments/enr_1", Class: ClassGrant,
-		Transport: TransportSocket, CredID: "cred-op", Allowed: true,
+	rec.RecordDecision(control.ControlDecision{
+		Method: "DELETE", Path: "/api/enrolments/enr_1", Class: control.ClassGrant,
+		Transport: control.TransportSocket, CredID: "cred-op", Allowed: true,
 	})
 
 	events := readLoggedEvents(t, rec)
@@ -255,11 +257,11 @@ func TestControlAudit_RefusalFloodCannotRotateRetentionWindowClean(t *testing.T)
 
 	hugePath := "/" + strings.Repeat("Q", attackerPath)
 	for i := 0; i < floodSize; i++ {
-		rec.RecordDecision(ControlDecision{
+		rec.RecordDecision(control.ControlDecision{
 			Method:    "POST",
 			Path:      hugePath,
-			Class:     ClassExecute,
-			Transport: TransportSocket,
+			Class:     control.ClassExecute,
+			Transport: control.TransportSocket,
 			CredID:    "cred-attacker",
 			Allowed:   false,
 			Reason:    "class not granted",

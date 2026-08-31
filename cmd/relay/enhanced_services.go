@@ -78,7 +78,7 @@ type EnhancedServiceRegistry struct {
 	services map[string]*EnhancedService
 
 	// relayRoutes is the path space relay itself serves, accumulated from
-	// RouteRegistrar rather than written out here: a hand-maintained list
+	// control.RouteRegistrar rather than written out here: a hand-maintained list
 	// drifts the first time someone adds a route, and a security check that
 	// has silently stopped covering half the surface is worse than none.
 	relayRoutes map[string]struct{}
@@ -268,10 +268,10 @@ func (r *EnhancedServiceRegistry) collidingRelayRouteLocked(route string) string
 //
 // Two reserved checks, because they rest on different evidence. /relay/ is a
 // constant: it carries the unauthenticated login ceremony, which is
-// registered outside RouteRegistrar (ADR-016 decision 5) and so is in no
+// registered outside control.RouteRegistrar (ADR-016 decision 5) and so is in no
 // accumulated set, and a manifest claiming it would put a service in front
 // of the one door relay serves with no credential. Everything else comes
-// from what RouteRegistrar was actually asked to register.
+// from what control.RouteRegistrar was actually asked to register.
 func (r *EnhancedServiceRegistry) checkRouteConflictsLocked(serviceID string, routes []string) error {
 	for _, route := range routes {
 		if route == strings.TrimSuffix(relayReservedPrefix, "/") || strings.HasPrefix(route, relayReservedPrefix) {

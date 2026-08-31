@@ -3,12 +3,12 @@ package main
 // Tests for ADR-015 decision 2: an execute-class route must be ABSENT from
 // the TCP mux -- the mux's own refusal, never a handler that ran and
 // refused. That refusal takes two shapes, because the "/" catch-all is
-// socket-only (ClassProxy, ADR-016 decision 4) and absorbs nothing here: a
+// socket-only (control.ClassProxy, ADR-016 decision 4) and absorbs nothing here: a
 // text/plain 404 where no pattern claims the path, and a 405 where a pattern
 // claims it under another method. Exercises the real wiring (NewFrontendServer +
 // ListenLoopback + a real TCP/Unix listener + real HTTP requests), which is
 // what distinguishes this file from capability_test.go's coverage of
-// RouteRegistrar.Handle and ClassReachableOn in isolation -- that file
+// control.RouteRegistrar.Handle and control.ClassReachableOn in isolation -- that file
 // already pins the fail-closed matrix (unknown class, known class on an
 // unknown transport) so this file does not repeat it.
 
@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // teCounters are flipped only by an ops method's success path (each Create /
@@ -53,7 +55,7 @@ type teServer struct {
 // store is a parameter rather than built internally so a caller can mint a
 // credential against it (via NewCredentialAuthorizer) before or after the
 // server exists.
-func teNewServer(t *testing.T, store SettingsStore, authz Authorizer) *teServer {
+func teNewServer(t *testing.T, store SettingsStore, authz control.Authorizer) *teServer {
 	t.Helper()
 	counters := &teCounters{}
 
@@ -122,7 +124,7 @@ func teSeed(t *testing.T, store SettingsStore) teFixtureIDs {
 type teRoute struct {
 	method string
 	path   string
-	class  CapabilityClass
+	class  control.CapabilityClass
 	body   any
 }
 
@@ -147,51 +149,51 @@ const teDispatcherNoService = "no service registered for this path"
 func teRouteTable(ids teFixtureIDs) []teRoute {
 	return []teRoute{
 		// service_routes.go
-		{"GET", "/api/services", ClassRead, nil},
-		{"GET", "/api/services/svc1", ClassRead, nil},
-		{"POST", "/api/services", ClassExecute, map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}},
-		{"PUT", "/api/services/svc1", ClassExecute, map[string]any{"display_name": "svc1", "command": "/bin/false"}},
-		{"DELETE", "/api/services/svc-del", ClassConfigure, nil},
-		{"POST", "/api/services/svc1/start", ClassConfigure, nil},
-		{"POST", "/api/services/svc1/stop", ClassConfigure, nil},
-		{"PUT", "/api/services/svc1/autostart", ClassConfigure, map[string]any{"autostart": true}},
+		{"GET", "/api/services", control.ClassRead, nil},
+		{"GET", "/api/services/svc1", control.ClassRead, nil},
+		{"POST", "/api/services", control.ClassExecute, map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}},
+		{"PUT", "/api/services/svc1", control.ClassExecute, map[string]any{"display_name": "svc1", "command": "/bin/false"}},
+		{"DELETE", "/api/services/svc-del", control.ClassConfigure, nil},
+		{"POST", "/api/services/svc1/start", control.ClassConfigure, nil},
+		{"POST", "/api/services/svc1/stop", control.ClassConfigure, nil},
+		{"PUT", "/api/services/svc1/autostart", control.ClassConfigure, map[string]any{"autostart": true}},
 
 		// enrolment_routes.go
-		{"GET", "/api/enrolments", ClassRead, nil},
-		{"GET", "/api/enrolments/enr1", ClassRead, nil},
-		{"POST", "/api/enrolments", ClassGrant, map[string]any{"client_id": "te-new-enrolment"}},
-		{"DELETE", "/api/enrolments/enr-del", ClassGrant, nil},
-		{"GET", "/api/remote", ClassRead, nil},
-		{"PUT", "/api/remote", ClassExecute, map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}},
+		{"GET", "/api/enrolments", control.ClassRead, nil},
+		{"GET", "/api/enrolments/enr1", control.ClassRead, nil},
+		{"POST", "/api/enrolments", control.ClassGrant, map[string]any{"client_id": "te-new-enrolment"}},
+		{"DELETE", "/api/enrolments/enr-del", control.ClassGrant, nil},
+		{"GET", "/api/remote", control.ClassRead, nil},
+		{"PUT", "/api/remote", control.ClassExecute, map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}},
 
 		// mcp_routes.go
-		{"POST", "/api/mcps", ClassExecute, map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}},
-		{"DELETE", "/api/mcps/mcp1", ClassConfigure, nil},
+		{"POST", "/api/mcps", control.ClassExecute, map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}},
+		{"DELETE", "/api/mcps/mcp1", control.ClassConfigure, nil},
 
 		// project_routes.go
-		{"GET", "/api/projects", ClassRead, nil},
-		{"GET", "/api/projects/" + ids.projID, ClassRead, nil},
-		{"GET", "/api/mcps", ClassRead, nil},
-		{"GET", "/api/mcps/mcp1/scope_fields", ClassRead, nil},
-		{"GET", "/api/mcps/mcp1/tools", ClassRead, nil},
-		{"POST", "/api/mcps/mcp1/enumerate", ClassRead, map[string]any{"field": "x"}},
-		{"POST", "/api/projects", ClassConfigure, map[string]any{"name": "te-new-project", "path": ids.newProjDir}},
-		{"PUT", "/api/projects/" + ids.projID, ClassConfigure, map[string]any{}},
-		{"DELETE", "/api/projects/" + ids.projDelID, ClassConfigure, nil},
-		{"POST", "/api/projects/" + ids.projID + "/regen_skill", ClassConfigure, nil},
-		{"POST", "/api/projects/" + ids.projID + "/rotate_token", ClassGrant, nil},
+		{"GET", "/api/projects", control.ClassRead, nil},
+		{"GET", "/api/projects/" + ids.projID, control.ClassRead, nil},
+		{"GET", "/api/mcps", control.ClassRead, nil},
+		{"GET", "/api/mcps/mcp1/scope_fields", control.ClassRead, nil},
+		{"GET", "/api/mcps/mcp1/tools", control.ClassRead, nil},
+		{"POST", "/api/mcps/mcp1/enumerate", control.ClassRead, map[string]any{"field": "x"}},
+		{"POST", "/api/projects", control.ClassConfigure, map[string]any{"name": "te-new-project", "path": ids.newProjDir}},
+		{"PUT", "/api/projects/" + ids.projID, control.ClassConfigure, map[string]any{}},
+		{"DELETE", "/api/projects/" + ids.projDelID, control.ClassConfigure, nil},
+		{"POST", "/api/projects/" + ids.projID + "/regen_skill", control.ClassConfigure, nil},
+		{"POST", "/api/projects/" + ids.projID + "/rotate_token", control.ClassGrant, nil},
 
 		// audit_routes.go
-		{"GET", "/api/audit", ClassRead, nil},
-		{"GET", "/api/audit/log", ClassRead, nil},
-		{"POST", "/api/audit/export", ClassConfigure, map[string]any{}},
+		{"GET", "/api/audit", control.ClassRead, nil},
+		{"GET", "/api/audit/log", control.ClassRead, nil},
+		{"POST", "/api/audit/export", control.ClassConfigure, map[string]any{}},
 	}
 }
 
 func teExecuteRoutes(ids teFixtureIDs) []teRoute {
 	var out []teRoute
 	for _, r := range teRouteTable(ids) {
-		if r.class == ClassExecute {
+		if r.class == control.ClassExecute {
 			out = append(out, r)
 		}
 	}
@@ -201,7 +203,7 @@ func teExecuteRoutes(ids teFixtureIDs) []teRoute {
 func teNonExecuteRoutes(ids teFixtureIDs) []teRoute {
 	var out []teRoute
 	for _, r := range teRouteTable(ids) {
-		if r.class != ClassExecute {
+		if r.class != control.ClassExecute {
 			out = append(out, r)
 		}
 	}
@@ -248,7 +250,7 @@ func (ts *teServer) doSocket(t *testing.T, r teRoute) (*http.Response, []byte) {
 // ran and answered for a missing resource (writeJSON, Content-Type
 // application/json -- routed), and a 405.
 //
-// The 405 arm exists because the TCP mux has no catch-all: ClassProxy is
+// The 405 arm exists because the TCP mux has no catch-all: control.ClassProxy is
 // socket-only (ADR-016 decision 4), so nothing there absorbs a near-miss and
 // http.ServeMux answers with its own 405 -- no handler, no dispatcher,
 // nothing registered under that method. A catch-all on this mux would turn
@@ -303,7 +305,7 @@ func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	teSeed(t, store)
 	before := store.Get().Services
 
-	resp, body := ts.doTCP(t, teRoute{"POST", "/api/services", ClassExecute,
+	resp, body := ts.doTCP(t, teRoute{"POST", "/api/services", control.ClassExecute,
 		map[string]any{"display_name": "te-phantom-service", "command": "/bin/true"}})
 
 	teAssertMuxRefused(t, resp, body)
@@ -323,7 +325,7 @@ func TestTCPServiceCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	// Both answers are a text/plain 404, so the BODY is what tells them
 	// apart: the dispatcher names itself, and http.ServeMux's NotFoundHandler
 	// says "404 page not found".
-	catchAllOnly := teRoute{"POST", "/api/sessions", ClassProxy, map[string]any{}}
+	catchAllOnly := teRoute{"POST", "/api/sessions", control.ClassProxy, map[string]any{}}
 	resp, body = ts.doSocket(t, catchAllOnly)
 	if !strings.Contains(string(body), teDispatcherNoService) {
 		t.Fatalf("POST /api/sessions on the socket: status=%d body=%s; want the dispatcher's own answer, or the TCP check below proves nothing",
@@ -341,7 +343,7 @@ func TestTCPServiceUpdate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	ts := teNewServer(t, store, nil)
 	teSeed(t, store)
 
-	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/services/svc1", ClassExecute,
+	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/services/svc1", control.ClassExecute,
 		map[string]any{"display_name": "svc1", "command": "/bin/false"}})
 
 	teAssertMuxRefused(t, resp, body)
@@ -360,7 +362,7 @@ func TestTCPMcpCreate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	teSeed(t, store)
 	before := store.Get().ExternalMcps
 
-	resp, body := ts.doTCP(t, teRoute{"POST", "/api/mcps", ClassExecute,
+	resp, body := ts.doTCP(t, teRoute{"POST", "/api/mcps", control.ClassExecute,
 		map[string]any{"display_name": "te-phantom-mcp", "command": teNonexistentMcpCommand}})
 
 	teAssertMuxRefused(t, resp, body)
@@ -378,7 +380,7 @@ func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	ts := teNewServer(t, store, nil)
 	teSeed(t, store)
 
-	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/remote", ClassExecute,
+	resp, body := ts.doTCP(t, teRoute{"PUT", "/api/remote", control.ClassExecute,
 		map[string]any{"enabled": true, "listen": "127.0.0.1:9910"}})
 
 	teAssertMuxRefused(t, resp, body)
@@ -393,7 +395,7 @@ func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 // TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute is the
 // strongest available proof that decision 2 is a routing property and not an
 // authorization refusal in disguise: it wires the REAL credentialAuthorizer
-// and mints a credential carrying ClassExecute (among all four classes),
+// and mints a credential carrying control.ClassExecute (among all four classes),
 // hashed to the SAME bearer this test sends -- mirroring how
 // migrateFrontendTokenToCredential lets one token satisfy both
 // frontendBearerAuth and the credential authorizer in production. If
@@ -410,7 +412,7 @@ func TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute(t *testing.
 			ID:      "te-all-classes-cred",
 			Name:    "te-all-classes-cred",
 			Hash:    hashToken(ts.token),
-			Classes: []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute},
+			Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute},
 			Created: time.Now().UTC().Format(time.RFC3339),
 		})
 	}), "seed all-classes credential")
@@ -491,7 +493,7 @@ func TestRouteSetDivergence_TCPEqualsSocketMinusExecuteRoutes(t *testing.T) {
 				r.method, r.path, sockResp.StatusCode, sockBody)
 		}
 
-		wantTCPRouted := r.class != ClassExecute
+		wantTCPRouted := r.class != control.ClassExecute
 		if tcpRouted != wantTCPRouted {
 			t.Fatalf("%s %s (class %s): TCP routed=%v, want %v (tcp status=%d body=%s)",
 				r.method, r.path, r.class, tcpRouted, wantTCPRouted, tcpResp.StatusCode, tcpBody)

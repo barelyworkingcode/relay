@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func acsNewAuditRecorder(t *testing.T) *AuditRecorder {
@@ -42,7 +44,7 @@ func acsDoBearer(t *testing.T, method, url, token string) int {
 	return resp.StatusCode
 }
 
-func acsMintCredential(t *testing.T, store SettingsStore, classes ...CapabilityClass) (APICredential, string) {
+func acsMintCredential(t *testing.T, store SettingsStore, classes ...control.CapabilityClass) (APICredential, string) {
 	t.Helper()
 	var cred APICredential
 	var plaintext string
@@ -54,22 +56,22 @@ func acsMintCredential(t *testing.T, store SettingsStore, classes ...CapabilityC
 	return cred, plaintext
 }
 
-// A class refusal through the real Authorizer + RouteRegistrar.Handle must
+// A class refusal through the real control.Authorizer + control.RouteRegistrar.Handle must
 // name the credential that attempted it, the same standing a tool-call
 // denial already has; an unresolved bearer (absent or matching nothing) has
 // no credential to name and must record an empty CredID rather than one
 // invented from thin air.
 func TestAcsControlDecision_ClassRefusalRecordsCredID_UnknownBearerRecordsEmpty(t *testing.T) {
 	store := newCLISandboxStore(t)
-	cred, plaintext := acsMintCredential(t, store, ClassRead)
+	cred, plaintext := acsMintCredential(t, store, control.ClassRead)
 
 	authz := NewCredentialAuthorizer(store)
 	rec := acsNewAuditRecorder(t)
 
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket, Authz: authz, Auditor: rec}
-	rr.Handle(ClassGrant, "GET /api/acs-refuse", func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatal("handler must not run: credential lacks ClassGrant")
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket, Authz: authz, Auditor: rec}
+	rr.Handle(control.ClassGrant, "GET /api/acs-refuse", func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler must not run: credential lacks control.ClassGrant")
 	})
 
 	srv := httptest.NewServer(mux)
@@ -128,7 +130,7 @@ func TestAcsControlDecision_TableRow_ShowsMethodPathClassTransportCredID_NoLeak(
 			ID:      "acs-render-cred",
 			Name:    "acs-render",
 			Hash:    hashToken(plaintext),
-			Classes: []CapabilityClass{ClassGrant},
+			Classes: []control.CapabilityClass{control.ClassGrant},
 			Created: "2026-01-01T00:00:00Z",
 		}
 		s.AddAPICredential(cred)
@@ -138,8 +140,8 @@ func TestAcsControlDecision_TableRow_ShowsMethodPathClassTransportCredID_NoLeak(
 	rec := acsNewAuditRecorder(t)
 
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{Mux: mux, Transport: TransportTCP, Authz: authz, Auditor: rec}
-	rr.Handle(ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, _ *http.Request) {
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportTCP, Authz: authz, Auditor: rec}
+	rr.Handle(control.ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 

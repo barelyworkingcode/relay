@@ -13,9 +13,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-var allClasses = []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute}
+var allClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute}
 
 // ---------------------------------------------------------------------------
 // Grants
@@ -31,7 +33,7 @@ func TestAPICredential_Grants_NilClassesGrantsNothing(t *testing.T) {
 }
 
 func TestAPICredential_Grants_EmptyClassesGrantsNothing(t *testing.T) {
-	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []CapabilityClass{}}
+	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []control.CapabilityClass{}}
 	for _, class := range allClasses {
 		if cred.Grants(class) {
 			t.Errorf("empty Classes granted %q, want refused", class)
@@ -40,7 +42,7 @@ func TestAPICredential_Grants_EmptyClassesGrantsNothing(t *testing.T) {
 }
 
 func TestAPICredential_Grants_UnknownClassGrantsNothingAndDoesNotPoisonCredential(t *testing.T) {
-	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []CapabilityClass{"made_up_class", "another_bogus_one"}}
+	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []control.CapabilityClass{"made_up_class", "another_bogus_one"}}
 	for _, class := range allClasses {
 		if cred.Grants(class) {
 			t.Errorf("credential holding only unknown class strings granted %q, want refused", class)
@@ -49,22 +51,22 @@ func TestAPICredential_Grants_UnknownClassGrantsNothingAndDoesNotPoisonCredentia
 
 	// An unknown entry sitting beside a real one must not poison the whole
 	// credential -- the real class must still work.
-	cred.Classes = append(cred.Classes, ClassRead)
-	if !cred.Grants(ClassRead) {
+	cred.Classes = append(cred.Classes, control.ClassRead)
+	if !cred.Grants(control.ClassRead) {
 		t.Fatal("a real class beside an unknown one was refused; an unknown entry must not poison the whole credential")
 	}
-	if cred.Grants(ClassConfigure) {
-		t.Fatal("ClassConfigure was granted by a credential that never named it")
+	if cred.Grants(control.ClassConfigure) {
+		t.Fatal("control.ClassConfigure was granted by a credential that never named it")
 	}
 }
 
 func TestAPICredential_Grants_TrueFalsePerClass(t *testing.T) {
-	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []CapabilityClass{ClassRead, ClassExecute}}
-	cases := map[CapabilityClass]bool{
-		ClassRead:      true,
-		ClassConfigure: false,
-		ClassGrant:     false,
-		ClassExecute:   true,
+	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []control.CapabilityClass{control.ClassRead, control.ClassExecute}}
+	cases := map[control.CapabilityClass]bool{
+		control.ClassRead:      true,
+		control.ClassConfigure: false,
+		control.ClassGrant:     false,
+		control.ClassExecute:   true,
 	}
 	for class, want := range cases {
 		if got := cred.Grants(class); got != want {
@@ -86,7 +88,7 @@ func TestMint_ReturnsPlaintextOnceAndStoresOnlyTheHash(t *testing.T) {
 	var plaintext string
 	assertNoErr(t, store.With(func(s *Settings) {
 		var err error
-		cred, plaintext, err = s.Mint("ci-bot", []CapabilityClass{ClassRead})
+		cred, plaintext, err = s.Mint("ci-bot", []control.CapabilityClass{control.ClassRead})
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
@@ -127,8 +129,8 @@ func TestCredentialAuthorizer_Authorize_MissingHeader(t *testing.T) {
 	auth := NewCredentialAuthorizer(store)
 
 	req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
-	if err := auth.Authorize(req, ClassRead); err != errNoCredential {
-		t.Fatalf("missing header: got %v, want errNoCredential", err)
+	if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+		t.Fatalf("missing header: got %v, want control.ErrNoCredential", err)
 	}
 }
 
@@ -139,8 +141,8 @@ func TestCredentialAuthorizer_Authorize_MalformedHeader(t *testing.T) {
 	for _, header := range []string{"Basic dXNlcjpwYXNz", "Bearer", "Token abc123", "Bearer "} {
 		req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
 		req.Header.Set("Authorization", header)
-		if err := auth.Authorize(req, ClassRead); err != errNoCredential {
-			t.Errorf("header %q: got %v, want errNoCredential", header, err)
+		if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+			t.Errorf("header %q: got %v, want control.ErrNoCredential", header, err)
 		}
 	}
 }
@@ -151,8 +153,8 @@ func TestCredentialAuthorizer_Authorize_UnknownTokenIsNoCredential(t *testing.T)
 
 	req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
 	req.Header.Set("Authorization", "Bearer this-token-was-never-minted")
-	if err := auth.Authorize(req, ClassRead); err != errNoCredential {
-		t.Fatalf("unknown token: got %v, want errNoCredential", err)
+	if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+		t.Fatalf("unknown token: got %v, want control.ErrNoCredential", err)
 	}
 }
 
@@ -163,14 +165,14 @@ func TestCredentialAuthorizer_Authorize_KnownTokenWithoutClassIsRefused(t *testi
 	var plaintext string
 	assertNoErr(t, store.With(func(s *Settings) {
 		var err error
-		_, plaintext, err = s.Mint("read-only", []CapabilityClass{ClassRead})
+		_, plaintext, err = s.Mint("read-only", []control.CapabilityClass{control.ClassRead})
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
 	req, _ := http.NewRequest("POST", "http://unix/api/projects", nil)
 	req.Header.Set("Authorization", "Bearer "+plaintext)
-	if err := auth.Authorize(req, ClassConfigure); err != errClassNotGranted {
-		t.Fatalf("credential without the class: got %v, want errClassNotGranted", err)
+	if err := auth.Authorize(req, control.ClassConfigure); err != control.ErrClassNotGranted {
+		t.Fatalf("credential without the class: got %v, want control.ErrClassNotGranted", err)
 	}
 }
 
@@ -182,13 +184,13 @@ func TestCredentialAuthorizer_Authorize_KnownTokenWithClassIsAllowedAndExposesCr
 	var plaintext string
 	assertNoErr(t, store.With(func(s *Settings) {
 		var err error
-		cred, plaintext, err = s.Mint("configurer", []CapabilityClass{ClassConfigure})
+		cred, plaintext, err = s.Mint("configurer", []control.CapabilityClass{control.ClassConfigure})
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
 	req, _ := http.NewRequest("PUT", "http://unix/api/services/x", nil)
 	req.Header.Set("Authorization", "Bearer "+plaintext)
-	if err := auth.Authorize(req, ClassConfigure); err != nil {
+	if err := auth.Authorize(req, control.ClassConfigure); err != nil {
 		t.Fatalf("credential with the class: got %v, want nil", err)
 	}
 
@@ -217,8 +219,8 @@ func TestCredentialAuthorizer_Authorize_EmptyClassesRefusedForEveryClass(t *test
 	for _, class := range allClasses {
 		req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
 		req.Header.Set("Authorization", "Bearer "+plaintext)
-		if err := auth.Authorize(req, class); err != errClassNotGranted {
-			t.Errorf("class %q: got %v, want errClassNotGranted", class, err)
+		if err := auth.Authorize(req, class); err != control.ErrClassNotGranted {
+			t.Errorf("class %q: got %v, want control.ErrClassNotGranted", class, err)
 		}
 	}
 }
@@ -236,10 +238,10 @@ func TestMigrateFrontendTokenToCredential_GrantsExactlyReadConfigureAndProxy(t *
 		t.Fatalf("want exactly 1 migrated credential, got %d", len(s.APICredentials))
 	}
 	cred := s.APICredentials[0]
-	if cred.Grants(ClassGrant) || cred.Grants(ClassExecute) {
+	if cred.Grants(control.ClassGrant) || cred.Grants(control.ClassExecute) {
 		t.Fatalf("migrated credential must not hold grant or execute: %+v", cred.Classes)
 	}
-	if !cred.Grants(ClassRead) || !cred.Grants(ClassConfigure) || !cred.Grants(ClassProxy) {
+	if !cred.Grants(control.ClassRead) || !cred.Grants(control.ClassConfigure) || !cred.Grants(control.ClassProxy) {
 		t.Fatalf("migrated credential must hold read, configure and proxy: %+v", cred.Classes)
 	}
 	if len(cred.Classes) != 3 {
@@ -261,7 +263,7 @@ func TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace(
 		ID:      id,
 		Name:    legacyFrontendCredentialName,
 		Hash:    hashToken(token),
-		Classes: []CapabilityClass{ClassRead, ClassConfigure},
+		Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure},
 		Created: created,
 	}}}
 
@@ -275,7 +277,7 @@ func TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace(
 	if got.ID != id || got.Created != created {
 		t.Fatalf("the upgrade replaced the record's identity rather than its class set: %+v", got)
 	}
-	if !got.Grants(ClassProxy) {
+	if !got.Grants(control.ClassProxy) {
 		t.Fatalf("the upgrade did not add proxy: %+v", got.Classes)
 	}
 	if s.AuthenticateAPICredential(token) == nil {
@@ -342,7 +344,7 @@ func TestMigrateFrontendTokenToCredential_PreservesTokenValueForExistingConsumer
 	if cred == nil {
 		t.Fatal("the exact frontend token value does not resolve to the migrated credential")
 	}
-	if !cred.Grants(ClassRead) || !cred.Grants(ClassConfigure) {
+	if !cred.Grants(control.ClassRead) || !cred.Grants(control.ClassConfigure) {
 		t.Fatal("the resolved credential does not carry read+configure")
 	}
 }
@@ -388,7 +390,7 @@ func TestSettings_APICredentialsRoundTripsAfterMint(t *testing.T) {
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	assertNoErr(t, store.With(func(s *Settings) {
-		_, _, err := s.Mint("hermes", []CapabilityClass{ClassRead})
+		_, _, err := s.Mint("hermes", []control.CapabilityClass{control.ClassRead})
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
@@ -407,7 +409,7 @@ func TestSettings_APICredentialsRoundTripsAfterMint(t *testing.T) {
 
 func TestAPICredential_AddRemoveFind(t *testing.T) {
 	s := &Settings{}
-	cred, _, err := s.Mint("tool-a", []CapabilityClass{ClassRead})
+	cred, _, err := s.Mint("tool-a", []control.CapabilityClass{control.ClassRead})
 	assertNoErr(t, err, "Mint")
 
 	if got := s.FindAPICredential(cred.ID); got == nil || got.ID != cred.ID {
@@ -435,7 +437,7 @@ func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.
 		ID:      "hand-written",
 		Name:    legacyFrontendCredentialName,
 		Hash:    hashToken("tok"),
-		Classes: []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute},
+		Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute},
 	}}}
 
 	if !migrateFrontendTokenToCredential(s, "tok") {
@@ -443,12 +445,12 @@ func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.
 	}
 
 	got := s.APICredentials[0]
-	for _, class := range []CapabilityClass{ClassGrant, ClassExecute} {
+	for _, class := range []control.CapabilityClass{control.ClassGrant, control.ClassExecute} {
 		if got.Grants(class) {
 			t.Errorf("legacy credential still grants %q after migration", class)
 		}
 	}
-	for _, class := range []CapabilityClass{ClassRead, ClassConfigure} {
+	for _, class := range []control.CapabilityClass{control.ClassRead, control.ClassConfigure} {
 		if !got.Grants(class) {
 			t.Errorf("legacy credential lost %q", class)
 		}
@@ -463,7 +465,7 @@ func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.
 // ---------------------------------------------------------------------------
 
 func TestAPICredential_Expired_AbsentExpiresMeansNever(t *testing.T) {
-	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []CapabilityClass{ClassRead}}
+	cred := APICredential{ID: "c1", Hash: "irrelevant", Classes: []control.CapabilityClass{control.ClassRead}}
 	for _, when := range []time.Time{
 		time.Unix(0, 0),
 		time.Now(),
@@ -518,7 +520,7 @@ func TestAPICredential_ExpiresRoundTripsThroughSettingsJSON(t *testing.T) {
 	var minted APICredential
 	assertNoErr(t, store.With(func(s *Settings) {
 		var err error
-		minted, _, err = s.MintFor("hermes-login", []CapabilityClass{ClassRead}, 12*time.Hour)
+		minted, _, err = s.MintFor("hermes-login", []control.CapabilityClass{control.ClassRead}, 12*time.Hour)
 		assertNoErr(t, err, "MintFor")
 	}), "store.With")
 
@@ -550,7 +552,7 @@ func TestAPICredential_ExpiresOmittedWhenNoTTL(t *testing.T) {
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
 	assertNoErr(t, store.With(func(s *Settings) {
-		_, _, err := s.Mint("no-ttl", []CapabilityClass{ClassRead})
+		_, _, err := s.Mint("no-ttl", []control.CapabilityClass{control.ClassRead})
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
@@ -575,9 +577,9 @@ func TestAPICredential_ExpiresOmittedWhenNoTTL(t *testing.T) {
 func TestAPICredential_ExpiredIsRefusedExactlyLikeAnUnknownOne(t *testing.T) {
 	s := &Settings{}
 
-	live, livePlain, err := s.MintFor("live", []CapabilityClass{ClassRead}, time.Hour)
+	live, livePlain, err := s.MintFor("live", []control.CapabilityClass{control.ClassRead}, time.Hour)
 	assertNoErr(t, err, "MintFor live")
-	expired, expiredPlain, err := s.MintFor("expired", []CapabilityClass{ClassRead}, time.Hour)
+	expired, expiredPlain, err := s.MintFor("expired", []control.CapabilityClass{control.ClassRead}, time.Hour)
 	assertNoErr(t, err, "MintFor expired")
 
 	// Backdate rather than sleep: the record is what authentication reads.
@@ -611,7 +613,7 @@ func TestAPICredential_ExpiredIsRefusedExactlyLikeAnUnknownOne(t *testing.T) {
 
 func TestAPICredential_UnparseableExpiresIsRefusedAtAuthentication(t *testing.T) {
 	s := &Settings{}
-	_, plaintext, err := s.MintFor("corrupt", []CapabilityClass{ClassRead}, time.Hour)
+	_, plaintext, err := s.MintFor("corrupt", []control.CapabilityClass{control.ClassRead}, time.Hour)
 	assertNoErr(t, err, "MintFor")
 	s.APICredentials[0].Expires = "whenever"
 

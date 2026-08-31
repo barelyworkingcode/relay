@@ -4,11 +4,11 @@ package main
 // and capability_test.go already cover Grants' nil/empty/unknown-class
 // matrix and controlStatus's three named branches individually — this file
 // goes at what they leave shallow: the full error-variant matrix run
-// through RouteRegistrar.Handle (including a wrapped errNoCredential) with a
+// through control.RouteRegistrar.Handle (including a wrapped control.ErrNoCredential) with a
 // leak check on the response body, a multi-restart migration sequence
 // against one persisted Settings with an unrelated credential present to
 // prove it survives untouched, the migrated credential's grant/execute
-// refusal proven through the real Authorizer + Handle stack rather than
+// refusal proven through the real control.Authorizer + Handle stack rather than
 // Grants alone, and an end-to-end audit-record leak check against a real
 // minted credential.
 
@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 type ceFakeAuthorizer struct {
@@ -31,7 +33,7 @@ type ceFakeAuthorizer struct {
 	credID string
 }
 
-func (f *ceFakeAuthorizer) Authorize(r *http.Request, _ CapabilityClass) error {
+func (f *ceFakeAuthorizer) Authorize(r *http.Request, _ control.CapabilityClass) error {
 	if f.credID != "" {
 		*r = *r.WithContext(withAPICredentialID(r.Context(), f.credID))
 	}
@@ -39,10 +41,10 @@ func (f *ceFakeAuthorizer) Authorize(r *http.Request, _ CapabilityClass) error {
 }
 
 type ceRecordingAuditor struct {
-	decisions []ControlDecision
+	decisions []control.ControlDecision
 }
 
-func (a *ceRecordingAuditor) RecordDecision(d ControlDecision) {
+func (a *ceRecordingAuditor) RecordDecision(d control.ControlDecision) {
 	a.decisions = append(a.decisions, d)
 }
 
@@ -79,21 +81,21 @@ func TestCredentialEnforcement_Handle_ErrorVariantMatrix_StatusAndNoLeak(t *test
 		want int
 	}{
 		{"nil allowed", nil, http.StatusOK},
-		{"errNoCredential", errNoCredential, http.StatusUnauthorized},
-		{"errClassNotGranted", errClassNotGranted, http.StatusForbidden},
-		{"wrapped errNoCredential", fmt.Errorf("resolve bearer: %w", errNoCredential), http.StatusUnauthorized},
-		{"wrapped errClassNotGranted", fmt.Errorf("policy: %w", errClassNotGranted), http.StatusForbidden},
+		{"control.ErrNoCredential", control.ErrNoCredential, http.StatusUnauthorized},
+		{"control.ErrClassNotGranted", control.ErrClassNotGranted, http.StatusForbidden},
+		{"wrapped control.ErrNoCredential", fmt.Errorf("resolve bearer: %w", control.ErrNoCredential), http.StatusUnauthorized},
+		{"wrapped control.ErrClassNotGranted", fmt.Errorf("policy: %w", control.ErrClassNotGranted), http.StatusForbidden},
 		{"unrelated error", errors.New("settings store is on fire"), http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mux := http.NewServeMux()
-			rr := &RouteRegistrar{
+			rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext,
 				Mux:       mux,
-				Transport: TransportSocket,
+				Transport: control.TransportSocket,
 				Authz:     &ceFakeAuthorizer{err: tc.err, credID: "cred-under-test"},
 			}
-			rr.Handle(ClassConfigure, "POST /api/ce-x", func(w http.ResponseWriter, _ *http.Request) {
+			rr.Handle(control.ClassConfigure, "POST /api/ce-x", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 			srv := httptest.NewServer(mux)
@@ -126,7 +128,7 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 		ID:      "other-tool-id",
 		Name:    "other-tool",
 		Hash:    hashToken("other-tool-token"),
-		Classes: []CapabilityClass{ClassRead},
+		Classes: []control.CapabilityClass{control.ClassRead},
 		Created: "2020-01-01T00:00:00Z",
 	}
 	s.AddAPICredential(other)
@@ -154,10 +156,10 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 	if legacy.Hash != hashToken(lastToken) {
 		t.Fatal("legacy credential's hash does not match the LATEST restart's token")
 	}
-	if len(legacy.Classes) != 3 || !legacy.Grants(ClassRead) || !legacy.Grants(ClassConfigure) || !legacy.Grants(ClassProxy) {
+	if len(legacy.Classes) != 3 || !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) || !legacy.Grants(control.ClassProxy) {
 		t.Fatalf("legacy credential's classes drifted across restarts: %+v", legacy.Classes)
 	}
-	if legacy.Grants(ClassGrant) || legacy.Grants(ClassExecute) {
+	if legacy.Grants(control.ClassGrant) || legacy.Grants(control.ClassExecute) {
 		t.Fatalf("legacy credential picked up a class the migration must never carry: %+v", legacy.Classes)
 	}
 
@@ -175,7 +177,7 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 	if found == nil {
 		t.Fatal("migration removed the unrelated pre-existing credential")
 	}
-	if found.Hash != other.Hash || found.Name != other.Name || len(found.Classes) != 1 || found.Classes[0] != ClassRead {
+	if found.Hash != other.Hash || found.Name != other.Name || len(found.Classes) != 1 || found.Classes[0] != control.ClassRead {
 		t.Fatalf("migration disturbed the unrelated pre-existing credential: %+v", found)
 	}
 }
@@ -192,17 +194,17 @@ func TestCredentialEnforcement_MigratedCredential_DeniedGrantAndExecute_ThroughR
 	authz := NewCredentialAuthorizer(store)
 
 	for _, tc := range []struct {
-		class CapabilityClass
+		class control.CapabilityClass
 		want  int
 	}{
-		{ClassRead, http.StatusOK},
-		{ClassConfigure, http.StatusOK},
-		{ClassGrant, http.StatusForbidden},
-		{ClassExecute, http.StatusForbidden},
+		{control.ClassRead, http.StatusOK},
+		{control.ClassConfigure, http.StatusOK},
+		{control.ClassGrant, http.StatusForbidden},
+		{control.ClassExecute, http.StatusForbidden},
 	} {
 		t.Run(string(tc.class), func(t *testing.T) {
 			mux := http.NewServeMux()
-			rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket, Authz: authz}
+			rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket, Authz: authz}
 			rr.Handle(tc.class, "POST /api/ce-y", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
@@ -270,7 +272,7 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 			ID:      "ce-leak-cred",
 			Name:    "ce-leak-check",
 			Hash:    hashToken(plaintext),
-			Classes: []CapabilityClass{ClassRead},
+			Classes: []control.CapabilityClass{control.ClassRead},
 			Created: "2026-01-01T00:00:00Z",
 		}
 		s.AddAPICredential(cred)
@@ -279,13 +281,13 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 	authz := NewCredentialAuthorizer(store)
 	aud := &ceRecordingAuditor{}
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket, Authz: authz, Auditor: aud}
-	rr.Handle(ClassRead, "GET /api/ce-leak", func(w http.ResponseWriter, _ *http.Request) {
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket, Authz: authz, Auditor: aud}
+	rr.Handle(control.ClassRead, "GET /api/ce-leak", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	rr.Handle(ClassGrant, "GET /api/ce-leak-denied", func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatal("handler must not run: this credential does not hold ClassGrant")
+	rr.Handle(control.ClassGrant, "GET /api/ce-leak-denied", func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler must not run: this credential does not hold control.ClassGrant")
 	})
 
 	srv := httptest.NewServer(mux)
@@ -325,7 +327,7 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 // compatibility claim ADR-016 decision 4 rests on, made against a real
 // enhanced service rather than against the dispatcher's 404. Eve holds
 // RELAY_FRONTEND_TOKEN and dials the frontend SOCKET, so a socket-only
-// ClassProxy must leave it reaching exactly what it reached before -- proven
+// control.ClassProxy must leave it reaching exactly what it reached before -- proven
 // by the upstream service recording the request, not by the status alone.
 //
 // The TCP half is the other side of the same decision, and it is a change:

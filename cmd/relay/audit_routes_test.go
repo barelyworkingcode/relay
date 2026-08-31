@@ -21,12 +21,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func newAuditRoutesServer(t *testing.T, rec *AuditRecorder) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterAuditRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, &AuditOps{Audit: rec})
+	RegisterAuditRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, &AuditOps{Audit: rec})
 	return httptest.NewServer(mux)
 }
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 type Permission string
@@ -378,11 +380,11 @@ func (e *Enrolment) GrantsProject(projectID string) bool {
 // classes it may exercise (ADR-015 decision 3). Only Hash is stored — the
 // plaintext is returned once, by Mint, and never again.
 type APICredential struct {
-	ID      string            `json:"id"`
-	Name    string            `json:"name,omitempty"`
-	Hash    string            `json:"hash"`
-	Classes []CapabilityClass `json:"classes"`
-	Created string            `json:"created,omitempty"`
+	ID      string                    `json:"id"`
+	Name    string                    `json:"name,omitempty"`
+	Hash    string                    `json:"hash"`
+	Classes []control.CapabilityClass `json:"classes"`
+	Created string                    `json:"created,omitempty"`
 	// Expires is RFC3339 and ABSENT MEANS NEVER, so every record written
 	// before this field existed round-trips unchanged — the same zero-value
 	// discipline Project.Kind follows (ADR-016 decision 3).
@@ -411,9 +413,9 @@ func (c APICredential) Expired(now time.Time) bool {
 // Grants reports whether the credential holds class. A nil or empty
 // Classes grants nothing — never "everything" — so a credential minted by
 // a tool that predates the class model is inert rather than omnipotent.
-// An unknown string in Classes simply never equals a real CapabilityClass
+// An unknown string in Classes simply never equals a real control.CapabilityClass
 // constant, so it grants nothing without needing to be rejected up front.
-func (c APICredential) Grants(class CapabilityClass) bool {
+func (c APICredential) Grants(class control.CapabilityClass) bool {
 	return slices.Contains(c.Classes, class)
 }
 

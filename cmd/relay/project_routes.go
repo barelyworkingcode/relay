@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -146,13 +147,13 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(rr *control.RouteRegistrar, store SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
 		}
 	}
-	rr.Handle(ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects := store.Get().Projects
 		if projects == nil {
 			projects = []Project{}
@@ -161,7 +162,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 		writeJSON(w, http.StatusOK, projectsToView(projects))
 	})
 
-	rr.Handle(ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		proj, _ := store.Get().findProjectByID(r.PathValue("id"))
 		if proj == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
@@ -170,7 +171,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 		writeJSON(w, http.StatusOK, projectToView(*proj))
 	})
 
-	rr.Handle(ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		var body projectCreateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -193,7 +194,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 		writeJSON(w, http.StatusCreated, projectToView(created))
 	})
 
-	rr.Handle(ClassConfigure, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "PUT /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
@@ -229,7 +230,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 		writeJSON(w, http.StatusOK, projectToView(updated))
 	})
 
-	rr.Handle(ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var existed bool
 		var removed Project
@@ -261,7 +262,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 
 	// MCP listing for the Eve project dialog's "Allowed MCPs" picker.
 	// Returns id + display_name only; OAuth state and credentials stay private.
-	rr.Handle(ClassRead, "GET /api/mcps", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/mcps", func(w http.ResponseWriter, r *http.Request) {
 		mcps := store.Get().ExternalMcps
 		out := make([]map[string]string, 0, len(mcps))
 		for _, m := range mcps {
@@ -279,7 +280,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 	//
 	// grant: this issues a credential another party holds (ADR-015 decision
 	// 1), the same reasoning as enrolment create.
-	rr.Handle(ClassGrant, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassGrant, "POST /api/projects/{id}/rotate_token", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// ProjectOps.RotateToken records the rotation itself (so it can
 		// attach the presence_id the gate minted) and withholds the new
@@ -302,7 +303,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 	// POST /api/projects/{id}/regen_skill — force a SKILL.md regen for one
 	// project regardless of GenerateSkill (the toggle gates *automatic* regen;
 	// this is the explicit "do it now" button).
-	rr.Handle(ClassConfigure, "POST /api/projects/{id}/regen_skill", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/projects/{id}/regen_skill", func(w http.ResponseWriter, r *http.Request) {
 		if skillLister == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill regeneration not available in this mode"})
 			return
@@ -335,7 +336,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 	// rather than an empty list: "this MCP scopes nothing" and "relay cannot
 	// tell you what this MCP scopes" are different answers, and only one of
 	// them means an editor may safely offer no fields.
-	rr.Handle(ClassRead, "GET /api/mcps/{id}/scope_fields", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/mcps/{id}/scope_fields", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		surfaces := mcps.AllMcpSurfaces()
 		if _, ok := surfaces[id]; !ok {
@@ -359,7 +360,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 	// nothing here.
 	// read, not configure: it discloses real values and changes nothing
 	// (ADR-015 decision 1), even though the HTTP verb is POST.
-	rr.Handle(ClassRead, "POST /api/mcps/{id}/enumerate", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "POST /api/mcps/{id}/enumerate", func(w http.ResponseWriter, r *http.Request) {
 		var body enumerateRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -372,7 +373,7 @@ func RegisterProjectRoutes(rr *RouteRegistrar, store SettingsStore, ops *Project
 	// GET /api/mcps/{id}/tools — live tool list for the project picker.
 	// 503 when no provider is wired (test contexts) or 404 when MCP is unknown
 	// / not connected yet.
-	rr.Handle(ClassRead, "GET /api/mcps/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/mcps/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
 		if tools == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool list not available"})
 			return

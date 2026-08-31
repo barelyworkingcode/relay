@@ -4,24 +4,26 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func TestControlAudit_RecordsAllowedAndRefusedDistinguishably(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "GET",
 		Path:      "/api/projects",
-		Class:     ClassRead,
-		Transport: TransportSocket,
+		Class:     control.ClassRead,
+		Transport: control.TransportSocket,
 		CredID:    "cred-eve",
 		Allowed:   true,
 	})
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "POST",
 		Path:      "/api/mcps",
-		Class:     ClassExecute,
-		Transport: TransportTCP,
+		Class:     control.ClassExecute,
+		Transport: control.TransportTCP,
 		CredID:    "cred-scheduler",
 		Allowed:   false,
 		Reason:    "class not granted",
@@ -64,11 +66,11 @@ func TestControlAudit_RecordsAllowedAndRefusedDistinguishably(t *testing.T) {
 func TestControlAudit_RecordCarriesClassTransportAndCredential(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "PUT",
 		Path:      "/api/remote",
-		Class:     ClassConfigure,
-		Transport: TransportSocket,
+		Class:     control.ClassConfigure,
+		Transport: control.TransportSocket,
 		CredID:    "cred-tray",
 		Allowed:   false,
 		Reason:    "no credential",
@@ -81,11 +83,11 @@ func TestControlAudit_RecordCarriesClassTransportAndCredential(t *testing.T) {
 	if ev.Path != "/api/remote" {
 		t.Errorf("path = %q, want /api/remote", ev.Path)
 	}
-	if ev.Class != string(ClassConfigure) {
-		t.Errorf("class = %q, want %q", ev.Class, ClassConfigure)
+	if ev.Class != string(control.ClassConfigure) {
+		t.Errorf("class = %q, want %q", ev.Class, control.ClassConfigure)
 	}
-	if ev.Transport != string(TransportSocket) {
-		t.Errorf("transport = %q, want %q", ev.Transport, TransportSocket)
+	if ev.Transport != string(control.TransportSocket) {
+		t.Errorf("transport = %q, want %q", ev.Transport, control.TransportSocket)
 	}
 	if ev.Actor.CredID != "cred-tray" {
 		t.Errorf("cred id = %q, want cred-tray", ev.Actor.CredID)
@@ -99,9 +101,9 @@ func TestControlAudit_RecordCarriesClassTransportAndCredential(t *testing.T) {
 }
 
 // TestControlAudit_NeverLeaksTokenMaterial is the one that matters: proves
-// the recorded event is built from an allow-list of ControlDecision fields
+// the recorded event is built from an allow-list of control.ControlDecision fields
 // rather than anything wider. The plausible bearer token below is never
-// passed to RecordDecision at all — ControlDecision has no field for one —
+// passed to RecordDecision at all — control.ControlDecision has no field for one —
 // so this also pins that the type stays that way.
 func TestControlAudit_NeverLeaksTokenMaterial(t *testing.T) {
 	rec := newTestAudit(t, nil)
@@ -109,11 +111,11 @@ func TestControlAudit_NeverLeaksTokenMaterial(t *testing.T) {
 	const plausibleToken = "relay_frontend_bearer_9f8e7d6c5b4a3210deadbeefcafefeed"
 	const credID = "cred-4c1f9d"
 
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "POST",
 		Path:      "/api/services",
-		Class:     ClassExecute,
-		Transport: TransportSocket,
+		Class:     control.ClassExecute,
+		Transport: control.TransportSocket,
 		CredID:    credID,
 		Allowed:   false,
 		Reason:    "class not granted",
@@ -174,34 +176,41 @@ func TestControlAudit_NeverLeaksTokenMaterial(t *testing.T) {
 
 func TestControlAudit_NilRecorderDoesNotPanic(t *testing.T) {
 	var rec *AuditRecorder
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:  "GET",
 		Path:    "/api/projects",
-		Class:   ClassRead,
+		Class:   control.ClassRead,
 		CredID:  "cred-x",
 		Allowed: true,
 	})
 }
 
 func TestControlAudit_NilAuditorInterfaceDoesNotPanic(t *testing.T) {
-	var ca ControlAuditor = (*AuditRecorder)(nil)
-	ca.RecordDecision(ControlDecision{
+	var ca control.ControlAuditor = (*AuditRecorder)(nil)
+	ca.RecordDecision(control.ControlDecision{
 		Method:  "GET",
 		Path:    "/api/projects",
-		Class:   ClassRead,
+		Class:   control.ClassRead,
 		CredID:  "cred-x",
 		Allowed: true,
 	})
 }
 
+func TestControlAuditorOrNil_NilRecorderProducesNilInterface(t *testing.T) {
+	var rec *AuditRecorder
+	if got := controlAuditorOrNil(rec); got != nil {
+		t.Fatalf("controlAuditorOrNil(nil) = %#v, want nil", got)
+	}
+}
+
 func TestControlAudit_NewKindIsQueryableAndDistinctFromToolCalls(t *testing.T) {
 	rec := newTestAudit(t, nil)
 
-	rec.RecordDecision(ControlDecision{
+	rec.RecordDecision(control.ControlDecision{
 		Method:    "POST",
 		Path:      "/api/enrolments",
-		Class:     ClassGrant,
-		Transport: TransportSocket,
+		Class:     control.ClassGrant,
+		Transport: control.TransportSocket,
 		CredID:    "cred-op",
 		Allowed:   true,
 	})

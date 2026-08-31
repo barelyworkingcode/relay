@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // Control-plane credentials are minted on the host, by the user who owns the
@@ -28,7 +30,7 @@ func runCredentialCommand(args []string) {
 // refused rather than stored: Grants compares against these constants, so a
 // typo'd class would leave the credential inert with nothing on any operator
 // surface to show why.
-var capabilityClasses = []CapabilityClass{ClassRead, ClassConfigure, ClassGrant, ClassExecute, ClassProxy}
+var capabilityClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute, control.ClassProxy}
 
 var errReservedCredentialName = fmt.Errorf("%q is reserved for the RELAY_FRONTEND_TOKEN migration, which rewrites its hash on every relay start; it cannot be minted or revoked by hand", legacyFrontendCredentialName)
 
@@ -43,13 +45,13 @@ func formatClasses[T ~string](classes []T) string {
 	return strings.Join(parts, ",")
 }
 
-func parseCapabilityClasses(raw []string) ([]CapabilityClass, error) {
+func parseCapabilityClasses(raw []string) ([]control.CapabilityClass, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("at least one class is required (%s); a credential with no class can reach nothing", formatClasses(capabilityClasses))
 	}
-	out := make([]CapabilityClass, 0, len(raw))
+	out := make([]control.CapabilityClass, 0, len(raw))
 	for _, r := range raw {
-		c := CapabilityClass(strings.TrimSpace(r))
+		c := control.CapabilityClass(strings.TrimSpace(r))
 		if !slices.Contains(capabilityClasses, c) {
 			return nil, fmt.Errorf("unknown class %q; valid classes are %s", r, formatClasses(capabilityClasses))
 		}

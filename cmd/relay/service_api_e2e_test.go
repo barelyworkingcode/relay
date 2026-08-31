@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
@@ -30,10 +32,10 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 
 	// execute-class: POST /api/services writes the caller-supplied `command`
 	// into settings (ADR-015 decision 1), so it exists only on the socket
-	// transport. Proven directly against a socket RouteRegistrar rather than
+	// transport. Proven directly against a socket control.RouteRegistrar rather than
 	// the full loopback server, which never registers this route at all.
 	socketMux := http.NewServeMux()
-	RegisterServiceRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket}, ops)
+	RegisterServiceRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: socketMux, Transport: control.TransportSocket}, ops)
 	socketSrv := httptest.NewServer(socketMux)
 	defer socketSrv.Close()
 

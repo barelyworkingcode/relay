@@ -21,23 +21,25 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 type lrAuditor struct {
 	mu        sync.Mutex
-	decisions []ControlDecision
+	decisions []control.ControlDecision
 }
 
-func (a *lrAuditor) RecordDecision(d ControlDecision) {
+func (a *lrAuditor) RecordDecision(d control.ControlDecision) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.decisions = append(a.decisions, d)
 }
 
-func (a *lrAuditor) forPath(path string) []ControlDecision {
+func (a *lrAuditor) forPath(path string) []control.ControlDecision {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var out []ControlDecision
+	var out []control.ControlDecision
 	for _, d := range a.decisions {
 		if d.Path == path {
 			out = append(out, d)
@@ -478,11 +480,11 @@ func TestLoginRoutes_MintedCredentialHoldsOnlyReadAndConfigure(t *testing.T) {
 	_, token := s.enrolled()
 
 	cred := s.loginCredential()
-	want := []CapabilityClass{ClassRead, ClassConfigure}
+	want := []control.CapabilityClass{control.ClassRead, control.ClassConfigure}
 	if !slices.Equal(cred.Classes, want) {
 		t.Fatalf("classes = %v, want exactly %v", cred.Classes, want)
 	}
-	for _, class := range []CapabilityClass{ClassGrant, ClassExecute, ClassProxy} {
+	for _, class := range []control.CapabilityClass{control.ClassGrant, control.ClassExecute, control.ClassProxy} {
 		if cred.Grants(class) {
 			t.Fatalf("the login credential holds %s", class)
 		}
@@ -525,7 +527,7 @@ func TestLoginRoutes_StaleCounterIsRefusedAuditedAndLeavesThePasskeyUsable(t *te
 	}
 
 	credID := lrB64(a.credID)
-	var recorded *ControlDecision
+	var recorded *control.ControlDecision
 	for _, d := range s.auditor.forPath("/relay/login/verify") {
 		if !d.Allowed && strings.Contains(d.Reason, credID) {
 			recorded = &d

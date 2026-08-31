@@ -12,7 +12,7 @@ package main
 // These tests drive the two real doors instead of the struct behind them:
 //   - ipcHandlers[MsgUpdateRemoteConfig], the exact map onSettingsIpc
 //     dispatches a WebView message through.
-//   - PUT /api/remote through a real RouteRegistrar, the exact route
+//   - PUT /api/remote through a real control.RouteRegistrar, the exact route
 //     enrolment_routes.go registers.
 //
 // Both assert on the SUPERVISOR actually binding or closing a socket, not on
@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // newOperatorSurfaceFixture wires a real RemoteSupervisor and a real
@@ -105,13 +107,13 @@ func TestIPCUpdateRemoteConfig_TogglingEnrolmentRequestsOpensAndClosesTheListene
 
 // TestHTTPPutRemote_TogglingEnrolmentRequestsOpensAndClosesTheListener is the
 // same proof over PUT /api/remote — the HTTP door RegisterEnrolmentRoutes
-// registers, socket-only (ClassExecute), which is the door `relay` itself
+// registers, socket-only (control.ClassExecute), which is the door `relay` itself
 // and any control-plane credential holder both go through.
 func TestHTTPPutRemote_TogglingEnrolmentRequestsOpensAndClosesTheListener(t *testing.T) {
 	_, sup, ops := newOperatorSurfaceFixture(t)
 
 	mux := http.NewServeMux()
-	RegisterEnrolmentRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
+	RegisterEnrolmentRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

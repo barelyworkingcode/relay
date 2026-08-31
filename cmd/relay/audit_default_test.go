@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,8 +22,8 @@ import (
 // Settings value to a row on disk — not RecordDecision called by hand.
 func adControlDoor(t *testing.T, rec *AuditRecorder) {
 	t.Helper()
-	rr := &RouteRegistrar{Mux: http.NewServeMux(), Transport: TransportSocket, Auditor: rec}
-	rr.Handle(ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {})
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: http.NewServeMux(), Transport: control.TransportSocket, Auditor: rec}
+	rr.Handle(control.ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {})
 	rr.Mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/enrolments", nil))
 }
 
@@ -51,7 +53,7 @@ func TestAdSettingsWithNoAuditBlockRecordsAControlDecision(t *testing.T) {
 	if ev.Event != AuditEventControlDecision {
 		t.Errorf("event = %q, want %q", ev.Event, AuditEventControlDecision)
 	}
-	if ev.Path != "/api/enrolments" || ev.Class != string(ClassGrant) {
+	if ev.Path != "/api/enrolments" || ev.Class != string(control.ClassGrant) {
 		t.Errorf("record does not name the decision: path=%q class=%q", ev.Path, ev.Class)
 	}
 }

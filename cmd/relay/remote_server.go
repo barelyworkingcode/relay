@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
@@ -155,19 +156,19 @@ type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, co
 // class is not reachable on TCP, so an execute- or proxy-class operation
 // added here later is absent from the table rather than refused inside it.
 type remoteConfigEntry struct {
-	class   CapabilityClass
+	class   control.CapabilityClass
 	handler remoteConfigHandler
 }
 
-// buildRemoteConfigHandlers drops any entry whose class ClassReachableOn
-// refuses for TransportTCP — the exact structural shape RouteRegistrar.Handle
-// (capability.go) uses, applied to this dispatch table for the first time
-// (ADR-010 decision 4's "route" meant a map entry before RouteRegistrar
+// buildRemoteConfigHandlers drops any entry whose class control.ClassReachableOn
+// refuses for control.TransportTCP — the exact structural shape control.RouteRegistrar.Handle
+// uses, applied to this dispatch table for the first time
+// (ADR-010 decision 4's "route" meant a map entry before control.RouteRegistrar
 // existed; this is the same idea, catching up).
 func buildRemoteConfigHandlers(entries map[string]remoteConfigEntry) map[string]remoteConfigEntry {
 	out := make(map[string]remoteConfigEntry, len(entries))
 	for reqType, entry := range entries {
-		if !ClassReachableOn(entry.class, TransportTCP) {
+		if !control.ClassReachableOn(entry.class, control.TransportTCP) {
 			continue
 		}
 		out[reqType] = entry
@@ -181,8 +182,8 @@ func buildRemoteConfigHandlers(entries map[string]remoteConfigEntry) map[string]
 // grants, and a table that mixed them would make "what can a certificate
 // without cli-admin reach" a question about a field rather than about a map.
 var remoteConfigHandlers = buildRemoteConfigHandlers(map[string]remoteConfigEntry{
-	bridge.ReqDescribeGrant: {ClassRead, handleRemoteDescribeGrant},
-	bridge.ReqNarrowGrant:   {ClassConfigure, handleRemoteNarrowGrant},
+	bridge.ReqDescribeGrant: {control.ClassRead, handleRemoteDescribeGrant},
+	bridge.ReqNarrowGrant:   {control.ClassConfigure, handleRemoteNarrowGrant},
 })
 
 func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() McpSurfaces, settings *Settings, proj *Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
@@ -504,7 +505,7 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 		}
 		// A nil configurer means the configuration table is absent (fail
 		// closed) — no different, from the wire, than a type nobody
-		// registered. Not a ControlDecision: there is no operation this
+		// registered. Not a control.ControlDecision: there is no operation this
 		// listener actually carries to measure the refusal against, the
 		// same reasoning ADR-015 gives for an unmatched TCP route.
 		if s.configurer == nil {
@@ -525,11 +526,11 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 // real table, so — unlike an unregistered request type — this IS an
 // authorization decision, and ADR-015's record is what answers "did this
 // identity try" after the fact.
-func (s *RemoteServer) recordConfigRefusal(class CapabilityClass, reqType string, caller bridge.RemoteCaller) {
-	s.audit.RecordDecision(ControlDecision{
+func (s *RemoteServer) recordConfigRefusal(class control.CapabilityClass, reqType string, caller bridge.RemoteCaller) {
+	s.audit.RecordDecision(control.ControlDecision{
 		Method:      reqType,
 		Class:       class,
-		Transport:   TransportTCP,
+		Transport:   control.TransportTCP,
 		Allowed:     false,
 		Reason:      "cli-admin is not set on this enrolment",
 		ClientID:    caller.ClientID,
