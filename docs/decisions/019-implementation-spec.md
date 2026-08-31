@@ -596,7 +596,7 @@ Only then: `client.crt`, `ca.crt`, `registration.json` written atomically; `pend
 
 ### 5.7 The closing report
 
-The tool-plane address is **derived from `--host` and the port of the poll's `relay_addr`**, never from `relay_addr`'s host. `remote.listen` is very often `127.0.0.1:9910` or `0.0.0.0:9910`, which is meaningless to a remote machine, and following a host supplied over the wire would be a redirection primitive even where the pin has closed. A `relay_addr` whose host is neither loopback nor `0.0.0.0` and differs from `--host` is printed as an informational note and **not** followed.
+The tool-plane address is **derived from `--host` and the port of the poll's `relay_addr`**, never from `relay_addr`'s host. The port resolves most-explicit first: a `--port` the operator actually typed wins, then `relay_addr`'s port, then 9910 — stated because "the port of `relay_addr`" read literally would make a typed `--port` dead in the common case. `remote.listen` is very often `127.0.0.1:9910` or `0.0.0.0:9910`, which is meaningless to a remote machine, and following a host supplied over the wire would be a redirection primitive even where the pin has closed. A `relay_addr` whose host is neither loopback nor `0.0.0.0` and differs from `--host` is printed as an informational note and **not** followed.
 
 Then `ListTools` once per granted project id:
 
@@ -796,7 +796,7 @@ Each is written so it can **fail**. Unless stated otherwise, each is a hermetic 
 
 **AC-38 — No field of `registration.json` relaxes a check.** A registration whose `ca_fingerprint` names a foreign CA but whose `ca.crt` is correct still verifies against `ca.crt`; a registration whose `ca.crt` is foreign fails TLS regardless of what `ca_fingerprint` says. A source scan finds no read of a `Registration` field inside `TLSConfig`, `LoadBundle` or `verifyIssuedBundle`. *Fails if* any of the three is false.
 
-**AC-39 — A corrupt cache is still a usable registration.** With `registration.json` truncated to `{`, the client warns and still loads key/cert/CA and calls successfully (requiring `--project` if several grants exist). *Fails if* it refuses to run.
+**AC-39 — A corrupt cache is still a usable registration.** With `registration.json` truncated to `{`, the client warns and still loads key/cert/CA and calls successfully, given `--addr` (and `--project` if several grants exist). The `--addr` is not optional here: `registration.json` is where the address lives, so a truncated cache loses it along with the default project — the identity survives, the routing does not. *Fails if* it refuses to run when the address is supplied.
 
 ### The store
 
