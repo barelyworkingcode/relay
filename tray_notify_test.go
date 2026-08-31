@@ -12,6 +12,9 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -376,5 +379,118 @@ func TestTick_AtMostOneNotifyCallPerTick(t *testing.T) {
 	n.tick(1, 50, notifierLive, notifierMaxLive, false)
 	if len(*calls) != 1 {
 		t.Errorf("got %d notify calls for one tick with unapproved=50, want exactly 1", len(*calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The denial report — the seam Objective-C uses to reach relay's own log
+// ---------------------------------------------------------------------------
+
+// macOS denies notification authorization outright for an ad-hoc-signed,
+// non-notarised LSUIElement bundle: no prompt, no user action, and nothing
+// to find afterwards except "Allow notifications: Off" in System Settings.
+// reportNotificationsDenied is the whole of relay's answer to that, so what
+// is pinned here is the two properties that make it worth having — it says
+// enough to act on, and it says it once.
+
+// slog's TextHandler quotes the message, escaping the two quoted phrases
+// inside it, so the constant does not appear in the output verbatim. Its
+// quote-free head does, and is what the counts below match on.
+var denialWarningHead = notificationsDeniedWarning[:strings.IndexByte(notificationsDeniedWarning, '"')]
+
+func denialLogCapture(t *testing.T) *lrSyncBuffer {
+	t.Helper()
+	notificationsDeniedReported.Store(false)
+	t.Cleanup(func() { notificationsDeniedReported.Store(false) })
+
+	logs := &lrSyncBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return logs
+}
+
+// The obligations of the message, not its wording: a rewrite may say this
+// any way it likes as long as it still names the setting, says the count is
+// not lost with it, and says whose setting it is.
+func TestNotificationsDeniedWarning_SaysWhatHappenedAndWhatToDo(t *testing.T) {
+	for _, want := range []struct{ what, substr string }{
+		{"where the switch is", "System Settings"},
+		{"which switch", "Notifications"},
+		{"that the tray line still carries the count", "Pending enrolment requests: N"},
+		{"the same table from a terminal", "relay enrol requests"},
+		{"that this is a per-user setting", "per-user"},
+	} {
+		if !strings.Contains(notificationsDeniedWarning, want.substr) {
+			t.Errorf("the denial warning does not say %s (no %q):\n%s",
+				want.what, want.substr, notificationsDeniedWarning)
+		}
+	}
+}
+
+// A denial is a persistent state, not an event — macOS answers every later
+// request the same way. One line is diagnosable; one per notification is a
+// flood that would itself need suppressing.
+func TestReportNotificationsDenied_WarnsOnceCarryingTheErrorDetail(t *testing.T) {
+	logs := denialLogCapture(t)
+
+	reportNotificationsDenied("Notifications are not allowed for this application")
+
+	if got := strings.Count(logs.String(), denialWarningHead); got != 1 {
+		t.Fatalf("the first denial produced %d warnings, want 1:\n%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), "Notifications are not allowed for this application") {
+		t.Errorf("the warning dropped the error macOS gave back:\n%s", logs.String())
+	}
+
+	for i := 0; i < 50; i++ {
+		reportNotificationsDenied("Notifications are not allowed for this application")
+	}
+	if got := strings.Count(logs.String(), denialWarningHead); got != 1 {
+		t.Fatalf("51 denials produced %d warnings, want exactly 1", got)
+	}
+}
+
+// The common case: macOS refuses with granted=NO and no NSError at all. The
+// line must still be emitted, and must not carry an empty error= key that
+// reads as "something went wrong and relay does not know what".
+func TestReportNotificationsDenied_WarnsWithNoErrorAttached(t *testing.T) {
+	logs := denialLogCapture(t)
+
+	reportNotificationsDenied("")
+
+	if got := strings.Count(logs.String(), denialWarningHead); got != 1 {
+		t.Fatalf("a denial with no error produced %d warnings, want 1:\n%s", got, logs.String())
+	}
+	if strings.Contains(logs.String(), "error=") {
+		t.Errorf("a denial with no error still logged an error key:\n%s", logs.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The no-bundle-identifier guard
+// ---------------------------------------------------------------------------
+
+// UNUserNotificationCenter.currentNotificationCenter THROWS for a process
+// with no bundle identifier, which is every `go test` binary and every bare
+// ./relay. Notify must stay a no-op there rather than crash, and must stay a
+// SILENT one: this suite would otherwise warn about a denial on every run of
+// a path that was never denied anything.
+func TestDarwinPlatformNotify_WithoutABundleIdentifierIsASilentNoOp(t *testing.T) {
+	if id := os.Getenv("__CFBundleIdentifier"); id != "" {
+		t.Skipf("this binary is running inside a bundle (%s); the guard under test is the no-bundle case", id)
+	}
+	logs := denialLogCapture(t)
+
+	p := NewPlatform()
+	for i := 0; i < 3; i++ {
+		p.Notify("Relay", "1 machine is waiting to be registered.")
+	}
+
+	if got := logs.String(); got != "" {
+		t.Fatalf("Notify without a bundle identifier logged:\n%s", got)
+	}
+	if notificationsDeniedReported.Load() {
+		t.Fatal("Notify without a bundle identifier reported a denial; nothing was ever asked")
 	}
 }

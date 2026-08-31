@@ -145,6 +145,15 @@ func goOnNotificationClick() {
 	}
 }
 
+// goOnNotificationsDenied is the only route Objective-C has into relay's
+// slog output. It carries no appInstance check on purpose: a denial is worth
+// recording whether or not the tray finished coming up.
+//
+//export goOnNotificationsDenied
+func goOnNotificationsDenied(detail *C.char) {
+	reportNotificationsDenied(C.GoString(detail))
+}
+
 //export goOnAppTerminate
 func goOnAppTerminate() {
 	if appInstance != nil {
