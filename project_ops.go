@@ -344,17 +344,79 @@ func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
 }
 
 // narrowUpdateFields carries a NarrowGrant request's already-validated
-// fields into applyProjectUpdate's patch shape. The two structs' pointer
-// fields share exactly the same underlying types by construction — see
-// remoteNarrowFields' own doc comment — so this is a relabelling, not a
-// conversion, and it sets nothing narrowsOnly did not already clear.
-func narrowUpdateFields(f remoteNarrowFields) projectUpdateFields {
+// fields into applyProjectUpdate's patch shape. AllowedMcpIDs is a
+// relabelling — narrowsOnly already proved the requested list widens
+// nothing. AllowedTools/Access/AllowExternal are NOT: the wire semantics
+// for a set pointer is whole-map replace (applyProjectUpdate's
+// candidate.AllowedTools = *f.AllowedTools and siblings), but a remote
+// only ever names the MCP ids it means to touch, so a map built from the
+// request alone would drop every id it didn't mention — narrowing an MCP
+// the caller never named, down to nothing, as a side effect of narrowing
+// one it did. mergeNarrowedMap folds the request's per-key overrides onto
+// what's already stored so an untouched id keeps its stored value; keys
+// for an MCP falling out of the resulting allowed_mcp_ids are left for
+// SyncProjectToken's existing pruning rather than carried forward stale.
+func narrowUpdateFields(stored Project, f remoteNarrowFields) projectUpdateFields {
+	resultMcpIDs := stored.AllowedMcpIDs
+	if f.AllowedMcpIDs != nil {
+		resultMcpIDs = *f.AllowedMcpIDs
+	}
 	return projectUpdateFields{
 		AllowedMcpIDs: f.AllowedMcpIDs,
-		AllowedTools:  f.AllowedTools,
-		Access:        f.Access,
-		AllowExternal: f.AllowExternal,
+		AllowedTools:  mergeNarrowedMap(stored.AllowedTools, f.AllowedTools, resultMcpIDs),
+		Access:        mergeNarrowedMap(stored.Access, f.Access, resultMcpIDs),
+		AllowExternal: mergeNarrowedMap(stored.AllowExternal, f.AllowExternal, resultMcpIDs),
 	}
+}
+
+// mergeNarrowedMap merges a NarrowGrant request's per-MCP overrides onto
+// what's stored: an id in keep but not in req keeps its stored value, an
+// id in req is set to req's value, and an id outside keep is dropped
+// (falling out of allowed_mcp_ids, handled here rather than left for
+// applyProjectUpdate to reconcile against a stale carried-forward entry).
+// req == nil means the request doesn't touch this field at all, which
+// must stay nil so applyProjectUpdate's own nil-check leaves it alone —
+// merging would turn "not in the request" into "set to a copy of
+// stored," a write with nothing behind it.
+func mergeNarrowedMap[V any](stored map[string]V, req *map[string]V, keep []string) *map[string]V {
+	if req == nil {
+		return nil
+	}
+	keepSet := make(map[string]bool, len(keep))
+	for _, id := range keep {
+		keepSet[id] = true
+	}
+	merged := make(map[string]V, len(stored))
+	for id, v := range stored {
+		if keepSet[id] {
+			merged[id] = v
+		}
+	}
+	for id, v := range *req {
+		merged[id] = v
+	}
+	return &merged
+}
+
+// remoteNarrowFieldNames lists the fields a NarrowGrant request touches,
+// for the audit record and the caller's Changed list — presence, not
+// content, so it reads the request directly rather than narrowUpdateFields'
+// merged (and therefore always-non-nil-when-touched, identically) result.
+func remoteNarrowFieldNames(f remoteNarrowFields) []string {
+	var names []string
+	if f.AllowedMcpIDs != nil {
+		names = append(names, "allowed_mcp_ids")
+	}
+	if f.AllowedTools != nil {
+		names = append(names, "allowed_tools")
+	}
+	if f.Access != nil {
+		names = append(names, "access")
+	}
+	if f.AllowExternal != nil {
+		names = append(names, "allow_external")
+	}
+	return names
 }
 
 // NarrowForEnrolment is the one core behind the remote listener's
@@ -419,7 +481,7 @@ func (o *ProjectOps) NarrowForEnrolment(
 			return errNarrowingIsNoop
 		}
 		var applyErr error
-		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(f), surfaces)
+		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(*proj, f), surfaces)
 		return applyErr
 	})
 	if err != nil && !noop {
@@ -438,7 +500,7 @@ func (o *ProjectOps) NarrowForEnrolment(
 		return updated, nil, nil
 	}
 
-	changed := projectUpdateGrantFieldNames(narrowUpdateFields(f))
+	changed := remoteNarrowFieldNames(f)
 	// Reported and not undone, the same balance EnrolmentOps.Update and
 	// Revoke strike: a narrowing act has no side artifact to roll back, and
 	// refusing to narrow because the log is broken would make a failing
