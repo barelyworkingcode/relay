@@ -11,11 +11,14 @@ type Platform interface {
 	OpenURL(url string)
 
 	// Notify raises a user notification. It is best-effort by design and
-	// reports nothing back: macOS drops it when the user has denied
-	// notifications, when Focus is on, or when the process has no bundle
-	// identifier (a bare ./relay, or go test), and there is no way to force
-	// one. Nothing may depend on delivery — the tray's own "Pending
+	// reports nothing back to the caller: macOS drops it when the user has
+	// denied notifications, when Focus is on, or when the process has no
+	// bundle identifier (a bare ./relay, or go test), and there is no way to
+	// force one. Nothing may depend on delivery — the tray's own "Pending
 	// enrolment requests: N" line is the guaranteed surface (ADR-019 spec
 	// §9.4).
+	//
+	// A denial is nonetheless diagnosable: the macOS implementation logs
+	// notificationsDeniedWarning once when authorization comes back refused.
 	Notify(title, body string)
 }

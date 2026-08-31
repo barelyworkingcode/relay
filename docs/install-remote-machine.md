@@ -191,6 +191,20 @@ about opening it:
   always there while something is waiting, and `relay enrol requests` reads
   the same table from a terminal.
 
+  macOS can also refuse Relay notification authorization outright, with no
+  prompt and nothing for you to have clicked — an unsigned or non-notarised
+  build is refused as a matter of course. Relay logs that once, so it is not
+  a silent nothing:
+
+  ```
+  grep "user notifications are disabled" ~/Library/Application\ Support/relay/logs/relay.log
+  ```
+
+  If that line is there, `System Settings → Notifications → Relay → Allow
+  notifications` is off. It is a per-user setting, so turn it on in the
+  account that runs the tray. Nothing else changes either way: the requests
+  are in the table regardless.
+
 ### A2. Register, from the client
 
 **On the client** — one command:

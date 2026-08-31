@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -9,6 +11,37 @@ const (
 	notifyMinInterval = 60 * time.Second
 	notifyMaxPerHour  = 6
 )
+
+// notificationsDeniedWarning is what a person debugging a missing banner has
+// to be able to find. macOS refuses notification authorization outright for
+// an ad-hoc-signed, non-notarised LSUIElement bundle — no prompt, no user
+// action — and the only other evidence is opening System Settings and
+// reading "Allow notifications: Off".
+const notificationsDeniedWarning = "user notifications are disabled for Relay in System Settings → Notifications, " +
+	"so no banner will be raised when a machine is waiting to be registered; " +
+	"the tray menu's \"Pending enrolment requests: N\" line still shows them, " +
+	"and so does `relay enrol requests`. Notifications are a per-user setting: " +
+	"turn \"Allow notifications\" on for Relay in the account that runs the tray."
+
+var notificationsDeniedReported atomic.Bool
+
+// reportNotificationsDenied records a refused notification authorization,
+// once. A denial is a persistent state and not an event — macOS answers
+// every later request the same way — so a line per attempt would be noise
+// that then needs a suppressor of its own.
+//
+// Called from Objective-C via goOnNotificationsDenied and from nowhere else;
+// detail is the NSError description, empty when the refusal carried none.
+func reportNotificationsDenied(detail string) {
+	if notificationsDeniedReported.Swap(true) {
+		return
+	}
+	if detail != "" {
+		slog.Warn(notificationsDeniedWarning, "error", detail)
+		return
+	}
+	slog.Warn(notificationsDeniedWarning)
+}
 
 type pendingEnrolmentNotifier struct {
 	now      func() time.Time

@@ -15,9 +15,10 @@ void cocoa_settings_eval_js(const char* js);
 void cocoa_open_url(const char* url);
 
 // Best-effort user notification. Silently does nothing when the process has
-// no bundle identifier (UNUserNotificationCenter throws there) or when the
-// user has denied authorization. Deliveries share one identifier, so a
-// second banner replaces the first rather than stacking.
+// no bundle identifier (UNUserNotificationCenter throws there). A denial by
+// macOS is not silent: it reaches relay's log once, via
+// goOnNotificationsDenied. Deliveries share one identifier, so a second
+// banner replaces the first rather than stacking.
 void cocoa_notify(const char* title, const char* body);
 
 void cocoa_dispatch_main_callback(uintptr_t ctx);
