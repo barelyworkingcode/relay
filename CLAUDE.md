@@ -14,7 +14,7 @@ service management.
 - `relay audit [--tail N] [--project ID] [--outcome denied] [--grep TEXT] [--json]` — tail the tool-call audit log. Reads the file directly, so it works with the tray stopped.
 - `relay grant [--project ID] [--json]` — the operator-side "what did I actually grant?": every record's MCPs, mode, outbound grant, tools and the **real** scope values, with a scope reaching a filesystem root or a whole home directory called out. Reads settings.json directly, like `relay audit`. `disclose` governs the client's view and never this one (issue #41).
 - `relay credential mint --name NAME --class CLASS [--class ...] [--ttl 12h] | list [--include-expired] | revoke --id ID` — control-plane API credentials (ADR-015, ADR-016). `--class` is one of `read`, `configure`, `grant`, `execute`, `proxy`; an unknown class or an empty set is refused. `--ttl` gives the credential an expiry; omitted means never. The plaintext token is printed once and only its SHA-256 is stored. Reserved: `legacy-frontend-token`, which the frontend-token migration owns.
-- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | sign --client-id ID --csr PATH|- [--grant ...] | list | update ... | revoke --client-id ID | requests [--json] | approve --id REQ --client-id ID --grant PROJECT_ID [--grant ...] | refuse --id REQ | ca-fingerprint` — remote-client enrolment. `create` generates the client's keypair on this host and emits a bundle containing the private key (legacy, deprecated in its own output). `sign` signs a CSR the client generated itself — relay only ever sees the public key, and returns certificates only. Host-side operator act only: no self-service enrolment, no bootstrap token. `update --cli-admin` (`--cli-admin=false` to withdraw it) toggles the enrolment's `cli_admin` bit — configuration authority over the remote listener, scoped to narrowing the enrolment's own already-granted access profiles, never widening them (ADR-018 decision 4). Rides on `update` rather than a new subcommand; gated in both directions, live on the client's next request. `requests`/`approve`/`refuse` are the network CSR path's operator surface (ADR-018 decision 8): `requests` lists what an unenrolled remote has lodged over the enrolment-request listener, `approve` signs one exactly as `sign` does — same op, same gate, same digest, over the request's *stored* CSR bytes — and `refuse` declines one without ever reaching the presence gate (declining a stranger is not the act it protects). `ca-fingerprint` prints relay's CA certificate hash, the value a client pins with `--ca-fingerprint`; it reads `ca.crt` straight off disk, like `list`, and works with the tray stopped. `requests`/`approve`/`refuse` are brokered like `create`/`sign`/`update`/`revoke`: the pending table lives only in the running tray's memory, so these need it up. See [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself).
+- `relay enrol create --client-id ID --grant PROJECT_ID [--grant ...] | sign --client-id ID --csr PATH|- [--grant ...] | list | update ... | revoke --client-id ID | requests [--json] | approve --id REQ --client-id ID --grant PROJECT_ID [--grant ...] | refuse --id REQ | ca-fingerprint` — remote-client enrolment. `create` generates the client's keypair on this host and emits a bundle containing the private key (legacy, deprecated in its own output). `sign` signs a CSR the client generated itself — relay only ever sees the public key, and returns certificates only. Host-side operator act only: no self-service enrolment, no bootstrap token. `update --cli-admin` (`--cli-admin=false` to withdraw it) toggles the enrolment's `cli_admin` bit — configuration authority over the remote listener, scoped to narrowing the enrolment's own already-granted access profiles, never widening them (ADR-018 decision 4). Rides on `update` rather than a new subcommand; gated in both directions, live on the client's next request. `requests`/`approve`/`refuse` are the network CSR path's operator surface (ADR-018 decision 8, narrowed by ADR-019): `requests` lists what an unenrolled remote has lodged over the enrolment-request listener, with a `SAS` column carrying the six-character comparison code (`-` for a carried-pin `relayremote request` row, `(waiting)` before the client opens its commitment, `FAILED` if it opened it wrongly), `approve` signs one exactly as `sign` does — same op, same gate, same digest, over the request's *stored* CSR bytes — and `refuse` declines one without ever reaching the presence gate (declining a stranger is not the act it protects). `approve` **requires a grant**: with no `--grant` it refuses, naming `--no-grant` as the explicit way to enrol a machine with no access (ADR-019 decision 7 — an enrolment that reaches nothing reads on the client as a broken install, so the operator says which they meant). It also refuses, before the gate, a row whose comparison was never completed or failed. `ca-fingerprint` prints relay's CA certificate hash, the value a client pins with `--ca-fingerprint`; it reads `ca.crt` straight off disk, like `list`, and works with the tray stopped. `requests`/`approve`/`refuse` are brokered like `create`/`sign`/`update`/`revoke`: the pending table lives only in the running tray's memory, so these need it up. See [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself).
 - `relay login enrol | list | revoke --id ID` — host-side anchor for interactive passkey login (ADR-016). `enrol` mints a single-use, two-minute registration code (only its SHA-256 is stored; the code is printed once and is never accepted in place of an assertion) and prints where to redeem it; `list` shows registered passkeys — name, abbreviated credential id, created, last-used counter — never the public key; `revoke` removes one (and does **not** end sessions it already signed in — those are `relay credential revoke`, or Settings → Passkeys). The code is also mintable from the tray's **Show Login Code...** item, which goes through the same `mintBootstrapCode`. Not a control-plane credential and not a fifth/sixth entry in `docs/tokens.md`'s inventory: it authorises registering a passkey, nothing else.
 
 ## Architecture
@@ -218,7 +218,16 @@ over a bounded, in-memory, never-persisted table of at most 8 pending
 requests — it holds no reference to a router, the CA, the sealer or
 `settings.json`. **Lodging raises no prompt, ever**: no code on that path
 touches `presence.Gate`, so an unauthenticated network peer can only make a
-counter go up to its cap, never raise a dialog. The human approves from
+counter go up to its cap, never raise a dialog. **It may raise a
+*notification*** (ADR-019 decision 4) — one coalesced, rate-limited (at most
+one a minute, six an hour), dismissible tray banner carrying a count and
+nothing a peer supplied, drawn by the tray's existing 2s poll *reading* the
+lodge-generation counter, never by the lodge path *calling* anything. That
+banner is discoverability, not a guarantee: it can be denied, suppressed by
+Focus, or unavailable to a process with no bundle identifier, so the menu's
+`Pending enrolment requests: N` line is the reliable surface and
+`tray_notify.go`'s bounds are what make the banner safe rather than its
+existence. The human approves from
 `relay enrol requests`/`approve`/`refuse` or Settings → Remote Clients →
 Pending requests, and *that* act reuses `enrolment.sign`'s existing gate and
 digest unchanged — there is no `enrolment.approve` entry in
@@ -229,10 +238,21 @@ redeemable for another. The listener itself is plain TCP, not mTLS: nothing
 on it is a secret in either direction (a self-signed CSR proves possession;
 the certificates it returns are public), so TLS here would be decoration
 that reads as a security property it cannot provide — the real control is
-the CA-fingerprint pin `relayremote request --ca-fingerprint` (or a watched
-`--tofu`) performs client-side, which is the only thing that stops an
-attacker who lets a real CSR through to relay from substituting its own CA
-on the way back. See [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself).
+client-side and comes in two forms, one per client verb. `relayremote
+request` pins the CA-fingerprint carried out of band (`--ca-fingerprint`, or
+a watched `--tofu`), unchanged. `relayremote register` instead completes a
+**commit–reveal comparison** (ADR-019 decision 3, `enrolment_sas.go`): a
+six-character code over relay's CA SPKI, the CSR's SPKI and a 16-byte nonce
+from each side, the client's committed at lodge and opened on its first
+poll. Both close the same gap — an attacker who lets a real CSR through to
+relay and substitutes its own CA on the way back — and neither is optional:
+a row that carries a commitment but was never opened, or whose open failed,
+is refused by `EnrolmentOps.Approve` before the presence gate from every
+door. `maxPendingEnrolmentRequests = 8` is now load-bearing for that bound
+as well as for availability: it is the attacker's parallelism against 30
+bits, so raising it degrades the margin linearly. See
+[`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself)
+and [`docs/install-remote-machine.md`](docs/install-remote-machine.md).
 
 Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
 persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the

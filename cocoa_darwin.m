@@ -2,6 +2,7 @@
 #import <WebKit/WebKit.h>
 #import <EventKit/EventKit.h>
 #import <Contacts/Contacts.h>
+#import <UserNotifications/UserNotifications.h>
 #include "cocoa_darwin.h"
 #include <stdlib.h>
 
@@ -479,7 +480,136 @@ void cocoa_open_url(const char* url) {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:urlStr]];
 }
 
+// ---------------------------------------------------------------------------
+// User notifications
+// ---------------------------------------------------------------------------
+
+extern void goOnNotificationClick(void);
+extern void goOnNotificationsDenied(const char* detail);
+
+// Every delivery reuses this identifier so a second notification REPLACES
+// the first in Notification Center instead of stacking — coalescing at the
+// OS layer, on top of the coalescing pendingEnrolmentNotifier already does.
+static NSString *const kRelayPendingEnrolmentNotificationID = @"relay.enrolment.pending";
+
+@interface NotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+static NotificationDelegate *notificationDelegate = nil;
+
+@implementation NotificationDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       didReceiveNotificationResponse:(UNNotificationResponse *)response
+                withCompletionHandler:(void (^)(void))completionHandler {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        goOnNotificationClick();
+    });
+    completionHandler();
+}
+
+// Without this the banner is suppressed whenever Relay is the frontmost
+// app, which is exactly the case while the operator is clicking through the
+// tray menu that raised it.
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    completionHandler(UNNotificationPresentationOptionList | UNNotificationPresentationOptionBanner);
+}
+@end
+
+// UNUserNotificationCenter.currentNotificationCenter THROWS for a process
+// with no bundle identifier, and relay runs bare from a terminal during
+// development and under go test. Guarding here — rather than letting the
+// exception escape into Go — is what keeps `./relay` runnable.
+static UNUserNotificationCenter *relay_notification_center(void) {
+    static BOOL warned = NO;
+    if ([[NSBundle mainBundle] bundleIdentifier] == nil) {
+        if (!warned) {
+            warned = YES;
+            NSLog(@"relay: no bundle identifier, user notifications unavailable");
+        }
+        return nil;
+    }
+    return [UNUserNotificationCenter currentNotificationCenter];
+}
+
+typedef enum {
+    kRelayAuthUnasked = 0,
+    kRelayAuthAsking,
+    kRelayAuthAnswered,
+} RelayAuthState;
+
+// Both are read and written only on the main thread: cocoa_notify is reached
+// from the tray's menu rebuild, which is always dispatched to main, and the
+// authorization completion handler — which fires on an arbitrary queue —
+// hops to main before touching them. Hence unguarded.
+//
+// gDeferred holds at most one request: the newest raised while the
+// authorization answer is still outstanding. A request added before the
+// answer arrives is discarded by macOS, and every delivery shares one
+// identifier anyway, so only the freshest is worth holding. It is an array
+// rather than a plain pointer because this file is compiled without ARC: the
+// array owns what it holds, so nothing here has to say retain or release.
+static RelayAuthState gAuthState = kRelayAuthUnasked;
+static NSMutableArray *gDeferred = nil;
+
+void cocoa_notify(const char* title, const char* body) {
+    UNUserNotificationCenter *center = relay_notification_center();
+    if (center == nil) return;
+
+    if (notificationDelegate == nil) {
+        notificationDelegate = [[NotificationDelegate alloc] init];
+        center.delegate = notificationDelegate;
+    }
+
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = [NSString stringWithUTF8String:title];
+    content.body = [NSString stringWithUTF8String:body];
+
+    UNNotificationRequest *req =
+        [UNNotificationRequest requestWithIdentifier:kRelayPendingEnrolmentNotificationID
+                                             content:content
+                                             trigger:nil];
+
+    if (gAuthState == kRelayAuthAsking) {
+        [gDeferred removeAllObjects];
+        [gDeferred addObject:req];
+        return;
+    }
+
+    // Authorization is requested once, lazily, on the first notification —
+    // never at launch, where a permission prompt for a feature the operator
+    // may never turn on is noise.
+    if (gAuthState == kRelayAuthUnasked) {
+        gAuthState = kRelayAuthAsking;
+        gDeferred = [[NSMutableArray alloc] initWithObjects:req, nil];
+        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+                              completionHandler:^(BOOL granted, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                gAuthState = kRelayAuthAnswered;
+                if (!granted) {
+                    // Silently denied is the case this exists for: macOS
+                    // refuses an ad-hoc-signed, non-notarised LSUIElement
+                    // bundle without ever prompting, and nothing else in the
+                    // system says so.
+                    NSString *detail = error.localizedDescription;
+                    goOnNotificationsDenied(detail ? [detail UTF8String] : "");
+                } else if (gDeferred.count > 0) {
+                    // Read before the clear: the array is the only owner.
+                    [center addNotificationRequest:gDeferred.lastObject
+                             withCompletionHandler:nil];
+                }
+                [gDeferred removeAllObjects];
+            });
+        }];
+        return;
+    }
+
+    [center addNotificationRequest:req withCompletionHandler:nil];
+}
+
 extern void goDispatchCallback(uintptr_t ctx);
+
 
 void cocoa_dispatch_main_callback(uintptr_t ctx) {
     dispatch_async(dispatch_get_main_queue(), ^{

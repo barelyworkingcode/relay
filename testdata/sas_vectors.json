@@ -1,0 +1,274 @@
+{
+  "construction": {
+    "alphabet": "23456789ABCDEFGHJKLMNPQRSTUVWXYZ",
+    "commit": "SHA256(commit_domain || SHA256(csr_spki) || rc)",
+    "commit_domain": "relay.sas.commit.v1\\x00",
+    "digest": "SHA256(domain || SHA256(ca_spki) || SHA256(csr_spki) || rc || rr)",
+    "domain": "relay.sas.v1\\x00",
+    "sas": "enc30(digest): first 30 bits, big-endian from the front, six symbols of the alphabet, most significant group first"
+  },
+  "note": "Shared SAS test vectors. Committed byte-identically in relay (testdata/sas_vectors.json) and relayRemote (testdata/sas_vectors.json). See relay docs/decisions/019-implementation-spec.md section 3.1.",
+  "vectors": [
+    {
+      "name": "all-zero",
+      "ca_spki": "0000000000000000000000000000000000000000000000000000000000000000",
+      "csr_spki": "0000000000000000000000000000000000000000000000000000000000000000",
+      "rc": "00000000000000000000000000000000",
+      "rr": "00000000000000000000000000000000",
+      "sas": "J2TT7Y",
+      "commit": "bb2e380382b6f3e94ccea2c25602c2c4cec370375eb84be32618bdc6141f2fcc"
+    },
+    {
+      "name": "all-ff",
+      "ca_spki": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "csr_spki": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "rc": "ffffffffffffffffffffffffffffffff",
+      "rr": "ffffffffffffffffffffffffffffffff",
+      "sas": "DXNSUK",
+      "commit": "89af295d80d40223e11b05cd00653185261939e56e230f819b72eba560f7d262"
+    },
+    {
+      "name": "empty-spkis",
+      "ca_spki": "",
+      "csr_spki": "",
+      "rc": "00000000000000000000000000000000",
+      "rr": "ffffffffffffffffffffffffffffffff",
+      "sas": "SP2S8C",
+      "commit": "fccfdde6b334c6afb2ae58e920abece9ed8c562d385b8ae45974d0e9a2c39e01"
+    },
+    {
+      "name": "single-byte-spkis",
+      "ca_spki": "00",
+      "csr_spki": "ff",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "EJP896",
+      "commit": "1b5e8cadb8705098c034bd7b5f1894e0be4cd13b6f932faafd922305b712a863"
+    },
+    {
+      "name": "single-byte-spkis-swapped",
+      "ca_spki": "ff",
+      "csr_spki": "00",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "NW58HS",
+      "commit": "abc2d999616d4b000efa765707f64b03a862719c9dc1d3f3292076ee7008d285"
+    },
+    {
+      "name": "single-byte-nonces-swapped",
+      "ca_spki": "00",
+      "csr_spki": "ff",
+      "rc": "cf47674bc4b471c22fd3377831500479",
+      "rr": "4ec73a8488a3f9f440c4b29181921e40",
+      "sas": "52HK4C",
+      "commit": "30ea0f9b46ced4753aa48e95c9258230aab85f241c899ff97815aae235726697"
+    },
+    {
+      "name": "p256-zero-nonces",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "00000000000000000000000000000000",
+      "rr": "00000000000000000000000000000000",
+      "sas": "2R6DAH",
+      "commit": "90f545a69e887bd858aa24d7eb273a5b27a7631c404778fd1430361468208d9f"
+    },
+    {
+      "name": "p256-a",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "XVMMND",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    },
+    {
+      "name": "p256-a-keys-swapped",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "HKJVT9",
+      "commit": "bc026dbd6a180dc2e8c169901abc3fb3aa19ea259c9ebba47e84ec8137950c86"
+    },
+    {
+      "name": "p256-b",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d0301070342000467ab0efaa7fd16678da5187548040bc697e1f20de4404f40cb797f245cd9d41b952ba8a4b23d601c167d1c075225ea63d4a2a58274be218b9352da548086bc1c",
+      "rc": "d981f6e75b7d3091f02b94304fe768ef",
+      "rr": "9d15d9c2da379fe73dcc0be45ebec942",
+      "sas": "CKA3WY",
+      "commit": "7e3a06aa3efa0fe65c35954129371921bb839e2e9da6ac065fc28627585eff0d"
+    },
+    {
+      "name": "p256-c",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d0301070342000467ab0efaa7fd16678da5187548040bc697e1f20de4404f40cb797f245cd9d41b952ba8a4b23d601c167d1c075225ea63d4a2a58274be218b9352da548086bc1c",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004d773449b27c186d5ba6eb39a4847cc1602bb117e42938347b40ecd40d0dcec78990ef71ada703fd4db793d0edf22a335aef6f6fc49e17e3725f1dd06296ccb22",
+      "rc": "b896298f7dc4780393b6c61d38658a25",
+      "rr": "056eb9747831b32b8431f379517f918f",
+      "sas": "EQSZBT",
+      "commit": "2ab35d5eff83f648767722e165afc2c1ec2b1db45416c0ce883acb0df550d4dd"
+    },
+    {
+      "name": "p256-d",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004d773449b27c186d5ba6eb39a4847cc1602bb117e42938347b40ecd40d0dcec78990ef71ada703fd4db793d0edf22a335aef6f6fc49e17e3725f1dd06296ccb22",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004e86c79c000e6fcf834cfd2e203517374ea97a94874c7a7776c8abfdfc4a4496d99fd193245c61321415e18d4893f1a63e6eaa224c18b08f4a7a68122a761d27e",
+      "rc": "21fc58be7538f4613fa8a54536be5905",
+      "rr": "9a48d9d9a2b4429940340006d6900970",
+      "sas": "87QCU3",
+      "commit": "a0467a8429f7543c42b4bcf60d90e2021593dfc5c679bc0fd74046ed2cb1d968"
+    },
+    {
+      "name": "p256-same-key-both-sides",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "rc": "d981f6e75b7d3091f02b94304fe768ef",
+      "rr": "9d15d9c2da379fe73dcc0be45ebec942",
+      "sas": "Y7Y5WB",
+      "commit": "d6c1343711b02b4f521215d1ee13ff6847c8d34f71b33e6bed168e3e4b45727a"
+    },
+    {
+      "name": "p256-ca-zero-csr",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "0000000000000000000000000000000000000000000000000000000000000000",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "UJVTPR",
+      "commit": "b4d2e8dff7d8b8d7c503e339703eddac71d6fe1555311a6f5c3b71ecb354767d"
+    },
+    {
+      "name": "zero-ca-p256-csr",
+      "ca_spki": "0000000000000000000000000000000000000000000000000000000000000000",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "cf47674bc4b471c22fd3377831500479",
+      "sas": "R8L9CC",
+      "commit": "bc026dbd6a180dc2e8c169901abc3fb3aa19ea259c9ebba47e84ec8137950c86"
+    },
+    {
+      "name": "rc-zero-rr-ff",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d0301070342000467ab0efaa7fd16678da5187548040bc697e1f20de4404f40cb797f245cd9d41b952ba8a4b23d601c167d1c075225ea63d4a2a58274be218b9352da548086bc1c",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004d773449b27c186d5ba6eb39a4847cc1602bb117e42938347b40ecd40d0dcec78990ef71ada703fd4db793d0edf22a335aef6f6fc49e17e3725f1dd06296ccb22",
+      "rc": "00000000000000000000000000000000",
+      "rr": "ffffffffffffffffffffffffffffffff",
+      "sas": "KCA29W",
+      "commit": "9dde042bdf823e0a3adff14be310543b69ad56d5d65226a72d371f846ecd2fc0"
+    },
+    {
+      "name": "rc-ff-rr-zero",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d0301070342000467ab0efaa7fd16678da5187548040bc697e1f20de4404f40cb797f245cd9d41b952ba8a4b23d601c167d1c075225ea63d4a2a58274be218b9352da548086bc1c",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004d773449b27c186d5ba6eb39a4847cc1602bb117e42938347b40ecd40d0dcec78990ef71ada703fd4db793d0edf22a335aef6f6fc49e17e3725f1dd06296ccb22",
+      "rc": "ffffffffffffffffffffffffffffffff",
+      "rr": "00000000000000000000000000000000",
+      "sas": "8SESSA",
+      "commit": "165d5b2ef593dd26e29716c872ea2c58762065c993bc58a856911af3d6b450c0"
+    },
+    {
+      "name": "len-1-and-91",
+      "ca_spki": "80",
+      "csr_spki": "3c0bfc92cb994b91e2f1a4fc431223730c5c483e254a8edd35a63ade584e63a9818377024fd46bf3e33d5d5170cf36bcc32b270e66f391723656e32f14655cf19e4126b6f9ffb9f5fabf8fd795fed09f9e56fc3120ccab81766dc9",
+      "rc": "8ae482be0886ab4b65a696f06d8f6d82",
+      "rr": "bc4a6f5b5a9d5401d83244409832e6f3",
+      "sas": "DTK69A",
+      "commit": "283df21ec4d6437a371981b2e942f7f678601e5818047ed9bd548803bae37bdb"
+    },
+    {
+      "name": "len-33-and-2",
+      "ca_spki": "0413c7135d992ff994d1dbbdbfb38383a0dc697f20e26f11c8eb89edbde8754a6e",
+      "csr_spki": "70df",
+      "rc": "3e0174f4c98b57767858c108d11c825a",
+      "rr": "23e72fc68a4c89eb156eb51a4666bc3d",
+      "sas": "W5V4GH",
+      "commit": "0a6c3d251f8c2094fc5f4969c77434af6cf5d1ae0eaee6c2ab60dcc1a7d6138c"
+    },
+    {
+      "name": "len-64-and-65",
+      "ca_spki": "9a7619225ca885eaaf8528e2e5e336094cd865c4a519abf1e5bec4f092e341796128a18232b6f4c35f23ac3006daa8ea5197f2b9f83e2843ab519d0adadfe907",
+      "csr_spki": "c5351ffe9ab03daf5517da1e8e1ae25b8eb05d8ef4826b2fcc2c083153367225ab8f5b025f773042a34882033a384cbd8e088f5f5e31de9c22753c50a31b3eb67d",
+      "rc": "ad53963b28e6a85ca56e2afce4c2ee67",
+      "rr": "2b2b46d8699db6e965c85a2b8ec79b38",
+      "sas": "F2Y8BB",
+      "commit": "d7cb646f33362d90af49ab3f929d4a4eb4925f3223b35a0b369d6146b14e94b4"
+    },
+    {
+      "name": "random-a",
+      "ca_spki": "3cba786fc4a0f4b32d7be805816c2bc680283203a9df05dd0824f24cbf2b3241ca715a9b91df7b3af59c876fdccbfd18864aed1593cf55951020b4d624392ac28953c17f6f73fc900e29f8e5f1bbc819e5352b8589de2d90f03282",
+      "csr_spki": "784388b598fc5b2774d8625cd51afa509dea28bc003c0012e78f502ef9a4240a8b3365faceaaa95bfab92a3f126e8ebd9a7334d3fadad5eae8100407ebe58dec54f9d2f66e407042b66ddea608e564cc310a0c549cf52e6841bf8e",
+      "rc": "56531c549cf56718f51ac5ee6bc8c9bd",
+      "rr": "c0c914a0f5ae198e56dab2c146c9dd4b",
+      "sas": "YFSQGD",
+      "commit": "b626fc2871db9b5b2b60a3b20814e7ff89bf9801429a621e43b6e26cde40ca86"
+    },
+    {
+      "name": "random-b",
+      "ca_spki": "06a2408d0ce358edcafd5bbbd6b7a32e08e714987ac54d501cab85ceb7bc3158014511917cba9105388975b8bed7b774f82974eb76ba55df17072888aa0ab5a6eaad32ed9de9599a665a72ae37db46b1788cc482aeecfb503de566",
+      "csr_spki": "91d72acc352e402f860f0580b50e57a131122d82593fde593e082b02909c5356ecc4734af610d857442094d6e1eae78af6354defb51d22538eda97e85c7d80498f4907e8bad9cf528007af2b3c661b69664c791ee18a599fcaf7ba",
+      "rc": "f2129b0767e93e8c0788a2ada28211af",
+      "rr": "2100f21cf709235eeb2e0b1c4957c3d9",
+      "sas": "9GGJ63",
+      "commit": "2c2fe4613b3a7cc3e0ecfcd745aafb5a5674ed261e5d47ef260e6e8ce0ecaf43"
+    },
+    {
+      "name": "random-c",
+      "ca_spki": "eabefa00299f5628c62bd2135939c219ea51f8f3eccf464f25eae7f2b637ac4b2cd9ea6eca0dced9381d4db746252df4fe751b6e12b4a5b75dbc6481b494844c113828c43ec6be569f3c9afd6b16a1ff4bc3e8b4e39f32e5d29fc2",
+      "csr_spki": "2f755a605f469cd0439931afb3c8bd627c2da768e179244446e1b825a4035d4d1c64f94d18aa14ad33e924b3b098bb78c0a7b74eab77b186e9f38695263964a1070b038be7b5476f361d843ad5c2336fa16428a85f0088b9c8a02d",
+      "rc": "cb00d3a4af62e5a78dd4310076058607",
+      "rr": "c20abe9741536d2378d50a8ace098c72",
+      "sas": "8ZZ8Z3",
+      "commit": "eb518b331b78395672c00b64afda1cae837e0b456184de52015d82a640c41ece"
+    },
+    {
+      "name": "random-d",
+      "ca_spki": "87dde0c3ead9808ac8a55891e203846a77e9468a977abf2f0f82b60a06fffaec0ec0340defa76d7e52683582490f18664d6f83eccba42efc6e5888f97ec796ef18064473d5856de7e88545564cc8abee5ea3c7c0dba03c63df2892",
+      "csr_spki": "6d4186161de8d6eafa7fed12881cf48cbabf44fc4ff5bfdce4ae384dde0008241da97d3c8b034614e16e199559e78e39a31d627cf6625b1afab4b7fd5d8b7940dd2eca6ee60d6d9cd498c52112ac9bbe773a4c22891baa42f80b32",
+      "rc": "e3c2166bb437cd38eddc39901246f17a",
+      "rr": "c2efed7b04eceb5d08fa381e83385267",
+      "sas": "KQ84SE",
+      "commit": "5de789f7980c1914381ad19d3021e1dfc483515b3273464add9ae3e8c2d5c0e4"
+    },
+    {
+      "name": "first-symbol-leads",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "57a0dbfa682a0517000000000000003d",
+      "sas": "2F4ZVM",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    },
+    {
+      "name": "last-symbol-leads",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "303d6bac6a5fddde000000000000002f",
+      "sas": "ZCXELT",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    },
+    {
+      "name": "first-symbol-trails",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "a9525c18ef2b252a000000000000000d",
+      "sas": "VKNCD2",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    },
+    {
+      "name": "last-symbol-trails",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "ab62edb3dccee5510000000000000038",
+      "sas": "WHBGDZ",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    },
+    {
+      "name": "first-and-last-symbols",
+      "ca_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200049bc43bb6530450458f95d1ff1268bf1b147cac97cd95cd88eb0d0b6abed9f7d1dd102d47f5bfe83ae8131dbb989545c222c36e8cf5fab4927e62c9c93fdf456b",
+      "csr_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200041f9cdcb4bffbf706617cf9991f6db016ead07c8831cd4d53914e078510961f6d3ffdbc53fee383b50371a04ace010be22c676b465020710125f8ec953cfbdfbe",
+      "rc": "4ec73a8488a3f9f440c4b29181921e40",
+      "rr": "77ea3315a634e118000000000000005a",
+      "sas": "56JGZ2",
+      "commit": "676f4be76519831fc98ffb46339e3e76f968c09be6d7388613a8a3df51433e9f"
+    }
+  ]
+}

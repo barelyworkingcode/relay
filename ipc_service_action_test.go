@@ -56,6 +56,7 @@ func (stubPlatform) OpenSettings(html string)        {}
 func (stubPlatform) EvalSettingsJS(js string)        {}
 func (stubPlatform) DispatchToMain(fn func())        { fn() }
 func (stubPlatform) OpenURL(url string)              {}
+func (stubPlatform) Notify(title, body string)       {}
 
 func newDispatcherIPC(t *testing.T, enhanced *EnhancedServiceRegistry) (*IPCContext, *recordingUI) {
 	t.Helper()

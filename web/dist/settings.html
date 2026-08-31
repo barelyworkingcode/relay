@@ -514,6 +514,17 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .remote-state.on { color: var(--ok); border: 1px solid var(--ok); }
 .remote-state.off { color: var(--text-2); border: 1px solid var(--border); }
 .remote-state.absent { color: var(--text-3); border: 1px dashed var(--border); }
+/* The comparison code, and the largest thing on a pending row: the operator
+   is being asked to read six characters off one screen and match them to six
+   on another, and a code rendered at body size is a code nobody compares. */
+.enrol-sas { border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
+.enrol-sas-code { font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: 6px; color: var(--text); }
+.enrol-sas-state { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.enrol-sas-help { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+.enrol-sas.waiting { border-style: dashed; border-color: var(--border); }
+.enrol-sas.failed { border-color: var(--danger); }
+.enrol-sas.failed .enrol-sas-state { color: var(--danger); }
+.enrol-sas.legacy { border-style: dashed; border-color: var(--border); }
 .remote-note { font-size: 11px; color: var(--text-2); margin-top: 8px; }
 .remote-note.warn { color: var(--warn); }
 .remote-note.danger { color: var(--danger); }
@@ -567,7 +578,8 @@ window.__RELAY_INIT__ = {
   enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
   passkeys: __PASSKEYS_JSON__,
   loginSessions: __LOGIN_SESSIONS_JSON__,
-  loginCode: __LOGIN_CODE_JSON__
+  loginCode: __LOGIN_CODE_JSON__,
+  initialPage: __INITIAL_PAGE_JSON__
 };
 </script>
 <script>
@@ -785,6 +797,7 @@ window.__RELAY_INIT__ = {
   var PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
   var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
   var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
+  var INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
   function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
       window.webkit.messageHandlers.ipc.postMessage(msg);
@@ -951,6 +964,7 @@ window.__RELAY_INIT__ = {
   var JSON_PLACEHOLDER = JSON.stringify({ "my-server": { "command": "npx", "args": ["-y", "@example/server"], "env": { "API_KEY": "..." } } }, null, 2);
   function render(source) {
     if (state.projectForm) captureProjectFormInputs();
+    if (state.enrolForm) captureEnrolFormInputs();
     const el = document.getElementById("content");
     const fromPush = source === "push";
     if (state.page === "services") {
@@ -2823,13 +2837,18 @@ window.__RELAY_INIT__ = {
     }
     for (const r of list) {
       html += '<div class="enrol-card">';
+      html += renderRequestComparison(r);
       html += '<div class="enrol-card-header">';
       html += '<span class="enrol-card-name">' + esc(r.request_id) + "</span>";
       if (r.approved) {
         html += '<span class="remote-state on">approved: ' + esc(r.approved_client_id) + "</span>";
       } else {
         html += "<span>";
-        html += `<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm('` + esc(r.request_id) + `')">Approve\u2026</button> `;
+        if (enrolRequestApprovable(r)) {
+          html += `<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm('` + esc(r.request_id) + `')">Approve\u2026</button> `;
+        } else {
+          html += '<button class="btn btn-sm btn-primary" disabled title="This request has no completed comparison code, so it cannot be approved.">Approve\u2026</button> ';
+        }
         html += `<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest('` + esc(r.request_id) + `')">Refuse</button>`;
         html += "</span>";
       }
@@ -2840,11 +2859,32 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     return html;
   }
+  function enrolRequestApprovable(r) {
+    if (r.is_legacy_request) return true;
+    return !!r.sas_ready && !r.sas_failed;
+  }
+  function renderRequestComparison(r) {
+    if (r.is_legacy_request) {
+      return '<div class="enrol-sas legacy"><div class="enrol-sas-state">carried-pin request (<code>relayremote request</code>)</div><div class="enrol-sas-help">There is no comparison code on this path. The control here is the CA fingerprint the operator carried to that machine, shown in the tab header.</div></div>';
+    }
+    if (r.sas_failed) {
+      return '<div class="enrol-sas failed"><div class="enrol-sas-state">Comparison failed</div><div class="enrol-sas-help">That machine failed its comparison handshake; this request cannot be approved. Refuse it and register again \u2014 if it fails a second time, something is on the network path.</div></div>';
+    }
+    if (!r.sas_ready) {
+      return '<div class="enrol-sas waiting"><div class="enrol-sas-state">Waiting for the comparison code\u2026</div><div class="enrol-sas-help">Waiting for that machine to complete the comparison handshake. Approving is disabled until it does.</div></div>';
+    }
+    return '<div class="enrol-sas"><div class="enrol-sas-code">' + esc(r.sas) + '</div><div class="enrol-sas-help">Compare this with the code shown on the machine asking. If they differ, Refuse \u2014 something is on the network path.</div></div>';
+  }
   function renderPendingRequestFields(r) {
     let html = '<div class="enrol-fp"><span class="enrol-fp-label">key: </span>sha256:' + esc(r.spki_sha256) + "</div>";
     html += '<div class="enrol-meta">';
     html += "<span>label: <strong>" + (r.label ? esc(r.label) : "(none)") + "</strong> <em>(supplied by the requesting machine)</em></span>";
     html += "</div>";
+    if (r.requested_profile) {
+      html += '<div class="enrol-meta">';
+      html += "<span>asked for: <strong>" + esc(r.requested_profile) + "</strong> <em>(a request from that machine, not a grant)</em></span>";
+      html += "</div>";
+    }
     html += '<div class="enrol-meta">';
     html += "<span>from: <strong>" + esc(r.remote_addr) + "</strong></span>";
     html += "<span>arrived: <strong>" + esc(r.arrived_at) + "</strong></span>";
@@ -2920,6 +2960,7 @@ window.__RELAY_INIT__ = {
     if (approving && f.pendingRequest) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Request ' + esc(f.request_id) + "</div>";
+      html += renderRequestComparison(f.pendingRequest);
       html += renderPendingRequestFields(f.pendingRequest);
       html += '<p class="proj-section-help">Approving raises the same presence prompt <code>relay enrol sign</code> already uses \u2014 there is no second door into issuance. The certificate is issued over exactly the public key above; nothing chosen below can redirect it to a different key.</p>';
       html += renderCAFingerprintLine();
@@ -2931,6 +2972,9 @@ window.__RELAY_INIT__ = {
     html += "<label>Client id</label>";
     const idPlaceholder = approving && f.pendingRequest && f.pendingRequest.label || "hermes-mail";
     html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="' + esc(idPlaceholder) + '" />';
+    if (approving && f.client_id) {
+      html += '<p class="proj-section-help">Relay suggests this; it is yours to change. It names the enrolment in <code>relay enrol list</code> and in every audit record.</p>';
+    }
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Granted Access Profiles</div>';
@@ -2946,8 +2990,15 @@ window.__RELAY_INIT__ = {
       html += "<div><div>" + esc(p.name) + '</div><div class="desc">' + esc(p.id) + "</div></div>";
       html += "</label>";
     }
-    if (grantable.length && f.project_ids.length === 0) {
+    if (approving && f.pendingRequest && f.pendingRequest.requested_profile) {
+      html += '<p class="proj-section-help">This machine asked for <code>' + esc(f.pendingRequest.requested_profile) + "</code> \u2014 a request from that machine, not a grant. Nothing is ticked for you; tick it above only if you mean to.</p>";
+    }
+    if (f.project_ids.length === 0) {
       html += '<p class="proj-section-help">No grant selected: this client will be enrolled but can reach no access profile until one is added.</p>';
+      html += '<label class="proj-tool-row">';
+      html += '<input type="checkbox" ' + (f.no_grant ? "checked" : "") + ' onchange="toggleEnrolNoGrant(this.checked)" />';
+      html += "<div><div>Enrol with no access for now (nothing will work until I grant a profile)</div></div>";
+      html += "</label>";
     }
     html += "</div>";
     html += '<div class="proj-section">';
@@ -2961,13 +3012,14 @@ window.__RELAY_INIT__ = {
     html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || "") + '" />';
     html += "</div>";
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveEnrolment()">' + (approving ? "Approve &amp; issue certificate" : "Create &amp; issue certificate") + "</button>";
+    const grantChosen = f.project_ids.length > 0 || !!f.no_grant;
+    html += '<button class="btn btn-primary"' + (grantChosen ? "" : " disabled") + ' onclick="saveEnrolment()">' + (approving ? "Approve &amp; issue certificate" : "Create &amp; issue certificate") + "</button>";
     html += '<button class="btn btn-danger" onclick="cancelEnrolment()">Cancel</button>';
     html += "</div>";
     return html;
   }
   function newEnrolment() {
-    state.enrolForm = { client_id: "", project_ids: [], window_seconds: "", max_calls: "", max_result_bytes: "" };
+    state.enrolForm = { client_id: "", project_ids: [], window_seconds: "", max_calls: "", max_result_bytes: "", no_grant: false };
     state.enrolmentError = null;
     state.enrolBundle = null;
     state.enrolRevoked = null;
@@ -2976,12 +3028,21 @@ window.__RELAY_INIT__ = {
   function approveEnrolmentRequestForm(requestID) {
     const r = (state.pendingEnrolmentRequests || []).find((x) => x.request_id === requestID);
     if (!r) return;
+    if (!enrolRequestApprovable(r)) {
+      state.enrolmentError = "this request has not completed its comparison handshake, so it cannot be approved";
+      render();
+      return;
+    }
     state.enrolForm = {
-      client_id: "",
+      // The host's own suggestion, not the request's label — see the form's
+      // client-id help text. Absent (an unusable label, or every suffix to
+      // -99 taken) leaves the field empty rather than guessing.
+      client_id: r.suggested_client_id || "",
       project_ids: [],
       window_seconds: "",
       max_calls: "",
       max_result_bytes: "",
+      no_grant: false,
       request_id: requestID,
       pendingRequest: r
     };
@@ -3009,7 +3070,26 @@ window.__RELAY_INIT__ = {
     const i = f.project_ids.indexOf(projectID);
     if (checked && i < 0) f.project_ids.push(projectID);
     if (!checked && i >= 0) f.project_ids.splice(i, 1);
+    if (f.project_ids.length > 0) f.no_grant = false;
     render();
+  }
+  function toggleEnrolNoGrant(checked) {
+    const f = state.enrolForm;
+    if (!f) return;
+    f.no_grant = !!checked;
+    render();
+  }
+  function captureEnrolFormInputs() {
+    const f = state.enrolForm;
+    if (!f) return;
+    const val = function(id) {
+      const el = document.getElementById(id);
+      return el && typeof el.value === "string" ? el.value : "";
+    };
+    f.client_id = val("enrolClientId") || f.client_id;
+    f.window_seconds = val("enrolWindow") || f.window_seconds;
+    f.max_calls = val("enrolMaxCalls") || f.max_calls;
+    f.max_result_bytes = val("enrolMaxBytes") || f.max_result_bytes;
   }
   function saveEnrolment() {
     const f = state.enrolForm;
@@ -3021,6 +3101,11 @@ window.__RELAY_INIT__ = {
       return;
     }
     f.client_id = clientID;
+    if (f.project_ids.length === 0 && !f.no_grant) {
+      state.enrolmentError = 'choose at least one access profile, or tick "Enrol with no access for now"';
+      render();
+      return;
+    }
     const num = function(id) {
       const raw = ((document.getElementById(id) || {}).value || "").trim();
       const n = parseInt(raw, 10);
@@ -4438,6 +4523,7 @@ That browser's credential stops authenticating on its next request and it has to
     if (state.page === "inspector") updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
   };
   if (LOGIN_CODE_INIT) showPage("passkeys");
+  else if (INITIAL_PAGE) showPage(INITIAL_PAGE);
   else render();
   Object.assign(window, {
     auditBaseDetail,
@@ -4491,6 +4577,10 @@ That browser's credential stops authenticating on its next request and it has to
     renderPendingEnrolmentRequests,
     renderPendingRequestFields,
     renderRemoteListener,
+    renderRequestComparison,
+    enrolRequestApprovable,
+    toggleEnrolNoGrant,
+    captureEnrolFormInputs,
     revokeEnrolment,
     saveEnrolment,
     saveRemoteConfig,

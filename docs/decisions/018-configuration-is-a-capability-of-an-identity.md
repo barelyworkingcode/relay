@@ -12,7 +12,10 @@ narrowing was mainly about — stays fully gated; see the Open questions entry
 on local identity binding for why. Decision 8, the enrolment-request
 channel, is also implemented — see [`docs/access-profiles.md`](../access-profiles.md#approving-a-request-from-the-machine-itself)
 for the operator's walkthrough and [`docs/tokens.md`](../tokens.md#the-enrolment-request-channel-is-not-a-credential)
-for why the request id it mints is not a credential.
+for why the request id it mints is not a credential. **Decision 8 is narrowed
+in two places by [ADR-019](019-registration-is-one-command.md)**, which is
+implemented: P1's "no notification either" and the mandatory hand-carried
+`--ca-fingerprint`. Both narrowings are marked inline in decision 8.
 **Date:** 2026-08-29
 
 ## Context
@@ -179,6 +182,26 @@ Two properties everything about this channel follows from:
   alone raises the existing, unchanged `enrolment.sign` presence prompt. This
   is a structural answer to "cannot spam prompts," not a rate-limited one —
   no code path from an unauthenticated lodge reaches `presence.Gate` at all.
+
+  > **Narrowed by [ADR-019](019-registration-is-one-command.md) §4.** P1 as
+  > written above also promised that *nothing at all* appears on the
+  > operator's screen because a stranger lodged a request. That half is no
+  > longer true where the enrolment listener is on: a lodge may now raise a
+  > **coalesced, rate-limited, dismissible tray notification** — one banner
+  > regardless of how many rows are pending, at most one a minute and six an
+  > hour, none once the table is full, none while the Settings window is
+  > open. Clicking it opens a window.
+  >
+  > **What survives is the property P1 was written to buy, and it is
+  > unchanged: no code path from an unauthenticated lodge reaches
+  > `presence.Gate`.** The notification is raised by the tray's existing
+  > two-second poll *reading* a counter, never by the lodge path *calling*
+  > anything — `Lodge` still cannot reach beyond a map. So the structural
+  > proof stands exactly as argued: a network peer can make a number go up to
+  > its cap and, now, cause a banner to be drawn; it still cannot take the
+  > screen or ask anyone for a password. Spamming a dismissible banner is an
+  > annoyance; spamming `presence.Gate` was the attack this decision was
+  > written to make impossible, and it remains impossible.
 - **P2 — nothing on this channel is a secret, in either direction.** Inbound
   is a CSR, self-signed and therefore proof of possession by construction;
   outbound is a client certificate and a CA certificate, public verifiers
@@ -186,6 +209,42 @@ Two properties everything about this channel follows from:
   carrying only public artifacts in both directions is a mailbox, not a
   door, and is confined the way a mailbox is: bounded capacity, no admission
   requirement to use it, and nothing behind it worth stealing.
+
+  > **Narrowed in its justification, not in its property.** The approved
+  > poll payload now also carries each granted access profile's **display
+  > name** beside the id it already carried, because nothing else the
+  > client can reach ever tells it one — `ListTools` returns tools with no
+  > project identity, and `DescribeGrant` is gated on `cli_admin`, which a
+  > plain registration does not and should not hold. Without a name the
+  > operator who granted "Hermes Mail Inbox" on the Mac is shown a UUID on
+  > the other machine with nothing to match it against, which defeats the
+  > point of reporting what the grant reaches (ADR-019 §5.7).
+  >
+  > **A display name is not covered by the sentence above.** "Public
+  > verifiers useless without a private key" is an argument about
+  > certificates; a project name is host configuration metadata and that
+  > argument does not reach it. P2's property still holds, on a different
+  > and narrower ground — **where the name may appear, not what it is**:
+  >
+  > - it is disclosed only in an **approved** payload, which exists only
+  >   because a human read that name on the approval sheet and deliberately
+  >   granted that profile to that exact key;
+  > - its recipient already holds the profile id and a certificate that can
+  >   call the profile's tools, so the name tells it nothing it could not
+  >   already infer from what it was just handed;
+  > - a `pending`, `refused` or `unknown` poll — the answers an
+  >   unauthenticated peer holding a guessed request id can actually reach —
+  >   carries no name at all, and that is enforced in code and asserted
+  >   against the marshalled JSON, not merely intended.
+  >
+  > The third point is the whole of the narrowing. Move the name into a
+  > branch a pending row can reach and this stops being a mailbox that
+  > answers a stranger with nothing, so P2 is then genuinely weakened rather
+  > than restated. The rest of the channel is unchanged: inbound is still a
+  > self-signed CSR, and the plain-TCP argument below is untouched — a
+  > profile name is not a secret whose confidentiality TLS would be
+  > protecting, and the CA certificate this listener already hands to any
+  > caller remains the reason encrypting it would buy nothing.
 
 **The transport is plain TCP, deliberately.** Once P2 holds, TLS on this
 listener buys nothing real: the client has no CA to verify a handshake
@@ -206,6 +265,25 @@ another, and comparing the public-key hash alone does not, on its own,
 close a man-in-the-middle on the network path — only the client's own CA
 pin does that, which is why `--ca-fingerprint` (or an explicit, watched
 `--tofu`) is mandatory on the client with no default.
+
+> **Narrowed by [ADR-019](019-registration-is-one-command.md) §3.** The
+> paragraph above is still exactly right for `relayremote request`, which is
+> unchanged: `--ca-fingerprint` or `--tofu`, no default, refused at flag
+> parse without one. What ADR-019 adds is a second client verb,
+> `relayremote register`, where the mandatory control is a **six-character
+> comparison code** rather than a hand-carried fingerprint. It carries the
+> same weight and is mandatory in the same way — `register` refuses to write
+> anything without either a typed confirmation or a `--ca-fingerprint`, there
+> is no flag that skips it, and `--tofu` does not exist on that verb at all.
+>
+> The reasoning this paragraph gives is *why* the code had to be built as a
+> commitment exchange rather than a hash of the two public keys: P2 makes
+> both keys public, so a naked hash of them is grindable by the attacker on
+> the path. The code binds relay's CA and the requesting key together with a
+> nonce from each side, neither of which either side could choose after the
+> fact — which is what makes the comparison close the man-in-the-middle the
+> key-hash comparison alone does not. The *hand-carried* fingerprint is
+> retired as the only path; the pin is not retired as a control.
 
 This closes the acceptance bar the open question below was written against,
 verbatim: *"it must not become a way to spam prompts or a second door into
