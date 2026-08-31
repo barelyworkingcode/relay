@@ -130,17 +130,27 @@ func narrowsOnly(stored Project, f remoteNarrowFields) error {
 // same request) is equally accepted by that test, and it is this function's
 // job to tell the two apart. Only fields the request touches are compared:
 // an absent pointer is "no change" everywhere else in this package too.
+//
+// The comparison is against narrowUpdateFields' MERGED result, not f
+// itself. f.AllowedTools (etc.) holds only the ids the request named; under
+// merge semantics that is never what ends up stored for the whole map, so
+// comparing it directly against stored's full map would read every request
+// that omits an untouched id — which is every request — as a change, even
+// a byte-for-byte resend. Comparing what would actually be written is what
+// keeps this the same question applyProjectUpdate's mutators are about to
+// answer.
 func narrowingIsNoop(stored Project, f remoteNarrowFields) bool {
-	if f.AllowedMcpIDs != nil && !slices.Equal(*f.AllowedMcpIDs, stored.AllowedMcpIDs) {
+	merged := narrowUpdateFields(stored, f)
+	if merged.AllowedMcpIDs != nil && !slices.Equal(*merged.AllowedMcpIDs, stored.AllowedMcpIDs) {
 		return false
 	}
-	if f.AllowedTools != nil && !maps.EqualFunc(*f.AllowedTools, stored.AllowedTools, slices.Equal) {
+	if merged.AllowedTools != nil && !maps.EqualFunc(*merged.AllowedTools, stored.AllowedTools, slices.Equal) {
 		return false
 	}
-	if f.Access != nil && !maps.Equal(*f.Access, stored.Access) {
+	if merged.Access != nil && !maps.Equal(*merged.Access, stored.Access) {
 		return false
 	}
-	if f.AllowExternal != nil && !maps.Equal(*f.AllowExternal, stored.AllowExternal) {
+	if merged.AllowExternal != nil && !maps.Equal(*merged.AllowExternal, stored.AllowExternal) {
 		return false
 	}
 	return true
