@@ -145,6 +145,21 @@ type pendingRecordView struct {
 	RemoteAddr string
 }
 
+// markApprovedOutcome is MarkApproved's return shape: a plain bool cannot
+// distinguish "the row was swept" from "the operator refused this exact
+// request while the gate was open" (issue #93), and EnrolmentOps.Approve
+// needs to report a different sentinel — and a different operator note —
+// for each. A two-value bool tuple was the other option; this reads better
+// at both ends, since every call site switches on it by name instead of by
+// position.
+type markApprovedOutcome int
+
+const (
+	markApprovedOK         markApprovedOutcome = iota
+	markApprovedRowGone                        // never lodged, or swept past its TTL
+	markApprovedRowRefused                     // the operator declined this exact request mid-gate
+)
+
 // EnrolmentRequestApprovalSink is what EnrolmentOps.Approve, Refuse and
 // PendingRequests need from the pending table (spec §3): read one record's
 // stored bytes, list every live row, mark one approved once a gated sign has
@@ -154,7 +169,7 @@ type pendingRecordView struct {
 type EnrolmentRequestApprovalSink interface {
 	Get(requestID string) (pendingRecordView, bool)
 	List() []enrolmentRequestView
-	MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) bool
+	MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) markApprovedOutcome
 	Refuse(audit *AuditRecorder, requestID string) bool
 }
 
@@ -452,18 +467,25 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 // This is subtle: Approve reads the record through Get before the gated
 // sign runs, and Get already refuses a refused row — so reaching here with
 // r.refused true means an operator refused this exact request WHILE the
-// gate was open (a race, not the common case). The sign has already
-// committed by the time this runs, so undoing it is not on the table; but
-// letting it silently overwrite the operator's refusal would make the row
-// answer "approved" for a request the operator just declined by name. It
-// answers false instead, exactly like the swept-row race already does, and
-// EnrolmentOps.Approve reports errEnrolmentRequestExpired.
-func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) bool {
+// gate was open (a race, not the common case), and reaching here with the
+// row simply gone means it was swept past its TTL in that same window. The
+// sign has already committed by the time this runs either way, so undoing
+// it is not on the table — but the two races are not the same fact, and
+// collapsing them into one bool would report a refusal to the operator as
+// a TTL expiry (issue #93: the row didn't expire, and the poll answers
+// "refused", not "unknown"). markApprovedRowGone and markApprovedRowRefused
+// keep them distinct all the way out to EnrolmentOps.Approve, which reports
+// errEnrolmentRequestExpired for the former and errEnrolmentRequestRefused
+// for the latter.
+func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, projectIDs []string, relayAddr, certPEM, caPEM string) markApprovedOutcome {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.pending[requestID]
-	if !ok || r.refused {
-		return false
+	if !ok {
+		return markApprovedRowGone
+	}
+	if r.refused {
+		return markApprovedRowRefused
 	}
 	r.approved = true
 	r.approvedClientID = clientID
@@ -472,7 +494,7 @@ func (t *enrolmentRequestTable) MarkApproved(requestID, clientID string, project
 	r.approvedCertPEM = certPEM
 	r.approvedCAPEM = caPEM
 	r.expiresAt = t.now().Add(enrolmentCollectTTL)
-	return true
+	return markApprovedOK
 }
 
 // List is the read-only surface a later slice's EnrolmentOps.PendingRequests

@@ -439,6 +439,58 @@ func TestEnrolApprove_RowSweptDuringPresencePromptSaysSoAndDoesNotClaimDelivery(
 	}
 }
 
+// Issue #93, the CLI-visible half: if the pending row is instead found
+// REFUSED when MarkApproved runs -- the operator declined this exact
+// request from the pending list while THIS approval's own presence prompt
+// was still open -- the enrolment still commits, but `relay enrol
+// approve`'s own output must name the refusal plainly (never call it an
+// expiry) and point at revoke by the client id that was just signed.
+func TestEnrolApprove_RowRefusedDuringPresencePromptNamesTheRefusalNotAnExpiry(t *testing.T) {
+	store := newCLISandboxStore(t)
+	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+
+	table := newEnrolmentRequestTable()
+	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-a", "10.0.0.5:41233")
+	assertNoErr(t, err, "Lodge")
+
+	sink := &refusedDuringApprovalSink{enrolmentRequestTable: table, requestID: l.RequestID}
+
+	serveBroker(t, newBrokerRouter(t, store, func(r *appRouter) {
+		r.enrolmentOps.Requests = sink
+	}))
+
+	out := captureStdout(t, func() {
+		enrolApprove([]string{"--id", l.RequestID, "--client-id", "hermes-mail", "--grant", profile.ID})
+	})
+
+	if !strings.Contains(out, "hermes-mail") {
+		t.Fatalf("enrol approve output = %q, want it to name the client id", out)
+	}
+	if strings.Contains(out, "expired") || strings.Contains(out, "TTL") {
+		t.Fatalf("enrol approve output = %q, must NOT call this an expiry -- the row was refused, not swept", out)
+	}
+	if !strings.Contains(out, "you refused this exact request") {
+		t.Fatalf("enrol approve output = %q, want it to name the operator's own refusal plainly", out)
+	}
+	if !strings.Contains(out, "relay enrol revoke --client-id hermes-mail") {
+		t.Fatalf("enrol approve output = %q, want it to point at revoke by client id", out)
+	}
+
+	stored := store.Get().FindEnrolment("hermes-mail")
+	if stored == nil {
+		t.Fatal("the enrolment must be real and recorded even though the pending row was refused mid-approval")
+	}
+	if !stored.GrantsProject(profile.ID) {
+		t.Fatalf("approved enrolment does not grant %s: %+v", profile.ID, stored)
+	}
+
+	poll, perr := table.Poll(l.RequestID)
+	assertNoErr(t, perr, "Poll")
+	if poll.Status != "refused" {
+		t.Fatalf("poll status = %q, want refused -- the row still exists and was decided, not expired", poll.Status)
+	}
+}
+
 func TestEnrolRequests_JSONFlagPrintsMachineReadableOutput(t *testing.T) {
 	store := newCLISandboxStore(t)
 	table := newEnrolmentRequestTable()

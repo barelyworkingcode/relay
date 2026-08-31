@@ -652,6 +652,35 @@ Recover with one of the two named paths: hand the client its certificate the
 operator-carried way (Path B, above), or `relay enrol revoke --client-id
 vm-agent` to undo the enrolment and let the client lodge a fresh request.
 
+### `note: you refused this exact request from the pending list while this approval's presence prompt was still open …`
+
+Also part of `relay enrol approve`'s own success output, and easy to confuse
+with the expiry note above — read it carefully, because the fix is different.
+This one prints when the pending row is found **refused**, not swept: someone
+at this Mac declined this exact request by name (`relay enrol refuse`, or
+Settings → Remote Clients → Pending requests) while *this* `relay enrol
+approve` run's own presence prompt was still open, waiting on a fingerprint or
+password. By the time it prints, the certificate has already been signed and
+committed — real, and in `relay enrol list` — for the CSR the refusal named.
+The row is not gone, either: the client's poll answers "refused", exactly as
+it would have without the race. The output names the refusal plainly and the
+one way to undo it:
+
+```
+approved enrolment request "req_3e4501d2142dc76a99399399b16c727b" as "vm-agent"
+  fingerprint: sha256:…
+  profiles:    477d9a17-da03-45eb-a433-764f93fe96fc
+  note: you refused this exact request from the pending list while this approval's presence
+  prompt was still open — the certificate was signed and committed anyway, for the CSR that
+  refusal named. It is real and already recorded; see it in `relay enrol list`. If your refusal
+  still stands, run `relay enrol revoke --client-id vm-agent` to undo it
+```
+
+If the refusal still stands, `relay enrol revoke --client-id vm-agent` is the
+recovery — there is no operator-carried delivery path to offer here, unlike
+the expiry case: nothing about this certificate needs a different transport,
+it needs to not exist.
+
 ### `refused: approving needs your confirmation on the Mac's screen, ...`
 
 `relay enrol approve` run from a session that cannot show a prompt:
