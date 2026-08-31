@@ -71,39 +71,66 @@ so the flag disappears in the common case.
 ### 3. One short code replaces two comparisons
 
 The pin does not go away; **the two hand-carried comparisons collapse into one
-six-character code neither machine had to be told in advance.**
+six-character code neither machine had to be told in advance.** The client
+prints it while waiting, the host's approval sheet shows it beside the
+requested name, and the human compares two short strings on two screens.
 
-    SAS = truncate(H(relay CA SPKI ‖ lodged CSR SPKI), 6 characters)
+**The code must be built as a commitment exchange, and a naive hash of the two
+public keys is not good enough.** The obvious construction —
+`truncate(H(CA SPKI ‖ CSR SPKI), 30 bits)` — is broken, and the reasoning that
+made it look sound is worth recording so nobody reintroduces it. Both of its
+inputs are public: the attacker on the path reads the CSR, and it obtains
+relay's CA certificate by lodging a request of its own, since §8 P2 of ADR-018
+makes that certificate public and freely handed out. So the attacker can
+compute the value the host will display, exactly, and then grind its *own* CA
+keypair until its substitute produces the same six characters. At roughly a
+microsecond per candidate that is about eighteen minutes on one core and
+seconds on a GPU — inside the ten minutes the client waits and the fifteen the
+request lives.
 
-The client prints it while waiting. The host's approval sheet shows it beside
-the requested name. The human compares two short strings on two screens.
+The fix is a commit–reveal, and it costs one field on the lodge, two on the
+acknowledgement, one on the poll, and no extra round trip:
 
-This is stronger than what it replaces, not weaker, and the reason is what
-`docs/access-profiles.md` already warns about at length: comparing the *key*
-hash alone does not close a man-in-the-middle, because an attacker can pass
-the real CSR through to the real relay — so the hash the operator approves
-matches in good faith — and then answer the waiting client with its own CA
-certificate. Every check the client runs against what it receives passes,
-because the certificate really is valid, just for the wrong CA.
+    R_C     16 random bytes, chosen by the client
+    R_R     16 random bytes, minted by relay after the commitment arrives
 
-Binding both halves into one value defeats both substitutions:
+    commit  = H( "relay.sas.commit.v1\0" ‖ H(csrSPKI) ‖ R_C )
+    SAS     = enc30( H( "relay.sas.v1\0" ‖ H(caSPKI) ‖ H(csrSPKI) ‖ R_C ‖ R_R ) )
+
+The client commits to `R_C` when it lodges and opens it only on its first poll;
+relay mints `R_R` only once the commitment is in hand. Neither side can compute
+the comparison value while it still has freedom to choose an input, so neither
+value is grindable and the attacker is reduced to one blind guess per lodged
+row. The bounded pending table caps its parallelism at eight, which puts the
+margin at roughly one in 134 million per approval.
+
+This is the construction Bluetooth numeric comparison actually uses. An earlier
+draft of this decision cited Bluetooth as the precedent while omitting the
+commitment — which is the part that does the work. Six characters is safe
+*because* of the commitment, not because the number is short and watched.
+
+The code binds both halves of the exchange, so both substitutions a
+man-in-the-middle can attempt change it:
 
 | Attack | Host shows | Client computes |
 |---|---|---|
-| attacker lodges its own key | `H(CA_relay ‖ SPKI_attacker)` | `H(CA_attacker ‖ SPKI_client)` |
-| attacker forwards the real CSR | `H(CA_relay ‖ SPKI_client)` | `H(CA_attacker ‖ SPKI_client)` |
+| attacker lodges its own key | over `CA_relay`, `SPKI_attacker` | over `CA_attacker`, `SPKI_client` |
+| attacker forwards the real CSR | over `CA_relay`, `SPKI_client` | over `CA_attacker`, `SPKI_client` |
 
-Either way the two codes differ and the human refuses. Six characters is
-sufficient because the attacker gets one guess per approval against a value it
-cannot observe — this is Bluetooth numeric comparison's argument, and it does
-not become an offline grind: the target lives on the host's screen.
+Either way the two codes differ and the human refuses. This matters because
+comparing the *key* hash alone does not close the man-in-the-middle —
+`docs/access-profiles.md` warns about it at length: an attacker can pass the
+real CSR through to the real relay, so the hash the operator approves matches
+in good faith, and then answer the waiting client with its own CA certificate.
+Every check the client runs against what it receives passes, because the
+certificate really is valid, just for the wrong CA.
 
 **This narrows ADR-018 §8**, which requires `--ca-fingerprint` or an explicit
 `--tofu` with no default. Under this decision the SAS comparison is the
 mandatory control and carries the same weight: `register` refuses to complete
-without an answer, there is no flag that skips it, and a non-interactive
-caller must supply `--ca-fingerprint` exactly as before. What is retired is
-the *hand-carried* fingerprint as the only path, not the pin as a control.
+without an answer, there is no flag that skips it, and a non-interactive caller
+must supply `--ca-fingerprint` exactly as before. What is retired is the
+*hand-carried* fingerprint as the only path, not the pin as a control.
 
 ### 4. A lodge may raise a notification, never a prompt
 
