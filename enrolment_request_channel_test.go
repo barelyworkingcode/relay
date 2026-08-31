@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -452,12 +453,12 @@ func TestEnrolment_AC9_NinthDistinctRequestRefusedNoEviction(t *testing.T) {
 	table := newEnrolmentRequestTable()
 	var ids []string
 	for i := 0; i < maxPendingEnrolmentRequests; i++ {
-		res, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac9-%d", i)), "", "")
+		res, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac9-%d", i)), "", "", "", "")
 		assertNoErr(t, err, "lodge %d", i)
 		ids = append(ids, res.RequestID)
 	}
 
-	_, err := table.Lodge(genClientCSRPEM(t, "ac9-overflow"), "", "")
+	_, err := table.Lodge(genClientCSRPEM(t, "ac9-overflow"), "", "", "", "")
 	if err == nil {
 		t.Fatal("the 9th distinct request was not refused")
 	}
@@ -491,11 +492,11 @@ func TestEnrolment_AC10_IdempotentRelodge(t *testing.T) {
 	table.setClock(func() time.Time { return now })
 
 	csr := genClientCSRPEM(t, "ac10-client")
-	first, err := table.Lodge(csr, "", "10.0.0.1:1")
+	first, err := table.Lodge(csr, "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "first lodge")
 
 	now = now.Add(5 * time.Minute)
-	second, err := table.Lodge(csr, "", "10.0.0.1:1")
+	second, err := table.Lodge(csr, "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "second lodge (retry)")
 
 	if second.RequestID != first.RequestID {
@@ -523,7 +524,7 @@ func TestEnrolment_AC11_ExpiredRequestIsSweptLazily(t *testing.T) {
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
 
-	_, err := table.Lodge(genClientCSRPEM(t, "ac11-client"), "", "")
+	_, err := table.Lodge(genClientCSRPEM(t, "ac11-client"), "", "", "", "")
 	assertNoErr(t, err, "lodge")
 	if len(table.List()) != 1 {
 		t.Fatal("lodge did not create a row")
@@ -539,7 +540,7 @@ func TestEnrolment_AC11_ExpiredRequestIsSweptLazily(t *testing.T) {
 	now = now.Add(time.Second)
 	table.setClock(func() time.Time { return now })
 	for i := 0; i < maxPendingEnrolmentRequests; i++ {
-		_, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac11-refill-%d", i)), "", "")
+		_, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac11-refill-%d", i)), "", "", "", "")
 		assertNoErr(t, err, "refill lodge %d after expiry swept the table", i)
 	}
 }
@@ -550,23 +551,27 @@ func TestEnrolment_AC11_ExpiredRequestIsSweptLazily(t *testing.T) {
 // EnrolmentRequestServer holds a field shaped like a presence.Gate or
 // Provider, so there is nowhere in this listener's code for a call to
 // originate — and this test is the behavioural half: a REAL Recording
-// provider is constructed, the full Lodge path is driven hard (filling the
-// table to its cap, refusing past it, expiring it, and refilling it), and
-// it must never once be touched.
+// provider is constructed, the full Lodge and Poll surface is driven hard
+// (with and without a comparison commitment, resumed, mismatched, opened
+// well and badly, filled to the cap, refused past it, expired, refilled,
+// and fed malformed and oversized input), and it must never once be
+// touched.
 func TestEnrolment_AC12_NoPresencePromptEverForAnyNumberOfLodges(t *testing.T) {
 	recording := presencetest.NewRecording(nil)
 
+	mkEmptySandboxRelayHome(t)
 	table := newEnrolmentRequestTable()
+	seedCAInto(t, table)
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
 
 	fillAndOverflow := func(prefix string) {
 		for i := 0; i < maxPendingEnrolmentRequests; i++ {
-			if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("%s-%d", prefix, i)), "", ""); err != nil {
+			if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("%s-%d", prefix, i)), "", "", "", ""); err != nil {
 				t.Fatalf("%s lodge %d: %v", prefix, i, err)
 			}
 		}
-		if _, err := table.Lodge(genClientCSRPEM(t, prefix+"-overflow"), "", ""); err == nil {
+		if _, err := table.Lodge(genClientCSRPEM(t, prefix+"-overflow"), "", "", "", ""); err == nil {
 			t.Fatalf("%s: overflow lodge unexpectedly succeeded", prefix)
 		}
 	}
@@ -578,12 +583,43 @@ func TestEnrolment_AC12_NoPresencePromptEverForAnyNumberOfLodges(t *testing.T) {
 
 	// A malformed CSR and a hostile label too — every refusal path in
 	// Lodge runs entirely before, and entirely without, presence.
-	if _, err := table.Lodge([]byte("not a csr"), "", ""); err == nil {
+	if _, err := table.Lodge([]byte("not a csr"), "", "", "", ""); err == nil {
 		t.Fatal("a malformed CSR was accepted")
 	}
-	if _, err := table.Lodge(genClientCSRPEM(t, "ac12-label"), strings.Repeat("x", 100), ""); err == nil {
+	if _, err := table.Lodge(genClientCSRPEM(t, "ac12-label"), strings.Repeat("x", 100), "", "", ""); err == nil {
 		t.Fatal("an oversized label was accepted")
 	}
+	if _, err := table.Lodge(genClientCSRPEM(t, "ac12-profile"), "", strings.Repeat("p", 100), "", ""); err == nil {
+		t.Fatal("an oversized requested_profile was accepted")
+	}
+
+	// The comparison surface, driven through every one of its outcomes:
+	// none of them is a place a prompt could appear either. A fresh table
+	// because the one above has been driven into the ceremony limiter's
+	// escalated backoff on purpose, and this half is about the comparison
+	// rather than the throttle.
+	fresh := newEnrolmentRequestTable()
+	seedCAInto(t, fresh)
+
+	c := newSASClient(t, "ac12-commit")
+	good := c.lodgeRegister(t, fresh, "")
+	c.lodgeRegister(t, fresh, "") // idempotent re-lodge of the same commitment
+	bad := newSASClient(t, "ac12-bad")
+	badRow := bad.lodgeRegister(t, fresh, "")
+
+	if _, err := fresh.Poll(good.RequestID, c.open()); err != nil {
+		t.Fatalf("a correct opening was refused: %v", err)
+	}
+	if _, err := fresh.Poll(badRow.RequestID, hex.EncodeToString(make([]byte, sasNonceBytes))); err == nil {
+		t.Fatal("an incorrect opening was accepted")
+	}
+	if _, err := fresh.Poll("req_not_here", c.open()); err != nil {
+		t.Fatalf("polling an unknown id errored: %v", err)
+	}
+	if _, err := fresh.Lodge(c.csrPEM, "", "", newSASClient(t, "ac12-other").commit, ""); err == nil {
+		t.Fatal("a second commitment on one key was accepted")
+	}
+	fresh.List()
 
 	if n := recording.Calls(); n != 0 {
 		t.Fatalf("presence.Provider.Evaluate was called %d time(s) while lodging enrolment requests — P1 requires zero, always", n)
@@ -606,12 +642,12 @@ func TestEnrolment_AC13_LodgingIsUnaudited_FullTableWarnsOncePerTTL(t *testing.T
 	warnings := func() int { return strings.Count(logs.String(), enrolmentTableFullWarning) }
 
 	for i := 0; i < maxPendingEnrolmentRequests; i++ {
-		_, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-%d", i)), "", "")
+		_, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-%d", i)), "", "", "", "")
 		assertNoErr(t, err, "lodge %d", i)
 	}
 	const floodSize = 50
 	for i := 0; i < floodSize; i++ {
-		if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-flood-%d", i)), "", ""); err == nil {
+		if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-flood-%d", i)), "", "", "", ""); err == nil {
 			t.Fatalf("flood lodge %d over the cap unexpectedly succeeded", i)
 		}
 	}
@@ -621,7 +657,7 @@ func TestEnrolment_AC13_LodgingIsUnaudited_FullTableWarnsOncePerTTL(t *testing.T
 
 	now = now.Add(enrolmentRequestTTL + time.Second)
 	for i := 0; i < floodSize; i++ {
-		if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-flood2-%d", i)), "", ""); err == nil {
+		if _, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("ac13-flood2-%d", i)), "", "", "", ""); err == nil {
 			break // the table refills; later ones legitimately succeed
 		}
 	}
@@ -641,7 +677,7 @@ func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 	t.Run("refusal", func(t *testing.T) {
 		audit := newTestAudit(t, nil)
 		table := newEnrolmentRequestTable()
-		res, err := table.Lodge(genClientCSRPEM(t, "ac14-refuse"), "", "10.0.0.1:1")
+		res, err := table.Lodge(genClientCSRPEM(t, "ac14-refuse"), "", "", "", "10.0.0.1:1")
 		assertNoErr(t, err, "lodge")
 
 		if !table.Refuse(audit, res.RequestID) {
@@ -677,7 +713,7 @@ func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 		table := newEnrolmentRequestTable()
 		now := time.Now()
 		table.setClock(func() time.Time { return now })
-		_, err := table.Lodge(genClientCSRPEM(t, "ac14-expire"), "", "10.0.0.1:1")
+		_, err := table.Lodge(genClientCSRPEM(t, "ac14-expire"), "", "", "", "10.0.0.1:1")
 		assertNoErr(t, err, "lodge")
 
 		now = now.Add(enrolmentRequestTTL + time.Second)
@@ -716,7 +752,7 @@ func TestEnrolment_AC15_OversizedAndHostileInputRefusedAtTheDoor(t *testing.T) {
 	t.Run("csr_pem over maxCSRBytes", func(t *testing.T) {
 		table := newEnrolmentRequestTable()
 		oversized := make([]byte, maxCSRBytes+1)
-		_, err := table.Lodge(oversized, "", "10.0.0.1:1")
+		_, err := table.Lodge(oversized, "", "", "", "10.0.0.1:1")
 		if err == nil {
 			t.Fatal("an oversized CSR was accepted")
 		}
@@ -742,7 +778,7 @@ func TestEnrolment_AC15_OversizedAndHostileInputRefusedAtTheDoor(t *testing.T) {
 			// check each hostile shape is refused on its own merits, not to
 			// drive the limiter.
 			table := newEnrolmentRequestTable()
-			_, err := table.Lodge(genClientCSRPEM(t, "ac15-label"), label, "")
+			_, err := table.Lodge(genClientCSRPEM(t, "ac15-label"), label, "", "", "")
 			if err == nil {
 				t.Fatalf("hostile label %q was accepted", label)
 			}
@@ -873,14 +909,14 @@ func TestEnrolment_PollReflectsPendingAndUnknown(t *testing.T) {
 func TestEnrolment_RefusalReportsRefusedNotUnknown(t *testing.T) {
 	audit := newTestAudit(t, nil)
 	table := newEnrolmentRequestTable()
-	res, err := table.Lodge(genClientCSRPEM(t, "refusal-client"), "", "10.0.0.1:1")
+	res, err := table.Lodge(genClientCSRPEM(t, "refusal-client"), "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "lodge")
 
 	if !table.Refuse(audit, res.RequestID) {
 		t.Fatal("Refuse reported the record was not found")
 	}
 
-	poll, perr := table.Poll(res.RequestID)
+	poll, perr := table.Poll(res.RequestID, "")
 	assertNoErr(t, perr, "poll")
 	if poll.Status != "refused" {
 		t.Fatalf("poll status after refusal = %q, want %q -- a refused requester must not see the same "+
@@ -899,7 +935,7 @@ func TestEnrolment_RefusedRowExpiresAtTTL(t *testing.T) {
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
 
-	res, err := table.Lodge(genClientCSRPEM(t, "refusal-ttl-client"), "", "10.0.0.1:1")
+	res, err := table.Lodge(genClientCSRPEM(t, "refusal-ttl-client"), "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "lodge")
 	if !table.Refuse(nil, res.RequestID) {
 		t.Fatal("Refuse reported the record was not found")
@@ -908,14 +944,14 @@ func TestEnrolment_RefusedRowExpiresAtTTL(t *testing.T) {
 	// Still short of the TTL: the poll must still answer "refused", not
 	// "unknown" -- refusing must not have shortened the row's life.
 	now = now.Add(enrolmentRequestTTL - time.Second)
-	poll, perr := table.Poll(res.RequestID)
+	poll, perr := table.Poll(res.RequestID, "")
 	assertNoErr(t, perr, "poll before TTL")
 	if poll.Status != "refused" {
 		t.Fatalf("poll status just before TTL = %q, want %q", poll.Status, "refused")
 	}
 
 	now = now.Add(2 * time.Second)
-	poll, perr = table.Poll(res.RequestID)
+	poll, perr = table.Poll(res.RequestID, "")
 	assertNoErr(t, perr, "poll after TTL")
 	if poll.Status != "unknown" {
 		t.Fatalf("poll status past TTL = %q, want %q -- a refused row expires exactly like any other", poll.Status, "unknown")
@@ -942,7 +978,7 @@ func TestEnrolment_SweepPrunesLastLodgeBySource(t *testing.T) {
 	const hosts = 50
 	for i := 0; i < hosts; i++ {
 		addr := fmt.Sprintf("10.0.%d.%d:%d", i/256, i%256, 10000+i)
-		l, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("sweep-src-%d", i)), "", addr)
+		l, err := table.Lodge(genClientCSRPEM(t, fmt.Sprintf("sweep-src-%d", i)), "", "", "", addr)
 		assertNoErr(t, err, "lodge %d", i)
 		// Refuse immediately: only lastLodgeBySource's growth is under
 		// test here, not the 8-row pending cap.
@@ -962,7 +998,7 @@ func TestEnrolment_SweepPrunesLastLodgeBySource(t *testing.T) {
 	// -- inside the next Lodge, using the table's own injectable clock,
 	// never a real sleep.
 	now = now.Add(perSourceLodgeInterval + time.Second)
-	_, err := table.Lodge(genClientCSRPEM(t, "sweep-trigger"), "", "10.9.9.9:1")
+	_, err := table.Lodge(genClientCSRPEM(t, "sweep-trigger"), "", "", "", "10.9.9.9:1")
 	assertNoErr(t, err, "triggering lodge")
 
 	table.mu.Lock()
@@ -994,13 +1030,13 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 	table.limiter.now = func() time.Time { return now }
 
 	csr := genClientCSRPEM(t, "relimiter-client")
-	first, err := table.Lodge(csr, "", "10.0.0.1:1")
+	first, err := table.Lodge(csr, "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "first lodge")
 
 	// Escalate the limiter past its grace with genuine failures -- exactly
 	// the shape an attacker grinding for a slot produces.
 	for i := 0; i <= ceremonyFailureGrace; i++ {
-		if _, err := table.Lodge([]byte("not a csr"), "", ""); err == nil {
+		if _, err := table.Lodge([]byte("not a csr"), "", "", "", ""); err == nil {
 			t.Fatalf("malformed CSR %d unexpectedly accepted", i)
 		}
 	}
@@ -1014,7 +1050,7 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 	// Move past the penalty window so the door opens, then re-lodge the
 	// SAME CSR: idempotent, so it must succeed.
 	now = nextAllowedBefore.Add(time.Millisecond)
-	second, err := table.Lodge(csr, "", "10.0.0.1:1")
+	second, err := table.Lodge(csr, "", "", "", "10.0.0.1:1")
 	assertNoErr(t, err, "idempotent re-lodge after the penalty window")
 	if second.RequestID != first.RequestID {
 		t.Fatalf("re-lodge id = %s, want the original %s", second.RequestID, first.RequestID)
@@ -1029,7 +1065,7 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 	}
 
 	// A genuine NEW insert, by contrast, DOES record success and resets it.
-	if _, err := table.Lodge(genClientCSRPEM(t, "relimiter-new"), "", "10.0.0.2:1"); err != nil {
+	if _, err := table.Lodge(genClientCSRPEM(t, "relimiter-new"), "", "", "", "10.0.0.2:1"); err != nil {
 		t.Fatalf("genuine new lodge: %v", err)
 	}
 	table.limiter.mu.Lock()

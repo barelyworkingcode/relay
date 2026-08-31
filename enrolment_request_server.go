@@ -76,8 +76,8 @@ var (
 // is the only implementation; the interface exists so this file's own
 // struct can be checked by reflection (AC-4) rather than merely reviewed.
 type EnrolmentRequestSink interface {
-	Lodge(csrPEM []byte, label, remoteAddr string) (lodged, error)
-	Poll(requestID string) (pollResult, error)
+	Lodge(csrPEM []byte, label, requestedProfile, sasCommit, remoteAddr string) (lodged, error)
+	Poll(requestID, sasOpen string) (pollResult, error)
 }
 
 var _ EnrolmentRequestSink = (*enrolmentRequestTable)(nil)
@@ -113,6 +113,12 @@ type enrolmentRequestHandler func(sink EnrolmentRequestSink, line []byte, remote
 // enrolmentRequestHandlers has exactly two entries. No request type outside
 // this map reaches anything at all, and neither entry can reach a tool, a
 // grant, or the CA — see EnrolmentRequestSink.
+//
+// The commitment open rides on the poll rather than becoming a third entry
+// here. That is a deliberate trade, and it costs something: Poll is no
+// longer a pure read (see its own doc comment for the bounds on the write
+// it gained). It is paid to keep a two-entry table, which a reviewer reads
+// as a boundary in a way a three-entry list is not.
 var enrolmentRequestHandlers = map[string]enrolmentRequestHandler{
 	bridge.ReqEnrolmentRequest:     handleEnrolmentLodge,
 	bridge.ReqEnrolmentRequestPoll: handleEnrolmentPoll,
@@ -130,6 +136,20 @@ type enrolmentRequestLodgeResult struct {
 	SPKISHA256       string `json:"spki_sha256"`
 	PollAfterSeconds int    `json:"poll_after_seconds"`
 	ExpiresInSeconds int    `json:"expires_in_seconds"`
+
+	// CAPEM is relay's CA certificate, returned only when the lodge
+	// carried a commitment. It is public by construction, so an
+	// unauthenticated peer learns nothing from it — and the client cannot
+	// print the comparison code without it.
+	CAPEM string `json:"ca_pem,omitempty"`
+
+	// SASNonce is relay's own nonce for this row, minted after the
+	// client's commitment was in hand. It is NOT the comparison code:
+	// neither result type on this listener carries that, ever. A relay
+	// that echoed the code it displays would let a man-in-the-middle
+	// forward relay's own value to the client, and the comparison would
+	// become a comparison of one number with itself.
+	SASNonce string `json:"sas_nonce,omitempty"`
 }
 
 type enrolmentRequestPollResult struct {
@@ -156,7 +176,7 @@ func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr str
 		// Strict decoding: an unrecognised field lands here loudly.
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment request: "+err.Error())
 	}
-	res, err := sink.Lodge([]byte(req.CSRPEM), req.Label, remoteAddr)
+	res, err := sink.Lodge([]byte(req.CSRPEM), req.Label, req.RequestedProfile, req.SASCommit, remoteAddr)
 	if err != nil {
 		return enrolmentErrorResponse(err)
 	}
@@ -165,6 +185,8 @@ func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr str
 		SPKISHA256:       res.SPKISHA256,
 		PollAfterSeconds: res.PollAfterSeconds,
 		ExpiresInSeconds: res.ExpiresInSeconds,
+		CAPEM:            res.CAPEM,
+		SASNonce:         res.SASNonce,
 	})
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment request: "+merr.Error())
@@ -177,12 +199,15 @@ func handleEnrolmentPoll(sink EnrolmentRequestSink, line []byte, _ string) bridg
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment poll: "+err.Error())
 	}
-	res, err := sink.Poll(req.RequestID)
+	res, err := sink.Poll(req.RequestID, req.SASOpen)
 	if err != nil {
-		// Poll's own implementation never returns an error today (an
-		// unknown id is a value, "unknown", not a failure) — handled
-		// anyway so a future implementation choice cannot silently drop
-		// an error path.
+		// Every refusal on the commitment-open path is the caller's
+		// request being wrong, so it answers as invalid params; anything
+		// else is relay's own side failing. An unknown id remains a
+		// value, "unknown", not an error.
+		if errors.Is(err, errEnrolmentSASRefused) {
+			return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "enrolment poll: "+err.Error())
+		}
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment poll: "+err.Error())
 	}
 	data, merr := json.Marshal(enrolmentRequestPollResult{
@@ -217,6 +242,12 @@ func enrolmentErrorResponse(err error) bridge.BridgeResponse {
 	}
 	if errors.Is(err, errEnrolmentTableFull) {
 		return bridge.ErrorResponse(codeEnrolmentThrottled, err.Error())
+	}
+	// A missing CA is relay's own state, not a malformed request: the
+	// caller can do nothing about it and the message names the one-time
+	// fix on the host.
+	if errors.Is(err, errEnrolmentNoCA) {
+		return bridge.ErrorResponse(jsonrpc.CodeInternalError, err.Error())
 	}
 	return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, err.Error())
 }

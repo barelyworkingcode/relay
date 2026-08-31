@@ -15,7 +15,10 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,6 +35,13 @@ const (
 	// human walks to a Mac to approve one. The login challenge table
 	// (webauthn_challenge.go) is 64 because a browser ceremony is fast;
 	// this is an order of magnitude smaller on purpose.
+	//
+	// This number now carries a SECOND argument, not only availability: it
+	// is the attacker's parallelism against the comparison code. One
+	// lodged row buys one blind guess at six characters (2^-30), the table
+	// caps concurrent rows at this value, and the claimed bound is the
+	// product — 8 x 2^-30. Raising it for convenience degrades the
+	// comparison's margin linearly.
 	maxPendingEnrolmentRequests = 8
 
 	// enrolmentRequestTTL is long enough to cross a room, short enough
@@ -70,6 +80,20 @@ var (
 	// errEnrolmentRateLimited is the global ceremonyLimiter's refusal,
 	// reused verbatim in shape from the WebAuthn login ceremony.
 	errEnrolmentRateLimited = errors.New("too many enrolment requests")
+
+	// errEnrolmentNoCA refuses a lodge that carried a commitment when
+	// there is no CA certificate on disk to compute the comparison code
+	// over. Never answered with an empty ca_pem: a client handed no CA
+	// would either abort anyway or, worse, fall back to something weaker.
+	// A lodge WITHOUT a commitment is unaffected — `relayremote request`
+	// needs no CA at lodge time.
+	errEnrolmentNoCA = errors.New("this relay has no CA certificate yet, so it cannot answer a registration with a comparison code: run `relay enrol create` once on the Mac")
+
+	// errEnrolmentSASRefused marks every refusal on the commitment-open
+	// path, so the listener can answer them as invalid params rather than
+	// as an internal failure — they are all the caller's request being
+	// wrong, never relay's side failing.
+	errEnrolmentSASRefused = errors.New("enrolment comparison refused")
 )
 
 // enrolmentRateLimitedError carries the delay the caller should wait,
@@ -111,6 +135,18 @@ type enrolmentRequestRecord struct {
 	approvedCertPEM    string
 	approvedCAPEM      string
 
+	// The comparison-code material (spec §3). sasCommit, sasNonce and
+	// requestedProfile are set at Lodge and never written again; sasOpen
+	// and sasFailed are set at most once by Poll, and Poll is the ONLY
+	// thing in this file that writes either. A record with an empty
+	// sasCommit is a legacy `relayremote request` row and carries no
+	// comparison at all.
+	sasCommit        string
+	sasNonce         string
+	sasOpen          string
+	sasFailed        bool
+	requestedProfile string
+
 	// refused is set exactly once, by Refuse, on the operator's explicit
 	// decline. It does NOT remove the row: the requester's next poll must
 	// be able to answer "refused" specifically rather than fall through to
@@ -132,6 +168,18 @@ type enrolmentRequestView struct {
 	ExpiresAt        time.Time
 	Approved         bool
 	ApprovedClientID string
+
+	// SAS is the six-character comparison code, derived at projection time
+	// and empty until the commitment has been opened. SASReady says the
+	// row has a code to show; SASFailed says its opening did not verify
+	// and it is permanently unapprovable; IsLegacyRequest says it was
+	// lodged by `relayremote request`, which carries no comparison and is
+	// approvable exactly as it always was.
+	SAS              string
+	SASReady         bool
+	SASFailed        bool
+	RequestedProfile string
+	IsLegacyRequest  bool
 }
 
 // pendingRecordView is what EnrolmentOps.Approve needs to read under the
@@ -143,6 +191,14 @@ type pendingRecordView struct {
 	CSRPEM     []byte
 	Label      string
 	RemoteAddr string
+
+	// The comparison state EnrolmentOps.Approve refuses on (spec §3.4):
+	// a row that committed to a comparison and never opened it, or opened
+	// it wrongly, is unapprovable from every door — the host enforces the
+	// comparison independently of whatever the client claims it did.
+	SASCommit string
+	SASOpen   string
+	SASFailed bool
 }
 
 // markApprovedOutcome is MarkApproved's return shape: a plain bool cannot
@@ -181,6 +237,15 @@ type lodged struct {
 	SPKISHA256       string
 	PollAfterSeconds int
 	ExpiresInSeconds int
+
+	// CAPEM and SASNonce are populated only for a lodge that carried a
+	// commitment. The CA certificate is public (nothing is leaked by
+	// handing it to an unauthenticated peer) and the client cannot print
+	// the comparison code without it; SASNonce is relay's own nonce,
+	// minted only after the client's commitment is in hand, which is what
+	// stops an attacker choosing the value the host will display.
+	CAPEM    string
+	SASNonce string
 }
 
 // pollResult is Poll's value: "pending" and "unknown" from this file alone;
@@ -208,6 +273,19 @@ type enrolmentRequestTable struct {
 	mu      sync.Mutex
 	pending map[string]*enrolmentRequestRecord
 
+	// caCertPEM and caSPKI are PLAIN BYTES, pushed in by
+	// remote_reconcile.go on every tick — never a *RelayCA and never a
+	// closure over one. The table's whole structural claim is that it
+	// holds nothing able to sign, read settings or unseal, and holding
+	// two byte slices keeps that true while still letting it hand out a
+	// public certificate and derive a code.
+	caCertPEM []byte
+	caSPKI    []byte
+
+	// lodgeGen advances only when a Lodge inserts a row. See
+	// LodgeGeneration.
+	lodgeGen uint64
+
 	limiter           *ceremonyLimiter
 	lastLodgeBySource map[string]time.Time
 	lastFullWarning   time.Time
@@ -233,6 +311,37 @@ func (t *enrolmentRequestTable) setClock(fn func() time.Time) {
 	t.now = fn
 }
 
+// setCACert hands the table the CA certificate a commitment-bearing lodge
+// is answered with, and the SPKI the comparison code is derived from. Both
+// are copied in as bytes: this table must stay incapable of signing,
+// reading settings or unsealing anything, and that is a property of what it
+// HOLDS, not of what it happens to call — a *RelayCA or a closure over one
+// would hand it the CA's private key by reference.
+//
+// Called on every reconcile tick, so a break-glass CA regeneration reaches
+// the projection. Empty slices are the legitimate "no CA on disk" state and
+// make a commitment-bearing lodge refuse.
+func (t *enrolmentRequestTable) setCACert(certPEM, spki []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.caCertPEM = append([]byte(nil), certPEM...)
+	t.caSPKI = append([]byte(nil), spki...)
+}
+
+// LodgeGeneration is a monotonic counter incremented ONLY when a Lodge
+// actually inserts a row — never on an idempotent re-lodge, a refusal, a
+// throttle or a poll. It is the entire mechanism by which the tray learns
+// that something arrived, and it is a PULL: the tray reads it on the timer
+// it already runs. Nothing in this file may gain a callback field, a
+// channel or a reference to anything that can notify — that is what would
+// turn an unauthenticated lodge into a push, and the file's header states
+// why it cannot.
+func (t *enrolmentRequestTable) LodgeGeneration() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lodgeGen
+}
+
 // validEnrolmentLabel: empty means "no label supplied", which is allowed;
 // a non-empty label must be <=64 bytes of the isSafeID charset (spec §3:
 // "the isSafeID charset") — the same guard that already keeps a client id
@@ -251,6 +360,10 @@ func validEnrolmentLabel(label string) bool {
 
 func invalidEnrolmentLabelMessage() string {
 	return fmt.Sprintf("label must be 1-%d bytes of letters, digits, '.', '_' or '-'", maxEnrolmentLabelBytes)
+}
+
+func invalidRequestedProfileMessage() string {
+	return fmt.Sprintf("requested_profile must be 1-%d bytes of letters, digits, '.', '_' or '-'", maxEnrolmentLabelBytes)
 }
 
 // newRequestID mints "req_" + 32 hex characters (16 random bytes). Request
@@ -274,7 +387,7 @@ func (t *enrolmentRequestTable) newRequestID() string {
 // settings.json — P1 and the "lodging is never audited, no settings
 // mutation" half of §2 both hold because there is nothing here capable of
 // either.
-func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (out lodged, err error) {
+func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sasCommit, remoteAddr string) (out lodged, err error) {
 	if retry, ok := t.limiter.allow(); !ok {
 		return lodged{}, &enrolmentRateLimitedError{RetryAfter: retry}
 	}
@@ -304,6 +417,20 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		err = fmt.Errorf("%s", invalidEnrolmentLabelMessage())
 		return lodged{}, err
 	}
+	// requested_profile is a hint shown to the operator as a request and
+	// never honoured automatically. It is exactly as hostile as the label
+	// and is rendered on the same screen, so it gets the identical guard.
+	if !validEnrolmentLabel(requestedProfile) {
+		err = fmt.Errorf("%s", invalidRequestedProfileMessage())
+		return lodged{}, err
+	}
+	// Re-checked here as well as at decode: this method is the table's own
+	// door, and a caller reaching it another way must not be able to store
+	// a commitment that can never be opened.
+	if sasCommit != "" && !validSASHex(sasCommit, sha256.Size) {
+		err = errors.New("sas_commit must be 64 lowercase hex characters")
+		return lodged{}, err
+	}
 
 	// ParseClientCSR enforces maxCSRBytes itself (enrolment_csr.go) —
 	// reused verbatim rather than duplicated, so this is also where
@@ -322,6 +449,13 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 	now := t.now()
 	t.sweepLocked(now)
 
+	// A commitment relay cannot answer with a CA is refused outright
+	// rather than answered with an empty ca_pem — see errEnrolmentNoCA.
+	if sasCommit != "" && (len(t.caCertPEM) == 0 || len(t.caSPKI) == 0) {
+		err = errEnrolmentNoCA
+		return lodged{}, err
+	}
+
 	// Idempotent re-lodge: a retry over an already-pending key is free,
 	// consumes no second slot, and does not extend the original expiry —
 	// so "flood the table with one key" is impossible; a distinct slot
@@ -333,15 +467,39 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		if r.refused {
 			continue
 		}
-		if r.spkiSHA256 == spki {
-			out = lodged{
-				RequestID:        r.id,
-				SPKISHA256:       spki,
-				PollAfterSeconds: enrolPollAfterSeconds,
-				ExpiresInSeconds: secondsUntil(r.expiresAt, now),
-			}
-			return out, nil
+		if r.spkiSHA256 != spki {
+			continue
 		}
+		switch {
+		case r.sasCommit == sasCommit:
+			// The resume path, and the only one that answers: same row,
+			// same nonce, therefore the same code on both screens. Two
+			// codes for one registration is the confusion this whole
+			// ceremony exists to remove.
+		case r.sasCommit == "":
+			err = errors.New("this key already has a pending request lodged without a comparison commitment: refuse that one on the Mac, or wait for it to expire, before registering with one")
+			return lodged{}, err
+		case sasCommit == "":
+			err = errors.New("this key already has a pending request lodged with a comparison commitment: refuse that one on the Mac, or wait for it to expire, before lodging without one")
+			return lodged{}, err
+		default:
+			// A key gets ONE live comparison. A second commitment on the
+			// same key would hand an attacker a second free guess at the
+			// six characters, which is the whole of the margin.
+			err = errors.New("this key already has a pending request bound to a different comparison commitment: refuse that one on the Mac, or wait for it to expire")
+			return lodged{}, err
+		}
+		out = lodged{
+			RequestID:        r.id,
+			SPKISHA256:       spki,
+			PollAfterSeconds: enrolPollAfterSeconds,
+			ExpiresInSeconds: secondsUntil(r.expiresAt, now),
+		}
+		if r.sasCommit != "" {
+			out.CAPEM = string(t.caCertPEM)
+			out.SASNonce = r.sasNonce
+		}
+		return out, nil
 	}
 
 	sourceHost := addrHost(remoteAddr)
@@ -364,18 +522,36 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		return lodged{}, err
 	}
 
+	// Minted here, after the client's commitment is already in hand and
+	// before this call returns, and assigned to the record exactly once:
+	// an attacker that could choose or re-choose this value after learning
+	// the client's nonce could grind the code the host will display.
+	var sasNonce string
+	if sasCommit != "" {
+		sasNonce, err = newSASNonce()
+		if err != nil {
+			err = fmt.Errorf("could not mint a comparison nonce: %w", err)
+			return lodged{}, err
+		}
+	}
+
 	id := t.newRequestID()
 	rec := &enrolmentRequestRecord{
-		id:         id,
-		csrPEM:     append([]byte(nil), csrPEM...),
-		spkiSHA256: spki,
-		label:      label,
-		remoteAddr: remoteAddr,
-		arrivedAt:  now,
-		expiresAt:  now.Add(enrolmentRequestTTL),
+		id:               id,
+		csrPEM:           append([]byte(nil), csrPEM...),
+		spkiSHA256:       spki,
+		label:            label,
+		remoteAddr:       remoteAddr,
+		arrivedAt:        now,
+		expiresAt:        now.Add(enrolmentRequestTTL),
+		sasCommit:        sasCommit,
+		sasNonce:         sasNonce,
+		requestedProfile: requestedProfile,
 	}
 	t.pending[id] = rec
 	inserted = true
+	// Only an actual insert moves the generation — see LodgeGeneration.
+	t.lodgeGen++
 	if sourceHost != "" {
 		t.lastLodgeBySource[sourceHost] = now
 	}
@@ -385,6 +561,10 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 		SPKISHA256:       spki,
 		PollAfterSeconds: enrolPollAfterSeconds,
 		ExpiresInSeconds: int(enrolmentRequestTTL.Seconds()),
+	}
+	if sasCommit != "" {
+		out.CAPEM = string(t.caCertPEM)
+		out.SASNonce = sasNonce
 	}
 	return out, nil
 }
@@ -399,7 +579,15 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, remoteAddr string) (
 // exempt from that rule by construction: reporting "refused" for a request
 // only its own lodger holds the id to does not let anyone learn anything
 // about a DIFFERENT id.
-func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
+//
+// "Lodge writes, Poll reads" is no longer true, and that is deliberate.
+// The commitment open rides here rather than becoming a third entry in
+// enrolmentRequestHandlers, because a two-entry dispatch table is visibly
+// a security boundary and a three-entry one is a list. The write Poll
+// gained in exchange is bounded (one field on one row), single-use (a
+// second, different opening is refused, never applied) and self-verifying
+// (it is accepted only if it opens the commitment already stored).
+func (t *enrolmentRequestTable) Poll(requestID, sasOpen string) (pollResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -408,6 +596,11 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 	r, ok := t.pending[requestID]
 	if !ok {
 		return pollResult{Status: "unknown"}, nil
+	}
+	if sasOpen != "" {
+		if err := openCommitmentLocked(r, sasOpen); err != nil {
+			return pollResult{}, err
+		}
 	}
 	switch {
 	case r.approved:
@@ -428,6 +621,60 @@ func (t *enrolmentRequestTable) Poll(requestID string) (pollResult, error) {
 			ExpiresInSeconds: secondsUntil(r.expiresAt, now),
 		}, nil
 	}
+}
+
+// openCommitmentLocked is the write side of Poll. It verifies the opening
+// against the commitment the row was lodged with, over the SPKI of the
+// STORED CSR — binding the key is what stops a commitment captured off the
+// wire being replayed under a different one.
+func openCommitmentLocked(r *enrolmentRequestRecord, sasOpen string) error {
+	if !validSASHex(sasOpen, sasNonceBytes) {
+		return fmt.Errorf("%w: sas_open must be 32 lowercase hex characters", errEnrolmentSASRefused)
+	}
+	if r.sasCommit == "" {
+		return fmt.Errorf("%w: this request was not lodged with a comparison commitment", errEnrolmentSASRefused)
+	}
+	if r.sasFailed {
+		return fmt.Errorf("%w: this request's commitment already failed to open, and it cannot be approved", errEnrolmentSASRefused)
+	}
+	if r.sasOpen != "" {
+		// A redialled poll resends the same opening and must not fail. A
+		// DIFFERENT one is a second attempt at the same row and is
+		// refused rather than allowed to overwrite what is already bound.
+		if r.sasOpen != sasOpen {
+			return fmt.Errorf("%w: a different opening was already recorded for this request", errEnrolmentSASRefused)
+		}
+		return nil
+	}
+	rc, err := hex.DecodeString(sasOpen)
+	if err != nil {
+		return fmt.Errorf("%w: sas_open must be 32 lowercase hex characters", errEnrolmentSASRefused)
+	}
+	spkiSum, ok := sha256HexToArray(r.spkiSHA256)
+	if !ok {
+		// Not the caller's fault and not a comparison refusal: this is a
+		// digest this table itself wrote at Lodge.
+		return fmt.Errorf("the stored key digest for %s is unreadable", r.id)
+	}
+	if sasCommitment(spkiSum, rc) != r.sasCommit {
+		// Permanent. One row buys one blind guess at the code and no
+		// more; letting a second, better-aimed opening follow a first
+		// would turn the comparison into a grind.
+		r.sasFailed = true
+		return fmt.Errorf("%w: the comparison commitment did not open", errEnrolmentSASRefused)
+	}
+	r.sasOpen = sasOpen
+	return nil
+}
+
+func sha256HexToArray(s string) ([32]byte, bool) {
+	var out [32]byte
+	raw, err := hex.DecodeString(s)
+	if err != nil || len(raw) != sha256.Size {
+		return out, false
+	}
+	copy(out[:], raw)
+	return out, true
 }
 
 // Get reads one pending record's stored bytes under the table lock — the
@@ -453,6 +700,9 @@ func (t *enrolmentRequestTable) Get(requestID string) (pendingRecordView, bool) 
 		CSRPEM:     append([]byte(nil), r.csrPEM...),
 		Label:      r.label,
 		RemoteAddr: r.remoteAddr,
+		SASCommit:  r.sasCommit,
+		SASOpen:    r.sasOpen,
+		SASFailed:  r.sasFailed,
 	}, true
 }
 
@@ -514,7 +764,7 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 		if r.refused {
 			continue
 		}
-		out = append(out, enrolmentRequestView{
+		v := enrolmentRequestView{
 			RequestID:        r.id,
 			SPKISHA256:       r.spkiSHA256,
 			Label:            r.label,
@@ -523,10 +773,59 @@ func (t *enrolmentRequestTable) List() []enrolmentRequestView {
 			ExpiresAt:        r.expiresAt,
 			Approved:         r.approved,
 			ApprovedClientID: r.approvedClientID,
-		})
+			RequestedProfile: r.requestedProfile,
+			IsLegacyRequest:  r.sasCommit == "",
+			SASFailed:        r.sasFailed,
+			SASReady:         r.sasCommit != "" && r.sasOpen != "" && !r.sasFailed,
+		}
+		if v.SASReady {
+			v.SAS = t.sasForLocked(r)
+			v.SASReady = v.SAS != ""
+		}
+		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ArrivedAt.Before(out[j].ArrivedAt) })
 	return out
+}
+
+// sasForLocked derives the comparison code at PROJECTION time rather than
+// storing it at Lodge, so the code the operator is shown is always over the
+// CA currently on disk. A CA regenerated mid-flight therefore makes the two
+// screens differ, which is the correct outcome and not a bug to smooth over.
+func (t *enrolmentRequestTable) sasForLocked(r *enrolmentRequestRecord) string {
+	if len(t.caSPKI) == 0 {
+		return ""
+	}
+	csrSPKI, ok := csrSPKIFromPEM(r.csrPEM)
+	if !ok {
+		return ""
+	}
+	rc, err := hex.DecodeString(r.sasOpen)
+	if err != nil {
+		return ""
+	}
+	rr, err := hex.DecodeString(r.sasNonce)
+	if err != nil {
+		return ""
+	}
+	return computeSAS(t.caSPKI, csrSPKI, rc, rr)
+}
+
+// csrSPKIFromPEM re-reads the public key out of the stored CSR. It does not
+// re-verify the signature: Lodge ran the whole of ParseClientCSR over these
+// exact bytes before the row existed and nothing mutates csrPEM afterwards,
+// so a second proof-of-possession check on every render would prove nothing
+// new.
+func csrSPKIFromPEM(csrPEM []byte) ([]byte, bool) {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		return nil, false
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, false
+	}
+	return csr.RawSubjectPublicKeyInfo, true
 }
 
 // liveCountLocked counts rows still eligible to hold a slot: pending and

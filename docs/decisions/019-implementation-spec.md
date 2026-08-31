@@ -107,7 +107,7 @@ type enrolmentRequestLodgeResult struct {
 
 **`ca_pem` is returned at lodge time, not at collection time.** This resolves the open question, and the justification has three parts: (a) P2 — the CA certificate is public and relay hands it to anyone who collects an approval already, so early delivery leaks nothing new; (b) the client must print the code *before* the human walks to the Mac, otherwise the human arrives at a screen showing a value with nothing to compare it to and has to walk back; (c) the commit–reveal construction in §3 makes early disclosure harmless — an attacker holding relay's CA early still cannot compute the target, because it must commit before it learns `R_C`.
 
-If `sas_commit` was supplied and relay has no CA certificate on disk, the lodge is **refused** (`CodeInternalError`, naming `relay enrol create` as the one-time fix). It is never answered with an empty `ca_pem`: a client that received no CA would either have to abort anyway or, worse, silently fall back to something weaker. A lodge without `sas_commit` is unaffected and still succeeds — `request` does not need the CA at lodge.
+If `sas_commit` was supplied and relay holds no CA certificate, the lodge is **refused**. "Holds" is the material the reconcile tick last pushed into the table, not a read of disk — the table structurally cannot reach the filesystem, which is what keeps it holding nothing that can sign. A CA created between ticks is therefore invisible for at most one settings poll, which fails closed and is harmless. The lodge is refused (`CodeInternalError`, naming `relay enrol create` as the one-time fix). It is never answered with an empty `ca_pem`: a client that received no CA would either have to abort anyway or, worse, silently fall back to something weaker. A lodge without `sas_commit` is unaffected and still succeeds — `request` does not need the CA at lodge.
 
 ### 2.3 `EnrolmentRequestPoll` — client → host
 
@@ -142,7 +142,7 @@ Shape is **unchanged**. In particular:
 | no `sasCommit` | present | refuse, `CodeInvalidParams`: *this request was not lodged with a comparison commitment* |
 | has `sasCommit`, no `sasOpen` yet | absent | answer normally; row stays `sas_ready:false` |
 | has `sasCommit`, no `sasOpen` yet | present, commitment verifies | record `sasOpen` once; row becomes `sas_ready:true`; answer normally |
-| has `sasCommit`, no `sasOpen` yet | present, commitment fails | set `sasFailed`; refuse the poll, `CodeInvalidParams`. **The row is permanently not approvable** |
+| has `sasCommit`, no `sasOpen` yet | present, commitment fails | set `sasFailed`; refuse the poll, `CodeInvalidParams`. **`sasFailed` is terminal for opens**: a later correct opening does not rescue the row, or one blind guess would become a grind. A plain poll on a failed row still answers normally |
 | has `sasOpen` | identical value | idempotent; answer normally (a redialled poll must not fail) |
 | has `sasOpen` | different value | refuse; do not overwrite |
 
