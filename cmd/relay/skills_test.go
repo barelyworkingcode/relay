@@ -1,0 +1,568 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/barelyworkingcode/relay/internal/mcp"
+)
+
+type stubLister struct {
+	tools []mcp.Tool
+	err   error
+}
+
+func (s stubLister) ListTools(_ context.Context, _ string) (json.RawMessage, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return json.Marshal(s.tools)
+}
+
+func (s stubLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBucket, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	groups := map[string][]mcp.Tool{}
+	for _, t := range s.tools {
+		key := t.Category
+		if key == "" {
+			key = "Tools"
+		}
+		groups[key] = append(groups[key], t)
+	}
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	buckets := make([]SkillBucket, 0, len(keys))
+	for _, k := range keys {
+		buckets = append(buckets, SkillBucket{Key: k, Slug: skillSlug(k), Tools: groups[k]})
+	}
+	return buckets, nil
+}
+
+func writeSkillDir(t *testing.T, root, name, body string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, skillFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func dirExists(t *testing.T, path string) bool {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
+	proj := Project{Name: "tbo", Token: NewSecret("secret-plaintext-token-do-not-leak")}
+	bucket := SkillBucket{
+		Key:  "Files",
+		Slug: "files",
+		Tools: []mcp.Tool{
+			{Name: "fs_read", Description: "Read a file"},
+			{Name: "fs_write", Description: "Write a file"},
+		},
+	}
+	out := renderBucketSkillMd(proj, bucket)
+
+	projTok, _ := proj.Token.Reveal()
+	if strings.Contains(out, projTok) {
+		t.Fatalf("SKILL.md must never contain the plaintext token; got:\n%s", out)
+	}
+	if !strings.Contains(out, "fs_read") || !strings.Contains(out, "fs_write") {
+		t.Fatalf("tool names missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "name: relay-files") {
+		t.Fatalf("expected the skill name frontmatter; got:\n%s", out)
+	}
+	if !strings.Contains(out, "mcp call *)") || !strings.Contains(out, "allowed-tools: Bash(") {
+		t.Fatalf("expected allowed-tools to scope to `mcp call *`; got:\n%s", out)
+	}
+	if !strings.Contains(out, "RELAY_PROJECT_TOKEN") {
+		t.Fatalf("expected guidance about RELAY_PROJECT_TOKEN env var; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Relay binary path:") {
+		t.Fatalf("expected the resolved relay binary path to be documented; got:\n%s", out)
+	}
+}
+
+func TestSynthesizeDescription_CapabilityKeywords(t *testing.T) {
+	imageDesc := "Generate an image from a text description using a local Stable Diffusion model via ComfyUI. Returns JSON. Use whenever the user asks for an image, illustration, picture, logo, or visual asset."
+	desc := synthesizeDescription("Image", []mcp.Tool{
+		{Name: "generate_image", Description: imageDesc},
+	})
+	for _, kw := range []string{"image", "illustration", "picture", "logo"} {
+		if !strings.Contains(strings.ToLower(desc), kw) {
+			t.Errorf("description should surface %q for routing; got:\n%s", kw, desc)
+		}
+	}
+
+	mail := synthesizeDescription("Mail", []mcp.Tool{
+		{Name: "mail_send", Description: "Send an email"},
+		{Name: "mail_list_messages", Description: "List messages in a mailbox"},
+	})
+	if !strings.Contains(mail, "send") || !strings.Contains(mail, "list messages") {
+		t.Errorf("mail description missing capability phrases; got:\n%s", mail)
+	}
+}
+
+func TestRenderBucketSkillMd_DescriptionIsYAMLQuoted(t *testing.T) {
+	bucket := SkillBucket{Key: "Weather", Slug: "weather", Tools: []mcp.Tool{
+		{Name: "weather_current", Description: "Get the current weather for a location."},
+		{Name: "weather_forecast", Description: "Get the forecast."},
+	}}
+	out := renderBucketSkillMd(Project{Name: "p", Token: NewSecret("t")}, bucket)
+
+	var descLine string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "description:") {
+			descLine = l
+			break
+		}
+	}
+	if descLine == "" {
+		t.Fatalf("no description frontmatter line:\n%s", out)
+	}
+	val := strings.TrimSpace(strings.TrimPrefix(descLine, "description:"))
+	if !strings.HasPrefix(val, "\"") || !strings.HasSuffix(val, "\"") {
+		t.Fatalf("description must be double-quoted for YAML safety; got: %s", descLine)
+	}
+	// Sanity: the value really does contain the colon-space that necessitated quoting.
+	if !strings.Contains(val, "): ") {
+		t.Fatalf("expected a colon-space inside the description (the case quoting protects); got: %s", descLine)
+	}
+}
+
+func TestSynthesizeDescription_EmptyToolsIsHarmless(t *testing.T) {
+	if got := synthesizeDescription("Empty", nil); got == "" {
+		t.Fatal("expected a non-empty headline even with no tools")
+	}
+}
+
+func TestSynthesizeDescription_RespectsLengthCap(t *testing.T) {
+	tools := make([]mcp.Tool, 30)
+	for i := range tools {
+		tools[i] = mcp.Tool{Name: "tool_with_a_fairly_long_descriptive_name_" + strings.Repeat("x", i)}
+	}
+	if got := synthesizeDescription("Big", tools); len(got) > descMaxLen+4 {
+		t.Fatalf("description exceeded cap: %d chars", len(got))
+	}
+}
+
+func TestSkillSlug(t *testing.T) {
+	cases := map[string]string{
+		"Mail":             "mail",
+		"Google Calendar":  "google-calendar",
+		"comfyui":          "comfyui",
+		"!!!":              "tools",
+		"":                 "tools",
+		"  spaced  out  ":  "spaced-out",
+		"weird/chars*here": "weird-chars-here",
+	}
+	for in, want := range cases {
+		if got := skillSlug(in); got != want {
+			t.Errorf("skillSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNameToPhrase(t *testing.T) {
+	if got := nameToPhrase("generate_image", "Image"); got != "generate image" {
+		t.Errorf("got %q", got)
+	}
+	if got := nameToPhrase("mail_send", "Mail"); got != "send" {
+		t.Errorf("expected leading bucket token dropped, got %q", got)
+	}
+	if got := nameToPhrase("status", "System"); got != "status" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func imageAndMailLister() stubLister {
+	return stubLister{tools: []mcp.Tool{
+		{Name: "generate_image", Category: "Image", Description: "Generate an image. Use whenever the user asks for an image, picture, or logo."},
+		{Name: "mail_send", Category: "Mail", Description: "Send an email"},
+	}}
+}
+
+func TestEmitSkills_WritesPerBucketFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+
+	paths, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways)
+	if err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 skill files, got %d: %v", len(paths), paths)
+	}
+
+	img, err := os.ReadFile(filepath.Join(root, "relay-image", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read relay-image: %v", err)
+	}
+	if !strings.Contains(string(img), "generate_image") {
+		t.Errorf("relay-image should list generate_image; got:\n%s", img)
+	}
+	mail, err := os.ReadFile(filepath.Join(root, "relay-mail", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read relay-mail: %v", err)
+	}
+	if !strings.Contains(string(mail), "mail_send") {
+		t.Errorf("relay-mail should list mail_send; got:\n%s", mail)
+	}
+}
+
+func TestEmitSkills_DescriptionContainsCapabilityKeywords(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	if _, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways); err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	img, _ := os.ReadFile(filepath.Join(root, "relay-image", "SKILL.md"))
+	front := string(img)
+	descLine := ""
+	for _, line := range strings.Split(front, "\n") {
+		if strings.HasPrefix(line, "description:") {
+			descLine = line
+			break
+		}
+	}
+	if descLine == "" {
+		t.Fatalf("no description frontmatter line; got:\n%s", front)
+	}
+	if !strings.Contains(strings.ToLower(descLine), "image") {
+		t.Errorf("image skill description must mention 'image' to route; got: %s", descLine)
+	}
+}
+
+func TestEmitSkills_PrunesStaleRelayDirs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay-old", "stale")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	if dirExists(t, filepath.Join(root, "relay-old")) {
+		t.Error("stale relay-old should have been pruned")
+	}
+	if !dirExists(t, filepath.Join(root, "relay-image")) {
+		t.Error("relay-image should exist")
+	}
+}
+
+func TestEmitSkills_MigratesLegacyRelayDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay", "legacy single-dir layout")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	if dirExists(t, filepath.Join(root, "relay")) {
+		t.Error("legacy relay dir should have been migrated away")
+	}
+	if !dirExists(t, filepath.Join(root, "relay-image")) {
+		t.Error("relay-image should exist after migration")
+	}
+}
+
+func TestEmitSkills_EmptyToolsPrunesEverything(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay", "x")
+	writeSkillDir(t, root, "relay-mail", "x")
+	writeSkillDir(t, root, "deploy", "user-authored skill")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+
+	if _, err := EmitSkills(context.Background(), stubLister{}, proj, root, RegenAlways); err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	if dirExists(t, filepath.Join(root, "relay")) || dirExists(t, filepath.Join(root, "relay-mail")) {
+		t.Error("all relay-managed dirs should be pruned when there are no tools")
+	}
+	if !dirExists(t, filepath.Join(root, "deploy")) {
+		t.Error("user-authored skill dir must never be touched")
+	}
+}
+
+func TestEmitSkills_Idempotent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := imageAndMailLister()
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
+		t.Fatalf("first EmitSkills: %v", err)
+	}
+	target := filepath.Join(root, "relay-image", "SKILL.md")
+	first, _ := os.ReadFile(target)
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
+		t.Fatalf("second EmitSkills: %v", err)
+	}
+	second, _ := os.ReadFile(target)
+	if string(first) != string(second) {
+		t.Error("expected stable output across regen; got drift")
+	}
+}
+
+func TestEmitSkills_NoTokenLeakageAcrossAllFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	proj := Project{Name: "p1", Token: NewSecret("super-secret-token")}
+	if _, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways); err != nil {
+		t.Fatalf("EmitSkills: %v", err)
+	}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		projTok, _ := proj.Token.Reveal()
+		if strings.Contains(string(data), projTok) {
+			t.Errorf("%s leaks the project token", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmitSkills_RegenNever(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay-mail", "preexisting")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := stubLister{err: errors.New("must not be called")}
+
+	paths, err := EmitSkills(context.Background(), lister, proj, root, RegenNever)
+	if err != nil {
+		t.Fatalf("RegenNever should be a no-op: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("RegenNever should report no paths, got %v", paths)
+	}
+	if !dirExists(t, filepath.Join(root, "relay-mail")) {
+		t.Error("RegenNever must not prune existing dirs")
+	}
+}
+
+func TestEmitSkills_SkipIfExists_CreatesMissingButPreservesExisting(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay-mail", "OLD")
+	writeSkillDir(t, root, "relay-old", "stale")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := stubLister{tools: []mcp.Tool{
+		{Name: "generate_image", Category: "Image"},
+		{Name: "mail_send", Category: "Mail"},
+	}}
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenSkipIfExists); err != nil {
+		t.Fatalf("SkipIfExists: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "relay-mail", "SKILL.md")); string(data) != "OLD" {
+		t.Error("SkipIfExists must not overwrite an existing bucket skill")
+	}
+	if !dirExists(t, filepath.Join(root, "relay-image")) {
+		t.Error("SkipIfExists must create a newly-desired bucket that doesn't exist yet")
+	}
+	if !dirExists(t, filepath.Join(root, "relay-old")) {
+		t.Error("SkipIfExists must be non-destructive (no pruning of stale dirs)")
+	}
+}
+
+func TestEmitSkills_SkipIfExists_GeneratesWhenEmpty(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
+
+	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenSkipIfExists); err != nil {
+		t.Fatalf("SkipIfExists (empty namespace): %v", err)
+	}
+	if !dirExists(t, filepath.Join(root, "relay-image")) {
+		t.Error("SkipIfExists should generate when no relay dirs exist yet")
+	}
+}
+
+func TestRemoveSkill_RemovesAllRelayDirsOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	writeSkillDir(t, root, "relay", "x")
+	writeSkillDir(t, root, "relay-mail", "x")
+	writeSkillDir(t, root, "relay-image", "x")
+	writeSkillDir(t, root, "deploy", "user-authored")
+
+	if err := RemoveSkill(root); err != nil {
+		t.Fatalf("RemoveSkill: %v", err)
+	}
+	for _, name := range []string{"relay", "relay-mail", "relay-image"} {
+		if dirExists(t, filepath.Join(root, name)) {
+			t.Errorf("%s should have been removed", name)
+		}
+	}
+	if !dirExists(t, filepath.Join(root, "deploy")) {
+		t.Error("user-authored dir must be left intact")
+	}
+	if !dirExists(t, root) {
+		t.Error("skills root itself must not be removed")
+	}
+}
+
+func TestRemoveSkill_NonExistentRoot(t *testing.T) {
+	if err := RemoveSkill(filepath.Join(t.TempDir(), "does-not-exist")); err != nil {
+		t.Fatalf("RemoveSkill on missing root should be a no-op, got %v", err)
+	}
+}
+
+func TestAppRouter_ListSkillBuckets(t *testing.T) {
+	r := setupRouter(t,
+		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn, "mcp-c": PermOff},
+		map[string][]string{"mcp-a": {"mail_archive"}}, // disabled tool excluded
+		nil,
+		map[string]*mockMcpConn{
+			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
+				{Name: "mail_send", Description: "Send mail", Category: "Mail"},
+				{Name: "mail_archive", Description: "Archive mail", Category: "Mail"},
+			}, nil),
+			"mcp-b": newMockConn("mcp-b", []mcp.Tool{
+				{Name: "generate_image", Description: "Generate an image"}, // no category
+			}, nil),
+			"mcp-c": newMockConn("mcp-c", []mcp.Tool{
+				{Name: "secret_tool", Description: "denied MCP"},
+			}, nil),
+		},
+	)
+
+	buckets, err := r.ListSkillBuckets(context.Background(), testToken)
+	if err != nil {
+		t.Fatalf("ListSkillBuckets: %v", err)
+	}
+
+	byKey := map[string]SkillBucket{}
+	for _, b := range buckets {
+		byKey[b.Key] = b
+	}
+
+	mail, ok := byKey["Mail"]
+	if !ok {
+		t.Fatalf("expected a Mail bucket; got keys %v", keysOf(byKey))
+	}
+	if mail.Slug != "mail" {
+		t.Errorf("Mail slug = %q, want mail", mail.Slug)
+	}
+	if len(mail.Tools) != 1 || mail.Tools[0].Name != "mail_send" {
+		t.Errorf("disabled mail_archive should be excluded; got %v", toolNames(mail.Tools))
+	}
+
+	if _, ok := byKey["mcp-b"]; !ok {
+		t.Errorf("expected uncategorized tool to bucket under MCP display name; got keys %v", keysOf(byKey))
+	}
+
+	for _, b := range buckets {
+		for _, tool := range b.Tools {
+			if tool.Name == "secret_tool" {
+				t.Error("tools from a denied MCP must not appear in any bucket")
+			}
+		}
+	}
+}
+
+func keysOf(m map[string]SkillBucket) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// extractTriggerKeywords locates a marker in a lowercased copy and must carry
+// that position back onto the original. strings.ToLower is not length-preserving
+// in UTF-8 — 23 runes shrink, 2 grow — so a byte offset either lands mid-clause
+// (silently harvesting the wrong routing keywords, which is the worse failure
+// because it degrades routing without erroring) or runs off the end and panics.
+func TestExtractTriggerKeywords_SurvivesNonASCII(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{"plain ascii", "Use this whenever the user asks about invoices.", "the user asks about invoices"},
+		// Non-ASCII is written with explicit escapes: these runes are the whole
+		// point of the test and must not depend on how a file was transcribed.
+		// U+023A and U+023E grow when lowercased (2 bytes -> 3).
+		{"growing rune U+023A", "\u023Ause whenever x.", "x"},
+		{"growing rune U+023E", "\u023Euse whenever x.", "x"},
+		{"several growing runes", "\u023A\u023A\u023Ause whenever x.", "x"},
+		// U+212A KELVIN SIGN shrinks (3 bytes -> 1).
+		{"shrinking rune U+212A", "\u212A\u212A\u212Ause whenever the user asks for an invoice.", "an invoice"},
+		{"shrinking rune U+1E9E", "\u1E9Euse whenever mail arrives.", "mail arrives"},
+		{"emoji before the marker", "\U0001F4E7use whenever mail arrives.", "mail arrives"},
+		{"cjk before the marker", "\u90F5\u4FBFuse whenever mail arrives.", "mail arrives"},
+		{"no marker at all", "Just a description with no trigger.", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panicked on %q: %v", tc.desc, r)
+				}
+			}()
+			if got := extractTriggerKeywords(tc.desc); got != tc.want {
+				t.Errorf("extractTriggerKeywords(%q) = %q, want %q", tc.desc, got, tc.want)
+			}
+		})
+	}
+}
+
+// Every rune whose lowercase form differs in byte length must be survivable —
+// a hostile or merely multilingual tool description must not be able to crash
+// skill generation for a whole project.
+func TestExtractTriggerKeywords_NoRuneCrashesGeneration(t *testing.T) {
+	var checked int
+	for r := rune(0); r < 0x10000; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		orig := string(r)
+		if len(orig) == len(strings.ToLower(orig)) {
+			continue
+		}
+		checked++
+		desc := orig + "use whenever x."
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					t.Fatalf("panicked on U+%04X: %v", r, rec)
+				}
+			}()
+			if got := extractTriggerKeywords(desc); got != "x" {
+				t.Errorf("U+%04X: got %q, want %q", r, got, "x")
+			}
+		}()
+	}
+	if checked == 0 {
+		t.Fatal("found no length-changing runes; the test is not exercising anything")
+	}
+	t.Logf("verified %d runes whose lowercase form changes byte length", checked)
+}

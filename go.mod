@@ -1,4 +1,4 @@
-module relaygo
+module github.com/barelyworkingcode/relay
 
 go 1.25
 

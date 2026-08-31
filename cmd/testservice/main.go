@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"relaygo/bridge"
+	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
 func main() {

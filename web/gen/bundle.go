@@ -1,26 +1,31 @@
 // The WKWebView loads the document via loadHTMLString:baseURL:nil, which
 // cannot resolve relative <script src> URLs, so the bundle must be inlined
-// rather than referenced. web/dist/settings.html is committed to the repo so
-// a plain `go build` (which //go:embed's it) still works without running
+// rather than referenced. internal/webassets/settings.html is committed to the
+// repo so a plain `go build` (which //go:embed's it) still works without running
 // this generator.
 package main
 
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
 )
 
 const (
-	entryPoint = "web/src/entry.js"
-	shellPath  = "web/shell.html"
-	outPath    = "web/dist/settings.html"
-	marker     = "<!--RELAY_BUNDLE-->"
+	marker = "<!--RELAY_BUNDLE-->"
 )
 
 func main() {
+	root, err := moduleRoot()
+	if err != nil {
+		log.Fatal(err)
+	}
+	entryPoint := filepath.Join(root, "web", "src", "entry.js")
+	shellPath := filepath.Join(root, "web", "shell.html")
+	outPath := filepath.Join(root, "internal", "webassets", "settings.html")
 	result := api.Build(api.BuildOptions{
 		EntryPoints: []string{entryPoint},
 		Bundle:      true,
@@ -63,7 +68,7 @@ func main() {
 	out := strings.Replace(string(shell), marker, inline, 1)
 
 	// Write atomically (temp + rename in the same dir) so an interrupted run can
-	// never leave a truncated, committed web/dist/settings.html behind.
+	// never leave a truncated, committed generated asset behind.
 	tmp := outPath + ".tmp"
 	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
 		log.Fatalf("write %s: %v", tmp, err)
@@ -72,6 +77,23 @@ func main() {
 		log.Fatalf("rename %s -> %s: %v", tmp, outPath, err)
 	}
 	log.Printf("wrote %s (%d bytes, bundle %d bytes)", outPath, len(out), len(js))
+}
+
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", os.ErrNotExist
+		}
+		dir = parent
+	}
 }
 
 func itoa(n int) string {
