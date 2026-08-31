@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 type serviceView struct {
@@ -61,8 +63,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 
 // ops is the same instance the Services tab's IPC handlers use, so a service
 // started from curl and one started from the tray share validation and registry.
-func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
-	rr.Handle(ClassRead, "GET /api/services", func(w http.ResponseWriter, r *http.Request) {
+func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
+	rr.Handle(control.ClassRead, "GET /api/services", func(w http.ResponseWriter, r *http.Request) {
 		list := ops.List()
 		out := make([]serviceView, 0, len(list))
 		for _, c := range list {
@@ -71,7 +73,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 		writeJSON(w, http.StatusOK, out)
 	})
 
-	rr.Handle(ClassRead, "GET /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassRead, "GET /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
 		svc, err := ops.Get(r.PathValue("id"))
 		if err != nil {
 			writeServiceError(w, err)
@@ -82,7 +84,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 
 	// execute: the body's `command` field is what relay will run — the
 	// caller chooses it, not relay (ADR-015 decision 1).
-	rr.Handle(ClassExecute, "POST /api/services", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassExecute, "POST /api/services", func(w http.ResponseWriter, r *http.Request) {
 		var body serviceFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -97,7 +99,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 	})
 
 	// execute: same reasoning as create — Update can rewrite `command`.
-	rr.Handle(ClassExecute, "PUT /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassExecute, "PUT /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body serviceFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -111,7 +113,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 		writeJSON(w, http.StatusOK, withProcessError(serviceViewOf(updated, ops.Registry.IsRunning(updated.ID)), err))
 	})
 
-	rr.Handle(ClassConfigure, "DELETE /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "DELETE /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeServiceError(w, err)
 			return
@@ -122,7 +124,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 	// configure, not execute: this launches an already-configured command —
 	// the operator chose what runs when they created or updated the record
 	// (ADR-015 decision 1).
-	rr.Handle(ClassConfigure, "POST /api/services/{id}/start", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/services/{id}/start", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := ops.Start(id); err != nil {
 			writeServiceError(w, err)
@@ -132,7 +134,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 		writeJSON(w, http.StatusOK, serviceViewOf(svc, ops.Registry.IsRunning(id)))
 	})
 
-	rr.Handle(ClassConfigure, "POST /api/services/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/services/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := ops.Stop(id); err != nil {
 			writeServiceError(w, err)
@@ -142,7 +144,7 @@ func RegisterServiceRoutes(rr *RouteRegistrar, ops *ServiceOps) {
 		writeJSON(w, http.StatusOK, serviceViewOf(svc, ops.Registry.IsRunning(id)))
 	})
 
-	rr.Handle(ClassConfigure, "PUT /api/services/{id}/autostart", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "PUT /api/services/{id}/autostart", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Autostart bool `json:"autostart"`
 		}

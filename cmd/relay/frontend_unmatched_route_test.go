@@ -37,7 +37,7 @@ func urUnmatchedLines(logs *lrSyncBuffer) []string {
 
 // POST /api/services is the near-miss ADR-015 decision 2 produces: GET holds
 // the path, the execute-class POST was never registered on this listener,
-// and nothing absorbs it because ClassProxy is socket-only. http.ServeMux
+// and nothing absorbs it because control.ClassProxy is socket-only. http.ServeMux
 // answers 405 with no handler run, which is exactly the shape that used to
 // be silent.
 func TestTCPUnmatchedRoute_MethodNotAllowedIsLogged(t *testing.T) {

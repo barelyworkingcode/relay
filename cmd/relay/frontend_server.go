@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // FrontendServer hosts the HTTP API that Eve and relayScheduler consume. It
@@ -37,8 +39,8 @@ type FrontendServer struct {
 	// socket mux, without threading a second copy of NewFrontendServer's
 	// parameter list through it.
 	routeDeps frontendRouteDeps
-	authz     Authorizer
-	auditor   ControlAuditor
+	authz     control.Authorizer
+	auditor   control.ControlAuditor
 }
 
 // EnvAPIListen opts the API into a loopback TCP listener beside the 0600 Unix
@@ -67,8 +69,8 @@ func loopbackOnly(addr string) error {
 }
 
 // ListenLoopback adds a second listener carrying its OWN route set, built
-// fresh from routeDeps for TransportTCP (ADR-015 decision 2): registerFrontendRoutes
-// runs ClassReachableOn against TransportTCP this time, so an execute-class
+// fresh from routeDeps for control.TransportTCP (ADR-015 decision 2): registerFrontendRoutes
+// runs control.ClassReachableOn against control.TransportTCP this time, so an execute-class
 // route — one where the caller supplies what runs — is never handed to this
 // mux at all, on any credential. The socket and TCP handlers still share
 // frontendCredentialAuth and frontendRecover, so authentication and panic
@@ -87,7 +89,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 	}
 
 	tcpMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: tcpMux, Transport: TransportTCP, Authz: s.authz, Auditor: s.auditor, Issuance: s.routeDeps.issuance, Reserve: s.routeDeps.enhanced}, s.routeDeps)
+	registerFrontendRoutes(&control.RouteRegistrar{Mux: tcpMux, Transport: control.TransportTCP, Authz: s.authz, Auditor: s.auditor, Reserve: s.routeDeps.enhanced, CredentialID: APICredentialIDFromContext}, s.routeDeps)
 
 	// The origin comes from the address the kernel actually gave this
 	// listener, never from a constant or a request header — an ephemeral
@@ -121,7 +123,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 // WebAuthn ceremony is verified against an origin and a Unix socket has
 // none: with no listener bound there is nothing the login routes could check
 // an assertion against, so they are not registered anywhere rather than
-// registered against a placeholder (the same rule RouteRegistrar.Handle
+// registered against a placeholder (the same rule control.RouteRegistrar.Handle
 // follows for an unreachable class).
 func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
 	verifier, err := NewWebAuthnVerifier(origin, webauthnRPID)
@@ -187,7 +189,7 @@ type frontendRouteDeps struct {
 // is never registered at all (ADR-015 decision 2), so calling all five
 // registrars unconditionally on every transport is safe — the per-route
 // class, not a call site here, decides what lands on TCP.
-func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
+func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) {
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
 	if deps.auditOps != nil {
 		RegisterAuditRoutes(rr, deps.auditOps)
@@ -215,14 +217,14 @@ func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
 	// sibling create paths can't route around it; it self-classifies the
 	// request and forwards everything that isn't a session-create POST.
 	//
-	// ClassProxy, not ClassConfigure: what this mount reaches is whatever a
+	// control.ClassProxy, not control.ClassConfigure: what this mount reaches is whatever a
 	// manifest declares — relayLLM's sessions, terminals and /ws included —
 	// which relay cannot see and therefore cannot class as configuration.
 	// The class is socket-only, so this registration is also the reason the
 	// TCP mux has no catch-all: a near-miss like POST /api/services there is
 	// a 405 from http.ServeMux rather than a proxied request (ADR-016
 	// decision 4).
-	rr.Handle(ClassProxy, "/", newSessionModelGuard(deps.store, dispatcher))
+	rr.Handle(control.ClassProxy, "/", newSessionModelGuard(deps.store, dispatcher))
 }
 
 // NewFrontendServer wires the mux and binds the frontend Unix socket at 0600.
@@ -277,7 +279,7 @@ func registerFrontendRoutes(rr *RouteRegistrar, deps frontendRouteDeps) {
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz Authorizer, auditor ControlAuditor) (*FrontendServer, error) {
+func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -307,7 +309,7 @@ func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPTo
 	ensureFrontendTokenIsCredential(store, frontend.Token)
 
 	socketMux := http.NewServeMux()
-	registerFrontendRoutes(&RouteRegistrar{Mux: socketMux, Transport: TransportSocket, Authz: authz, Auditor: auditor, Issuance: deps.issuance, Reserve: deps.enhanced}, deps)
+	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext}, deps)
 
 	// The socket door is composed through the same function the loopback one
 	// is, with an empty public set: a browser cannot reach a Unix socket and
@@ -424,7 +426,7 @@ func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
 
 // frontendCredentialAuth admits any bearer that resolves to a credential in
 // Settings.APICredentials (ADR-015 decision 3) and leaves what that credential
-// may then DO to RouteRegistrar's per-route class check.
+// may then DO to control.RouteRegistrar's per-route class check.
 //
 // This is the ONLY bearer check in front of either mux, deliberately. A second
 // gate here admitting one fixed value would make every other credential
@@ -474,7 +476,7 @@ func frontendCredentialAuth(store SettingsStore, next http.Handler) http.Handler
 // authenticated can produce a line.
 //
 // This is deliberate: it logs and records nothing. An unregistered route is
-// not an authorization decision, and a ControlDecision here would put an
+// not an authorization decision, and a control.ControlDecision here would put an
 // attacker-drivable write on the listener ADR-015 decision 2 deliberately
 // leaves empty. The socket keeps no counterpart at all: its catch-all
 // absorbs every unmatched path, so a miss there is the dispatcher's, not
@@ -488,7 +490,7 @@ func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := mux.Handler(r); pattern == "" {
 			slog.Warn(unmatchedRouteWarning,
-				"method", r.Method, "path", r.URL.Path, "transport", string(TransportTCP))
+				"method", r.Method, "path", r.URL.Path, "transport", string(control.TransportTCP))
 		}
 		mux.ServeHTTP(w, r)
 	})

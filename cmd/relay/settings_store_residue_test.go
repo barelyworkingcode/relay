@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // A stat that fails must close READS as well as writes. readErr alone refuses
@@ -31,7 +33,7 @@ func TestSettingsStore_AFailedStatClosesReadsRatherThanServingTheOldCache(t *tes
 			ID:      "residue-cred",
 			Name:    "residue",
 			Hash:    hashToken("residue-plaintext"),
-			Classes: []CapabilityClass{ClassRead},
+			Classes: []control.CapabilityClass{control.ClassRead},
 		})
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)

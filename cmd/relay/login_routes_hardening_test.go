@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func lrhStat(t *testing.T, s *lrServer) os.FileInfo {
@@ -196,7 +198,7 @@ func TestLoginRoutes_LoginOutcomesAreAuditedAndCarryNoSecret(t *testing.T) {
 		t.Fatal("no login outcome reached the auditor at all")
 	}
 
-	find := func(match func(ControlDecision) bool) *ControlDecision {
+	find := func(match func(control.ControlDecision) bool) *control.ControlDecision {
 		for i := range decisions {
 			if match(decisions[i]) {
 				return &decisions[i]
@@ -205,28 +207,30 @@ func TestLoginRoutes_LoginOutcomesAreAuditedAndCarryNoSecret(t *testing.T) {
 		return nil
 	}
 
-	signedIn := find(func(d ControlDecision) bool { return d.Allowed && d.CredID == cred.ID })
+	signedIn := find(func(d control.ControlDecision) bool { return d.Allowed && d.CredID == cred.ID })
 	if signedIn == nil {
 		t.Fatalf("a successful login wrote no record naming the credential it minted (%s): %+v", cred.ID, decisions)
 	}
-	if signedIn.Transport != TransportTCP || signedIn.Method != http.MethodPost {
+	if signedIn.Transport != control.TransportTCP || signedIn.Method != http.MethodPost {
 		t.Errorf("login record = %s %s on %s, want POST %s on tcp", signedIn.Method, signedIn.Path, signedIn.Transport, loginVerifyPath)
 	}
 	if signedIn.Reason != "" {
 		t.Errorf("an allowed record carries a reason: %q", signedIn.Reason)
 	}
 
-	registered := find(func(d ControlDecision) bool { return d.Allowed && d.CredID == abbreviatePasskeyID(passkeyID) })
+	registered := find(func(d control.ControlDecision) bool { return d.Allowed && d.CredID == abbreviatePasskeyID(passkeyID) })
 	if registered == nil {
 		t.Errorf("a successful registration wrote no record naming the passkey (%s): %+v", abbreviatePasskeyID(passkeyID), decisions)
 	}
 
-	badCode := find(func(d ControlDecision) bool { return !d.Allowed && d.Reason == errBootstrapCodeInvalid.Error() })
+	badCode := find(func(d control.ControlDecision) bool { return !d.Allowed && d.Reason == errBootstrapCodeInvalid.Error() })
 	if badCode == nil {
 		t.Errorf("a refused bootstrap code wrote no record: %+v", decisions)
 	}
 
-	rejected := find(func(d ControlDecision) bool { return !d.Allowed && d.Reason == errWebAuthnAssertionRejected.Error() })
+	rejected := find(func(d control.ControlDecision) bool {
+		return !d.Allowed && d.Reason == errWebAuthnAssertionRejected.Error()
+	})
 	if rejected == nil {
 		t.Errorf("a refused assertion wrote no record: %+v", decisions)
 	}

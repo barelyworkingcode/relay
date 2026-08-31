@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (*httptest.Server, SettingsStore) {
@@ -23,7 +25,7 @@ func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (
 	store := newCLISandboxStore(t)
 	ops := &ServiceOps{Store: store, Registry: reg, OnChange: onChange, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterServiceRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
+	RegisterServiceRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	return httptest.NewServer(mux), store
 }
 
@@ -361,7 +363,7 @@ func TestServiceRoutes_CreateReportsFailedPersist(t *testing.T) {
 	base := newCLISandboxStore(t)
 	ops := &ServiceOps{Store: &failingStore{SettingsStore: base, err: errors.New("disk full")}, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterServiceRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
+	RegisterServiceRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

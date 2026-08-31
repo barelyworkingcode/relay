@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
@@ -24,7 +26,7 @@ func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
 	})
 	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterProjectRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, store, ops, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
+	RegisterProjectRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, store, ops, schemaProviderFunc(v2Surfaces), nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL, store

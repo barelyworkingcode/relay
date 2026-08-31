@@ -566,7 +566,7 @@ func (o *EnrolmentOps) relayAddr() string {
 // NOT gated by presence.Gate: declining a stranger's request from the list
 // is not the act ADR-017 decision 3 protects (issue #68's boundary), and
 // the table's own Refuse method already records it as a genuine,
-// human-driven ControlDecision, unlike lodging.
+// human-driven control.ControlDecision, unlike lodging.
 func (o *EnrolmentOps) Refuse(requestID string) error {
 	if o.Requests == nil {
 		return errEnrolmentRequestsNotWired

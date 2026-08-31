@@ -115,7 +115,7 @@ type CredentialIssuance struct {
 	PresenceID string
 }
 
-// IssuanceAuditor is the issuance counterpart to ControlAuditor, and a
+// IssuanceAuditor is the issuance counterpart to control.ControlAuditor, and a
 // separate interface rather than a method added to that one: the doors that
 // issue are not the doors that route, and a control-plane door with no
 // issuance to record should not have to implement this.
@@ -339,7 +339,7 @@ func issuanceEvent(iss CredentialIssuance) AuditEvent {
 
 // classStrings widens a class set into the plain strings the record carries,
 // keeping AuditEvent's on-disk shape independent of the authorization
-// package's types the way Class and Transport already are.
+// package's types the way Class and control.Transport already are.
 func classStrings[T ~string](classes []T) []string {
 	if len(classes) == 0 {
 		return nil

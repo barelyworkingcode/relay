@@ -29,6 +29,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // Bounds, tuned per spec §2's table — not derived, not "optimised" without
@@ -956,10 +958,10 @@ func (t *enrolmentRequestTable) Refuse(audit *AuditRecorder, requestID string) b
 		return false
 	}
 	if audit != nil {
-		audit.RecordDecision(ControlDecision{
+		audit.RecordDecision(control.ControlDecision{
 			Method:    "enrolment.request.refuse",
-			Class:     ClassGrant,
-			Transport: TransportTCP,
+			Class:     control.ClassGrant,
+			Transport: control.TransportTCP,
 			Allowed:   false,
 		})
 	}

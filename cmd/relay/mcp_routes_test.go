@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // Mounts both RegisterProjectRoutes and RegisterMcpRoutes on one mux, the
@@ -25,7 +27,7 @@ func newMcpRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	store := newCLISandboxStore(t)
 	ops := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	rr := &RouteRegistrar{Mux: mux, Transport: TransportSocket}
+	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}
 	RegisterProjectRoutes(rr, store, &ProjectOps{Store: store}, nil, nil, nil, nil, nil)
 	RegisterMcpRoutes(rr, ops)
 	return httptest.NewServer(mux), store

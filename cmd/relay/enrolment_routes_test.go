@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, SettingsStore) {
@@ -25,7 +27,7 @@ func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, 
 	store := newCLISandboxStore(t)
 	ops := &EnrolmentOps{Store: store, OnChange: onChange, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
-	RegisterEnrolmentRoutes(&RouteRegistrar{Mux: mux, Transport: TransportSocket}, ops)
+	RegisterEnrolmentRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, ops)
 	return httptest.NewServer(mux), store
 }
 

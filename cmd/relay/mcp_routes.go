@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // mcpView is an explicit allow-list, not ExternalMcp marshaled directly:
@@ -68,10 +70,10 @@ func writeMcpError(w http.ResponseWriter, err error) {
 // ops is the same instance the settings UI's IPC handlers use, so an MCP
 // registered from curl and one registered from the tray share validation,
 // the SSRF guard, and discovery.
-func RegisterMcpRoutes(rr *RouteRegistrar, ops *McpOps) {
+func RegisterMcpRoutes(rr *control.RouteRegistrar, ops *McpOps) {
 	// execute: a stdio MCP's `command` is the caller's choice of what relay
 	// runs (ADR-015 decision 1) — the same reasoning as service create.
-	rr.Handle(ClassExecute, "POST /api/mcps", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassExecute, "POST /api/mcps", func(w http.ResponseWriter, r *http.Request) {
 		var body mcpFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -87,7 +89,7 @@ func RegisterMcpRoutes(rr *RouteRegistrar, ops *McpOps) {
 		writeJSON(w, http.StatusCreated, view)
 	})
 
-	rr.Handle(ClassConfigure, "DELETE /api/mcps/{id}", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "DELETE /api/mcps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeMcpError(w, err)
 			return

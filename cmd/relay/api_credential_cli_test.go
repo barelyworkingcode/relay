@@ -1,12 +1,12 @@
 package main
 
 // The composition nothing else in the suite exercises: NewFrontendServer's
-// OUTER gate and RouteRegistrar's per-route class check running together,
+// OUTER gate and control.RouteRegistrar's per-route class check running together,
 // against real credentials in a real store. The route-level tests
 // (capability_test.go, credential_enforcement_test.go) drive a synthetic mux
 // with no outer gate at all, and the server-level tests
 // (frontend_server_test.go, transport_enforcement_test.go) pass a nil
-// Authorizer — so a gate that admitted exactly one token while the class
+// control.Authorizer — so a gate that admitted exactly one token while the class
 // check expected many could be, and was, green in both.
 //
 // Also covers the `relay credential` CLI that mints those credentials, since
@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 // accLegacyToken stands in for RELAY_FRONTEND_TOKEN: the value
@@ -216,10 +218,10 @@ func TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports(t *testing.T
 	if legacy.Hash != hashToken(accLegacyToken) {
 		t.Fatal("the legacy credential's hash is not the frontend token's")
 	}
-	if !legacy.Grants(ClassRead) || !legacy.Grants(ClassConfigure) {
+	if !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) {
 		t.Fatalf("legacy classes = %v, want read+configure", legacy.Classes)
 	}
-	if legacy.Grants(ClassGrant) || legacy.Grants(ClassExecute) {
+	if legacy.Grants(control.ClassGrant) || legacy.Grants(control.ClassExecute) {
 		t.Fatalf("legacy classes = %v; the migration must not carry grant or execute", legacy.Classes)
 	}
 
@@ -460,7 +462,7 @@ func TestACCMintNormalizesSurroundingWhitespaceInAClass(t *testing.T) {
 	store := newCLISandboxStore(t)
 	cred, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-spacey", Classes: []string{" execute "}})
 	assertNoErr(t, err, "mint")
-	if !cred.Grants(ClassExecute) {
+	if !cred.Grants(control.ClassExecute) {
 		t.Fatalf("classes = %v; the credential is inert despite being accepted", cred.Classes)
 	}
 }
@@ -562,15 +564,15 @@ func TestACCMintAcceptsTheProxyClass(t *testing.T) {
 	store := newCLISandboxStore(t)
 	cred, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-proxier", Classes: []string{"proxy"}})
 	assertNoErr(t, err, "mint --class proxy")
-	if !cred.Grants(ClassProxy) {
+	if !cred.Grants(control.ClassProxy) {
 		t.Fatalf("classes = %v; the credential is inert despite being accepted", cred.Classes)
 	}
-	if cred.Grants(ClassConfigure) || cred.Grants(ClassExecute) {
+	if cred.Grants(control.ClassConfigure) || cred.Grants(control.ClassExecute) {
 		t.Fatalf("classes = %v; proxy must not imply any other class", cred.Classes)
 	}
 
 	stored := store.Get().APICredentials
-	if len(stored) != 1 || !stored[0].Grants(ClassProxy) {
+	if len(stored) != 1 || !stored[0].Grants(control.ClassProxy) {
 		t.Fatalf("the proxy class did not survive the write: %+v", stored)
 	}
 }
