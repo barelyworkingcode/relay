@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/login"
 )
 
 // loginOwnerHandle is the WebAuthn user handle every passkey relay registers
@@ -75,7 +76,7 @@ var (
 // FrontendServer.ListenLoopback.
 type loginRoutes struct {
 	store    config.SettingsStore
-	verifier *WebAuthnVerifier
+	verifier *login.WebAuthnVerifier
 	auditor  control.ControlAuditor
 	// issuance records the two credentials this surface hands out — a
 	// registered passkey and the credential an assertion mints — which the
@@ -85,7 +86,7 @@ type loginRoutes struct {
 	issuance IssuanceAuditor
 }
 
-func newLoginRoutes(store config.SettingsStore, verifier *WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
+func newLoginRoutes(store config.SettingsStore, verifier *login.WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
 	return &loginRoutes{store: store, verifier: verifier, auditor: auditor}
 }
 
@@ -191,10 +192,10 @@ func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
 		Credentials: []string{},
 	}
 	switch ceremony {
-	case WebAuthnCeremonyRegister:
+	case login.WebAuthnCeremonyRegister:
 		resp.UserHandle = base64.RawURLEncoding.EncodeToString(loginOwnerHandle)
 		resp.UserName = loginUserName
-	case WebAuthnCeremonyAssert:
+	case login.WebAuthnCeremonyAssert:
 		// The cost ADR-016 decision 6 states plainly: refusing discoverable
 		// credentials means allowCredentials must be supplied, so this
 		// endpoint hands an unauthenticated caller the registered ids. They
@@ -219,9 +220,9 @@ func (lr *loginRoutes) serveVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch ceremony {
-	case WebAuthnCeremonyRegister:
+	case login.WebAuthnCeremonyRegister:
 		lr.register(w, req)
-	case WebAuthnCeremonyAssert:
+	case login.WebAuthnCeremonyAssert:
 		lr.assert(w, req)
 	}
 }
@@ -238,7 +239,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 		return
 	}
 
-	result, err := lr.verifier.VerifyRegistration(WebAuthnRegistrationInput{
+	result, err := lr.verifier.VerifyRegistration(login.WebAuthnRegistrationInput{
 		ClientDataJSON:    clientData,
 		AttestationObject: attestation,
 		Existing:          loginCredentials(config.FreshSettings(lr.store)),
@@ -277,10 +278,10 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	// settings writer for whatever can reach the listener.
 	var refusal error
 	saveErr := config.WithDeclinable(lr.store, func(s *config.Settings) error {
-		if len(s.Passkeys) >= MaxRegisteredPasskeys {
-			refusal = fmt.Errorf("%w: %d registered", errWebAuthnPasskeyLimit, len(s.Passkeys))
+		if len(s.Passkeys) >= login.MaxRegisteredPasskeys {
+			refusal = fmt.Errorf("%w: %d registered", login.ErrWebAuthnPasskeyLimit, len(s.Passkeys))
 		} else if slices.ContainsFunc(s.Passkeys, func(p config.Passkey) bool { return p.ID == id }) {
-			refusal = errWebAuthnDuplicateCred
+			refusal = login.ErrWebAuthnDuplicateCred
 		} else if err := consumeBootstrapCode(s, req.Code); err != nil {
 			refusal = err
 		}
@@ -360,7 +361,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 		}
 	}
 
-	result, err := lr.verifier.VerifyAssertion(WebAuthnAssertionInput{
+	result, err := lr.verifier.VerifyAssertion(login.WebAuthnAssertionInput{
 		CredentialID:      credentialID,
 		ClientDataJSON:    clientData,
 		AuthenticatorData: authData,
@@ -369,7 +370,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 		Credentials:       loginCredentials(config.FreshSettings(lr.store)),
 	})
 	if err != nil {
-		var counter *webauthnCounterError
+		var counter *login.WebAuthnCounterError
 		if errors.As(err, &counter) {
 			slog.Warn("login: signature counter did not increase", "error", counter.Error())
 		}
@@ -462,7 +463,7 @@ func (lr *loginRoutes) recordLoginOutcome(credID string, allowed bool, err error
 		// refusal here rate-bounded — so recording it would hand that caller
 		// the audit-log amplification audit_control_cap_test.go exists about.
 		// The failures that caused the throttle are each recorded.
-		if errors.Is(err, errWebAuthnRateLimited) {
+		if errors.Is(err, login.ErrWebAuthnRateLimited) {
 			return
 		}
 		reason, _ = audit.CapControlString(loginAuditReason(err), loginAuditMaxReasonBytes)
@@ -490,7 +491,7 @@ func loginAuditReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	var counter *webauthnCounterError
+	var counter *login.WebAuthnCounterError
 	if errors.As(err, &counter) {
 		return counter.Error()
 	}
@@ -516,13 +517,13 @@ func loginAuditReason(err error) string {
 // values. A record whose encoded fields do not decode is dropped rather than
 // repaired: it then resolves to nothing, which is the same refusal an unknown
 // credential id gets.
-func loginCredentials(s *config.Settings) []WebAuthnCredential {
+func loginCredentials(s *config.Settings) []login.WebAuthnCredential {
 	if s == nil {
 		return nil
 	}
-	out := make([]WebAuthnCredential, 0, len(s.Passkeys))
+	out := make([]login.WebAuthnCredential, 0, len(s.Passkeys))
 	for _, p := range s.Passkeys {
-		id, err := ParseCredentialID(p.ID)
+		id, err := login.ParseCredentialID(p.ID)
 		if err != nil {
 			slog.Warn("login: stored passkey has an unreadable credential id", "name", p.Name)
 			continue
@@ -532,7 +533,7 @@ func loginCredentials(s *config.Settings) []WebAuthnCredential {
 			slog.Warn("login: stored passkey has an unreadable user handle", "name", p.Name)
 			continue
 		}
-		out = append(out, WebAuthnCredential{
+		out = append(out, login.WebAuthnCredential{
 			ID:               id,
 			PublicKeyX:       p.X,
 			PublicKeyY:       p.Y,
@@ -544,12 +545,12 @@ func loginCredentials(s *config.Settings) []WebAuthnCredential {
 	return out
 }
 
-func parseLoginCeremony(name string) (WebAuthnCeremony, error) {
+func parseLoginCeremony(name string) (login.WebAuthnCeremony, error) {
 	switch name {
 	case "register":
-		return WebAuthnCeremonyRegister, nil
+		return login.WebAuthnCeremonyRegister, nil
 	case "assert":
-		return WebAuthnCeremonyAssert, nil
+		return login.WebAuthnCeremonyAssert, nil
 	}
 	return 0, fmt.Errorf("%w: %q", errLoginCeremonyUnknown, name)
 }
@@ -589,7 +590,7 @@ func loginStatus(err error) int {
 	switch {
 	case errors.Is(err, errLoginBadRequest), errors.Is(err, errLoginCeremonyUnknown):
 		return http.StatusBadRequest
-	case errors.Is(err, errWebAuthnRateLimited), errors.Is(err, errChallengeTableFull):
+	case errors.Is(err, login.ErrWebAuthnRateLimited), errors.Is(err, login.ErrChallengeTableFull):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusForbidden
@@ -601,8 +602,8 @@ func loginStatus(err error) int {
 // both counter values, which belongs in the audit record and not in a reply
 // to an unauthenticated caller.
 func loginRefusalBody(err error) string {
-	if errors.Is(err, errWebAuthnCounter) {
-		return errWebAuthnAssertionRejected.Error()
+	if errors.Is(err, login.ErrWebAuthnCounter) {
+		return login.ErrWebAuthnAssertionRejected.Error()
 	}
 	return err.Error()
 }
@@ -618,8 +619,8 @@ func writeLoginRefusal(w http.ResponseWriter, err error) {
 // loginRetryAfterSeconds rounds up: a Retry-After of 0 invites an immediate
 // retry the limiter would refuse again.
 func loginRetryAfterSeconds(err error) int {
-	wait := challengeTTL
-	var limited *webauthnRateLimitedError
+	wait := login.ChallengeTTL
+	var limited *login.WebAuthnRateLimitedError
 	if errors.As(err, &limited) {
 		wait = limited.RetryAfter
 	}

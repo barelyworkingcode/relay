@@ -1,4 +1,4 @@
-package main
+package login
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ import (
 // both often enough for an operator to see it and rare enough not to become
 // the log flood it is warning about.
 func TestWebAuthnChallengeFloodIsBoundedAndVisibleOncePerTTL(t *testing.T) {
-	logs := &lrSyncBuffer{}
+	logs := &loginSyncBuffer{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
@@ -32,7 +32,7 @@ func TestWebAuthnChallengeFloodIsBoundedAndVisibleOncePerTTL(t *testing.T) {
 		refused := 0
 		for i := 0; i < n; i++ {
 			if _, err := store.Issue(WebAuthnCeremonyAssert); err != nil {
-				if !errors.Is(err, errChallengeTableFull) {
+				if !errors.Is(err, ErrChallengeTableFull) {
 					t.Fatalf("issue: %v", err)
 				}
 				refused++
@@ -62,15 +62,15 @@ func TestWebAuthnChallengeFloodIsBoundedAndVisibleOncePerTTL(t *testing.T) {
 	// The owner arriving mid-flood is refused, and the refusal does not lapse
 	// on its own: the flood re-fills the table the moment the TTL retires an
 	// entry. This is the cost the comment on Issue now names.
-	if _, err := store.Issue(WebAuthnCeremonyRegister); !errors.Is(err, errChallengeTableFull) {
-		t.Fatalf("the owner's challenge during a flood: got %v, want %v", err, errChallengeTableFull)
+	if _, err := store.Issue(WebAuthnCeremonyRegister); !errors.Is(err, ErrChallengeTableFull) {
+		t.Fatalf("the owner's challenge during a flood: got %v, want %v", err, ErrChallengeTableFull)
 	}
-	now = now.Add(challengeTTL + time.Second)
+	now = now.Add(ChallengeTTL + time.Second)
 	if refused := flood(maxOutstandingChallenges); refused != 0 {
 		t.Fatalf("the flood could not re-fill the table after a TTL: %d refusals", refused)
 	}
-	if _, err := store.Issue(WebAuthnCeremonyRegister); !errors.Is(err, errChallengeTableFull) {
-		t.Fatalf("the owner's challenge a TTL later: got %v, want %v", err, errChallengeTableFull)
+	if _, err := store.Issue(WebAuthnCeremonyRegister); !errors.Is(err, ErrChallengeTableFull) {
+		t.Fatalf("the owner's challenge a TTL later: got %v, want %v", err, ErrChallengeTableFull)
 	}
 	if got := warnings(); got != 2 {
 		t.Fatalf("%d warnings across two TTL windows, want exactly 2", got)
@@ -78,7 +78,7 @@ func TestWebAuthnChallengeFloodIsBoundedAndVisibleOncePerTTL(t *testing.T) {
 
 	// And when the pressure stops, the table drains and the owner is served
 	// again — the refusal is a consequence of the flood and not a latch.
-	now = now.Add(challengeTTL + time.Second)
+	now = now.Add(ChallengeTTL + time.Second)
 	if _, err := store.Issue(WebAuthnCeremonyRegister); err != nil {
 		t.Fatalf("the owner's challenge after the flood stopped: %v", err)
 	}

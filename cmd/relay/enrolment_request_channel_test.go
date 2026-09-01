@@ -31,6 +31,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
@@ -776,7 +777,7 @@ func TestEnrolment_AC15_OversizedAndHostileInputRefusedAtTheDoor(t *testing.T) {
 			"../escape",
 		} {
 			// A fresh table per label: the global ceremony limiter (by
-			// design, matching WebAuthnVerifier.VerifyRegistration) counts
+			// design, matching login.WebAuthnVerifier.VerifyRegistration) counts
 			// a validation refusal as a failure, and this loop's job is to
 			// check each hostile shape is refused on its own merits, not to
 			// drive the limiter.
@@ -1018,19 +1019,19 @@ func TestEnrolment_SweepPrunesLastLodgeBySource(t *testing.T) {
 // Finding 4: an idempotent re-lodge must not reset the global limiter
 // ---------------------------------------------------------------------------
 
-// Lodge's deferred limiter update ran recordSuccess() on ANY nil-error
+// Lodge's deferred limiter update ran RecordSuccess() on ANY nil-error
 // return, and the idempotent re-lodge path (spec §2, AC-10) returns nil --
 // so re-lodging a CSR the attacker already has a slot for zeroed
 // failures/nextAllowed for free, unlimited, forever, and the 2s->30s
-// escalation ceremonyLimiter exists to build never held. A re-lodge must be
-// neutral: it neither escalates the limiter nor resets it. Assertions read
-// the limiter's own fields directly, per the finding's instruction, rather
-// than inferring state from timing.
+// escalation ceremonylimit.Limiter exists to build never held. A re-lodge
+// must be neutral: it neither escalates the limiter nor resets it. Assertions
+// read the limiter's own state through its Failures/NextAllowed test seam,
+// per the finding's instruction, rather than inferring state from timing.
 func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 	table := newEnrolmentRequestTable()
 	now := time.Now()
 	table.setClock(func() time.Time { return now })
-	table.limiter.now = func() time.Time { return now }
+	table.limiter.SetClock(func() time.Time { return now })
 
 	csr := genClientCSRPEM(t, "relimiter-client")
 	first, err := table.Lodge(csr, "", "", "", "10.0.0.1:1")
@@ -1038,15 +1039,13 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 
 	// Escalate the limiter past its grace with genuine failures -- exactly
 	// the shape an attacker grinding for a slot produces.
-	for i := 0; i <= ceremonyFailureGrace; i++ {
+	for i := 0; i <= ceremonylimit.FailureGrace; i++ {
 		if _, err := table.Lodge([]byte("not a csr"), "", "", "", ""); err == nil {
 			t.Fatalf("malformed CSR %d unexpectedly accepted", i)
 		}
 	}
-	table.limiter.mu.Lock()
-	failuresBefore, nextAllowedBefore := table.limiter.failures, table.limiter.nextAllowed
-	table.limiter.mu.Unlock()
-	if failuresBefore <= ceremonyFailureGrace || nextAllowedBefore.IsZero() {
+	failuresBefore, nextAllowedBefore := table.limiter.Failures(), table.limiter.NextAllowed()
+	if failuresBefore <= ceremonylimit.FailureGrace || nextAllowedBefore.IsZero() {
 		t.Fatalf("limiter did not escalate: failures=%d nextAllowed=%v", failuresBefore, nextAllowedBefore)
 	}
 
@@ -1059,9 +1058,7 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 		t.Fatalf("re-lodge id = %s, want the original %s", second.RequestID, first.RequestID)
 	}
 
-	table.limiter.mu.Lock()
-	failuresAfter, nextAllowedAfter := table.limiter.failures, table.limiter.nextAllowed
-	table.limiter.mu.Unlock()
+	failuresAfter, nextAllowedAfter := table.limiter.Failures(), table.limiter.NextAllowed()
 	if failuresAfter != failuresBefore || !nextAllowedAfter.Equal(nextAllowedBefore) {
 		t.Fatalf("an idempotent re-lodge changed the limiter: failures %d -> %d, nextAllowed %v -> %v (want unchanged -- a re-lodge must be neutral)",
 			failuresBefore, failuresAfter, nextAllowedBefore, nextAllowedAfter)
@@ -1071,9 +1068,7 @@ func TestEnrolment_IdempotentRelodgeDoesNotResetTheGlobalLimiter(t *testing.T) {
 	if _, err := table.Lodge(genClientCSRPEM(t, "relimiter-new"), "", "", "", "10.0.0.2:1"); err != nil {
 		t.Fatalf("genuine new lodge: %v", err)
 	}
-	table.limiter.mu.Lock()
-	failuresFinal, nextAllowedFinal := table.limiter.failures, table.limiter.nextAllowed
-	table.limiter.mu.Unlock()
+	failuresFinal, nextAllowedFinal := table.limiter.Failures(), table.limiter.NextAllowed()
 	if failuresFinal != 0 || !nextAllowedFinal.IsZero() {
 		t.Fatalf("a genuine new insert did not reset the limiter: failures=%d nextAllowed=%v, want zero", failuresFinal, nextAllowedFinal)
 	}

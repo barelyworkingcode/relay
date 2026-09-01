@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
+	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
@@ -40,7 +41,7 @@ import (
 const (
 	// maxPendingEnrolmentRequests is human-paced, not machine-paced: a
 	// human walks to a Mac to approve one. The login challenge table
-	// (webauthn_challenge.go) is 64 because a browser ceremony is fast;
+	// (internal/login's webauthn_challenge.go) is 64 because a browser ceremony is fast;
 	// this is an order of magnitude smaller on purpose.
 	//
 	// This number now carries a SECOND argument, not only availability: it
@@ -78,13 +79,13 @@ const (
 )
 
 var (
-	// errEnrolmentTableFull is refuse-never-evict (webauthn_challenge.go's
+	// errEnrolmentTableFull is refuse-never-evict (internal/login's webauthn_challenge.go's
 	// Issue and its own doc comment on why eviction is the wrong fix):
 	// displacing a live row would let a flood silently bump the operator's
 	// own request out of the table, where a refusal is at least answered.
 	errEnrolmentTableFull = errors.New("too many pending enrolment requests")
 
-	// errEnrolmentRateLimited is the global ceremonyLimiter's refusal,
+	// errEnrolmentRateLimited is a ceremonylimit.Limiter's refusal,
 	// reused verbatim in shape from the WebAuthn login ceremony.
 	errEnrolmentRateLimited = errors.New("too many enrolment requests")
 
@@ -104,7 +105,7 @@ var (
 )
 
 // enrolmentRateLimitedError carries the delay the caller should wait,
-// mirroring webauthnRateLimitedError: the limiter RETURNS the delay rather
+// mirroring login.WebAuthnRateLimitedError: the limiter RETURNS the delay rather
 // than sleeping, because a handler that slept would hand an unauthenticated
 // caller a cheaper denial of service than the one being rate-limited.
 type enrolmentRateLimitedError struct{ RetryAfter time.Duration }
@@ -362,7 +363,7 @@ type enrolmentRequestTable struct {
 	// LodgeGeneration.
 	lodgeGen uint64
 
-	limiter           *ceremonyLimiter
+	limiter           *ceremonylimit.Limiter
 	lastLodgeBySource map[string]time.Time
 	lastFullWarning   time.Time
 
@@ -373,7 +374,7 @@ type enrolmentRequestTable struct {
 func newEnrolmentRequestTable() *enrolmentRequestTable {
 	return &enrolmentRequestTable{
 		pending:           make(map[string]*enrolmentRequestRecord),
-		limiter:           newCeremonyLimiter(),
+		limiter:           ceremonylimit.New(),
 		lastLodgeBySource: make(map[string]time.Time),
 		now:               time.Now,
 		rand:              rand.Read,
@@ -464,11 +465,11 @@ func (t *enrolmentRequestTable) newRequestID() string {
 // mutation" half of §2 both hold because there is nothing here capable of
 // either.
 func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sasCommit, remoteAddr string) (out lodged, err error) {
-	if retry, ok := t.limiter.allow(); !ok {
+	if retry, ok := t.limiter.Allow(); !ok {
 		return lodged{}, &enrolmentRateLimitedError{RetryAfter: retry}
 	}
 	// The limiter's failure/success signal is decided by the OUTCOME of
-	// this whole call, mirroring WebAuthnVerifier.VerifyRegistration: a
+	// this whole call, mirroring login.WebAuthnVerifier.VerifyRegistration: a
 	// structural refusal (table full, per-source throttle) counts as a
 	// failure exactly as a malformed CSR does, because both are the shape
 	// an attacker grinding for a slot produces.
@@ -483,9 +484,9 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	defer func() {
 		switch {
 		case err != nil:
-			t.limiter.recordFailure()
+			t.limiter.RecordFailure()
 		case inserted:
-			t.limiter.recordSuccess()
+			t.limiter.RecordSuccess()
 		}
 	}()
 
@@ -1016,7 +1017,7 @@ func (t *enrolmentRequestTable) sweepLocked(now time.Time) {
 // challengeTableFullWarning uses.
 const enrolmentTableFullWarning = "enrolment: the pending request table is full; a request was refused"
 
-// warnTableFullLocked mirrors WebAuthnChallengeStore.warnTableFullLocked
+// warnTableFullLocked mirrors login.WebAuthnChallengeStore.warnTableFullLocked
 // exactly: at most one slog.Warn per TTL, which is the difference between
 // an operator seeing "enrolment is broken" and seeing that something is
 // hammering the port.

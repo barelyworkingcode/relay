@@ -2,8 +2,9 @@ package main
 
 // HTTP coverage for ADR-016 decision 5's public route table. Every ceremony
 // here runs through the real mux over the real loopback listener, driven by
-// the software authenticator in webauthn_testclient_test.go — the negative
-// verifier cases live in webauthn_test.go and are deliberately not repeated.
+// the software authenticator in internal/login/loginfake — the negative
+// verifier cases live in internal/login's webauthn_test.go and are
+// deliberately not repeated.
 
 import (
 	"bytes"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/login"
+	"github.com/barelyworkingcode/relay/internal/login/loginfake"
 )
 
 type lrAuditor struct {
@@ -152,29 +155,29 @@ func lrDecodeChallenge(t *testing.T, encoded string) []byte {
 
 // register drives one full registration ceremony and returns the raw
 // response, so a caller can assert on a refusal as easily as on success.
-func (s *lrServer) register(a *softAuthenticator, code string, signCount uint32) (*http.Response, []byte) {
+func (s *lrServer) register(a *loginfake.SoftAuthenticator, code string, signCount uint32) (*http.Response, []byte) {
 	s.t.Helper()
 	ch := s.challenge("register")
-	c := &registrationCeremony{
-		ClientData: clientDataOpts{
+	c := &loginfake.RegistrationCeremony{
+		ClientData: loginfake.ClientDataOpts{
 			Type:        "webauthn.create",
 			Origin:      s.origin,
 			Challenge:   lrDecodeChallenge(s.t, ch.Challenge),
 			CrossOrigin: boolPtr(false),
 		},
-		AuthData: authDataOpts{
-			RPIDHash:  rpIDHash(ch.RPID),
-			Flags:     flagUserPresent | flagUserVerified | flagAttestedCredentialData,
+		AuthData: loginfake.AuthDataOpts{
+			RPIDHash:  loginfake.RPIDHash(ch.RPID),
+			Flags:     loginfake.FlagUserPresent | loginfake.FlagUserVerified | loginfake.FlagAttestedCredentialData,
 			SignCount: signCount,
 			Attested:  true,
-			AAGUID:    a.aaguid,
-			CredID:    a.credID,
-			COSEKey:   a.coseKey(),
+			AAGUID:    a.AAGUID,
+			CredID:    a.CredID,
+			COSEKey:   a.CoseKey(),
 		},
 		Format:  "none",
-		AttStmt: cborEncMap(),
+		AttStmt: loginfake.CBOREncMap(),
 	}
-	in := c.input()
+	in := c.Input()
 	return doJSON(s.t, "POST", s.base+"/relay/login/verify", map[string]any{
 		"ceremony":           "register",
 		"code":               code,
@@ -183,7 +186,7 @@ func (s *lrServer) register(a *softAuthenticator, code string, signCount uint32)
 	})
 }
 
-func (s *lrServer) assert(a *softAuthenticator, signCount uint32) (*http.Response, []byte) {
+func (s *lrServer) assert(a *loginfake.SoftAuthenticator, signCount uint32) (*http.Response, []byte) {
 	s.t.Helper()
 	return s.assertWith(a, signCount, loginOwnerHandle)
 }
@@ -191,26 +194,26 @@ func (s *lrServer) assert(a *softAuthenticator, signCount uint32) (*http.Respons
 // assertWith takes the user handle explicitly because a real browser returns
 // none for a non-discoverable credential, which is what residentKey
 // "discouraged" asks for.
-func (s *lrServer) assertWith(a *softAuthenticator, signCount uint32, userHandle []byte) (*http.Response, []byte) {
+func (s *lrServer) assertWith(a *loginfake.SoftAuthenticator, signCount uint32, userHandle []byte) (*http.Response, []byte) {
 	s.t.Helper()
 	ch := s.challenge("assert")
-	c := &assertionCeremony{
-		ClientData: clientDataOpts{
+	c := &loginfake.AssertionCeremony{
+		ClientData: loginfake.ClientDataOpts{
 			Type:        "webauthn.get",
 			Origin:      s.origin,
 			Challenge:   lrDecodeChallenge(s.t, ch.Challenge),
 			CrossOrigin: boolPtr(false),
 		},
-		AuthData: authDataOpts{
-			RPIDHash:  rpIDHash(ch.RPID),
-			Flags:     flagUserPresent | flagUserVerified,
+		AuthData: loginfake.AuthDataOpts{
+			RPIDHash:  loginfake.RPIDHash(ch.RPID),
+			Flags:     loginfake.FlagUserPresent | loginfake.FlagUserVerified,
 			SignCount: signCount,
 		},
-		CredentialID: a.credID,
+		CredentialID: a.CredID,
 		UserHandle:   userHandle,
-		SignWith:     a.key,
+		SignWith:     a.Key,
 	}
-	in := c.input(s.t)
+	in := c.Input(s.t)
 	return doJSON(s.t, "POST", s.base+"/relay/login/verify", map[string]any{
 		"ceremony":           "assert",
 		"credential_id":      lrB64(in.CredentialID),
@@ -222,7 +225,7 @@ func (s *lrServer) assertWith(a *softAuthenticator, signCount uint32, userHandle
 }
 
 // signIn runs the whole ceremony and returns the plaintext credential.
-func (s *lrServer) signIn(a *softAuthenticator, signCount uint32) string {
+func (s *lrServer) signIn(a *loginfake.SoftAuthenticator, signCount uint32) string {
 	s.t.Helper()
 	resp, body := s.assert(a, signCount)
 	if resp.StatusCode != http.StatusOK {
@@ -239,9 +242,9 @@ func (s *lrServer) signIn(a *softAuthenticator, signCount uint32) string {
 }
 
 // enrolled registers one passkey against a freshly minted code and signs in.
-func (s *lrServer) enrolled() (*softAuthenticator, string) {
+func (s *lrServer) enrolled() (*loginfake.SoftAuthenticator, string) {
 	s.t.Helper()
-	a := newSoftAuthenticator(s.t)
+	a := loginfake.NewSoftAuthenticator(s.t)
 	resp, body := s.register(a, s.mintCode(), 1)
 	if resp.StatusCode != http.StatusCreated {
 		s.t.Fatalf("register: status %d, body %s", resp.StatusCode, body)
@@ -287,7 +290,7 @@ func (s *lrServer) socketDo(method, path, token string) (*http.Response, []byte)
 func TestLoginRoutes_HappyPath(t *testing.T) {
 	s := lrNewServer(t)
 
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	resp, body := s.register(a, s.mintCode(), 1)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: status %d, body %s", resp.StatusCode, body)
@@ -336,7 +339,7 @@ func TestLoginRoutes_RegistrationWithoutAValidCodeIsRefusedIdentically(t *testin
 		}
 	}
 
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	resp, body := s.register(a, "", 1)
 	record("no code", resp, body)
 
@@ -363,7 +366,7 @@ func TestLoginRoutes_RegistrationWithoutAValidCodeIsRefusedIdentically(t *testin
 	if resp, body := s.register(a, code, 1); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup registration: status %d, body %s", resp.StatusCode, body)
 	}
-	second := newSoftAuthenticator(t)
+	second := loginfake.NewSoftAuthenticator(t)
 	resp, body = s.register(second, code, 1)
 	refusals = append(refusals, refusal{"spent code", resp.StatusCode, string(body)})
 	if resp.StatusCode == http.StatusCreated {
@@ -388,7 +391,7 @@ func TestLoginRoutes_RegistrationWithoutAValidCodeIsRefusedIdentically(t *testin
 // must not authenticate anything, and must not even be spent.
 func TestLoginRoutes_BootstrapCodeCannotSignIn(t *testing.T) {
 	s := lrNewServer(t)
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	if resp, body := s.register(a, s.mintCode(), 1); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: status %d, body %s", resp.StatusCode, body)
 	}
@@ -417,23 +420,23 @@ func TestLoginRoutes_BootstrapCodeCannotSignIn(t *testing.T) {
 func TestLoginRoutes_FifthPasskeyIsAcceptedAndSixthIsRefused(t *testing.T) {
 	s := lrNewServer(t)
 
-	for i := 0; i < MaxRegisteredPasskeys; i++ {
-		a := newSoftAuthenticator(t)
+	for i := 0; i < login.MaxRegisteredPasskeys; i++ {
+		a := loginfake.NewSoftAuthenticator(t)
 		resp, body := s.register(a, s.mintCode(), 1)
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("passkey %d: status %d, body %s", i+1, resp.StatusCode, body)
 		}
 	}
-	if got := len(s.store.Get().Passkeys); got != MaxRegisteredPasskeys {
-		t.Fatalf("registered %d passkeys, want %d", got, MaxRegisteredPasskeys)
+	if got := len(s.store.Get().Passkeys); got != login.MaxRegisteredPasskeys {
+		t.Fatalf("registered %d passkeys, want %d", got, login.MaxRegisteredPasskeys)
 	}
 
 	code := s.mintCode()
-	resp, body := s.register(newSoftAuthenticator(t), code, 1)
+	resp, body := s.register(loginfake.NewSoftAuthenticator(t), code, 1)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("sixth passkey: status %d, want 403, body %s", resp.StatusCode, body)
 	}
-	if got := len(s.store.Get().Passkeys); got != MaxRegisteredPasskeys {
+	if got := len(s.store.Get().Passkeys); got != login.MaxRegisteredPasskeys {
 		t.Fatalf("a refused registration changed the passkey count to %d", got)
 	}
 	if s.store.Get().LoginBootstrap == nil {
@@ -513,7 +516,7 @@ func TestLoginRoutes_MintedCredentialHoldsOnlyReadAndConfigure(t *testing.T) {
 // point 10).
 func TestLoginRoutes_StaleCounterIsRefusedAuditedAndLeavesThePasskeyUsable(t *testing.T) {
 	s := lrNewServer(t)
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	if resp, body := s.register(a, s.mintCode(), 1); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: status %d, body %s", resp.StatusCode, body)
 	}
@@ -523,11 +526,11 @@ func TestLoginRoutes_StaleCounterIsRefusedAuditedAndLeavesThePasskeyUsable(t *te
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("replayed counter: status %d, want 403, body %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), errWebAuthnAssertionRejected.Error()) {
+	if !strings.Contains(string(body), login.ErrWebAuthnAssertionRejected.Error()) {
 		t.Fatalf("a counter refusal must answer in the words of a rejected assertion: %s", body)
 	}
 
-	credID := lrB64(a.credID)
+	credID := lrB64(a.CredID)
 	var recorded *control.ControlDecision
 	for _, d := range s.auditor.forPath("/relay/login/verify") {
 		if !d.Allowed && strings.Contains(d.Reason, credID) {
@@ -567,7 +570,7 @@ var lrPublicPatterns = []string{
 }
 
 func TestLoginRoutes_PublicMuxCarriesExactlyTheEnumeratedPatterns(t *testing.T) {
-	verifier, err := NewWebAuthnVerifier("http://localhost:1", webauthnRPID)
+	verifier, err := login.NewWebAuthnVerifier("http://localhost:1", webauthnRPID)
 	if err != nil {
 		t.Fatalf("NewWebAuthnVerifier: %v", err)
 	}
@@ -677,7 +680,7 @@ func TestLoginRoutes_MintedPlaintextAppearsOnlyInTheOneResponse(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	registerResp, registerBody := s.register(a, s.mintCode(), 1)
 	if registerResp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: status %d, body %s", registerResp.StatusCode, registerBody)
