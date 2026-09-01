@@ -29,6 +29,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -45,7 +46,7 @@ type remoteFixture struct {
 	server  *RemoteServer
 	mgr     *ExternalMcpManager
 	project config.Project
-	bundle  *enrolmentBundle
+	bundle  *enrolment.Bundle
 	// mcpCalls counts how many times a tool actually reached the (mock) MCP.
 	// Several tests assert on it being zero: a refusal that happens after the
 	// mailbox was read is not a refusal. Atomic because it is incremented on a
@@ -156,12 +157,12 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	}
 
 	grants := []string{f.project.ID}
-	req := enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: grants}
+	req := enrolment.Request{ClientID: "hermes-mail", ProjectIDs: grants}
 	if opts.budget != nil {
 		req.Budget = *opts.budget
 	}
-	bundle, err := createEnrolment(store, req)
-	assertNoErr(t, err, "createEnrolment")
+	bundle, err := enrolment.Create(store, req)
+	assertNoErr(t, err, "enrolment.Create")
 	f.bundle = bundle
 
 	if opts.skipServe {
@@ -172,13 +173,13 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 }
 
 // newRemoteFixtureCSRSigned is newRemoteFixture's CSR-signed twin: instead
-// of createEnrolment generating the client's key on this host, the key is
+// of enrolment.Create generating the client's key on this host, the key is
 // generated here (standing in for relayremote's own machine) and only its
 // CSR crosses into EnrolmentOps.Sign, exactly as `relay enrol sign` drives
 // it. The certificate that comes back is what the fixture dials
 // RemoteServer with, proving a CSR-signed enrolment authenticates and can
 // call a tool (acceptance criteria 1 and 24's relay-side half) — the one
-// newRemoteFixture, built entirely around createEnrolment, cannot reach.
+// newRemoteFixture, built entirely around enrolment.Create, cannot reach.
 // newRemoteFixture itself is untouched: it is the legacy-path regression
 // test and stays exactly as it is.
 func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFixture, *ecdsa.PrivateKey) {
@@ -252,12 +253,12 @@ func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFix
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(f.audit)}
 	created, err := ops.Sign(context.Background(), signFields, auditViaCLI, "")
 	assertNoErr(t, err, "EnrolmentOps.Sign")
-	f.bundle = &enrolmentBundle{
+	f.bundle = &enrolment.Bundle{
 		Enrolment:  created.Enrolment,
 		Dir:        created.Dir,
 		CertPath:   created.Dir + "/client.crt",
 		CACertPath: created.Dir + "/ca.crt",
-		// KeyPath is deliberately left empty: signEnrolment never writes a
+		// KeyPath is deliberately left empty: enrolment.Sign never writes a
 		// client.key, so there is nothing on this host's disk to point at
 		// — the private key above never leaves this test's memory.
 	}
@@ -321,7 +322,7 @@ func (f *remoteFixture) dial() *remoteTestClient {
 }
 
 // dialWithClientKey connects with the CSR-signed certificate off disk (the
-// only thing signEnrolment wrote) paired with key, held only in memory —
+// only thing enrolment.Sign wrote) paired with key, held only in memory —
 // standing in for the client machine that generated it and never sent it
 // anywhere. tls.X509KeyPair, not tls.LoadX509KeyPair: there is no
 // client.key file for this identity to read.
@@ -456,10 +457,10 @@ func TestRemoteServer_EnrolledClientListsToolsAndCallsTool(t *testing.T) {
 // AC-1 / AC-24 (relay-side half): a remote enrolled entirely via CSR — key
 // generated off-host, only the CSR signed by EnrolmentOps.Sign — completes
 // a real mTLS handshake against RemoteServer and calls a tool, exactly as
-// the createEnrolment-based fixture above does. This is the hermetically
+// the enrolment.Create-based fixture above does. This is the hermetically
 // reachable half of the end-to-end acceptance criterion that was going
 // untaken: remoteFixture already proves the mTLS handshake works, but every
-// existing fixture built its identity with createEnrolment, so nothing
+// existing fixture built its identity with enrolment.Create, so nothing
 // exercised RemoteServer against a certificate that came out of Sign.
 func TestRemoteServer_CSRSignedClientListsToolsAndCallsTool(t *testing.T) {
 	f, key := newRemoteFixtureCSRSigned(t, remoteFixtureOpts{})
@@ -559,7 +560,11 @@ func TestRemoteServer_ProjectIDIsOptionalForOneGrantAndRequiredForSeveral(t *tes
 				second = p.ID
 			}
 		}
-		updateEnrolmentGrants(s, "hermes-mail", []string{f.project.ID, second})
+		for i := range s.Enrolments {
+			if s.Enrolments[i].ClientID == "hermes-mail" {
+				s.Enrolments[i].ProjectIDs = []string{f.project.ID, second}
+			}
+		}
 	}), "widen grants")
 
 	c := f.dial()
@@ -583,8 +588,8 @@ func TestRemoteServer_ProjectIDIsOptionalForOneGrantAndRequiredForSeveral(t *tes
 func TestRemoteServer_UnenrolledCertificateIsClosedWithoutReadingARequest(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 
-	ca, err := LoadOrCreateCA(testSealer())
-	assertNoErr(t, err, "LoadOrCreateCA")
+	ca, err := enrolment.LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "enrolment.LoadOrCreateCA")
 	keyPEM, certPEM, _, err := ca.IssueClientCert("ghost")
 	assertNoErr(t, err, "IssueClientCert")
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -628,7 +633,7 @@ func TestRemoteServer_ForeignCertificateIsRejected(t *testing.T) {
 	// A second, unrelated CA — the same code path relay uses for its own,
 	// pointed at a different config dir.
 	otherDir := mkShortTempDir(t, "other-ca-")
-	otherCA, err := generateCA(otherDir+"/"+caKeySealedFile, otherDir+"/ca.crt", testSealer())
+	otherCA, err := enrolment.GenerateCA(otherDir+"/"+enrolment.CAKeySealedFile, otherDir+"/ca.crt", testSealer())
 	assertNoErr(t, err, "generate foreign CA")
 	keyPEM, certPEM, _, err := otherCA.IssueClientCert("impostor")
 	assertNoErr(t, err, "issue foreign client cert")
@@ -830,8 +835,8 @@ func TestRemoteServer_RevokingAnEnrolmentClosesItsLiveConnection(t *testing.T) {
 		t.Fatalf("baseline ListTools failed: %s", resp.Message)
 	}
 
-	if _, err := revokeEnrolment(f.store, "hermes-mail"); err != nil {
-		t.Fatalf("revokeEnrolment: %v", err)
+	if _, err := enrolment.Revoke(f.store, "hermes-mail"); err != nil {
+		t.Fatalf("enrolment.Revoke: %v", err)
 	}
 
 	// The socket itself must go, not merely the record.

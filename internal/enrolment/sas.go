@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"crypto/rand"
@@ -11,7 +11,7 @@ import (
 // unambiguous once 1 and I are both gone.
 const sasAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
-const sasNonceBytes = 16
+const SASNonceBytes = 16
 
 // The trailing NUL is part of the hashed bytes, not a Go string terminator.
 // It makes each tag fixed-length and prefix-free against the other; with every
@@ -21,20 +21,20 @@ const (
 	sasCommitDomain = "relay.sas.commit.v1\x00"
 )
 
-// newSASNonce returns a fresh nonce as 32 lowercase hex characters.
-func newSASNonce() (string, error) {
-	b := make([]byte, sasNonceBytes)
+// NewSASNonce returns a fresh nonce as 32 lowercase hex characters.
+func NewSASNonce() (string, error) {
+	b := make([]byte, SASNonceBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
 }
 
-// sasCommitment is the hiding commitment the client lodges before relay mints
+// SASCommitment is the hiding commitment the client lodges before relay mints
 // its own nonce. It binds the CSR's public key: a commitment captured off the
 // wire does not open against any other key, so it cannot be replayed under an
 // attacker's CSR.
-func sasCommitment(csrSPKISHA256 [32]byte, rc []byte) string {
+func SASCommitment(csrSPKISHA256 [32]byte, rc []byte) string {
 	buf := make([]byte, 0, len(sasCommitDomain)+len(csrSPKISHA256)+len(rc))
 	buf = append(buf, sasCommitDomain...)
 	buf = append(buf, csrSPKISHA256[:]...)
@@ -43,9 +43,9 @@ func sasCommitment(csrSPKISHA256 [32]byte, rc []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// computeSAS derives the six-character comparison code from both public keys
+// ComputeSAS derives the six-character comparison code from both public keys
 // and both nonces. caSPKI and csrSPKI are raw DER SubjectPublicKeyInfo.
-func computeSAS(caSPKI, csrSPKI, rc, rr []byte) string {
+func ComputeSAS(caSPKI, csrSPKI, rc, rr []byte) string {
 	caSum := sha256.Sum256(caSPKI)
 	csrSum := sha256.Sum256(csrSPKI)
 	buf := make([]byte, 0, len(sasDomain)+len(caSum)+len(csrSum)+len(rc)+len(rr))
@@ -68,9 +68,9 @@ func enc30(digest [32]byte) string {
 	return string(out[:])
 }
 
-// validSASHex reports whether s is exactly wantBytes bytes rendered as
+// ValidSASHex reports whether s is exactly wantBytes bytes rendered as
 // lowercase hex.
-func validSASHex(s string, wantBytes int) bool {
+func ValidSASHex(s string, wantBytes int) bool {
 	if len(s) != 2*wantBytes {
 		return false
 	}

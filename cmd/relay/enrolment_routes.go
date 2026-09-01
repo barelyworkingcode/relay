@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 // credIDOf names the control-plane credential a request resolved to, or "" if
@@ -61,9 +62,9 @@ func withBundleError(v enrolmentView, err error) enrolmentView {
 
 func enrolmentHTTPStatus(err error) int {
 	switch {
-	case errors.Is(err, errEnrolmentNotFound):
+	case errors.Is(err, enrolment.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, errEnrolmentInvalid):
+	case errors.Is(err, enrolment.ErrInvalid):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
@@ -106,7 +107,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 		// create if that recording fails) so it can attach the presence_id
 		// the gate minted — this route no longer has a grant to name.
 		created, err := ops.Create(r.Context(), body, auditViaHTTP, credIDOf(r))
-		if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 			writeEnrolmentError(w, err)
 			return
 		}

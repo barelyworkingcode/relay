@@ -115,8 +115,9 @@ func teSeed(t *testing.T, store config.SettingsStore) teFixtureIDs {
 		s.UpsertService(config.ServiceConfig{ID: "svc1", DisplayName: "svc1", Command: "/bin/true"})
 		s.UpsertService(config.ServiceConfig{ID: "svc-del", DisplayName: "svc-del", Command: "/bin/true"})
 		s.AddExternalMcp(config.ExternalMcp{ID: "mcp1", DisplayName: "mcp1", Command: "/bin/true"})
-		addEnrolment(s, config.Enrolment{ClientID: "enr1", Fingerprint: "fp-enr1"})
-		addEnrolment(s, config.Enrolment{ClientID: "enr-del", Fingerprint: "fp-enr-del"})
+		s.Enrolments = append(s.Enrolments,
+			config.Enrolment{ClientID: "enr1", Fingerprint: "fp-enr1"},
+			config.Enrolment{ClientID: "enr-del", Fingerprint: "fp-enr-del"})
 	}), "seed fixtures")
 
 	return teFixtureIDs{projID: proj.ID, projDelID: projDel.ID, newProjDir: t.TempDir()}

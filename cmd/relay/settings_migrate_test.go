@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -147,7 +148,7 @@ func TestMigration_NamesStaleCopiesAndDeletesNothing(t *testing.T) {
 }
 
 // TestMigration_CAKeyIsFoldedIntoSealedFile is §4.7 step 4 / §5.7: a real
-// plaintext ca.key (and its ca.crt) found at LoadOrCreateCA time is sealed
+// plaintext ca.key (and its ca.crt) found at enrolment.LoadOrCreateCA time is sealed
 // into ca.key.sealed, the plaintext ca.key is removed, and the resulting
 // CA still signs certificates that verify against the same ca.crt — a
 // migrated CA is not a new one.
@@ -155,14 +156,14 @@ func TestMigration_CAKeyIsFoldedIntoSealedFile(t *testing.T) {
 	// Produce a real plaintext ca.key/ca.crt pair the way a pre-ADR-017
 	// install would have one: generate a CA the normal (sealed) way, then
 	// unseal the key back to plaintext and write it out by hand, deleting
-	// the sealed form. This is the legacy shape LoadOrCreateCA must migrate.
+	// the sealed form. This is the legacy shape enrolment.LoadOrCreateCA must migrate.
 	dir := mkEmptySandboxRelayHome(t)
 	sealer := testSealer()
-	ca, err := LoadOrCreateCA(sealer) // generates sealed from the start
+	ca, err := enrolment.LoadOrCreateCA(sealer) // generates sealed from the start
 	assertNoErr(t, err, "generate CA")
 	origFingerprint := ca.CertPEM()
 
-	sealedData, err := os.ReadFile(filepath.Join(dir, caKeySealedFile))
+	sealedData, err := os.ReadFile(filepath.Join(dir, enrolment.CAKeySealedFile))
 	assertNoErr(t, err, "read ca.key.sealed")
 	var env sealed.Envelope
 	assertNoErr(t, json.Unmarshal(sealedData, &env), "parse ca.key.sealed")
@@ -170,16 +171,16 @@ func TestMigration_CAKeyIsFoldedIntoSealedFile(t *testing.T) {
 	assertNoErr(t, err, "unseal ca.key.sealed")
 
 	// Roll back to the legacy, pre-migration shape.
-	assertNoErr(t, os.Remove(filepath.Join(dir, caKeySealedFile)), "remove ca.key.sealed")
+	assertNoErr(t, os.Remove(filepath.Join(dir, enrolment.CAKeySealedFile)), "remove ca.key.sealed")
 	assertNoErr(t, os.WriteFile(filepath.Join(dir, "ca.key"), keyPEM, 0600), "write legacy plaintext ca.key")
 
-	migrated, err := LoadOrCreateCA(sealer)
-	assertNoErr(t, err, "LoadOrCreateCA (migrate)")
+	migrated, err := enrolment.LoadOrCreateCA(sealer)
+	assertNoErr(t, err, "enrolment.LoadOrCreateCA (migrate)")
 
 	if _, statErr := os.Stat(filepath.Join(dir, "ca.key")); !os.IsNotExist(statErr) {
 		t.Error("plaintext ca.key survived migration")
 	}
-	if _, statErr := os.Stat(filepath.Join(dir, caKeySealedFile)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(dir, enrolment.CAKeySealedFile)); statErr != nil {
 		t.Error("ca.key.sealed was not written by migration")
 	}
 	if string(migrated.CertPEM()) != string(origFingerprint) {

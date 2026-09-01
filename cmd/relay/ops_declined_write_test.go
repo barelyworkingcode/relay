@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"os"
 	"strings"
 	"testing"
@@ -160,13 +161,13 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			want: errPasskeyNotFound,
 		},
 		{
-			name: "revokeEnrolment",
+			name: "enrolment.Revoke",
 			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) {},
 			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
-				_, err := revokeEnrolment(store, "ghost")
+				_, err := enrolment.Revoke(store, "ghost")
 				return err
 			},
-			want: errEnrolmentNotFound,
+			want: enrolment.ErrNotFound,
 		},
 	}
 
@@ -185,21 +186,21 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 	}
 }
 
-// updateEnrolment's refusals carry no sentinel, so they are checked on their
+// enrolment.Update's refusals carry no sentinel, so they are checked on their
 // text rather than with errors.Is — the same contract the callers rely on.
 func TestUpdateEnrolmentThatFindsNothingWritesNothing(t *testing.T) {
 	dir, store := odwSandbox(t)
 	before := odwSnap(t, dir)
 
 	window := 60
-	_, _, err := updateEnrolment(store, enrolmentUpdateRequest{
+	_, _, err := enrolment.Update(store, enrolment.UpdateRequest{
 		ClientID: "ghost",
-		Budget:   enrolmentBudgetUpdate{WindowSeconds: &window},
+		Budget:   enrolment.BudgetUpdate{WindowSeconds: &window},
 	})
 	if err == nil || !strings.Contains(err.Error(), "no enrolment found with client id") {
-		t.Fatalf("updateEnrolment error = %v, want a not-found refusal naming the client id", err)
+		t.Fatalf("enrolment.Update error = %v, want a not-found refusal naming the client id", err)
 	}
-	before.assertUntouched(t, dir, "updateEnrolment")
+	before.assertUntouched(t, dir, "enrolment.Update")
 }
 
 // A refused enrolment persists nothing — including the settings write itself.
@@ -210,14 +211,14 @@ func TestCreateEnrolmentThatIsRefusedWritesNothing(t *testing.T) {
 	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", t.TempDir())
 	before := odwSnap(t, dir)
 
-	_, err := createEnrolment(store, enrolmentRequest{
+	_, err := enrolment.Create(store, enrolment.Request{
 		ClientID:   "hermes-mail",
 		ProjectIDs: []string{local.ID},
 	})
-	if !errors.Is(err, errEnrolmentInvalid) {
-		t.Fatalf("createEnrolment error = %v, want one matching errEnrolmentInvalid", err)
+	if !errors.Is(err, enrolment.ErrInvalid) {
+		t.Fatalf("enrolment.Create error = %v, want one matching enrolment.ErrInvalid", err)
 	}
-	before.assertUntouched(t, dir, "createEnrolment")
+	before.assertUntouched(t, dir, "enrolment.Create")
 }
 
 // The frontend-token migration reports whether it changed anything, and the

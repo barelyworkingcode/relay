@@ -163,7 +163,7 @@ Four rules, and each exists for a reason worth stating.
   human-curated list; `--include-expired` is how an operator sees what is
   about to go.
 
-**This is not a reversal of the enrolment trade.** `enrolment_ca.go` chose
+**This is not a reversal of the enrolment trade.** `internal/enrolment/ca.go` chose
 revocation over expiry for client certificates deliberately, because a short
 certificate lifetime needs an authenticated renewal path, and any credential
 replayable to obtain a fresh certificate reintroduces a bearer secret at the

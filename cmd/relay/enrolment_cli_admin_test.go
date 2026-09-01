@@ -20,6 +20,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -44,7 +45,7 @@ func TestEnrolment_CLIAdminAbsentMeansOffAndRoundTripsAbsent(t *testing.T) {
 	}
 	store := sealedSettingsStoreAt(dir)
 
-	e := findEnrolment(store.Get(), "hermes-mail")
+	e := enrolment.Find(store.Get(), "hermes-mail")
 	if e == nil {
 		t.Fatal("fixture enrolment did not load")
 	}
@@ -87,30 +88,30 @@ func TestSettingsClone_CarriesCLIAdminAndIsolatesTheCopy(t *testing.T) {
 func TestEnrolmentUpdateRequest_DigestBindsCLIAdmin(t *testing.T) {
 	gate := allowGate(t)
 
-	absent := enrolmentUpdateRequest{ClientID: "hermes-mail"}
+	absent := enrolment.UpdateRequest{ClientID: "hermes-mail"}
 	on := true
-	setTrue := enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}
+	setTrue := enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}
 	off := false
-	setFalse := enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &off}
+	setFalse := enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &off}
 
 	// Positive control: redeeming against the identical digest succeeds.
-	grant, err := gate.Request(context.Background(), "enrolment.update", absent.presenceDigest(), "update")
+	grant, err := gate.Request(context.Background(), "enrolment.update", enrolmentUpdateDigest(absent), "update")
 	assertNoErr(t, err, "Request")
-	if err := gate.Redeem(grant, "enrolment.update", absent.presenceDigest()); err != nil {
+	if err := gate.Redeem(grant, "enrolment.update", enrolmentUpdateDigest(absent)); err != nil {
 		t.Fatalf("redeeming against the SAME digest failed: %v", err)
 	}
 
 	// absent -> setTrue must not redeem.
-	grant, err = gate.Request(context.Background(), "enrolment.update", absent.presenceDigest(), "update")
+	grant, err = gate.Request(context.Background(), "enrolment.update", enrolmentUpdateDigest(absent), "update")
 	assertNoErr(t, err, "Request")
-	if err := gate.Redeem(grant, "enrolment.update", setTrue.presenceDigest()); !errors.Is(err, presence.ErrGrantInvalid) {
+	if err := gate.Redeem(grant, "enrolment.update", enrolmentUpdateDigest(setTrue)); !errors.Is(err, presence.ErrGrantInvalid) {
 		t.Fatalf("a grant minted with cli_admin absent redeemed for a request setting it: err = %v, want ErrGrantInvalid", err)
 	}
 
 	// setTrue -> setFalse must not redeem.
-	grant, err = gate.Request(context.Background(), "enrolment.update", setTrue.presenceDigest(), "update")
+	grant, err = gate.Request(context.Background(), "enrolment.update", enrolmentUpdateDigest(setTrue), "update")
 	assertNoErr(t, err, "Request")
-	if err := gate.Redeem(grant, "enrolment.update", setFalse.presenceDigest()); !errors.Is(err, presence.ErrGrantInvalid) {
+	if err := gate.Redeem(grant, "enrolment.update", enrolmentUpdateDigest(setFalse)); !errors.Is(err, presence.ErrGrantInvalid) {
 		t.Fatalf("a grant minted for cli_admin=true redeemed for cli_admin=false: err = %v, want ErrGrantInvalid", err)
 	}
 }
@@ -120,8 +121,8 @@ func TestEnrolmentUpdateRequest_DigestBindsCLIAdmin(t *testing.T) {
 func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create")
 
 	recording := presencetest.NewRecording(nil)
 	gate, err := presence.NewGate(recording)
@@ -129,7 +130,7 @@ func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	on := true
-	_, _, err = ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
 	assertNoErr(t, err, "Update turning cli-admin on")
 	if n := recording.Calls(); n != 1 {
 		t.Fatalf("Calls() after turning on = %d, want 1", n)
@@ -139,7 +140,7 @@ func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 	}
 
 	off := false
-	_, _, err = ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &off}, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &off}, auditViaCLI, "")
 	assertNoErr(t, err, "Update turning cli-admin off")
 	if n := recording.Calls(); n != 2 {
 		t.Fatalf("Calls() after turning off = %d, want 2 (turning off must prompt too)", n)
@@ -153,13 +154,13 @@ func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 func TestEnrolmentOpsUpdate_CLIAdminNilGateRefusesBeforeTouchingStore(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create")
 
 	before := odwSnap(t, dir)
 	ops := &EnrolmentOps{Store: store, Gate: nil, Issuance: pgwWithIssuance(t)}
 	on := true
-	_, _, err = ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
 	if !errors.Is(err, errPresenceGateNotWired) {
 		t.Fatalf("Update with a nil gate: err = %v, want errPresenceGateNotWired", err)
 	}
@@ -171,8 +172,8 @@ func TestEnrolmentOpsUpdate_CLIAdminNilGateRefusesBeforeTouchingStore(t *testing
 func TestEnrolmentOpsUpdate_CLIAdminAuditingOffRefusesBeforeProvider(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create")
 
 	before := odwSnap(t, dir)
 	recording := presencetest.NewRecording(nil)
@@ -180,7 +181,7 @@ func TestEnrolmentOpsUpdate_CLIAdminAuditingOffRefusesBeforeProvider(t *testing.
 	assertNoErr(t, err, "NewGate")
 	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: nil}
 	on := true
-	_, _, err = ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on}, auditViaCLI, "")
 	if !errors.Is(err, errIssuanceAuditingRequired) {
 		t.Fatalf("Update with auditing off: err = %v, want errIssuanceAuditingRequired", err)
 	}
@@ -196,13 +197,13 @@ func TestEnrolmentOpsUpdate_CLIAdminAuditingOffRefusesBeforeProvider(t *testing.
 func TestUpdateEnrolment_CLIAdminOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create")
 
 	assertNoErr(t, store.With(func(s *config.Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
 
 	on := true
-	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on})
+	_, after, err := enrolment.Update(store, enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on})
 	assertNoErr(t, err, "a cli-admin-only update must not re-validate untouched grants")
 	if !after.CLIAdmin {
 		t.Fatal("cli_admin was not applied")
@@ -268,8 +269,8 @@ func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 	enrolCreateForCLITest(t, store, "hermes-off", []string{mail.ID})
 
 	on := true
-	_, _, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on})
-	assertNoErr(t, err, "updateEnrolment turning cli-admin on")
+	_, _, err := enrolment.Update(store, enrolment.UpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on})
+	assertNoErr(t, err, "enrolment.Update turning cli-admin on")
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
@@ -321,14 +322,14 @@ func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 func TestEnrolList_PrintsCLIAdminColumn(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment on")
-	_, err = createEnrolment(store, enrolmentRequest{ClientID: "hermes-off", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment off")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create on")
+	_, err = enrolment.Create(store, enrolment.Request{ClientID: "hermes-off", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create off")
 
 	on := true
-	_, _, err = updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-on", CLIAdmin: &on})
-	assertNoErr(t, err, "updateEnrolment")
+	_, _, err = enrolment.Update(store, enrolment.UpdateRequest{ClientID: "hermes-on", CLIAdmin: &on})
+	assertNoErr(t, err, "enrolment.Update")
 
 	// Reload the store the way `relay enrol list` does: a fresh
 	// FileSettingsStore over the same directory, so this exercises the

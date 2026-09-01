@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"crypto/ecdsa"
@@ -26,11 +26,11 @@ import (
 
 const (
 	caKeyFile = "ca.key"
-	// caKeySealedFile replaces caKeyFile once migration runs (§4.7 step 4)
+	// CAKeySealedFile replaces caKeyFile once migration runs (§4.7 step 4)
 	// or a fresh CA is generated (§5.7 clause 3): relay never writes a
 	// plaintext ca.key again after either.
-	caKeySealedFile = "ca.key.sealed"
-	caCertFile      = "ca.crt"
+	CAKeySealedFile = "ca.key.sealed"
+	CACertFile      = "ca.crt"
 
 	caValidity = 20 * 365 * 24 * time.Hour
 
@@ -56,7 +56,7 @@ var caMu sync.Mutex
 
 func caPaths() (keyPath, sealedKeyPath, certPath string) {
 	dir := bridge.ConfigDir()
-	return filepath.Join(dir, caKeyFile), filepath.Join(dir, caKeySealedFile), filepath.Join(dir, caCertFile)
+	return filepath.Join(dir, caKeyFile), filepath.Join(dir, CAKeySealedFile), filepath.Join(dir, CACertFile)
 }
 
 // LoadOrCreateCA resolves relay's CA per §5.7: a sealed key wins if one
@@ -100,7 +100,7 @@ func LoadOrCreateCA(sealer sealed.Sealer) (*RelayCA, error) {
 	if sealer == nil {
 		return nil, fmt.Errorf("%w: no CA exists yet and there is no sealer to create one under", config.ErrSealUnavailable)
 	}
-	return generateCA(sealedKeyPath, certPath, sealer)
+	return GenerateCA(sealedKeyPath, certPath, sealer)
 }
 
 func loadSealedCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
@@ -146,7 +146,7 @@ func parseCA(keyPEM, certPEM []byte, keyName, certPath string) (*RelayCA, error)
 	return &RelayCA{key: key, cert: cert, certPEM: certPEM}, nil
 }
 
-func generateCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
+func GenerateCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ca key: %w", err)
@@ -210,14 +210,14 @@ func (ca *RelayCA) CertFingerprint() string {
 	return FingerprintCert(ca.cert)
 }
 
-// loadCACertificateOnly reads and parses ca.crt directly, without opening
+// LoadCACertificateOnly reads and parses ca.crt directly, without opening
 // ca.key.sealed at all: a CLI process holds no sealer (enrol_cmd.go's
 // standing rule — never reach toward one, dead or live) and does not need
 // one here, because the certificate is stored clear (§5.7) and public by
 // construction (§6). Refuses distinctly when no CA has been generated yet,
 // naming the fix, rather than the bare os.IsNotExist a caller would
 // otherwise have to translate itself.
-func loadCACertificateOnly() (*x509.Certificate, error) {
+func LoadCACertificateOnly() (*x509.Certificate, error) {
 	certPEM, err := caCertPEMFromDisk()
 	if err != nil {
 		return nil, err
@@ -228,7 +228,7 @@ func loadCACertificateOnly() (*x509.Certificate, error) {
 // caCertPEMFromDisk returns ca.crt's bytes verbatim — the PEM a client is
 // handed at lodge time and computes the comparison code over, so it must be
 // the file, not a re-encoding of a parse of it. Same "read commands work
-// with the tray stopped" shape as caFingerprintFromDisk, and like it this
+// with the tray stopped" shape as CAFingerprintFromDisk, and like it this
 // never touches ca.key.sealed: the certificate is public and stored clear.
 func caCertPEMFromDisk() ([]byte, error) {
 	_, _, certPath := caPaths()
@@ -261,16 +261,16 @@ func parseCACertificatePEM(certPEM []byte) (*x509.Certificate, error) {
 // same key, and an attacker cannot exploit the difference: a leaf only
 // verifies under the CA certificate carrying the key that signed it.
 func caSPKIFromDisk() ([]byte, error) {
-	cert, err := loadCACertificateOnly()
+	cert, err := LoadCACertificateOnly()
 	if err != nil {
 		return nil, err
 	}
 	return cert.RawSubjectPublicKeyInfo, nil
 }
 
-// caMaterialFromDisk reads both halves in one pass, for the reconcile tick
+// CAMaterialFromDisk reads both halves in one pass, for the reconcile tick
 // that pushes them into the pending-request table.
-func caMaterialFromDisk() (certPEM, spki []byte, err error) {
+func CAMaterialFromDisk() (certPEM, spki []byte, err error) {
 	certPEM, err = caCertPEMFromDisk()
 	if err != nil {
 		return nil, nil, err
@@ -282,13 +282,13 @@ func caMaterialFromDisk() (certPEM, spki []byte, err error) {
 	return certPEM, cert.RawSubjectPublicKeyInfo, nil
 }
 
-// caFingerprintFromDisk is `relay enrol ca-fingerprint`'s whole
+// CAFingerprintFromDisk is `relay enrol ca-fingerprint`'s whole
 // implementation: read the certificate straight off disk and fingerprint
 // it, with no store, no dial and no sealer — the same "read commands work
 // with the tray stopped" shape `relay enrol list` and `relay audit` already
 // have.
-func caFingerprintFromDisk() (string, error) {
-	cert, err := loadCACertificateOnly()
+func CAFingerprintFromDisk() (string, error) {
+	cert, err := LoadCACertificateOnly()
 	if err != nil {
 		return "", err
 	}

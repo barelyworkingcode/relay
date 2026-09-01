@@ -40,7 +40,7 @@ const (
 	// maxEnrolFrameBytes bounds one wire frame. This is deliberately
 	// smaller than bridge.MaxMessageSize (10 MiB, sized for tool results):
 	// spec §11.15 requires the size check to apply at the frame layer, in
-	// addition to maxCSRBytes inside ParseClientCSR, so an oversized frame
+	// addition to enrolment.MaxCSRBytes inside enrolment.ParseClientCSR, so an oversized frame
 	// never reaches JSON decoding at all, let alone a CSR parser.
 	maxEnrolFrameBytes = 64 << 10
 

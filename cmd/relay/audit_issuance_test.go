@@ -25,6 +25,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -241,7 +242,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	if len(enrolments) != 1 {
 		t.Fatalf("want 1 enrolment, got %d", len(enrolments))
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(dir, enrolmentBundleDir, "hermes-mail", "client.key"))
+	keyPEM, err := os.ReadFile(filepath.Join(dir, enrolment.BundleDir, "hermes-mail", "client.key"))
 	assertNoErr(t, err, "read client key")
 
 	aiQuiet(t, func() { enrolRevoke(store, []string{"--client-id", "hermes-mail"}) })
@@ -262,7 +263,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 // audit log.
 func aiUnsealCAKeyPEM(t *testing.T, dir string, store config.SettingsStore) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, caKeySealedFile))
+	data, err := os.ReadFile(filepath.Join(dir, enrolment.CAKeySealedFile))
 	assertNoErr(t, err, "read ca.key.sealed")
 	var env sealed.Envelope
 	assertNoErr(t, json.Unmarshal(data, &env), "parse ca.key.sealed")
@@ -700,7 +701,7 @@ func TestIssuance_HTTPEnrolmentIsRevokedWhenTheRecordFails(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("POST /api/enrolments: status %d, want 500 when the act cannot be recorded; body %s", resp.StatusCode, body)
 	}
-	if e := findEnrolment(f.store.Reload(), "hermes-unrecorded"); e != nil {
+	if e := enrolment.Find(f.store.Reload(), "hermes-unrecorded"); e != nil {
 		t.Fatal("an enrolment that could not be recorded survived; the client certificate is live with nothing in the log")
 	}
 	if strings.Contains(string(body), "dir") {

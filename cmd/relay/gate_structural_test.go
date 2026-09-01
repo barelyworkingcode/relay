@@ -73,20 +73,20 @@ var gatedMutatorNames = map[string]bool{
 var gateAllowlistedFiles = map[string]string{
 	// The six gated cores (ADR-017 implementation spec S5): each holds a
 	// presence.Gate field and calls Require before touching the store.
-	"credential_ops.go": "the CredentialOps core: Gate.Require runs before Mint/Revoke touch the store",
-	"project_ops.go": "the ProjectOps core: Gate.Require runs before Create/Update/RotateToken touch the store; " +
+	"cmd/relay/credential_ops.go": "the CredentialOps core: Gate.Require runs before Mint/Revoke touch the store",
+	"cmd/relay/project_ops.go": "the ProjectOps core: Gate.Require runs before Create/Update/RotateToken touch the store; " +
 		"NarrowForEnrolment also calls applyProjectUpdate and withDeclinable, but is deliberately UNGATED (ADR-018 " +
 		"decision 4) — grant_narrowing.go's narrowsOnly makes a widening unrepresentable before this file is ever " +
 		"reached, so it is not one of the acts ADR-017 decision 3 gates, and gating a route a VM can reach would put " +
 		"a presence prompt on the host's screen that the caller cannot see and the human did not ask for",
-	"mcp_ops.go": "the McpOps core: Gate.Require runs before Add and StartOAuth touch the store; Remove is deliberately " +
+	"cmd/relay/mcp_ops.go": "the McpOps core: Gate.Require runs before Add and StartOAuth touch the store; Remove is deliberately " +
 		"ungated (ADR-018 step 3 -- removal narrows, re-registering under the same id still hits Add's gate) and still " +
 		"calls requireIssuanceAuditor",
-	"service_ops.go": "the ServiceOps core: Gate.Require runs before Create/Update touch the store; Remove is deliberately " +
+	"cmd/relay/service_ops.go": "the ServiceOps core: Gate.Require runs before Create/Update touch the store; Remove is deliberately " +
 		"ungated (ADR-018 step 3 -- removal narrows, and stopping a running service is already ungated configure via " +
 		"POST /api/services/{id}/stop) and still calls requireIssuanceAuditor",
-	"enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
-	"login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
+	"cmd/relay/enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
+	"cmd/relay/login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
 
 	// Where the mutators themselves, and the free functions a core
 	// delegates to, are defined.
@@ -95,20 +95,20 @@ var gateAllowlistedFiles = map[string]string{
 	// not read: package main can only reach them through that package's
 	// exported surface, so every crossing still appears here as a call
 	// site in one of the files below.
-	"settings_project_scope.go": "defines the updateProject* grant-shape mutators the cores and project_apply.go call",
-	"api_credential.go":         "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
-	"enrolment.go":              "defines createEnrolment/updateEnrolment/revokeEnrolment and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
-	"project_apply.go":          "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
+	"cmd/relay/settings_project_scope.go": "defines the updateProject* grant-shape mutators the cores and project_apply.go call",
+	"cmd/relay/api_credential.go":         "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
+	"internal/enrolment/enrolment.go":     "defines the package's Create/Update/Revoke and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
+	"cmd/relay/project_apply.go":          "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
 
 	// Legitimately ungated mutations that share a name with a gated
 	// mutator (§6.7's matching is by identifier, not by resolved type):
 	// none of these are project.grant, credential.mint or any other op in
 	// presence.GatedOps.
-	"project_routes.go":  "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
-	"ipc_handlers.go":    "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
-	"trayapp.go":         "the frontend-token migration's one-time store.With call; not a gated op",
-	"frontend_server.go": "ensureFrontendTokenIsCredential's config.WithDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
-	"login_routes.go":    "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
+	"cmd/relay/project_routes.go":  "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
+	"cmd/relay/ipc_handlers.go":    "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
+	"cmd/relay/trayapp.go":         "the frontend-token migration's one-time store.With call; not a gated op",
+	"cmd/relay/frontend_server.go": "ensureFrontendTokenIsCredential's config.WithDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
+	"cmd/relay/login_routes.go":    "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
 
 	// S6 brokered every mutating CLI command over admin_op (ADR-017
 	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
@@ -123,30 +123,46 @@ var gateAllowlistedFiles = map[string]string{
 
 func gsModuleRoot(t *testing.T) string {
 	t.Helper()
-	return relaySourceDir(t)
+	return repoRoot(t)
 }
 
-// gsPackageMainFiles returns every non-test .go file directly in the relay
-// command source directory. Its subpackages carry their own structural guards.
-func gsPackageMainFiles(t *testing.T, root string) []string {
+// gsScannedDirs are the directories this scan walks, module-root-relative,
+// which is also how gateAllowlistedFiles is keyed. internal/enrolment is here
+// because it owns addEnrolment/removeEnrolment: two entries in
+// gatedMutatorNames whose only definitions and call sites live there, and a
+// scan that read cmd/relay alone would report zero violations for them
+// forever.
+var gsScannedDirs = []string{
+	filepath.Join("cmd", "relay"),
+	filepath.Join("internal", "enrolment"),
+}
+
+// gsScannedFiles returns every non-test .go file directly in each scanned
+// directory, named by its path relative to the module root.
+func gsScannedFiles(t *testing.T, root string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("reading %q: %v", root, err)
-	}
 	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	for _, rel := range gsScannedDirs {
+		dir := filepath.Join(root, rel)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("reading %q: %v", dir, err)
 		}
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+		found := 0
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			out = append(out, filepath.Join(rel, name))
+			found++
 		}
-		out = append(out, name)
-	}
-	if len(out) == 0 {
-		t.Fatalf("found no package-main source files under %q; the scan is misconfigured", root)
+		if found == 0 {
+			t.Fatalf("found no source files under %q; the scan is misconfigured", dir)
+		}
 	}
 	return out
 }
@@ -163,7 +179,7 @@ func TestGate_NoDoorReachesAGatedMutationOutsideItsCore(t *testing.T) {
 	fset := token.NewFileSet()
 	var violations []gsViolation
 
-	for _, name := range gsPackageMainFiles(t, root) {
+	for _, name := range gsScannedFiles(t, root) {
 		path := filepath.Join(root, name)
 		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
@@ -265,10 +281,10 @@ var wantGatedMutatorNames = []string{
 
 // wantGateAllowlistedFiles pins gateAllowlistedFiles' key set the same way.
 var wantGateAllowlistedFiles = []string{
-	"credential_ops.go", "project_ops.go", "mcp_ops.go", "service_ops.go",
-	"enrolment_ops.go", "login_ops.go",
-	"settings_project_scope.go", "api_credential.go", "enrolment.go", "project_apply.go",
-	"project_routes.go", "ipc_handlers.go", "trayapp.go", "frontend_server.go", "login_routes.go",
+	"cmd/relay/credential_ops.go", "cmd/relay/project_ops.go", "cmd/relay/mcp_ops.go", "cmd/relay/service_ops.go",
+	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
+	"cmd/relay/settings_project_scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "cmd/relay/project_apply.go",
+	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/frontend_server.go", "cmd/relay/login_routes.go",
 }
 
 // TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a
@@ -413,8 +429,10 @@ func equalStringSlices(a, b []string) bool {
 //     retirement is a two-place, reviewable diff rather than a silent
 //     subtraction.
 func TestGate_RequireGateCallSitesAreComplete(t *testing.T) {
-	root := gsModuleRoot(t)
-	sites := scanRequireGateCallSites(t, root)
+	// relaySourceDir, not gsModuleRoot: every requireGate call site is in
+	// package main, because requireGate itself is. The mutation-containment
+	// scan above reaches further only because the mutators it hunts do.
+	sites := scanRequireGateCallSites(t, relaySourceDir(t))
 
 	gotByOp := map[string][]string{}
 	for _, s := range sites {

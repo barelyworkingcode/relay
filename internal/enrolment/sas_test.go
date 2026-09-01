@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"crypto/sha256"
@@ -85,16 +85,16 @@ func TestSASVectorsMatchImplementation(t *testing.T) {
 		rc := mustHex(t, v.RC)
 		rr := mustHex(t, v.RR)
 
-		if got := computeSAS(caSPKI, csrSPKI, rc, rr); got != v.SAS {
-			t.Errorf("%s: computeSAS = %q, want %q", v.Name, got, v.SAS)
+		if got := ComputeSAS(caSPKI, csrSPKI, rc, rr); got != v.SAS {
+			t.Errorf("%s: ComputeSAS = %q, want %q", v.Name, got, v.SAS)
 		}
-		if got := sasCommitment(sha256.Sum256(csrSPKI), rc); got != v.Commit {
-			t.Errorf("%s: sasCommitment = %q, want %q", v.Name, got, v.Commit)
+		if got := SASCommitment(sha256.Sum256(csrSPKI), rc); got != v.Commit {
+			t.Errorf("%s: SASCommitment = %q, want %q", v.Name, got, v.Commit)
 		}
 		if len(v.SAS) != 6 {
 			t.Errorf("%s: vector sas %q is not 6 characters", v.Name, v.SAS)
 		}
-		if !validSASHex(v.Commit, sha256.Size) {
+		if !ValidSASHex(v.Commit, sha256.Size) {
 			t.Errorf("%s: vector commit %q is not 64 lowercase hex", v.Name, v.Commit)
 		}
 		for i := 0; i < len(v.SAS); i++ {
@@ -185,8 +185,8 @@ func TestSASDomainSeparation(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xD0A1))
 	caSPKI := make([]byte, 91)
 	csrSPKI := make([]byte, 91)
-	rc := make([]byte, sasNonceBytes)
-	rr := make([]byte, sasNonceBytes)
+	rc := make([]byte, SASNonceBytes)
+	rr := make([]byte, SASNonceBytes)
 	for _, b := range [][]byte{caSPKI, csrSPKI, rc, rr} {
 		rng.Read(b)
 	}
@@ -197,23 +197,23 @@ func TestSASDomainSeparation(t *testing.T) {
 	withDomain := sha256.Sum256(append([]byte(sasDomain), body...))
 	naked := sha256.Sum256(body)
 
-	if got := computeSAS(caSPKI, csrSPKI, rc, rr); got != enc30(withDomain) {
-		t.Fatalf("computeSAS = %q, want %q — the domain tag is not in the preimage as written", got, enc30(withDomain))
+	if got := ComputeSAS(caSPKI, csrSPKI, rc, rr); got != enc30(withDomain) {
+		t.Fatalf("ComputeSAS = %q, want %q — the domain tag is not in the preimage as written", got, enc30(withDomain))
 	}
-	if enc30(naked) == computeSAS(caSPKI, csrSPKI, rc, rr) {
+	if enc30(naked) == ComputeSAS(caSPKI, csrSPKI, rc, rr) {
 		t.Fatal("the code is unchanged without the domain prefix")
 	}
 
 	crossed := sha256.Sum256(append(append([]byte(sasDomain), csrSum[:]...), rc...))
-	if sasCommitment(csrSum, rc) == hex.EncodeToString(crossed[:]) {
-		t.Fatal("sasCommitment uses the SAS domain tag rather than the commitment one")
+	if SASCommitment(csrSum, rc) == hex.EncodeToString(crossed[:]) {
+		t.Fatal("SASCommitment uses the SAS domain tag rather than the commitment one")
 	}
 }
 
 // AC-5
 func TestSASCommitmentBindsTheKey(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xC0117))
-	rc := make([]byte, sasNonceBytes)
+	rc := make([]byte, SASNonceBytes)
 	a := make([]byte, 91)
 	b := make([]byte, 91)
 	for i := 0; i < 1000; i++ {
@@ -222,11 +222,11 @@ func TestSASCommitmentBindsTheKey(t *testing.T) {
 		rng.Read(b)
 		sumA := sha256.Sum256(a)
 		sumB := sha256.Sum256(b)
-		commitA := sasCommitment(sumA, rc)
-		if commitA != sasCommitment(sumA, rc) {
-			t.Fatal("sasCommitment is not deterministic")
+		commitA := SASCommitment(sumA, rc)
+		if commitA != SASCommitment(sumA, rc) {
+			t.Fatal("SASCommitment is not deterministic")
 		}
-		if commitA == sasCommitment(sumB, rc) {
+		if commitA == SASCommitment(sumB, rc) {
 			t.Fatalf("iteration %d: a commitment over key A verified against key B", i)
 		}
 	}
@@ -237,12 +237,12 @@ func TestSASSubstitutionChangesTheCode(t *testing.T) {
 	rng := rand.New(rand.NewSource(0xA77ACC))
 	caReal := make([]byte, 91)
 	csrReal := make([]byte, 91)
-	rc := make([]byte, sasNonceBytes)
-	rr := make([]byte, sasNonceBytes)
+	rc := make([]byte, SASNonceBytes)
+	rr := make([]byte, SASNonceBytes)
 	for _, b := range [][]byte{caReal, csrReal, rc, rr} {
 		rng.Read(b)
 	}
-	honest := computeSAS(caReal, csrReal, rc, rr)
+	honest := ComputeSAS(caReal, csrReal, rc, rr)
 
 	caAttacker := make([]byte, 91)
 	csrAttacker := make([]byte, 91)
@@ -250,11 +250,11 @@ func TestSASSubstitutionChangesTheCode(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		rng.Read(caAttacker)
 		rng.Read(csrAttacker)
-		if computeSAS(caAttacker, csrReal, rc, rr) == honest {
+		if ComputeSAS(caAttacker, csrReal, rc, rr) == honest {
 			caCollisions++
 			t.Errorf("iteration %d: substituting the CA left the code at %q", i, honest)
 		}
-		if computeSAS(caReal, csrAttacker, rc, rr) == honest {
+		if ComputeSAS(caReal, csrAttacker, rc, rr) == honest {
 			csrCollisions++
 			t.Errorf("iteration %d: substituting the CSR left the code at %q", i, honest)
 		}
@@ -267,15 +267,15 @@ func TestSASSubstitutionChangesTheCode(t *testing.T) {
 func TestSASNonceIsThirtyTwoLowercaseHex(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 128; i++ {
-		n, err := newSASNonce()
+		n, err := NewSASNonce()
 		if err != nil {
-			t.Fatalf("newSASNonce: %v", err)
+			t.Fatalf("NewSASNonce: %v", err)
 		}
-		if !validSASHex(n, sasNonceBytes) {
-			t.Fatalf("newSASNonce returned %q", n)
+		if !ValidSASHex(n, SASNonceBytes) {
+			t.Fatalf("NewSASNonce returned %q", n)
 		}
 		if seen[n] {
-			t.Fatalf("newSASNonce repeated %q", n)
+			t.Fatalf("NewSASNonce repeated %q", n)
 		}
 		seen[n] = true
 	}
@@ -299,8 +299,8 @@ func TestSASValidHex(t *testing.T) {
 		{"0123456789abcdef0123456789abcde ", 16, false},
 	}
 	for _, c := range cases {
-		if got := validSASHex(c.s, c.n); got != c.want {
-			t.Errorf("validSASHex(%q, %d) = %v, want %v", c.s, c.n, got, c.want)
+		if got := ValidSASHex(c.s, c.n); got != c.want {
+			t.Errorf("ValidSASHex(%q, %d) = %v, want %v", c.s, c.n, got, c.want)
 		}
 	}
 }

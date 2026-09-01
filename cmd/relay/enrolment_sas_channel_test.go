@@ -27,6 +27,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -39,11 +40,11 @@ import (
 // push into it. The sandbox must already exist.
 func seedCAInto(t *testing.T, table *enrolmentRequestTable) (certPEM, spki []byte) {
 	t.Helper()
-	if _, err := LoadOrCreateCA(testSealer()); err != nil {
-		t.Fatalf("LoadOrCreateCA: %v", err)
+	if _, err := enrolment.LoadOrCreateCA(testSealer()); err != nil {
+		t.Fatalf("enrolment.LoadOrCreateCA: %v", err)
 	}
-	certPEM, spki, err := caMaterialFromDisk()
-	assertNoErr(t, err, "caMaterialFromDisk")
+	certPEM, spki, err := enrolment.CAMaterialFromDisk()
+	assertNoErr(t, err, "enrolment.CAMaterialFromDisk")
 	table.setCACert(certPEM, spki)
 	return certPEM, spki
 }
@@ -71,7 +72,7 @@ func newSASClient(t *testing.T, cn string) *sasClient {
 	t.Helper()
 	csrPEM := genClientCSRPEM(t, cn)
 	csr := parseCSRForTest(t, csrPEM)
-	rc := make([]byte, sasNonceBytes)
+	rc := make([]byte, enrolment.SASNonceBytes)
 	if _, err := rand.Read(rc); err != nil {
 		t.Fatalf("read client nonce: %v", err)
 	}
@@ -79,7 +80,7 @@ func newSASClient(t *testing.T, cn string) *sasClient {
 		csrPEM: csrPEM,
 		spki:   csr.RawSubjectPublicKeyInfo,
 		rc:     rc,
-		commit: sasCommitment(sha256.Sum256(csr.RawSubjectPublicKeyInfo), rc),
+		commit: enrolment.SASCommitment(sha256.Sum256(csr.RawSubjectPublicKeyInfo), rc),
 	}
 }
 
@@ -108,7 +109,7 @@ func viewFor(t *testing.T, table *enrolmentRequestTable, requestID string) enrol
 // otherNonce returns a valid 32-hex opening that is not c's.
 func otherNonce(t *testing.T) string {
 	t.Helper()
-	b := make([]byte, sasNonceBytes)
+	b := make([]byte, enrolment.SASNonceBytes)
 	if _, err := rand.Read(b); err != nil {
 		t.Fatalf("read nonce: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestSAS_AC8_RelayNonceIsMintedInLodgeAndAssignedOnce(t *testing.T) {
 	table, _, _ := sasCATable(t)
 	a := newSASClient(t, "ac8-a").lodgeRegister(t, table, "10.0.0.1:1")
 	b := newSASClient(t, "ac8-b").lodgeRegister(t, table, "10.0.0.2:1")
-	if !validSASHex(a.SASNonce, sasNonceBytes) || !validSASHex(b.SASNonce, sasNonceBytes) {
+	if !enrolment.ValidSASHex(a.SASNonce, enrolment.SASNonceBytes) || !enrolment.ValidSASHex(b.SASNonce, enrolment.SASNonceBytes) {
 		t.Fatalf("nonces are not 32 lowercase hex: %q, %q", a.SASNonce, b.SASNonce)
 	}
 	if a.SASNonce == b.SASNonce {
@@ -304,7 +305,7 @@ func TestSAS_HostAndClientDeriveTheSameCode(t *testing.T) {
 
 	rr, err := hex.DecodeString(l.SASNonce)
 	assertNoErr(t, err, "decode the relay nonce")
-	client := computeSAS(caSPKI, c.spki, c.rc, rr)
+	client := enrolment.ComputeSAS(caSPKI, c.spki, c.rc, rr)
 
 	if host := viewFor(t, table, l.RequestID).SAS; host != client {
 		t.Fatalf("host shows %q, client computes %q", host, client)
@@ -352,11 +353,11 @@ func TestSAS_IdempotentRelodgeRules(t *testing.T) {
 		assertNoErr(t, err, "legacy lodge")
 
 		csr := parseCSRForTest(t, csrPEM)
-		rc := make([]byte, sasNonceBytes)
+		rc := make([]byte, enrolment.SASNonceBytes)
 		if _, err := rand.Read(rc); err != nil {
 			t.Fatalf("read nonce: %v", err)
 		}
-		commit := sasCommitment(sha256.Sum256(csr.RawSubjectPublicKeyInfo), rc)
+		commit := enrolment.SASCommitment(sha256.Sum256(csr.RawSubjectPublicKeyInfo), rc)
 		_, err = table.Lodge(csrPEM, "", "", commit, "10.0.0.1:1")
 		if err == nil || !strings.Contains(err.Error(), "without a comparison commitment") {
 			t.Fatalf("err = %v, want a refusal naming the mismatch", err)

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"strings"
 	"testing"
 )
@@ -17,14 +18,14 @@ func TestGrantView_ShowsEnrolmentsAndCLIAdminState(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment on")
-	_, err = createEnrolment(store, enrolmentRequest{ClientID: "hermes-off", ProjectIDs: []string{mail.ID}})
-	assertNoErr(t, err, "createEnrolment off")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create on")
+	_, err = enrolment.Create(store, enrolment.Request{ClientID: "hermes-off", ProjectIDs: []string{mail.ID}})
+	assertNoErr(t, err, "enrolment.Create off")
 
 	on := true
-	_, _, err = updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-on", CLIAdmin: &on})
-	assertNoErr(t, err, "updateEnrolment turning cli-admin on")
+	_, _, err = enrolment.Update(store, enrolment.UpdateRequest{ClientID: "hermes-on", CLIAdmin: &on})
+	assertNoErr(t, err, "enrolment.Update turning cli-admin on")
 
 	s := store.Get()
 	proj, _ := config.FindProjectByID(s, mail.ID)
@@ -78,7 +79,7 @@ func TestGrantView_ShowsEnrolmentsAndCLIAdminState(t *testing.T) {
 }
 
 // A local project can never be granted to an enrolment
-// (ValidateEnrolmentGrants), so its grant view carries no enrolments and the
+// (enrolment.ValidateGrants), so its grant view carries no enrolments and the
 // text output must not print an empty "enrolments:" section for it.
 func TestGrantView_LocalProjectHasNoEnrolmentsSection(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)

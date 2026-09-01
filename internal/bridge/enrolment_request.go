@@ -116,9 +116,9 @@ func lowerHexOfLength(s string, n int) bool {
 }
 
 // safeWireID is the door's bound on requested_profile — the same charset
-// the main package's isSafeID enforces, checked here so hostile text is
+// internal/enrolment's SafeID enforces, checked here so hostile text is
 // refused before it reaches a table at all. The main package re-checks it
-// with isSafeID itself, which stays the authority; this is the earlier of
+// with SafeID itself, which stays the authority; this is the earlier of
 // two refusals, not the only one.
 func safeWireID(s string, maxBytes int) bool {
 	if s == "" || s == "." || s == ".." || len(s) > maxBytes {

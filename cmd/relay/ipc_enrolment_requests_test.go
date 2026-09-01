@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"reflect"
 	"strings"
 	"testing"
@@ -175,14 +176,14 @@ func TestIPCApproveEnrolmentRequest_PersistsAndEmitsBundleAndRefreshesList(t *te
 	if !ok {
 		t.Fatalf("expected onEnrolmentCreated; got %+v", ui.events)
 	}
-	var enrolment config.Enrolment
-	if err := json.Unmarshal(created[0].(json.RawMessage), &enrolment); err != nil {
+	var enrolled config.Enrolment
+	if err := json.Unmarshal(created[0].(json.RawMessage), &enrolled); err != nil {
 		t.Fatalf("unmarshal enrolment: %v", err)
 	}
-	if enrolment.ClientID != "hermes-mail" || !enrolment.GrantsProject(mail.ID) {
-		t.Fatalf("emitted enrolment does not match the approval: %+v", enrolment)
+	if enrolled.ClientID != "hermes-mail" || !enrolled.GrantsProject(mail.ID) {
+		t.Fatalf("emitted enrolment does not match the approval: %+v", enrolled)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") == nil {
+	if enrolment.Find(store.Get(), "hermes-mail") == nil {
 		t.Error("approved enrolment was not persisted")
 	}
 
@@ -301,12 +302,12 @@ func TestIPCRefuseEnrolmentRequest_RequiresRequestID(t *testing.T) {
 func TestRemoteConfigView_CarriesCAFingerprintMatchingDiskRead(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	if _, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
-		t.Fatalf("createEnrolment: %v", err)
+	if _, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
+		t.Fatalf("enrolment.Create: %v", err)
 	}
 
-	want, err := caFingerprintFromDisk()
-	assertNoErr(t, err, "caFingerprintFromDisk")
+	want, err := enrolment.CAFingerprintFromDisk()
+	assertNoErr(t, err, "enrolment.CAFingerprintFromDisk")
 
 	view := remoteConfigViewOf(store.Get(), true)
 	if view.CAFingerprint != want {
@@ -315,7 +316,7 @@ func TestRemoteConfigView_CarriesCAFingerprintMatchingDiskRead(t *testing.T) {
 }
 
 // No CA has been generated yet on a fresh install: the field is empty
-// rather than the tab surfacing loadCACertificateOnly's error as if the
+// rather than the tab surfacing enrolment.LoadCACertificateOnly's error as if the
 // operator had done something wrong.
 func TestRemoteConfigView_EmptyCAFingerprintWhenNoCAExistsYet(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)

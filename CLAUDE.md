@@ -51,8 +51,7 @@ audit_issuance.go        credential_issued / credential_revoked: the record ever
                          the CLI's own append-only recorder, and the fail-closed rule for issuance
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
 scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
-enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
-enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
+enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
@@ -87,6 +86,10 @@ bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go h
                          frameconn.go is the framing/scanner/deadline plumbing BOTH listeners share;
                          remote_request.go + remote_caller.go are the remote wire type and attested identity
 mcp/                     MCP types + stdio server (proxies to the bridge)
+enrolment/               The enrolment domain: the record's CRUD/validation (enrolment.go), relay's
+                         own CA (ca.go), CSR parsing (csr.go), the comparison code (sas.go) and the
+                         per-enrolment budget ledger (budget.go). Depends on config/bridge/sealed;
+                         the gate, the audit sink and every door stay in main.
 ```
 
 ## Projects
@@ -190,7 +193,7 @@ See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
 
 ### Remote client enrolment
 
-An **enrolment** (`enrolment.go`, `settings.json` → `enrolments`) binds one
+An **enrolment** (`internal/enrolment`, `settings.json` → `enrolments`) binds one
 client certificate to the remote projects it may use. It is keyed by
 *certificate, not by machine* — several agents on one VM each hold their own
 enrolment, granted, audited, and revoked independently, and nothing may assume
@@ -199,7 +202,7 @@ one per machine. There is **no bearer token anywhere on this path**: a stolen
 
 **The client's private key is generated on the client, not on relay**
 (ADR-018 decision 6 step 1). `relayremote enrol` generates the keypair and a
-CSR; `relay enrol sign` (`enrolment_csr.go`, `RelayCA.SignClientCSR`) signs
+CSR; `relay enrol sign` (`enrolment.ParseClientCSR`, `RelayCA.SignClientCSR`) signs
 the CSR's own public key and returns only certificates — the private key
 never crosses to this host, and relay never writes one for a CSR enrolment
 (`writeSignedCertBundle` refuses if `client.key` is already present in the
@@ -241,7 +244,7 @@ that reads as a security property it cannot provide — the real control is
 client-side and comes in two forms, one per client verb. `relayremote
 request` pins the CA-fingerprint carried out of band (`--ca-fingerprint`, or
 a watched `--tofu`), unchanged. `relayremote register` instead completes a
-**commit–reveal comparison** (ADR-019 decision 3, `enrolment_sas.go`): a
+**commit–reveal comparison** (ADR-019 decision 3, `internal/enrolment/sas.go`): a
 six-character code over relay's CA SPKI, the CSR's SPKI and a 16-byte nonce
 from each side, the client's committed at lodge and opened on its first
 poll. Both close the same gap — an attacker who lets a real CSR through to
@@ -254,18 +257,18 @@ bits, so raising it degrades the margin linearly. See
 [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself)
 and [`docs/install-remote-machine.md`](docs/install-remote-machine.md).
 
-Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
+Relay is its own CA (`internal/enrolment/ca.go`), generated lazily on first use and
 persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the
 config dir — not in `settings.json`, which is rewritten in full on every
 mutation. The CA's private key is never written to disk as plaintext; only
 the tray, holding the keychain key, can open it. Client certs are
 long-lived because *revocation, not expiry, is the control*; revoking deletes
-the record and fires `SetEnrolmentRevocationHook` so the listener can close
+the record and fires `enrolment.SetRevocationHook` so the listener can close
 live connections.
 
-Grants are validated at enrolment (`ValidateEnrolmentGrants` — every grant must
+Grants are validated at enrolment (`enrolment.ValidateGrants` — every grant must
 name a project with `IsRemote()` true) and at conversion
-(`ValidateProjectEnrolments` — remote→local is refused while any enrolment
+(`enrolment.ValidateProjectConversion` — remote→local is refused while any enrolment
 grants the project, naming the offenders), and a third time at call time by the
 listener (`RemoteServer.resolveGrant` re-checks `IsRemote()` immediately before
 dispatch, so a grant that went stale by any route relay did not anticipate
@@ -296,7 +299,7 @@ decoding is strict (`DisallowUnknownFields`) so a client sending `cwd` gets a
 loud error rather than silent divergence. The project token is resolved
 host-side from the granted project and never appears on the wire.
 
-Every remote call is budgeted (`enrolment_budget.go`). Each enrolment carries a
+Every remote call is budgeted (`internal/enrolment/budget.go`). Each enrolment carries a
 rolling-window call-rate and result-volume cap, enforced in `appRouter.CallTool`
 and refused with the `throttled` outcome — distinct from `denied` (a tool the
 grant never included) and `tool_error` (a boundary inside the MCP) because it is
@@ -324,7 +327,7 @@ The listener **refuses to start when auditing is disabled**: a remote grant is
 justified by the calls it records, so serving remote traffic unrecorded is not
 a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 (inactivity, not a cap on work) and keeps a connection table keyed by
-fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
+fingerprint so `enrolment.SetRevocationHook` closes a revoked client's *live*
 connections.
 
 `enrolment_requests` and `enrolment_listen` configure the third listener
@@ -358,7 +361,7 @@ the old one serving and says so loudly rather than leaving nothing behind and
 no error; live connections on the old address are then closed deliberately,
 because `listen` is the reachability control and a narrowed bind that left
 old sessions running would not have narrowed anything. The revocation hook is
-*owned* (`SetEnrolmentRevocationHookFor` / `ClearEnrolmentRevocationHookFor`)
+*owned* (`enrolment.SetRevocationHookFor` / `enrolment.ClearRevocationHookFor`)
 so a replaced listener's teardown cannot uninstall the live listener's hook.
 
 **Every authorization read on this path goes through `freshSettings`, never
@@ -429,7 +432,7 @@ as it did before the field existed. An `expires` relay cannot parse reads as
 **expired**, and an expired credential is refused *identically* to an unknown
 one — a distinguishable answer would be an oracle for which credentials exist.
 Expired records are reaped lazily, inside the same `store.With` as the next
-mint, never by a timer. This is not a reversal of `enrolment_ca.go`'s
+mint, never by a timer. This is not a reversal of `internal/enrolment/ca.go`'s
 revocation-over-expiry choice: an enrolment is long-lived and revoked, a login
 credential is short-lived by design and renewed by another ceremony. See
 [`docs/tokens.md`](docs/tokens.md#expiry).

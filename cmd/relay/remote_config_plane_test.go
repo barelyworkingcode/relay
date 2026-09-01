@@ -17,18 +17,19 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
 
-// setCLIAdmin flips an enrolment's bit directly through updateEnrolment
+// setCLIAdmin flips an enrolment's bit directly through enrolment.Update
 // (bypassing EnrolmentOps' own gate — the toggle itself is covered
 // elsewhere), so these tests can drive the bit deterministically.
 func setCLIAdmin(t *testing.T, store config.SettingsStore, clientID string, on bool) {
 	t.Helper()
 	v := on
-	if _, _, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: clientID, CLIAdmin: &v}); err != nil {
+	if _, _, err := enrolment.Update(store, enrolment.UpdateRequest{ClientID: clientID, CLIAdmin: &v}); err != nil {
 		t.Fatalf("setCLIAdmin(%s, %v): %v", clientID, on, err)
 	}
 }
@@ -316,8 +317,8 @@ func TestCliAdmin_CannotTouchAnotherEnrolmentsProfile(t *testing.T) {
 		calProj, createErr = createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
 	}), "create B's profile")
 	assertNoErr(t, createErr, "create B's profile")
-	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{calProj.ID}})
-	assertNoErr(t, err, "createEnrolment for B")
+	_, err := enrolment.Create(f.store, enrolment.Request{ClientID: "hermes-cal", ProjectIDs: []string{calProj.ID}})
+	assertNoErr(t, err, "enrolment.Create for B")
 
 	before := odwSnap(t, f.dir)
 	c := f.dial() // dials as A (hermes-mail)
@@ -345,8 +346,8 @@ func TestCliAdmin_DescribeGrantDoesNotDiscloseSiblingEnrolments(t *testing.T) {
 	setCLIAdmin(t, f.store, "hermes-mail", true)
 	// B grants the SAME profile A holds, so A's own posture and the
 	// operator's `relay grant` view of that profile both name B.
-	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
-	assertNoErr(t, err, "createEnrolment for sibling B")
+	_, err := enrolment.Create(f.store, enrolment.Request{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
+	assertNoErr(t, err, "enrolment.Create for sibling B")
 
 	c := f.dial() // dials as A (hermes-mail)
 	resp := c.roundTrip(`{"type":"DescribeGrant"}`)
@@ -382,8 +383,8 @@ func TestCliAdmin_DescribeGrantDoesNotDiscloseSiblingEnrolments(t *testing.T) {
 func TestCliAdmin_NarrowGrantResultDoesNotDiscloseSiblingEnrolments(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 	setCLIAdmin(t, f.store, "hermes-mail", true)
-	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
-	assertNoErr(t, err, "createEnrolment for sibling B")
+	_, err := enrolment.Create(f.store, enrolment.Request{ClientID: "hermes-cal", ProjectIDs: []string{f.project.ID}})
+	assertNoErr(t, err, "enrolment.Create for sibling B")
 
 	c := f.dial()
 	resp := c.roundTrip(`{"type":"NarrowGrant","arguments":{"allowed_tools":{"macmcp":["mail_search"]}}}`)
@@ -496,7 +497,7 @@ func TestCliAdmin_FlippingBitOffDeniesTheNextRequestNotTheConnection(t *testing.
 	// Precondition: the listener's own cached settings must still show the
 	// bit on, or this test is back to exercising the in-process case and
 	// proves nothing about freshSettings.
-	if e := findEnrolment(f.store.Get(), "hermes-mail"); e == nil || !e.CLIAdmin {
+	if e := enrolment.Find(f.store.Get(), "hermes-mail"); e == nil || !e.CLIAdmin {
 		t.Fatal("the listener's cached settings already show cli_admin off; " +
 			"this test no longer reproduces the cross-process condition it was written for")
 	}

@@ -4,10 +4,10 @@ package main
 // shares EnrolmentOps with the Remote Clients tab's IPC handlers
 // (ipc_enrolments_test.go), so these tests focus on the envelope — status
 // codes, request/response shape — rather than re-proving grant and
-// client-id validation enrolment.go already covers.
+// client-id validation internal/enrolment already covers.
 //
 // TestEnrolmentRoutes_CreateNeverLeaksKeyMaterial is the one that matters:
-// createEnrolment writes a client private key to disk, and not one byte of
+// enrolment.Create writes a client private key to disk, and not one byte of
 // it may ride out over the wire in any response.
 
 import (
@@ -21,6 +21,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, config.SettingsStore) {
@@ -158,7 +159,7 @@ func TestEnrolmentRoutes_CreateMalformedJSON(t *testing.T) {
 	}
 }
 
-// The load-bearing test in this file. createEnrolment writes a client
+// The load-bearing test in this file. enrolment.Create writes a client
 // private key to disk; the whole reason the HTTP response hands back a
 // bundle directory rather than the bundle's contents is that the key must
 // never cross this boundary — not whole, not truncated, not as a "preview".
@@ -224,19 +225,19 @@ func TestEnrolmentRoutes_RevokeFiresHookAnd204(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d, body %s", resp.StatusCode, body)
 	}
-	fingerprint := findEnrolment(store.Get(), "hermes-mail").Fingerprint
+	fingerprint := enrolment.Find(store.Get(), "hermes-mail").Fingerprint
 
 	var hookClient, hookFingerprint string
-	SetEnrolmentRevocationHook(func(clientID, fp string) {
+	enrolment.SetRevocationHook(func(clientID, fp string) {
 		hookClient, hookFingerprint = clientID, fp
 	})
-	t.Cleanup(func() { SetEnrolmentRevocationHook(nil) })
+	t.Cleanup(func() { enrolment.SetRevocationHook(nil) })
 
 	resp, body = doJSON(t, "DELETE", srv.URL+"/api/enrolments/hermes-mail", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: status %d, body %s", resp.StatusCode, body)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") != nil {
+	if enrolment.Find(store.Get(), "hermes-mail") != nil {
 		t.Error("the enrolment record survived revocation")
 	}
 	if hookClient != "hermes-mail" || hookFingerprint != fingerprint {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 // The vocabulary of things relay issues. Each names a kind of credential, not
@@ -227,7 +228,7 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // This is deliberate, and is the one issuing path that needs an undo: the
 // artifact is a credential the client already holds — a key relay wrote, or
 // a certificate over a key the client generated — so withholding the bundle
-// path would not withhold the credential. revokeEnrolment removes the
+// path would not withhold the credential. enrolment.Revoke removes the
 // record AND the emitted bundle, which is what makes the refusal real.
 func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e config.Enrolment, via, credID, presenceID string) error {
 	err := recordIssuance(a, CredentialIssuance{
@@ -241,7 +242,7 @@ func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e conf
 	if err == nil {
 		return nil
 	}
-	if _, undoErr := revokeEnrolment(store, e.ClientID); undoErr != nil {
+	if _, undoErr := enrolment.Revoke(store, e.ClientID); undoErr != nil {
 		return fmt.Errorf("%w (and revoking the unrecorded enrolment %q also failed: %v)", err, e.ClientID, undoErr)
 	}
 	return err

@@ -95,7 +95,7 @@ type grantView struct {
 	// so `relay grant` answers "who can reach this and can any of them
 	// reconfigure it" in the same place it answers "what does this reach"
 	// (ADR-018 decision 5). Empty for a local project, which no enrolment
-	// can grant (ValidateEnrolmentGrants).
+	// can grant (enrolment.ValidateGrants).
 	Enrolments []grantEnrolmentView `json:"enrolments,omitempty"`
 }
 

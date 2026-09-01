@@ -1,16 +1,17 @@
-package main
+package enrolment
 
 import (
 	"fmt"
 	"slices"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-type enrolmentBudgets struct {
+type Budgets struct {
 	mu      sync.RWMutex
 	windows map[string]*budgetWindow
 
@@ -34,17 +35,17 @@ type volumeSample struct {
 	bytes int64
 }
 
-func enrolmentBudget(s *config.Settings, rc bridge.RemoteCaller) config.EnrolmentBudget {
+func BudgetFor(s *config.Settings, rc bridge.RemoteCaller) config.EnrolmentBudget {
 	if s != nil {
-		if e := findEnrolmentByFingerprint(s, rc.Fingerprint); e != nil {
-			return normalizeEnrolmentBudget(e.Budget)
+		if e := FindByFingerprint(s, rc.Fingerprint); e != nil {
+			return NormalizeBudget(e.Budget)
 		}
 	}
-	return normalizeEnrolmentBudget(config.EnrolmentBudget{})
+	return NormalizeBudget(config.EnrolmentBudget{})
 }
 
-func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget config.EnrolmentBudget) error {
-	budget = normalizeEnrolmentBudget(budget)
+func (b *Budgets) Admit(rc bridge.RemoteCaller, budget config.EnrolmentBudget) error {
+	budget = NormalizeBudget(budget)
 	span := time.Duration(budget.WindowSeconds) * time.Second
 	w, now := b.windowFor(rc.Fingerprint)
 
@@ -68,7 +69,7 @@ func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget config.Enrolment
 	return nil
 }
 
-// charge records the size of a completed result against the volume
+// Charge records the size of a completed result against the volume
 // budget. This runs after the call, and that is a real limit, not an
 // oversight: result size is not knowable before the MCP answers, so a call
 // that pushes the total over the cap completes and returns its bytes — the
@@ -79,11 +80,11 @@ func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget config.Enrolment
 // n is the same quantity the audit layer records as ResultBytes,
 // deliberately reused rather than a second measurement that could
 // disagree with the log.
-func (b *enrolmentBudgets) charge(rc bridge.RemoteCaller, budget config.EnrolmentBudget, n int) {
+func (b *Budgets) Charge(rc bridge.RemoteCaller, budget config.EnrolmentBudget, n int) {
 	if n <= 0 {
 		return
 	}
-	budget = normalizeEnrolmentBudget(budget)
+	budget = NormalizeBudget(budget)
 	span := time.Duration(budget.WindowSeconds) * time.Second
 	w, now := b.windowFor(rc.Fingerprint)
 
@@ -101,7 +102,7 @@ func (b *enrolmentBudgets) charge(rc bridge.RemoteCaller, budget config.Enrolmen
 // save a few hundred bytes per enrolment ever created and would open a
 // race where a sweep drops the window a long-running call is about to
 // charge its bytes to.
-func (b *enrolmentBudgets) windowFor(fingerprint string) (*budgetWindow, time.Time) {
+func (b *Budgets) windowFor(fingerprint string) (*budgetWindow, time.Time) {
 	b.mu.RLock()
 	w, clock := b.windows[fingerprint], b.clock
 	b.mu.RUnlock()
@@ -130,7 +131,7 @@ func (b *enrolmentBudgets) windowFor(fingerprint string) (*budgetWindow, time.Ti
 	return w, now
 }
 
-func (b *enrolmentBudgets) setClock(fn func() time.Time) {
+func (b *Budgets) SetClock(fn func() time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.clock = fn
@@ -152,4 +153,33 @@ func (w *budgetWindow) prune(cutoff time.Time) {
 	if j > 0 {
 		w.volume = slices.Delete(w.volume, 0, j)
 	}
+}
+
+// TrackedWindows and DrawnBytes are the read seam the router's budget tests
+// need: those tests live in package main, beside the appRouter.CallTool path
+// that actually enforces a budget, and the ledger's own fields are
+// unexported. Both panic outside a test binary — production has no business
+// reading a running total, only Admit and Charge do.
+func (b *Budgets) TrackedWindows() int {
+	if !testing.Testing() {
+		panic("enrolment: TrackedWindows is a test seam and must not be reached in a shipped binary")
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.windows)
+}
+
+func (b *Budgets) DrawnBytes(fingerprint string) int64 {
+	if !testing.Testing() {
+		panic("enrolment: DrawnBytes is a test seam and must not be reached in a shipped binary")
+	}
+	b.mu.RLock()
+	w := b.windows[fingerprint]
+	b.mu.RUnlock()
+	if w == nil {
+		return 0
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bytes
 }

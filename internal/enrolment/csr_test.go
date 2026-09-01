@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"crypto"
@@ -29,9 +29,10 @@ func genCSRPEMFromKey(t *testing.T, key crypto.Signer, sigAlg x509.SignatureAlgo
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
-// genClientCSRPEM is the fixture every other package test (enrolment_test.go,
-// enrol_cmd_test.go, presence_gate_wiring_test.go) reaches for when it needs
-// a real, valid CSR rather than a negative case of its own.
+// genClientCSRPEM is the fixture enrolment_test.go reaches for when it needs
+// a real, valid CSR rather than a negative case of its own. Package main's
+// enrolment tests carry their own copy (enrolment_fixtures_test.go): a
+// generator, not an assertion, so two independent ones cost nothing.
 func genClientCSRPEM(t *testing.T, cn string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -120,7 +121,7 @@ func TestParseClientCSR_Negatives(t *testing.T) {
 	assertNoErr(t, err, "generate P-256 key for SHA1 test")
 	sha1PEM := genCSRPEMFromKey(t, sha1Key, x509.ECDSAWithSHA1, "sha1-client")
 
-	oversized := make([]byte, maxCSRBytes+1)
+	oversized := make([]byte, MaxCSRBytes+1)
 
 	// A PEM block honestly labelled something other than "CERTIFICATE
 	// REQUEST" (and other than "CERTIFICATE", which gets its own message),

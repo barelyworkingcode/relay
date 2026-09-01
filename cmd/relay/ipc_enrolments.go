@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"time"
 )
 
@@ -99,7 +100,7 @@ type pendingEnrolmentRequestView struct {
 	RequestedProfile string `json:"requested_profile,omitempty"`
 
 	// SuggestedClientID is the host's collision-free suggestion for the
-	// approval sheet's client-id field. Advisory: ValidateEnrolment inside
+	// approval sheet's client-id field. Advisory: the validation inside
 	// store.With is still the authority on uniqueness, and empty means "no
 	// suggestion", never a chosen id.
 	SuggestedClientID string `json:"suggested_client_id,omitempty"`
@@ -165,7 +166,7 @@ type remoteConfigView struct {
 	// same CA (AC-30) with no sealer and no CA generation on this path.
 	// Empty when no CA has been generated yet (no enrolment created or
 	// signed on this install): the tab shows that as an explanation rather
-	// than surfacing loadCACertificateOnly's error, since a missing CA here
+	// than surfacing enrolment.LoadCACertificateOnly's error, since a missing CA here
 	// is not a caller mistake to report as a failure.
 	CAFingerprint string `json:"ca_fingerprint,omitempty"`
 
@@ -197,14 +198,14 @@ func remoteConfigViewOf(s *config.Settings, auditEnabled bool) remoteConfigView 
 			v.EnrolmentEffective = v.EnrolmentListen
 		}
 	}
-	if fp, err := caFingerprintFromDisk(); err == nil {
+	if fp, err := enrolment.CAFingerprintFromDisk(); err == nil {
 		v.CAFingerprint = fp
 	}
 	return v
 }
 
 func enrolmentBudgetDefaults() config.EnrolmentBudget {
-	return normalizeEnrolmentBudget(config.EnrolmentBudget{})
+	return enrolment.NormalizeBudget(config.EnrolmentBudget{})
 }
 
 func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
@@ -228,10 +229,10 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 		// the create if that recording fails) so it can attach the
 		// presence_id the gate minted.
 		created, err := ctx.EnrolmentOps.Create(ctx.Ctx, fields, auditViaIPC, "")
-		// Only errEnrolmentBundle means the record landed; every other
+		// Only enrolment.ErrBundle means the record landed; every other
 		// error means nothing was persisted, and announcing a row for it
 		// would add a credential-less enrolment to the list.
-		if err != nil && !errors.Is(err, errEnrolmentBundle) {
+		if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 			dispatchEmit(ctx, "onEnrolmentError", err.Error())
 			return
 		}
@@ -247,7 +248,7 @@ func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {
 }
 
 // ipcRevokeEnrolment goes through ctx.EnrolmentOps.Revoke, which goes
-// through revokeEnrolment rather than RemoveEnrolment directly: revokeEnrolment
+// through enrolment.Revoke rather than deleting the record directly: enrolment.Revoke
 // fires the revocation hook so the listener severs LIVE connections holding
 // that certificate, and removes the emitted bundle. Deleting the record
 // alone would leave a compromised agent in its scanner loop working
@@ -337,12 +338,12 @@ func ipcApproveEnrolmentRequest(ctx *IPCContext, raw json.RawMessage) {
 	// DispatchToMain before any UI touch.
 	ctx.GoFunc(func() {
 		created, err := ctx.EnrolmentOps.Approve(ctx.Ctx, fields, auditViaIPC, "")
-		// Only errEnrolmentBundle, errEnrolmentRequestExpired and
+		// Only enrolment.ErrBundle, errEnrolmentRequestExpired and
 		// errEnrolmentRequestRefused mean the record landed; every other
 		// error means nothing was persisted, and announcing a row for it
 		// would add a credential-less enrolment to the list — same rule
 		// ipcCreateEnrolment follows.
-		if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+		if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
 			dispatchEmit(ctx, "onEnrolmentError", err.Error())
 			return
 		}

@@ -231,7 +231,7 @@ func TestRemoteTab_BundleBannerSaysMoveNotCopy(t *testing.T) {
 // Create
 // ---------------------------------------------------------------------------
 
-// ValidateEnrolmentGrants refuses a grant naming a local project, so the form
+// enrolment.ValidateGrants refuses a grant naming a local project, so the form
 // must not offer one: a UI that presents a choice the server is about to
 // reject teaches the operator that refusals are arbitrary.
 func TestRemoteTab_OnlyRemoteProjectsAreOffered(t *testing.T) {
@@ -270,7 +270,7 @@ func TestRemoteTab_NoRemoteProjectsExplainsWhere(t *testing.T) {
 }
 
 // The create payload carries the chosen grants and sends 0 for a blank budget
-// field — which normalizeEnrolmentBudget reads as "unset, use the conservative
+// field — which enrolment.NormalizeBudget reads as "unset, use the conservative
 // default". Zero must never travel as, or be read as, "unlimited".
 func TestRemoteTab_CreatePayloadShape(t *testing.T) {
 	vm := seedRemoteVM(t, enrolProjectsFixture, `[]`, remoteEnabled)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -193,9 +194,9 @@ type appRouter struct {
 	audit *AuditRecorder
 	// budgets enforces each enrolment's rolling call-rate and result-volume
 	// caps for remote callers (ADR-010 decision 7). The zero value enforces
-	// (see enrolmentBudgets), so there is no way to end up with an
+	// (see enrolment.Budgets), so there is no way to end up with an
 	// unbudgeted router by omission.
-	budgets       enrolmentBudgets
+	budgets       enrolment.Budgets
 	serviceTokens serviceTokenStore
 
 	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
@@ -697,8 +698,8 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// Resolved once and reused below, so admission and accounting for
 		// one call are always governed by the same numbers even if an
 		// operator edits the enrolment mid-call.
-		budget = enrolmentBudget(settings, rc)
-		if err := r.budgets.admit(rc, budget); err != nil {
+		budget = enrolment.BudgetFor(settings, rc)
+		if err := r.budgets.Admit(rc, budget); err != nil {
 			au.done(AuditOutcomeThrottled, err)
 			return nil, err
 		}
@@ -719,7 +720,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// Charged after the fact because a result's size is not knowable
 		// before the MCP answers, and even on error: bytes that came back
 		// left the host whether or not the tool called them a success.
-		r.budgets.charge(rc, budget, len(result))
+		r.budgets.Charge(rc, budget, len(result))
 	}
 	au.doneResult(result, err)
 	return result, err
