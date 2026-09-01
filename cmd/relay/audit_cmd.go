@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -49,7 +50,7 @@ func runAuditCommand(args []string) {
 		exitError("audit: no log at %s (auditing may be disabled, or relay has not run yet)", path)
 	}
 
-	q := AuditQuery{
+	q := audit.AuditQuery{
 		ProjectID: *projectID,
 		McpID:     *mcpID,
 		Outcome:   *outcome,
@@ -59,10 +60,10 @@ func runAuditCommand(args []string) {
 		Limit:     *tail,
 	}
 
-	events := readAuditTail(path, auditTailBudget)
-	matched := make([]AuditEvent, 0, *tail)
+	events := audit.ReadAuditTail(path, audit.AuditTailBudget)
+	matched := make([]audit.AuditEvent, 0, *tail)
 	for i := range events {
-		if q.matches(&events[i]) {
+		if q.Matches(&events[i]) {
 			matched = append(matched, events[i])
 			if len(matched) >= *tail {
 				break
@@ -94,7 +95,7 @@ func runAuditCommand(args []string) {
 // Renders oldest-first so the table reads top-to-bottom in time order, like
 // the --json export. Factored out of runAuditCommand so the rendering can be
 // exercised without capturing os.Stdout.
-func writeAuditTable(w io.Writer, matched []AuditEvent, authority bool) {
+func writeAuditTable(w io.Writer, matched []audit.AuditEvent, authority bool) {
 	fmt.Fprintln(w, "TIME\tOUTCOME\tPROJECT\tMCP\tTOOL\tMS\tCALLER\tDETAIL")
 	for i := len(matched) - 1; i >= 0; i-- {
 		ev := matched[i]
@@ -126,7 +127,7 @@ func writeAuditTable(w io.Writer, matched []AuditEvent, authority bool) {
 // A remote caller has no process to name, so it is labelled by the enrolled
 // client instead — otherwise every row of `relay audit --kind remote` would
 // show a dash in the column that is supposed to say who called.
-func auditCallerLabel(a AuditActor) string {
+func auditCallerLabel(a audit.AuditActor) string {
 	if a.ClientID != "" {
 		return a.ClientID
 	}
@@ -151,7 +152,7 @@ func auditCallerLabel(a AuditActor) string {
 // does not get this treatment: ev.Error is typically empty for a tool_error
 // (the MCP's reason lives in the result content, not this field), so without
 // the marker a scope-violating row and an ordinary one render identically.
-func auditDetail(ev AuditEvent) string {
+func auditDetail(ev audit.AuditEvent) string {
 	detail := auditBaseDetail(ev)
 	if !ev.ScopeViolation {
 		return detail
@@ -162,7 +163,7 @@ func auditDetail(ev AuditEvent) string {
 	return "scope_violation: true  " + detail
 }
 
-func auditBaseDetail(ev AuditEvent) string {
+func auditBaseDetail(ev audit.AuditEvent) string {
 	// A supervision record (ADR-012) names no tool and carries no arguments:
 	// the transition itself is the detail.
 	if ev.Supervision != "" {
@@ -191,7 +192,7 @@ func auditBaseDetail(ev AuditEvent) string {
 		return collapseWhitespace(ev.Error)
 	}
 	if len(ev.Args) > 0 {
-		return collapseWhitespace(truncateRunes(string(ev.Args), 120))
+		return collapseWhitespace(audit.TruncateRunes(string(ev.Args), 120))
 	}
 	if ev.ToolCount > 0 {
 		return fmt.Sprintf("%d tools visible", ev.ToolCount)
@@ -202,9 +203,9 @@ func auditBaseDetail(ev AuditEvent) string {
 // auditIssuanceDetail renders a credential_issued / credential_revoked row.
 // Nothing it prints comes from a field that could hold a secret: Credential,
 // Subject, SubjectName, Grants and Via are the only ones it reads, and
-// CredentialIssuance has no plaintext, hash or key material to put in any of
+// audit.CredentialIssuance has no plaintext, hash or key material to put in any of
 // them.
-func auditIssuanceDetail(ev AuditEvent) string {
+func auditIssuanceDetail(ev audit.AuditEvent) string {
 	parts := []string{ev.Credential}
 	if ev.Subject != "" {
 		parts = append(parts, ev.Subject)
@@ -229,7 +230,7 @@ func auditIssuanceDetail(ev AuditEvent) string {
 // which case the line is omitted rather than printed full of placeholders.
 // Access is the field that says whether anything was recorded: it and
 // Scope/AllowExternal are always set together by setAuthority.
-func auditAuthorityLine(ev AuditEvent) (string, bool) {
+func auditAuthorityLine(ev audit.AuditEvent) (string, bool) {
 	if ev.Access == "" {
 		return "", false
 	}

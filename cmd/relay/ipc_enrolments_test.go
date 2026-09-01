@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -37,7 +38,7 @@ func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, config.Setti
 	t.Helper()
 	_, store := newEnrolmentSandbox(t)
 	ui := &recordingUI{}
-	var rec *AuditRecorder
+	var rec *audit.AuditRecorder
 	if auditEnabled {
 		// A real recorder with a live sink, not the bare cfg-only struct this
 		// fixture used before requireIssuanceAuditor existed (§7.4): issuance

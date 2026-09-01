@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -237,16 +238,16 @@ func pgwUngatedCases(t *testing.T) []pgwUngatedCase {
 // pgwAuditRecorderFor lets a case built for the generic IssuanceAuditor
 // interface (every core but LoginOps) share its "issuance off" (nil) and
 // "issuance on" (a real recorder) states with LoginOps, whose Audit field is
-// the concrete *AuditRecorder type. issuance is either nil or the exact
+// the concrete *audit.AuditRecorder type. issuance is either nil or the exact
 // value pgwWithIssuance below hands every other case.
-func pgwAuditRecorderFor(t *testing.T, issuance IssuanceAuditor) *AuditRecorder {
+func pgwAuditRecorderFor(t *testing.T, issuance IssuanceAuditor) *audit.AuditRecorder {
 	t.Helper()
 	if issuance == nil {
 		return nil
 	}
-	rec, ok := issuance.(*AuditRecorder)
+	rec, ok := issuance.(*audit.AuditRecorder)
 	if !ok {
-		t.Fatalf("pgwAuditRecorderFor: issuance is a %T, not *AuditRecorder", issuance)
+		t.Fatalf("pgwAuditRecorderFor: issuance is a %T, not *audit.AuditRecorder", issuance)
 	}
 	return rec
 }
@@ -391,7 +392,7 @@ func TestGate_RetiredOpsStillWriteConfigChange(t *testing.T) {
 			tc.seed(t, store)
 
 			logPath := filepath.Join(t.TempDir(), "audit.jsonl")
-			rec, err := NewAuditRecorder(nil, logPath)
+			rec, err := audit.NewAuditRecorder(nil, logPath, openAuditWriter)
 			assertNoErr(t, err, "NewAuditRecorder")
 			t.Cleanup(rec.Close)
 
@@ -404,9 +405,9 @@ func TestGate_RetiredOpsStillWriteConfigChange(t *testing.T) {
 			assertNoErr(t, err, "read audit log")
 			events := aiParse(t, string(data))
 
-			var found *AuditEvent
+			var found *audit.AuditEvent
 			for i := range events {
-				if events[i].Event == AuditEventConfigChange {
+				if events[i].Event == audit.AuditEventConfigChange {
 					found = &events[i]
 				}
 			}
@@ -481,7 +482,7 @@ func TestGate_EveryIssuanceAuditorCallSiteHasACase(t *testing.T) {
 	}
 }
 
-// pgwWithIssuance returns a real, Ready() *AuditRecorder boxed as an
+// pgwWithIssuance returns a real, Ready() *audit.AuditRecorder boxed as an
 // IssuanceAuditor -- the "auditing on" state every op-succeeds case needs.
 func pgwWithIssuance(t *testing.T) IssuanceAuditor {
 	t.Helper()

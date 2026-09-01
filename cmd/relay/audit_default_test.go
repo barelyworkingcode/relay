@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
@@ -21,14 +22,14 @@ import (
 // adControlDoor drives one request through the door every control-plane route
 // is registered behind, so what is asserted is the production path from a
 // Settings value to a row on disk — not RecordDecision called by hand.
-func adControlDoor(t *testing.T, rec *AuditRecorder) {
+func adControlDoor(t *testing.T, rec *audit.AuditRecorder) {
 	t.Helper()
 	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: http.NewServeMux(), Transport: control.TransportSocket, Auditor: rec}
 	rr.Handle(control.ClassGrant, "POST /api/enrolments", func(w http.ResponseWriter, r *http.Request) {})
 	rr.Mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/enrolments", nil))
 }
 
-func adStartRecorder(t *testing.T, s *config.Settings) *AuditRecorder {
+func adStartRecorder(t *testing.T, s *config.Settings) *audit.AuditRecorder {
 	t.Helper()
 	rec := startAuditRecorder(s)
 	if rec != nil {
@@ -51,8 +52,8 @@ func TestAdSettingsWithNoAuditBlockRecordsAControlDecision(t *testing.T) {
 	adControlDoor(t, rec)
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Event != AuditEventControlDecision {
-		t.Errorf("event = %q, want %q", ev.Event, AuditEventControlDecision)
+	if ev.Event != audit.AuditEventControlDecision {
+		t.Errorf("event = %q, want %q", ev.Event, audit.AuditEventControlDecision)
 	}
 	if ev.Path != "/api/enrolments" || ev.Class != string(control.ClassGrant) {
 		t.Errorf("record does not name the decision: path=%q class=%q", ev.Path, ev.Class)
@@ -111,7 +112,7 @@ func TestAdExistingSettingsWithNoAuditBlockRoundTripUnchanged(t *testing.T) {
 	if raw, ok := adReadRawSettings(t, dir)["audit"]; ok {
 		t.Errorf("a rewrite invented an audit block the operator never wrote: %s", raw)
 	}
-	if !resolveAuditConfig(store.Get().Audit).Enabled {
+	if !audit.ResolveAuditConfig(store.Get().Audit).Enabled {
 		t.Error("an absent audit block resolved to disabled after a rewrite")
 	}
 }
@@ -137,7 +138,7 @@ func TestAdExistingExplicitFalseSurvivesARewrite(t *testing.T) {
 	if *cfg.Enabled {
 		t.Errorf("enabled = true after rewrite, want false")
 	}
-	if resolveAuditConfig(store.Get().Audit).Enabled {
+	if audit.ResolveAuditConfig(store.Get().Audit).Enabled {
 		t.Error("an explicit false resolved to enabled after a rewrite")
 	}
 }
@@ -175,18 +176,23 @@ func TestAdDefaultInstallLogIsBounded(t *testing.T) {
 		t.Fatal("no recorder for a default install")
 	}
 
-	if rec.cfg.MaxFileBytes != auditDefaultMaxFileBytes {
-		t.Errorf("max_file_bytes = %d with no audit block, want %d", rec.cfg.MaxFileBytes, auditDefaultMaxFileBytes)
+	// rec's own resolved config is unexported; audit.ResolveAuditConfig(nil)
+	// is that same resolution's public seam, applied to the same "no audit
+	// block" input a default install starts from.
+	want := audit.ResolveAuditConfig(nil)
+	got := audit.ResolveAuditConfig((&config.Settings{Version: config.CurrentSettingsVersion}).Audit)
+	if got.MaxFileBytes != want.MaxFileBytes {
+		t.Errorf("max_file_bytes = %d with no audit block, want %d", got.MaxFileBytes, want.MaxFileBytes)
 	}
-	if rec.cfg.Generations != auditDefaultGenerations {
-		t.Errorf("generations = %d with no audit block, want %d", rec.cfg.Generations, auditDefaultGenerations)
+	if got.Generations != want.Generations {
+		t.Errorf("generations = %d with no audit block, want %d", got.Generations, want.Generations)
 	}
 	// This is subtle: max_file_bytes = 0 is not "unbounded" but "rotate on
 	// every write" (log_rotate.go), so a lost default is a pathological log
 	// rather than a large one, and either way the retention window is gone.
-	if rec.cfg.MaxFileBytes <= 0 || rec.cfg.Generations <= 0 {
+	if got.MaxFileBytes <= 0 || got.Generations <= 0 {
 		t.Fatalf("a default install's log has no bound: %d bytes x %d generations",
-			rec.cfg.MaxFileBytes, rec.cfg.Generations)
+			got.MaxFileBytes, got.Generations)
 	}
 }
 

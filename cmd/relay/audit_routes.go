@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -17,9 +18,9 @@ type auditPathView struct {
 
 func auditHTTPStatus(err error) int {
 	switch {
-	case errors.Is(err, errAuditNotFound):
+	case errors.Is(err, audit.ErrAuditNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, errAuditInvalid):
+	case errors.Is(err, audit.ErrAuditInvalid):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
@@ -30,13 +31,13 @@ func writeAuditError(w http.ResponseWriter, err error) {
 	writeJSON(w, auditHTTPStatus(err), map[string]string{"error": err.Error()})
 }
 
-// parseAuditQueryParams turns URL query values into auditQueryFields. A
+// parseAuditQueryParams turns URL query values into audit.AuditQueryFields. A
 // non-numeric limit or non-boolean deep is a parsing failure the caller must
 // fix, so it is reported as a 400 here rather than reaching Query with a
 // zero value that would silently answer a different question (or a full
 // unbounded scan).
-func parseAuditQueryParams(q url.Values) (auditQueryFields, error) {
-	f := auditQueryFields{
+func parseAuditQueryParams(q url.Values) (audit.AuditQueryFields, error) {
+	f := audit.AuditQueryFields{
 		ProjectID: q.Get("project_id"),
 		McpID:     q.Get("mcp_id"),
 		Outcome:   q.Get("outcome"),
@@ -47,14 +48,14 @@ func parseAuditQueryParams(q url.Values) (auditQueryFields, error) {
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return auditQueryFields{}, fmt.Errorf("limit: %q is not an integer", v)
+			return audit.AuditQueryFields{}, fmt.Errorf("limit: %q is not an integer", v)
 		}
 		f.Limit = n
 	}
 	if v := q.Get("deep"); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return auditQueryFields{}, fmt.Errorf("deep: %q is not a boolean", v)
+			return audit.AuditQueryFields{}, fmt.Errorf("deep: %q is not a boolean", v)
 		}
 		f.Deep = b
 	}
@@ -63,10 +64,10 @@ func parseAuditQueryParams(q url.Values) (auditQueryFields, error) {
 
 // ops is the same instance the Tool Calls tab's IPC handlers use, so a query
 // run from curl and one run from the tray see identical redaction and
-// filtering — Query never reads the log file itself, only AuditRecorder's own
+// filtering — Query never reads the log file itself, only audit.AuditRecorder's own
 // query path, so there is no second route to the raw bytes for this to drift
-// from (see the SECURITY note on AuditOps.Query).
-func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *AuditOps) {
+// from (see the SECURITY note on audit.AuditOps.Query).
+func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *audit.AuditOps) {
 	rr.Handle(control.ClassRead, "GET /api/audit", func(w http.ResponseWriter, r *http.Request) {
 		fields, err := parseAuditQueryParams(r.URL.Query())
 		if err != nil {
@@ -82,7 +83,7 @@ func RegisterAuditRoutes(rr *control.RouteRegistrar, ops *AuditOps) {
 	})
 
 	rr.Handle(control.ClassConfigure, "POST /api/audit/export", func(w http.ResponseWriter, r *http.Request) {
-		var body auditQueryFields
+		var body audit.AuditQueryFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return

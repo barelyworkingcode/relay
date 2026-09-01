@@ -1,4 +1,4 @@
-package main
+package audit
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -344,10 +345,10 @@ const (
 
 	// Past this, events are dropped and counted rather than made to wait: the
 	// audit sink must never be able to stall a tool call.
-	auditQueueSize = 512
+	AuditQueueSize = 512
 
 	// Bounds work per query regardless of how large the log has grown.
-	auditTailBudget = 8 << 20
+	AuditTailBudget = 8 << 20
 )
 
 type resolvedAuditConfig struct {
@@ -378,7 +379,7 @@ func intOr(v, def int) int {
 
 // A nil receiver resolves to the full default set, so settings.json written
 // before this feature existed behaves as if auditing was always on.
-func resolveAuditConfig(c *config.AuditConfig) resolvedAuditConfig {
+func ResolveAuditConfig(c *config.AuditConfig) resolvedAuditConfig {
 	if c == nil {
 		c = &config.AuditConfig{}
 	}
@@ -399,7 +400,7 @@ func resolveAuditConfig(c *config.AuditConfig) resolvedAuditConfig {
 	}
 }
 
-const auditRedactedValue = "[redacted]"
+const AuditRedactedValue = "[redacted]"
 
 // Matched as case-insensitive substrings of an argument key, so "mcp_token",
 // "X-Api-Key", and "userPassword" are all caught without enumerating every
@@ -412,7 +413,7 @@ var auditSensitiveKeys = []string{
 	"bearer", "passphrase",
 }
 
-var auditRedactedJSON = json.RawMessage(`"` + auditRedactedValue + `"`)
+var auditRedactedJSON = json.RawMessage(`"` + AuditRedactedValue + `"`)
 
 // Walks JSON *as bytes* and never decodes a value into a Go interface{}
 // (ADR-012). The predecessor decoded into interface{}, redacted, and
@@ -422,7 +423,7 @@ var auditRedactedJSON = json.RawMessage(`"` + auditRedactedValue + `"`)
 // one, numbers came back in Go's float formatting.
 //
 // It is deliberately total rather than fallible: anything it cannot walk
-// (after the json.Compact in redactArgs, nothing that is valid JSON) is
+// (after the json.Compact in RedactArgs, nothing that is valid JSON) is
 // returned unchanged rather than dropped. An object is the only shape that
 // can carry a key to redact by, so the object walk is the only branch that
 // can fail closed: a walk that errors mid-way falls back to the un-redacted
@@ -555,7 +556,7 @@ func isSensitiveKey(key string, extra []string) bool {
 // only rewrite: it strips insignificant whitespace and leaves every string,
 // escape and number spelling exactly as the caller wrote it, so the recorded
 // arguments and the arguments the MCP received are the same bytes.
-func redactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.RawMessage, size int, truncated bool) {
+func RedactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.RawMessage, size int, truncated bool) {
 	if len(raw) == 0 {
 		return nil, 0, false
 	}
@@ -578,7 +579,7 @@ func redactArgs(raw json.RawMessage, maxBytes int, extra []string) (out json.Raw
 func capAsString(s string, maxBytes int) (json.RawMessage, int, bool) {
 	size := len(s)
 	if len(s) > maxBytes {
-		s = truncateRunes(s, maxBytes)
+		s = TruncateRunes(s, maxBytes)
 	}
 	encoded, err := json.Marshal(s)
 	if err != nil {
@@ -587,7 +588,7 @@ func capAsString(s string, maxBytes int) (json.RawMessage, int, bool) {
 	return encoded, size, size > maxBytes
 }
 
-func truncateRunes(s string, n int) string {
+func TruncateRunes(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
@@ -667,28 +668,34 @@ type AuditRecorder struct {
 	done      chan struct{}
 }
 
+// OpenWriter opens the rotating log destination a recorder writes to. Log
+// rotation (cmd/relay/log_rotate.go) is shared by relay's own log, the audit
+// log and every managed service's log, so this package does not own it —
+// callers supply it, the same way service.Registry takes OpenLog.
+type OpenWriter func(path string, maxBytes int64, generations int) (io.WriteCloser, error)
+
 // A disabled config returns nil, which every call site treats as
 // "auditing off".
-func NewAuditRecorder(cfg *config.AuditConfig, path string) (*AuditRecorder, error) {
-	resolved := resolveAuditConfig(cfg)
+func NewAuditRecorder(cfg *config.AuditConfig, path string, openWriter OpenWriter) (*AuditRecorder, error) {
+	resolved := ResolveAuditConfig(cfg)
 	if !resolved.Enabled {
 		return nil, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("audit log dir: %w", err)
 	}
-	w, err := openRotatingLogGenerations(path, resolved.MaxFileBytes, resolved.Generations)
+	w, err := openWriter(path, resolved.MaxFileBytes, resolved.Generations)
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
-	return newAuditRecorderWith(resolved, path, w), nil
+	return NewAuditRecorderWith(resolved, path, w), nil
 }
 
-// newAuditRecorderWith is the constructor a caller that owns the sink uses:
+// NewAuditRecorderWith is the constructor a caller that owns the sink uses:
 // the tray hands it a rotatingWriter, a CLI process hands it a plain
-// append-only file (audit_issuance.go), and a test hands it whatever it needs
+// append-only file (issuance.go), and a test hands it whatever it needs
 // to fail.
-func newAuditRecorderWith(resolved resolvedAuditConfig, path string, w io.WriteCloser) *AuditRecorder {
+func NewAuditRecorderWith(resolved resolvedAuditConfig, path string, w io.WriteCloser) *AuditRecorder {
 	// Lowercase once rather than per call.
 	extra := make([]string, 0, len(resolved.RedactKeys))
 	for _, k := range resolved.RedactKeys {
@@ -699,7 +706,7 @@ func newAuditRecorderWith(resolved resolvedAuditConfig, path string, w io.WriteC
 	r := &AuditRecorder{
 		cfg:     resolved,
 		path:    path,
-		ch:      make(chan AuditEvent, auditQueueSize),
+		ch:      make(chan AuditEvent, AuditQueueSize),
 		flushCh: make(chan chan struct{}),
 		syncCh:  make(chan auditDurableWrite),
 		ring:    newAuditRing(resolved.RingSize),
@@ -723,14 +730,38 @@ func (r *AuditRecorder) Enabled() bool { return r != nil && r.cfg.Enabled }
 func (r *AuditRecorder) hasSink() bool { return r != nil && r.syncCh != nil }
 
 // Ready reports whether this recorder actually has somewhere to write --
-// enabled AND holding a live sink. requireIssuanceAuditor (audit_issuance.go)
-// uses this rather than Enabled alone: an operator can flip
+// enabled AND holding a live sink. cmd/relay's requireIssuanceAuditor uses
+// this rather than Enabled alone: an operator can flip
 // "enabled": true in settings.json while the recorder actually constructed
 // at startup failed to open its file, and the two states must not be
 // conflated into "auditing is on".
 func (r *AuditRecorder) Ready() bool { return r.Enabled() && r.hasSink() }
 
+func (r *AuditRecorder) LogArgs() bool { return r != nil && r.cfg.LogArgs }
+
 func (r *AuditRecorder) LogLists() bool { return r != nil && r.cfg.LogLists }
+
+// RedactCallArgs prepares one tool call's arguments for the audit record, per
+// this recorder's own config: nil when logging arguments is off, otherwise
+// redacted and capped. cmd/relay's router instrumentation (audit_call.go)
+// calls this rather than reaching cfg's fields directly — cfg stays
+// unexported, and this is the operation on it that a caller outside the
+// package needs, not a getter for its fields.
+func (r *AuditRecorder) RedactCallArgs(args json.RawMessage) (out json.RawMessage, size int, truncated bool) {
+	if r == nil || !r.cfg.LogArgs {
+		return nil, 0, false
+	}
+	return RedactArgs(args, r.cfg.MaxArgBytes, r.cfg.RedactKeys)
+}
+
+// PreviewResult returns a capped preview of a tool result, or "" when preview
+// is off (the default) or there is nothing to preview.
+func (r *AuditRecorder) PreviewResult(result json.RawMessage) string {
+	if r == nil || r.cfg.MaxResultPreviewBytes <= 0 || len(result) == 0 {
+		return ""
+	}
+	return TruncateRunes(string(result), r.cfg.MaxResultPreviewBytes)
+}
 
 func (r *AuditRecorder) Path() string {
 	if r == nil {
@@ -909,6 +940,22 @@ func (r *AuditRecorder) Close() {
 	})
 }
 
+// CloseWriterForTest closes the underlying log file out from under the
+// writer goroutine, so a test can make a write fail for real (an unwritable
+// disk, say) rather than through a test-only switch in production code. It
+// deliberately does not go through Close, which also tears down the writer
+// goroutine itself.
+//
+// This is a test seam, not a production capability — see
+// config.NewSettingsStoreWithCache for the same pattern. It panics outside a
+// test binary.
+func (r *AuditRecorder) CloseWriterForTest() error {
+	if !testing.Testing() {
+		panic("audit: CloseWriterForTest is a test seam and must not be reached in a shipped binary")
+	}
+	return r.w.Close()
+}
+
 func (r *AuditRecorder) Wrote() uint64 {
 	if r == nil {
 		return 0
@@ -956,11 +1003,11 @@ type AuditQuery struct {
 	Text  string `json:"text,omitempty"` // substring over tool, args, error, project name
 	Limit int    `json:"limit,omitempty"`
 	// Searches the log file rather than the in-memory ring, for history older
-	// than the ring holds. Bounded by auditTailBudget.
+	// than the ring holds. Bounded by AuditTailBudget.
 	Deep bool `json:"deep,omitempty"`
 }
 
-func (q AuditQuery) matches(ev *AuditEvent) bool {
+func (q AuditQuery) Matches(ev *AuditEvent) bool {
 	if q.ProjectID != "" && ev.Actor.ProjectID != q.ProjectID {
 		return false
 	}
@@ -1005,14 +1052,14 @@ func (r *AuditRecorder) Query(q AuditQuery) []AuditEvent {
 
 	var candidates []AuditEvent
 	if q.Deep {
-		candidates = readAuditTail(r.path, auditTailBudget)
+		candidates = ReadAuditTail(r.path, AuditTailBudget)
 	} else {
 		candidates = r.ring.snapshot()
 	}
 
 	out := make([]AuditEvent, 0, limit)
 	for i := range candidates {
-		if q.matches(&candidates[i]) {
+		if q.Matches(&candidates[i]) {
 			out = append(out, candidates[i])
 			if len(out) >= limit {
 				break
@@ -1025,7 +1072,7 @@ func (r *AuditRecorder) Query(q AuditQuery) []AuditEvent {
 // Reads at most budget bytes from the end of the JSONL log and returns the
 // events newest-first. Unparseable lines are skipped rather than failing the
 // whole query — a truncated tail should still be readable.
-func readAuditTail(path string, budget int64) []AuditEvent {
+func ReadAuditTail(path string, budget int64) []AuditEvent {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -1073,16 +1120,23 @@ func readAuditTail(path string, budget int64) []AuditEvent {
 	return events
 }
 
-// Auditing is observability, not an authorization control, so a broken sink
-// degrades to "no audit log" rather than taking relay down — the Tool Calls
-// tab makes the disabled state visible instead of pretending.
-func startAuditRecorder(s *config.Settings) *AuditRecorder {
-	path, err := auditLogPath()
-	if err != nil {
-		slog.Error("audit log disabled: cannot resolve log dir", "error", err)
-		return nil
-	}
-	rec, err := NewAuditRecorder(s.Audit, path)
+// LogPath is the on-disk path of the tool-call audit log, given the directory
+// relay's rotated logs live under (cmd/relay's serviceLogDir).
+func LogPath(logDir string) string {
+	return filepath.Join(logDir, "audit", "toolcalls.jsonl")
+}
+
+// StartAuditRecorder is the tray's constructor. Auditing is observability,
+// not an authorization control, so a broken sink degrades to "no audit log"
+// rather than taking relay down — the Tool Calls tab makes the disabled state
+// visible instead of pretending.
+//
+// logDir and openWriter are the two things this package does not own: where
+// relay's rotated logs live, and how a log file rotates (shared by relay's
+// own log and every managed service's log, cmd/relay/log_rotate.go).
+func StartAuditRecorder(cfg *config.AuditConfig, logDir string, openWriter OpenWriter) *AuditRecorder {
+	path := LogPath(logDir)
+	rec, err := NewAuditRecorder(cfg, path, openWriter)
 	if err != nil {
 		slog.Error("audit log disabled", "path", path, "error", err)
 		return nil
@@ -1097,14 +1151,6 @@ func startAuditRecorder(s *config.Settings) *AuditRecorder {
 	return rec
 }
 
-func auditLogPath() (string, error) {
-	dir, err := serviceLogDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "audit", "toolcalls.jsonl"), nil
-}
-
 // The buffer is sized for the largest record the caps allow (redacted args
 // plus an optional result preview) with generous headroom, so an oversized
 // line is skipped rather than truncating the rest of the scan.
@@ -1116,4 +1162,4 @@ func newAuditScanner(r io.Reader) *bufio.Scanner {
 
 // Separate function so tests can reason about it without reaching for uuid
 // directly.
-func newAuditID() string { return uuid.NewString() }
+func NewAuditID() string { return uuid.NewString() }

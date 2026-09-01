@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/webassets"
@@ -82,12 +83,12 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 	if enrolments == nil {
 		enrolments = []config.Enrolment{}
 	}
-	// The first paint has no *AuditRecorder to consult, so the remote view's
+	// The first paint has no *audit.AuditRecorder to consult, so the remote view's
 	// audit state comes from the configuration. That is what the operator
 	// edits and what NewRemoteServer's refusal is phrased in terms of; the IPC
 	// handlers, which do hold the recorder, pass its live answer instead (see
 	// remoteConfigViewOf).
-	remote := remoteConfigViewOf(settings, resolveAuditConfig(settings.Audit).Enabled)
+	remote := remoteConfigViewOf(settings, audit.ResolveAuditConfig(settings.Audit).Enabled)
 	return strings.NewReplacer(
 		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", externalMcpsToNativeView(settings.ExternalMcps)),
 		"__SERVICES_JSON__", mustMarshalJSON("services", serviceConfigsToNativeView(settings.Services)),

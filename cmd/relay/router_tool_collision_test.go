@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
@@ -123,7 +124,7 @@ func collisionScopes() map[string]json.RawMessage {
 //
 // It does not go through newTestRouter because that helper takes a concrete
 // *ExternalMcpManager and this needs an injected ToolManager.
-func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, allowedMcpIDs []string, disabled map[string][]string) (*appRouter, *collidingProvider) {
+func newCollisionRouter(t *testing.T, rec *audit.AuditRecorder, dir string, order, allowedMcpIDs []string, disabled map[string][]string) (*appRouter, *collidingProvider) {
 	t.Helper()
 	tp := newCollidingProvider(order, collisionTools())
 
@@ -166,7 +167,7 @@ func bothOrders() map[string][]string {
 // The error's TEXT is included deliberately even though no test pins its
 // wording: determinism is a property OF the wording as much as of the code, and
 // a refusal that names fs-a on Monday and fs-b on Tuesday is precisely the bug.
-func outcomeFingerprint(err error, ev *AuditEvent, dispatched []string) string {
+func outcomeFingerprint(err error, ev *audit.AuditEvent, dispatched []string) string {
 	errText := "<nil>"
 	if err != nil {
 		errText = err.Error()
@@ -220,8 +221,8 @@ func TestCallTool_GrantAdmittingOneOwnerReachesIt_InBothConnectionOrders(t *test
 				if len(events) != 1 {
 					t.Fatalf("expected 1 audit record, got %d", len(events))
 				}
-				if events[0].Outcome != AuditOutcomeOK {
-					t.Errorf("audit outcome = %q, want %q", events[0].Outcome, AuditOutcomeOK)
+				if events[0].Outcome != audit.AuditOutcomeOK {
+					t.Errorf("audit outcome = %q, want %q", events[0].Outcome, audit.AuditOutcomeOK)
 				}
 			})
 		}
@@ -288,9 +289,9 @@ func TestCallTool_GrantAdmittingSeveralOwnersRefusesDeterministically_NamingBoth
 		t.Fatalf("expected %d audit records, got %d", 2*collisionDeterminismRuns, len(events))
 	}
 	for i, ev := range events {
-		if ev.Outcome != AuditOutcomeDenied {
+		if ev.Outcome != audit.AuditOutcomeDenied {
 			t.Fatalf("audit record %d: outcome = %q, want %q — relay made this decision, no MCP was reached",
-				i, ev.Outcome, AuditOutcomeDenied)
+				i, ev.Outcome, audit.AuditOutcomeDenied)
 		}
 		if ev.Tool != collidingTool {
 			t.Errorf("audit record %d: tool = %q, want %q", i, ev.Tool, collidingTool)
@@ -435,7 +436,7 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 	soloTools := map[string][]mcp.Tool{collisionMcpA: simpleTools(collidingTool, "fs_write")}
 	soloOrder := []string{collisionMcpA}
 
-	newSolo := func(t *testing.T, allowed []string, disabled map[string][]string) (*appRouter, *collidingProvider, *AuditRecorder) {
+	newSolo := func(t *testing.T, allowed []string, disabled map[string][]string) (*appRouter, *collidingProvider, *audit.AuditRecorder) {
 		t.Helper()
 		rec := newTestAudit(t, nil)
 		tp := newCollidingProvider(soloOrder, soloTools)
@@ -474,7 +475,7 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 			t.Fatalf("dispatched to %v, want [%s]", got, collisionMcpA)
 		}
 		events := readLoggedEvents(t, rec)
-		if len(events) != 1 || events[0].Outcome != AuditOutcomeOK || events[0].McpID != collisionMcpA {
+		if len(events) != 1 || events[0].Outcome != audit.AuditOutcomeOK || events[0].McpID != collisionMcpA {
 			t.Errorf("audit = %+v, want one ok record naming %s", events, collisionMcpA)
 		}
 	})
@@ -492,7 +493,7 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 			t.Errorf("a refused call still reached %v", got)
 		}
 		events := readLoggedEvents(t, rec)
-		if len(events) != 1 || events[0].Outcome != AuditOutcomeDenied {
+		if len(events) != 1 || events[0].Outcome != audit.AuditOutcomeDenied {
 			t.Errorf("audit = %+v, want one denied record", events)
 		}
 	})
@@ -520,7 +521,7 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 			t.Errorf("a disabled tool still reached %v", got)
 		}
 		events := readLoggedEvents(t, rec)
-		if len(events) != 1 || events[0].Outcome != AuditOutcomeDenied {
+		if len(events) != 1 || events[0].Outcome != audit.AuditOutcomeDenied {
 			t.Errorf("audit = %+v, want one denied record", events)
 		}
 	})

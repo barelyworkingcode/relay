@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
@@ -250,7 +251,7 @@ type EnrolmentRequestApprovalSink interface {
 	Get(requestID string) (pendingRecordView, bool)
 	List() []enrolmentRequestView
 	MarkApproved(requestID, clientID string, projects []approvedProject, relayAddr, certPEM, caPEM string) markApprovedOutcome
-	Refuse(audit *AuditRecorder, requestID string) bool
+	Refuse(audit *audit.AuditRecorder, requestID string) bool
 }
 
 var _ EnrolmentRequestApprovalSink = (*enrolmentRequestTable)(nil)
@@ -458,7 +459,7 @@ func (t *enrolmentRequestTable) newRequestID() string {
 }
 
 // Lodge is the ENTIRE write path an unauthenticated peer can reach. It
-// never touches presence.Gate, an AuditRecorder, a SettingsStore or
+// never touches presence.Gate, an audit.AuditRecorder, a SettingsStore or
 // settings.json — P1 and the "lodging is never audited, no settings
 // mutation" half of §2 both hold because there is nothing here capable of
 // either.
@@ -944,9 +945,9 @@ func (t *enrolmentRequestTable) liveCountLocked() int {
 // that was never lodged.
 //
 // audit may be nil (a caller with no recorder wired); RecordDecision is a
-// no-op on a nil *AuditRecorder boxed correctly, but this checks explicitly
+// no-op on a nil *audit.AuditRecorder boxed correctly, but this checks explicitly
 // so a nil audit never gets a method call at all.
-func (t *enrolmentRequestTable) Refuse(audit *AuditRecorder, requestID string) bool {
+func (t *enrolmentRequestTable) Refuse(audit *audit.AuditRecorder, requestID string) bool {
 	t.mu.Lock()
 	r, found := t.pending[requestID]
 	actionable := found && !r.approved && !r.refused

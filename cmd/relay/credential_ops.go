@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
@@ -65,9 +66,9 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.APICredential{}, "", err
 	}
-	norm := credentialMintRequest{Name: name, Classes: classStrings(classes), TTL: req.TTL}
+	norm := credentialMintRequest{Name: name, Classes: audit.ClassStrings(classes), TTL: req.TTL}
 	grant, err := requireGate(o.Gate, ctx, "credential.mint", norm.presenceDigest(),
-		fmt.Sprintf("mint a control-plane credential named %q with classes %s", name, joinWithAnd(classStrings(classes))))
+		fmt.Sprintf("mint a control-plane credential named %q with classes %s", name, joinWithAnd(audit.ClassStrings(classes))))
 	if err != nil {
 		return config.APICredential{}, "", err
 	}
@@ -76,11 +77,11 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 	if err != nil {
 		return config.APICredential{}, "", err
 	}
-	if auditErr := recordIssuance(o.Issuance, CredentialIssuance{
+	if auditErr := recordIssuance(o.Issuance, audit.CredentialIssuance{
 		Credential: auditCredentialAPI,
 		Subject:    cred.ID,
 		Name:       cred.Name,
-		Grants:     classStrings(cred.Classes),
+		Grants:     audit.ClassStrings(cred.Classes),
 		Via:        via,
 		CredID:     credID,
 		PresenceID: grant.ID(),
@@ -115,12 +116,12 @@ func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (con
 	if err != nil {
 		return config.APICredential{}, err
 	}
-	if auditErr := recordIssuance(o.Issuance, CredentialIssuance{
+	if auditErr := recordIssuance(o.Issuance, audit.CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialAPI,
 		Subject:    removed.ID,
 		Name:       removed.Name,
-		Grants:     classStrings(removed.Classes),
+		Grants:     audit.ClassStrings(removed.Classes),
 		Via:        via,
 		CredID:     credID,
 		PresenceID: grant.ID(),

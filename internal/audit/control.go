@@ -1,4 +1,4 @@
-package main
+package audit
 
 import (
 	"time"
@@ -11,7 +11,7 @@ import (
 // than surfacing only when the two packages are wired together.
 var _ control.ControlAuditor = (*AuditRecorder)(nil)
 
-func controlAuditorOrNil(rec *AuditRecorder) control.ControlAuditor {
+func ControlAuditorOrNil(rec *AuditRecorder) control.ControlAuditor {
 	if rec == nil {
 		return nil
 	}
@@ -33,15 +33,15 @@ const (
 	auditMaxControlMethodBytes = 32
 )
 
-// Caps s on a rune boundary, reusing audit.go's truncateRunes rather than a
+// Caps s on a rune boundary, reusing audit.go's TruncateRunes rather than a
 // second truncation routine for the same on-disk contract (ArgsTruncated):
 // the returned bool is that contract's marker, true exactly when s did not
 // fit and was cut.
-func capControlString(s string, maxBytes int) (string, bool) {
+func CapControlString(s string, maxBytes int) (string, bool) {
 	if len(s) <= maxBytes {
 		return s, false
 	}
-	return truncateRunes(s, maxBytes), true
+	return TruncateRunes(s, maxBytes), true
 }
 
 // RecordDecision is the control-plane counterpart to the router's tool-call
@@ -64,18 +64,18 @@ func (r *AuditRecorder) RecordDecision(d control.ControlDecision) {
 		outcome = AuditOutcomeDenied
 		reason = d.Reason
 	}
-	method, methodTruncated := capControlString(d.Method, auditMaxControlMethodBytes)
-	path, pathTruncated := capControlString(d.Path, auditMaxControlPathBytes)
+	method, methodTruncated := CapControlString(d.Method, auditMaxControlMethodBytes)
+	path, pathTruncated := CapControlString(d.Path, auditMaxControlPathBytes)
 	// A remote-listener decision names an enrolment's certificate, not a
 	// control-plane credential — there is no CredID for it to name at all,
 	// the same attested-identity pair the tool-call audit path already
-	// carries for a remote caller (audit_call.go).
+	// carries for a remote caller (cmd/relay/audit_call.go).
 	actor := AuditActor{Kind: AuditActorControl, Auth: AuditAuthToken, CredID: d.CredID}
 	if d.Transport == control.TransportTCP && d.ClientID != "" {
 		actor = AuditActor{Kind: AuditActorRemote, Auth: AuditAuthMTLS, ClientID: d.ClientID, Fingerprint: d.Fingerprint}
 	}
 	r.Record(AuditEvent{
-		ID:              newAuditID(),
+		ID:              NewAuditID(),
 		TS:              time.Now().UTC(),
 		Event:           AuditEventControlDecision,
 		Method:          method,

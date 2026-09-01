@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -51,14 +52,14 @@ func allowGate(t *testing.T) *presence.Gate {
 	return g
 }
 
-// enabledIssuanceRecorder returns an *AuditRecorder that is Ready() —
+// enabledIssuanceRecorder returns an *audit.AuditRecorder that is Ready() —
 // enabled and holding a live sink — so requireIssuanceAuditor (§7.4) does
 // not refuse it. Every test exercising a gated core's success path needs
 // one, since issuance auditing is now a hard dependency; a test exercising
 // AC-26 (auditing off refuses) passes nil instead.
-func enabledIssuanceRecorder(t *testing.T) *AuditRecorder {
+func enabledIssuanceRecorder(t *testing.T) *audit.AuditRecorder {
 	t.Helper()
-	rec, err := NewAuditRecorder(nil, filepath.Join(t.TempDir(), "audit.jsonl"))
+	rec, err := audit.NewAuditRecorder(nil, filepath.Join(t.TempDir(), "audit.jsonl"), openAuditWriter)
 	if err != nil {
 		t.Fatalf("NewAuditRecorder: %v", err)
 	}

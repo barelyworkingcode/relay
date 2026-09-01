@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -29,7 +30,7 @@ type RemoteSupervisor struct {
 	ctx    context.Context
 	store  config.SettingsStore
 	router RemoteToolRouter
-	audit  *AuditRecorder
+	audit  *audit.AuditRecorder
 	// configurer and surfaces are threaded straight through to every
 	// RemoteServer this supervisor binds — see RemoteConfigurer's own doc
 	// comment for why they are two narrow things and not a *ProjectOps.
@@ -60,7 +61,7 @@ type RemoteSupervisor struct {
 	lastEnrolReport string
 }
 
-func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, goFunc func(func())) *RemoteSupervisor {
+func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, goFunc func(func())) *RemoteSupervisor {
 	return &RemoteSupervisor{
 		ctx: ctx, store: store, router: router, audit: audit,
 		configurer: configurer, surfaces: surfaces, goFunc: goFunc,

@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -196,7 +197,7 @@ func TestEnrolmentOpsSign_WritesExactlyOneCredentialIssuedRecord(t *testing.T) {
 	assertNoErr(t, err, "Sign")
 
 	events := aiParse(t, aiLogText(t))
-	issued := aiOnly(t, events, AuditEventCredentialIssued, "hermes-mail")
+	issued := aiOnly(t, events, audit.AuditEventCredentialIssued, "hermes-mail")
 	if issued.Credential != auditCredentialEnrolment {
 		t.Errorf("credential = %q, want %q", issued.Credential, auditCredentialEnrolment)
 	}

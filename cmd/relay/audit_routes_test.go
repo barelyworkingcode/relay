@@ -1,7 +1,7 @@
 package main
 
 // HTTP coverage for the ADR-014 audit slice: RegisterAuditRoutes shares
-// AuditOps with the Tool Calls tab's IPC handlers (ipc_audit.go), so these
+// audit.AuditOps with the Tool Calls tab's IPC handlers (ipc_audit.go), so these
 // tests focus on the envelope — status codes, filter wiring, and (most
 // importantly) that redaction survives the HTTP door exactly as it does the
 // IPC one.
@@ -10,7 +10,7 @@ package main
 // it drives a real tool call with credential-like arguments through the
 // actual router instrumentation (audit_call.go), not a hand-crafted "already
 // redacted" fixture, so it would catch a route that reads the raw log file
-// instead of going through AuditRecorder.Query.
+// instead of going through audit.AuditRecorder.Query.
 
 import (
 	"context"
@@ -22,18 +22,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-func newAuditRoutesServer(t *testing.T, rec *AuditRecorder) *httptest.Server {
+func newAuditRoutesServer(t *testing.T, rec *audit.AuditRecorder) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterAuditRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, &AuditOps{Audit: rec})
+	RegisterAuditRoutes(&control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket}, &audit.AuditOps{Audit: rec})
 	return httptest.NewServer(mux)
 }
 
-func seedAuditEvents(t *testing.T, rec *AuditRecorder, events []AuditEvent) {
+func seedAuditEvents(t *testing.T, rec *audit.AuditRecorder, events []audit.AuditEvent) {
 	t.Helper()
 	for _, ev := range events {
 		rec.Record(ev)
@@ -41,15 +42,15 @@ func seedAuditEvents(t *testing.T, rec *AuditRecorder, events []AuditEvent) {
 	rec.Flush()
 }
 
-var auditFixture = []AuditEvent{
-	{ID: "ev1", Event: AuditEventCallTool, Outcome: AuditOutcomeOK,
-		Actor: AuditActor{Kind: AuditActorProject, ProjectID: "p1", ProjectName: "relay"},
+var auditFixture = []audit.AuditEvent{
+	{ID: "ev1", Event: audit.AuditEventCallTool, Outcome: audit.AuditOutcomeOK,
+		Actor: audit.AuditActor{Kind: audit.AuditActorProject, ProjectID: "p1", ProjectName: "relay"},
 		McpID: "fsmcp", Tool: "read_file"},
-	{ID: "ev2", Event: AuditEventCallTool, Outcome: AuditOutcomeDenied,
-		Actor: AuditActor{Kind: AuditActorProject, ProjectID: "p2", ProjectName: "sandbox"},
+	{ID: "ev2", Event: audit.AuditEventCallTool, Outcome: audit.AuditOutcomeDenied,
+		Actor: audit.AuditActor{Kind: audit.AuditActorProject, ProjectID: "p2", ProjectName: "sandbox"},
 		McpID: "macmcp", Tool: "send_mail", Error: "access denied"},
-	{ID: "ev3", Event: AuditEventCallTool, Outcome: AuditOutcomeOK,
-		Actor: AuditActor{Kind: AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"},
+	{ID: "ev3", Event: audit.AuditEventCallTool, Outcome: audit.AuditOutcomeOK,
+		Actor: audit.AuditActor{Kind: audit.AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"},
 		McpID: "macmcp", Tool: "mail_search"},
 }
 
@@ -63,7 +64,7 @@ func TestAuditRoutes_QueryHappyPath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, body)
 	}
-	var events []AuditEvent
+	var events []audit.AuditEvent
 	if err := json.Unmarshal(body, &events); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestAuditRoutes_FiltersActuallyFilter(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status %d, body %s", resp.StatusCode, body)
 			}
-			var events []AuditEvent
+			var events []audit.AuditEvent
 			if err := json.Unmarshal(body, &events); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -227,7 +228,7 @@ func TestAuditRoutes_DisabledRecorderDoesNotPanic(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("query: status %d, body %s", resp.StatusCode, body)
 	}
-	var events []AuditEvent
+	var events []audit.AuditEvent
 	if err := json.Unmarshal(body, &events); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestAuditRoutes_DisabledRecorderDoesNotPanic(t *testing.T) {
 
 // The load-bearing test in this file. redactArgs runs inside the real router
 // instrumentation (audit_call.go), not as a hand-crafted fixture, so this
-// would catch a route that bypassed AuditRecorder.Query to read the log file
+// would catch a route that bypassed audit.AuditRecorder.Query to read the log file
 // (or the ring) directly.
 func TestAuditRoutes_RedactionNeverLeaksCredentialArgs(t *testing.T) {
 	mock := newMockConn("macmcp", localTools("send_mail"),
@@ -273,8 +274,8 @@ func TestAuditRoutes_RedactionNeverLeaksCredentialArgs(t *testing.T) {
 	if strings.Contains(string(body), secret) {
 		t.Fatalf("the HTTP response leaked a credential-like argument value: %s", body)
 	}
-	if !strings.Contains(string(body), auditRedactedValue) {
-		t.Errorf("expected the redaction marker %q in the response: %s", auditRedactedValue, body)
+	if !strings.Contains(string(body), audit.AuditRedactedValue) {
+		t.Errorf("expected the redaction marker %q in the response: %s", audit.AuditRedactedValue, body)
 	}
 
 	resp, body = doJSON(t, "POST", srv.URL+"/api/audit/export", map[string]interface{}{})

@@ -1,4 +1,4 @@
-package main
+package audit
 
 import (
 	"encoding/json"
@@ -198,8 +198,8 @@ func TestControlAudit_NilAuditorInterfaceDoesNotPanic(t *testing.T) {
 
 func TestControlAuditorOrNil_NilRecorderProducesNilInterface(t *testing.T) {
 	var rec *AuditRecorder
-	if got := controlAuditorOrNil(rec); got != nil {
-		t.Fatalf("controlAuditorOrNil(nil) = %#v, want nil", got)
+	if got := ControlAuditorOrNil(rec); got != nil {
+		t.Fatalf("ControlAuditorOrNil(nil) = %#v, want nil", got)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestControlAudit_NewKindIsQueryableAndDistinctFromToolCalls(t *testing.T) {
 		Allowed:   true,
 	})
 	rec.Record(AuditEvent{
-		ID:      newAuditID(),
+		ID:      NewAuditID(),
 		Event:   AuditEventCallTool,
 		Outcome: AuditOutcomeOK,
 		Tool:    "read_file",

@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+
+	"github.com/barelyworkingcode/relay/internal/audit"
 )
 
 type ipcAuditQueryMsg struct {
 	Type string `json:"type"`
-	AuditQuery
+	audit.AuditQuery
 }
 
 // Enough for the UI to tell the difference between "no calls yet" and "not
@@ -22,7 +24,7 @@ type auditStatus struct {
 	LogLists bool   `json:"log_lists"`
 }
 
-func auditStatusOf(rec *AuditRecorder) auditStatus {
+func auditStatusOf(rec *audit.AuditRecorder) auditStatus {
 	st := auditStatus{
 		Enabled:  rec.Enabled(),
 		Path:     rec.Path(),
@@ -30,8 +32,8 @@ func auditStatusOf(rec *AuditRecorder) auditStatus {
 		Recorded: rec.Wrote(),
 	}
 	if rec != nil {
-		st.LogArgs = rec.cfg.LogArgs
-		st.LogLists = rec.cfg.LogLists
+		st.LogArgs = rec.LogArgs()
+		st.LogLists = rec.LogLists()
 	}
 	return st
 }
@@ -43,7 +45,7 @@ func ipcQueryAudit(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	fields := auditFieldsFromQuery(msg.AuditQuery)
+	fields := audit.AuditFieldsFromQuery(msg.AuditQuery)
 	if fields.Deep {
 		ctx.GoFunc(func() {
 			events, err := ctx.AuditOps.Query(fields)
@@ -70,7 +72,7 @@ func ipcExportAudit(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	fields := auditFieldsFromQuery(msg.AuditQuery)
+	fields := audit.AuditFieldsFromQuery(msg.AuditQuery)
 
 	ctx.GoFunc(func() {
 		path, err := ctx.AuditOps.Export(fields)
@@ -79,7 +81,7 @@ func ipcExportAudit(ctx *IPCContext, raw json.RawMessage) {
 			return
 		}
 		// Revealing the export in Finder is a desktop side effect with no HTTP
-		// equivalent, so it stays here rather than in AuditOps.Export.
+		// equivalent, so it stays here rather than in audit.AuditOps.Export.
 		ctx.Platform.DispatchToMain(func() {
 			ctx.Platform.OpenURL(fileURL(filepath.Dir(path)))
 			ctx.UI.EmitEvent("onAuditExported", path)
@@ -94,7 +96,7 @@ func fileURL(path string) string {
 // Opens Finder on the log's containing directory rather than firing a TCC-free
 // "reveal this exact file" API relay doesn't have access to. Cannot become an
 // HTTP capability — a remote caller triggering a Finder window on someone's
-// desktop is not a sensible API — so this stays IPC-only; AuditOps.LogPath is
+// desktop is not a sensible API — so this stays IPC-only; audit.AuditOps.LogPath is
 // the part of this capability HTTP gets, via GET /api/audit/log.
 func ipcRevealAuditLog(ctx *IPCContext, _ json.RawMessage) {
 	path, err := ctx.AuditOps.LogPath()

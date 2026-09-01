@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
@@ -142,7 +143,7 @@ func TestCliAdmin_RepeatedIdenticalNarrowingWritesNothingTheSecondTime(t *testin
 	countConfigChanges := func() int {
 		n := 0
 		for _, e := range readLoggedEvents(t, f.audit) {
-			if e.Event == AuditEventConfigChange && e.Credential == auditCredentialProjectGrant {
+			if e.Event == audit.AuditEventConfigChange && e.Credential == auditCredentialProjectGrant {
 				n++
 			}
 		}
@@ -646,20 +647,20 @@ func TestCliAdmin_NarrowGrantAttributedToTheEnrolment(t *testing.T) {
 	}
 
 	events := readLoggedEvents(t, f.audit)
-	var found *AuditEvent
+	var found *audit.AuditEvent
 	for i := range events {
-		if events[i].Event == AuditEventConfigChange && events[i].Credential == auditCredentialProjectGrant {
+		if events[i].Event == audit.AuditEventConfigChange && events[i].Credential == auditCredentialProjectGrant {
 			found = &events[i]
 		}
 	}
 	if found == nil {
 		t.Fatalf("no config_change recorded for the NarrowGrant: %+v", events)
 	}
-	if found.Actor.Kind != AuditActorRemote {
-		t.Errorf("actor.kind = %q, want %q", found.Actor.Kind, AuditActorRemote)
+	if found.Actor.Kind != audit.AuditActorRemote {
+		t.Errorf("actor.kind = %q, want %q", found.Actor.Kind, audit.AuditActorRemote)
 	}
-	if found.Actor.Auth != AuditAuthMTLS {
-		t.Errorf("actor.auth = %q, want %q", found.Actor.Auth, AuditAuthMTLS)
+	if found.Actor.Auth != audit.AuditAuthMTLS {
+		t.Errorf("actor.auth = %q, want %q", found.Actor.Auth, audit.AuditAuthMTLS)
 	}
 	if found.Actor.ClientID != "hermes-mail" {
 		t.Errorf("actor.client_id = %q, want hermes-mail", found.Actor.ClientID)
@@ -691,17 +692,17 @@ func TestCliAdmin_RefusedConfigRequestWritesControlDecision(t *testing.T) {
 	}
 
 	events := readLoggedEvents(t, f.audit)
-	var found *AuditEvent
+	var found *audit.AuditEvent
 	for i := range events {
-		if events[i].Event == AuditEventControlDecision && events[i].Class == string(control.ClassConfigure) {
+		if events[i].Event == audit.AuditEventControlDecision && events[i].Class == string(control.ClassConfigure) {
 			found = &events[i]
 		}
 	}
 	if found == nil {
 		t.Fatalf("no control_decision recorded for the refused NarrowGrant: %+v", events)
 	}
-	if found.Outcome != AuditOutcomeDenied {
-		t.Errorf("outcome = %q, want %q", found.Outcome, AuditOutcomeDenied)
+	if found.Outcome != audit.AuditOutcomeDenied {
+		t.Errorf("outcome = %q, want %q", found.Outcome, audit.AuditOutcomeDenied)
 	}
 	if found.Transport != string(control.TransportTCP) {
 		t.Errorf("transport = %q, want %q", found.Transport, control.TransportTCP)
@@ -730,9 +731,9 @@ func TestCliAdmin_RefusedDescribeGrantRecordsItsOwnClass(t *testing.T) {
 	}
 
 	events := readLoggedEvents(t, f.audit)
-	var found *AuditEvent
+	var found *audit.AuditEvent
 	for i := range events {
-		if events[i].Event == AuditEventControlDecision && events[i].Method == bridge.ReqDescribeGrant {
+		if events[i].Event == audit.AuditEventControlDecision && events[i].Method == bridge.ReqDescribeGrant {
 			found = &events[i]
 		}
 	}

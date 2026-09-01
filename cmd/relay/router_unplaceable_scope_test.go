@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
@@ -65,8 +66,8 @@ func TestCallTool_DeniesAScopeTheLiveSchemaCannotPlace(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected one record, got %d", len(events))
 	}
-	if events[0].Outcome != AuditOutcomeDenied {
-		t.Errorf("recorded as %q, want %q", events[0].Outcome, AuditOutcomeDenied)
+	if events[0].Outcome != audit.AuditOutcomeDenied {
+		t.Errorf("recorded as %q, want %q", events[0].Outcome, audit.AuditOutcomeDenied)
 	}
 }
 
@@ -158,7 +159,7 @@ func TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared(t *testing.T) {
 
 	// The reverse direction: a genuinely scope-nothing MCP keeps the quiet
 	// string.
-	quiet, _ := auditAuthorityLine(AuditEvent{Access: config.AccessRead, AllowExternal: new(bool)})
+	quiet, _ := auditAuthorityLine(audit.AuditEvent{Access: config.AccessRead, AllowExternal: new(bool)})
 	if !strings.Contains(quiet, "(none declared)") {
 		t.Errorf("an MCP with no scope concept lost its own rendering: %q", quiet)
 	}

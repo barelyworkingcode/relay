@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
@@ -40,7 +41,7 @@ type accServer struct {
 }
 
 // accNewServer wires the REAL composed stack — real ServiceOps/EnrolmentOps/
-// AuditOps/McpOps, a real 0600 socket, a real loopback TCP listener, and a
+// audit.AuditOps/McpOps, a real 0600 socket, a real loopback TCP listener, and a
 // real credentialAuthorizer over the same store. frontendToken is what the
 // server is told RELAY_FRONTEND_TOKEN is; "" builds a server with no
 // credential of its own, which is the fail-closed case.
@@ -58,7 +59,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: frontendToken},
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		ops, enrolOps, &AuditOps{}, mcpOps, projOps,
+		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps,
 		NewCredentialAuthorizer(store), nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

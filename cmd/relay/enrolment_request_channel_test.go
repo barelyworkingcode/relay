@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -46,12 +47,12 @@ import (
 type enrolFixture struct {
 	t      *testing.T
 	table  *enrolmentRequestTable
-	audit  *AuditRecorder
+	audit  *audit.AuditRecorder
 	server *EnrolmentRequestServer
 }
 
 type enrolFixtureOpts struct {
-	// disableAudit builds the server with a nil *AuditRecorder, which is
+	// disableAudit builds the server with a nil *audit.AuditRecorder, which is
 	// what audit.enabled:false produces (NewAuditRecorder returns nil).
 	disableAudit bool
 	// skipServe leaves the server unstarted so a test can assert on
@@ -421,7 +422,7 @@ func TestEnrolment_AC7_ConfigResolution(t *testing.T) {
 	}
 }
 
-// AC-8: with audit.enabled:false (an AuditRecorder that is nil, exactly
+// AC-8: with audit.enabled:false (an audit.AuditRecorder that is nil, exactly
 // what a disabled audit config produces), the listener refuses to start.
 // "Refuses to serve" for a listener already bound is RemoteSupervisor's
 // job (reconcileEnrolmentListenerLocked tears it down when auditing stops
@@ -677,41 +678,41 @@ func TestEnrolment_AC13_LodgingIsUnaudited_FullTableWarnsOncePerTTL(t *testing.T
 // Allowed:false; an expiry writes none.
 func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 	t.Run("refusal", func(t *testing.T) {
-		audit := newTestAudit(t, nil)
+		rec := newTestAudit(t, nil)
 		table := newEnrolmentRequestTable()
 		res, err := table.Lodge(genClientCSRPEM(t, "ac14-refuse"), "", "", "", "10.0.0.1:1")
 		assertNoErr(t, err, "lodge")
 
-		if !table.Refuse(audit, res.RequestID) {
+		if !table.Refuse(rec, res.RequestID) {
 			t.Fatal("Refuse reported the record was not found")
 		}
 		if len(table.List()) != 0 {
 			t.Fatal("a refused record is still pending")
 		}
 
-		events := readLoggedEvents(t, audit)
+		events := readLoggedEvents(t, rec)
 		if len(events) != 1 {
 			t.Fatalf("refusal wrote %d audit event(s), want exactly 1: %+v", len(events), events)
 		}
 		ev := events[0]
-		if ev.Event != AuditEventControlDecision {
-			t.Errorf("event = %q, want %q", ev.Event, AuditEventControlDecision)
+		if ev.Event != audit.AuditEventControlDecision {
+			t.Errorf("event = %q, want %q", ev.Event, audit.AuditEventControlDecision)
 		}
-		if ev.Outcome == AuditOutcomeOK {
+		if ev.Outcome == audit.AuditOutcomeOK {
 			t.Errorf("refusal recorded outcome %q, want a refused outcome", ev.Outcome)
 		}
 
 		// Refusing an id that is no longer there writes nothing further.
-		if table.Refuse(audit, res.RequestID) {
+		if table.Refuse(rec, res.RequestID) {
 			t.Fatal("Refuse succeeded twice on the same id")
 		}
-		if events2 := readLoggedEvents(t, audit); len(events2) != 1 {
+		if events2 := readLoggedEvents(t, rec); len(events2) != 1 {
 			t.Fatalf("a second Refuse on a gone id wrote %d event(s), want still 1", len(events2))
 		}
 	})
 
 	t.Run("expiry", func(t *testing.T) {
-		audit := newTestAudit(t, nil)
+		rec := newTestAudit(t, nil)
 		table := newEnrolmentRequestTable()
 		now := time.Now()
 		table.setClock(func() time.Time { return now })
@@ -722,7 +723,7 @@ func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 		if rows := table.List(); len(rows) != 0 {
 			t.Fatal("the row did not expire")
 		}
-		if events := readLoggedEvents(t, audit); len(events) != 0 {
+		if events := readLoggedEvents(t, rec); len(events) != 0 {
 			t.Fatalf("an expiry wrote %d audit event(s), want 0: %+v", len(events), events)
 		}
 	})

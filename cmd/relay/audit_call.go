@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 )
@@ -14,9 +15,9 @@ import (
 // instrumentation reads as straight-line code with no `if r.audit != nil`
 // noise at each step — a router built without a recorder simply does nothing.
 type auditCall struct {
-	rec   *AuditRecorder
+	rec   *audit.AuditRecorder
 	start time.Time
-	ev    AuditEvent
+	ev    audit.AuditEvent
 
 	// remote marks a caller that arrived over the remote listener, which is the
 	// only thing that switches this event from ADR-008's one fail-open record
@@ -35,16 +36,16 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 	if !r.audit.Enabled() {
 		return nil
 	}
-	if event != AuditEventCallTool && !r.audit.LogLists() {
+	if event != audit.AuditEventCallTool && !r.audit.LogLists() {
 		return nil
 	}
 	a := &auditCall{
 		rec:   r.audit,
 		start: time.Now(),
-		ev: AuditEvent{
-			ID:    newAuditID(),
+		ev: audit.AuditEvent{
+			ID:    audit.NewAuditID(),
 			Event: event,
-			Actor: AuditActor{Kind: AuditActorUnknown, Auth: AuditAuthNone},
+			Actor: audit.AuditActor{Kind: audit.AuditActorUnknown, Auth: audit.AuditAuthNone},
 		},
 	}
 	// A remote caller's identity is attested by its certificate, the network
@@ -55,8 +56,8 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 	// number.
 	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok {
 		a.remote = true
-		a.ev.Actor.Kind = AuditActorRemote
-		a.ev.Actor.Auth = AuditAuthMTLS
+		a.ev.Actor.Kind = audit.AuditActorRemote
+		a.ev.Actor.Auth = audit.AuditAuthMTLS
 		a.ev.Actor.ClientID = rc.ClientID
 		a.ev.Actor.Fingerprint = rc.Fingerprint
 		a.ev.Actor.RemoteAddr = rc.RemoteAddr
@@ -67,7 +68,7 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 	// call would frequently find nothing.
 	if pid := bridge.CallerPIDFromContext(ctx); pid > 0 {
 		a.ev.Actor.PID = pid
-		a.ev.Actor.Proc, a.ev.Actor.Parent = ProcessNames(pid)
+		a.ev.Actor.Proc, a.ev.Actor.Parent = audit.ProcessNames(pid)
 	}
 	return a
 }
@@ -79,10 +80,7 @@ func (a *auditCall) setTool(name string, args json.RawMessage) {
 		return
 	}
 	a.ev.Tool = name
-	if !a.rec.cfg.LogArgs {
-		return
-	}
-	a.ev.Args, a.ev.ArgsBytes, a.ev.ArgsTruncated = redactArgs(args, a.rec.cfg.MaxArgBytes, a.rec.cfg.RedactKeys)
+	a.ev.Args, a.ev.ArgsBytes, a.ev.ArgsTruncated = a.rec.RedactCallArgs(args)
 }
 
 // Known only after tool-owner lookup, which is why it's separate from setTool.
@@ -109,15 +107,15 @@ func (a *auditCall) setActor(ctx context.Context, stored *config.StoredToken, se
 	}
 	switch {
 	case stored.Name == serviceTokenName:
-		a.ev.Actor.Kind = AuditActorService
-		a.ev.Actor.Auth = AuditAuthService
+		a.ev.Actor.Kind = audit.AuditActorService
+		a.ev.Actor.Auth = audit.AuditAuthService
 	case token == "":
-		a.ev.Actor.Kind = AuditActorProject
-		a.ev.Actor.Auth = AuditAuthCwd
+		a.ev.Actor.Kind = audit.AuditActorProject
+		a.ev.Actor.Auth = audit.AuditAuthCwd
 		a.ev.Actor.Cwd = bridge.CallerCwdFromContext(ctx)
 	default:
-		a.ev.Actor.Kind = AuditActorProject
-		a.ev.Actor.Auth = AuditAuthToken
+		a.ev.Actor.Kind = audit.AuditActorProject
+		a.ev.Actor.Auth = audit.AuditAuthToken
 	}
 	a.setProject(stored, settings)
 }
@@ -139,12 +137,12 @@ func (a *auditCall) setUnauthenticated(ctx context.Context, token string) {
 	if a.remote {
 		return
 	}
-	a.ev.Actor.Kind = AuditActorUnknown
+	a.ev.Actor.Kind = audit.AuditActorUnknown
 	if token == "" {
-		a.ev.Actor.Auth = AuditAuthNone
+		a.ev.Actor.Auth = audit.AuditAuthNone
 		a.ev.Actor.Cwd = bridge.CallerCwdFromContext(ctx)
 	} else {
-		a.ev.Actor.Auth = AuditAuthToken
+		a.ev.Actor.Auth = audit.AuditAuthToken
 	}
 }
 
@@ -214,9 +212,9 @@ func (a *auditCall) intent() error {
 		return nil
 	}
 	ev := a.ev
-	ev.Phase = AuditPhaseIntent
+	ev.Phase = audit.AuditPhaseIntent
 	ev.TS = a.start.UTC()
-	ev.Outcome = AuditOutcomePending
+	ev.Outcome = audit.AuditOutcomePending
 	if err := a.rec.RecordDurable(ev); err != nil {
 		return err
 	}
@@ -231,7 +229,7 @@ func (a *auditCall) done(outcome string, err error) {
 	if a.intentWritten {
 		// Same id as the intent: that pairing is what makes the two lines one
 		// call rather than two events that happen to look alike.
-		a.ev.Phase = AuditPhaseCompletion
+		a.ev.Phase = audit.AuditPhaseCompletion
 	}
 	a.ev.DurMs = time.Since(a.start).Milliseconds()
 	a.ev.TS = a.start.UTC()
@@ -248,24 +246,22 @@ func (a *auditCall) doneResult(result json.RawMessage, err error) {
 		return
 	}
 	if err != nil {
-		a.done(AuditOutcomeError, err)
+		a.done(audit.AuditOutcomeError, err)
 		return
 	}
 	a.ev.ResultBytes = len(result)
 	a.ev.ResultIsError = resultIsError(result)
 	a.ev.ScopeViolation = a.ev.ResultIsError && resultIsScopeViolation(result)
-	if n := a.rec.cfg.MaxResultPreviewBytes; n > 0 && len(result) > 0 {
-		a.ev.ResultPreview = truncateRunes(string(result), n)
-	}
+	a.ev.ResultPreview = a.rec.PreviewResult(result)
 	// A tool that refuses in-protocol returns a normal result with isError
-	// set: not AuditOutcomeError, but not a success either — recording it as
+	// set: not audit.AuditOutcomeError, but not a success either — recording it as
 	// "ok" would hide every application-level refusal (an fsMCP read outside
 	// allowed_dirs, say) from `relay audit --outcome ...`.
 	if a.ev.ResultIsError {
-		a.done(AuditOutcomeToolError, nil)
+		a.done(audit.AuditOutcomeToolError, nil)
 		return
 	}
-	a.done(AuditOutcomeOK, nil)
+	a.done(audit.AuditOutcomeOK, nil)
 }
 
 func resultIsError(result json.RawMessage) bool {
@@ -346,15 +342,15 @@ func projectNameFor(stored *config.StoredToken, settings *config.Settings) strin
 // A failed individual restart attempt produces NO record: it is a step inside
 // an outage the mcp_down row already opened, and one line per retry would
 // bury the two lines that bound it.
-func mcpSupervisionEvent(ev McpHealthEvent) (AuditEvent, bool) {
-	out := AuditEvent{
-		ID:          newAuditID(),
+func mcpSupervisionEvent(ev McpHealthEvent) (audit.AuditEvent, bool) {
+	out := audit.AuditEvent{
+		ID:          audit.NewAuditID(),
 		TS:          time.Now(),
 		McpID:       ev.ID,
 		Supervision: ev.State,
-		Actor: AuditActor{
-			Kind: AuditActorRelay,
-			Auth: AuditAuthNone,
+		Actor: audit.AuditActor{
+			Kind: audit.AuditActorRelay,
+			Auth: audit.AuditAuthNone,
 			// Named so the CALLER column says who wrote the row rather than a
 			// dash, which on every other line means "could not attribute".
 			Proc: "relay",
@@ -368,18 +364,23 @@ func mcpSupervisionEvent(ev McpHealthEvent) (AuditEvent, bool) {
 
 	switch ev.State {
 	case McpHealthDown:
-		out.Event, out.Outcome = AuditEventMcpDown, AuditOutcomeError
+		out.Event, out.Outcome = audit.AuditEventMcpDown, audit.AuditOutcomeError
 	case McpHealthRestarted:
-		out.Event, out.Outcome = AuditEventMcpUp, AuditOutcomeOK
+		out.Event, out.Outcome = audit.AuditEventMcpUp, audit.AuditOutcomeOK
 	case McpHealthAbandoned:
-		out.Event, out.Outcome = AuditEventMcpDown, AuditOutcomeError
+		out.Event, out.Outcome = audit.AuditEventMcpDown, audit.AuditOutcomeError
 	default:
-		return AuditEvent{}, false
+		return audit.AuditEvent{}, false
 	}
 	return out, true
 }
 
-func (r *AuditRecorder) RecordMcpSupervision(ev McpHealthEvent) {
+// recordMcpSupervision is RecordDecision's counterpart for ADR-012 liveness
+// events. A free function rather than a method on *audit.AuditRecorder:
+// McpHealthEvent is a main-only type (external_mcp.go), and methods cannot
+// follow a type across a package boundary — the receiver would have to live
+// in whichever package McpHealthEvent does, which is this one.
+func recordMcpSupervision(r *audit.AuditRecorder, ev McpHealthEvent) {
 	if !r.Enabled() {
 		return
 	}
