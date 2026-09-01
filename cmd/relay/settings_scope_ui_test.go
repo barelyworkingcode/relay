@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/dop251/goja"
 )
 
@@ -282,12 +283,12 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 		return JSON.stringify(window.harvestProjectForm());
 	})()`)
 
-	var create projectCreateFields
+	var create project.CreateFields
 	if err := json.Unmarshal([]byte(raw), &create); err != nil {
 		t.Fatalf("editor payload did not decode as a create: %v\n%s", err, raw)
 	}
 	if create.Access["macmcp"] != config.AccessRead {
-		t.Errorf(`"access" did not reach projectCreateFields.Access — check the json tag: %#v`, create.Access)
+		t.Errorf(`"access" did not reach project.CreateFields.Access — check the json tag: %#v`, create.Access)
 	}
 	if len(create.AllowedTools["macmcp"]) != 1 {
 		t.Errorf(`"allowed_tools" did not reach the DTO: %#v`, create.AllowedTools)
@@ -296,7 +297,7 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 		t.Errorf(`"context" did not reach the DTO: %s`, create.Context["macmcp"])
 	}
 
-	var update projectUpdateFields
+	var update project.UpdateFields
 	if err := json.Unmarshal([]byte(raw), &update); err != nil {
 		t.Fatalf("editor payload did not decode as an update: %v", err)
 	}
@@ -305,9 +306,9 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 	}
 
 	s := &config.Settings{Version: 1}
-	created, err := applyProjectCreate(s, create, v2Surfaces())
+	created, err := project.ApplyCreate(s, create, v2Surfaces())
 	if err != nil {
-		t.Fatalf("the editor's own payload was refused by applyProjectCreate: %v", err)
+		t.Fatalf("the editor's own payload was refused by project.ApplyCreate: %v", err)
 	}
 	if created.Access["macmcp"] != config.AccessRead || !strings.Contains(string(created.Context["macmcp"]), "Bob") {
 		t.Errorf("the permission set did not survive the create: %#v", created)

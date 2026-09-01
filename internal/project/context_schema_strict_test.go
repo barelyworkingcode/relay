@@ -1,9 +1,7 @@
-package main
+package project
 
 import (
-	"context"
 	"encoding/json"
-	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -149,27 +147,5 @@ func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
 	f, _ = cs.Field("f")
 	if !f.Governs("capture_screenshot") {
 		t.Error(`a stray "" beside "mail_*" narrowed the field instead of widening it`)
-	}
-}
-
-func TestCallTool_RefusesEveryToolOfAnMcpWhoseSchemaCannotBeRead(t *testing.T) {
-	broken := `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":"mail_*"}}`
-	r := newProfileRouter(t, profileOpts{
-		kind:          config.ProjectKindRemote,
-		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
-		access:        map[string]string{"macmcp": config.AccessWrite},
-		allowExternal: map[string]bool{"macmcp": true},
-		contextValues: map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)},
-		schema:        broken,
-		schemaVersion: 2,
-	})
-	for _, tool := range []string{"mail_search", "web_fetch"} {
-		_, err := r.CallTool(context.Background(), tool, json.RawMessage(`{}`), testToken)
-		if err == nil {
-			t.Fatalf("%s ran against a schema relay could not read", tool)
-		}
-		if !strings.Contains(err.Error(), "cannot read") {
-			t.Errorf("%s: refusal does not say why: %v", tool, err)
-		}
 	}
 }

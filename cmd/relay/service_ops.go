@@ -55,7 +55,7 @@ type serviceFields struct {
 	WorkingDir  *string           `json:"working_dir,omitempty"`
 	Autostart   *bool             `json:"autostart,omitempty"`
 	URL         *string           `json:"url,omitempty"`
-	// FrontendConsumer is a pointer for the same reason projectUpdateFields'
+	// FrontendConsumer is a pointer for the same reason project.UpdateFields'
 	// pointers are: nil means "leave whatever is already stored alone" (an
 	// edit form that never mentions it must not silently re-enable
 	// front-door credential injection for a backend that opted out via

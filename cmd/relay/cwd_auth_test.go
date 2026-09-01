@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func cwdProject(t *testing.T, path string, allowCwd bool) *config.Settings {
@@ -27,7 +28,7 @@ func TestAuthenticateProjectByPath_OptedIn(t *testing.T) {
 	s := cwdProject(t, dir, true)
 
 	for _, cwd := range []string{dir, filepath.Join(dir, "sub", "deeper")} {
-		stored := authenticateProjectByPath(s, cwd)
+		stored := project.AuthenticateByPath(s, cwd)
 		if stored == nil {
 			t.Fatalf("cwd %q: expected a StoredToken", cwd)
 		}
@@ -41,7 +42,7 @@ func TestAuthenticateProjectByPath_RequiresOptIn(t *testing.T) {
 	dir := t.TempDir()
 	s := cwdProject(t, dir, false)
 
-	if stored := authenticateProjectByPath(s, dir); stored != nil {
+	if stored := project.AuthenticateByPath(s, dir); stored != nil {
 		t.Fatalf("expected nil for a project that did not opt in, got %+v", stored)
 	}
 }
@@ -57,7 +58,7 @@ func TestAuthenticateProjectByPath_NoMatch(t *testing.T) {
 		"escaping suffix": filepath.Join(s.Projects[0].Path, "..", "elsewhere"),
 	}
 	for name, cwd := range cases {
-		if stored := authenticateProjectByPath(s, cwd); stored != nil {
+		if stored := project.AuthenticateByPath(s, cwd); stored != nil {
 			t.Errorf("%s (%q): expected nil, got project %q", name, cwd, stored.ProjectID)
 		}
 	}
@@ -79,10 +80,10 @@ func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
 		AllowCwdAuth:  true,
 	})
 
-	if got := authenticateProjectByPath(s, inner); got == nil || got.ProjectID != "inner-project" {
+	if got := project.AuthenticateByPath(s, inner); got == nil || got.ProjectID != "inner-project" {
 		t.Errorf("inner dir resolved to %v, want inner-project", got)
 	}
-	if got := authenticateProjectByPath(s, filepath.Join(outer, "docs")); got == nil || got.ProjectID != "test-project" {
+	if got := project.AuthenticateByPath(s, filepath.Join(outer, "docs")); got == nil || got.ProjectID != "test-project" {
 		t.Errorf("outer dir resolved to %v, want test-project", got)
 	}
 }
@@ -106,7 +107,7 @@ func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 		AllowCwdAuth:  false,
 	})
 
-	got := authenticateProjectByPath(s, inner)
+	got := project.AuthenticateByPath(s, inner)
 	if got == nil || got.ProjectID != "test-project" {
 		t.Fatalf("resolved to %v, want the opted-in parent test-project", got)
 	}
@@ -123,7 +124,7 @@ func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
 	s.Projects[0].AllowCwdAuth = true
 
 	byToken := s.AuthenticateProjectByHash(config.HashToken(testToken))
-	byPath := authenticateProjectByPath(s, filepath.Join(dir, "sub"))
+	byPath := project.AuthenticateByPath(s, filepath.Join(dir, "sub"))
 	if byToken == nil || byPath == nil {
 		t.Fatal("both auth paths must resolve")
 	}
@@ -238,10 +239,10 @@ func TestDirWithinProject_CaseInsensitiveVolume(t *testing.T) {
 		t.Skip("case-sensitive volume: no case variant resolves to the same directory")
 	}
 
-	if !dirWithinProject(dir, variant) {
+	if !project.DirWithin(dir, variant) {
 		t.Errorf("dir %q not matched against case-variant project path %q", dir, variant)
 	}
-	if !dirWithinProject(filepath.Join(dir, "sub"), variant) {
+	if !project.DirWithin(filepath.Join(dir, "sub"), variant) {
 		t.Errorf("subdirectory of %q not matched against %q", dir, variant)
 	}
 }
@@ -250,14 +251,14 @@ func TestDirWithinProject_IdentityRejectsOutsiders(t *testing.T) {
 	proj := t.TempDir()
 	other := t.TempDir()
 
-	if dirWithinProject(other, proj) {
+	if project.DirWithin(other, proj) {
 		t.Errorf("unrelated dir %q matched project %q", other, proj)
 	}
-	if dirWithinProject(filepath.Dir(proj), proj) {
+	if project.DirWithin(filepath.Dir(proj), proj) {
 		t.Errorf("parent of %q matched the project itself", proj)
 	}
 	// A path that doesn't exist yet still resolves textually.
-	if !dirWithinProject(filepath.Join(proj, "not", "created", "yet"), proj) {
+	if !project.DirWithin(filepath.Join(proj, "not", "created", "yet"), proj) {
 		t.Errorf("non-existent nested path should still match textually")
 	}
 }

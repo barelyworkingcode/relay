@@ -1,8 +1,11 @@
-package main
+package project
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -14,16 +17,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// createProjectWithToken is a thin wrapper over createProjectWithTokenKind,
+// CreateWithToken is a thin wrapper over CreateWithTokenKind,
 // kept with its original signature so no existing caller or test has to
 // change. Call within store.With.
-func createProjectWithToken(s *config.Settings, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
-	return createProjectWithTokenKind(s, config.ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
+func CreateWithToken(s *config.Settings, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+	return CreateWithTokenKind(s, config.ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
 }
 
 // surfaces maps MCP IDs to their runtime schema + tool surface (from
 // ExternalMcpManager) for scope derivation. Call within store.With.
-func createProjectWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
 	kind = config.NormalizeProjectKind(kind)
 	if name == "" {
 		return config.Project{}, fmt.Errorf("project name is required")
@@ -35,15 +38,15 @@ func createProjectWithTokenKind(s *config.Settings, kind config.ProjectKind, nam
 		models = []string{}
 	}
 	// GenerateSkill/AllowCwdAuth/ShellTemplates aren't parameters here — they
-	// are applied by later mutators in applyProjectCreate — so this candidate
+	// are applied by later mutators in ApplyCreate — so this candidate
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
 	// gets full path/MCP/model validation.
 	candidate := config.Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
-	if err := validateProjectShape(&candidate); err != nil {
+	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}
-	if err := validateProjectGrants(&candidate, surfaces); err != nil {
+	if err := ValidateGrants(&candidate, surfaces); err != nil {
 		return config.Project{}, err
 	}
 
@@ -74,10 +77,11 @@ func createProjectWithTokenKind(s *config.Settings, kind config.ProjectKind, nam
 // generateProjectToken errors rather than falling back to a weak token if
 // the system CSPRNG fails.
 func generateProjectToken() (string, string, error) {
-	plaintext, err := generateRandomHex(32)
-	if err != nil {
-		return "", "", err
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
+	plaintext := hex.EncodeToString(b[:])
 	return plaintext, config.HashToken(plaintext), nil
 }
 
@@ -100,7 +104,7 @@ func validateProjectPath(path string) error {
 	return nil
 }
 
-// validateProjectShape is the single point that decides whether a given
+// ValidateShape is the single point that decides whether a given
 // combination of Kind, Path, AllowCwdAuth, GenerateSkill, ShellTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
 // and update paths so a project can never reach settings.json in a
@@ -109,7 +113,7 @@ func validateProjectPath(path string) error {
 // A remote project is a capability grant to a client on another machine,
 // not a host directory, so every host-directory-flavored feature below must
 // be absent.
-func validateProjectShape(proj *config.Project) error {
+func ValidateShape(proj *config.Project) error {
 	// Kind-independent, and checked first: an over-broad allowed_tools entry
 	// grants every tool of the MCP for a profile, and is a no-op for a local
 	// project — refusing both keeps validation and enforcement the same rule
@@ -222,7 +226,7 @@ func validateToolPattern(mcpID, pattern string) error {
 }
 
 // permissionPolicyIsEmpty must agree with the update path's rule that an
-// emptied policy is stored as nil (applyProjectUpdate) — otherwise
+// emptied policy is stored as nil (ApplyUpdate) — otherwise
 // converting a local project to a profile by clearing its policy would be
 // refused for still having one.
 func permissionPolicyIsEmpty(p *config.PermissionPolicy) bool {
@@ -231,10 +235,10 @@ func permissionPolicyIsEmpty(p *config.PermissionPolicy) bool {
 
 // validateProjectPermissions refuses an invalid access mode, an uncompilable
 // tool pattern, and a context value the MCP's own schema will not stand
-// behind. Called from applyProjectCreate and applyProjectUpdate against the
+// behind. Called from ApplyCreate and ApplyUpdate against the
 // fully-merged candidate, so every surface is refused identically.
 //
-// It is separate from validateProjectShape because it needs something that
+// It is separate from ValidateShape because it needs something that
 // function does not have: what the MCP declared at runtime. Shape is
 // answerable from the record alone; whether "mail_accounts" is a field
 // macMCP has is answerable only from the live surface.
@@ -249,7 +253,7 @@ func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) erro
 		}
 	}
 
-	// Not redundant with validateProjectShape's identical check: this runs
+	// Not redundant with ValidateShape's identical check: this runs
 	// against the fully-merged candidate reached by both HTTP and IPC.
 	if err := validateAllowedToolPatterns(proj); err != nil {
 		return err
@@ -303,7 +307,7 @@ func validateProjectContextForMcp(mcpID string, blob json.RawMessage, surfaces M
 		// one that matters: an empty value is how a restrict field refuses
 		// everything it governs.
 		for _, name := range names {
-			if !hasScopeValue(values, name) {
+			if !HasScopeValue(values, name) {
 				return fmt.Errorf("context %q for %q: a non-empty value is required", name, mcpID)
 			}
 		}
@@ -350,7 +354,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// authenticateProjectByPath returns nil when dir is empty, matches nothing,
+// AuthenticateByPath returns nil when dir is empty, matches nothing,
 // or matches only projects that have NOT opted into AllowCwdAuth — every
 // failure mode is "no access", never "all access". The scope granted is
 // identical to the project's token: opting in changes how a caller is
@@ -359,7 +363,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // Nested projects resolve to the most specific match (longest project path
 // containing dir), so a project nested inside another wins for its own
 // subtree.
-func authenticateProjectByPath(s *config.Settings, dir string) *config.StoredToken {
+func AuthenticateByPath(s *config.Settings, dir string) *config.StoredToken {
 	if dir == "" {
 		return nil
 	}
@@ -374,7 +378,7 @@ func authenticateProjectByPath(s *config.Settings, dir string) *config.StoredTok
 		if !p.AllowCwdAuth || p.Path == "" {
 			continue
 		}
-		if !dirWithinProject(dir, p.Path) {
+		if !DirWithin(dir, p.Path) {
 			continue
 		}
 		if n := len(realpathBestEffort(p.Path)); n > bestLen {
@@ -385,4 +389,100 @@ func authenticateProjectByPath(s *config.Settings, dir string) *config.StoredTok
 		return nil
 	}
 	return config.StoredTokenForProject(s, best, best.TokenHash)
+}
+
+// DirWithin reports whether dir is equal to or nested under
+// projectPath. An empty dir means "no directory to validate" and returns
+// true -- the LLM-provider path may send a project id with no cwd.
+func DirWithin(dir, projectPath string) bool {
+	if dir == "" {
+		return true
+	}
+	if projectPath == "" {
+		return false
+	}
+	// Prefer filesystem identity when both paths exist: os.SameFile compares
+	// device + inode, so it sees through case-insensitive volumes (a stored
+	// "/users/Jonathan/x" really is the on-disk "/Users/jonathan/x"). Falls
+	// through to the textual check when either side can't be stat'd -- paths
+	// that don't exist yet are legitimate here.
+	if within, decided := dirWithinProjectByIdentity(dir, projectPath); decided {
+		return within
+	}
+	// Resolve symlinks on both sides so e.g. macOS /var vs /private/var (or
+	// /tmp) don't false-reject a directory that really is inside the project.
+	dir = realpathBestEffort(dir)
+	projectPath = realpathBestEffort(projectPath)
+	if dir == projectPath {
+		return true
+	}
+	rel, err := filepath.Rel(projectPath, dir)
+	if err != nil {
+		return false
+	}
+	// rel must stay inside the project: not "..", not "../...", not absolute.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
+}
+
+// dirWithinProjectByIdentity walks from dir up to the filesystem root looking
+// for the directory that IS projectPath, comparing by device+inode. Returns
+// (result, true) once it can answer from the filesystem, or (false, false) when
+// the project path can't be stat'd and the caller should fall back to comparing
+// text. The walk is bounded by path depth and each step is a single stat.
+func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) {
+	projInfo, err := os.Stat(projectPath)
+	if err != nil || !projInfo.IsDir() {
+		return false, false
+	}
+	cur := filepath.Clean(dir)
+	for {
+		info, err := os.Stat(cur)
+		if err == nil {
+			if os.SameFile(info, projInfo) {
+				return true, true
+			}
+		} else if !os.IsNotExist(err) {
+			// Permission trouble or worse: don't claim an answer we can't back up.
+			return false, false
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root without meeting the project directory. The project
+			// exists and dir's whole chain was walkable, so this is a real "no".
+			return false, true
+		}
+		cur = parent
+	}
+}
+
+// realpathBestEffort cleans p and resolves symlinks. The path may not exist yet
+// (only an ancestor might), so it EvalSymlinks the longest existing prefix and
+// re-appends the non-existent tail. This makes a directory and its project
+// parent resolve to the same symlink-canonical form regardless of which
+// segments exist, so the containment check in DirWithin is reliable.
+func realpathBestEffort(p string) string {
+	p = filepath.Clean(p)
+	suffix := ""
+	cur := p
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			if suffix == "" {
+				return resolved
+			}
+			return filepath.Join(resolved, suffix)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p // reached the root with nothing resolvable
+		}
+		if suffix == "" {
+			suffix = filepath.Base(cur)
+		} else {
+			suffix = filepath.Join(filepath.Base(cur), suffix)
+		}
+		cur = parent
+	}
 }

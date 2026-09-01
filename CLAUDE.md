@@ -39,10 +39,8 @@ settings.go              Config, project CRUD, permission derivation
 settings_store.go        Atomic settings.json read/write
 types.go                 Project, StoredToken, ExternalMcp, ServiceConfig (Settings lives in settings.go)
 tokens.go                hashToken, auth sentinel errors
-project.go               Project + token creation
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
-context_schema.go        MCP contextSchema vocabulary (scope/source/applies_to), McpSurface, the tool-name matcher
 router.go                Bridge auth (service vs project tokens), tool filtering, access mode, scope presence, _meta injection
 audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation
@@ -50,7 +48,6 @@ audit_cmd.go             `relay audit` CLI
 audit_issuance.go        credential_issued / credential_revoked: the record every mint and revoke writes,
                          the CLI's own append-only recorder, and the fail-closed rule for issuance
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
-scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
@@ -90,6 +87,15 @@ enrolment/               The enrolment domain: the record's CRUD/validation (enr
                          own CA (ca.go), CSR parsing (csr.go), the comparison code (sas.go) and the
                          per-enrolment budget ledger (budget.go). Depends on config/bridge/sealed;
                          the gate, the audit sink and every door stay in main.
+project/                 The project domain — the unit a grant is scoped to: creation, token and
+                         shape/permission validation (project.go, apply.go), the schema-driven
+                         scope derivation and the updateProject* grant-shape mutators (scope.go,
+                         context_schema.go), how broad one scope value is (scope_breadth.go), the
+                         scope-value picker's policy (enumerate.go) and a remote's self-narrowing
+                         rules (narrowing.go). McpSurfaces is the runtime MCP view it takes as a
+                         parameter, so it never reaches the MCP manager. Depends on
+                         config/enrolment; the presence gate, the router, the routes, the IPC
+                         handlers and the DTO stay in main.
 ```
 
 ## Projects
@@ -144,7 +150,8 @@ omission in the language of "there was nothing to apply". The audit record now
 carries `scope_unplaced` and the two facts no longer share a string (issue
 #42). v2 only — a v1 blob is injected verbatim, so nothing is dropped there.
 
-**A count is not a measure of confinement** (`scope_breadth.go`, issue #41).
+**A count is not a measure of confinement** (`internal/project/scope_breadth.go`,
+issue #41).
 `disclose: "count"` renders `["/"]` and `["/Users/me/project"]` identically, so
 a value whose entries resolve to a **filesystem root** is named as
 `unrestricted (the whole filesystem)` at every `disclose` setting — the client
@@ -159,7 +166,7 @@ about the field name; ADR-011 decision 3's no-registry rule is intact.
 
 `allow_cwd_auth` (default false, per project) opts into a token-less fallback:
 a caller with no token whose working directory is inside the project path
-authenticates as that project via `AuthenticateProjectByPath`, with identical
+authenticates as that project via `project.AuthenticateByPath`, with identical
 scope. A present-but-invalid token never falls back. See
 [`docs/tokens.md`](docs/tokens.md#directory-auth-allow_cwd_auth).
 
@@ -175,11 +182,11 @@ an equality check invites a future bug where an unset field reads as remote.
 
 A remote project has no `Path` and cannot have anything that presumes a host
 directory — `AllowCwdAuth`, `GenerateSkill`, `ShellTemplates`, and the
-`allowed_mcp_ids: ["*"]` wildcard are all refused by `validateProjectShape`
-(`project.go`), as is a non-empty `allowed_models` (an empty allowlist is the
+`allowed_mcp_ids: ["*"]` wildcard are all refused by `project.ValidateShape`,
+as is a non-empty `allowed_models` (an empty allowlist is the
 only value `modelAllowedForProject` won't misread as "unrestricted"). A
 MCP whose every tool needs the project path can't be granted to a remote
-project either (`ValidateProjectGrants`) — and `SyncProjectToken`
+project either (`project.ValidateGrants`) — and the package's own token sync
 independently refuses to derive any `source: "project_path"` field for one
 regardless, since an MCP's schema is discovered at runtime and could gain
 such a field after a grant was already validated. `appRouter.CallTool`

@@ -1,13 +1,11 @@
-package main
+package project
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
-	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
 func testSchemas() McpSurfaces {
@@ -21,21 +19,21 @@ func testSchemas() McpSurfaces {
 func TestProjectCreate_RejectsUnsafePath(t *testing.T) {
 	s := &config.Settings{Version: 1}
 	for _, bad := range []string{"", "relative/dir", "../escape", "/ok/../../etc"} {
-		if _, err := createProjectWithToken(s, "P", bad, nil, nil, nil, nil); err == nil {
+		if _, err := CreateWithToken(s, "P", bad, nil, nil, nil, nil); err == nil {
 			t.Fatalf("expected rejection of unsafe path %q", bad)
 		}
 	}
 	if len(s.Projects) != 0 {
 		t.Fatalf("no project should have been created from invalid paths; got %d", len(s.Projects))
 	}
-	if _, err := createProjectWithToken(s, "P", t.TempDir(), nil, nil, nil, nil); err != nil {
+	if _, err := CreateWithToken(s, "P", t.TempDir(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("clean absolute path should be accepted: %v", err)
 	}
 }
 
 func TestProjectCreateRemote_NoPathSucceeds(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	proj, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected pathless remote project to be created, got: %v", err)
 	}
@@ -54,7 +52,7 @@ func TestProjectCreateRemote_NoPathSucceeds(t *testing.T) {
 // — unlike the wildcard, which is always rejected.
 func TestProjectCreateRemote_ZeroAllowedMcpsValid(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	proj, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected zero-MCP remote project to be created, got: %v", err)
 	}
@@ -65,7 +63,7 @@ func TestProjectCreateRemote_ZeroAllowedMcpsValid(t *testing.T) {
 
 func TestProjectCreateRemote_RejectsPath(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "/some/host/dir", nil, nil, nil, nil); err == nil {
+	if _, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "/some/host/dir", nil, nil, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with a path")
 	}
 	if len(s.Projects) != 0 {
@@ -77,7 +75,7 @@ func TestProjectCreateRemote_RejectsPath(t *testing.T) {
 // remote machine can reach, with nothing to review.
 func TestProjectCreateRemote_RejectsWildcardMcps(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"*"}, nil, nil, nil); err == nil {
+	if _, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"*"}, nil, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with wildcard allowed_mcp_ids")
 	}
 }
@@ -87,14 +85,14 @@ func TestProjectCreateRemote_RejectsWildcardMcps(t *testing.T) {
 // something — and remote has no model-scoping story yet.
 func TestProjectCreateRemote_RejectsNonEmptyModels(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, []string{"claude-opus"}, nil, nil); err == nil {
+	if _, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, []string{"claude-opus"}, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with non-empty allowed_models")
 	}
 }
 
 func TestProjectCreateRemote_RejectsPathScopedMcpGrant(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	_, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"fsmcp"}, nil, nil, testSchemas())
+	_, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"fsmcp"}, nil, nil, testSchemas())
 	if err == nil {
 		t.Fatal("expected rejection of remote project granted a path-scoped MCP")
 	}
@@ -124,7 +122,7 @@ func TestProjectKind_ZeroValueRoundTripsAsLocal(t *testing.T) {
 // key, the same wire shape as before this field existed.
 func TestProjectKind_LocalSerializesWithNoKindKey(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithToken(s, "Local", t.TempDir(), nil, nil, nil, nil)
+	proj, err := CreateWithToken(s, "Local", t.TempDir(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken: %v", err)
 	}
@@ -155,7 +153,7 @@ func TestProjectCreate(t *testing.T) {
 		Projects: []config.Project{},
 	}
 
-	proj, err := createProjectWithToken(s, "TestProject", tmpDir, []string{"fsmcp", "macmcp"}, []string{"claude-opus"}, nil, testSchemas())
+	proj, err := CreateWithToken(s, "TestProject", tmpDir, []string{"fsmcp", "macmcp"}, []string{"claude-opus"}, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -237,7 +235,7 @@ func TestProjectUpdate(t *testing.T) {
 		Projects: []config.Project{},
 	}
 
-	proj, err := createProjectWithToken(s, "UpdateTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
+	proj, err := CreateWithToken(s, "UpdateTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -277,7 +275,7 @@ func TestProjectDelete(t *testing.T) {
 		Projects: []config.Project{},
 	}
 
-	proj, err := createProjectWithToken(s, "DeleteTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
+	proj, err := CreateWithToken(s, "DeleteTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -299,86 +297,6 @@ func TestProjectDelete(t *testing.T) {
 	}
 }
 
-func TestProjectTokenScoping(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	s := &config.Settings{
-		Version: 1,
-		ExternalMcps: []config.ExternalMcp{
-			{ID: "fsmcp", DisplayName: "fsMCP"},
-			{ID: "macmcp", DisplayName: "macMCP"},
-		},
-		Services:    []config.ServiceConfig{},
-		Projects:    []config.Project{},
-		AdminSecret: config.NewSecret("test-admin"),
-	}
-
-	proj, err := createProjectWithToken(s, "ScopeTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
-	if err != nil {
-		t.Fatalf("CreateProjectWithToken failed: %v", err)
-	}
-
-	mgr := NewExternalMcpManager(nil)
-	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", []mcp.Tool{
-		{Name: "fs_read", Description: "Read file"},
-		{Name: "fs_write", Description: "Write file"},
-		{Name: "fs_bash", Description: "Run bash"},
-	}, func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
-		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
-	}))
-	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("capture_screenshot"),
-		func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
-			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
-		}))
-
-	store := storeWithCache(t.TempDir(), testSealer(), s)
-	r := &appRouter{
-		store:    store,
-		tools:    mgr,
-		services: NewServiceRegistry(),
-		onChange: func() {},
-	}
-
-	projTok, _ := proj.Token.Reveal()
-	result, err := r.ListTools(context.Background(), projTok)
-	if err != nil {
-		t.Fatalf("ListTools failed: %v", err)
-	}
-	tools := unmarshalTools(t, result)
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools (fs_read, fs_write — fs_bash disabled), got %d: %v", len(tools), toolNamesOf(tools))
-	}
-	for _, tool := range tools {
-		if tool.Name == "fs_bash" {
-			t.Error("fs_bash should be excluded (disabled)")
-		}
-		if tool.Name == "capture_screenshot" {
-			t.Error("capture_screenshot should be excluded (macmcp not in project)")
-		}
-	}
-
-	_, err = r.CallTool(context.Background(), "fs_read", json.RawMessage(`{"path":"/tmp"}`), projTok)
-	if err != nil {
-		t.Fatalf("expected fs_read to succeed, got: %v", err)
-	}
-
-	_, err = r.CallTool(context.Background(), "capture_screenshot", nil, projTok)
-	if err == nil {
-		t.Fatal("expected error calling tool from disallowed MCP")
-	}
-	if !strings.Contains(err.Error(), "access denied") {
-		t.Errorf("expected 'access denied', got %q", err.Error())
-	}
-
-	_, err = r.CallTool(context.Background(), "fs_bash", json.RawMessage(`{"command":"ls"}`), projTok)
-	if err == nil {
-		t.Fatal("expected error calling disabled tool fs_bash")
-	}
-	if !strings.Contains(err.Error(), "access denied") {
-		t.Errorf("expected 'access denied', got %q", err.Error())
-	}
-}
-
 func TestProjectPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := sealedSettingsStoreAt(tmpDir)
@@ -394,7 +312,7 @@ func TestProjectPersistence(t *testing.T) {
 			ID:          "fsmcp",
 			DisplayName: "fsMCP",
 		})
-		proj, err := createProjectWithToken(s, "PersistTest", projectDir, []string{"fsmcp"}, []string{"claude-opus"}, nil, testSchemas())
+		proj, err := CreateWithToken(s, "PersistTest", projectDir, []string{"fsmcp"}, []string{"claude-opus"}, nil, testSchemas())
 		if err != nil {
 			t.Fatalf("CreateProjectWithToken failed: %v", err)
 		}
@@ -438,12 +356,4 @@ func TestProjectPersistence(t *testing.T) {
 	if len(reloaded2.Projects) != 0 {
 		t.Errorf("expected 0 projects after delete, got %d", len(reloaded2.Projects))
 	}
-}
-
-func toolNamesOf(tools []mcp.Tool) []string {
-	names := make([]string, len(tools))
-	for i, t := range tools {
-		names[i] = t.Name
-	}
-	return names
 }

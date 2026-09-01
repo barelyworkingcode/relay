@@ -80,7 +80,7 @@ func isSessionCreatePath(p string) bool {
 }
 
 // Must be a separate check, not a case inside the model allowlist:
-// validateProjectShape requires a remote project's AllowedModels to be
+// project.ValidateShape requires a remote project's AllowedModels to be
 // empty, but modelAllowedForProject treats an empty allowlist as
 // unrestricted — folded together, a remote project would permit every
 // model, the most permissive outcome reached through the most restrictive

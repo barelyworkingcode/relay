@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
@@ -23,7 +24,7 @@ func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
 	var proj config.Project
 	var createErr error
 	if err := store.With(func(s *config.Settings) {
-		proj, createErr = createProjectWithToken(s, "PtyProj", t.TempDir(), nil, nil, nil, nil)
+		proj, createErr = project.CreateWithToken(s, "PtyProj", t.TempDir(), nil, nil, nil, nil)
 	}); err != nil {
 		t.Fatalf("store.With: %v", err)
 	}
@@ -152,10 +153,10 @@ func TestDirWithinProject_ResolvesSymlinks(t *testing.T) {
 		t.Skip("temp dir has no symlink component on this platform")
 	}
 	// project = symlink form; dir = resolved-form subdir of the same place.
-	if !dirWithinProject(filepath.Join(real, "sub"), tmp) {
+	if !project.DirWithin(filepath.Join(real, "sub"), tmp) {
 		t.Errorf("symlink-equivalent subdir wrongly rejected: dir=%q project=%q", filepath.Join(real, "sub"), tmp)
 	}
-	if !dirWithinProject(filepath.Join(tmp, "sub"), real) {
+	if !project.DirWithin(filepath.Join(tmp, "sub"), real) {
 		t.Errorf("symlink-equivalent subdir wrongly rejected (reverse): dir=%q project=%q", filepath.Join(tmp, "sub"), real)
 	}
 }
@@ -179,8 +180,8 @@ func TestDirWithinProject(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := dirWithinProject(tc.dir, tc.project); got != tc.want {
-				t.Errorf("dirWithinProject(%q, %q) = %v, want %v", tc.dir, tc.project, got, tc.want)
+			if got := project.DirWithin(tc.dir, tc.project); got != tc.want {
+				t.Errorf("project.DirWithin(%q, %q) = %v, want %v", tc.dir, tc.project, got, tc.want)
 			}
 		})
 	}

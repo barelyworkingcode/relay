@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -124,7 +124,7 @@ func TestValidatePermissions_PermitsUnknownMcpButNotAnEmptyValue(t *testing.T) {
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "anything", "non-empty")
 }
 
-// contextValues answers nil for a non-object blob, which every caller would
+// ContextValues answers nil for a non-object blob, which every caller would
 // then treat as an absent scope, so it is refused rather than read as "no
 // fields".
 func TestValidatePermissions_RefusesNonObjectContext(t *testing.T) {
@@ -145,7 +145,7 @@ func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 	if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
 		t.Fatalf("ADR-011's own worked example was refused: %v", err)
 	}
-	if err := validateProjectShape(proj); err != nil {
+	if err := ValidateShape(proj); err != nil {
 		t.Fatalf("ADR-011's own worked example failed the shape check: %v", err)
 	}
 }
@@ -153,12 +153,12 @@ func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 	s := &config.Settings{Version: 1}
 	surfaces := v2Surfaces()
-	proj, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, surfaces)
+	proj, err := CreateWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, surfaces)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	before := contextValues(s.Projects[0].Context["macmcp"])
-	if !hasScopeValue(before, "file_dirs") {
+	before := ContextValues(s.Projects[0].Context["macmcp"])
+	if !HasScopeValue(before, "file_dirs") {
 		t.Fatalf("precondition: file_dirs should have been derived, got %s", s.Projects[0].Context["macmcp"])
 	}
 
@@ -166,18 +166,18 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 		"macmcp": json.RawMessage(`{"mail_accounts":["Alice"]}`),
 	}, surfaces)
 
-	after := contextValues(s.Projects[0].Context["macmcp"])
-	if !hasScopeValue(after, "mail_accounts") {
+	after := ContextValues(s.Projects[0].Context["macmcp"])
+	if !HasScopeValue(after, "mail_accounts") {
 		t.Errorf("operator value was not stored: %s", s.Projects[0].Context["macmcp"])
 	}
-	if !hasScopeValue(after, "file_dirs") {
+	if !HasScopeValue(after, "file_dirs") {
 		t.Errorf("the derived field was destroyed by an operator edit: %s", s.Projects[0].Context["macmcp"])
 	}
 }
 
 func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	proj, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 // typo — so it is kept as-is instead.
 func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, nil)
+	proj, err := CreateWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 // it would make a confined local agent unexpressible.
 func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	proj, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 		t.Error("a dropped entry still reached the token")
 	}
 
-	local, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
+	local, err := CreateWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create local: %v", err)
 	}

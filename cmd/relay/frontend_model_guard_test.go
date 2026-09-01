@@ -257,7 +257,7 @@ func remoteProject(t *testing.T, store config.SettingsStore) config.Project {
 
 // A remote project is a grant to another machine, not a place a session runs.
 //
-// This cannot be left to the model allowlist: validateProjectShape requires a
+// This cannot be left to the model allowlist: project.ValidateShape requires a
 // remote project's AllowedModels to be EMPTY, and modelAllowedForProject reads
 // an empty allowlist as "unrestricted". So without an explicit refusal the most
 // restrictive configuration produces the most permissive outcome — every model

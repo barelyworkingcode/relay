@@ -29,7 +29,7 @@ func newEnrolmentSandbox(t *testing.T) (string, config.SettingsStore) {
 }
 
 // mkStoreProject stores a project of the given kind and returns it. Built
-// here rather than through package main's createProjectWithTokenKind: that
+// here rather than through internal/project's CreateWithTokenKind: that
 // one also mints a project token and derives permissions, none of which any
 // rule in this package reads — grant validation reaches a stored project by
 // id and asks IsRemote(), and nothing else. path must be empty for a remote

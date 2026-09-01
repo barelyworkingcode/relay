@@ -32,7 +32,7 @@ func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 	return r, svcToken
 }
 
-// The hole this closes: dirWithinProject("", "") returns true, because the
+// The hole this closes: project.DirWithin("", "") returns true, because the
 // empty-dir branch is evaluated before the empty-project-path branch and
 // short-circuits it. Without an explicit refusal the call SUCCEEDS and hands
 // back the remote project's plaintext token with WorkingDir: "", which Go's

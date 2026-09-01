@@ -14,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func newV2ProjectRoutesServer(t *testing.T) (string, config.SettingsStore) {
@@ -160,23 +161,23 @@ func TestProjectRoutes_ScopeFields(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
-	var fields []ScopeFieldView
+	var fields []project.ScopeFieldView
 	if err := json.Unmarshal(body, &fields); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(fields) != 3 {
 		t.Fatalf("want macMCP's three restrict fields, got %d: %s", len(fields), body)
 	}
-	byName := map[string]ScopeFieldView{}
+	byName := map[string]project.ScopeFieldView{}
 	for _, f := range fields {
 		byName[f.Name] = f
 	}
 	// Absent-source-means-operator is resolved server-side so no consumer has
 	// to re-derive it.
-	if got := byName["mail_accounts"]; got.Source != ContextSourceOperator || !got.Enumerable || got.Description == "" {
+	if got := byName["mail_accounts"]; got.Source != project.ContextSourceOperator || !got.Enumerable || got.Description == "" {
 		t.Errorf("mail_accounts projected wrong: %#v", got)
 	}
-	if got := byName["file_dirs"]; got.Source != ContextSourceProjectPath {
+	if got := byName["file_dirs"]; got.Source != project.ContextSourceProjectPath {
 		t.Errorf("file_dirs must be marked derived, got %q", got.Source)
 	}
 	if got := byName["mail_mailboxes"]; len(got.DependsOn) != 1 || got.DependsOn[0] != "mail_accounts" {

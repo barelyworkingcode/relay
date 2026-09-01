@@ -2,8 +2,8 @@ package main
 
 // AC-15 (ADR-017 implementation spec §6.7): this file proves ONE property,
 // and it is narrower than its name suggests -- mutation containment, not
-// gate coverage. It parses every non-test .go file in package main and
-// finds every call to store.With, store.WithDeclinable, withDeclinable, and
+// gate coverage. It parses every non-test .go file in each directory listed
+// in gsScannedDirs and finds every call to store.With, store.WithDeclinable, withDeclinable, and
 // to each mutator in the gated set (§6.7's own list). Every call site found
 // must be in a file on gateAllowlistedFiles below; anything else fails the
 // suite by name. That answers "a NEW route registered without the gate
@@ -55,8 +55,8 @@ var gatedMutatorNames = map[string]bool{
 	"addEnrolment":               true,
 	"removeEnrolment":            true,
 	"mintBootstrapCode":          true,
-	"applyProjectCreate":         true,
-	"applyProjectUpdate":         true,
+	"ApplyCreate":                true,
+	"ApplyUpdate":                true,
 	"UpdateProjectAllowedTools":  true,
 	"UpdateProjectAccess":        true,
 	"updateProjectContext":       true,
@@ -75,8 +75,8 @@ var gateAllowlistedFiles = map[string]string{
 	// presence.Gate field and calls Require before touching the store.
 	"cmd/relay/credential_ops.go": "the CredentialOps core: Gate.Require runs before Mint/Revoke touch the store",
 	"cmd/relay/project_ops.go": "the ProjectOps core: Gate.Require runs before Create/Update/RotateToken touch the store; " +
-		"NarrowForEnrolment also calls applyProjectUpdate and withDeclinable, but is deliberately UNGATED (ADR-018 " +
-		"decision 4) — grant_narrowing.go's narrowsOnly makes a widening unrepresentable before this file is ever " +
+		"NarrowForEnrolment also calls project.ApplyUpdate and withDeclinable, but is deliberately UNGATED (ADR-018 " +
+		"decision 4) — internal/project/narrowing.go's NarrowsOnly makes a widening unrepresentable before this file is ever " +
 		"reached, so it is not one of the acts ADR-017 decision 3 gates, and gating a route a VM can reach would put " +
 		"a presence prompt on the host's screen that the caller cannot see and the human did not ask for",
 	"cmd/relay/mcp_ops.go": "the McpOps core: Gate.Require runs before Add and StartOAuth touch the store; Remove is deliberately " +
@@ -95,10 +95,10 @@ var gateAllowlistedFiles = map[string]string{
 	// not read: package main can only reach them through that package's
 	// exported surface, so every crossing still appears here as a call
 	// site in one of the files below.
-	"cmd/relay/settings_project_scope.go": "defines the updateProject* grant-shape mutators the cores and project_apply.go call",
-	"cmd/relay/api_credential.go":         "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
-	"internal/enrolment/enrolment.go":     "defines the package's Create/Update/Revoke and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
-	"cmd/relay/project_apply.go":          "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
+	"internal/project/scope.go":       "defines the updateProject* grant-shape mutators; they are unexported there, so internal/project/apply.go below is the only file that can reach them at all",
+	"cmd/relay/api_credential.go":     "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
+	"internal/enrolment/enrolment.go": "defines the package's Create/Update/Revoke and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
+	"internal/project/apply.go":       "defines ApplyCreate/ApplyUpdate, the pair ProjectOps calls after the gate; they call the updateProject* grant-shape mutators and the config.Settings UpdateProject* methods as their own sub-mutations",
 
 	// Legitimately ungated mutations that share a name with a gated
 	// mutator (§6.7's matching is by identifier, not by resolved type):
@@ -135,6 +135,7 @@ func gsModuleRoot(t *testing.T) string {
 var gsScannedDirs = []string{
 	filepath.Join("cmd", "relay"),
 	filepath.Join("internal", "enrolment"),
+	filepath.Join("internal", "project"),
 }
 
 // gsScannedFiles returns every non-test .go file directly in each scanned
@@ -273,7 +274,7 @@ var wantGatedMutatorNames = []string{
 	"UpsertService", "RemoveService",
 	"addEnrolment", "removeEnrolment",
 	"mintBootstrapCode",
-	"applyProjectCreate", "applyProjectUpdate",
+	"ApplyCreate", "ApplyUpdate",
 	"UpdateProjectAllowedTools", "UpdateProjectAccess", "updateProjectContext",
 	"updateProjectMcps", "SetProjectAllowCwdAuth", "UpdateProjectAllowExternal",
 	"updateProjectKind", "updateProjectPath",
@@ -283,7 +284,7 @@ var wantGatedMutatorNames = []string{
 var wantGateAllowlistedFiles = []string{
 	"cmd/relay/credential_ops.go", "cmd/relay/project_ops.go", "cmd/relay/mcp_ops.go", "cmd/relay/service_ops.go",
 	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
-	"cmd/relay/settings_project_scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "cmd/relay/project_apply.go",
+	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
 	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/frontend_server.go", "cmd/relay/login_routes.go",
 }
 

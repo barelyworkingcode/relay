@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/webassets"
 )
 
@@ -44,7 +45,7 @@ func mustMarshalJSON(label string, v interface{}) string {
 // because the PROJECT LIST needs it too — a row has to say "needs a scope
 // value" without anyone opening the editor first, and a list that had to
 // round-trip for that would render the reassuring answer first.
-func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]ScopeFieldView) string {
+func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]project.ScopeFieldView) string {
 	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil, "")
 }
 
@@ -59,7 +60,7 @@ func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCach
 // initialPage is one of web/src/app.js's showPage ids and is set only from a
 // constant in this repository; it never carries anything a network peer
 // supplied.
-func renderSettingsDocument(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
+func renderSettingsDocument(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]project.ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
@@ -67,7 +68,7 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		toolCache = map[string][]config.ToolInfo{}
 	}
 	if scopeFields == nil {
-		scopeFields = map[string][]ScopeFieldView{}
+		scopeFields = map[string][]project.ScopeFieldView{}
 	}
 	projects := settings.Projects
 	if projects == nil {

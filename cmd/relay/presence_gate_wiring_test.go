@@ -26,6 +26,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func pgwSandbox(t *testing.T) (string, config.SettingsStore) {
@@ -175,7 +176,7 @@ func pgwCases(t *testing.T) []pgwCase {
 			}},
 		{"project.grant", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &ProjectOps{Store: store, Gate: gate, Issuance: issuance}
-			_, err := ops.Create(context.Background(), projectCreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
+			_, err := ops.Create(context.Background(), project.CreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
 		}},
 	}
@@ -566,7 +567,7 @@ func TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt(t *testing.T) {
 	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	newName := "renamed"
-	_, found, err := ops.Update(context.Background(), proj.ID, projectUpdateFields{Name: &newName}, func() McpSurfaces { return nil }, auditViaCLI, "")
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{Name: &newName}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
 	if err != nil {
 		t.Fatalf("a name-only update must not reach the gate at all: %v", err)
 	}
@@ -584,7 +585,7 @@ func TestProjectOps_AllowCwdAuthTurningOnIsGated(t *testing.T) {
 	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	on := true
-	_, _, err = ops.Update(context.Background(), proj.ID, projectUpdateFields{AllowCwdAuth: &on}, func() McpSurfaces { return nil }, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowCwdAuth: &on}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
 	if !errors.Is(err, presence.ErrRefused) {
 		t.Fatalf("turning on allow_cwd_auth: err = %v, want presence.ErrRefused", err)
 	}
@@ -602,7 +603,7 @@ func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	tools := map[string][]string{"macmcp": {"mail_*"}}
-	_, _, err = ops.Update(context.Background(), proj.ID, projectUpdateFields{AllowedTools: &tools}, func() McpSurfaces { return nil }, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowedTools: &tools}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
 	if !errors.Is(err, presence.ErrRefused) {
 		t.Fatalf("widening allowed_tools: err = %v, want presence.ErrRefused", err)
 	}
@@ -623,7 +624,7 @@ func TestProjectOps_AllowExternalTurningOnIsGated(t *testing.T) {
 	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	external := map[string]bool{"macmcp": true}
-	_, _, err = ops.Update(context.Background(), proj.ID, projectUpdateFields{AllowExternal: &external}, func() McpSurfaces { return nil }, auditViaCLI, "")
+	_, _, err = ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowExternal: &external}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
 	if !errors.Is(err, presence.ErrRefused) {
 		t.Fatalf("turning on allow_external: err = %v, want presence.ErrRefused", err)
 	}
@@ -657,7 +658,7 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond units
 
 // TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields is AC-9,
-// standing guard over §2.4's trap: projectUpdateFields.presenceDigest must
+// standing guard over §2.4's trap: projectUpdateDigest must
 // keep binding all eight grant-shape fields even though a future narrowing
 // of project.grant's GATE to fire only on allow_cwd_auth (ADR-018, blocked
 // on the local cli-admin identity binding) will make it look natural to
@@ -665,7 +666,7 @@ const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond unit
 // rest fixed, must move the digest — the prompt authorises the request,
 // not the reason the request was privileged.
 func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
-	base := projectUpdateFields{
+	base := project.UpdateFields{
 		AllowedMcpIDs: ptr([]string{"macmcp"}),
 		AllowedTools:  ptr(map[string][]string{"macmcp": {"mail_*"}}),
 		Access:        ptr(map[string]string{"macmcp": "read"}),
@@ -675,32 +676,32 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		Kind:          ptr(config.ProjectKindLocal),
 		Path:          ptr("/tmp/base"),
 	}
-	baseDigest := base.presenceDigest("proj-x")
+	baseDigest := projectUpdateDigest("proj-x", base)
 
 	variants := []struct {
 		name   string
-		mutate func(f *projectUpdateFields)
+		mutate func(f *project.UpdateFields)
 	}{
-		{"allowed_mcp_ids", func(f *projectUpdateFields) { f.AllowedMcpIDs = ptr([]string{"fsmcp"}) }},
-		{"allowed_tools", func(f *projectUpdateFields) { f.AllowedTools = ptr(map[string][]string{"macmcp": {"*"}}) }},
-		{"access", func(f *projectUpdateFields) { f.Access = ptr(map[string]string{"macmcp": "write"}) }},
-		{"context", func(f *projectUpdateFields) {
+		{"allowed_mcp_ids", func(f *project.UpdateFields) { f.AllowedMcpIDs = ptr([]string{"fsmcp"}) }},
+		{"allowed_tools", func(f *project.UpdateFields) { f.AllowedTools = ptr(map[string][]string{"macmcp": {"*"}}) }},
+		{"access", func(f *project.UpdateFields) { f.Access = ptr(map[string]string{"macmcp": "write"}) }},
+		{"context", func(f *project.UpdateFields) {
 			f.Context = ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":2}`)})
 		}},
-		{"allow_external", func(f *projectUpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
-		{"allow_cwd_auth", func(f *projectUpdateFields) { f.AllowCwdAuth = ptr(true) }},
-		{"kind", func(f *projectUpdateFields) { f.Kind = ptr(config.ProjectKindRemote) }},
-		{"path", func(f *projectUpdateFields) { f.Path = ptr("/tmp/other") }},
+		{"allow_external", func(f *project.UpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
+		{"allow_cwd_auth", func(f *project.UpdateFields) { f.AllowCwdAuth = ptr(true) }},
+		{"kind", func(f *project.UpdateFields) { f.Kind = ptr(config.ProjectKindRemote) }},
+		{"path", func(f *project.UpdateFields) { f.Path = ptr("/tmp/other") }},
 	}
 	for _, v := range variants {
 		variant := base
 		v.mutate(&variant)
-		if variant.presenceDigest("proj-x") == baseDigest {
+		if projectUpdateDigest("proj-x", variant) == baseDigest {
 			t.Errorf("changing %s alone did not move the digest", v.name)
 		}
 	}
-	if base.presenceDigest("proj-x") != base.presenceDigest("proj-x") {
-		t.Fatal("presenceDigest is not deterministic over the same request")
+	if projectUpdateDigest("proj-x", base) != projectUpdateDigest("proj-x", base) {
+		t.Fatal("projectUpdateDigest is not deterministic over the same request")
 	}
 }
 

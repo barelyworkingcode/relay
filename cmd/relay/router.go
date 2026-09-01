@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +15,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 type ToolProvider interface {
@@ -33,7 +32,7 @@ type ToolProvider interface {
 	// the only defence that catches an MCP which grew a scope field after a
 	// grant was validated is one that asks the running server (ADR-011
 	// decision 4).
-	McpSurfaceFor(id string) McpSurface
+	McpSurfaceFor(id string) project.McpSurface
 }
 
 type ToolManager interface {
@@ -91,7 +90,7 @@ func checkToolAccess(tok *config.StoredToken, mcpID, toolName string, tool *mcp.
 			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' reaches outside this host and this grant does not allow external access for MCP '%s'", toolName, mcpID))
 		}
 	}
-	// Applied to every token kind, not only local ones: validateProjectShape
+	// Applied to every token kind, not only local ones: project.ValidateShape
 	// refuses disabled_tools on a remote-kind record, but a record that
 	// acquired one by a route validation didn't cover (a hand-edited
 	// settings.json) must still have it honoured -- ignoring a denylist is
@@ -296,7 +295,7 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*config.StoredToken, *c
 	}
 
 	s := r.store.Get()
-	stored := authenticateProjectByPath(s, cwd)
+	stored := project.AuthenticateByPath(s, cwd)
 	if stored == nil {
 		slog.Debug("cwd auth rejected", "cwd", cwd)
 		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
@@ -407,7 +406,7 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
-			// appendScopeNote is idempotent, so the two listing paths cannot
+			// project.AppendScopeNote is idempotent, so the two listing paths cannot
 			// double-append a scope note if they ever converge.
 			if !view.listable(t.Name) {
 				continue
@@ -599,11 +598,11 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// would otherwise keep serving every existing grant with no scope at all
 	// (ADR-011 decision 4).
 	surface := r.tools.McpSurfaceFor(extID)
-	schema := ParseContextSchema(surface.Schema, surface.SchemaVersion)
+	schema := project.ParseContextSchema(surface.Schema, surface.SchemaVersion)
 
 	au.setMcpRoot(surface.Root)
 
-	// filterKnownContextFields drops any stored value under a field name the
+	// project.FilterKnownContextFields drops any stored value under a field name the
 	// LIVE schema no longer declares: an MCP can rename or drop a field
 	// between when a grant was written and when a call runs, and relay never
 	// rewrites settings.json to match, so an unfiltered value stored under
@@ -611,7 +610,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// name. Only reached once extID has resolved to a live connection, so
 	// this is never the "MCP is merely down" case that makes pruning stored
 	// data unsafe.
-	meta := mergeProjectID(filterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
+	meta := mergeProjectID(project.FilterKnownContextFields(stored.Context[extID], schema), stored.ProjectID)
 	meta = mergeArgsSHA256(meta, bridge.ArgsSHA256FromContext(ctx))
 
 	// Audited BEFORE the first thing that can refuse (ADR-011 decision 7),
@@ -642,11 +641,11 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// the tool check because this is the layer that decides whether
 		// relay is in a position to make statements about this MCP's
 		// boundaries at all.
-		if unplaced := unplaceableContextFields(schema, contextValues(stored.Context[extID])); len(unplaced) > 0 {
+		if unplaced := project.UnplaceableContextFields(schema, project.ContextValues(stored.Context[extID])); len(unplaced) > 0 {
 			au.setUnplacedScope(unplaced)
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: this grant scopes MCP '%s' by %s, which '%s' does not declare in its live context schema — relay cannot enforce a scope it cannot place, so no call to this MCP is dispatched under this grant",
-				extID, quoteNames(unplaced), extID))
+				extID, project.QuoteNames(unplaced), extID))
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
 		}
@@ -674,14 +673,14 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// allowed_dirs is what fsMCP reads as unrestricted, so removing the
 		// value and letting the call through would turn a forged
 		// confinement into no confinement.
-		if f, unsatisfiable := unsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
+		if f, unsatisfiable := project.UnsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
 				extID, name, f.Name))
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
 		}
-		if err := checkScopePresence(schema, contextValues(stored.Context[extID]), extID, name); err != nil {
+		if err := checkScopePresence(schema, project.ContextValues(stored.Context[extID]), extID, name); err != nil {
 			au.done(AuditOutcomeDenied, err)
 			return nil, err
 		}
@@ -774,12 +773,12 @@ func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 // Absent and empty are both refusals -- "no restriction" is deliberately not
 // expressible as emptiness. A v1 schema is exempt: it declares no scope
 // keywords.
-func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcpID, toolName string) error {
+func checkScopePresence(cs project.ContextSchema, values map[string]json.RawMessage, mcpID, toolName string) error {
 	if !cs.V2() {
 		return nil
 	}
 	for _, f := range cs.GoverningFields(toolName) {
-		if hasScopeValue(values, f.Name) {
+		if project.HasScopeValue(values, f.Name) {
 			continue
 		}
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
@@ -800,15 +799,15 @@ func checkScopePresence(cs ContextSchema, values map[string]json.RawMessage, mcp
 // because "declared, but this call's grant supplied nothing" is itself the
 // finding a `denied` record exists to carry; collapsing that to nil would
 // make it indistinguishable from an MCP with no scope concept at all. Fields
-// come from auditedScopeFields rather than RestrictFields so a v1 MCP whose
+// come from project.AuditedScopeFields rather than RestrictFields so a v1 MCP whose
 // confinement relay itself derives is still answerable as "was this call
 // confined?" rather than recorded as `scope: null`.
-func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
-	fields := auditedScopeFields(cs)
+func scopeFromMeta(cs project.ContextSchema, meta json.RawMessage) map[string]json.RawMessage {
+	fields := project.AuditedScopeFields(cs)
 	if len(fields) == 0 {
 		return nil
 	}
-	injected := contextValues(meta)
+	injected := project.ContextValues(meta)
 	out := make(map[string]json.RawMessage, len(fields))
 	for _, f := range fields {
 		if v, ok := injected[f.Name]; ok {
@@ -824,7 +823,7 @@ func scopeFromMeta(cs ContextSchema, meta json.RawMessage) map[string]json.RawMe
 // is listable and what scope note to attach, as one type, so ListTools and
 // ListSkillBuckets cannot answer either question differently.
 type scopeView struct {
-	schema   ContextSchema
+	schema   project.ContextSchema
 	values   map[string]json.RawMessage
 	isRemote bool
 	// scoped is false for a service token, which holds no project context
@@ -839,8 +838,8 @@ func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string, isServ
 	}
 	surface := r.tools.McpSurfaceFor(mcpID)
 	return scopeView{
-		schema:   ParseContextSchema(surface.Schema, surface.SchemaVersion),
-		values:   contextValues(stored.Context[mcpID]),
+		schema:   project.ParseContextSchema(surface.Schema, surface.SchemaVersion),
+		values:   project.ContextValues(stored.Context[mcpID]),
 		isRemote: stored.IsRemote(),
 		scoped:   true,
 	}
@@ -863,10 +862,10 @@ func (v scopeView) listable(toolName string) bool {
 	if !v.schema.Usable() {
 		return false
 	}
-	if len(unplaceableContextFields(v.schema, v.values)) > 0 {
+	if len(project.UnplaceableContextFields(v.schema, v.values)) > 0 {
 		return false
 	}
-	_, unsatisfiable := unsatisfiableScopeField(v.schema, v.isRemote, toolName)
+	_, unsatisfiable := project.UnsatisfiableScopeField(v.schema, v.isRemote, toolName)
 	return !unsatisfiable
 }
 
@@ -874,7 +873,7 @@ func (v scopeView) annotate(t *mcp.Tool) {
 	if !v.scoped || !v.schema.V2() {
 		return
 	}
-	t.Description = appendScopeNote(t.Description, scopeNoteFor(v.schema, v.values, t.Name))
+	t.Description = project.AppendScopeNote(t.Description, project.ScopeNoteFor(v.schema, v.values, t.Name))
 }
 
 func (r *appRouter) ValidateAdmin(token string) error {
@@ -996,7 +995,7 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		if err := refuseRemotePty(proj); err != nil {
 			return bridge.PtyEnvResponse{}, err
 		}
-		if !dirWithinProject(req.Directory, proj.Path) {
+		if !project.DirWithin(req.Directory, proj.Path) {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
 		}
 	} else {
@@ -1061,12 +1060,12 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 }
 
 // refuseRemotePty rejects a PTY launch bound to a remote project. Without
-// it the request would succeed: dirWithinProject("", "") returns true (the
+// it the request would succeed: project.DirWithin("", "") returns true (the
 // empty-dir branch short-circuits before the empty-project-path branch), so
 // the caller would receive the project's plaintext token with
 // WorkingDir: "", and Go's exec.Cmd treats an empty Dir as the PARENT
 // process's working directory -- a host shell coming up holding a remote
-// project's credential. Refusing here rather than teaching dirWithinProject
+// project's credential. Refusing here rather than teaching project.DirWithin
 // about kinds keeps that helper a pure containment predicate.
 func refuseRemotePty(proj *config.Project) error {
 	if !proj.IsRemote() {
@@ -1079,113 +1078,17 @@ func refuseRemotePty(proj *config.Project) error {
 // findProjectForPty accepts either an explicit project identifier (ID or
 // name) or a directory match against Project.Path, since a terminal_create
 // request may carry only the working directory.
-func findProjectForPty(s *config.Settings, project, directory string) *config.Project {
+func findProjectForPty(s *config.Settings, projectRef, directory string) *config.Project {
 	for i := range s.Projects {
 		p := &s.Projects[i]
-		if project != "" && (p.ID == project || p.Name == project) {
+		if projectRef != "" && (p.ID == projectRef || p.Name == projectRef) {
 			return p
 		}
-		if project == "" && directory != "" && p.Path == directory {
+		if projectRef == "" && directory != "" && p.Path == directory {
 			return p
 		}
 	}
 	return nil
-}
-
-// dirWithinProject reports whether dir is equal to or nested under
-// projectPath. An empty dir means "no directory to validate" and returns
-// true -- the LLM-provider path may send a project id with no cwd.
-func dirWithinProject(dir, projectPath string) bool {
-	if dir == "" {
-		return true
-	}
-	if projectPath == "" {
-		return false
-	}
-	// Prefer filesystem identity when both paths exist: os.SameFile compares
-	// device + inode, so it sees through case-insensitive volumes (a stored
-	// "/users/Jonathan/x" really is the on-disk "/Users/jonathan/x"). Falls
-	// through to the textual check when either side can't be stat'd -- paths
-	// that don't exist yet are legitimate here.
-	if within, decided := dirWithinProjectByIdentity(dir, projectPath); decided {
-		return within
-	}
-	// Resolve symlinks on both sides so e.g. macOS /var vs /private/var (or
-	// /tmp) don't false-reject a directory that really is inside the project.
-	dir = realpathBestEffort(dir)
-	projectPath = realpathBestEffort(projectPath)
-	if dir == projectPath {
-		return true
-	}
-	rel, err := filepath.Rel(projectPath, dir)
-	if err != nil {
-		return false
-	}
-	// rel must stay inside the project: not "..", not "../...", not absolute.
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return false
-	}
-	return true
-}
-
-// dirWithinProjectByIdentity walks from dir up to the filesystem root looking
-// for the directory that IS projectPath, comparing by device+inode. Returns
-// (result, true) once it can answer from the filesystem, or (false, false) when
-// the project path can't be stat'd and the caller should fall back to comparing
-// text. The walk is bounded by path depth and each step is a single stat.
-func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) {
-	projInfo, err := os.Stat(projectPath)
-	if err != nil || !projInfo.IsDir() {
-		return false, false
-	}
-	cur := filepath.Clean(dir)
-	for {
-		info, err := os.Stat(cur)
-		if err == nil {
-			if os.SameFile(info, projInfo) {
-				return true, true
-			}
-		} else if !os.IsNotExist(err) {
-			// Permission trouble or worse: don't claim an answer we can't back up.
-			return false, false
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			// Reached the root without meeting the project directory. The project
-			// exists and dir's whole chain was walkable, so this is a real "no".
-			return false, true
-		}
-		cur = parent
-	}
-}
-
-// realpathBestEffort cleans p and resolves symlinks. The path may not exist yet
-// (only an ancestor might), so it EvalSymlinks the longest existing prefix and
-// re-appends the non-existent tail. This makes a directory and its project
-// parent resolve to the same symlink-canonical form regardless of which
-// segments exist, so the containment check in dirWithinProject is reliable.
-func realpathBestEffort(p string) string {
-	p = filepath.Clean(p)
-	suffix := ""
-	cur := p
-	for {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			if suffix == "" {
-				return resolved
-			}
-			return filepath.Join(resolved, suffix)
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return p // reached the root with nothing resolvable
-		}
-		if suffix == "" {
-			suffix = filepath.Base(cur)
-		} else {
-			suffix = filepath.Join(filepath.Base(cur), suffix)
-		}
-		cur = parent
-	}
 }
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {

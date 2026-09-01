@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -32,11 +32,11 @@ func remoteProjectGranting(ids ...string) *config.Project {
 }
 
 func TestValidateProjectGrants_RefusesAnMcpWhoseEveryToolNeedsTheProjectPath(t *testing.T) {
-	err := validateProjectGrants(remoteProjectGranting("fsmcp"), McpSurfaces{"fsmcp": fsmcpSurface()})
+	err := ValidateGrants(remoteProjectGranting("fsmcp"), McpSurfaces{"fsmcp": fsmcpSurface()})
 	if err == nil {
 		t.Fatal("a profile was granted an MCP whose every tool needs a project path")
 	}
-	for _, want := range []string{"fsmcp", v1AllowedDirsField, "no usable tools"} {
+	for _, want := range []string{"fsmcp", V1AllowedDirsField, "no usable tools"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal should say %q; got: %v", want, err)
 		}
@@ -44,10 +44,10 @@ func TestValidateProjectGrants_RefusesAnMcpWhoseEveryToolNeedsTheProjectPath(t *
 }
 
 func TestValidateProjectGrants_PermitsAnMcpThatKeepsUsableTools(t *testing.T) {
-	if err := validateProjectGrants(remoteProjectGranting("macmcp"), McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
+	if err := ValidateGrants(remoteProjectGranting("macmcp"), McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
 		t.Fatalf("a profile was refused macMCP, which retains 7 usable tools: %v", err)
 	}
-	err := validateProjectGrants(remoteProjectGranting("macmcp", "fsmcp"),
+	err := ValidateGrants(remoteProjectGranting("macmcp", "fsmcp"),
 		McpSurfaces{"macmcp": macmcpSurface(), "fsmcp": fsmcpSurface()})
 	if err == nil || !strings.Contains(err.Error(), "fsmcp") {
 		t.Fatalf("the refusal should name fsmcp and not macmcp; got: %v", err)
@@ -61,17 +61,17 @@ func TestValidateProjectGrants_PermitsAnMcpThatKeepsUsableTools(t *testing.T) {
 func TestValidateProjectGrants_PermitsWhenTheToolSurfaceIsUnknown(t *testing.T) {
 	surface := macmcpSurface()
 	surface.Tools = nil
-	if err := validateProjectGrants(remoteProjectGranting("macmcp"), McpSurfaces{"macmcp": surface}); err != nil {
+	if err := ValidateGrants(remoteProjectGranting("macmcp"), McpSurfaces{"macmcp": surface}); err != nil {
 		t.Fatalf("a grant was refused because relay had not connected to the MCP: %v", err)
 	}
-	if err := validateProjectGrants(remoteProjectGranting("macmcp"), nil); err != nil {
+	if err := ValidateGrants(remoteProjectGranting("macmcp"), nil); err != nil {
 		t.Fatalf("a grant was refused with no surfaces at all: %v", err)
 	}
 }
 
 func TestValidateProjectGrants_LocalProjectsAreExempt(t *testing.T) {
 	local := &config.Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"}}
-	if err := validateProjectGrants(local, McpSurfaces{"fsmcp": fsmcpSurface()}); err != nil {
+	if err := ValidateGrants(local, McpSurfaces{"fsmcp": fsmcpSurface()}); err != nil {
 		t.Fatalf("a local project was refused a path-scoped MCP: %v", err)
 	}
 }
@@ -84,7 +84,7 @@ func TestSyncProjectToken_DerivesEveryProjectPathFieldTheSchemaDeclares(t *testi
 	proj := &config.Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"macmcp"}}
 	syncProjectToken(s, proj, McpSurfaces{"macmcp": macmcpSurface()})
 
-	values := contextValues(proj.Context["macmcp"])
+	values := ContextValues(proj.Context["macmcp"])
 	if string(values["file_dirs"]) != `["/tmp/project"]` {
 		t.Fatalf("file_dirs = %s, want the project path", values["file_dirs"])
 	}
@@ -103,7 +103,7 @@ func TestSyncProjectToken_DerivationDoesNotClobberOperatorSetFields(t *testing.T
 	}
 	syncProjectToken(s, proj, McpSurfaces{"macmcp": macmcpSurface()})
 
-	values := contextValues(proj.Context["macmcp"])
+	values := ContextValues(proj.Context["macmcp"])
 	if string(values["mail_accounts"]) != `["Bob"]` {
 		t.Errorf("an operator-set scope was lost on resync: %v", values)
 	}
@@ -131,7 +131,7 @@ func TestSyncProjectToken_DisablesFsBashForAnyPathScopedMcp(t *testing.T) {
 	s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "fsmcp"}}}
 	proj := &config.Project{ID: "p1", Path: "/tmp/project", AllowedMcpIDs: []string{"fsmcp"}}
 	syncProjectToken(s, proj, McpSurfaces{"fsmcp": fsmcpSurface()})
-	if len(proj.DisabledTools["fsmcp"]) != 1 || proj.DisabledTools["fsmcp"][0] != v1FsBashTool {
+	if len(proj.DisabledTools["fsmcp"]) != 1 || proj.DisabledTools["fsmcp"][0] != V1FsBashTool {
 		t.Fatalf("fs_bash was not auto-disabled: %v", proj.DisabledTools)
 	}
 	syncProjectToken(s, proj, McpSurfaces{"fsmcp": fsmcpSurface()})
@@ -184,5 +184,65 @@ func TestUpdateProjectAllowedTools_DropsEntriesForUngrantedMcps(t *testing.T) {
 	s.UpdateProjectAllowedTools("p1", nil)
 	if proj, _ := config.FindProjectByID(s, "p1"); proj.AllowedTools != nil {
 		t.Fatalf("clearing the allowlist left %v", proj.AllowedTools)
+	}
+}
+
+// schemaHasField decides whether an MCP is filesystem-scoped, and a false
+// negative fails OPEN: the grant is permitted, the second defence then declines
+// to derive allowed_dirs for a remote project, the MCP receives nothing, and an
+// MCP that reads an absent allowlist as "unrestricted" hands a client on another
+// machine the whole host filesystem. So the answer must not depend on which of
+// two equivalent spellings an MCP chose.
+func TestSchemaHasField_DetectsBothSchemaShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		field  string
+		want   bool
+	}{
+		{"flat, as fsMCP declares it", `{"allowed_dirs":{"type":"array"}}`, "allowed_dirs", true},
+		{"nested under properties, the ordinary JSON-Schema shape",
+			`{"type":"object","properties":{"allowed_dirs":{"type":"array"}}}`, "allowed_dirs", true},
+		{"nested, field genuinely absent",
+			`{"type":"object","properties":{"allowed_mailboxes":{"type":"array"}}}`, "allowed_dirs", false},
+		{"flat, field genuinely absent", `{"allowed_mailboxes":{"type":"array"}}`, "allowed_dirs", false},
+		{"a field literally named properties still matches flat first",
+			`{"properties":{"type":"array"}}`, "properties", true},
+		{"properties present but not an object", `{"properties":"nonsense"}`, "allowed_dirs", false},
+		{"empty schema", ``, "allowed_dirs", false},
+		{"malformed json", `{not valid`, "allowed_dirs", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := schemaHasField(json.RawMessage(tc.schema), tc.field); got != tc.want {
+				t.Errorf("schemaHasField(%s, %q) = %v, want %v", tc.schema, tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+// The same filesystem-scoped MCP must be refused a remote grant regardless of
+// how it spelled its schema — the exact outcome ADR-009 decision 3 exists to
+// prevent.
+func TestValidateProjectGrants_RefusesFilesystemMcpInEitherSchemaShape(t *testing.T) {
+	shapes := map[string]string{
+		"flat":   `{"allowed_dirs":{"type":"array"}}`,
+		"nested": `{"type":"object","properties":{"allowed_dirs":{"type":"array"}}}`,
+	}
+	for name, schema := range shapes {
+		t.Run(name, func(t *testing.T) {
+			s := &config.Settings{Projects: []config.Project{{
+				ID: "p1", Name: "Remote", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"fsmcp"},
+			}}}
+			err := ValidateGrants(&s.Projects[0], McpSurfaces{
+				"fsmcp": {Schema: json.RawMessage(schema)},
+			})
+			if err == nil {
+				t.Fatalf("%s schema: remote project was granted a filesystem-scoped MCP", name)
+			}
+			if !strings.Contains(err.Error(), "fsmcp") {
+				t.Errorf("refusal should name the offending MCP, got: %v", err)
+			}
+		})
 	}
 }

@@ -1,7 +1,7 @@
-package main
+package project
 
-// grant_narrowing.go's own tests: hasGlobMeta must recognise every
-// character path.Match's grammar treats specially, because narrowsOnly's
+// narrowing.go's own tests: hasGlobMeta must recognise every
+// character path.Match's grammar treats specially, because NarrowsOnly's
 // literal-tool-name branch trusts hasGlobMeta to tell a plain name from
 // anything path.Match would parse further.
 
@@ -113,7 +113,7 @@ func TestHasGlobMeta_OrdinaryCharactersAreNotFlagged(t *testing.T) {
 // Finding B: an allowed_tools / access / allow_external key naming an MCP
 // NOT in the resulting allowed_mcp_ids must be refused rather than stored
 // (SPEC-step2-cli-admin.md §4.2's last bullet) — an inert control reads on
-// the screen as a boundary and is not one. Each of narrowsOnly's three
+// the screen as a boundary and is not one. Each of NarrowsOnly's three
 // "is this MCP in the resulting set" guards has its own test: deleting any
 // one of them must leave only its own test red, not the other two.
 // ---------------------------------------------------------------------------
@@ -125,9 +125,9 @@ func TestNarrowsOnly_RefusesAllowedToolsKeyOnAnMcpNotInTheResultingSet(t *testin
 	}
 	narrowedIDs := []string{"macmcp"}
 	tools := map[string][]string{"other": {"other_tool"}}
-	err := narrowsOnly(stored, remoteNarrowFields{AllowedMcpIDs: &narrowedIDs, AllowedTools: &tools})
+	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowedTools: &tools})
 	if err == nil {
-		t.Fatal("narrowsOnly accepted an allowed_tools key for an MCP dropped from allowed_mcp_ids")
+		t.Fatal("NarrowsOnly accepted an allowed_tools key for an MCP dropped from allowed_mcp_ids")
 	}
 	if !strings.Contains(err.Error(), "other") {
 		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
@@ -141,9 +141,9 @@ func TestNarrowsOnly_RefusesAccessKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
 	}
 	narrowedIDs := []string{"macmcp"}
 	access := map[string]string{"other": config.AccessRead}
-	err := narrowsOnly(stored, remoteNarrowFields{AllowedMcpIDs: &narrowedIDs, Access: &access})
+	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, Access: &access})
 	if err == nil {
-		t.Fatal("narrowsOnly accepted an access key for an MCP dropped from allowed_mcp_ids")
+		t.Fatal("NarrowsOnly accepted an access key for an MCP dropped from allowed_mcp_ids")
 	}
 	if !strings.Contains(err.Error(), "other") {
 		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
@@ -157,9 +157,9 @@ func TestNarrowsOnly_RefusesAllowExternalKeyOnAnMcpNotInTheResultingSet(t *testi
 	}
 	narrowedIDs := []string{"macmcp"}
 	allowExternal := map[string]bool{"other": false}
-	err := narrowsOnly(stored, remoteNarrowFields{AllowedMcpIDs: &narrowedIDs, AllowExternal: &allowExternal})
+	err := NarrowsOnly(stored, NarrowFields{AllowedMcpIDs: &narrowedIDs, AllowExternal: &allowExternal})
 	if err == nil {
-		t.Fatal("narrowsOnly accepted an allow_external key for an MCP dropped from allowed_mcp_ids")
+		t.Fatal("NarrowsOnly accepted an allow_external key for an MCP dropped from allowed_mcp_ids")
 	}
 	if !strings.Contains(err.Error(), "other") {
 		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")

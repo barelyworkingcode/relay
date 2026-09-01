@@ -2,9 +2,9 @@
 
 package main
 
-// Subtle: ParseContextSchema(nil, 0) is not a narrow schema, it is no
+// Subtle: project.ParseContextSchema(nil, 0) is not a narrow schema, it is no
 // schema — checkScopePresence finds no field to require and passes every
-// tool, and filterKnownContextFields strips every stored context key. A
+// tool, and project.FilterKnownContextFields strips every stored context key. A
 // connection reachable before its schema is published is a call answered as
 // though the grant were empty.
 

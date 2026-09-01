@@ -3,15 +3,17 @@ package main
 // A schema version relay reports is a version it holds a schema for.
 //
 // A surface reporting a version with no schema is the most dangerous state
-// this type can hold, because ParseContextSchema(nil, 2) is a v2 schema with
+// this type can hold, because project.ParseContextSchema(nil, 2) is a v2 schema with
 // ZERO fields and nothing about it looks wrong: checkScopePresence finds no
-// restrict field and passes every tool, filterKnownContextFields finds
+// restrict field and passes every tool, project.FilterKnownContextFields finds
 // nothing declared and strips every stored context key off the wire, and
 // scopeFromMeta records no scope. Relay removes the confinement and reports
 // that none was needed.
 
 import (
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func TestMcpSurface_StopClearsTheVersionWithTheSchema(t *testing.T) {
@@ -19,7 +21,7 @@ func TestMcpSurface_StopClearsTheVersionWithTheSchema(t *testing.T) {
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("mail_search"), nil))
 	addMockSchema(mgr, "macmcp", scopedSchema, 2)
 
-	if s := mgr.McpSurfaceFor("macmcp"); !s.hasSchema() || s.SchemaVersion != 2 {
+	if s := mgr.McpSurfaceFor("macmcp"); !surfaceHasSchema(s) || s.SchemaVersion != 2 {
 		t.Fatalf("before Stop: %+v", s)
 	}
 
@@ -45,7 +47,7 @@ func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
 	mgr.schemaVersions["macmcp"] = 2
 	mgr.mu.Unlock()
 
-	for name, s := range map[string]McpSurface{
+	for name, s := range map[string]project.McpSurface{
 		"McpSurfaceFor":   mgr.McpSurfaceFor("macmcp"),
 		"AllMcpSurfaces":  mgr.AllMcpSurfaces()["macmcp"],
 		"empty-schema":    mgr.McpSurfaceFor("never-connected"),
@@ -54,7 +56,7 @@ func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
 		if s.SchemaVersion != 0 {
 			t.Errorf("%s reported version %d with no schema", name, s.SchemaVersion)
 		}
-		cs := ParseContextSchema(s.Schema, s.SchemaVersion)
+		cs := project.ParseContextSchema(s.Schema, s.SchemaVersion)
 		if cs.V2() {
 			t.Errorf("%s parsed as v2 with no schema: a zero-field v2 schema passes every scope check and strips every context key", name)
 		}
@@ -63,4 +65,4 @@ func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
 
 // A surface with no bytes is what "relay knows nothing about this MCP"
 // looks like.
-func (s McpSurface) hasSchema() bool { return len(s.Schema) > 0 }
+func surfaceHasSchema(s project.McpSurface) bool { return len(s.Schema) > 0 }

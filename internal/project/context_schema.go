@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -14,9 +14,9 @@ import (
 // there is deliberately no registry mapping known names to known handling.
 // Vocabulary reference: docs/context-schema.md. Rationale: ADR-011 decision 3.
 
-// contextSchemaV2 is the first version carrying the v2 keywords; absent or
+// ContextSchemaV2 is the first version carrying the v2 keywords; absent or
 // lower means v1, handled by the allowed_dirs compatibility branch.
-const contextSchemaV2 = 2
+const ContextSchemaV2 = 2
 
 const (
 	// ContextScopeRestrict: there is no "absent" keyword for unrestricted
@@ -39,13 +39,13 @@ const (
 	ContextDiscloseNone = "none"
 )
 
-// v1AllowedDirsField is the ONE domain-specific name left in relay
+// V1AllowedDirsField is the ONE domain-specific name left in relay
 // (TestNoDomainSpecificFieldNames asserts it); v2 derives it instead.
-const v1AllowedDirsField = "allowed_dirs"
+const V1AllowedDirsField = "allowed_dirs"
 
-// v1FsBashTool is the second domain-specific string, deliberately deferred
+// V1FsBashTool is the second domain-specific string, deliberately deferred
 // rather than fixed (ADR-011: out of scope, not resource scoping).
-const v1FsBashTool = "fs_bash"
+const V1FsBashTool = "fs_bash"
 
 // ContextField is one declared field of a v2 contextSchema: a JSON-Schema-
 // ish validation fragment plus the ADR-011 keywords for what it's FOR.
@@ -390,7 +390,7 @@ func (cs ContextSchema) MalformedReason() string {
 	return strings.Join(cs.Malformed, "; ")
 }
 
-func (cs ContextSchema) V2() bool { return cs.Version >= contextSchemaV2 }
+func (cs ContextSchema) V2() bool { return cs.Version >= ContextSchemaV2 }
 
 func (cs ContextSchema) Field(name string) (ContextField, bool) {
 	f, ok := cs.byName[name]
@@ -432,7 +432,7 @@ func (cs ContextSchema) ProjectPathFields() []ContextField {
 // v1DerivedField is v1's allowed_dirs in the v2 vocabulary -- the existing
 // compatibility branch, not the field-name registry decision 3 rejects.
 var v1DerivedField = ContextField{
-	Name:   v1AllowedDirsField,
+	Name:   V1AllowedDirsField,
 	Type:   "array",
 	Scope:  ContextScopeRestrict,
 	Source: ContextSourceProjectPath,
@@ -444,16 +444,16 @@ func derivedScopeFields(cs ContextSchema) []ContextField {
 	if cs.V2() {
 		return cs.ProjectPathFields()
 	}
-	if schemaHasField(cs.Raw, v1AllowedDirsField) {
+	if schemaHasField(cs.Raw, V1AllowedDirsField) {
 		return []ContextField{v1DerivedField}
 	}
 	return nil
 }
 
-// unsatisfiableScopeField: a value that can NEVER be supplied, distinct
+// UnsatisfiableScopeField: a value that can NEVER be supplied, distinct
 // from "not set yet". Remote-kind only; v1's absent allowed_dirs is
 // UNRESTRICTED to fsMCP.
-func unsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (ContextField, bool) {
+func UnsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (ContextField, bool) {
 	if !isRemote {
 		return ContextField{}, false
 	}
@@ -465,9 +465,9 @@ func unsatisfiableScopeField(cs ContextSchema, isRemote bool, toolName string) (
 	return ContextField{}, false
 }
 
-// auditedScopeFields returns fields whose injected values belong on an
+// AuditedScopeFields returns fields whose injected values belong on an
 // audit record: every v2 restriction, or v1's derived field.
-func auditedScopeFields(cs ContextSchema) []ContextField {
+func AuditedScopeFields(cs ContextSchema) []ContextField {
 	if cs.V2() {
 		return cs.RestrictFields()
 	}
@@ -564,9 +564,9 @@ func anyRestricts(fields []ContextField) bool {
 	return false
 }
 
-// contextValues yields an empty map, not an error, for an absent, null, or
+// ContextValues yields an empty map, not an error, for an absent, null, or
 // non-object blob.
-func contextValues(raw json.RawMessage) map[string]json.RawMessage {
+func ContextValues(raw json.RawMessage) map[string]json.RawMessage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
@@ -577,13 +577,13 @@ func contextValues(raw json.RawMessage) map[string]json.RawMessage {
 	return m
 }
 
-// filterKnownContextFields drops any stored key the MCP's LIVE schema no
+// FilterKnownContextFields drops any stored key the MCP's LIVE schema no
 // longer declares. v2 only: a v1 blob is always fully replaced.
-func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMessage {
+func FilterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMessage {
 	if !cs.V2() {
 		return base
 	}
-	values := contextValues(base)
+	values := ContextValues(base)
 	if values == nil {
 		return base
 	}
@@ -612,13 +612,13 @@ func filterKnownContextFields(base json.RawMessage, cs ContextSchema) json.RawMe
 // blob is forwarded verbatim, which is the MCP's half of the bargain. A v2
 // schema that decodes to no fields lands here too, since it would otherwise
 // pass every scope-presence check while stripping every stored key.
-func unplaceableContextFields(cs ContextSchema, values map[string]json.RawMessage) []string {
+func UnplaceableContextFields(cs ContextSchema, values map[string]json.RawMessage) []string {
 	if !cs.V2() {
 		return nil
 	}
 	var out []string
 	for name := range values {
-		if !hasScopeValue(values, name) {
+		if !HasScopeValue(values, name) {
 			continue
 		}
 		if _, ok := cs.Field(name); ok {
@@ -630,7 +630,7 @@ func unplaceableContextFields(cs ContextSchema, values map[string]json.RawMessag
 	return out
 }
 
-func quoteNames(names []string) string {
+func QuoteNames(names []string) string {
 	quoted := make([]string, 0, len(names))
 	for _, n := range names {
 		quoted = append(quoted, strconv.Quote(n))
@@ -638,9 +638,9 @@ func quoteNames(names []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// hasScopeValue does NOT re-run ValidateValue -- emptiness must be caught
+// HasScopeValue does NOT re-run ValidateValue -- emptiness must be caught
 // here since a schema can grow a field after a grant was written.
-func hasScopeValue(values map[string]json.RawMessage, name string) bool {
+func HasScopeValue(values map[string]json.RawMessage, name string) bool {
 	raw, ok := values[name]
 	if !ok {
 		return false
@@ -676,18 +676,18 @@ func (m McpSurfaces) Schema(mcpID string) ContextSchema {
 
 func (m McpSurfaces) ToolNames(mcpID string) []string { return m[mcpID].Tools }
 
-// scopeNotePrefix marks a note relay appended, so ListTools and
+// ScopeNotePrefix marks a note relay appended, so ListTools and
 // ListSkillBuckets rebuilding the same tool must not double-append.
-const scopeNotePrefix = "Scope: "
+const ScopeNotePrefix = "Scope: "
 
 // scopeValueWithheld is shared by disclose: "none" and by disclose:
 // "count" on a scalar, so the two cannot drift apart in phrasing.
 const scopeValueWithheld = "set, value withheld"
 
-// scopeNoteFor: EVERY governing field is named, including one with no
+// ScopeNoteFor: EVERY governing field is named, including one with no
 // value -- omitting the one that disqualifies the tool would read as
 // complete when it is not (decision 8); the unset message ignores disclose.
-func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName string) string {
+func ScopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName string) string {
 	if !cs.V2() {
 		return ""
 	}
@@ -697,7 +697,7 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 		if label == "" {
 			label = f.Name
 		}
-		if !hasScopeValue(values, f.Name) {
+		if !HasScopeValue(values, f.Name) {
 			parts = append(parts, fmt.Sprintf("%s — no value is set for %q, so every call to this tool is refused", label, f.Name))
 			continue
 		}
@@ -706,7 +706,7 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 	if len(parts) == 0 {
 		return ""
 	}
-	return scopeNotePrefix + strings.Join(parts, "; ") + "."
+	return ScopeNotePrefix + strings.Join(parts, "; ") + "."
 }
 
 // renderScopeDisclosure: a value reaching a filesystem ROOT is named
@@ -761,7 +761,7 @@ func renderScopeValue(raw json.RawMessage) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func appendScopeNote(desc, note string) string {
+func AppendScopeNote(desc, note string) string {
 	if note == "" || strings.Contains(desc, note) {
 		return desc
 	}

@@ -18,11 +18,12 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-func enumSurfaces() McpSurfaces {
-	return McpSurfaces{"macmcp": {
-		SchemaVersion: contextSchemaV2,
+func enumSurfaces() project.McpSurfaces {
+	return project.McpSurfaces{"macmcp": {
+		SchemaVersion: project.ContextSchemaV2,
 		Tools:         []string{"mail_search", "mail_save_attachment"},
 		Schema: json.RawMessage(`{
 			"mail_accounts": {"type":"array","items":{"type":"string"},
@@ -41,7 +42,7 @@ func enumSurfaces() McpSurfaces {
 // dependency list) doesn't look correct from the outside.
 type fakeEnumerator struct {
 	calls  []fakeEnumCall
-	result ContextEnumResult
+	result project.ContextEnumResult
 }
 
 type fakeEnumCall struct {
@@ -50,7 +51,7 @@ type fakeEnumCall struct {
 	values map[string]json.RawMessage
 }
 
-func (f *fakeEnumerator) EnumerateContextField(_ context.Context, mcpID, field string, values map[string]json.RawMessage) ContextEnumResult {
+func (f *fakeEnumerator) EnumerateContextField(_ context.Context, mcpID, field string, values map[string]json.RawMessage) project.ContextEnumResult {
 	f.calls = append(f.calls, fakeEnumCall{mcpID: mcpID, field: field, values: values})
 	res := f.result
 	res.McpID, res.Field = mcpID, field
@@ -58,12 +59,12 @@ func (f *fakeEnumerator) EnumerateContextField(_ context.Context, mcpID, field s
 }
 
 func okEnum(values ...string) *fakeEnumerator {
-	out := make([]ContextEnumValue, 0, len(values))
+	out := make([]project.ContextEnumValue, 0, len(values))
 	for _, v := range values {
 		raw, _ := json.Marshal(v)
-		out = append(out, ContextEnumValue{Value: raw, Label: v})
+		out = append(out, project.ContextEnumValue{Value: raw, Label: v})
 	}
-	return &fakeEnumerator{result: ContextEnumResult{Status: EnumStatusOK, Values: out}}
+	return &fakeEnumerator{result: project.ContextEnumResult{Status: project.EnumStatusOK, Values: out}}
 }
 
 // Deliberate: a refused field never reaches the MCP, so a name typed into the
@@ -72,16 +73,16 @@ func TestEnumerate_RelaysOwnRefusalsNeverReachTheMcp(t *testing.T) {
 	cases := []struct {
 		name, mcpID, field, wantStatus string
 	}{
-		{"an MCP relay has never connected to", "ghostmcp", "mail_accounts", EnumStatusUnknownMcp},
-		{"a field the MCP does not declare", "macmcp", "nosuch", EnumStatusNotEnumerable},
-		{"a declared field that is not enumerable", "macmcp", "mail_note", EnumStatusNotEnumerable},
-		{"a field relay derives from the project path", "macmcp", "file_dirs", EnumStatusNotEnumerable},
-		{"no field at all", "macmcp", "", EnumStatusNotEnumerable},
+		{"an MCP relay has never connected to", "ghostmcp", "mail_accounts", project.EnumStatusUnknownMcp},
+		{"a field the MCP does not declare", "macmcp", "nosuch", project.EnumStatusNotEnumerable},
+		{"a declared field that is not enumerable", "macmcp", "mail_note", project.EnumStatusNotEnumerable},
+		{"a field relay derives from the project path", "macmcp", "file_dirs", project.EnumStatusNotEnumerable},
+		{"no field at all", "macmcp", "", project.EnumStatusNotEnumerable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			enum := okEnum("Alice")
-			res := enumerateScopeField(context.Background(), enumSurfaces(), enum, c.mcpID, c.field, nil)
+			res := project.EnumerateScopeField(context.Background(), enumSurfaces(), enum, c.mcpID, c.field, nil)
 			if res.Status != c.wantStatus {
 				t.Errorf("status = %q, want %q (%s)", res.Status, c.wantStatus, res.Error)
 			}
@@ -99,8 +100,8 @@ func TestEnumerate_RelaysOwnRefusalsNeverReachTheMcp(t *testing.T) {
 }
 
 func TestEnumerate_NoProviderIsUnavailableNotEmpty(t *testing.T) {
-	res := enumerateScopeField(context.Background(), enumSurfaces(), nil, "macmcp", "mail_accounts", nil)
-	if res.Status != EnumStatusUnavailable || res.Values != nil {
+	res := project.EnumerateScopeField(context.Background(), enumSurfaces(), nil, "macmcp", "mail_accounts", nil)
+	if res.Status != project.EnumStatusUnavailable || res.Values != nil {
 		t.Fatalf("got %q values=%v, want unavailable with no list", res.Status, res.Values)
 	}
 }
@@ -115,7 +116,7 @@ func TestEnumerate_SendsOnlyDeclaredDependenciesAndDropsEmptyOnes(t *testing.T) 
 		"unrelated_field": json.RawMessage(`["x"]`),
 	}
 	enum := okEnum("INBOX")
-	enumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_mailboxes", chosen)
+	project.EnumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_mailboxes", chosen)
 	if len(enum.calls) != 1 {
 		t.Fatalf("want one call, got %d", len(enum.calls))
 	}
@@ -127,7 +128,7 @@ func TestEnumerate_SendsOnlyDeclaredDependenciesAndDropsEmptyOnes(t *testing.T) 
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
 		t.Run("unchosen "+empty, func(t *testing.T) {
 			enum := okEnum("INBOX")
-			enumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_mailboxes",
+			project.EnumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_mailboxes",
 				map[string]json.RawMessage{"mail_accounts": json.RawMessage(empty)})
 			if v := enum.calls[0].values; len(v) != 0 {
 				t.Fatalf("an unchosen dependency was sent as %v; the server may read that as 'match nothing'", v)
@@ -136,7 +137,7 @@ func TestEnumerate_SendsOnlyDeclaredDependenciesAndDropsEmptyOnes(t *testing.T) 
 	}
 
 	enum = okEnum("Alice", "Bob")
-	enumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_accounts", chosen)
+	project.EnumerateScopeField(context.Background(), enumSurfaces(), enum, "macmcp", "mail_accounts", chosen)
 	if v := enum.calls[0].values; len(v) != 0 {
 		t.Fatalf("a field declaring no depends_on was sent %v", v)
 	}
@@ -164,8 +165,8 @@ func TestEnumerate_MethodNotFoundDegradesAndLatches(t *testing.T) {
 	m, calls := mgrWithConn(t, rpcErrConn(jsonrpc.CodeMethodNotFound, "method not found"))
 
 	res := m.EnumerateContextField(context.Background(), "macmcp", "mail_accounts", nil)
-	if res.Status != EnumStatusUnsupported {
-		t.Fatalf("status = %q, want %q", res.Status, EnumStatusUnsupported)
+	if res.Status != project.EnumStatusUnsupported {
+		t.Fatalf("status = %q, want %q", res.Status, project.EnumStatusUnsupported)
 	}
 	if res.Values != nil {
 		t.Error("an MCP that does not enumerate was reported as having no values")
@@ -177,7 +178,7 @@ func TestEnumerate_MethodNotFoundDegradesAndLatches(t *testing.T) {
 	// A different field, same connection: still answered from the latch, no
 	// second round trip.
 	res = m.EnumerateContextField(context.Background(), "macmcp", "mail_mailboxes", nil)
-	if res.Status != EnumStatusUnsupported {
+	if res.Status != project.EnumStatusUnsupported {
 		t.Fatalf("second call status = %q", res.Status)
 	}
 	if *calls != 1 {
@@ -201,8 +202,8 @@ func TestEnumerate_InvalidParamsIsSurfacedNotDegraded(t *testing.T) {
 	m, _ := mgrWithConn(t, rpcErrConn(jsonrpc.CodeInvalidParams, "no enumerable field named mail_mailboxes"))
 	res := m.EnumerateContextField(context.Background(), "macmcp", "mail_mailboxes", nil)
 
-	if res.Status != EnumStatusInvalidField {
-		t.Fatalf("status = %q, want %q", res.Status, EnumStatusInvalidField)
+	if res.Status != project.EnumStatusInvalidField {
+		t.Fatalf("status = %q, want %q", res.Status, project.EnumStatusInvalidField)
 	}
 	if !strings.Contains(res.Error, "no enumerable field named mail_mailboxes") {
 		t.Errorf("the MCP's own reason was thrown away: %q", res.Error)
@@ -247,8 +248,8 @@ func TestEnumerate_EverythingElseIsRetryable(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, _ := mgrWithConn(t, c.send)
 			res := m.EnumerateContextField(context.Background(), "macmcp", "mail_mailboxes", nil)
-			if res.Status != EnumStatusUnavailable {
-				t.Fatalf("status = %q, want %q (%s)", res.Status, EnumStatusUnavailable, res.Error)
+			if res.Status != project.EnumStatusUnavailable {
+				t.Fatalf("status = %q, want %q (%s)", res.Status, project.EnumStatusUnavailable, res.Error)
 			}
 			if res.Values != nil {
 				t.Fatalf("a failed call came back with a value list: %v", res.Values)
@@ -270,7 +271,7 @@ func TestEnumerate_DisconnectedMcpIsUnavailable(t *testing.T) {
 	m := NewExternalMcpManager(nil)
 	t.Cleanup(m.StopAll)
 	res := m.EnumerateContextField(context.Background(), "macmcp", "mail_accounts", nil)
-	if res.Status != EnumStatusUnavailable || res.Values != nil {
+	if res.Status != project.EnumStatusUnavailable || res.Values != nil {
 		t.Fatalf("got %q values=%v", res.Status, res.Values)
 	}
 }
@@ -291,7 +292,7 @@ func TestEnumerate_EmptyListIsAnAnswerAndSerializesApartFromAFailure(t *testing.
 		t.Errorf(`"there are none" must serialize as [] : %s`, body)
 	}
 
-	failed := ContextEnumResult{McpID: "macmcp", Field: "mail_mailboxes", Status: EnumStatusUnavailable}
+	failed := project.ContextEnumResult{McpID: "macmcp", Field: "mail_mailboxes", Status: project.EnumStatusUnavailable}
 	body, _ = json.Marshal(failed)
 	if !strings.Contains(string(body), `"values":null`) {
 		t.Errorf(`"nobody could look" must serialize as null, not []: %s`, body)
@@ -311,7 +312,7 @@ func startEnumPeer(t *testing.T, mode string) *ExternalMcpManager {
 	return m
 }
 
-func enumValueStrings(t *testing.T, res ContextEnumResult) []string {
+func enumValueStrings(t *testing.T, res project.ContextEnumResult) []string {
 	t.Helper()
 	out := make([]string, 0, len(res.Values))
 	for _, v := range res.Values {
@@ -333,7 +334,7 @@ func TestEnumerate_LiveStdioPeer(t *testing.T) {
 		t.Fatalf("want 3 restrict fields from the peer's serverInfo, got %d", len(views))
 	}
 
-	accounts := enumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_accounts", nil)
+	accounts := project.EnumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_accounts", nil)
 	if !accounts.OK() {
 		t.Fatalf("mail_accounts: %q %s", accounts.Status, accounts.Error)
 	}
@@ -344,7 +345,7 @@ func TestEnumerate_LiveStdioPeer(t *testing.T) {
 		t.Error("the label the MCP sent for display did not survive")
 	}
 
-	within := enumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_mailboxes",
+	within := project.EnumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_mailboxes",
 		map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)})
 	if !within.OK() {
 		t.Fatalf("mail_mailboxes within Bob: %q %s", within.Status, within.Error)
@@ -359,7 +360,7 @@ func TestEnumerate_LiveStdioPeer(t *testing.T) {
 		nil,
 		{"mail_accounts": json.RawMessage(`[]`)},
 	} {
-		across := enumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_mailboxes", unset)
+		across := project.EnumerateScopeField(context.Background(), surfaces, m, "macmcp", "mail_mailboxes", unset)
 		if !across.OK() {
 			t.Fatalf("mail_mailboxes across all: %q %s", across.Status, across.Error)
 		}
@@ -371,22 +372,22 @@ func TestEnumerate_LiveStdioPeer(t *testing.T) {
 
 func TestEnumerate_LiveStdioPeerWithoutTheMethod(t *testing.T) {
 	m := startEnumPeer(t, "unsupported")
-	res := enumerateScopeField(context.Background(), m.AllMcpSurfaces(), m, "macmcp", "mail_accounts", nil)
-	if res.Status != EnumStatusUnsupported {
-		t.Fatalf("status = %q, want %q (%s)", res.Status, EnumStatusUnsupported, res.Error)
+	res := project.EnumerateScopeField(context.Background(), m.AllMcpSurfaces(), m, "macmcp", "mail_accounts", nil)
+	if res.Status != project.EnumStatusUnsupported {
+		t.Fatalf("status = %q, want %q (%s)", res.Status, project.EnumStatusUnsupported, res.Error)
 	}
 	if res.Values != nil {
 		t.Error("an MCP without the method was reported as having no accounts")
 	}
 }
 
-// Calls the manager directly — enumerateScopeField would (correctly) refuse
+// Calls the manager directly — project.EnumerateScopeField would (correctly) refuse
 // first; this is belt behind that brace.
 func TestEnumerate_LiveStdioPeerRefusesAnUndeclaredField(t *testing.T) {
 	m := startEnumPeer(t, "v2")
 	res := m.EnumerateContextField(context.Background(), "macmcp", "invented_field", nil)
-	if res.Status != EnumStatusInvalidField {
-		t.Fatalf("status = %q, want %q (%s)", res.Status, EnumStatusInvalidField, res.Error)
+	if res.Status != project.EnumStatusInvalidField {
+		t.Fatalf("status = %q, want %q (%s)", res.Status, project.EnumStatusInvalidField, res.Error)
 	}
 	if res.Values != nil {
 		t.Error("a refused request came back with a value list")
@@ -401,8 +402,8 @@ func TestEnumerate_LiveStdioPeerThatDies(t *testing.T) {
 	conn.Close()
 
 	res := m.EnumerateContextField(context.Background(), "macmcp", "mail_accounts", nil)
-	if res.Status != EnumStatusUnavailable {
-		t.Fatalf("status = %q, want %q (%s)", res.Status, EnumStatusUnavailable, res.Error)
+	if res.Status != project.EnumStatusUnavailable {
+		t.Fatalf("status = %q, want %q (%s)", res.Status, project.EnumStatusUnavailable, res.Error)
 	}
 	if res.Values != nil {
 		t.Error("a dead connection was reported as an empty account list")
@@ -414,7 +415,7 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 		name       string
 		mcpID      string
 		body       string
-		enum       ContextEnumerator
+		enum       project.ContextEnumerator
 		wantCode   int
 		wantStatus string
 		wantValues string
@@ -422,44 +423,44 @@ func TestEnumerateRoute_HTTP(t *testing.T) {
 		{
 			name: "a real answer", mcpID: "macmcp",
 			body: `{"field":"mail_accounts"}`, enum: okEnum("Alice", "Bob"),
-			wantCode: http.StatusOK, wantStatus: EnumStatusOK,
+			wantCode: http.StatusOK, wantStatus: project.EnumStatusOK,
 			wantValues: `"values":[{"value":"Alice","label":"Alice"},{"value":"Bob","label":"Bob"}]`,
 		},
 		{
 			name: "an answer with nothing in it", mcpID: "macmcp",
 			body: `{"field":"mail_accounts"}`, enum: okEnum(),
-			wantCode: http.StatusOK, wantStatus: EnumStatusOK, wantValues: `"values":[]`,
+			wantCode: http.StatusOK, wantStatus: project.EnumStatusOK, wantValues: `"values":[]`,
 		},
 		{
 			name: "an MCP that does not implement enumeration", mcpID: "macmcp",
 			body: `{"field":"mail_accounts"}`,
-			enum: &fakeEnumerator{result: ContextEnumResult{Status: EnumStatusUnsupported, Error: "no such method"}},
+			enum: &fakeEnumerator{result: project.ContextEnumResult{Status: project.EnumStatusUnsupported, Error: "no such method"}},
 			// 200: this is a true final answer about the MCP, not a
 			// failure — the caller renders a text box permanently.
-			wantCode: http.StatusOK, wantStatus: EnumStatusUnsupported, wantValues: `"values":null`,
+			wantCode: http.StatusOK, wantStatus: project.EnumStatusUnsupported, wantValues: `"values":null`,
 		},
 		{
 			name: "the MCP refusing the request relay built", mcpID: "macmcp",
 			body: `{"field":"mail_accounts"}`,
-			enum: &fakeEnumerator{result: ContextEnumResult{Status: EnumStatusInvalidField, Error: "not enumerable"}},
+			enum: &fakeEnumerator{result: project.ContextEnumResult{Status: project.EnumStatusInvalidField, Error: "not enumerable"}},
 			// 502: the failure is on relay's side of the operator.
-			wantCode: http.StatusBadGateway, wantStatus: EnumStatusInvalidField, wantValues: `"values":null`,
+			wantCode: http.StatusBadGateway, wantStatus: project.EnumStatusInvalidField, wantValues: `"values":null`,
 		},
 		{
 			name: "the MCP not answering right now", mcpID: "macmcp",
 			body:     `{"field":"mail_accounts"}`,
-			enum:     &fakeEnumerator{result: ContextEnumResult{Status: EnumStatusUnavailable, Error: "Mail timed out"}},
-			wantCode: http.StatusServiceUnavailable, wantStatus: EnumStatusUnavailable, wantValues: `"values":null`,
+			enum:     &fakeEnumerator{result: project.ContextEnumResult{Status: project.EnumStatusUnavailable, Error: "Mail timed out"}},
+			wantCode: http.StatusServiceUnavailable, wantStatus: project.EnumStatusUnavailable, wantValues: `"values":null`,
 		},
 		{
 			name: "an MCP relay has never connected to", mcpID: "ghostmcp",
 			body: `{"field":"mail_accounts"}`, enum: okEnum("Alice"),
-			wantCode: http.StatusNotFound, wantStatus: EnumStatusUnknownMcp, wantValues: `"values":null`,
+			wantCode: http.StatusNotFound, wantStatus: project.EnumStatusUnknownMcp, wantValues: `"values":null`,
 		},
 		{
 			name: "a field the MCP never said it could enumerate", mcpID: "macmcp",
 			body: `{"field":"file_dirs"}`, enum: okEnum("Alice"),
-			wantCode: http.StatusBadRequest, wantStatus: EnumStatusNotEnumerable, wantValues: `"values":null`,
+			wantCode: http.StatusBadRequest, wantStatus: project.EnumStatusNotEnumerable, wantValues: `"values":null`,
 		},
 	}
 
@@ -551,7 +552,7 @@ func TestEnumerate_IPC(t *testing.T) {
 	if !ok {
 		t.Fatal("no onScopeFieldEnumerated event")
 	}
-	var res ContextEnumResult
+	var res project.ContextEnumResult
 	if err := json.Unmarshal(args[0].(json.RawMessage), &res); err != nil {
 		t.Fatalf("event payload: %v", err)
 	}
@@ -562,14 +563,14 @@ func TestEnumerate_IPC(t *testing.T) {
 		t.Fatalf("the chosen dependency did not reach the MCP: %+v", enum.calls)
 	}
 
-	ipc.Enumerate = &fakeEnumerator{result: ContextEnumResult{Status: EnumStatusUnavailable, Error: "Mail timed out"}}
+	ipc.Enumerate = &fakeEnumerator{result: project.ContextEnumResult{Status: project.EnumStatusUnavailable, Error: "Mail timed out"}}
 	ipcEnumerateScopeField(ipc, json.RawMessage(`{"type":"enumerate_scope_field","mcp_id":"macmcp","field":"mail_accounts"}`))
 	args, _ = findEvent(ui, "onScopeFieldEnumerated")
-	res = ContextEnumResult{}
+	res = project.ContextEnumResult{}
 	if err := json.Unmarshal(args[0].(json.RawMessage), &res); err != nil {
 		t.Fatalf("event payload: %v", err)
 	}
-	if res.Status != EnumStatusUnavailable || res.Values != nil {
+	if res.Status != project.EnumStatusUnavailable || res.Values != nil {
 		t.Fatalf("a failure reached the UI as %+v", res)
 	}
 }
@@ -584,9 +585,9 @@ func TestEnumerate_IPCWithNoProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("no event emitted")
 	}
-	var res ContextEnumResult
+	var res project.ContextEnumResult
 	_ = json.Unmarshal(args[0].(json.RawMessage), &res)
-	if res.Status != EnumStatusUnavailable || res.Values != nil {
+	if res.Status != project.EnumStatusUnavailable || res.Values != nil {
 		t.Fatalf("got %+v", res)
 	}
 }

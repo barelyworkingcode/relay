@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 const scopedSchema = `{
@@ -388,12 +389,12 @@ func TestListTools_AppendsTheScopeNoteToGovernedToolsOnly(t *testing.T) {
 	if !strings.HasPrefix(mail, "Search mail.") {
 		t.Errorf("the tool's own description was lost: %q", mail)
 	}
-	for _, want := range []string{scopeNotePrefix, "Mail accounts this client may read from or send as", "Bob"} {
+	for _, want := range []string{project.ScopeNotePrefix, "Mail accounts this client may read from or send as", "Bob"} {
 		if !strings.Contains(mail, want) {
 			t.Errorf("scope note %q missing %q", mail, want)
 		}
 	}
-	if web, ok := seen["web_fetch"]; ok && strings.Contains(web, scopeNotePrefix) {
+	if web, ok := seen["web_fetch"]; ok && strings.Contains(web, project.ScopeNotePrefix) {
 		t.Errorf("an ungoverned tool got a scope note: %q", web)
 	}
 }
@@ -419,7 +420,7 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 				continue
 			}
 			found = true
-			if n := strings.Count(tool.Description, scopeNotePrefix); n != 1 {
+			if n := strings.Count(tool.Description, project.ScopeNotePrefix); n != 1 {
 				t.Errorf("scope note appears %d times: %q", n, tool.Description)
 			}
 		}
@@ -428,19 +429,19 @@ func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
 		t.Fatal("mail_search was not bucketed")
 	}
 	for _, tool := range r.tools.Tools("macmcp") {
-		if strings.Contains(tool.Description, scopeNotePrefix) {
+		if strings.Contains(tool.Description, project.ScopeNotePrefix) {
 			t.Fatalf("a listing wrote its note back onto the MCP's own tool list: %q", tool.Description)
 		}
 	}
 }
 
 func TestScopeFromMeta_NoRestrictFieldDeclaredIsAbsent(t *testing.T) {
-	v1 := ParseContextSchema(json.RawMessage(`{"anything":"here"}`), 1)
+	v1 := project.ParseContextSchema(json.RawMessage(`{"anything":"here"}`), 1)
 	if got := scopeFromMeta(v1, json.RawMessage(`{"anything":"here"}`)); got != nil {
 		t.Errorf("v1 schema: scope = %#v, want nil (no scope concept declared)", got)
 	}
 
-	v2NoRestrict := ParseContextSchema(json.RawMessage(`{
+	v2NoRestrict := project.ParseContextSchema(json.RawMessage(`{
 		"note": {"type": "string", "source": "operator"}
 	}`), 2)
 	if got := scopeFromMeta(v2NoRestrict, json.RawMessage(`{"note":"hi"}`)); got != nil {
@@ -449,7 +450,7 @@ func TestScopeFromMeta_NoRestrictFieldDeclaredIsAbsent(t *testing.T) {
 }
 
 func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *testing.T) {
-	cs := ParseContextSchema(json.RawMessage(scopedSchema), 2)
+	cs := project.ParseContextSchema(json.RawMessage(scopedSchema), 2)
 
 	got := scopeFromMeta(cs, json.RawMessage(`{}`))
 	if got == nil {
@@ -472,7 +473,7 @@ func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *t
 }
 
 func TestScopeFromMeta_PopulatedValueIsCarried(t *testing.T) {
-	cs := ParseContextSchema(json.RawMessage(scopedSchema), 2)
+	cs := project.ParseContextSchema(json.RawMessage(scopedSchema), 2)
 	got := scopeFromMeta(cs, json.RawMessage(`{"mail_accounts":["Bob"],"unrelated":1}`))
 	if string(got["mail_accounts"]) != `["Bob"]` {
 		t.Errorf("scope = %v, want mail_accounts = [\"Bob\"]", got)
@@ -510,5 +511,27 @@ func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
 	}
 	if !strings.Contains(string(populated), `"scope":{"mail_accounts":["Bob"]}`) {
 		t.Errorf("populated scope marshaled as %s", populated)
+	}
+}
+
+func TestCallTool_RefusesEveryToolOfAnMcpWhoseSchemaCannotBeRead(t *testing.T) {
+	broken := `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":"mail_*"}}`
+	r := newProfileRouter(t, profileOpts{
+		kind:          config.ProjectKindRemote,
+		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
+		access:        map[string]string{"macmcp": config.AccessWrite},
+		allowExternal: map[string]bool{"macmcp": true},
+		contextValues: map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)},
+		schema:        broken,
+		schemaVersion: 2,
+	})
+	for _, tool := range []string{"mail_search", "web_fetch"} {
+		_, err := r.CallTool(context.Background(), tool, json.RawMessage(`{}`), testToken)
+		if err == nil {
+			t.Fatalf("%s ran against a schema relay could not read", tool)
+		}
+		if !strings.Contains(err.Error(), "cannot read") {
+			t.Errorf("%s: refusal does not say why: %v", tool, err)
+		}
 	}
 }

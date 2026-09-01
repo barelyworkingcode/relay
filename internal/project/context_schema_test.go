@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -132,7 +132,7 @@ func TestContextField_GovernsReadsAppliesTo(t *testing.T) {
 
 func TestContextField_AbsentAppliesToGovernsEverything(t *testing.T) {
 	cs := ParseContextSchema(json.RawMessage(fsmcpV2Schema), 2)
-	f, _ := cs.Field(v1AllowedDirsField)
+	f, _ := cs.Field(V1AllowedDirsField)
 	for _, name := range []string{"fs_read", "fs_bash", "anything_at_all"} {
 		if !f.Governs(name) {
 			t.Fatalf("absent applies_to did not govern %q", name)
@@ -255,11 +255,11 @@ func TestHasScopeValue_EmptyIsAbsent(t *testing.T) {
 		"blank":   json.RawMessage(`""`),
 		"object":  json.RawMessage(`{}`),
 	}
-	if !hasScopeValue(values, "present") {
+	if !HasScopeValue(values, "present") {
 		t.Error("a real value read as absent")
 	}
 	for _, name := range []string{"empty", "null", "blank", "object", "missing"} {
-		if hasScopeValue(values, name) {
+		if HasScopeValue(values, name) {
 			t.Errorf("%q read as a usable scope value", name)
 		}
 	}
@@ -271,7 +271,7 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 		"mail_accounts":  json.RawMessage(`["Bob"]`),
 		"mail_mailboxes": json.RawMessage(`["INBOX","Projects/Archive"]`),
 	}
-	note := scopeNoteFor(cs, values, "mail_search")
+	note := ScopeNoteFor(cs, values, "mail_search")
 	for _, want := range []string{"Mail accounts this client may read from or send as", "Bob", "INBOX, Projects/Archive"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note %q missing %q", note, want)
@@ -280,16 +280,16 @@ func TestScopeNoteFor_UsesTheSchemasOwnDescription(t *testing.T) {
 	if strings.Contains(note, "Directories") {
 		t.Errorf("note mentioned an ungoverned field: %q", note)
 	}
-	if n := scopeNoteFor(cs, values, "messages_send"); n != "" {
+	if n := ScopeNoteFor(cs, values, "messages_send"); n != "" {
 		t.Errorf("an ungoverned tool got a note: %q", n)
 	}
-	n := scopeNoteFor(cs, nil, "mail_search")
+	n := ScopeNoteFor(cs, nil, "mail_search")
 	for _, want := range []string{"mail_accounts", "mail_mailboxes", "refused"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("a note for a grant with no values omits %q: %q", want, n)
 		}
 	}
-	if n := scopeNoteFor(ParseContextSchema(json.RawMessage(macmcpSchema), 0), values, "mail_search"); n != "" {
+	if n := ScopeNoteFor(ParseContextSchema(json.RawMessage(macmcpSchema), 0), values, "mail_search"); n != "" {
 		t.Errorf("a v1 schema got a note: %q", n)
 	}
 }
@@ -315,7 +315,7 @@ func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
 		"mail_accounts":   json.RawMessage(`["Bob","Alice"]`),
 		"primary_account": json.RawMessage(`"Bob"`),
 	}
-	note := scopeNoteFor(cs, values, "mail_search")
+	note := ScopeNoteFor(cs, values, "mail_search")
 	for _, leak := range []string{"Bob", "Alice"} {
 		if strings.Contains(note, leak) {
 			t.Errorf("note %q disclosed a value its field withholds: %q", note, leak)
@@ -333,7 +333,7 @@ func TestScopeNoteFor_DiscloseCountAndNoneNameNoValue(t *testing.T) {
 	// disclosing a count ("1") that names nothing new.
 	scalarCount := `{"primary_account":{"type":"string","description":"d","scope":"restrict","source":"operator","disclose":"count"}}`
 	cs2 := ParseContextSchema(json.RawMessage(scalarCount), 2)
-	note2 := scopeNoteFor(cs2, map[string]json.RawMessage{"primary_account": json.RawMessage(`"Bob"`)}, "mail_search")
+	note2 := ScopeNoteFor(cs2, map[string]json.RawMessage{"primary_account": json.RawMessage(`"Bob"`)}, "mail_search")
 	if strings.Contains(note2, "Bob") {
 		t.Errorf("disclose: \"count\" on a scalar field leaked its value: %q", note2)
 	}
@@ -356,7 +356,7 @@ func TestScopeNoteFor_UnsetValueMessageUnchangedByDisclose(t *testing.T) {
 		if !cs.Usable() {
 			t.Fatalf("disclose %s: schema unusable: %s", disclose, cs.MalformedReason())
 		}
-		if got := scopeNoteFor(cs, nil, "mail_search"); got != want {
+		if got := ScopeNoteFor(cs, nil, "mail_search"); got != want {
 			t.Errorf("disclose %s: note = %q, want %q", disclose, got, want)
 		}
 	}
@@ -380,8 +380,8 @@ func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *test
 	cs := ParseContextSchema(json.RawMessage(macmcpSchema), 2)
 	base := json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`)
 
-	out := filterKnownContextFields(base, cs)
-	values := contextValues(out)
+	out := FilterKnownContextFields(base, cs)
+	values := ContextValues(out)
 	if _, present := values["write_dirs"]; present {
 		t.Errorf("a field the live schema no longer declares survived filtering: %s", out)
 	}
@@ -390,28 +390,28 @@ func TestFilterKnownContextFields_DropsWhatTheLiveSchemaNoLongerDeclares(t *test
 	}
 
 	v1 := ParseContextSchema(json.RawMessage(macmcpSchema), 0)
-	if got := filterKnownContextFields(base, v1); string(got) != string(base) {
+	if got := FilterKnownContextFields(base, v1); string(got) != string(base) {
 		t.Errorf("a v1 schema was filtered: got %s, want unchanged %s", got, base)
 	}
 
 	for _, raw := range []json.RawMessage{nil, json.RawMessage(``), json.RawMessage(`null`)} {
-		if got := filterKnownContextFields(raw, cs); string(got) != string(raw) {
-			t.Errorf("filterKnownContextFields(%q) = %q, want unchanged", raw, got)
+		if got := FilterKnownContextFields(raw, cs); string(got) != string(raw) {
+			t.Errorf("FilterKnownContextFields(%q) = %q, want unchanged", raw, got)
 		}
 	}
 }
 
 func TestAppendScopeNote_IsIdempotent(t *testing.T) {
 	note := "Scope: accounts — Bob."
-	once := appendScopeNote("Search mail.", note)
-	twice := appendScopeNote(once, note)
+	once := AppendScopeNote("Search mail.", note)
+	twice := AppendScopeNote(once, note)
 	if once != twice {
 		t.Fatalf("double-appended: %q then %q", once, twice)
 	}
-	if appendScopeNote("desc", "") != "desc" {
+	if AppendScopeNote("desc", "") != "desc" {
 		t.Fatal("an empty note changed the description")
 	}
-	if appendScopeNote("", note) != note {
+	if AppendScopeNote("", note) != note {
 		t.Fatal("an empty description did not become the note")
 	}
 }
@@ -424,8 +424,8 @@ func TestNoDomainSpecificFieldNamesRemainInRelay(t *testing.T) {
 		file string
 		why  string
 	}{
-		v1AllowedDirsField: {"context_schema.go", "the v1 compatibility branch (ADR-011 decision 3), scheduled for removal"},
-		v1FsBashTool:       {"context_schema.go", "the fs_bash auto-disable, DEFERRED by ADR-011 as not resource scoping"},
+		V1AllowedDirsField: {"context_schema.go", "the v1 compatibility branch (ADR-011 decision 3), scheduled for removal"},
+		V1FsBashTool:       {"context_schema.go", "the fs_bash auto-disable, DEFERRED by ADR-011 as not resource scoping"},
 	}
 
 	counts := map[string]int{}

@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -7,17 +7,17 @@ import (
 )
 
 // GenerateSkill, AllowCwdAuth, and ShellTemplates aren't parameters of
-// CreateProjectWithTokenKind (see project_test.go) — they're applied by
-// follow-on mutators inside applyProjectCreate, so testing their rejection
-// requires the full projectCreateFields path.
+// CreateWithTokenKind (see project_test.go) — they're applied by
+// follow-on mutators inside ApplyCreate, so testing their rejection
+// requires the full CreateFields path.
 func TestApplyProjectCreate_RemoteRejectsAllowCwdAuth(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	f := projectCreateFields{
+	f := CreateFields{
 		Name:         "Agent VM",
 		Kind:         config.ProjectKindRemote,
 		AllowCwdAuth: true,
 	}
-	if _, err := applyProjectCreate(s, f, nil); err == nil {
+	if _, err := ApplyCreate(s, f, nil); err == nil {
 		t.Fatal("expected rejection of remote project with allow_cwd_auth")
 	}
 	if len(s.Projects) != 0 {
@@ -30,12 +30,12 @@ func TestApplyProjectCreate_RemoteRejectsAllowCwdAuth(t *testing.T) {
 // a lie about what it does.
 func TestApplyProjectCreate_RemoteRejectsGenerateSkill(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	f := projectCreateFields{
+	f := CreateFields{
 		Name:          "Agent VM",
 		Kind:          config.ProjectKindRemote,
 		GenerateSkill: true,
 	}
-	if _, err := applyProjectCreate(s, f, nil); err == nil {
+	if _, err := ApplyCreate(s, f, nil); err == nil {
 		t.Fatal("expected rejection of remote project with generate_skill")
 	}
 	if len(s.Projects) != 0 {
@@ -45,14 +45,14 @@ func TestApplyProjectCreate_RemoteRejectsGenerateSkill(t *testing.T) {
 
 func TestApplyProjectCreate_RemoteRejectsShellTemplates(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	f := projectCreateFields{
+	f := CreateFields{
 		Name: "Agent VM",
 		Kind: config.ProjectKindRemote,
 		ShellTemplates: []config.ShellTemplate{
 			{ID: "ssh-1", Name: "SSH box"},
 		},
 	}
-	if _, err := applyProjectCreate(s, f, nil); err == nil {
+	if _, err := ApplyCreate(s, f, nil); err == nil {
 		t.Fatal("expected rejection of remote project with shell templates")
 	}
 	if len(s.Projects) != 0 {
@@ -62,12 +62,12 @@ func TestApplyProjectCreate_RemoteRejectsShellTemplates(t *testing.T) {
 
 func TestApplyProjectCreate_RemoteRejectsPathScopedGrant(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	f := projectCreateFields{
+	f := CreateFields{
 		Name:          "Agent VM",
 		Kind:          config.ProjectKindRemote,
 		AllowedMcpIDs: []string{"fsmcp"},
 	}
-	_, err := applyProjectCreate(s, f, testSchemas())
+	_, err := ApplyCreate(s, f, testSchemas())
 	if err == nil {
 		t.Fatal("expected rejection of remote project granted a path-scoped MCP")
 	}
@@ -78,11 +78,11 @@ func TestApplyProjectCreate_RemoteRejectsPathScopedGrant(t *testing.T) {
 
 func TestApplyProjectCreate_RemoteZeroMcpsSucceeds(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	f := projectCreateFields{
+	f := CreateFields{
 		Name: "Agent VM",
 		Kind: config.ProjectKindRemote,
 	}
-	created, err := applyProjectCreate(s, f, nil)
+	created, err := ApplyCreate(s, f, nil)
 	if err != nil {
 		t.Fatalf("expected zero-MCP remote project to be created, got: %v", err)
 	}
@@ -98,13 +98,13 @@ func TestApplyProjectCreate_RemoteZeroMcpsSucceeds(t *testing.T) {
 // field — and on rejection found=true but the stored project is untouched.
 func TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	created, err := applyProjectCreate(s, projectCreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote}, nil)
+	created, err := ApplyCreate(s, CreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote}, nil)
 	if err != nil {
 		t.Fatalf("setup create: %v", err)
 	}
 
 	allow := true
-	_, found, err := applyProjectUpdate(s, created.ID, projectUpdateFields{AllowCwdAuth: &allow}, func() McpSurfaces { return nil })
+	_, found, err := ApplyUpdate(s, created.ID, UpdateFields{AllowCwdAuth: &allow}, func() McpSurfaces { return nil })
 	_ = found
 	if err == nil {
 		t.Fatal("expected rejection of allow_cwd_auth flip on a remote project")
@@ -117,13 +117,13 @@ func TestApplyProjectUpdate_RemoteRejectsAllowCwdAuthFlip(t *testing.T) {
 
 func TestApplyProjectUpdate_RemoteRejectsWildcardMcps(t *testing.T) {
 	s := &config.Settings{Version: 1}
-	created, err := applyProjectCreate(s, projectCreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote}, nil)
+	created, err := ApplyCreate(s, CreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote}, nil)
 	if err != nil {
 		t.Fatalf("setup create: %v", err)
 	}
 
 	wildcard := []string{"*"}
-	_, _, err = applyProjectUpdate(s, created.ID, projectUpdateFields{AllowedMcpIDs: &wildcard}, func() McpSurfaces { return nil })
+	_, _, err = ApplyUpdate(s, created.ID, UpdateFields{AllowedMcpIDs: &wildcard}, func() McpSurfaces { return nil })
 	if err == nil {
 		t.Fatal("expected rejection of wildcard allowed_mcp_ids on update for a remote project")
 	}

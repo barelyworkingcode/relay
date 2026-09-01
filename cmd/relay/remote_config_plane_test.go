@@ -21,6 +21,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // setCLIAdmin flips an enrolment's bit directly through enrolment.Update
@@ -118,9 +119,9 @@ func TestCliAdmin_NarrowsOwnGrantedTools(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Finding A: a resend of an already-applied narrowing must not rewrite
-// settings.json or double the audit trail. narrowsOnly accepts "request
+// settings.json or double the audit trail. project.NarrowsOnly accepts "request
 // equals what is already stored" — that is not a widening — but
-// applyProjectUpdate's mutators write unconditionally once invoked, and
+// project.ApplyUpdate's mutators write unconditionally once invoked, and
 // withDeclinable's only lever against a write is a callback error. Six
 // identical NarrowGrant requests must produce one write and one
 // config_change, not six.
@@ -250,7 +251,7 @@ func TestCliAdmin_EscapedGlobCannotWidenGrant(t *testing.T) {
 	before := odwSnap(t, f.dir)
 	// "mail_\x" (a backslash-escaped "x") reads, to toolAllowedByPatterns,
 	// as the literal NAME "mail_\x" — which "mail_?x" matches, since "?"
-	// matches any single character including "\". narrowsOnly's
+	// matches any single character including "\". project.NarrowsOnly's
 	// literal-tool-name branch is meant to accept only a requested pattern
 	// whose OWN matched set is a subset of what's stored. But once stored,
 	// "mail_\x" is not a literal name any more — path.Match reads it as a
@@ -314,7 +315,7 @@ func TestCliAdmin_CannotTouchAnotherEnrolmentsProfile(t *testing.T) {
 	var calProj config.Project
 	var createErr error
 	assertNoErr(t, f.store.With(func(s *config.Settings) {
-		calProj, createErr = createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
+		calProj, createErr = project.CreateWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
 	}), "create B's profile")
 	assertNoErr(t, createErr, "create B's profile")
 	_, err := enrolment.Create(f.store, enrolment.Request{ClientID: "hermes-cal", ProjectIDs: []string{calProj.ID}})
@@ -417,7 +418,7 @@ func TestRemoteNarrowFields_NamesNoOtherIdentity(t *testing.T) {
 		"access":          true,
 		"allow_external":  true,
 	}
-	typ := reflect.TypeOf(remoteNarrowFields{})
+	typ := reflect.TypeOf(project.NarrowFields{})
 	got := map[string]bool{}
 	for i := 0; i < typ.NumField(); i++ {
 		tag := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
@@ -425,12 +426,12 @@ func TestRemoteNarrowFields_NamesNoOtherIdentity(t *testing.T) {
 	}
 	for tag := range want {
 		if !got[tag] {
-			t.Errorf("remoteNarrowFields is missing the %q field", tag)
+			t.Errorf("project.NarrowFields is missing the %q field", tag)
 		}
 	}
 	for tag := range got {
 		if !want[tag] {
-			t.Errorf("remoteNarrowFields has an unlisted field tagged %q — every field on the remote configuration surface must be named in this test's own list, on purpose, before it ships", tag)
+			t.Errorf("project.NarrowFields has an unlisted field tagged %q — every field on the remote configuration surface must be named in this test's own list, on purpose, before it ships", tag)
 		}
 	}
 }
@@ -454,19 +455,19 @@ func TestCliAdmin_CannotFlipAllowCwdAuth(t *testing.T) {
 }
 
 func TestRemoteNarrowFields_HasNoAllowCwdAuthField(t *testing.T) {
-	typ := reflect.TypeOf(remoteNarrowFields{})
+	typ := reflect.TypeOf(project.NarrowFields{})
 	for i := 0; i < typ.NumField(); i++ {
 		if typ.Field(i).Name == "AllowCwdAuth" {
-			t.Fatal("remoteNarrowFields has an AllowCwdAuth field")
+			t.Fatal("project.NarrowFields has an AllowCwdAuth field")
 		}
 	}
 }
 
 func TestValidateProjectShape_StillRefusesAllowCwdAuthOnRemote(t *testing.T) {
 	proj := &config.Project{Kind: config.ProjectKindRemote, AllowCwdAuth: true}
-	err := validateProjectShape(proj)
+	err := project.ValidateShape(proj)
 	if err == nil || !strings.Contains(err.Error(), "allow_cwd_auth") {
-		t.Fatalf("validateProjectShape(remote, allow_cwd_auth=true) = %v, want a refusal naming allow_cwd_auth", err)
+		t.Fatalf("project.ValidateShape(remote, allow_cwd_auth=true) = %v, want a refusal naming allow_cwd_auth", err)
 	}
 }
 
@@ -530,7 +531,7 @@ func (b *blockingConfigurer) DescribeGrant(s *config.Settings, p *config.Project
 	return b.real.DescribeGrant(s, p)
 }
 
-func (b *blockingConfigurer) NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (config.Project, []string, error) {
+func (b *blockingConfigurer) NarrowForEnrolment(ctx context.Context, projectID string, f project.NarrowFields, caller bridge.RemoteCaller, surfaces func() project.McpSurfaces) (config.Project, []string, error) {
 	close(b.started)
 	<-b.proceed
 	return b.real.NarrowForEnrolment(ctx, projectID, f, caller, surfaces)
@@ -791,12 +792,12 @@ func TestCliAdmin_NoPresencePromptReachableFromRemoteListener(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NarrowForEnrolment reuses applyProjectUpdate rather than writing the
+// NarrowForEnrolment reuses project.ApplyUpdate rather than writing the
 // narrowed fields to the store directly (SPEC-step2-cli-admin.md §4.3).
-// narrowsOnly alone cannot observe this: it only judges whether a REQUEST is
+// project.NarrowsOnly alone cannot observe this: it only judges whether a REQUEST is
 // narrower than what is stored, never what the mutator that applies an
 // accepted request actually does to the record. A direct field write would
-// still satisfy every narrowsOnly rule while skipping SyncProjectToken's own
+// still satisfy every project.NarrowsOnly rule while skipping SyncProjectToken's own
 // pruning of a dropped MCP's now-orphaned allowed_tools/access entries.
 // ---------------------------------------------------------------------------
 
@@ -820,12 +821,12 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 	}), "widen behind the guards")
 
 	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
-	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
 	narrowedIDs := []string{"macmcp"}
 	_, _, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
-		remoteNarrowFields{AllowedMcpIDs: &narrowedIDs}, caller, surfaces)
+		project.NarrowFields{AllowedMcpIDs: &narrowedIDs}, caller, surfaces)
 	assertNoErr(t, err, "NarrowForEnrolment dropping an MCP")
 
 	proj, _ := config.FindProjectByID(store.Get(), mail.ID)
@@ -833,7 +834,7 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 		t.Fatal("the project vanished")
 	}
 	if _, stale := proj.AllowedTools["other"]; stale {
-		t.Error("a dropped MCP's allowed_tools entry survived narrowing: NarrowForEnrolment must reuse applyProjectUpdate (SyncProjectToken prunes it), not write AllowedMcpIDs to the store directly")
+		t.Error("a dropped MCP's allowed_tools entry survived narrowing: NarrowForEnrolment must reuse project.ApplyUpdate (SyncProjectToken prunes it), not write AllowedMcpIDs to the store directly")
 	}
 	if _, stale := proj.Access["other"]; stale {
 		t.Error("a dropped MCP's access entry survived narrowing")
@@ -866,11 +867,11 @@ func TestNarrowForEnrolment_IssuanceAuditingOffRefusesBeforeTouchingStore(t *tes
 
 	before := odwSnap(t, dir)
 	ops := &ProjectOps{Store: store, Issuance: nil, OnChange: func() {}}
-	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
 	_, _, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
-		remoteNarrowFields{AllowedTools: &map[string][]string{"macmcp": {"mail_search"}}}, caller, surfaces)
+		project.NarrowFields{AllowedTools: &map[string][]string{"macmcp": {"mail_search"}}}, caller, surfaces)
 	if !errors.Is(err, errIssuanceAuditingRequired) {
 		t.Fatalf("NarrowForEnrolment with a nil Issuance: err = %v, want errIssuanceAuditingRequired", err)
 	}

@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"testing"
 )
 
 // The settings UI builds its save payload in harvestProjectForm (web/src/app.js).
 // This pins the Go side against that exact JSON shape: a mismatch in a tag name
-// would fail silently, since every field on projectUpdateFields is optional and
+// would fail silently, since every field on project.UpdateFields is optional and
 // an unrecognised key is simply ignored.
 func TestRemoteProjectPayloadFromSettingsUI(t *testing.T) {
 	raw := []byte(`{
@@ -21,19 +22,19 @@ func TestRemoteProjectPayloadFromSettingsUI(t *testing.T) {
 		"allow_cwd_auth":false,
 		"disabled_tools":{}
 	}`)
-	var f projectCreateFields
+	var f project.CreateFields
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatalf("settings-UI payload did not decode: %v", err)
 	}
 	if f.Kind != config.ProjectKindRemote {
-		t.Fatalf(`"kind":"remote" did not reach projectCreateFields.Kind (got %q) — check the json tag`, f.Kind)
+		t.Fatalf(`"kind":"remote" did not reach project.CreateFields.Kind (got %q) — check the json tag`, f.Kind)
 	}
 	if f.Path != "" {
 		t.Errorf("payload with no path key produced Path=%q", f.Path)
 	}
 
 	s := &config.Settings{}
-	created, err := applyProjectCreate(s, f, nil)
+	created, err := project.ApplyCreate(s, f, nil)
 	if err != nil {
 		t.Fatalf("creating a zero-grant remote project from the UI payload failed: %v", err)
 	}

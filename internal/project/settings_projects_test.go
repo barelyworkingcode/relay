@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -11,7 +11,6 @@ import (
 
 func newProjectsTestStore(t *testing.T) config.SettingsStore {
 	t.Helper()
-	_ = mkSandboxRelayHome(t)
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
@@ -39,7 +38,7 @@ func createTestProject(t *testing.T, store config.SettingsStore, name, path stri
 	var proj config.Project
 	store.With(func(s *config.Settings) {
 		var err error
-		proj, err = createProjectWithToken(s, name, path, mcpIDs, []string{"*"}, nil, fsSchemas())
+		proj, err = CreateWithToken(s, name, path, mcpIDs, []string{"*"}, nil, fsSchemas())
 		if err != nil {
 			t.Fatalf("CreateProjectWithToken: %v", err)
 		}
@@ -252,7 +251,7 @@ func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.
 }
 
 // The Project is constructed directly rather than through
-// CreateProjectWithTokenKind/ValidateProjectGrants, so this test exercises
+// CreateWithTokenKind/ValidateGrants, so this test exercises
 // SyncProjectToken's own guard in isolation — independent of whether
 // validation would have caught the same grant.
 func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
@@ -282,7 +281,7 @@ func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
 
 func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 	s := &config.Settings{}
-	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	mail, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create remote project")
 	// Seeded directly rather than through internal/enrolment's own
 	// mutator, which is unexported there: what these two tests are about is
@@ -296,7 +295,7 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 
 	local := config.ProjectKindLocal
 	path := t.TempDir()
-	_, _, err = applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas)
+	_, _, err = ApplyUpdate(s, mail.ID, UpdateFields{Kind: &local, Path: &path}, schemas)
 	if err == nil {
 		t.Fatal("converting a remote project to local must be refused while an enrolment grants it")
 	}
@@ -313,7 +312,7 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 	// Revoking the enrolment makes the conversion legal — capability and
 	// device revocation stay independent, and neither strands the other.
 	s.Enrolments = nil
-	if _, _, err := applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas); err != nil {
+	if _, _, err := ApplyUpdate(s, mail.ID, UpdateFields{Kind: &local, Path: &path}, schemas); err != nil {
 		t.Fatalf("conversion should be legal once no enrolment grants the project: %v", err)
 	}
 	converted, _ := config.FindProjectByID(s, mail.ID)
@@ -322,12 +321,12 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 	}
 }
 
-// Belt-and-braces, in the shape UpdateProjectPath already uses: the exported
-// mutator refuses the same conversion on its own, so a caller that skips
-// applyProjectUpdate cannot produce the silent widening.
+// Belt-and-braces, in the shape updateProjectPath already uses: the mutator
+// refuses the same conversion on its own, so a caller inside this package
+// that skips ApplyUpdate cannot produce the silent widening.
 func TestUpdateProjectKind_RefusesRemoteToLocalWhileEnrolled(t *testing.T) {
 	s := &config.Settings{}
-	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	mail, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create remote project")
 	s.Enrolments = append(s.Enrolments, config.Enrolment{
 		ClientID:    "hermes-mail",
@@ -341,7 +340,7 @@ func TestUpdateProjectKind_RefusesRemoteToLocalWhileEnrolled(t *testing.T) {
 	}
 
 	// Unrelated projects, and remote→remote no-ops, stay unaffected.
-	other, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{}, []string{}, nil, nil)
+	other, err := CreateWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create second remote project")
 	updateProjectKind(s, other.ID, config.ProjectKindLocal)
 	if proj, _ := config.FindProjectByID(s, other.ID); proj.IsRemote() {

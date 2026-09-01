@@ -2,9 +2,9 @@ package main
 
 // Issue #91: the wire semantics of NarrowGrant's three per-MCP maps
 // (allowed_tools, access, allow_external) is whole-map REPLACE, not merge —
-// applyProjectUpdate's candidate.AllowedTools = *f.AllowedTools (and the
+// project.ApplyUpdate's candidate.AllowedTools = *f.AllowedTools (and the
 // same for Access/AllowExternal) discards any key the request did not
-// name. narrowUpdateFields built that request map from only the ids the
+// name. project.NarrowUpdateFields built that request map from only the ids the
 // caller named, so narrowing one MCP of a multi-MCP grant silently
 // stripped every other MCP down to zero tools, read-default access and
 // external-default — an unrequested narrowing of a grant the caller never
@@ -18,6 +18,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant is RED against the
@@ -43,14 +44,14 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 	}), "widen behind the guards")
 
 	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
-	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
 	tools := map[string][]string{"macmcp": {"mail_search"}}
 	access := map[string]string{"macmcp": config.AccessRead}
 	external := map[string]bool{"macmcp": false}
 	_, changed, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
-		remoteNarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},
+		project.NarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},
 		caller, surfaces)
 	assertNoErr(t, err, "narrow macmcp only")
 	if len(changed) == 0 {
@@ -86,8 +87,8 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 
 // TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics re-establishes the
 // replay-safety property NarrowGrant depends on (it is marked replay-safe
-// in presence.GatedOps' surrounding docs) now that narrowUpdateFields
-// merges per key instead of replacing the whole map: narrowingIsNoop must
+// in presence.GatedOps' surrounding docs) now that project.NarrowUpdateFields
+// merges per key instead of replacing the whole map: project.NarrowingIsNoop must
 // compare the MERGED result against stored, not the bare request map,
 // or a request that only names one already-narrowed MCP of a two-MCP
 // grant would never read back as a no-op (the request map alone never
@@ -114,7 +115,7 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 
 	rec := enabledIssuanceRecorder(t)
 	ops := &ProjectOps{Store: store, Issuance: issuanceAuditorOrNil(rec), OnChange: func() {}}
-	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
+	surfaces := func() project.McpSurfaces { return project.McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
 	narrow := func() (config.Project, []string, error) {
@@ -122,7 +123,7 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 		access := map[string]string{"macmcp": config.AccessRead}
 		external := map[string]bool{"macmcp": false}
 		return ops.NarrowForEnrolment(context.Background(), mail.ID,
-			remoteNarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},
+			project.NarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},
 			caller, surfaces)
 	}
 

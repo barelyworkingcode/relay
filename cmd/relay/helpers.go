@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
@@ -127,4 +128,16 @@ func slugify(name string) string {
 		}
 	}
 	return strings.Join(nonEmpty, "-")
+}
+
+// sortedKeys orders a map's keys so a refusal naming one of several
+// offending entries names the same one every time — Go's map iteration is
+// randomised per range.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

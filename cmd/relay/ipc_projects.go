@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"log/slog"
 )
 
@@ -13,11 +14,11 @@ import (
 // identical to one created over HTTP.
 
 // ipcUpdateProjectMsg carries the project id inline, unlike the HTTP PUT
-// route. The patch fields are the shared projectUpdateFields so the update
-// orchestration stays in one place (applyProjectUpdate).
+// route. The patch fields are the shared project.UpdateFields so the update
+// orchestration stays in one place (project.ApplyUpdate).
 type ipcUpdateProjectMsg struct {
 	ID string `json:"id"`
-	projectUpdateFields
+	project.UpdateFields
 }
 
 type ipcProjectDisabledToolsMsg struct {
@@ -37,7 +38,7 @@ type ipcEnumerateScopeFieldMsg struct {
 }
 
 func ipcCreateProject(ctx *IPCContext, raw json.RawMessage) {
-	msg, ok := unmarshalIPC[projectCreateFields](raw, "create_project")
+	msg, ok := unmarshalIPC[project.CreateFields](raw, "create_project")
 	if !ok {
 		return
 	}
@@ -93,9 +94,9 @@ func ipcUpdateProject(ctx *IPCContext, raw json.RawMessage) {
 	// pump — see ipcCreateProject just above.
 	ctx.GoFunc(func() {
 		// Shape/grant validation (including path) happens inside
-		// applyProjectUpdate against the fully-merged candidate — mirrors
+		// project.ApplyUpdate against the fully-merged candidate — mirrors
 		// the HTTP PUT route.
-		updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.projectUpdateFields, func() McpSurfaces {
+		updated, found, updateErr := ctx.ProjectOps.Update(ctx.Ctx, msg.ID, msg.UpdateFields, func() project.McpSurfaces {
 			return mcpSurfacesFrom(ctx)
 		}, auditViaIPC, "")
 		if updateErr != nil {
@@ -266,7 +267,7 @@ func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 
 // ipcEnumerateScopeField is the tray's counterpart of
 // POST /api/mcps/{id}/enumerate (ADR-004 keeps the two editors co-equal).
-// Both surfaces call enumerateScopeField, so every check relay makes — is
+// Both surfaces call project.EnumerateScopeField, so every check relay makes — is
 // this a field the MCP declared, did it declare it enumerable — is made
 // once and identically. The result is emitted VERBATIM, including its
 // status, because the picker must render "no values" and "could not ask"
@@ -283,7 +284,7 @@ func ipcEnumerateScopeField(ctx *IPCContext, raw json.RawMessage) {
 	surfaces := mcpSurfacesFrom(ctx)
 	enum := ctx.Enumerate
 	ctx.GoFunc(func() {
-		res := enumerateScopeField(ctx.Ctx, surfaces, enum, msg.McpID, msg.Field, msg.Values)
+		res := project.EnumerateScopeField(ctx.Ctx, surfaces, enum, msg.McpID, msg.Field, msg.Values)
 		dispatchEmit(ctx, "onScopeFieldEnumerated", marshalForUI(res))
 	})
 }
@@ -291,7 +292,7 @@ func ipcEnumerateScopeField(ctx *IPCContext, raw json.RawMessage) {
 // mcpSurfacesFrom returns nil when ctx.Tools doesn't also implement
 // McpSurfaceProvider (a narrow test stub, typically) — SyncProjectToken
 // falls back to its "no scope derivation" path in that case.
-func mcpSurfacesFrom(ctx *IPCContext) McpSurfaces {
+func mcpSurfacesFrom(ctx *IPCContext) project.McpSurfaces {
 	if p, ok := ctx.Tools.(McpSurfaceProvider); ok {
 		return p.AllMcpSurfaces()
 	}

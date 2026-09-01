@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // defaultRemoteListen binds loopback: reaching relay from a VM must be a
@@ -126,7 +127,7 @@ func handleRemoteCallTool(ctx context.Context, req *bridge.RemoteRequest, router
 // with that method.
 type RemoteConfigurer interface {
 	DescribeGrant(s *config.Settings, proj *config.Project) grantView
-	NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (config.Project, []string, error)
+	NarrowForEnrolment(ctx context.Context, projectID string, f project.NarrowFields, caller bridge.RemoteCaller, surfaces func() project.McpSurfaces) (config.Project, []string, error)
 }
 
 var _ RemoteConfigurer = (*ProjectOps)(nil)
@@ -134,7 +135,7 @@ var _ RemoteConfigurer = (*ProjectOps)(nil)
 // remoteConfigHandler mirrors remoteHandler's shape: everything a config
 // handler needs, resolved once by handleRequest and handed down rather than
 // re-resolved.
-type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse
+type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse
 
 // remoteConfigEntry pairs a handler with the capability class its operation
 // carries. buildRemoteConfigHandlers refuses to install an entry whose
@@ -171,7 +172,7 @@ var remoteConfigHandlers = buildRemoteConfigHandlers(map[string]remoteConfigEntr
 	bridge.ReqNarrowGrant:   {control.ClassConfigure, handleRemoteNarrowGrant},
 })
 
-func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() McpSurfaces, settings *config.Settings, proj *config.Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
+func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() project.McpSurfaces, settings *config.Settings, proj *config.Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
 	data, err := json.Marshal(configurer.DescribeGrant(settings, proj))
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "describe grant: "+err.Error())
@@ -187,8 +188,8 @@ type remoteNarrowGrantResult struct {
 	Grant   grantView `json:"grant"`
 }
 
-func handleRemoteNarrowGrant(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
-	f, err := decodeRemoteNarrowFields(req.Arguments)
+func handleRemoteNarrowGrant(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() project.McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
+	f, err := project.DecodeNarrowFields(req.Arguments)
 	if err != nil {
 		// Strict decoding: a client sending allow_cwd_auth or any other
 		// field this struct doesn't declare lands here loudly.
@@ -229,7 +230,7 @@ type RemoteServer struct {
 	// surfaces resolves live MCP schemas for NarrowForEnrolment's validation.
 	// A read-only capability, unlike configurer: this cannot register, remove
 	// or reconfigure an MCP, only see what one currently declares.
-	surfaces func() McpSurfaces
+	surfaces func() project.McpSurfaces
 
 	listener net.Listener
 	ctx      context.Context
@@ -259,7 +260,7 @@ type remoteConn struct {
 	fingerprint string
 }
 
-func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces) (*RemoteServer, error) {
+func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces) (*RemoteServer, error) {
 	// freshSettings, not Get(): the operator who just edited settings.json is
 	// the same operator watching the listener come up.
 	settings := config.FreshSettings(store)
