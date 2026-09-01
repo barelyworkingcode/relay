@@ -1,13 +1,15 @@
 # IDE
 .idea/
 
-# Build artifacts
+# Build artifacts. These are binaries at the repository root, so the patterns
+# are anchored: a bare name matches any path component, which would swallow
+# cmd/relay and hide every file added there.
 *.app
 *.dSYM/
 bin/
-relay
-relaygo
-macmcp
+/relay
+/relaygo
+/macmcp
 
 # OS
 .DS_Store

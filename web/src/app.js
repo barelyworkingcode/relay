@@ -1,6 +1,6 @@
 // Settings UI application module: state, the render dispatcher, every tab
 // renderer, IPC bridge, and all event handlers. Pure helpers live in
-// ./lib/pure.js. Bundled (esbuild) and inlined into web/dist/settings.html.
+// ./lib/pure.js. Bundled (esbuild) and inlined into internal/webassets/settings.html.
 import {
     esc, formatScalar, cfgParseConfigText, cfgGetAt, cfgSetAt, cfgDefaultFor, cfgCoerce, cfgKvCoerce, cfgKvDisplay, cfgScanRequired, cfgSummary, cfgFormatStringMap, cfgFormatJson, oneLineProj
 } from './lib/pure.js';

@@ -39,37 +39,33 @@ settings.go              Config, project CRUD, permission derivation
 settings_store.go        Atomic settings.json read/write
 types.go                 Project, StoredToken, ExternalMcp, ServiceConfig (Settings lives in settings.go)
 tokens.go                hashToken, auth sentinel errors
-project.go               Project + token creation
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
-context_schema.go        MCP contextSchema vocabulary (scope/source/applies_to), McpSurface, the tool-name matcher
 router.go                Bridge auth (service vs project tokens), tool filtering, access mode, scope presence, _meta injection
-audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
-audit_call.go            Nil-safe per-call event builder used by the router instrumentation
+audit_call.go            Nil-safe per-call event builder used by the router instrumentation; reads AuditRecorder
+                         via RedactCallArgs/PreviewResult rather than its unexported config
 audit_cmd.go             `relay audit` CLI
-audit_issuance.go        credential_issued / credential_revoked: the record every mint and revoke writes,
-                         the CLI's own append-only recorder, and the fail-closed rule for issuance
+audit_start.go           Wires the audit engine to what it does not own: relay's log directory and log rotation
+audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requireIssuanceAuditor (ADR-017 §7.4,
+                         and MUST stay an unqualified identifier in this package — gate_ast_scan_test.go matches
+                         its call sites as a bare *ast.Ident), recordEnrolmentIssued/recordBootstrapIssued/etc.,
+                         and the CLI's own append-only recorder
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
-scope_breadth.go         How much of the host one scope value reaches (root / home / bounded)
-enrolment.go             Enrolment CRUD, grant validation, revocation + its live-connection hook
-enrolment_ca.go          Relay's self-signed CA: lazy generation, client/server cert issuance, fingerprints
+enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
-login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share)
+login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share) — holds the presence.Gate, stays in main
 login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
-webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, none attestation only
-webauthn_cbor.go         CBOR decode via fxamacker/cbor, pinned to the CTAP2 canonical subset
-webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
 login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
 login_document.go        The self-contained login page, served under a strict CSP
+webauthn_browser_live_test.go   Black-box HTTP+Chrome ceremony test via lrServer; never touches verifier internals, so it stayed in main rather than moving with login/
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
-external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
-                         mcpSupervisor restarts a stdio child that dies (ADR-012)
-wire_json.go             Verbatim JSON encoding for the outbound JSON-RPC frame (ADR-013)
-http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
+mcp_ops.go               McpOps: the gated, audited core the CLI, HTTP and IPC MCP doors share
+mcp_permissions.go       TCC permission probing; the darwin half reaches cocoa_darwin.go's cgo, so it
+                         stays with the tray process rather than moving to mcpbroker/
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
 frontend_server.go       Front-door HTTP server; project routes local, rest falls through;
                          composes the public login mux in front of frontendCredentialAuth
@@ -77,16 +73,84 @@ frontend_dispatcher.go   Manifest-driven HTTP + WS dispatcher (longest-prefix ma
 frontend_model_guard.go  Enforces a project's allowed_models before relayLLM sees the request
 relay_llm_channel.go     Provisions the frontend socket + bearer token (filename legacy; contents are the generic FrontendChannel)
 enhanced_services.go     In-memory registry of enhanced services; per-service reverse proxy
-service_registry.go      Background process management + ephemeral service tokens
-service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
-service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
+log_rotate.go            RotatingWriter + serviceLogDir: shared by relay's own log, the audit log,
+                         and every managed service's log via service.Registry.OpenLog
 ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
-service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
                          frameconn.go is the framing/scanner/deadline plumbing BOTH listeners share;
                          remote_request.go + remote_caller.go are the remote wire type and attested identity
 mcp/                     MCP types + stdio server (proxies to the bridge)
+enrolment/               The enrolment domain: the record's CRUD/validation (enrolment.go), relay's
+                         own CA (ca.go), CSR parsing (csr.go), the comparison code (sas.go) and the
+                         per-enrolment budget ledger (budget.go). Depends on config/bridge/sealed;
+                         the gate, the audit sink and every door stay in main.
+project/                 The project domain — the unit a grant is scoped to: creation, token and
+                         shape/permission validation (project.go, apply.go), the schema-driven
+                         scope derivation and the updateProject* grant-shape mutators (scope.go,
+                         context_schema.go), how broad one scope value is (scope_breadth.go), the
+                         scope-value picker's policy (enumerate.go) and a remote's self-narrowing
+                         rules (narrowing.go). McpSurfaces is the runtime MCP view it takes as a
+                         parameter, so it never reaches the MCP manager. Depends on
+                         config/enrolment; the presence gate, the router, the routes, the IPC
+                         handlers and the DTO stay in main.
+service/                 Background service supervision: process lifecycle and ephemeral service
+                         tokens (service_registry.go), pidfiles under run/ for orphan reclaim after
+                         a force-quit (service_pidfile.go), generic per-service status polling and
+                         action dispatch (service_status_client.go, poller.go), the manifest config
+                         editor's ResolveConfigPath security gate (service_config_file.go), and the
+                         exec.Cmd/env helpers (helpers.go, http.go) shared with external MCP
+                         spawning. Depends on bridge/config; the frontend channel's lifecycle and log
+                         rotation are main's, wired into Registry.FrontendEnv/OpenLog as callbacks so
+                         the package never depends on either concrete type.
+audit/                   The tool-call audit log engine: the event/actor/config model, the async
+                         writer, the in-memory ring, byte-level JSON redaction (ADR-012), AuditQuery,
+                         and AuditOps (the read-only core behind both the HTTP and IPC audit doors).
+                         Also the self-contained half of issuance recording (CredentialIssuance,
+                         RecordIssuance, OpenCLIIssuanceRecorder) — the gate-facing half
+                         (IssuanceAuditor, requireIssuanceAuditor, the recordEnrolment/Bootstrap/
+                         ProjectToken/PasskeyIssued helpers) stays in main, because
+                         requireIssuanceAuditor must stay an unqualified identifier for
+                         gate_ast_scan_test.go's AST match to keep seeing its call sites. Depends on
+                         config; log rotation is main's (log_rotate.go, shared with relay's own log
+                         and every service's log) and reaches this package only via the OpenWriter
+                         callback NewAuditRecorder/StartAuditRecorder take, the same pattern
+                         service.Registry.OpenLog uses. The router instrumentation (audit_call.go)
+                         and the CLI/HTTP/IPC surfaces (audit_cmd.go, audit_routes.go, ipc_audit.go)
+                         stay in main, since they reach the router or unexported recorder state
+                         directly.
+mcpbroker/               The external-MCP client: the stdio and HTTP transports and their JSON-RPC
+                         framing (external_mcp.go, http_mcp.go), the seatbelt launch decision
+                         (mcp_sandbox.go), the OAuth 2.1 client relay authenticates to an upstream
+                         HTTP MCP with (oauth.go — PKCE, dynamic registration, refresh; nothing to do
+                         with relay's own login), the context/enumerate client (external_mcp_enumerate.go),
+                         ADR-013's verbatim outbound encoder (wire_json.go) and the MCP/OAuth timeouts.
+                         Manager owns one supervised connection per MCP id plus the runtime schema
+                         table, and reports liveness through a SetHealthObserver callback so it needs
+                         no audit dependency. Depends on bridge/config/jsonrpc/mcp/project/service.
+                         Every door stays in main — McpOps (the gated core), mcp_routes.go, mcp_cmd.go,
+                         ipc_mcps.go — as does router.go, which reaches this package only through the
+                         ToolProvider/ToolManager interfaces, the ADR-012 audit translation
+                         (audit_call.go) and mcp_permissions*.go, whose darwin half is cgo.
+                         testseam.go is the only exported way into Manager's unexported connection and
+                         schema tables (SetConnectionForTest / ConnectionForTest /
+                         SetContextSchemaForTest); each panics outside a test binary, and cmd/relay's
+                         router, audit and scoping tests are what need them.
+login/                   The WebAuthn ceremony, pure: registration/assertion verification (webauthn.go,
+                         ES256 only, none attestation only), CBOR decode pinned to the CTAP2 canonical
+                         subset (webauthn_cbor.go), and the in-memory challenge table (webauthn_challenge.go,
+                         single use, 60s). Depends only on crypto/*, encoding/*, errors, fmt, math/big and
+                         internal/ceremonylimit — deliberately blind to the bootstrap code, the passkey
+                         store and the presence gate, all of which stay in main (login_ops.go, login_routes.go).
+                         loginfake/ is a separate, non-test package holding the software WebAuthn
+                         authenticator cmd/relay's login_routes tests drive over real HTTP — split out
+                         because a _test.go file's symbols cannot cross a package boundary, matching
+                         internal/presence/presencetest's shape (never imported outside a test binary).
+ceremonylimit/           A pure sync/time ceremony backoff (Limiter: Allow/RecordFailure/RecordSuccess),
+                         with zero WebAuthn or enrolment knowledge. Shared by two unrelated ceremonies —
+                         login/'s WebAuthnVerifier and cmd/relay's enrolment-request table
+                         (enrolment_requests.go) — neither of which may import the other, so the backoff
+                         lives in its own neutral package rather than in either.
 ```
 
 ## Projects
@@ -141,7 +205,8 @@ omission in the language of "there was nothing to apply". The audit record now
 carries `scope_unplaced` and the two facts no longer share a string (issue
 #42). v2 only — a v1 blob is injected verbatim, so nothing is dropped there.
 
-**A count is not a measure of confinement** (`scope_breadth.go`, issue #41).
+**A count is not a measure of confinement** (`internal/project/scope_breadth.go`,
+issue #41).
 `disclose: "count"` renders `["/"]` and `["/Users/me/project"]` identically, so
 a value whose entries resolve to a **filesystem root** is named as
 `unrestricted (the whole filesystem)` at every `disclose` setting — the client
@@ -156,7 +221,7 @@ about the field name; ADR-011 decision 3's no-registry rule is intact.
 
 `allow_cwd_auth` (default false, per project) opts into a token-less fallback:
 a caller with no token whose working directory is inside the project path
-authenticates as that project via `AuthenticateProjectByPath`, with identical
+authenticates as that project via `project.AuthenticateByPath`, with identical
 scope. A present-but-invalid token never falls back. See
 [`docs/tokens.md`](docs/tokens.md#directory-auth-allow_cwd_auth).
 
@@ -172,11 +237,11 @@ an equality check invites a future bug where an unset field reads as remote.
 
 A remote project has no `Path` and cannot have anything that presumes a host
 directory — `AllowCwdAuth`, `GenerateSkill`, `ShellTemplates`, and the
-`allowed_mcp_ids: ["*"]` wildcard are all refused by `validateProjectShape`
-(`project.go`), as is a non-empty `allowed_models` (an empty allowlist is the
+`allowed_mcp_ids: ["*"]` wildcard are all refused by `project.ValidateShape`,
+as is a non-empty `allowed_models` (an empty allowlist is the
 only value `modelAllowedForProject` won't misread as "unrestricted"). A
 MCP whose every tool needs the project path can't be granted to a remote
-project either (`ValidateProjectGrants`) — and `SyncProjectToken`
+project either (`project.ValidateGrants`) — and the package's own token sync
 independently refuses to derive any `source: "project_path"` field for one
 regardless, since an MCP's schema is discovered at runtime and could gain
 such a field after a grant was already validated. `appRouter.CallTool`
@@ -190,7 +255,7 @@ See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
 
 ### Remote client enrolment
 
-An **enrolment** (`enrolment.go`, `settings.json` → `enrolments`) binds one
+An **enrolment** (`internal/enrolment`, `settings.json` → `enrolments`) binds one
 client certificate to the remote projects it may use. It is keyed by
 *certificate, not by machine* — several agents on one VM each hold their own
 enrolment, granted, audited, and revoked independently, and nothing may assume
@@ -199,7 +264,7 @@ one per machine. There is **no bearer token anywhere on this path**: a stolen
 
 **The client's private key is generated on the client, not on relay**
 (ADR-018 decision 6 step 1). `relayremote enrol` generates the keypair and a
-CSR; `relay enrol sign` (`enrolment_csr.go`, `RelayCA.SignClientCSR`) signs
+CSR; `relay enrol sign` (`enrolment.ParseClientCSR`, `RelayCA.SignClientCSR`) signs
 the CSR's own public key and returns only certificates — the private key
 never crosses to this host, and relay never writes one for a CSR enrolment
 (`writeSignedCertBundle` refuses if `client.key` is already present in the
@@ -241,7 +306,7 @@ that reads as a security property it cannot provide — the real control is
 client-side and comes in two forms, one per client verb. `relayremote
 request` pins the CA-fingerprint carried out of band (`--ca-fingerprint`, or
 a watched `--tofu`), unchanged. `relayremote register` instead completes a
-**commit–reveal comparison** (ADR-019 decision 3, `enrolment_sas.go`): a
+**commit–reveal comparison** (ADR-019 decision 3, `internal/enrolment/sas.go`): a
 six-character code over relay's CA SPKI, the CSR's SPKI and a 16-byte nonce
 from each side, the client's committed at lodge and opened on its first
 poll. Both close the same gap — an attacker who lets a real CSR through to
@@ -254,18 +319,18 @@ bits, so raising it degrades the margin linearly. See
 [`docs/access-profiles.md`](docs/access-profiles.md#approving-a-request-from-the-machine-itself)
 and [`docs/install-remote-machine.md`](docs/install-remote-machine.md).
 
-Relay is its own CA (`enrolment_ca.go`), generated lazily on first use and
+Relay is its own CA (`internal/enrolment/ca.go`), generated lazily on first use and
 persisted as `ca.key.sealed` (sealed, ADR-017) / `ca.crt` (clear, 0600) in the
 config dir — not in `settings.json`, which is rewritten in full on every
 mutation. The CA's private key is never written to disk as plaintext; only
 the tray, holding the keychain key, can open it. Client certs are
 long-lived because *revocation, not expiry, is the control*; revoking deletes
-the record and fires `SetEnrolmentRevocationHook` so the listener can close
+the record and fires `enrolment.SetRevocationHook` so the listener can close
 live connections.
 
-Grants are validated at enrolment (`ValidateEnrolmentGrants` — every grant must
+Grants are validated at enrolment (`enrolment.ValidateGrants` — every grant must
 name a project with `IsRemote()` true) and at conversion
-(`ValidateProjectEnrolments` — remote→local is refused while any enrolment
+(`enrolment.ValidateProjectConversion` — remote→local is refused while any enrolment
 grants the project, naming the offenders), and a third time at call time by the
 listener (`RemoteServer.resolveGrant` re-checks `IsRemote()` immediately before
 dispatch, so a grant that went stale by any route relay did not anticipate
@@ -296,7 +361,7 @@ decoding is strict (`DisallowUnknownFields`) so a client sending `cwd` gets a
 loud error rather than silent divergence. The project token is resolved
 host-side from the granted project and never appears on the wire.
 
-Every remote call is budgeted (`enrolment_budget.go`). Each enrolment carries a
+Every remote call is budgeted (`internal/enrolment/budget.go`). Each enrolment carries a
 rolling-window call-rate and result-volume cap, enforced in `appRouter.CallTool`
 and refused with the `throttled` outcome — distinct from `denied` (a tool the
 grant never included) and `tool_error` (a boundary inside the MCP) because it is
@@ -324,7 +389,7 @@ The listener **refuses to start when auditing is disabled**: a remote grant is
 justified by the calls it records, so serving remote traffic unrecorded is not
 a degraded mode. Local tooling is unaffected. It also sets read+write deadlines
 (inactivity, not a cap on work) and keeps a connection table keyed by
-fingerprint so `SetEnrolmentRevocationHook` closes a revoked client's *live*
+fingerprint so `enrolment.SetRevocationHook` closes a revoked client's *live*
 connections.
 
 `enrolment_requests` and `enrolment_listen` configure the third listener
@@ -358,7 +423,7 @@ the old one serving and says so loudly rather than leaving nothing behind and
 no error; live connections on the old address are then closed deliberately,
 because `listen` is the reachability control and a narrowed bind that left
 old sessions running would not have narrowed anything. The revocation hook is
-*owned* (`SetEnrolmentRevocationHookFor` / `ClearEnrolmentRevocationHookFor`)
+*owned* (`enrolment.SetRevocationHookFor` / `enrolment.ClearRevocationHookFor`)
 so a replaced listener's teardown cannot uninstall the live listener's hook.
 
 **Every authorization read on this path goes through `freshSettings`, never
@@ -429,14 +494,14 @@ as it did before the field existed. An `expires` relay cannot parse reads as
 **expired**, and an expired credential is refused *identically* to an unknown
 one — a distinguishable answer would be an oracle for which credentials exist.
 Expired records are reaped lazily, inside the same `store.With` as the next
-mint, never by a timer. This is not a reversal of `enrolment_ca.go`'s
+mint, never by a timer. This is not a reversal of `internal/enrolment/ca.go`'s
 revocation-over-expiry choice: an enrolment is long-lived and revoked, a login
 credential is short-lived by design and renewed by another ceremony. See
 [`docs/tokens.md`](docs/tokens.md#expiry).
 
 **External MCPs are supervised children** — one stdio connection per MCP id,
 shared by every access profile that names it, and therefore restarted when it
-dies rather than left down. `mcpSupervisor` (`external_mcp.go`) waits on the
+dies rather than left down. `mcpSupervisor` (`internal/mcpbroker/external_mcp.go`) waits on the
 reader goroutine, backs off exponentially, and caps restart *intensity*: a child
 that stays up for `MCPRestartStableWindow` resets the counter, so an MCP that
 dies occasionally is recovered forever while one that dies on every spawn is
@@ -624,17 +689,18 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
    real binary they need is absent — `../relayLLM` unbuilt, or Google Chrome
    not installed. A developer without one must see a skip, never a failure.
 7. The WebAuthn verifier is covered twice on purpose (ADR-016 decision 8):
-   `webauthn_test.go`'s software client owns every negative case in the
-   hermetic tier, and `webauthn_browser_live_test.go` runs exactly one
-   ceremony in a real Chrome — the only evidence that relay agrees with a
-   user agent it did not also write. Neither covers real authenticator
+   `internal/login`'s `webauthn_test.go` software client owns every negative
+   case in the hermetic tier, and cmd/relay's `webauthn_browser_live_test.go`
+   (driving `internal/login/loginfake`'s software authenticator over real
+   HTTP) runs exactly one ceremony in a real Chrome — the only evidence that
+   relay agrees with a user agent it did not also write. Neither covers real authenticator
    hardware or Safari; both gaps are named in `docs/testing-roadmap.md`.
 
 ### Not covered by the suite
 
 - Cocoa tray UI (menu, dock) — exercise via `scripts/demo.sh`.
 - Real `launchd` integration — `service_registry` is tested against `cmd/testservice`.
-- Live OAuth round-trips — `oauth_test.go` covers PKCE/dynamic registration in isolation.
+- Live OAuth round-trips — `internal/mcpbroker/oauth_test.go` covers PKCE/dynamic registration in isolation.
 - Notarization / code-signing — exercised by `./build.sh --release`.
 
 ADRs: see [`docs/decisions/`](docs/decisions/). Cross-repo test status:
