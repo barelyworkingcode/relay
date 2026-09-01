@@ -1,4 +1,4 @@
-package main
+package login
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 )
 
 func newTestVerifier(t *testing.T) *WebAuthnVerifier {
@@ -135,7 +137,7 @@ func TestWebAuthnChallengeExpired(t *testing.T) {
 	now := time.Now()
 	v.challenges.now = func() time.Time { return now }
 	c := newAssertion(t, v, a)
-	now = now.Add(challengeTTL + time.Second)
+	now = now.Add(ChallengeTTL + time.Second)
 
 	_, err := v.VerifyAssertion(c.input(t, cred))
 	wantErr(t, err, errWebAuthnChallenge, "expired challenge")
@@ -149,7 +151,7 @@ func TestWebAuthnChallengeStillLiveJustInsideTTL(t *testing.T) {
 	now := time.Now()
 	v.challenges.now = func() time.Time { return now }
 	c := newAssertion(t, v, a)
-	now = now.Add(challengeTTL - time.Millisecond)
+	now = now.Add(ChallengeTTL - time.Millisecond)
 
 	if _, err := v.VerifyAssertion(c.input(t, cred)); err != nil {
 		t.Fatalf("assertion just inside the TTL: %v", err)
@@ -257,14 +259,14 @@ func TestWebAuthnChallengeTableIsBounded(t *testing.T) {
 			t.Fatalf("issue %d: %v", i, err)
 		}
 	}
-	if _, err := store.Issue(WebAuthnCeremonyAssert); !errors.Is(err, errChallengeTableFull) {
-		t.Fatalf("issue past the bound: got %v, want %v", err, errChallengeTableFull)
+	if _, err := store.Issue(WebAuthnCeremonyAssert); !errors.Is(err, ErrChallengeTableFull) {
+		t.Fatalf("issue past the bound: got %v, want %v", err, ErrChallengeTableFull)
 	}
 	if n := store.outstanding(); n != maxOutstandingChallenges {
 		t.Fatalf("outstanding = %d, want %d", n, maxOutstandingChallenges)
 	}
 
-	now = now.Add(challengeTTL + time.Second)
+	now = now.Add(ChallengeTTL + time.Second)
 	if _, err := store.Issue(WebAuthnCeremonyAssert); err != nil {
 		t.Fatalf("issue after the outstanding entries expired: %v", err)
 	}
@@ -297,7 +299,7 @@ func TestWebAuthnChallengeStoreIsSingleUseUnderConcurrency(t *testing.T) {
 				if store.consume(WebAuthnCeremonyAssert, c) {
 					local++
 				}
-				if _, err := store.Issue(WebAuthnCeremonyRegister); err != nil && !errors.Is(err, errChallengeTableFull) {
+				if _, err := store.Issue(WebAuthnCeremonyRegister); err != nil && !errors.Is(err, ErrChallengeTableFull) {
 					t.Errorf("issue: %v", err)
 				}
 			}
@@ -529,7 +531,7 @@ func TestWebAuthnSignatureOverTheWrongMessage(t *testing.T) {
 			c := newAssertion(t, v, a)
 			mangle(c, buildAuthData(c.AuthData), buildClientDataJSON(c.ClientData))
 			_, err := v.VerifyAssertion(c.input(t, cred))
-			wantErr(t, err, errWebAuthnAssertionRejected, name)
+			wantErr(t, err, ErrWebAuthnAssertionRejected, name)
 		})
 	}
 }
@@ -543,7 +545,7 @@ func TestWebAuthnSignatureFromAnotherKey(t *testing.T) {
 	c := newAssertion(t, v, a)
 	c.SignWith = other.key
 	_, err := v.VerifyAssertion(c.input(t, cred))
-	wantErr(t, err, errWebAuthnAssertionRejected, "signature from another key")
+	wantErr(t, err, ErrWebAuthnAssertionRejected, "signature from another key")
 }
 
 func TestWebAuthnSignatureMalformed(t *testing.T) {
@@ -562,7 +564,7 @@ func TestWebAuthnSignatureMalformed(t *testing.T) {
 			c := newAssertion(t, v, a)
 			c.RawSignature = sig
 			_, err := v.VerifyAssertion(c.input(t, cred))
-			wantErr(t, err, errWebAuthnAssertionRejected, name)
+			wantErr(t, err, ErrWebAuthnAssertionRejected, name)
 		})
 	}
 }
@@ -577,7 +579,7 @@ func TestWebAuthnSignatureWithTrailingDERBytes(t *testing.T) {
 	clientData := buildClientDataJSON(c.ClientData)
 	c.RawSignature = append(c.sign(t, authData, clientData), 0x00)
 	_, err := v.VerifyAssertion(c.input(t, cred))
-	wantErr(t, err, errWebAuthnAssertionRejected, "DER with a trailing byte")
+	wantErr(t, err, ErrWebAuthnAssertionRejected, "DER with a trailing byte")
 }
 
 // Check 9: credential-to-user binding.
@@ -590,7 +592,7 @@ func TestWebAuthnUnknownCredentialID(t *testing.T) {
 	c := newAssertion(t, v, a)
 	c.CredentialID = bytes.Repeat([]byte{0xAB}, 32)
 	_, err := v.VerifyAssertion(c.input(t, cred))
-	wantErr(t, err, errWebAuthnAssertionRejected, "unknown credential id")
+	wantErr(t, err, ErrWebAuthnAssertionRejected, "unknown credential id")
 }
 
 func TestWebAuthnNoRegisteredCredentials(t *testing.T) {
@@ -598,7 +600,7 @@ func TestWebAuthnNoRegisteredCredentials(t *testing.T) {
 	a := newSoftAuthenticator(t)
 	c := newAssertion(t, v, a)
 	_, err := v.VerifyAssertion(c.input(t))
-	wantErr(t, err, errWebAuthnAssertionRejected, "assertion against an empty credential set")
+	wantErr(t, err, ErrWebAuthnAssertionRejected, "assertion against an empty credential set")
 }
 
 func TestWebAuthnUnknownCredentialIsRefusedIdenticallyToABadSignature(t *testing.T) {
@@ -674,7 +676,7 @@ func TestWebAuthnCredentialIDOfAnotherRegisteredKeyDoesNotVerify(t *testing.T) {
 	c := newAssertion(t, v, first)
 	c.CredentialID = second.credID
 	_, err := v.VerifyAssertion(c.input(t, credOne, credTwo))
-	wantErr(t, err, errWebAuthnAssertionRejected, "signature by the wrong registered key")
+	wantErr(t, err, ErrWebAuthnAssertionRejected, "signature by the wrong registered key")
 }
 
 // Check 10: signature counter.
@@ -691,9 +693,9 @@ func TestWebAuthnCounterMustIncrease(t *testing.T) {
 			c := newAssertion(t, v, a)
 			c.AuthData.SignCount = received
 			_, err := v.VerifyAssertion(c.input(t, cred))
-			wantErr(t, err, errWebAuthnCounter, name+" counter")
+			wantErr(t, err, ErrWebAuthnCounter, name+" counter")
 
-			var counterErr *webauthnCounterError
+			var counterErr *WebAuthnCounterError
 			if !errors.As(err, &counterErr) {
 				t.Fatalf("error %v does not carry the credential for the audit record", err)
 			}
@@ -733,8 +735,8 @@ func TestWebAuthnCounterRegressionDoesNotDisableTheCredential(t *testing.T) {
 
 	stale := newAssertion(t, v, a)
 	stale.AuthData.SignCount = 4
-	if _, err := v.VerifyAssertion(stale.input(t, cred)); !errors.Is(err, errWebAuthnCounter) {
-		t.Fatalf("stale assertion: got %v, want %v", err, errWebAuthnCounter)
+	if _, err := v.VerifyAssertion(stale.input(t, cred)); !errors.Is(err, ErrWebAuthnCounter) {
+		t.Fatalf("stale assertion: got %v, want %v", err, ErrWebAuthnCounter)
 	}
 
 	fresh := newAssertion(t, v, a)
@@ -911,7 +913,7 @@ func TestWebAuthnCeremonyRateLimit(t *testing.T) {
 	cred := credentialOf(mustRegister(t, v, a), nil)
 
 	now := time.Now()
-	v.limiter.now = func() time.Time { return now }
+	v.limiter.SetClock(func() time.Time { return now })
 
 	fail := func() error {
 		c := newAssertion(t, v, a)
@@ -919,7 +921,7 @@ func TestWebAuthnCeremonyRateLimit(t *testing.T) {
 		_, err := v.VerifyAssertion(c.input(t, cred))
 		return err
 	}
-	for i := 0; i < ceremonyFailureGrace; i++ {
+	for i := 0; i < ceremonylimit.FailureGrace; i++ {
 		if err := fail(); !errors.Is(err, errWebAuthnOrigin) {
 			t.Fatalf("failure %d: got %v, want %v", i, err, errWebAuthnOrigin)
 		}
@@ -930,8 +932,8 @@ func TestWebAuthnCeremonyRateLimit(t *testing.T) {
 
 	good := newAssertion(t, v, a)
 	_, err := v.VerifyAssertion(good.input(t, cred))
-	wantErr(t, err, errWebAuthnRateLimited, "a ceremony inside the penalty window")
-	var limited *webauthnRateLimitedError
+	wantErr(t, err, ErrWebAuthnRateLimited, "a ceremony inside the penalty window")
+	var limited *WebAuthnRateLimitedError
 	if !errors.As(err, &limited) || limited.RetryAfter <= 0 {
 		t.Fatalf("error %v does not name a retry delay", err)
 	}
@@ -942,7 +944,7 @@ func TestWebAuthnCeremonyRateLimit(t *testing.T) {
 		t.Fatalf("assertion after the penalty window: %v", err)
 	}
 
-	for i := 0; i < ceremonyFailureGrace; i++ {
+	for i := 0; i < ceremonylimit.FailureGrace; i++ {
 		if err := fail(); !errors.Is(err, errWebAuthnOrigin) {
 			t.Fatalf("a success must reset the failure count, failure %d gave %v", i, err)
 		}
@@ -953,9 +955,9 @@ func TestWebAuthnRegistrationRateLimit(t *testing.T) {
 	v := newTestVerifier(t)
 	a := newSoftAuthenticator(t)
 	now := time.Now()
-	v.limiter.now = func() time.Time { return now }
+	v.limiter.SetClock(func() time.Time { return now })
 
-	for i := 0; i <= ceremonyFailureGrace; i++ {
+	for i := 0; i <= ceremonylimit.FailureGrace; i++ {
 		c := newRegistration(t, v, a)
 		c.Format = "packed"
 		if _, err := v.VerifyRegistration(c.input()); !errors.Is(err, errWebAuthnAttestationFormat) {
@@ -964,7 +966,7 @@ func TestWebAuthnRegistrationRateLimit(t *testing.T) {
 	}
 	c := newRegistration(t, v, a)
 	_, err := v.VerifyRegistration(c.input())
-	wantErr(t, err, errWebAuthnRateLimited, "registration inside the penalty window")
+	wantErr(t, err, ErrWebAuthnRateLimited, "registration inside the penalty window")
 }
 
 func TestWebAuthnPasskeyCap(t *testing.T) {
@@ -976,7 +978,7 @@ func TestWebAuthnPasskeyCap(t *testing.T) {
 	}
 	c := newRegistration(t, v, a)
 	_, err := v.VerifyRegistration(c.input(existing...))
-	wantErr(t, err, errWebAuthnPasskeyLimit, "a sixth passkey")
+	wantErr(t, err, ErrWebAuthnPasskeyLimit, "a sixth passkey")
 
 	fresh := newTestVerifier(t)
 	room := newRegistration(t, fresh, a)
@@ -992,7 +994,7 @@ func TestWebAuthnDuplicateCredentialIsRefused(t *testing.T) {
 
 	c := newRegistration(t, v, a)
 	_, err := v.VerifyRegistration(c.input(cred))
-	wantErr(t, err, errWebAuthnDuplicateCred, "re-registering a credential id")
+	wantErr(t, err, ErrWebAuthnDuplicateCred, "re-registering a credential id")
 }
 
 // Attestation policy.

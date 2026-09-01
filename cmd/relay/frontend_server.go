@@ -14,6 +14,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -129,7 +130,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 // registered against a placeholder (the same rule control.RouteRegistrar.Handle
 // follows for an unreachable class).
 func (s *FrontendServer) newLoginMuxFor(origin string) (*http.ServeMux, error) {
-	verifier, err := NewWebAuthnVerifier(origin, webauthnRPID)
+	verifier, err := login.NewWebAuthnVerifier(origin, webauthnRPID)
 	if err != nil {
 		return nil, fmt.Errorf("login routes: %w", err)
 	}

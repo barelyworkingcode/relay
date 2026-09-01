@@ -1,4 +1,4 @@
-package main
+package login
 
 import (
 	"crypto/ecdsa"
@@ -77,11 +77,11 @@ func newSoftAuthenticator(t *testing.T) *softAuthenticator {
 }
 
 func (a *softAuthenticator) x() []byte {
-	return a.key.PublicKey.X.FillBytes(make([]byte, coseCoordinateLength))
+	return a.key.X.FillBytes(make([]byte, coseCoordinateLength))
 }
 
 func (a *softAuthenticator) y() []byte {
-	return a.key.PublicKey.Y.FillBytes(make([]byte, coseCoordinateLength))
+	return a.key.Y.FillBytes(make([]byte, coseCoordinateLength))
 }
 
 // coseKey emits CTAP2 canonical order: 1, 3, -1, -2, -3.

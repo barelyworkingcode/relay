@@ -1,4 +1,4 @@
-package main
+package login
 
 import (
 	"crypto/rand"
@@ -42,11 +42,11 @@ func (c WebAuthnCeremony) String() string {
 
 const (
 	challengeLength          = 32
-	challengeTTL             = 60 * time.Second
+	ChallengeTTL             = 60 * time.Second
 	maxOutstandingChallenges = 64
 )
 
-var errChallengeTableFull = errors.New("too many login ceremonies in flight")
+var ErrChallengeTableFull = errors.New("too many login ceremonies in flight")
 
 type webauthnChallengeEntry struct {
 	ceremony WebAuthnCeremony
@@ -71,7 +71,7 @@ func newWebAuthnChallengeStore() *WebAuthnChallengeStore {
 		now:     time.Now,
 		rand:    rand.Reader,
 		max:     maxOutstandingChallenges,
-		ttl:     challengeTTL,
+		ttl:     ChallengeTTL,
 	}
 }
 
@@ -111,7 +111,7 @@ func (s *WebAuthnChallengeStore) Issue(ceremony WebAuthnCeremony) ([]byte, error
 	}
 	if len(s.entries) >= s.max {
 		s.warnTableFullLocked(now)
-		return nil, fmt.Errorf("%w: %d outstanding", errChallengeTableFull, len(s.entries))
+		return nil, fmt.Errorf("%w: %d outstanding", ErrChallengeTableFull, len(s.entries))
 	}
 	s.entries[string(challenge)] = webauthnChallengeEntry{
 		ceremony: ceremony,
@@ -166,76 +166,14 @@ func (s *WebAuthnChallengeStore) outstanding() int {
 	return len(s.entries)
 }
 
-const (
-	ceremonyFailureGrace = 3
-	ceremonyFailureDelay = 2 * time.Second
-	ceremonyMaxDelay     = 30 * time.Second
-	ceremonyFailureDecay = 5 * time.Minute
-)
+var ErrWebAuthnRateLimited = errors.New("too many failed login ceremonies")
 
-var errWebAuthnRateLimited = errors.New("too many failed login ceremonies")
-
-type webauthnRateLimitedError struct {
+type WebAuthnRateLimitedError struct {
 	RetryAfter time.Duration
 }
 
-func (e *webauthnRateLimitedError) Error() string {
-	return fmt.Sprintf("%s: retry after %s", errWebAuthnRateLimited, e.RetryAfter.Round(time.Second))
+func (e *WebAuthnRateLimitedError) Error() string {
+	return fmt.Sprintf("%s: retry after %s", ErrWebAuthnRateLimited, e.RetryAfter.Round(time.Second))
 }
 
-func (e *webauthnRateLimitedError) Unwrap() error { return errWebAuthnRateLimited }
-
-// ceremonyLimiter returns the delay it wants rather than sleeping: a verifier
-// that slept would hold a handler goroutine per attempt, which hands the
-// unauthenticated caller a cheaper denial of service than the one being
-// rate-limited.
-type ceremonyLimiter struct {
-	mu          sync.Mutex
-	failures    int
-	nextAllowed time.Time
-	lastFailure time.Time
-	now         func() time.Time
-}
-
-func newCeremonyLimiter() *ceremonyLimiter {
-	return &ceremonyLimiter{now: time.Now}
-}
-
-func (l *ceremonyLimiter) allow() (time.Duration, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	if !l.lastFailure.IsZero() && now.Sub(l.lastFailure) >= ceremonyFailureDecay {
-		l.failures = 0
-		l.nextAllowed = time.Time{}
-	}
-	if now.Before(l.nextAllowed) {
-		return l.nextAllowed.Sub(now), false
-	}
-	return 0, true
-}
-
-func (l *ceremonyLimiter) recordFailure() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	l.failures++
-	l.lastFailure = now
-	over := l.failures - ceremonyFailureGrace
-	if over <= 0 {
-		return
-	}
-	delay := time.Duration(over) * ceremonyFailureDelay
-	if delay > ceremonyMaxDelay {
-		delay = ceremonyMaxDelay
-	}
-	l.nextAllowed = now.Add(delay)
-}
-
-func (l *ceremonyLimiter) recordSuccess() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.failures = 0
-	l.nextAllowed = time.Time{}
-	l.lastFailure = time.Time{}
-}
+func (e *WebAuthnRateLimitedError) Unwrap() error { return ErrWebAuthnRateLimited }

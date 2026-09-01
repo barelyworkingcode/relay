@@ -1,4 +1,4 @@
-package main
+package login
 
 import (
 	"bytes"
@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+
+	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 )
 
 const (
@@ -55,33 +57,33 @@ var (
 	errWebAuthnUserPresent       = errors.New("webauthn: user presence flag not set")
 	errWebAuthnUserVerified      = errors.New("webauthn: user verification flag not set")
 	errWebAuthnUserHandle        = errors.New("webauthn: user handle does not match the credential")
-	errWebAuthnPasskeyLimit      = fmt.Errorf("webauthn: at most %d passkeys may be registered", MaxRegisteredPasskeys)
-	errWebAuthnDuplicateCred     = errors.New("webauthn: credential is already registered")
-	errWebAuthnCounter           = errors.New("webauthn: signature counter did not increase")
+	ErrWebAuthnPasskeyLimit      = fmt.Errorf("webauthn: at most %d passkeys may be registered", MaxRegisteredPasskeys)
+	ErrWebAuthnDuplicateCred     = errors.New("webauthn: credential is already registered")
+	ErrWebAuthnCounter           = errors.New("webauthn: signature counter did not increase")
 
-	// errWebAuthnAssertionRejected is the single answer to a credential id
+	// ErrWebAuthnAssertionRejected is the single answer to a credential id
 	// that resolves to nothing AND to a signature that does not verify
 	// (ADR-016 decision 7, point 9). Splitting it would tell an
 	// unauthenticated caller which credential ids exist.
-	errWebAuthnAssertionRejected = errors.New("webauthn: assertion rejected")
+	ErrWebAuthnAssertionRejected = errors.New("webauthn: assertion rejected")
 )
 
-// webauthnCounterError names the credential so the call site can audit the
+// WebAuthnCounterError names the credential so the call site can audit the
 // cloned-authenticator signal. It carries no instruction to disable that
 // credential, because one replayed stale assertion must not lock the owner
 // out (ADR-016 decision 7, point 10).
-type webauthnCounterError struct {
+type WebAuthnCounterError struct {
 	CredentialID []byte
 	Stored       uint32
 	Received     uint32
 }
 
-func (e *webauthnCounterError) Error() string {
+func (e *WebAuthnCounterError) Error() string {
 	return fmt.Sprintf("%s: credential %s stored %d, received %d",
-		errWebAuthnCounter, base64.RawURLEncoding.EncodeToString(e.CredentialID), e.Stored, e.Received)
+		ErrWebAuthnCounter, base64.RawURLEncoding.EncodeToString(e.CredentialID), e.Stored, e.Received)
 }
 
-func (e *webauthnCounterError) Unwrap() error { return errWebAuthnCounter }
+func (e *WebAuthnCounterError) Unwrap() error { return ErrWebAuthnCounter }
 
 type AuthenticatorData struct {
 	Raw       []byte
@@ -355,7 +357,7 @@ type WebAuthnVerifier struct {
 	rpID       string
 	rpIDHash   [32]byte
 	challenges *WebAuthnChallengeStore
-	limiter    *ceremonyLimiter
+	limiter    *ceremonylimit.Limiter
 }
 
 func NewWebAuthnVerifier(origin, rpID string) (*WebAuthnVerifier, error) {
@@ -370,7 +372,7 @@ func NewWebAuthnVerifier(origin, rpID string) (*WebAuthnVerifier, error) {
 		rpID:       rpID,
 		rpIDHash:   sha256.Sum256([]byte(rpID)),
 		challenges: newWebAuthnChallengeStore(),
-		limiter:    newCeremonyLimiter(),
+		limiter:    ceremonylimit.New(),
 	}, nil
 }
 
@@ -389,9 +391,9 @@ func (v *WebAuthnVerifier) IssueChallenge(ceremony WebAuthnCeremony) ([]byte, er
 // CeremonyRefused is the other half — a ceremony this verifier accepted and
 // the caller then refused, which is the only way a bootstrap-code guess is
 // counted at all.
-func (v *WebAuthnVerifier) CeremonyCompleted() { v.limiter.recordSuccess() }
+func (v *WebAuthnVerifier) CeremonyCompleted() { v.limiter.RecordSuccess() }
 
-func (v *WebAuthnVerifier) CeremonyRefused() { v.limiter.recordFailure() }
+func (v *WebAuthnVerifier) CeremonyRefused() { v.limiter.RecordFailure() }
 
 // VerifyRegistration is pure: it knows nothing about the bootstrap code that
 // anchors registration (ADR-016 decision 2), which is checked by the caller
@@ -405,17 +407,17 @@ func (v *WebAuthnVerifier) CeremonyRefused() { v.limiter.recordFailure() }
 // forgets to confirm leaves the count standing, which is the direction this
 // has to fail.
 func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (result *WebAuthnRegistrationResult, err error) {
-	if retry, ok := v.limiter.allow(); !ok {
-		return nil, &webauthnRateLimitedError{RetryAfter: retry}
+	if retry, ok := v.limiter.Allow(); !ok {
+		return nil, &WebAuthnRateLimitedError{RetryAfter: retry}
 	}
 	defer func() {
 		if err != nil {
-			v.limiter.recordFailure()
+			v.limiter.RecordFailure()
 		}
 	}()
 
 	if len(in.Existing) >= MaxRegisteredPasskeys {
-		return nil, fmt.Errorf("%w: %d registered", errWebAuthnPasskeyLimit, len(in.Existing))
+		return nil, fmt.Errorf("%w: %d registered", ErrWebAuthnPasskeyLimit, len(in.Existing))
 	}
 	clientData, challenge, err := parseClientData(in.ClientDataJSON)
 	if err != nil {
@@ -436,7 +438,7 @@ func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (res
 	}
 	for _, c := range in.Existing {
 		if bytes.Equal(c.ID, att.AuthData.CredentialID) {
-			return nil, errWebAuthnDuplicateCred
+			return nil, ErrWebAuthnDuplicateCred
 		}
 	}
 	return &WebAuthnRegistrationResult{
@@ -458,15 +460,15 @@ func (v *WebAuthnVerifier) VerifyRegistration(in WebAuthnRegistrationInput) (res
 // function accepts is a ceremony that completed. The caller confirms it too,
 // so the signal keeps working if that ever stops being true.
 func (v *WebAuthnVerifier) VerifyAssertion(in WebAuthnAssertionInput) (result *WebAuthnAssertionResult, err error) {
-	if retry, ok := v.limiter.allow(); !ok {
-		return nil, &webauthnRateLimitedError{RetryAfter: retry}
+	if retry, ok := v.limiter.Allow(); !ok {
+		return nil, &WebAuthnRateLimitedError{RetryAfter: retry}
 	}
 	defer func() {
 		if err != nil {
-			v.limiter.recordFailure()
+			v.limiter.RecordFailure()
 			return
 		}
-		v.limiter.recordSuccess()
+		v.limiter.RecordSuccess()
 	}()
 
 	clientData, challenge, err := parseClientData(in.ClientDataJSON)
@@ -481,7 +483,7 @@ func (v *WebAuthnVerifier) VerifyAssertion(in WebAuthnAssertionInput) (result *W
 	}
 	cred := findWebAuthnCredential(in.Credentials, in.CredentialID)
 	if cred == nil {
-		return nil, errWebAuthnAssertionRejected
+		return nil, ErrWebAuthnAssertionRejected
 	}
 	if len(in.UserHandle) > 0 &&
 		subtle.ConstantTimeCompare(in.UserHandle, cred.UserHandle) != 1 {
@@ -498,7 +500,7 @@ func (v *WebAuthnVerifier) VerifyAssertion(in WebAuthnAssertionInput) (result *W
 		return nil, err
 	}
 	if len(in.Signature) == 0 || len(in.Signature) > maxSignatureLength {
-		return nil, errWebAuthnAssertionRejected
+		return nil, ErrWebAuthnAssertionRejected
 	}
 	pub, err := webauthnPublicKey(cred.PublicKeyX, cred.PublicKeyY)
 	if err != nil {
@@ -510,10 +512,10 @@ func (v *WebAuthnVerifier) VerifyAssertion(in WebAuthnAssertionInput) (result *W
 	signed = append(signed, clientDataHash[:]...)
 	digest := sha256.Sum256(signed)
 	if !ecdsa.VerifyASN1(pub, digest[:], in.Signature) {
-		return nil, errWebAuthnAssertionRejected
+		return nil, ErrWebAuthnAssertionRejected
 	}
 	if cred.CounterSupported && authData.SignCount <= cred.SignCount {
-		return nil, &webauthnCounterError{
+		return nil, &WebAuthnCounterError{
 			CredentialID: cred.ID,
 			Stored:       cred.SignCount,
 			Received:     authData.SignCount,

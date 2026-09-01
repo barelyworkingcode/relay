@@ -602,7 +602,7 @@ func TestIssuance_LoginCeremonyRecordsThePasskeyAndTheCredential(t *testing.T) {
 		"login session plaintext": token,
 		"login session hash":      cred.Hash,
 		"passkey public X":        aiHexOf(stored[0].X),
-		"authenticator cred id":   aiHexOf(auth.credID),
+		"authenticator cred id":   aiHexOf(auth.CredID),
 	})
 }
 

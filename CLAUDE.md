@@ -56,13 +56,11 @@ enrol_cmd.go             `relay enrol` CLI
 capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
-login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share)
+login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share) — holds the presence.Gate, stays in main
 login_cmd.go             The `relay login` CLI (ADR-016 decision 2)
-webauthn.go              WebAuthn verifier: registration + assertion, ES256 only, none attestation only
-webauthn_cbor.go         CBOR decode via fxamacker/cbor, pinned to the CTAP2 canonical subset
-webauthn_challenge.go    In-memory challenge table (single use, 60s) + the ceremony rate limiter
 login_routes.go          The three unauthenticated /relay/login patterns and the door that serves them
 login_document.go        The self-contained login page, served under a strict CSP
+webauthn_browser_live_test.go   Black-box HTTP+Chrome ceremony test via lrServer; never touches verifier internals, so it stayed in main rather than moving with login/
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
 external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
@@ -122,6 +120,21 @@ audit/                   The tool-call audit log engine: the event/actor/config 
                          and the CLI/HTTP/IPC surfaces (audit_cmd.go, audit_routes.go, ipc_audit.go)
                          stay in main, since they reach the router or unexported recorder state
                          directly.
+login/                   The WebAuthn ceremony, pure: registration/assertion verification (webauthn.go,
+                         ES256 only, none attestation only), CBOR decode pinned to the CTAP2 canonical
+                         subset (webauthn_cbor.go), and the in-memory challenge table (webauthn_challenge.go,
+                         single use, 60s). Depends only on crypto/*, encoding/*, errors, fmt, math/big and
+                         internal/ceremonylimit — deliberately blind to the bootstrap code, the passkey
+                         store and the presence gate, all of which stay in main (login_ops.go, login_routes.go).
+                         loginfake/ is a separate, non-test package holding the software WebAuthn
+                         authenticator cmd/relay's login_routes tests drive over real HTTP — split out
+                         because a _test.go file's symbols cannot cross a package boundary, matching
+                         internal/presence/presencetest's shape (never imported outside a test binary).
+ceremonylimit/           A pure sync/time ceremony backoff (Limiter: Allow/RecordFailure/RecordSuccess),
+                         with zero WebAuthn or enrolment knowledge. Shared by two unrelated ceremonies —
+                         login/'s WebAuthnVerifier and cmd/relay's enrolment-request table
+                         (enrolment_requests.go) — neither of which may import the other, so the backoff
+                         lives in its own neutral package rather than in either.
 ```
 
 ## Projects
@@ -660,10 +673,11 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
    real binary they need is absent — `../relayLLM` unbuilt, or Google Chrome
    not installed. A developer without one must see a skip, never a failure.
 7. The WebAuthn verifier is covered twice on purpose (ADR-016 decision 8):
-   `webauthn_test.go`'s software client owns every negative case in the
-   hermetic tier, and `webauthn_browser_live_test.go` runs exactly one
-   ceremony in a real Chrome — the only evidence that relay agrees with a
-   user agent it did not also write. Neither covers real authenticator
+   `internal/login`'s `webauthn_test.go` software client owns every negative
+   case in the hermetic tier, and cmd/relay's `webauthn_browser_live_test.go`
+   (driving `internal/login/loginfake`'s software authenticator over real
+   HTTP) runs exactly one ceremony in a real Chrome — the only evidence that
+   relay agrees with a user agent it did not also write. Neither covers real authenticator
    hardware or Safari; both gaps are named in `docs/testing-roadmap.md`.
 
 ### Not covered by the suite

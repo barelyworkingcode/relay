@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/gorilla/websocket"
 )
 
@@ -128,7 +129,7 @@ func logAuthenticatorFacts(t *testing.T, page *chromePage, registration ceremony
 		t.Fatalf("decode chrome's attestation object: %v", err)
 	}
 	t.Logf("chrome clientDataJSON: %s", clientData)
-	att, err := ParseAttestationObject(attestation)
+	att, err := login.ParseAttestationObject(attestation)
 	if err != nil {
 		t.Fatalf("relay cannot parse chrome's attestation object: %v\nraw: %x", err, attestation)
 	}

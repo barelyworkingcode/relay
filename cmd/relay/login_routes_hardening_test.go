@@ -15,7 +15,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/ceremonylimit"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/login"
+	"github.com/barelyworkingcode/relay/internal/login/loginfake"
 )
 
 func lrhStat(t *testing.T, s *lrServer) os.FileInfo {
@@ -47,23 +50,25 @@ func TestLoginRoutes_ARefusedRegistrationWritesNothing(t *testing.T) {
 	// two stats is that refusal.
 	cases := map[string]func(t *testing.T, s *lrServer) func() (*http.Response, []byte){
 		"no code at all": func(t *testing.T, s *lrServer) func() (*http.Response, []byte) {
-			return func() (*http.Response, []byte) { return s.register(newSoftAuthenticator(t), "", 1) }
+			return func() (*http.Response, []byte) { return s.register(loginfake.NewSoftAuthenticator(t), "", 1) }
 		},
 		"a wrong code against a live anchor": func(t *testing.T, s *lrServer) func() (*http.Response, []byte) {
 			s.mintCode()
-			return func() (*http.Response, []byte) { return s.register(newSoftAuthenticator(t), "not-the-code", 1) }
+			return func() (*http.Response, []byte) {
+				return s.register(loginfake.NewSoftAuthenticator(t), "not-the-code", 1)
+			}
 		},
 		"the passkey cap reached": func(t *testing.T, s *lrServer) func() (*http.Response, []byte) {
-			for i := 0; i < MaxRegisteredPasskeys; i++ {
-				if resp, body := s.register(newSoftAuthenticator(t), s.mintCode(), 1); resp.StatusCode != http.StatusCreated {
+			for i := 0; i < login.MaxRegisteredPasskeys; i++ {
+				if resp, body := s.register(loginfake.NewSoftAuthenticator(t), s.mintCode(), 1); resp.StatusCode != http.StatusCreated {
 					t.Fatalf("passkey %d: status %d, body %s", i+1, resp.StatusCode, body)
 				}
 			}
 			code := s.mintCode()
-			return func() (*http.Response, []byte) { return s.register(newSoftAuthenticator(t), code, 1) }
+			return func() (*http.Response, []byte) { return s.register(loginfake.NewSoftAuthenticator(t), code, 1) }
 		},
 		"a duplicate credential id": func(t *testing.T, s *lrServer) func() (*http.Response, []byte) {
-			a := newSoftAuthenticator(t)
+			a := loginfake.NewSoftAuthenticator(t)
 			if resp, body := s.register(a, s.mintCode(), 1); resp.StatusCode != http.StatusCreated {
 				t.Fatalf("setup registration: status %d, body %s", resp.StatusCode, body)
 			}
@@ -116,7 +121,7 @@ func TestLoginRoutes_BootstrapCodeGuessesAreThrottled(t *testing.T) {
 	const guesses = 30
 	throttled := 0
 	for i := 0; i < guesses; i++ {
-		resp, body := s.register(newSoftAuthenticator(t), "guess-the-anchor", 1)
+		resp, body := s.register(loginfake.NewSoftAuthenticator(t), "guess-the-anchor", 1)
 		switch resp.StatusCode {
 		case http.StatusTooManyRequests:
 			throttled++
@@ -146,11 +151,11 @@ func TestLoginRoutes_ACodelessRegistrationDoesNotClearTheCeremonyLimiter(t *test
 
 	const rounds = 4
 	for round := 0; round < rounds; round++ {
-		for i := 0; i < ceremonyFailureGrace; i++ {
+		for i := 0; i < ceremonylimit.FailureGrace; i++ {
 			failAssertion()
 		}
 		// Under the defect this is what wiped `failures` and `nextAllowed`.
-		if resp, body := s.register(newSoftAuthenticator(t), "", 1); resp.StatusCode == http.StatusCreated {
+		if resp, body := s.register(loginfake.NewSoftAuthenticator(t), "", 1); resp.StatusCode == http.StatusCreated {
 			t.Fatalf("round %d: a registration with no code was accepted: %s", round, body)
 		}
 	}
@@ -158,7 +163,7 @@ func TestLoginRoutes_ACodelessRegistrationDoesNotClearTheCeremonyLimiter(t *test
 	resp, body := s.assert(a, 10)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("after %d failed ceremonies interleaved with codeless registrations the limiter answered %d, want 429: %s",
-			rounds*ceremonyFailureGrace, resp.StatusCode, body)
+			rounds*ceremonylimit.FailureGrace, resp.StatusCode, body)
 	}
 	if got := resp.Header.Get("Retry-After"); got == "" {
 		t.Error("a throttled ceremony carries no Retry-After")
@@ -176,19 +181,19 @@ func TestLoginRoutes_LoginOutcomesAreAuditedAndCarryNoSecret(t *testing.T) {
 
 	const guess = "GUESSED-ANCHOR-7K2P-QX4M"
 
-	a := newSoftAuthenticator(t)
+	a := loginfake.NewSoftAuthenticator(t)
 	code := s.mintCode()
 	if resp, body := s.register(a, code, 1); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: status %d, body %s", resp.StatusCode, body)
 	}
-	passkeyID := lrB64(a.credID)
+	passkeyID := lrB64(a.CredID)
 	token := s.signIn(a, 2)
 	cred := s.loginCredential()
 
-	if resp, body := s.register(newSoftAuthenticator(t), guess, 1); resp.StatusCode != http.StatusForbidden {
+	if resp, body := s.register(loginfake.NewSoftAuthenticator(t), guess, 1); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("guessed code: status %d, want 403, body %s", resp.StatusCode, body)
 	}
-	unknown := newSoftAuthenticator(t)
+	unknown := loginfake.NewSoftAuthenticator(t)
 	if resp, body := s.assertWith(unknown, 1, nil); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("unknown credential id: status %d, want 403, body %s", resp.StatusCode, body)
 	}
@@ -229,7 +234,7 @@ func TestLoginRoutes_LoginOutcomesAreAuditedAndCarryNoSecret(t *testing.T) {
 	}
 
 	rejected := find(func(d control.ControlDecision) bool {
-		return !d.Allowed && d.Reason == errWebAuthnAssertionRejected.Error()
+		return !d.Allowed && d.Reason == login.ErrWebAuthnAssertionRejected.Error()
 	})
 	if rejected == nil {
 		t.Errorf("a refused assertion wrote no record: %+v", decisions)
@@ -269,7 +274,7 @@ func TestLoginRoutes_AThrottledCeremonyIsNotRecorded(t *testing.T) {
 
 	throttled := 0
 	for i := 0; i < 30; i++ {
-		if resp, _ := s.register(newSoftAuthenticator(t), "guess", 1); resp.StatusCode == http.StatusTooManyRequests {
+		if resp, _ := s.register(loginfake.NewSoftAuthenticator(t), "guess", 1); resp.StatusCode == http.StatusTooManyRequests {
 			throttled++
 		}
 	}
@@ -279,7 +284,7 @@ func TestLoginRoutes_AThrottledCeremonyIsNotRecorded(t *testing.T) {
 
 	limited := 0
 	for _, d := range s.auditor.forPath(loginVerifyPath) {
-		if strings.Contains(d.Reason, errWebAuthnRateLimited.Error()) {
+		if strings.Contains(d.Reason, login.ErrWebAuthnRateLimited.Error()) {
 			limited++
 		}
 	}
@@ -304,8 +309,8 @@ func TestLoginAuditReason_CarriesNoCallerBytes(t *testing.T) {
 			want: errBootstrapCodeInvalid.Error(),
 		},
 		"a throttle": {
-			err:  &webauthnRateLimitedError{RetryAfter: 30},
-			want: errWebAuthnRateLimited.Error(),
+			err:  &login.WebAuthnRateLimitedError{RetryAfter: 30},
+			want: login.ErrWebAuthnRateLimited.Error(),
 		},
 	}
 	for name, tc := range cases {
@@ -318,7 +323,7 @@ func TestLoginAuditReason_CarriesNoCallerBytes(t *testing.T) {
 
 	// The counter refusal is the exception, and it is relay's own words about
 	// its own stored values (ADR-016 decision 7, point 10).
-	counter := &webauthnCounterError{CredentialID: []byte("abc"), Stored: 7, Received: 7}
+	counter := &login.WebAuthnCounterError{CredentialID: []byte("abc"), Stored: 7, Received: 7}
 	if got := loginAuditReason(counter); !strings.Contains(got, "stored 7") || !strings.Contains(got, "received 7") {
 		t.Fatalf("counter reason = %q, want both counter values", got)
 	}
