@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -62,7 +63,7 @@ func resetSealedStore(ctx context.Context, dir string, store *config.FileSetting
 		return err
 	}
 
-	for _, name := range []string{"settings.json", caKeySealedFile, caCertFile} {
+	for _, name := range []string{"settings.json", enrolment.CAKeySealedFile, enrolment.CACertFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("sealed reset: removing %s: %w", name, err)
 		}

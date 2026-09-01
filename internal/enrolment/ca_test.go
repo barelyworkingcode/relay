@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"bytes"
@@ -38,7 +38,7 @@ func TestLoadOrCreateCA_ReusesPersistedCA(t *testing.T) {
 	first, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "first LoadOrCreateCA")
 
-	for _, name := range []string{caKeySealedFile, caCertFile} {
+	for _, name := range []string{CAKeySealedFile, CACertFile} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		assertNoErr(t, err, "stat %s", name)
 		if perm := info.Mode().Perm(); perm != 0600 {
@@ -226,7 +226,7 @@ func TestRelayCA_SignClientCSR_RefusesNonECDSAKey(t *testing.T) {
 	}
 }
 
-// AC-30: `relay enrol ca-fingerprint`'s value (caFingerprintFromDisk, which
+// AC-30: `relay enrol ca-fingerprint`'s value (CAFingerprintFromDisk, which
 // reads ca.crt straight off disk with no sealer at all) and the value a
 // client pins (RelayCA.CertFingerprint, from the loaded CA the tray holds)
 // are byte-identical for the same CA.
@@ -236,22 +236,22 @@ func TestCAFingerprint_DiskReadMatchesLoadedCA(t *testing.T) {
 	ca, err := LoadOrCreateCA(testSealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 
-	fromDisk, err := caFingerprintFromDisk()
-	assertNoErr(t, err, "caFingerprintFromDisk")
+	fromDisk, err := CAFingerprintFromDisk()
+	assertNoErr(t, err, "CAFingerprintFromDisk")
 
 	if fromDisk != ca.CertFingerprint() {
-		t.Fatalf("caFingerprintFromDisk() = %q, want %q (RelayCA.CertFingerprint of the same CA)", fromDisk, ca.CertFingerprint())
+		t.Fatalf("CAFingerprintFromDisk() = %q, want %q (RelayCA.CertFingerprint of the same CA)", fromDisk, ca.CertFingerprint())
 	}
 	if !strings.HasPrefix(fromDisk, "sha256:") {
 		t.Fatalf("fingerprint %q lacks the sha256: prefix", fromDisk)
 	}
 }
 
-// caFingerprintFromDisk must never need a sealer: it is the one enrol
+// CAFingerprintFromDisk must never need a sealer: it is the one enrol
 // subcommand a CLI process can answer without dialing the tray.
 func TestCAFingerprint_RefusesNamingTheFixWhenNoCAExistsYet(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	_, err := caFingerprintFromDisk()
+	_, err := CAFingerprintFromDisk()
 	if err == nil || !strings.Contains(err.Error(), "relay enrol") {
 		t.Fatalf("err = %v, want a refusal naming a `relay enrol` command to run first", err)
 	}

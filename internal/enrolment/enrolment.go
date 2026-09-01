@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"crypto/x509"
@@ -20,38 +20,57 @@ import (
 // them without new evidence. The byte cap scales with the window
 // deliberately: a fixed cap would silently tighten if the window changed.
 const (
-	defaultEnrolmentWindowSeconds  = 3600
-	defaultEnrolmentMaxCalls       = 120
-	defaultEnrolmentMaxResultBytes = 64 << 20 // 64 MiB per window
+	DefaultWindowSeconds  = 3600
+	DefaultMaxCalls       = 120
+	DefaultMaxResultBytes = 64 << 20 // 64 MiB per window
 )
 
-const enrolmentBundleDir = "enrolments"
+const BundleDir = "enrolments"
 
-// normalizeEnrolmentBudget: zero never means "unlimited".
-func normalizeEnrolmentBudget(b config.EnrolmentBudget) config.EnrolmentBudget {
+// NormalizeBudget: zero never means "unlimited".
+func NormalizeBudget(b config.EnrolmentBudget) config.EnrolmentBudget {
 	if b.WindowSeconds <= 0 {
-		b.WindowSeconds = defaultEnrolmentWindowSeconds
+		b.WindowSeconds = DefaultWindowSeconds
 	}
 	if b.MaxCalls <= 0 {
-		b.MaxCalls = defaultEnrolmentMaxCalls
+		b.MaxCalls = DefaultMaxCalls
 	}
 	if b.MaxResultBytes <= 0 {
-		b.MaxResultBytes = defaultEnrolmentMaxResultBytes
+		b.MaxResultBytes = DefaultMaxResultBytes
 	}
 	return b
 }
 
-// addEnrolment applies unconditionally; validate with validateEnrolment
+// SafeID guards against path traversal: a client id is joined into the
+// bundle directory path <config>/enrolments/<client-id>, so a value with a
+// path separator or "." / ".." would escape it. The pending-request table's
+// optional label is held to the same charset for the same reason.
+func SafeID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// addEnrolment applies unconditionally; validate with validate
 // first. Does not save; use within store.With.
 func addEnrolment(s *config.Settings, e config.Enrolment) {
-	e.Budget = normalizeEnrolmentBudget(e.Budget)
+	e.Budget = NormalizeBudget(e.Budget)
 	s.Enrolments = append(s.Enrolments, e)
 }
 
 // removeEnrolment returns the deleted enrolment so the caller can hand its
-// fingerprint to CloseRevokedEnrolment. Does not save; use within store.With.
+// fingerprint to CloseRevoked. Does not save; use within store.With.
 func removeEnrolment(s *config.Settings, clientID string) (config.Enrolment, bool) {
-	e, idx := findEnrolmentByClientID(s, clientID)
+	e, idx := findByClientID(s, clientID)
 	if idx < 0 {
 		return config.Enrolment{}, false
 	}
@@ -60,17 +79,9 @@ func removeEnrolment(s *config.Settings, clientID string) (config.Enrolment, boo
 	return removed, true
 }
 
-func updateEnrolmentGrants(s *config.Settings, clientID string, projectIDs []string) {
-	e, idx := findEnrolmentByClientID(s, clientID)
-	if idx < 0 {
-		return
-	}
-	e.ProjectIDs = projectIDs
-}
-
-// findEnrolmentByFingerprint matches exact on the full fingerprint string —
+// FindByFingerprint matches exact on the full fingerprint string —
 // see FingerprintDER for why a prefix match would be the wrong shape here.
-func findEnrolmentByFingerprint(s *config.Settings, fingerprint string) *config.Enrolment {
+func FindByFingerprint(s *config.Settings, fingerprint string) *config.Enrolment {
 	if fingerprint == "" {
 		return nil
 	}
@@ -82,12 +93,12 @@ func findEnrolmentByFingerprint(s *config.Settings, fingerprint string) *config.
 	return nil
 }
 
-func findEnrolment(s *config.Settings, clientID string) *config.Enrolment {
-	e, _ := findEnrolmentByClientID(s, clientID)
+func Find(s *config.Settings, clientID string) *config.Enrolment {
+	e, _ := findByClientID(s, clientID)
 	return e
 }
 
-func findEnrolmentByClientID(s *config.Settings, clientID string) (*config.Enrolment, int) {
+func findByClientID(s *config.Settings, clientID string) (*config.Enrolment, int) {
 	for i := range s.Enrolments {
 		if s.Enrolments[i].ClientID == clientID {
 			return &s.Enrolments[i], i
@@ -96,7 +107,7 @@ func findEnrolmentByClientID(s *config.Settings, clientID string) (*config.Enrol
 	return nil, -1
 }
 
-func enrolmentsGrantingProject(s *config.Settings, projectID string) []string {
+func GrantingProject(s *config.Settings, projectID string) []string {
 	var ids []string
 	for i := range s.Enrolments {
 		if s.Enrolments[i].GrantsProject(projectID) {
@@ -106,18 +117,18 @@ func enrolmentsGrantingProject(s *config.Settings, projectID string) []string {
 	return ids
 }
 
-// validateEnrolment: call before addEnrolment, inside the same store.With,
+// validate: call before addEnrolment, inside the same store.With,
 // so two concurrent creates cannot both pass.
-func validateEnrolment(s *config.Settings, e *config.Enrolment) error {
+func validate(s *config.Settings, e *config.Enrolment) error {
 	if e.ClientID == "" {
 		return fmt.Errorf("enrolment client id is required")
 	}
 	// Client id names the bundle directory: a path separator or ".." would
 	// escape it.
-	if !isSafeID(e.ClientID) {
+	if !SafeID(e.ClientID) {
 		return fmt.Errorf("enrolment client id %q is invalid: use only letters, digits, '.', '_', '-' (no path separators)", e.ClientID)
 	}
-	if existing, _ := findEnrolmentByClientID(s, e.ClientID); existing != nil {
+	if existing, _ := findByClientID(s, e.ClientID); existing != nil {
 		return fmt.Errorf("enrolment %q already exists: revoke it first, or choose another client id", e.ClientID)
 	}
 	if e.Fingerprint == "" {
@@ -125,11 +136,11 @@ func validateEnrolment(s *config.Settings, e *config.Enrolment) error {
 	}
 	// A second enrolment on the same certificate would make identity
 	// ambiguous at resolution time. Refuse rather than pick.
-	if other := findEnrolmentByFingerprint(s, e.Fingerprint); other != nil {
+	if other := FindByFingerprint(s, e.Fingerprint); other != nil {
 		return fmt.Errorf("certificate %s is already enrolled as %q", e.Fingerprint, other.ClientID)
 	}
 	// A duplicate SPKI (the CSR path only) means the SAME private key was
-	// enrolled twice under two client ids: findEnrolmentByFingerprint alone
+	// enrolled twice under two client ids: FindByFingerprint alone
 	// cannot catch this, since the fingerprint hashes the whole certificate
 	// (serial included), and two certificates over one key get two
 	// different fingerprints — two live identities, two budgets, and
@@ -141,10 +152,10 @@ func validateEnrolment(s *config.Settings, e *config.Enrolment) error {
 			}
 		}
 	}
-	return validateEnrolmentGrants(s, e)
+	return ValidateGrants(s, e)
 }
 
-// validateEnrolmentGrants refuses an enrolment whose grants do not all name
+// ValidateGrants refuses an enrolment whose grants do not all name
 // remote-kind projects: without this, a grant naming a local project would
 // hand a remote client that project's full host-directory tool surface,
 // bypassing every scope restriction by pointing at the wrong project rather
@@ -153,7 +164,7 @@ func validateEnrolment(s *config.Settings, e *config.Enrolment) error {
 // Tests IsRemote(), never Kind == ProjectKindLocal: the zero value is
 // local, so an equality check invites a future bug where an unset field
 // reads as remote.
-func validateEnrolmentGrants(s *config.Settings, e *config.Enrolment) error {
+func ValidateGrants(s *config.Settings, e *config.Enrolment) error {
 	for _, id := range e.ProjectIDs {
 		proj, _ := config.FindProjectByID(s, id)
 		if proj == nil {
@@ -166,28 +177,28 @@ func validateEnrolmentGrants(s *config.Settings, e *config.Enrolment) error {
 	return nil
 }
 
-// validateProjectEnrolments refuses converting a project remote→local while
+// ValidateProjectConversion refuses converting a project remote→local while
 // any enrolment still grants it, rather than silently dropping grants from
 // records the operator never touched.
-func validateProjectEnrolments(s *config.Settings, proj *config.Project) error {
+func ValidateProjectConversion(s *config.Settings, proj *config.Project) error {
 	if proj.IsRemote() {
 		return nil
 	}
-	holders := enrolmentsGrantingProject(s, proj.ID)
+	holders := GrantingProject(s, proj.ID)
 	if len(holders) == 0 {
 		return nil
 	}
 	return fmt.Errorf("access profile %q cannot become a local project while enrolled clients grant it: %s — revoke those enrolments or drop the grant first", proj.ID, strings.Join(holders, ", "))
 }
 
-// EnrolmentRevocationHook closes live connections holding a revoked
+// RevocationHook closes live connections holding a revoked
 // certificate; deleting the settings record alone would let a compromised
 // agent in a persistent scanner loop keep working indefinitely.
-type EnrolmentRevocationHook func(clientID, fingerprint string)
+type RevocationHook func(clientID, fingerprint string)
 
 var (
 	revocationMu   sync.Mutex
-	revocationHook EnrolmentRevocationHook
+	revocationHook RevocationHook
 	// revocationOwner, compared by interface identity: the listener owning
 	// the hook is rebuilt on every rebind, so teardown must ask "is this
 	// still MINE?" before clearing — otherwise the ordinary rebind order
@@ -196,18 +207,18 @@ var (
 	revocationOwner any
 )
 
-func SetEnrolmentRevocationHookFor(owner any, fn EnrolmentRevocationHook) {
+func SetRevocationHookFor(owner any, fn RevocationHook) {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
 	revocationHook = fn
 	revocationOwner = owner
 }
 
-// ClearEnrolmentRevocationHookFor is the compare-and-clear a torn-down
+// ClearRevocationHookFor is the compare-and-clear a torn-down
 // listener must use: during a rebind the replacement has already installed
 // its own hook, and clearing unconditionally here would leave revocation
 // unable to sever a live connection.
-func ClearEnrolmentRevocationHookFor(owner any) bool {
+func ClearRevocationHookFor(owner any) bool {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
 	if revocationOwner != owner {
@@ -218,11 +229,11 @@ func ClearEnrolmentRevocationHookFor(owner any) bool {
 	return true
 }
 
-func SetEnrolmentRevocationHook(fn EnrolmentRevocationHook) {
-	SetEnrolmentRevocationHookFor(nil, fn)
+func SetRevocationHook(fn RevocationHook) {
+	SetRevocationHookFor(nil, fn)
 }
 
-func enrolmentRevocationHookOwner() any {
+func RevocationHookOwner() any {
 	revocationMu.Lock()
 	defer revocationMu.Unlock()
 	if revocationHook == nil {
@@ -231,7 +242,7 @@ func enrolmentRevocationHookOwner() any {
 	return revocationOwner
 }
 
-func CloseRevokedEnrolment(clientID, fingerprint string) {
+func CloseRevoked(clientID, fingerprint string) {
 	revocationMu.Lock()
 	hook := revocationHook
 	revocationMu.Unlock()
@@ -240,40 +251,40 @@ func CloseRevokedEnrolment(clientID, fingerprint string) {
 	}
 }
 
-type enrolmentRequest struct {
+type Request struct {
 	ClientID   string
 	ProjectIDs []string
 	Budget     config.EnrolmentBudget
 }
 
-type enrolmentBundle struct {
+type Bundle struct {
 	Enrolment  config.Enrolment
 	Dir        string
 	KeyPath    string
 	CertPath   string
 	CACertPath string
-	// CertPEM and CAPEM are the certificate bytes signEnrolment already
+	// CertPEM and CAPEM are the certificate bytes Sign already
 	// holds in memory once ca.SignClientCSR returns, kept here so a caller
 	// can hand them back even when the write below (writeSignedCertBundle)
 	// fails: the certificate exists — the record already committed — and
 	// only the on-host copy is missing (spec §11.7's "the poll response
-	// must still deliver the certificate"). createEnrolment leaves both
+	// must still deliver the certificate"). Create leaves both
 	// empty; a host-generated bundle's caller reads the key and cert off
 	// Dir instead, the same as it always has.
 	CertPEM []byte
 	CAPEM   []byte
 }
 
-// commitEnrolment builds the Enrolment record and persists it inside
-// store.With, after ValidateEnrolment passes — the shared middle of the
-// host-generated (createEnrolment) and CSR (signEnrolment) paths. spki is
+// Commit builds the Enrolment record and persists it inside
+// store.With, after validate passes — the shared middle of the
+// host-generated (Create) and CSR (Sign) paths. spki is
 // "" for the former; the CSR's SPKI hash for the latter.
-func commitEnrolment(store config.SettingsStore, req enrolmentRequest, fingerprint, spki string) (config.Enrolment, error) {
+func Commit(store config.SettingsStore, req Request, fingerprint, spki string) (config.Enrolment, error) {
 	enrolment := config.Enrolment{
 		ClientID:    req.ClientID,
 		Fingerprint: fingerprint,
 		ProjectIDs:  req.ProjectIDs,
-		Budget:      normalizeEnrolmentBudget(req.Budget),
+		Budget:      NormalizeBudget(req.Budget),
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		SPKISHA256:  spki,
 	}
@@ -283,30 +294,30 @@ func commitEnrolment(store config.SettingsStore, req enrolmentRequest, fingerpri
 
 	var validationErr error
 	if err := config.WithDeclinable(store, func(s *config.Settings) error {
-		if validationErr = validateEnrolment(s, &enrolment); validationErr != nil {
+		if validationErr = validate(s, &enrolment); validationErr != nil {
 			return validationErr
 		}
 		addEnrolment(s, enrolment)
 		return nil
 	}); err != nil {
 		if validationErr != nil {
-			return config.Enrolment{}, invalidEnrolment(validationErr.Error())
+			return config.Enrolment{}, Invalid(validationErr.Error())
 		}
 		return config.Enrolment{}, fmt.Errorf("failed to save settings: %w", err)
 	}
 	return enrolment, nil
 }
 
-// createEnrolment has no self-service path and no bootstrap token,
+// Create has no self-service path and no bootstrap token,
 // deliberately: an endpoint reachable by presenting a secret would
 // reintroduce a replayable credential at the point where the result is a
 // new identity, not a single call.
 //
-// Validation happens inside store.With (via commitEnrolment) so two
+// Validation happens inside store.With (via Commit) so two
 // concurrent creates cannot both claim a client id. The bundle is written
 // last: a key on disk that no enrolment references is a credential nobody
 // knows to revoke.
-func createEnrolment(store config.SettingsStore, req enrolmentRequest) (*enrolmentBundle, error) {
+func Create(store config.SettingsStore, req Request) (*Bundle, error) {
 	ca, err := LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, err
@@ -316,31 +327,31 @@ func createEnrolment(store config.SettingsStore, req enrolmentRequest) (*enrolme
 		return nil, err
 	}
 
-	enrolment, err := commitEnrolment(store, req, fingerprint, "")
+	enrolment, err := Commit(store, req, fingerprint, "")
 	if err != nil {
 		return nil, err
 	}
 
-	bundle, err := writeEnrolmentBundle(enrolment, keyPEM, certPEM, ca.CertPEM())
+	bundle, err := writeLegacyBundle(enrolment, keyPEM, certPEM, ca.CertPEM())
 	if err != nil {
 		// The settings mutation above already committed: the enrolment
 		// record exists and is a real, usable grant even though its bundle
 		// failed to reach disk. Returning a bare error here would tell every
-		// caller "nothing happened," which is false — errEnrolmentBundle is
+		// caller "nothing happened," which is false — ErrBundle is
 		// what lets a caller hand back the record that landed instead of
 		// silently orphaning it.
-		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
+		return bundle, fmt.Errorf("%w: %v", ErrBundle, err)
 	}
 	return bundle, nil
 }
 
-// signEnrolment is createEnrolment's CSR counterpart: the CSR (already
+// Sign is Create's CSR counterpart: the CSR (already
 // validated by ParseClientCSR, before the caller ever reached the gate)
 // supplies the public key, relay's CA signs it, and no client private key
-// ever exists in this process's address space. Same errEnrolmentBundle
+// ever exists in this process's address space. Same ErrBundle
 // semantics as create: a failed bundle write does not unwind a committed
 // record.
-func signEnrolment(store config.SettingsStore, req enrolmentRequest, csr *x509.CertificateRequest) (*enrolmentBundle, error) {
+func Sign(store config.SettingsStore, req Request, csr *x509.CertificateRequest) (*Bundle, error) {
 	ca, err := LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, err
@@ -351,7 +362,7 @@ func signEnrolment(store config.SettingsStore, req enrolmentRequest, csr *x509.C
 	}
 
 	spki := SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
-	enrolment, err := commitEnrolment(store, req, fingerprint, spki)
+	enrolment, err := Commit(store, req, fingerprint, spki)
 	if err != nil {
 		return nil, err
 	}
@@ -359,41 +370,41 @@ func signEnrolment(store config.SettingsStore, req enrolmentRequest, csr *x509.C
 	caPEM := ca.CertPEM()
 	bundle, err := writeSignedCertBundle(enrolment, certPEM, caPEM)
 	// The certificate exists in memory whether or not the write below
-	// succeeded — see enrolmentBundle's own doc comment on CertPEM/CAPEM.
+	// succeeded — see Bundle's own doc comment on CertPEM/CAPEM.
 	bundle.CertPEM = certPEM
 	bundle.CAPEM = caPEM
 	if err != nil {
-		return bundle, fmt.Errorf("%w: %v", errEnrolmentBundle, err)
+		return bundle, fmt.Errorf("%w: %v", ErrBundle, err)
 	}
 	return bundle, nil
 }
 
-// enrolmentBudgetUpdate: each field is a pointer because zero is meaningful
+// BudgetUpdate: each field is a pointer because zero is meaningful
 // on EnrolmentBudget itself ("use the default"), so a plain zero value
 // could not distinguish "left alone" from "reset to default". nil means the
 // former; a pointer to 0 means the latter.
-type enrolmentBudgetUpdate struct {
+type BudgetUpdate struct {
 	WindowSeconds  *int   `json:"window_seconds,omitempty"`
 	MaxCalls       *int   `json:"max_calls,omitempty"`
 	MaxResultBytes *int64 `json:"max_result_bytes,omitempty"`
 }
 
-// enrolmentUpdateRequest: ProjectIDs is a pointer to a slice for the same
+// UpdateRequest: ProjectIDs is a pointer to a slice for the same
 // reason the budget fields are pointers — nil means "leave the grants
 // alone", non-nil-but-empty means "replace them with nothing". JSON tags
 // are what let this travel as an admin_op payload (ADR-017 implementation
 // spec S6): `relay enrol update` is its only caller and builds one directly
 // from flags, so there is no separate wire type to keep in sync.
-type enrolmentUpdateRequest struct {
-	ClientID   string                `json:"client_id"`
-	ProjectIDs *[]string             `json:"project_ids,omitempty"`
-	Budget     enrolmentBudgetUpdate `json:"budget"`
+type UpdateRequest struct {
+	ClientID   string       `json:"client_id"`
+	ProjectIDs *[]string    `json:"project_ids,omitempty"`
+	Budget     BudgetUpdate `json:"budget"`
 	// CLIAdmin is a pointer for the same nil-means-no-change reason as
 	// ProjectIDs and every budget field.
 	CLIAdmin *bool `json:"cli_admin,omitempty"`
 }
 
-// updateEnrolment changes budget and/or grants without touching the
+// Update changes budget and/or grants without touching the
 // certificate: revoke+recreate reissues it, and rotating a credential and
 // retuning a limit are different operations.
 //
@@ -402,10 +413,10 @@ type enrolmentUpdateRequest struct {
 // names a profile since deleted (docs/access-profiles.md's "dangling
 // grant") — re-validating grants nobody asked to change would turn an
 // unrelated budget edit into a refusal.
-func updateEnrolment(store config.SettingsStore, req enrolmentUpdateRequest) (before, after config.Enrolment, err error) {
+func Update(store config.SettingsStore, req UpdateRequest) (before, after config.Enrolment, err error) {
 	var validationErr error
 	saveErr := config.WithDeclinable(store, func(s *config.Settings) error {
-		e, idx := findEnrolmentByClientID(s, req.ClientID)
+		e, idx := findByClientID(s, req.ClientID)
 		if idx < 0 {
 			validationErr = fmt.Errorf("no enrolment found with client id %q", req.ClientID)
 			return validationErr
@@ -425,11 +436,11 @@ func updateEnrolment(store config.SettingsStore, req enrolmentUpdateRequest) (be
 		if req.Budget.MaxResultBytes != nil {
 			candidate.Budget.MaxResultBytes = *req.Budget.MaxResultBytes
 		}
-		candidate.Budget = normalizeEnrolmentBudget(candidate.Budget)
+		candidate.Budget = NormalizeBudget(candidate.Budget)
 
 		if req.ProjectIDs != nil {
 			candidate.ProjectIDs = *req.ProjectIDs
-			if gerr := validateEnrolmentGrants(s, &candidate); gerr != nil {
+			if gerr := ValidateGrants(s, &candidate); gerr != nil {
 				validationErr = gerr
 				return gerr
 			}
@@ -458,7 +469,7 @@ func updateEnrolment(store config.SettingsStore, req enrolmentUpdateRequest) (be
 	return before, after, nil
 }
 
-// writeBundleFiles is the write step writeEnrolmentBundle and
+// writeBundleFiles is the write step writeLegacyBundle and
 // writeSignedCertBundle share: create dir 0700, then write each file 0600
 // via atomicWriteFile.
 func writeBundleFiles(dir string, files map[string][]byte) error {
@@ -473,7 +484,7 @@ func writeBundleFiles(dir string, files map[string][]byte) error {
 	return nil
 }
 
-// writeEnrolmentBundle emits the three files a client needs — its key, its
+// writeLegacyBundle emits the three files a client needs — its key, its
 // certificate, and the CA certificate it verifies the server with — into
 // <config>/enrolments/<client-id>/, 0700 dir and 0600 files.
 //
@@ -486,13 +497,13 @@ func writeBundleFiles(dir string, files map[string][]byte) error {
 // every caller moves, the mitigation is that the key sits in a 0600 file
 // under a 0700 directory, and the operator is expected to move rather than
 // copy it.
-func writeEnrolmentBundle(e config.Enrolment, keyPEM, certPEM, caPEM []byte) (*enrolmentBundle, error) {
-	dir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, e.ClientID)
+func writeLegacyBundle(e config.Enrolment, keyPEM, certPEM, caPEM []byte) (*Bundle, error) {
+	dir := filepath.Join(bridge.ConfigDir(), BundleDir, e.ClientID)
 	// b is built and returned even on failure below: the settings record for
-	// e already exists by the time this runs (createEnrolment writes it
+	// e already exists by the time this runs (Create writes it
 	// first), so a caller handling a write failure still needs the record
 	// and the directory it was trying to reach.
-	b := &enrolmentBundle{
+	b := &Bundle{
 		Enrolment:  e,
 		Dir:        dir,
 		KeyPath:    filepath.Join(dir, "client.key"),
@@ -509,7 +520,7 @@ func writeEnrolmentBundle(e config.Enrolment, keyPEM, certPEM, caPEM []byte) (*e
 	return b, nil
 }
 
-// writeSignedCertBundle is signEnrolment's write step: certificate and CA
+// writeSignedCertBundle is Sign's write step: certificate and CA
 // certificate only — client.crt and ca.crt, 0700 dir / 0600 files, sharing
 // writeBundleFiles with the legacy path above. The returned bundle's
 // KeyPath is left empty rather than given a nillable key parameter: a
@@ -521,9 +532,9 @@ func writeEnrolmentBundle(e config.Enrolment, keyPEM, certPEM, caPEM []byte) (*e
 // directory: a stale key would make a CSR-issued bundle indistinguishable
 // from a relay-generated one, and the caller carrying a CSR onto this host
 // is asserting the opposite — that the key never left the client machine.
-func writeSignedCertBundle(e config.Enrolment, certPEM, caPEM []byte) (*enrolmentBundle, error) {
-	dir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, e.ClientID)
-	b := &enrolmentBundle{
+func writeSignedCertBundle(e config.Enrolment, certPEM, caPEM []byte) (*Bundle, error) {
+	dir := filepath.Join(bridge.ConfigDir(), BundleDir, e.ClientID)
+	b := &Bundle{
 		Enrolment:  e,
 		Dir:        dir,
 		CertPath:   filepath.Join(dir, "client.crt"),
@@ -544,22 +555,22 @@ func writeSignedCertBundle(e config.Enrolment, certPEM, caPEM []byte) (*enrolmen
 	return b, nil
 }
 
-// revokeEnrolment deletes an enrolment, notifies the revocation hook so the
+// Revoke deletes an enrolment, notifies the revocation hook so the
 // listener can sever live connections, and removes the emitted bundle.
 // Deleting the record cuts the client without disturbing any project, and
 // leaves the certificate itself untouched — there is nothing to un-sign.
-func revokeEnrolment(store config.SettingsStore, clientID string) (config.Enrolment, error) {
+func Revoke(store config.SettingsStore, clientID string) (config.Enrolment, error) {
 	// Resolution and removal happen inside one With() call: no TOCTOU
 	// window between reading the record and deleting it.
 	var removed config.Enrolment
 	if err := config.WithDeclinable(store, func(s *config.Settings) error {
 		var found bool
 		if removed, found = removeEnrolment(s, clientID); !found {
-			return fmt.Errorf("%w: %q", errEnrolmentNotFound, clientID)
+			return fmt.Errorf("%w: %q", ErrNotFound, clientID)
 		}
 		return nil
 	}); err != nil {
-		if errors.Is(err, errEnrolmentNotFound) {
+		if errors.Is(err, ErrNotFound) {
 			return config.Enrolment{}, err
 		}
 		return config.Enrolment{}, fmt.Errorf("failed to save settings: %w", err)
@@ -572,18 +583,18 @@ func revokeEnrolment(store config.SettingsStore, clientID string) (config.Enrolm
 	// but the socket itself stays open until that client tries something.
 	// Closing it outright needs the process that owns the connection table,
 	// which is why the hook exists.
-	CloseRevokedEnrolment(removed.ClientID, removed.Fingerprint)
-	removeEnrolmentBundle(removed.ClientID)
+	CloseRevoked(removed.ClientID, removed.Fingerprint)
+	removeBundle(removed.ClientID)
 	return removed, nil
 }
 
-// removeEnrolmentBundle is best-effort: the operator may have already moved
+// removeBundle is best-effort: the operator may have already moved
 // the bundle to the client and deleted it here, and a revocation must not
 // fail because the host's copy is already gone. Revocation's teeth are the
 // deleted record and the closed connection, not this.
-func removeEnrolmentBundle(clientID string) {
-	if !isSafeID(clientID) {
+func removeBundle(clientID string) {
+	if !SafeID(clientID) {
 		return // never join an unvalidated id into a path we then remove
 	}
-	_ = os.RemoveAll(filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, clientID))
+	_ = os.RemoveAll(filepath.Join(bridge.ConfigDir(), BundleDir, clientID))
 }

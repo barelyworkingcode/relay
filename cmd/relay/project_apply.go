@@ -1,8 +1,11 @@
 package main
 
-import "github.com/barelyworkingcode/relay/internal/config"
+import (
+	"encoding/json"
 
-import "encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
+)
 
 // projectCreateFields is the transport-agnostic body for creating a project.
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
@@ -225,7 +228,7 @@ func applyProjectUpdate(s *config.Settings, id string, f projectUpdateFields, su
 	// the check there would turn a pre-existing bad grant into a wall in
 	// front of the very edit that might fix it.
 	if !candidate.IsRemote() && (proj.IsRemote() || f.Kind != nil) {
-		if err := validateProjectEnrolments(s, &candidate); err != nil {
+		if err := enrolment.ValidateProjectConversion(s, &candidate); err != nil {
 			return config.Project{}, true, err
 		}
 	}

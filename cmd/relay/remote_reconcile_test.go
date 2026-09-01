@@ -27,6 +27,8 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"slices"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,7 +47,7 @@ func (f *remoteFixture) supervise() *RemoteSupervisor {
 	sup := NewRemoteSupervisor(context.Background(), f.store, f.router, f.audit, nil, nil, nil)
 	f.t.Cleanup(func() {
 		sup.Close()
-		SetEnrolmentRevocationHook(nil)
+		enrolment.SetRevocationHook(nil)
 	})
 	return sup
 }
@@ -62,7 +64,7 @@ func (f *remoteFixture) cliWriter() config.SettingsStore {
 // dialAddr connects to an explicit address with an explicit bundle, so a test
 // can dial a listener the fixture does not own (the supervisor's) or use a
 // certificate the fixture did not create (one a CLI process enrolled).
-func (f *remoteFixture) dialAddr(addr string, b *enrolmentBundle) *remoteTestClient {
+func (f *remoteFixture) dialAddr(addr string, b *enrolment.Bundle) *remoteTestClient {
 	f.t.Helper()
 	cert, err := tls.LoadX509KeyPair(b.CertPath, b.KeyPath)
 	assertNoErr(f.t, err, "load client keypair from bundle")
@@ -154,17 +156,17 @@ func TestRemoteServer_AcceptsAnEnrolmentCreatedByAnotherProcess(t *testing.T) {
 
 	// Enrol through a second store. The running listener's store never sees
 	// this call — only the file does.
-	bundle, err := createEnrolment(f.cliWriter(), enrolmentRequest{
+	bundle, err := enrolment.Create(f.cliWriter(), enrolment.Request{
 		ClientID:   "hermes-cli",
 		ProjectIDs: []string{f.project.ID},
 	})
-	assertNoErr(t, err, "createEnrolment through a separate settings writer")
+	assertNoErr(t, err, "enrolment.Create through a separate settings writer")
 
 	// Precondition, not decoration: this test is only meaningful while the
 	// listener's own cached view still lags the file. If this ever fails, the
 	// cache stopped lagging and the test no longer exercises issue #21 — read
 	// the fix before deleting the assertion.
-	if findEnrolmentByFingerprint(f.store.Get(), bundle.Enrolment.Fingerprint) != nil {
+	if enrolment.FindByFingerprint(f.store.Get(), bundle.Enrolment.Fingerprint) != nil {
 		t.Fatal("the listener's cached settings already hold the new enrolment; " +
 			"this test no longer reproduces the cross-process condition it was written for")
 	}
@@ -198,9 +200,11 @@ func TestRemoteServer_RevocationByAnotherProcessTakesEffectMidSession(t *testing
 	// Delete the record through a second store and do NOT fire the hook: this
 	// is the cross-process shape, where the listener is never told.
 	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
-		if _, ok := removeEnrolment(s, "hermes-mail"); !ok {
+		kept := slices.DeleteFunc(s.Enrolments, func(e config.Enrolment) bool { return e.ClientID == "hermes-mail" })
+		if len(kept) == len(s.Enrolments) {
 			t.Error("the enrolment was not there to remove")
 		}
+		s.Enrolments = kept
 	}), "revoke through a separate settings writer")
 
 	resp := c.roundTrip(`{"type":"CallTool","name":"mail_search"}`)
@@ -226,8 +230,8 @@ func TestRemoteServer_InProcessRevocationStillClosesTheConnection(t *testing.T) 
 	if resp := c.roundTrip(`{"type":"ListTools"}`); resp.Type != bridge.RespTools {
 		t.Fatalf("baseline ListTools failed: %s", resp.Message)
 	}
-	if _, err := revokeEnrolment(f.store, "hermes-mail"); err != nil {
-		t.Fatalf("revokeEnrolment: %v", err)
+	if _, err := enrolment.Revoke(f.store, "hermes-mail"); err != nil {
+		t.Fatalf("enrolment.Revoke: %v", err)
 	}
 	assertConnectionStopsAnswering(t, c, "a revoked enrolment's live connection")
 }
@@ -301,7 +305,7 @@ func TestRemoteSupervisor_NeverOpensAListenerConfigDoesNotAskFor(t *testing.T) {
 					t.Fatalf("reconcile %d opened a listener at %s for %q", i, addr, name)
 				}
 			}
-			if owner := enrolmentRevocationHookOwner(); owner != nil {
+			if owner := enrolment.RevocationHookOwner(); owner != nil {
 				t.Errorf("a revocation hook was installed with no listener running: %v", owner)
 			}
 		})
@@ -426,7 +430,7 @@ func TestRemoteSupervisor_FailedRebindKeepsTheOldListenerAndReportsTheError(t *t
 	}
 
 	// And the hook still points at the listener that is actually live.
-	if owner := enrolmentRevocationHookOwner(); owner != sup.Server() {
+	if owner := enrolment.RevocationHookOwner(); owner != sup.Server() {
 		t.Errorf("after a failed rebind the revocation hook owner is %v, want the live listener %v", owner, sup.Server())
 	}
 }
@@ -551,7 +555,7 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	if first == nil {
 		t.Fatal("no listener was bound")
 	}
-	if owner := enrolmentRevocationHookOwner(); owner != first {
+	if owner := enrolment.RevocationHookOwner(); owner != first {
 		t.Fatalf("revocation hook owner = %v, want the listener just started %v", owner, first)
 	}
 
@@ -565,7 +569,7 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	if second == nil || second == first {
 		t.Fatalf("the rebind did not produce a new listener (got %v, was %v)", second, first)
 	}
-	owner := enrolmentRevocationHookOwner()
+	owner := enrolment.RevocationHookOwner()
 	if owner == nil {
 		t.Fatal("the rebind left NO revocation hook installed: revocation would no longer cut live connections")
 	}
@@ -582,8 +586,8 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	if resp := c.roundTrip(`{"type":"ListTools"}`); resp.Type != bridge.RespTools {
 		t.Fatalf("baseline ListTools on the moved listener failed: %s", resp.Message)
 	}
-	if _, err := revokeEnrolment(f.store, "hermes-mail"); err != nil {
-		t.Fatalf("revokeEnrolment: %v", err)
+	if _, err := enrolment.Revoke(f.store, "hermes-mail"); err != nil {
+		t.Fatalf("enrolment.Revoke: %v", err)
 	}
 	assertConnectionStopsAnswering(t, c, "a revoked enrolment's connection on the rebound listener")
 
@@ -592,7 +596,7 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 		s.Remote = &config.RemoteConfig{Enabled: ptr(false)}
 	}), "disable the remote block")
 	assertNoErr(t, sup.Reconcile(), "reconcile after disabling")
-	if owner := enrolmentRevocationHookOwner(); owner != nil {
+	if owner := enrolment.RevocationHookOwner(); owner != nil {
 		t.Errorf("a stopped listener left its revocation hook installed: %v", owner)
 	}
 }

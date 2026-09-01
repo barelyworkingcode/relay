@@ -31,6 +31,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -235,7 +236,7 @@ func TestEnrolment_AC3_RequestHandlersExactlyTwo(t *testing.T) {
 }
 
 // AC-4: EnrolmentRequestServer has no field of type RemoteToolRouter,
-// RemoteConfigurer, SettingsStore, sealed.Sealer or *RelayCA -- the
+// RemoteConfigurer, SettingsStore, sealed.Sealer or *enrolment.RelayCA -- the
 // struct's fields ARE the proof (spec §1), checked by reflection rather
 // than merely reviewed.
 func TestEnrolment_AC4_ServerHoldsNoDangerousFields(t *testing.T) {
@@ -244,7 +245,7 @@ func TestEnrolment_AC4_ServerHoldsNoDangerousFields(t *testing.T) {
 		reflect.TypeOf((*RemoteConfigurer)(nil)).Elem(),
 		reflect.TypeOf((*config.SettingsStore)(nil)).Elem(),
 		reflect.TypeOf((*sealed.Sealer)(nil)).Elem(),
-		reflect.TypeOf((*RelayCA)(nil)), // *RelayCA
+		reflect.TypeOf((*enrolment.RelayCA)(nil)), // *enrolment.RelayCA
 	}
 	typ := reflect.TypeOf(EnrolmentRequestServer{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -611,7 +612,7 @@ func TestEnrolment_AC12_NoPresencePromptEverForAnyNumberOfLodges(t *testing.T) {
 	if _, err := fresh.Poll(good.RequestID, c.open()); err != nil {
 		t.Fatalf("a correct opening was refused: %v", err)
 	}
-	if _, err := fresh.Poll(badRow.RequestID, hex.EncodeToString(make([]byte, sasNonceBytes))); err == nil {
+	if _, err := fresh.Poll(badRow.RequestID, hex.EncodeToString(make([]byte, enrolment.SASNonceBytes))); err == nil {
 		t.Fatal("an incorrect opening was accepted")
 	}
 	if _, err := fresh.Poll("req_not_here", c.open()); err != nil {
@@ -727,7 +728,7 @@ func TestEnrolment_AC14_OperatorRefusalIsAuditedExpiryIsNot(t *testing.T) {
 	})
 }
 
-// AC-15: a frame over 64 KiB, a csr_pem over maxCSRBytes, and a label
+// AC-15: a frame over 64 KiB, a csr_pem over enrolment.MaxCSRBytes, and a label
 // outside [A-Za-z0-9._-]{1,64} are each refused at the door with a named
 // message; none reaches the table.
 func TestEnrolment_AC15_OversizedAndHostileInputRefusedAtTheDoor(t *testing.T) {
@@ -750,15 +751,15 @@ func TestEnrolment_AC15_OversizedAndHostileInputRefusedAtTheDoor(t *testing.T) {
 		}
 	})
 
-	t.Run("csr_pem over maxCSRBytes", func(t *testing.T) {
+	t.Run("csr_pem over enrolment.MaxCSRBytes", func(t *testing.T) {
 		table := newEnrolmentRequestTable()
-		oversized := make([]byte, maxCSRBytes+1)
+		oversized := make([]byte, enrolment.MaxCSRBytes+1)
 		_, err := table.Lodge(oversized, "", "", "", "10.0.0.1:1")
 		if err == nil {
 			t.Fatal("an oversized CSR was accepted")
 		}
-		if !strings.Contains(err.Error(), csrTooLargeMessage(len(oversized))) {
-			t.Errorf("refusal does not use csrTooLargeMessage verbatim: %v", err)
+		if !strings.Contains(err.Error(), enrolment.CSRTooLargeMessage(len(oversized))) {
+			t.Errorf("refusal does not use enrolment.CSRTooLargeMessage verbatim: %v", err)
 		}
 		if got := len(table.List()); got != 0 {
 			t.Fatalf("an oversized CSR reached the table: %d rows", got)
@@ -966,7 +967,7 @@ func TestEnrolment_RefusedRowExpiresAtTTL(t *testing.T) {
 // lastLodgeBySource is keyed by a value ONLY an unauthenticated network peer
 // mints (the source host of every Lodge), and grows by one entry per
 // distinct address forever unless something prunes it -- the exact anti-
-// pattern enrolment_budget.go's windowFor comment (§11.9) warns is
+// pattern internal/enrolment/budget.go's windowFor comment (§11.9) warns is
 // different from ITS case, because ITS keys can only be minted by an
 // already-enrolled caller. sweepLocked must prune entries older than
 // perSourceLodgeInterval, in the same critical section as every other

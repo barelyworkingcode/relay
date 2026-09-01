@@ -110,7 +110,7 @@ func MigrateCAKey(dir string, sealer sealed.Sealer) error {
 }
 
 // SealCAKeyFile seals keyPEM and atomically writes ca.key.sealed. Shared by
-// MigrateCAKey and generateCA (enrolment_ca.go), which never writes a
+// MigrateCAKey and enrolment.GenerateCA (internal/enrolment/ca.go), which never writes a
 // plaintext ca.key at all.
 func SealCAKeyFile(dir string, sealer sealed.Sealer, keyPEM []byte) error {
 	env, err := sealer.Seal(keyPEM, []byte(CAAADPrefix+"ca.key"))

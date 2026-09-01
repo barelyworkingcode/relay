@@ -266,7 +266,7 @@ func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
 // but Settings.
 func TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount(t *testing.T) {
 	// updateMenuWithSettings -> renderSettingsDocument -> remoteConfigViewOf
-	// reads ca.crt off disk (caFingerprintFromDisk); sandbox first so that
+	// reads ca.crt off disk (enrolment.CAFingerprintFromDisk); sandbox first so that
 	// read never touches the real ConfigDir (headline testing rule).
 	mkEmptySandboxRelayHome(t)
 	rp := &recordingPlatform{}

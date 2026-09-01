@@ -14,6 +14,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
@@ -274,7 +275,7 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 			"set audit.enabled to true, or remove the remote block from settings.json")
 	}
 
-	ca, err := LoadOrCreateCA(store.Sealer())
+	ca, err := enrolment.LoadOrCreateCA(store.Sealer())
 	if err != nil {
 		return nil, fmt.Errorf("remote listener: %w", err)
 	}
@@ -314,7 +315,7 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 	// Installed with an owner because a rebind (RemoteSupervisor) binds the
 	// new listener before closing the old one, so the old one's teardown
 	// must be able to tell the hook is no longer its own.
-	SetEnrolmentRevocationHookFor(s, s.closeEnrolment)
+	enrolment.SetRevocationHookFor(s, s.closeEnrolment)
 
 	slog.Info("remote listener started", "addr", ln.Addr().String())
 	return s, nil
@@ -370,7 +371,7 @@ func (s *RemoteServer) Close() {
 	s.StopAccepting()
 	// Compare-and-clear, never unconditional: on a rebind the replacement
 	// already owns the hook by the time this runs.
-	ClearEnrolmentRevocationHookFor(s)
+	enrolment.ClearRevocationHookFor(s)
 	s.wg.Wait()
 }
 
@@ -414,12 +415,12 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 		return
 	}
 
-	fingerprint := FingerprintCert(state.PeerCertificates[0])
+	fingerprint := enrolment.FingerprintCert(state.PeerCertificates[0])
 	// currentSettings, not Get(): a cached view here would refuse a
 	// brand-new enrolment until the tray's next settings poll.
 	settings := s.currentSettings()
-	enrolment := findEnrolmentByFingerprint(settings, fingerprint)
-	if enrolment == nil {
+	enr := enrolment.FindByFingerprint(settings, fingerprint)
+	if enr == nil {
 		slog.Warn("remote: closing connection, certificate is not enrolled",
 			"fingerprint", fingerprint, "remote_addr", conn.RemoteAddr().String())
 		return
@@ -429,21 +430,21 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	// turned off since this listener bound.
 	if !remoteAuditingLive(settings, s.audit) {
 		slog.Error("remote: closing connection, auditing is not active",
-			"client_id", enrolment.ClientID, "remote_addr", conn.RemoteAddr().String())
+			"client_id", enr.ClientID, "remote_addr", conn.RemoteAddr().String())
 		return
 	}
 
 	ctx := bridge.WithRemoteCaller(connCtx, bridge.RemoteCaller{
-		ClientID:    enrolment.ClientID,
+		ClientID:    enr.ClientID,
 		Fingerprint: fingerprint,
 		RemoteAddr:  conn.RemoteAddr().String(),
 	})
 
-	rc := &remoteConn{conn: conn, clientID: enrolment.ClientID, fingerprint: fingerprint}
+	rc := &remoteConn{conn: conn, clientID: enr.ClientID, fingerprint: fingerprint}
 	s.track(rc)
 	defer s.untrack(rc)
 
-	slog.Info("remote client connected", "client_id", enrolment.ClientID, "remote_addr", conn.RemoteAddr().String())
+	slog.Info("remote client connected", "client_id", enr.ClientID, "remote_addr", conn.RemoteAddr().String())
 
 	bridge.NewFrameConn(conn, "remote", remoteIdleTimeout).
 		Serve(ctx, func(ctx context.Context, line string) bridge.BridgeResponse {
@@ -453,7 +454,7 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 
 // handleRequest resolves the caller BEFORE choosing a dispatch table
 // (decode -> resolveCaller -> pick table -> dispatch): which table applies
-// depends on enrolment.CLIAdmin, read fresh on every request, never cached
+// depends on the enrolment's CLIAdmin bit, read fresh on every request, never cached
 // from handleConn's one-time resolution — see resolveCaller's own doc
 // comment for why that placement matters. The cost, stated plainly: an
 // unknown request type now pays one freshSettings stat before being
@@ -544,28 +545,28 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 			fmt.Errorf("remote calls are refused while the tool-call audit log is disabled"))
 	}
 
-	enrolment := findEnrolmentByFingerprint(settings, fingerprint)
-	if enrolment == nil {
+	enr := enrolment.FindByFingerprint(settings, fingerprint)
+	if enr == nil {
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("this certificate is no longer enrolled"))
 	}
 
 	if projectID == "" {
-		switch len(enrolment.ProjectIDs) {
+		switch len(enr.ProjectIDs) {
 		case 0:
 			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
-				fmt.Errorf("enrolment %q holds no grants", enrolment.ClientID))
+				fmt.Errorf("enrolment %q holds no grants", enr.ClientID))
 		case 1:
-			projectID = enrolment.ProjectIDs[0]
+			projectID = enr.ProjectIDs[0]
 		default:
 			return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
-				fmt.Errorf("project_id is required: enrolment %q holds %d grants", enrolment.ClientID, len(enrolment.ProjectIDs)))
+				fmt.Errorf("project_id is required: enrolment %q holds %d grants", enr.ClientID, len(enr.ProjectIDs)))
 		}
 	}
 
-	if !enrolment.GrantsProject(projectID) {
+	if !enr.GrantsProject(projectID) {
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
-			fmt.Errorf("enrolment %q does not grant project %q", enrolment.ClientID, projectID))
+			fmt.Errorf("enrolment %q does not grant project %q", enr.ClientID, projectID))
 	}
 
 	proj, _ := config.FindProjectByID(settings, projectID)
@@ -579,7 +580,7 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("project %q is not a remote project: a grant that went stale is refused at call time rather than honoured", projectID))
 	}
-	return settings, enrolment, proj, nil
+	return settings, enr, proj, nil
 }
 
 // resolveGrant is resolveCaller plus the one thing the tool plane still

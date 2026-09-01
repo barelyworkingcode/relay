@@ -1,7 +1,7 @@
 package main
 
 // create, update and revoke are brokered (ADR-017 decision 2): `enrolUpdate`
-// no longer calls updateEnrolment directly, so its flag-parsing is tested on
+// no longer calls enrolment.Update directly, so its flag-parsing is tested on
 // its own, against parseEnrolUpdateFlags, with no store and no service dial
 // involved at all. The end-to-end path (a real bridge server, a wired
 // EnrolmentOps, the actual admin_op round trip) is covered separately below
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -26,8 +27,8 @@ import (
 // test can set up a starting state concisely.
 func enrolCreateForCLITest(t *testing.T, store config.SettingsStore, clientID string, projectIDs []string) {
 	t.Helper()
-	_, err := createEnrolment(store, enrolmentRequest{ClientID: clientID, ProjectIDs: projectIDs})
-	assertNoErr(t, err, "createEnrolment")
+	_, err := enrolment.Create(store, enrolment.Request{ClientID: clientID, ProjectIDs: projectIDs})
+	assertNoErr(t, err, "enrolment.Create")
 }
 
 // Flag detection is fs.Visit-based, not a zero check, so an unnamed flag must
@@ -75,7 +76,7 @@ func TestEnrolUpdate_CLIDispatchesTheParsedRequestThroughTheBroker(t *testing.T)
 
 	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--max-calls", "999"})
 
-	got := findEnrolment(store.Get(), "hermes-mail").Budget
+	got := enrolment.Find(store.Get(), "hermes-mail").Budget
 	if got.MaxCalls != 999 {
 		t.Fatalf("MaxCalls = %d, want 999", got.MaxCalls)
 	}
@@ -113,7 +114,7 @@ func TestParseEnrolSignFlags_MapsFlagsAndDefaultsBudget(t *testing.T) {
 	if !slices.Equal(got.ProjectIDs, []string{"proj-a", "proj-b"}) {
 		t.Fatalf("ProjectIDs = %v, want [proj-a proj-b] in the order given", got.ProjectIDs)
 	}
-	want := config.EnrolmentBudget{WindowSeconds: defaultEnrolmentWindowSeconds, MaxCalls: defaultEnrolmentMaxCalls, MaxResultBytes: defaultEnrolmentMaxResultBytes}
+	want := config.EnrolmentBudget{WindowSeconds: enrolment.DefaultWindowSeconds, MaxCalls: enrolment.DefaultMaxCalls, MaxResultBytes: enrolment.DefaultMaxResultBytes}
 	if got.Budget != want {
 		t.Fatalf("Budget = %+v, want the defaults %+v", got.Budget, want)
 	}
@@ -181,11 +182,11 @@ func TestParseEnrolSignFlags_RequiresClientIDAndCSR(t *testing.T) {
 	}
 }
 
-// A CSR file over maxCSRBytes is refused locally, with the same message
-// ParseClientCSR would give — before any store or dial.
+// A CSR file over enrolment.MaxCSRBytes is refused locally, with the same message
+// enrolment.ParseClientCSR would give — before any store or dial.
 func TestParseEnrolSignFlags_RefusesOverLengthCSRLocally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.csr")
-	assertNoErr(t, os.WriteFile(path, make([]byte, maxCSRBytes+1), 0644), "write oversized CSR file")
+	assertNoErr(t, os.WriteFile(path, make([]byte, enrolment.MaxCSRBytes+1), 0644), "write oversized CSR file")
 
 	_, err := parseEnrolSignFlags([]string{"--client-id", "x", "--csr", path})
 	if err == nil || !strings.Contains(err.Error(), "a few hundred bytes") {
@@ -203,7 +204,7 @@ func TestEnrolSign_CLIDispatchesTheParsedRequestThroughTheBroker(t *testing.T) {
 
 	enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID})
 
-	stored := findEnrolment(store.Get(), "hermes-mail")
+	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("enrolment did not land in the store")
 	}
@@ -228,11 +229,11 @@ func TestEnrolSign_OutDirWritesByteIdenticalCopies(t *testing.T) {
 	outDir := t.TempDir()
 	enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
 
-	stored := findEnrolment(store.Get(), "hermes-mail")
+	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("enrolment did not land in the store")
 	}
-	bundleDir := filepath.Join(dir, enrolmentBundleDir, "hermes-mail")
+	bundleDir := filepath.Join(dir, enrolment.BundleDir, "hermes-mail")
 
 	for _, name := range []string{"client.crt", "ca.crt"} {
 		got, err := os.ReadFile(filepath.Join(outDir, name))
@@ -260,10 +261,10 @@ func TestEnrolSign_BundleErrorLeavesOutDirUntouchedAndReportsFailureFirst(t *tes
 	csrPath := writeTestCSRFile(t, "hermes-mail")
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	// Force signEnrolment down the bundle-error path: writeSignedCertBundle
+	// Force enrolment.Sign down the bundle-error path: enrolment.WriteSignedCertBundle
 	// refuses when client.key already exists in the config-dir bundle
 	// location, so seed one there before signing.
-	bundleDir := filepath.Join(dir, enrolmentBundleDir, "hermes-mail")
+	bundleDir := filepath.Join(dir, enrolment.BundleDir, "hermes-mail")
 	assertNoErr(t, os.MkdirAll(bundleDir, 0700), "mkdir bundle dir")
 	assertNoErr(t, os.WriteFile(filepath.Join(bundleDir, "client.key"), []byte("stale key"), 0600), "seed stale client.key")
 
@@ -362,7 +363,7 @@ func TestEnrolRequestsApproveRefuse_CLIDispatchThroughTheBroker(t *testing.T) {
 	if !strings.Contains(out, "hermes-mail") {
 		t.Fatalf("enrol approve output = %q, want it to name the client id", out)
 	}
-	stored := findEnrolment(store.Get(), "hermes-mail")
+	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("approval did not land in the store")
 	}
@@ -431,7 +432,7 @@ func TestEnrolApprove_RowSweptDuringPresencePromptSaysSoAndDoesNotClaimDelivery(
 		t.Fatalf("enrol approve output = %q, want it to point at `relay enrol list` for the real, recorded enrolment", out)
 	}
 
-	stored := findEnrolment(store.Get(), "hermes-mail")
+	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("the enrolment must be real and recorded even though the pending row expired")
 	}
@@ -477,7 +478,7 @@ func TestEnrolApprove_RowRefusedDuringPresencePromptNamesTheRefusalNotAnExpiry(t
 		t.Fatalf("enrol approve output = %q, want it to point at revoke by client id", out)
 	}
 
-	stored := findEnrolment(store.Get(), "hermes-mail")
+	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("the enrolment must be real and recorded even though the pending row was refused mid-approval")
 	}
@@ -514,8 +515,8 @@ func TestEnrolRequests_JSONFlagPrintsMachineReadableOutput(t *testing.T) {
 // AC-30's CLI half: `relay enrol ca-fingerprint` needs no broker at all.
 func TestEnrolCAFingerprint_ReadsDirectlyWithNoBrokerNeeded(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	_, err := LoadOrCreateCA(testSealer())
-	assertNoErr(t, err, "LoadOrCreateCA")
+	_, err := enrolment.LoadOrCreateCA(testSealer())
+	assertNoErr(t, err, "enrolment.LoadOrCreateCA")
 
 	out := captureStdout(t, func() {
 		enrolCAFingerprint()

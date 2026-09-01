@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 func updateProjectMcps(s *config.Settings, id string, mcpIDs []string, surfaces McpSurfaces) {
@@ -41,14 +42,14 @@ func updateProjectKind(s *config.Settings, id string, kind config.ProjectKind) {
 	}
 	kind = config.NormalizeProjectKind(kind)
 	// Belt-and-braces, exactly as updateProjectPath does it: the real
-	// refusal is validateProjectEnrolments at the call site, but this
+	// refusal is enrolment.ValidateProjectConversion at the call site, but this
 	// function is reachable from anywhere in package main without passing
 	// through that guard. A remote→local conversion under a live enrolment
 	// strands that enrolment on a project whose shape it was never
 	// validated against — a silent widening of what a remote client
 	// reaches, rather than a loud error. Refuse silently here so a bypass
 	// of the validated path cannot produce it (ADR-010 decision 3).
-	if !kind.IsRemote() && proj.IsRemote() && len(enrolmentsGrantingProject(s, id)) > 0 {
+	if !kind.IsRemote() && proj.IsRemote() && len(enrolment.GrantingProject(s, id)) > 0 {
 		return
 	}
 	proj.Kind = kind

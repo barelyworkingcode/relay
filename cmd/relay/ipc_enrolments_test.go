@@ -2,8 +2,9 @@ package main
 
 // Hermetic tests for the Remote Clients IPC handlers. Mirrors the CLI coverage
 // in enrolment_test.go: every handler proves it (a) emits the right event,
-// (b) persists through the SettingsStore, and (c) refuses what enrolment.go
-// refuses, with enrolment.go's wording rather than a second opinion.
+// (b) persists through the SettingsStore, and (c) refuses what
+// internal/enrolment refuses, with that package's wording rather than a
+// second opinion.
 //
 // The load-bearing one is TestIPCCreateEnrolment_NeverEmitsKeyMaterial: the
 // bundle contains a client private key, and the whole reason the IPC surface
@@ -21,6 +22,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 // newEnrolmentIPC stands up an IPCContext over a sandboxed store whose config
@@ -106,10 +108,10 @@ func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 		t.Fatalf("emitted enrolment does not match the request: %+v", created)
 	}
 	// An unset budget takes the conservative default, never "unlimited".
-	if created.Budget.MaxCalls != defaultEnrolmentMaxCalls {
+	if created.Budget.MaxCalls != enrolment.DefaultMaxCalls {
 		t.Errorf("unset budget did not default: %+v", created.Budget)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") == nil {
+	if enrolment.Find(store.Get(), "hermes-mail") == nil {
 		t.Error("enrolment was not persisted")
 	}
 
@@ -131,7 +133,7 @@ func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 	}
 }
 
-// The one that matters. createEnrolment writes a private key to disk; not one
+// The one that matters. enrolment.Create writes a private key to disk; not one
 // byte of it may ride out on an IPC event, in any field, on any argument.
 func TestIPCCreateEnrolment_NeverEmitsKeyMaterial(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
@@ -178,7 +180,7 @@ func TestIPCCreateEnrolment_NeverEmitsKeyMaterial(t *testing.T) {
 	}
 }
 
-// A grant naming a local project is refused, and the refusal is enrolment.go's
+// A grant naming a local project is refused, and the refusal is internal/enrolment's
 // — it names the project so the operator knows which grant to drop.
 func TestIPCCreateEnrolment_RefusesLocalProjectGrant(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
@@ -253,7 +255,7 @@ func TestIPCCreateEnrolment_RefusesDuplicateClientID(t *testing.T) {
 
 // Revoking deletes the record, removes the bundle, and — the half a record
 // deletion cannot do — fires the hook that severs live connections. Going
-// through revokeEnrolment rather than RemoveEnrolment is what buys that third
+// through enrolment.Revoke rather than deleting the record is what buys that third
 // property, so the test asserts on it directly.
 func TestIPCRevokeEnrolment_DeletesRecordBundleAndFiresHook(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
@@ -262,19 +264,19 @@ func TestIPCRevokeEnrolment_DeletesRecordBundleAndFiresHook(t *testing.T) {
 		"client_id":   "hermes-mail",
 		"project_ids": []string{mail.ID},
 	}))
-	created := findEnrolment(store.Get(), "hermes-mail")
+	created := enrolment.Find(store.Get(), "hermes-mail")
 	if created == nil {
 		t.Fatal("setup: enrolment was not created")
 	}
 	fingerprint := created.Fingerprint
 	// bridge.ConfigDir() is redirected to the sandbox by newEnrolmentSandbox.
-	bundleDir := filepath.Join(bridge.ConfigDir(), enrolmentBundleDir, "hermes-mail")
+	bundleDir := filepath.Join(bridge.ConfigDir(), enrolment.BundleDir, "hermes-mail")
 
 	var hookClient, hookFingerprint string
-	SetEnrolmentRevocationHook(func(clientID, fp string) {
+	enrolment.SetRevocationHook(func(clientID, fp string) {
 		hookClient, hookFingerprint = clientID, fp
 	})
-	t.Cleanup(func() { SetEnrolmentRevocationHook(nil) })
+	t.Cleanup(func() { enrolment.SetRevocationHook(nil) })
 
 	ipcRevokeEnrolment(ipc, mustRaw(t, map[string]interface{}{"client_id": "hermes-mail"}))
 
@@ -290,7 +292,7 @@ func TestIPCRevokeEnrolment_DeletesRecordBundleAndFiresHook(t *testing.T) {
 	if got, _ := args[1].(string); got != fingerprint {
 		t.Errorf("revoked event fingerprint = %q, want the full %q", got, fingerprint)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") != nil {
+	if enrolment.Find(store.Get(), "hermes-mail") != nil {
 		t.Error("the enrolment record survived revocation")
 	}
 	if _, err := os.Stat(bundleDir); !os.IsNotExist(err) {
@@ -460,8 +462,8 @@ func TestRemoteConfigView_ReportsAuditAsTheGateOnRemoteAccess(t *testing.T) {
 func TestRenderSettingsHTML_SeedsEnrolmentsAndRemoteBlock(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-	if _, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
-		t.Fatalf("createEnrolment: %v", err)
+	if _, err := enrolment.Create(store, enrolment.Request{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
+		t.Fatalf("enrolment.Create: %v", err)
 	}
 	store.With(func(s *config.Settings) {
 		enabled := true

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -49,9 +50,9 @@ type enrolGrantBudgetFlags struct {
 func addEnrolGrantBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
 	f := &enrolGrantBudgetFlags{}
 	fs.Var(&f.grants, "grant", "access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project")
-	f.windowSeconds = fs.Int("window-seconds", defaultEnrolmentWindowSeconds, "budget window in seconds")
-	f.maxCalls = fs.Int("max-calls", defaultEnrolmentMaxCalls, "max tool calls per window")
-	f.maxResultBytes = fs.Int64("max-result-bytes", defaultEnrolmentMaxResultBytes, "max cumulative result bytes per window")
+	f.windowSeconds = fs.Int("window-seconds", enrolment.DefaultWindowSeconds, "budget window in seconds")
+	f.maxCalls = fs.Int("max-calls", enrolment.DefaultMaxCalls, "max tool calls per window")
+	f.maxResultBytes = fs.Int64("max-result-bytes", enrolment.DefaultMaxResultBytes, "max cumulative result bytes per window")
 	return f
 }
 
@@ -163,8 +164,8 @@ func parseEnrolSignFlags(args []string) (enrolSignFields, error) {
 }
 
 // readCSRFile reads the CSR the operator named — a path, or "-" for stdin
-// — through an io.LimitReader(maxCSRBytes+1), refusing an over-length file
-// with the exact message ParseClientCSR would give, so a huge file is
+// — through an io.LimitReader(enrolment.MaxCSRBytes+1), refusing an over-length file
+// with the exact message enrolment.ParseClientCSR would give, so a huge file is
 // refused before it ever reaches the store or the tray.
 func readCSRFile(path string) ([]byte, error) {
 	var r io.Reader
@@ -178,18 +179,18 @@ func readCSRFile(path string) ([]byte, error) {
 		defer f.Close()
 		r = f
 	}
-	data, err := io.ReadAll(io.LimitReader(r, maxCSRBytes+1))
+	data, err := io.ReadAll(io.LimitReader(r, enrolment.MaxCSRBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if len(data) > maxCSRBytes {
-		return nil, fmt.Errorf("%s", csrTooLargeMessage(len(data)))
+	if len(data) > enrolment.MaxCSRBytes {
+		return nil, fmt.Errorf("%s", enrolment.CSRTooLargeMessage(len(data)))
 	}
 	return data, nil
 }
 
 // enrolSign turns an operator-carried CSR into a signed certificate. Like
-// enrolCreate, this process holds no sealer and never calls LoadOrCreateCA
+// enrolCreate, this process holds no sealer and never calls enrolment.LoadOrCreateCA
 // on any branch: it only builds the request and prints what the broker
 // hands back — EnrolmentOps.Sign, running inside the tray, is the one
 // place that ever touches the CA key or the CSR's validation.
@@ -299,9 +300,9 @@ func formatCLIAdminState(on bool) string {
 // leave the stored value alone, so this uses fs.Visit rather than a zero
 // check (zero is itself meaningful here — "use the default" on a budget
 // field, "no profiles" on grants), and it is worth testing on its own
-// because updateEnrolment/EnrolmentOps.Update no longer run in this
+// because enrolment.Update/EnrolmentOps.Update no longer run in this
 // process to test it against directly.
-func parseEnrolUpdateFlags(args []string) enrolmentUpdateRequest {
+func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 	fs := flag.NewFlagSet("enrol update", flag.ExitOnError)
 	clientID := fs.String("client-id", "", "client id of the enrolment to update (required)")
 	windowSeconds := fs.Int("window-seconds", 0, "new budget window in seconds (0 resets to the default; omit to leave unchanged)")
@@ -313,7 +314,7 @@ func parseEnrolUpdateFlags(args []string) enrolmentUpdateRequest {
 	cliAdmin := fs.Bool("cli-admin", false, "let this certificate adjust its OWN access profiles over the remote listener (narrowing only); --cli-admin=false withdraws it. Effective on the client's next request.")
 	fs.Parse(args)
 
-	req := enrolmentUpdateRequest{ClientID: *clientID}
+	req := enrolment.UpdateRequest{ClientID: *clientID}
 	var grantFlagSet, anyFlagSet bool
 	fs.Visit(func(f *flag.Flag) {
 		anyFlagSet = true
@@ -467,7 +468,7 @@ func enrolRequests(args []string) {
 		if req.Approved {
 			status = "approved: " + req.ApprovedClientID
 		}
-		// The full 64 hex characters, never truncated — FingerprintDER's
+		// The full 64 hex characters, never truncated — enrolment.FingerprintDER's
 		// stated reason applies identically to a request's own key: a
 		// prefix answers "probably that key" where the point is "that key".
 		fmt.Fprintf(w, "%s\t%s\tsha256:%s\t%s\t%s\t%s\t%s\t%s\n",
@@ -653,7 +654,7 @@ func enrolRefuse(args []string) {
 // and `relay audit` already have, since the certificate is public and the
 // key it corresponds to is not needed to fingerprint it.
 func enrolCAFingerprint() {
-	fp, err := caFingerprintFromDisk()
+	fp, err := enrolment.CAFingerprintFromDisk()
 	if err != nil {
 		exitError("%v", err)
 	}

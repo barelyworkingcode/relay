@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -28,8 +29,8 @@ func TestEnrolmentOpsSign_MalformedCSRRefusedWithZeroProviderCalls(t *testing.T)
 		ProjectIDs: []string{profile.ID},
 		CSRPEM:     "not a csr at all",
 	}, auditViaCLI, "")
-	if err == nil || !errors.Is(err, errEnrolmentInvalid) {
-		t.Fatalf("a malformed CSR: err = %v, want errEnrolmentInvalid", err)
+	if err == nil || !errors.Is(err, enrolment.ErrInvalid) {
+		t.Fatalf("a malformed CSR: err = %v, want enrolment.ErrInvalid", err)
 	}
 	if n := recording.Calls(); n != 0 {
 		t.Errorf("presence provider called %d time(s) for a malformed CSR; must refuse before the gate", n)
@@ -232,7 +233,7 @@ func TestEnrolmentOpsSign_UnrecordedIssuanceRevokesAndRemovesTheBundle(t *testin
 	if broken.calls != 1 {
 		t.Errorf("issuance auditor called %d times, want 1", broken.calls)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") != nil {
+	if enrolment.Find(store.Get(), "hermes-mail") != nil {
 		t.Fatal("the enrolment must be revoked when its issuance cannot be recorded")
 	}
 	if _, statErr := os.Stat(dir + "/enrolments/hermes-mail"); statErr == nil {

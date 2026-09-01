@@ -331,7 +331,7 @@ type Project struct {
 // window. The enrolment, not the project, carries the cap (ADR-010 decision
 // 7) since it is the unit of compromise. There is deliberately no
 // representation of "unlimited": a zero field means "unset", which
-// normalizeEnrolmentBudget fills with the conservative default.
+// enrolment.NormalizeBudget fills with the conservative default.
 type EnrolmentBudget struct {
 	WindowSeconds  int   `json:"window_seconds"`
 	MaxCalls       int   `json:"max_calls"`
@@ -351,14 +351,14 @@ type EnrolmentBudget struct {
 type Enrolment struct {
 	// ClientID is also the certificate's Common Name and the bundle's
 	// directory name, so it is restricted to the filesystem-safe charset
-	// (isSafeID).
+	// (enrolment.SafeID).
 	ClientID string `json:"client_id"`
 	// Fingerprint is the FULL SHA-256 of the client certificate's DER,
 	// "sha256:" + 64 hex chars. Never truncated — see FingerprintDER.
 	Fingerprint string `json:"fingerprint"`
 	// ProjectIDs are the grants this certificate may select among by
 	// sending a project id on the wire. Every id here must name a project
-	// with IsRemote() true (ValidateEnrolmentGrants).
+	// with IsRemote() true (enrolment.ValidateGrants).
 	ProjectIDs []string        `json:"project_ids"`
 	Budget     EnrolmentBudget `json:"budget"`
 	CreatedAt  string          `json:"created_at"`

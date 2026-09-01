@@ -206,7 +206,7 @@ type loginCodeView struct {
 
 // LoginOps is the one core behind the tray's login-code item and the Passkeys
 // tab, standing to this file's functions exactly as EnrolmentOps stands to
-// enrolment.go's: `relay login` calls them directly, and this is how the
+// internal/enrolment's: `relay login` calls them directly, and this is how the
 // WebView door reaches the same ones.
 //
 // Every method is nil-safe, the discipline AuditRecorder follows. A nil core

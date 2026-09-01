@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -59,7 +60,7 @@ func TestEnrolmentOpsApprove_SignsOverTheStoredCSRsPublicKey(t *testing.T) {
 		t.Fatal("lodged record vanished before Approve ran")
 	}
 	csr := parseCSRForTest(t, rec.CSRPEM)
-	wantSPKI := SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
+	wantSPKI := enrolment.SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: table}
 	created, err := ops.Approve(context.Background(), approveFields{
@@ -199,7 +200,7 @@ func TestEnrolmentOpsApprove_DeniedLeavesPendingRecordAndWritesNoEnrolment(t *te
 }
 
 // AC-21: over a session that cannot show a prompt (the SSH shape), Approve
-// refuses without ever reaching signEnrolment.
+// refuses without ever reaching enrolment.Sign.
 func TestEnrolmentOpsApprove_NoSessionRefusesWithoutSigning(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
@@ -223,17 +224,17 @@ func TestEnrolmentOpsApprove_NoSessionRefusesWithoutSigning(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AC-22: ParseClientCSR runs before the gate
+// AC-22: enrolment.ParseClientCSR runs before the gate
 // ---------------------------------------------------------------------------
 
 func TestEnrolmentOpsApprove_MalformedStoredCSRRefusesWithZeroProviderCalls(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table := newEnrolmentRequestTable()
-	// Lodge itself would never store this (it runs ParseClientCSR before
+	// Lodge itself would never store this (it runs enrolment.ParseClientCSR before
 	// admitting a row) -- direct map access, legal white-box test code in
 	// this same package, is the only way to construct the case §11.14 asks
-	// for: a record whose CSR ParseClientCSR refuses.
+	// for: a record whose CSR enrolment.ParseClientCSR refuses.
 	table.pending["req_bad"] = &enrolmentRequestRecord{
 		id: "req_bad", csrPEM: []byte("not a csr at all"), spkiSHA256: "x",
 		remoteAddr: "10.0.0.5:1", arrivedAt: time.Now(), expiresAt: time.Now().Add(time.Hour),
@@ -246,8 +247,8 @@ func TestEnrolmentOpsApprove_MalformedStoredCSRRefusesWithZeroProviderCalls(t *t
 	_, err = ops.Approve(context.Background(), approveFields{
 		RequestID: "req_bad", ClientID: "hermes-mail", ProjectIDs: []string{profile.ID},
 	}, auditViaCLI, "")
-	if err == nil || !errors.Is(err, errEnrolmentInvalid) {
-		t.Fatalf("err = %v, want errEnrolmentInvalid", err)
+	if err == nil || !errors.Is(err, enrolment.ErrInvalid) {
+		t.Fatalf("err = %v, want enrolment.ErrInvalid", err)
 	}
 	if n := recording.Calls(); n != 0 {
 		t.Errorf("presence provider called %d time(s) for a malformed stored CSR; must refuse before the gate", n)
@@ -268,13 +269,13 @@ func TestEnrolmentOpsApprove_DuplicateSPKIRefusedNamingTheExistingClient(t *test
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	assertNoErr(t, err, "generate shared key")
 	csrFirst := genCSRPEMFromKey(t, key, 0, "hermes-first")
-	_, err = signEnrolment(store, enrolmentRequest{ClientID: "hermes-first", ProjectIDs: []string{profile.ID}}, parseCSRForTest(t, csrFirst))
+	_, err = enrolment.Sign(store, enrolment.Request{ClientID: "hermes-first", ProjectIDs: []string{profile.ID}}, parseCSRForTest(t, csrFirst))
 	assertNoErr(t, err, "seed an existing enrolment over the shared key")
 
 	// A second CSR over the SAME key, lodged and approved under a different
 	// client id: Lodge itself has no visibility into settings.json enrolments
 	// (only into other PENDING rows), so it succeeds -- the refusal must come
-	// from ValidateEnrolment inside Approve's own commitEnrolment.
+	// from the validation inside Approve's own enrolment.Commit.
 	table := newEnrolmentRequestTable()
 	l, err := table.Lodge(genCSRPEMFromKey(t, key, 0, "hermes-second"), "", "", "", "10.0.0.5:1")
 	assertNoErr(t, err, "lodge a second CSR over the same key")
@@ -314,7 +315,7 @@ func TestEnrolmentOpsApprove_UnrecordedIssuanceRevokesAndPollNeverApproves(t *te
 	if broken.calls != 1 {
 		t.Errorf("issuance auditor called %d times, want 1", broken.calls)
 	}
-	if findEnrolment(store.Get(), "hermes-mail") != nil {
+	if enrolment.Find(store.Get(), "hermes-mail") != nil {
 		t.Fatal("the enrolment must be revoked when its issuance cannot be recorded")
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "enrolments", "hermes-mail")); statErr == nil {
@@ -343,7 +344,7 @@ func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *te
 
 	// A legacy `enrol create` bundle already left a client.key at the
 	// target directory this approval will write to.
-	bundleDir := filepath.Join(dir, enrolmentBundleDir, "hermes-mail")
+	bundleDir := filepath.Join(dir, enrolment.BundleDir, "hermes-mail")
 	assertNoErr(t, os.MkdirAll(bundleDir, 0700), "mkdir bundle dir")
 	assertNoErr(t, os.WriteFile(filepath.Join(bundleDir, "client.key"), []byte("stale key"), 0600), "seed stale client.key")
 
@@ -351,13 +352,13 @@ func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *te
 	created, err := ops.Approve(context.Background(), approveFields{
 		RequestID: l.RequestID, ClientID: "hermes-mail", ProjectIDs: []string{profile.ID},
 	}, auditViaCLI, "")
-	if !errors.Is(err, errEnrolmentBundle) {
-		t.Fatalf("err = %v, want errEnrolmentBundle", err)
+	if !errors.Is(err, enrolment.ErrBundle) {
+		t.Fatalf("err = %v, want enrolment.ErrBundle", err)
 	}
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered when only the on-host bundle write failed (spec §11.7)")
 	}
-	if findEnrolment(store.Get(), "hermes-mail") == nil {
+	if enrolment.Find(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment record must have landed even though the bundle write failed")
 	}
 
@@ -422,7 +423,7 @@ func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered even though the row was swept mid-approval")
 	}
-	if findEnrolment(store.Get(), "hermes-mail") == nil {
+	if enrolment.Find(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment must be real and recorded even though the row expired")
 	}
 
@@ -491,7 +492,7 @@ func TestEnrolmentOpsApprove_RowRefusedDuringPresencePromptStillDeliversAndSaysS
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered even though the row was refused mid-approval")
 	}
-	if findEnrolment(store.Get(), "hermes-mail") == nil {
+	if enrolment.Find(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment must be real and recorded even though the row was refused mid-approval")
 	}
 

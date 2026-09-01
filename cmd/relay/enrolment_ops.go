@@ -11,33 +11,9 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
-
-var (
-	errEnrolmentNotFound = errors.New("enrolment not found")
-	errEnrolmentInvalid  = errors.New("invalid enrolment")
-	// errEnrolmentBundle means the enrolment record COMMITTED to settings
-	// and only the on-disk bundle (client key, client cert, CA cert) failed
-	// to write. Callers must not treat it as a failed creation: the
-	// returned enrolment is the record that landed, and reporting it as a
-	// plain error would lose a credential the operator can already see in
-	// settings.json but has no bundle to hand to the client.
-	errEnrolmentBundle = errors.New("enrolment bundle")
-)
-
-// Carries the reason text verbatim, the same trick serviceValidationError
-// uses: wrapping with %w would prefix the sentinel's own text, and
-// enrolment.go's messages already name the offending grant or client id for
-// the operator to act on as-is.
-type enrolmentValidationError struct{ reason string }
-
-func (e *enrolmentValidationError) Error() string        { return e.reason }
-func (e *enrolmentValidationError) Is(target error) bool { return target == errEnrolmentInvalid }
-
-func invalidEnrolment(reason string) error {
-	return &enrolmentValidationError{reason: reason}
-}
 
 // enrolmentFields is the create request; JSON tags match ipcCreateEnrolmentMsg's.
 type enrolmentFields struct {
@@ -58,10 +34,13 @@ func (f enrolmentFields) presenceDigest() presence.Digest {
 		Build()
 }
 
-// presenceDigest binds an enrolment.update grant to exactly the fields the
-// request touches, absent-aware: a budget-only update must not be spendable
-// on a grant-list change and the reverse (§6.4).
-func (r enrolmentUpdateRequest) presenceDigest() presence.Digest {
+// enrolmentUpdateDigest binds an enrolment.update grant to exactly the
+// fields the request touches, absent-aware: a budget-only update must not be
+// spendable on a grant-list change and the reverse (§6.4). A free function
+// rather than a method on the request, because the request type belongs to
+// internal/enrolment and the digest is this gated core's business, not the
+// domain's.
+func enrolmentUpdateDigest(r enrolment.UpdateRequest) presence.Digest {
 	b := presence.NewDigestBuilder("enrolment.update").StringField("client_id", true, r.ClientID)
 	if r.ProjectIDs != nil {
 		b.StringSetField("project_ids", true, *r.ProjectIDs)
@@ -121,7 +100,7 @@ func (f enrolmentSignFields) presenceDigest(csr *x509.CertificateRequest) presen
 		DurationField("budget.window_seconds", true, time.Duration(f.Budget.WindowSeconds)).
 		DurationField("budget.max_calls", true, time.Duration(f.Budget.MaxCalls)).
 		DurationField("budget.max_result_bytes", true, time.Duration(f.Budget.MaxResultBytes)).
-		StringField("csr_spki_sha256", true, SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)).
+		StringField("csr_spki_sha256", true, enrolment.SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)).
 		Build()
 }
 
@@ -139,8 +118,8 @@ func enrolmentSignReason(clientID string, projectIDs []string) string {
 // right status without inspecting the message.
 var errEnrolmentUnrecorded = errors.New("enrolment created but could not be recorded in the audit log and has been revoked")
 
-// EnrolmentCreated is deliberately narrower than enrolmentBundle, the type
-// createEnrolment writes to disk: that one also carries KeyPath, CertPath
+// EnrolmentCreated is deliberately narrower than enrolment.Bundle, the type
+// enrolment.Create writes to disk: that one also carries KeyPath, CertPath
 // and CACertPath, and a caller across an API boundary has no legitimate use
 // for any of them. The client private key must never cross that boundary,
 // and giving this type no field that names the key file is what makes that
@@ -220,14 +199,14 @@ func (o *EnrolmentOps) List() []config.Enrolment {
 }
 
 func (o *EnrolmentOps) Get(clientID string) (config.Enrolment, error) {
-	e := findEnrolment(o.Store.Get(), clientID)
+	e := enrolment.Find(o.Store.Get(), clientID)
 	if e == nil {
-		return config.Enrolment{}, fmt.Errorf("%w: %s", errEnrolmentNotFound, clientID)
+		return config.Enrolment{}, fmt.Errorf("%w: %s", enrolment.ErrNotFound, clientID)
 	}
 	return *e, nil
 }
 
-// Create delegates grant and client-id legality to createEnrolment, which
+// Create delegates grant and client-id legality to enrolment.Create, which
 // runs them inside the same store.With as the write so two concurrent
 // creates cannot both claim a client id — a second check out here could
 // only ever disagree with the one that counts. The only validation that
@@ -236,7 +215,7 @@ func (o *EnrolmentOps) Get(clientID string) (config.Enrolment, error) {
 func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credID string) (EnrolmentCreated, error) {
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
-		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -248,12 +227,12 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 		return EnrolmentCreated{}, err
 	}
 
-	bundle, err := createEnrolment(o.Store, enrolmentRequest{
+	bundle, err := enrolment.Create(o.Store, enrolment.Request{
 		ClientID:   clientID,
 		ProjectIDs: f.ProjectIDs,
 		Budget:     f.Budget,
 	})
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 		return EnrolmentCreated{}, err
 	}
 	bundleErr := err
@@ -268,7 +247,7 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 	}
 	o.notify()
 	if bundleErr != nil {
-		return created, bundleErr // errEnrolmentBundle: the record landed, the bundle write didn't
+		return created, bundleErr // enrolment.ErrBundle: the record landed, the bundle write didn't
 	}
 	return created, nil
 }
@@ -282,12 +261,12 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, credID string) (EnrolmentCreated, error) {
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
-		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
 	}
 
-	csr, err := ParseClientCSR([]byte(f.CSRPEM))
+	csr, err := enrolment.ParseClientCSR([]byte(f.CSRPEM))
 	if err != nil {
-		return EnrolmentCreated{}, invalidEnrolment(err.Error())
+		return EnrolmentCreated{}, enrolment.Invalid(err.Error())
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -299,19 +278,19 @@ func (o *EnrolmentOps) Sign(ctx context.Context, f enrolmentSignFields, via, cre
 		return EnrolmentCreated{}, err
 	}
 
-	return o.completeSigning(enrolmentRequest{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+	return o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
 }
 
-// completeSigning is the ordering §11.2 pins as normative — signEnrolment,
+// completeSigning is the ordering §11.2 pins as normative — enrolment.Sign,
 // then recordEnrolmentIssued's fail-closed undo — shared verbatim by Sign
 // and Approve. Both callers have already parsed their own CSR, checked
 // requireIssuanceAuditor and redeemed their own presence grant over
 // "enrolment.sign" before reaching here; this is what runs identically once
 // they have, so neither can drift from the other on the part that is
 // actually fragile — getting the undo or the commit order wrong.
-func (o *EnrolmentOps) completeSigning(req enrolmentRequest, csr *x509.CertificateRequest, grant presence.Grant, via, credID string) (EnrolmentCreated, error) {
-	bundle, err := signEnrolment(o.Store, req, csr)
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+func (o *EnrolmentOps) completeSigning(req enrolment.Request, csr *x509.CertificateRequest, grant presence.Grant, via, credID string) (EnrolmentCreated, error) {
+	bundle, err := enrolment.Sign(o.Store, req, csr)
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 		return EnrolmentCreated{}, err
 	}
 	bundleErr := err
@@ -330,7 +309,7 @@ func (o *EnrolmentOps) completeSigning(req enrolmentRequest, csr *x509.Certifica
 	}
 	o.notify()
 	if bundleErr != nil {
-		return created, bundleErr // errEnrolmentBundle: the record landed, the bundle write didn't
+		return created, bundleErr // enrolment.ErrBundle: the record landed, the bundle write didn't
 	}
 	return created, nil
 }
@@ -374,7 +353,7 @@ var (
 	// presence prompt held long enough for enrolmentRequestTTL to pass
 	// and some other table activity (another Lodge, a List/PendingRequests
 	// read) swept it in between. Threaded through exactly like
-	// errEnrolmentBundle -- a caller checks errors.Is and surfaces it
+	// enrolment.ErrBundle -- a caller checks errors.Is and surfaces it
 	// rather than treating a non-nil error as "nothing happened" -- because
 	// the poll row missing that certificate is a fact the operator must be
 	// told, not a fact that unwinds the issuance that already happened.
@@ -410,12 +389,12 @@ var (
 //
 // Order matches Sign's, applied to a stored record instead of a request
 // field (§11.2, §3 steps 1-4): read the pending record under the table
-// lock (1), ParseClientCSR the STORED bytes before anything else runs (2),
+// lock (1), enrolment.ParseClientCSR the STORED bytes before anything else runs (2),
 // requireIssuanceAuditor, then the gate over norm.presenceDigest(csr) (3),
-// then completeSigning — the identical signEnrolment/recordEnrolmentIssued
+// then completeSigning — the identical enrolment.Sign/recordEnrolmentIssued
 // body Sign uses (4) — and only once THAT has committed does MarkApproved
 // run, so a failed audit-log undo (errEnrolmentUnrecorded, never
-// errEnrolmentBundle) can never leave a poll answering "approved" for an
+// enrolment.ErrBundle) can never leave a poll answering "approved" for an
 // enrolment that was just revoked (AC-24).
 func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID string) (EnrolmentCreated, error) {
 	if o.Requests == nil {
@@ -423,11 +402,11 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	}
 	requestID := strings.TrimSpace(f.RequestID)
 	if requestID == "" {
-		return EnrolmentCreated{}, invalidEnrolment("request id is required")
+		return EnrolmentCreated{}, enrolment.Invalid("request id is required")
 	}
 	clientID := strings.TrimSpace(f.ClientID)
 	if clientID == "" {
-		return EnrolmentCreated{}, invalidEnrolment("client id is required")
+		return EnrolmentCreated{}, enrolment.Invalid("client id is required")
 	}
 
 	rec, found := o.Requests.Get(requestID)
@@ -443,9 +422,9 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 
 	// The stored bytes, never anything approveFields could carry — see its
 	// own doc comment.
-	csr, err := ParseClientCSR(rec.CSRPEM)
+	csr, err := enrolment.ParseClientCSR(rec.CSRPEM)
 	if err != nil {
-		return EnrolmentCreated{}, invalidEnrolment(err.Error())
+		return EnrolmentCreated{}, enrolment.Invalid(err.Error())
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -458,12 +437,12 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 		return EnrolmentCreated{}, err
 	}
 
-	created, err := o.completeSigning(enrolmentRequest{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+	created, err := o.completeSigning(enrolment.Request{ClientID: clientID, ProjectIDs: f.ProjectIDs, Budget: f.Budget}, csr, grant, via, credID)
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 		return EnrolmentCreated{}, err
 	}
 	// Reachable only once completeSigning's own fail-closed undo has
-	// already succeeded (err here is nil or errEnrolmentBundle — never
+	// already succeeded (err here is nil or enrolment.ErrBundle — never
 	// errEnrolmentUnrecorded, which returned above): the poll response must
 	// never carry an approval the audit log could not record (AC-24). The
 	// bundle write may still have failed (§11.7) — the certificate is
@@ -478,7 +457,7 @@ func (o *EnrolmentOps) Approve(ctx context.Context, f approveFields, via, credID
 	// to report. Either way the enrolment above has ALREADY committed (this
 	// line runs after it, never before), so the right answer is never to
 	// undo it; it is to say which of the two happened, the same way an
-	// on-disk bundle failure already does with errEnrolmentBundle.
+	// on-disk bundle failure already does with enrolment.ErrBundle.
 	switch o.Requests.MarkApproved(requestID, clientID, o.approvedProjects(f.ProjectIDs), o.relayAddr(), created.CertPEM, created.CAPEM) {
 	case markApprovedRowGone:
 		err = errors.Join(err, errEnrolmentRequestExpired)
@@ -529,7 +508,7 @@ func sasIncompleteDetail(rec pendingRecordView) string {
 	return "the requesting machine has not yet completed its comparison handshake; wait for its next poll, or refuse the request"
 }
 
-// suggestClientID is advisory only. ValidateEnrolment's uniqueness check
+// suggestClientID is advisory only. internal/enrolment's own uniqueness check
 // inside store.With stays the authority — this runs outside any lock, so
 // two operators approving at once can still both be offered the same name,
 // and the loser is refused loudly there rather than quietly overwriting.
@@ -537,18 +516,18 @@ func sasIncompleteDetail(rec pendingRecordView) string {
 // which the caller renders as "no suggestion", never as a chosen id.
 func suggestClientID(s *config.Settings, label string) string {
 	label = strings.TrimSpace(label)
-	if label == "" || !isSafeID(label) || len(label) > maxEnrolmentLabelBytes {
+	if label == "" || !enrolment.SafeID(label) || len(label) > maxEnrolmentLabelBytes {
 		return ""
 	}
 	if s == nil {
 		return label
 	}
-	if e := findEnrolment(s, label); e == nil {
+	if e := enrolment.Find(s, label); e == nil {
 		return label
 	}
 	for n := 2; n <= 99; n++ {
 		candidate := fmt.Sprintf("%s-%d", label, n)
-		if e := findEnrolment(s, candidate); e == nil {
+		if e := enrolment.Find(s, candidate); e == nil {
 			return candidate
 		}
 	}
@@ -574,7 +553,7 @@ func (o *EnrolmentOps) Refuse(requestID string) error {
 	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return invalidEnrolment("request id is required")
+		return enrolment.Invalid("request id is required")
 	}
 	if !o.Requests.Refuse(o.Audit, requestID) {
 		return fmt.Errorf("%w: %s", errEnrolmentRequestNotFound, requestID)
@@ -620,7 +599,7 @@ func (o *EnrolmentOps) PendingRequests() []enrolmentRequestView {
 // both carry outsized blast radius for a single boolean, and turning either
 // off is still gated — the human is being told what changed, not asked to
 // approve only the direction that widens.
-func enrolmentUpdateReason(req enrolmentUpdateRequest) string {
+func enrolmentUpdateReason(req enrolment.UpdateRequest) string {
 	if req.CLIAdmin != nil {
 		if *req.CLIAdmin {
 			return fmt.Sprintf("grant the enrolment %q configuration authority over its own access profiles (cli-admin)", req.ClientID)
@@ -631,25 +610,25 @@ func enrolmentUpdateReason(req enrolmentUpdateRequest) string {
 }
 
 // Update changes budget and/or grants without touching the certificate
-// (updateEnrolment's own doc comment on why that's a different operation
+// (enrolment.Update's own doc comment on why that's a different operation
 // from revoke+recreate). Gated because a grant-list replacement is exactly
 // the "widens one" case §6.4's table calls out, even though ADR-017's own
 // table names only create and revoke.
-func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, via, credID string) (before, after config.Enrolment, err error) {
+func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, via, credID string) (before, after config.Enrolment, err error) {
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	if req.ClientID == "" {
-		return config.Enrolment{}, config.Enrolment{}, invalidEnrolment("client id is required")
+		return config.Enrolment{}, config.Enrolment{}, enrolment.Invalid("client id is required")
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
 		return config.Enrolment{}, config.Enrolment{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "enrolment.update", req.presenceDigest(), enrolmentUpdateReason(req))
+	grant, err := requireGate(o.Gate, ctx, "enrolment.update", enrolmentUpdateDigest(req), enrolmentUpdateReason(req))
 	if err != nil {
 		return config.Enrolment{}, config.Enrolment{}, err
 	}
 
-	before, after, err = updateEnrolment(o.Store, req)
+	before, after, err = enrolment.Update(o.Store, req)
 	if err != nil {
 		return before, after, err
 	}
@@ -686,7 +665,7 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, v
 func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (config.Enrolment, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
-		return config.Enrolment{}, invalidEnrolment("client id is required")
+		return config.Enrolment{}, enrolment.Invalid("client id is required")
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
@@ -698,12 +677,13 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 		return config.Enrolment{}, err
 	}
 
-	// Goes through revokeEnrolment, never RemoveEnrolment directly:
-	// revokeEnrolment fires the hook that severs LIVE connections holding
+	// Goes through enrolment.Revoke, never the package's own unexported
+	// removeEnrolment:
+	// enrolment.Revoke fires the hook that severs LIVE connections holding
 	// the revoked certificate. A compromised agent sitting in a persistent
 	// scanner loop never reconnects on its own, so deleting only the
 	// settings record would leave it working indefinitely.
-	revoked, err := revokeEnrolment(o.Store, clientID)
+	revoked, err := enrolment.Revoke(o.Store, clientID)
 	if err != nil {
 		return config.Enrolment{}, err
 	}
@@ -752,12 +732,12 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 	if !f.Remove {
 		if listen != "" {
 			if err := validateRemoteListen(listen); err != nil {
-				return remoteConfigView{}, invalidEnrolment(err.Error())
+				return remoteConfigView{}, enrolment.Invalid(err.Error())
 			}
 		}
 		if enrolListen != "" {
 			if err := validateRemoteListen(enrolListen); err != nil {
-				return remoteConfigView{}, invalidEnrolment(err.Error())
+				return remoteConfigView{}, enrolment.Invalid(err.Error())
 			}
 		}
 	}

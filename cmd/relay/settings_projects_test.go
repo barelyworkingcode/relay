@@ -5,6 +5,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -276,5 +277,74 @@ func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
 	}
 	if _, present := after.Context["fsmcp"]; present {
 		t.Errorf("remote project must never get an allowed_dirs context entry, got %v", after.Context["fsmcp"])
+	}
+}
+
+func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
+	s := &config.Settings{}
+	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	assertNoErr(t, err, "create remote project")
+	// Seeded directly rather than through internal/enrolment's own
+	// mutator, which is unexported there: what these two tests are about is
+	// the project mutator's refusal, and the enrolment is setup for it.
+	s.Enrolments = append(s.Enrolments, config.Enrolment{
+		ClientID:    "hermes-mail",
+		Fingerprint: "sha256:" + strings.Repeat("a", 64),
+		ProjectIDs:  []string{mail.ID},
+	})
+	schemas := func() McpSurfaces { return nil }
+
+	local := config.ProjectKindLocal
+	path := t.TempDir()
+	_, _, err = applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas)
+	if err == nil {
+		t.Fatal("converting a remote project to local must be refused while an enrolment grants it")
+	}
+	if !strings.Contains(err.Error(), "hermes-mail") {
+		t.Fatalf("refusal must name the offending enrolment, got: %v", err)
+	}
+
+	// The refusal must have changed nothing.
+	after, _ := config.FindProjectByID(s, mail.ID)
+	if !after.IsRemote() || after.Path != "" {
+		t.Fatalf("refused conversion mutated the project: kind=%q path=%q", after.Kind, after.Path)
+	}
+
+	// Revoking the enrolment makes the conversion legal — capability and
+	// device revocation stay independent, and neither strands the other.
+	s.Enrolments = nil
+	if _, _, err := applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas); err != nil {
+		t.Fatalf("conversion should be legal once no enrolment grants the project: %v", err)
+	}
+	converted, _ := config.FindProjectByID(s, mail.ID)
+	if converted.IsRemote() {
+		t.Fatal("project did not convert to local after the enrolment was revoked")
+	}
+}
+
+// Belt-and-braces, in the shape UpdateProjectPath already uses: the exported
+// mutator refuses the same conversion on its own, so a caller that skips
+// applyProjectUpdate cannot produce the silent widening.
+func TestUpdateProjectKind_RefusesRemoteToLocalWhileEnrolled(t *testing.T) {
+	s := &config.Settings{}
+	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	assertNoErr(t, err, "create remote project")
+	s.Enrolments = append(s.Enrolments, config.Enrolment{
+		ClientID:    "hermes-mail",
+		Fingerprint: "sha256:" + strings.Repeat("b", 64),
+		ProjectIDs:  []string{mail.ID},
+	})
+
+	updateProjectKind(s, mail.ID, config.ProjectKindLocal)
+	if proj, _ := config.FindProjectByID(s, mail.ID); !proj.IsRemote() {
+		t.Fatal("UpdateProjectKind converted an enrolled remote project to local")
+	}
+
+	// Unrelated projects, and remote→remote no-ops, stay unaffected.
+	other, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{}, []string{}, nil, nil)
+	assertNoErr(t, err, "create second remote project")
+	updateProjectKind(s, other.ID, config.ProjectKindLocal)
+	if proj, _ := config.FindProjectByID(s, other.ID); proj.IsRemote() {
+		t.Fatal("an unenrolled remote project must still be convertible")
 	}
 }

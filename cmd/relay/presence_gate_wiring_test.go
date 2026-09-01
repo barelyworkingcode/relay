@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -87,20 +88,20 @@ func pgwCases(t *testing.T) []pgwCase {
 		{"enrolment.update",
 			func(t *testing.T, store config.SettingsStore) {
 				profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-				if _, err := createEnrolment(store, enrolmentRequest{ClientID: "pgw-update", ProjectIDs: []string{profile.ID}}); err != nil {
+				if _, err := enrolment.Create(store, enrolment.Request{ClientID: "pgw-update", ProjectIDs: []string{profile.ID}}); err != nil {
 					t.Fatalf("seed enrolment: %v", err)
 				}
 			},
 			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
 				calls := 5
-				_, _, err := ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "pgw-update", Budget: enrolmentBudgetUpdate{MaxCalls: &calls}}, auditViaCLI, "")
+				_, _, err := ops.Update(context.Background(), enrolment.UpdateRequest{ClientID: "pgw-update", Budget: enrolment.BudgetUpdate{MaxCalls: &calls}}, auditViaCLI, "")
 				return err
 			}},
 		{"enrolment.revoke",
 			func(t *testing.T, store config.SettingsStore) {
 				profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
-				if _, err := createEnrolment(store, enrolmentRequest{ClientID: "pgw-revoke", ProjectIDs: []string{profile.ID}}); err != nil {
+				if _, err := enrolment.Create(store, enrolment.Request{ClientID: "pgw-revoke", ProjectIDs: []string{profile.ID}}); err != nil {
 					t.Fatalf("seed enrolment: %v", err)
 				}
 			},
@@ -445,10 +446,11 @@ func TestGate_RetiredOpsStillWriteConfigChange(t *testing.T) {
 //     requireGate but has no row in either table — see pgwUngatedCases' doc
 //     comment for why. It is added to "want" by name.
 func TestGate_EveryIssuanceAuditorCallSiteHasACase(t *testing.T) {
-	root := gsModuleRoot(t)
-
+	// relaySourceDir, like TestGate_RequireGateCallSitesAreComplete: every
+	// requireIssuanceAuditor call site is in package main, because
+	// requireIssuanceAuditor is.
 	got := map[string]bool{}
-	for _, m := range scanRequireIssuanceAuditorCallSites(t, root) {
+	for _, m := range scanRequireIssuanceAuditorCallSites(t, relaySourceDir(t)) {
 		got[m] = true
 	}
 

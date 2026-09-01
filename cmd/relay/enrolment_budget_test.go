@@ -21,6 +21,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.Enr
 	rec := newTestAudit(t, nil)
 	r.audit = rec
 	clk := newFakeClock()
-	r.budgets.setClock(clk.now)
+	r.budgets.SetClock(clk.now)
 	return r, rec, clk
 }
 
@@ -128,23 +129,13 @@ func lastEvent(t *testing.T, rec *AuditRecorder) AuditEvent {
 
 // windowCount reports how many enrolments the ledger is tracking. Used to prove
 // a local call leaves no trace in it at all.
-func windowCount(b *enrolmentBudgets) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.windows)
+func windowCount(b *enrolment.Budgets) int {
+	return b.TrackedWindows()
 }
 
 // drawn reports the bytes currently charged to an enrolment's window.
-func drawn(b *enrolmentBudgets, clientID string) int64 {
-	b.mu.RLock()
-	w := b.windows[budgetFingerprint(clientID)]
-	b.mu.RUnlock()
-	if w == nil {
-		return 0
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.bytes
+func drawn(b *enrolment.Budgets, clientID string) int64 {
+	return b.DrawnBytes(budgetFingerprint(clientID))
 }
 
 const budgetResult = `{"content":[{"type":"text","text":"3 messages"}]}`
@@ -432,21 +423,21 @@ func TestEnrolmentBudget_ZeroAndAbsentResolveToDefaults(t *testing.T) {
 		// Hand-edited settings.json with the budget key stripped.
 		Budget: config.EnrolmentBudget{},
 	})
-	want := normalizeEnrolmentBudget(config.EnrolmentBudget{})
+	want := enrolment.NormalizeBudget(config.EnrolmentBudget{})
 
 	known := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: budgetFingerprint("hermes-mail")}
-	if got := enrolmentBudget(s, known); got != want {
+	if got := enrolment.BudgetFor(s, known); got != want {
 		t.Errorf("a zero stored budget resolved to %+v, want the conservative defaults %+v", got, want)
 	}
 	// Unreachable in practice — the listener closes a connection whose
 	// certificate resolves to nothing — which is exactly why it must fail
 	// closed rather than exempt.
 	unknown := bridge.RemoteCaller{ClientID: "stranger", Fingerprint: budgetFingerprint("stranger")}
-	if got := enrolmentBudget(s, unknown); got != want {
+	if got := enrolment.BudgetFor(s, unknown); got != want {
 		t.Errorf("an unresolved fingerprint resolved to %+v, want the conservative defaults %+v", got, want)
 	}
 	var nilSettings *config.Settings
-	if got := enrolmentBudget(nilSettings, known); got != want {
+	if got := enrolment.BudgetFor(nilSettings, known); got != want {
 		t.Errorf("nil settings resolved to %+v, want the conservative defaults %+v", got, want)
 	}
 }
@@ -460,16 +451,16 @@ func TestEnrolmentBudget_ZeroBudgetStillThrottles(t *testing.T) {
 	})
 
 	ctx := budgetCtx("hermes-mail")
-	for i := 1; i <= defaultEnrolmentMaxCalls; i++ {
+	for i := 1; i <= enrolment.DefaultMaxCalls; i++ {
 		if _, err := r.CallTool(ctx, "mail_search", nil, testToken); err != nil {
 			t.Fatalf("call %d of the default allowance was refused: %v", i, err)
 		}
 	}
 	if _, err := r.CallTool(ctx, "mail_search", nil, testToken); err == nil {
-		t.Fatalf("a zero budget read as unlimited: %d calls all succeeded", defaultEnrolmentMaxCalls+1)
+		t.Fatalf("a zero budget read as unlimited: %d calls all succeeded", enrolment.DefaultMaxCalls+1)
 	}
-	if calls() != defaultEnrolmentMaxCalls {
-		t.Errorf("MCP ran %d times, want %d", calls(), defaultEnrolmentMaxCalls)
+	if calls() != enrolment.DefaultMaxCalls {
+		t.Errorf("MCP ran %d times, want %d", calls(), enrolment.DefaultMaxCalls)
 	}
 }
 

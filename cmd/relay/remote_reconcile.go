@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"log/slog"
 	"sync"
 )
@@ -193,7 +194,7 @@ func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *config.Settin
 		// returns; the drain is not, so a blocked tool call cannot hold up
 		// the settings poll.
 		old.StopAccepting()
-		ClearEnrolmentRevocationHookFor(old)
+		enrolment.ClearRevocationHookFor(old)
 		sup.run(old.Close)
 		slog.Warn("remote listener moved; connections on the old address were closed",
 			"from", old.cfg.Listen, "to", ns.Addr())
@@ -236,13 +237,13 @@ func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *config.S
 	// reaches the table that derives the comparison code — and so a CA
 	// that vanished makes a commitment-bearing lodge refuse rather than
 	// answer with a code over a certificate that is no longer on disk.
-	// Bytes, never the *RelayCA: see setCACert.
+	// Bytes, never the *enrolment.RelayCA: see setCACert.
 	//
 	// Ordering is safe. resolveEnrolment already refuses
 	// enrolment_requests:true with enabled:false, so the tool-plane
 	// listener converges first in this same tick and NewRemoteServer's
-	// LoadOrCreateCA has already written ca.crt.
-	if certPEM, spki, err := caMaterialFromDisk(); err == nil {
+	// enrolment.LoadOrCreateCA has already written ca.crt.
+	if certPEM, spki, err := enrolment.CAMaterialFromDisk(); err == nil {
 		sup.enrolTable.setCACert(certPEM, spki)
 	} else {
 		sup.enrolTable.setCACert(nil, nil)
@@ -315,7 +316,7 @@ func (sup *RemoteSupervisor) stopLocked(why string) {
 	old.StopAccepting()
 	// Cleared here, not left to the background drain: a revocation must
 	// not be handed to a closure over a torn-down server.
-	ClearEnrolmentRevocationHookFor(old)
+	enrolment.ClearRevocationHookFor(old)
 	sup.run(old.Close)
 	slog.Warn("remote listener stopped", "addr", old.cfg.Listen, "reason", why)
 }

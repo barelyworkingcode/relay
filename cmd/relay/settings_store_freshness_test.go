@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -177,16 +178,19 @@ func TestSSFDeletingSettingsRevokesAnEnrolment(t *testing.T) {
 
 	proj := mkStoreProject(t, store, config.ProjectKindRemote, "ssf-remote", "")
 	assertNoErr(t, store.With(func(s *config.Settings) {
-		addEnrolment(s, config.Enrolment{ClientID: "ssf-client", Fingerprint: "ssf-fp", ProjectIDs: []string{proj.ID}})
+		// Appended directly: internal/enrolment's own mutator is unexported
+		// there, and what this fixture needs is a stored record, not the
+		// create path.
+		s.Enrolments = append(s.Enrolments, config.Enrolment{ClientID: "ssf-client", Fingerprint: "ssf-fp", ProjectIDs: []string{proj.ID}})
 	}), "add enrolment")
 
-	if findEnrolmentByFingerprint(config.FreshSettings(store), "ssf-fp") == nil {
+	if enrolment.FindByFingerprint(config.FreshSettings(store), "ssf-fp") == nil {
 		t.Fatal("the enrolment is not resolvable before the deletion; the fixture proves nothing")
 	}
 
 	assertNoErr(t, os.Remove(filepath.Join(dir, "settings.json")), "remove settings")
 
-	if findEnrolmentByFingerprint(config.FreshSettings(store), "ssf-fp") != nil {
+	if enrolment.FindByFingerprint(config.FreshSettings(store), "ssf-fp") != nil {
 		t.Fatal("the enrolment still resolves after settings.json was deleted; a certificate the file no longer grants must stop being enrolled")
 	}
 }

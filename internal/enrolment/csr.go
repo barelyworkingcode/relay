@@ -1,4 +1,4 @@
-package main
+package enrolment
 
 import (
 	"bytes"
@@ -12,29 +12,29 @@ import (
 	"fmt"
 )
 
-// maxCSRBytes bounds a CSR at "a few hundred bytes" times generous
+// MaxCSRBytes bounds a CSR at "a few hundred bytes" times generous
 // headroom: large enough for any legitimate PKCS#10 request, small enough
 // that an operator who carried in the wrong file sees a refusal instead of
 // relay parsing whatever else was on the USB stick.
-const maxCSRBytes = 16 << 10
+const MaxCSRBytes = 16 << 10
 
-// csrTooLargeMessage is shared with the CLI's own local pre-check
+// CSRTooLargeMessage is shared with the CLI's own local pre-check
 // (parseEnrolSignFlags' readCSRFile), so an operator sees the identical
 // wording whether the file is refused before the round trip or, belt and
 // braces, inside it.
-func csrTooLargeMessage(n int) string {
+func CSRTooLargeMessage(n int) string {
 	return fmt.Sprintf("a certificate signing request is a few hundred bytes; this is %d — is this the right file?", n)
 }
 
 // ParseClientCSR validates a CSR an operator carried in before anything in
-// enrolment_ca.go ever sees it. Pure: no store, no CA, no sealer, no
+// internal/enrolment/ca.go ever sees it. Pure: no store, no CA, no sealer, no
 // filesystem — every refusal here is decidable from the bytes alone, and
 // every rule below runs in this order (§1.3): a cheap size check first, PEM
 // shape, no trailing data, ASN.1 parse, proof of possession, and only then
 // the key type.
 func ParseClientCSR(pemBytes []byte) (*x509.CertificateRequest, error) {
-	if len(pemBytes) > maxCSRBytes {
-		return nil, fmt.Errorf("%s", csrTooLargeMessage(len(pemBytes)))
+	if len(pemBytes) > MaxCSRBytes {
+		return nil, fmt.Errorf("%s", CSRTooLargeMessage(len(pemBytes)))
 	}
 
 	block, rest := pem.Decode(pemBytes)

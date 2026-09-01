@@ -10,7 +10,7 @@ package main
 // P1 (lodging raises no prompt, ever) holds structurally: no function in
 // this file imports "github.com/barelyworkingcode/relay/internal/presence" or calls anything shaped like
 // Gate.Require. P2 (nothing on this channel is a secret) holds because the
-// CSR is proof-of-possession by construction (enrolment_csr.go) and nothing
+// CSR is proof-of-possession by construction (internal/enrolment/csr.go) and nothing
 // here ever computes or stores a bearer value. The one thing on this channel
 // that is neither a public verifier nor a peer's own input is the granted
 // profiles' display names, and it is confined by where it may appear rather
@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
 // Bounds, tuned per spec §2's table — not derived, not "optimised" without
@@ -348,7 +349,7 @@ type enrolmentRequestTable struct {
 	pending map[string]*enrolmentRequestRecord
 
 	// caCertPEM and caSPKI are PLAIN BYTES, pushed in by
-	// remote_reconcile.go on every tick — never a *RelayCA and never a
+	// remote_reconcile.go on every tick — never a *enrolment.RelayCA and never a
 	// closure over one. The table's whole structural claim is that it
 	// holds nothing able to sign, read settings or unseal, and holding
 	// two byte slices keeps that true while still letting it hand out a
@@ -378,7 +379,7 @@ func newEnrolmentRequestTable() *enrolmentRequestTable {
 	}
 }
 
-// setClock is a test seam, matching enrolmentBudgets.setClock's shape.
+// setClock is a test seam, matching enrolment.Budgets.SetClock's shape.
 func (t *enrolmentRequestTable) setClock(fn func() time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -389,7 +390,7 @@ func (t *enrolmentRequestTable) setClock(fn func() time.Time) {
 // is answered with, and the SPKI the comparison code is derived from. Both
 // are copied in as bytes: this table must stay incapable of signing,
 // reading settings or unsealing anything, and that is a property of what it
-// HOLDS, not of what it happens to call — a *RelayCA or a closure over one
+// HOLDS, not of what it happens to call — a *enrolment.RelayCA or a closure over one
 // would hand it the CA's private key by reference.
 //
 // Called on every reconcile tick, so a break-glass CA regeneration reaches
@@ -417,8 +418,8 @@ func (t *enrolmentRequestTable) LodgeGeneration() uint64 {
 }
 
 // validEnrolmentLabel: empty means "no label supplied", which is allowed;
-// a non-empty label must be <=64 bytes of the isSafeID charset (spec §3:
-// "the isSafeID charset") — the same guard that already keeps a client id
+// a non-empty label must be <=64 bytes of the enrolment.SafeID charset (spec §3:
+// "the enrolment.SafeID charset") — the same guard that already keeps a client id
 // from escaping the bundle directory it names, reused here because the
 // label is exactly as hostile: newline injection, RTL overrides,
 // terminal escapes, homoglyph spoofing of another client id.
@@ -429,7 +430,7 @@ func validEnrolmentLabel(label string) bool {
 	if len(label) > maxEnrolmentLabelBytes {
 		return false
 	}
-	return isSafeID(label)
+	return enrolment.SafeID(label)
 }
 
 func invalidEnrolmentLabelMessage() string {
@@ -501,22 +502,22 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	// Re-checked here as well as at decode: this method is the table's own
 	// door, and a caller reaching it another way must not be able to store
 	// a commitment that can never be opened.
-	if sasCommit != "" && !validSASHex(sasCommit, sha256.Size) {
+	if sasCommit != "" && !enrolment.ValidSASHex(sasCommit, sha256.Size) {
 		err = errors.New("sas_commit must be 64 lowercase hex characters")
 		return lodged{}, err
 	}
 
-	// ParseClientCSR enforces maxCSRBytes itself (enrolment_csr.go) —
+	// enrolment.ParseClientCSR enforces enrolment.MaxCSRBytes itself (internal/enrolment/csr.go) —
 	// reused verbatim rather than duplicated, so this is also where
 	// CheckSignature (proof of possession) and every other refusal in
 	// that function apply to a network-lodged CSR. Nothing below this
 	// line runs until the CSR is provably well-formed and self-signed.
-	csr, perr := ParseClientCSR(csrPEM)
+	csr, perr := enrolment.ParseClientCSR(csrPEM)
 	if perr != nil {
 		err = perr
 		return lodged{}, err
 	}
-	spki := SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
+	spki := enrolment.SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -605,7 +606,7 @@ func (t *enrolmentRequestTable) Lodge(csrPEM []byte, label, requestedProfile, sa
 	// the client's nonce could grind the code the host will display.
 	var sasNonce string
 	if sasCommit != "" {
-		sasNonce, err = newSASNonce()
+		sasNonce, err = enrolment.NewSASNonce()
 		if err != nil {
 			err = fmt.Errorf("could not mint a comparison nonce: %w", err)
 			return lodged{}, err
@@ -706,7 +707,7 @@ func (t *enrolmentRequestTable) Poll(requestID, sasOpen string) (pollResult, err
 // STORED CSR — binding the key is what stops a commitment captured off the
 // wire being replayed under a different one.
 func openCommitmentLocked(r *enrolmentRequestRecord, sasOpen string) error {
-	if !validSASHex(sasOpen, sasNonceBytes) {
+	if !enrolment.ValidSASHex(sasOpen, enrolment.SASNonceBytes) {
 		return fmt.Errorf("%w: sas_open must be 32 lowercase hex characters", errEnrolmentSASRefused)
 	}
 	if r.sasCommit == "" {
@@ -734,7 +735,7 @@ func openCommitmentLocked(r *enrolmentRequestRecord, sasOpen string) error {
 		// digest this table itself wrote at Lodge.
 		return fmt.Errorf("the stored key digest for %s is unreadable", r.id)
 	}
-	if sasCommitment(spkiSum, rc) != r.sasCommit {
+	if enrolment.SASCommitment(spkiSum, rc) != r.sasCommit {
 		// Permanent. One row buys one blind guess at the code and no
 		// more; letting a second, better-aimed opening follow a first
 		// would turn the comparison into a grind.
@@ -886,11 +887,11 @@ func (t *enrolmentRequestTable) sasForLocked(r *enrolmentRequestRecord) string {
 	if err != nil {
 		return ""
 	}
-	return computeSAS(t.caSPKI, csrSPKI, rc, rr)
+	return enrolment.ComputeSAS(t.caSPKI, csrSPKI, rc, rr)
 }
 
 // csrSPKIFromPEM re-reads the public key out of the stored CSR. It does not
-// re-verify the signature: Lodge ran the whole of ParseClientCSR over these
+// re-verify the signature: Lodge ran the whole of enrolment.ParseClientCSR over these
 // exact bytes before the row existed and nothing mutates csrPEM afterwards,
 // so a second proof-of-possession check on every render would prove nothing
 // new.
@@ -972,7 +973,7 @@ func (t *enrolmentRequestTable) Refuse(audit *AuditRecorder, requestID string) b
 // the same critical section as the next Lodge, Poll or List, exactly the
 // reapExpiredAPICredentials discipline: no timer, no goroutine, ever.
 //
-// This is subtle: enrolmentBudgets.windowFor (enrolment_budget.go) argues
+// This is subtle: enrolment.Budgets.windowFor (internal/enrolment/budget.go) argues
 // the OPPOSITE — never reclaim a window — because its keys are certificate
 // fingerprints only an ENROLLED caller can mint. This table's keys are
 // minted by an unauthenticated network peer, the exact case that comment
@@ -992,7 +993,7 @@ func (t *enrolmentRequestTable) sweepLocked(now time.Time) {
 	}
 
 	// This is subtle, and deliberately the opposite of
-	// enrolmentBudgets.windowFor's own comment (enrolment_budget.go),
+	// enrolment.Budgets.windowFor's own comment (internal/enrolment/budget.go),
 	// which argues AGAINST ever reclaiming a window because its keys are
 	// certificate fingerprints only an ENROLLED caller can mint — nothing
 	// unauthenticated can grow that map. lastLodgeBySource's keys are the

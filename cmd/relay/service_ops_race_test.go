@@ -6,7 +6,7 @@ package main
 // relaunch the caller-supplied command for a service settings no longer
 // named. sorHookStore and sorRaceRegistry force that interleaving
 // deterministically (a synchronous callback, not real goroutines) so these
-// tests never flake. See enrolment_ops.go's createEnrolment/revokeEnrolment
+// tests never flake. See enrolment_ops.go's enrolment.Create/enrolment.Revoke
 // for the pattern being restored here: validate at commit time, not before.
 
 import (

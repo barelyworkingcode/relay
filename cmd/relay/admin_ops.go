@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"os"
 	"path/filepath"
 	"time"
@@ -165,7 +166,7 @@ func adminEnrolmentCreate(ctx context.Context, r *appRouter, args json.RawMessag
 		return nil, err
 	}
 	created, err := ops.Create(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 		return nil, err
 	}
 	result := enrolmentCreateResult{Enrolment: created.Enrolment, Dir: created.Dir}
@@ -209,7 +210,7 @@ func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage)
 		return nil, err
 	}
 	created, err := ops.Sign(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, errEnrolmentBundle) {
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) {
 		return nil, err
 	}
 	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir}
@@ -244,7 +245,7 @@ func adminEnrolmentUpdate(ctx context.Context, r *appRouter, args json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	req, err := decodeAdminArgs[enrolmentUpdateRequest]("enrolment.update", args)
+	req, err := decodeAdminArgs[enrolment.UpdateRequest]("enrolment.update", args)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +334,7 @@ func adminEnrolmentRequestList(_ context.Context, r *appRouter, _ json.RawMessag
 
 // adminEnrolmentRequestApprove answers with enrolmentSignResult — the exact
 // shape adminEnrolmentSign already returns (Enrolment, Dir, the certificate
-// bytes, and BundleError when writeSignedCertBundle failed) — because
+// bytes, and BundleError when enrolment.WriteSignedCertBundle failed) — because
 // approving is enrolment.sign's second door, not a different result shape.
 func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	ops, err := requireEnrolmentOps(r)
@@ -345,11 +346,11 @@ func adminEnrolmentRequestApprove(ctx context.Context, r *appRouter, args json.R
 		return nil, err
 	}
 	created, err := ops.Approve(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, errEnrolmentBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
+	if err != nil && !errors.Is(err, enrolment.ErrBundle) && !errors.Is(err, errEnrolmentRequestExpired) && !errors.Is(err, errEnrolmentRequestRefused) {
 		return nil, err
 	}
 	result := enrolmentSignResult{Enrolment: created.Enrolment, Dir: created.Dir, CertPEM: created.CertPEM, CAPEM: created.CAPEM}
-	if errors.Is(err, errEnrolmentBundle) {
+	if errors.Is(err, enrolment.ErrBundle) {
 		result.BundleError = err.Error()
 	}
 	if errors.Is(err, errEnrolmentRequestExpired) {
