@@ -23,6 +23,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -127,15 +128,44 @@ func gsModuleRoot(t *testing.T) string {
 }
 
 // gsScannedDirs are the directories this scan walks, module-root-relative,
-// which is also how gateAllowlistedFiles is keyed. internal/enrolment is here
-// because it owns addEnrolment/removeEnrolment: two entries in
-// gatedMutatorNames whose only definitions and call sites live there, and a
-// scan that read cmd/relay alone would report zero violations for them
-// forever.
-var gsScannedDirs = []string{
-	filepath.Join("cmd", "relay"),
-	filepath.Join("internal", "enrolment"),
-	filepath.Join("internal", "project"),
+// which is also how gateAllowlistedFiles is keyed.
+//
+// This is DISCOVERED, not listed: cmd/relay plus every package under
+// internal. A hand-maintained list is the wrong shape for this guard --
+// anything it forgets reports zero violations forever, which reads exactly
+// like compliance. Any package that can import config can call a gated
+// mutator, so the default has to be that a new package is covered.
+//
+// internal/config is the one exclusion: it DECLARES the mutators, so its own
+// calls to them are the definitions every other package is being checked
+// against, not a door into them.
+func gsScannedDirs(t *testing.T, root string) []string {
+	t.Helper()
+	dirs := []string{filepath.Join("cmd", "relay")}
+	internalRoot := filepath.Join(root, "internal")
+	err := filepath.WalkDir(internalRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == filepath.Join("internal", "config") {
+			return fs.SkipDir
+		}
+		if path != internalRoot {
+			dirs = append(dirs, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking internal/: %v", err)
+	}
+	return dirs
 }
 
 // gsScannedFiles returns every non-test .go file directly in each scanned
@@ -143,7 +173,7 @@ var gsScannedDirs = []string{
 func gsScannedFiles(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
-	for _, rel := range gsScannedDirs {
+	for _, rel := range gsScannedDirs(t, root) {
 		dir := filepath.Join(root, rel)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
