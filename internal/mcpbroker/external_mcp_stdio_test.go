@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package mcpbroker
 
 // mockMcpConn, used throughout the rest of the suite, bypasses the JSON-RPC
 // framing, the pending-request ID map, the reader-death signaling, and the
@@ -12,44 +12,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
-
-var (
-	testmcpBinOnce sync.Once
-	testmcpBinPath string
-	testmcpBinErr  error
-)
-
-func buildTestMcpBinary(t *testing.T) string {
-	t.Helper()
-	testmcpBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("/tmp", "testmcp-bin-")
-		if err != nil {
-			testmcpBinErr = err
-			return
-		}
-		path := filepath.Join(dir, "testmcp")
-		cmd := exec.Command("go", "build", "-o", path, "./cmd/testmcp")
-		cmd.Dir = repoRoot(t)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			testmcpBinErr = err
-			return
-		}
-		testmcpBinPath = path
-	})
-	if testmcpBinErr != nil {
-		t.Fatalf("build cmd/testmcp: %v", testmcpBinErr)
-	}
-	return testmcpBinPath
-}
 
 func newTestMcpConn(t *testing.T) *externalMcpConn {
 	t.Helper()

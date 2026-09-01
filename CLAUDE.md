@@ -63,10 +63,9 @@ login_document.go        The self-contained login page, served under a strict CS
 webauthn_browser_live_test.go   Black-box HTTP+Chrome ceremony test via lrServer; never touches verifier internals, so it stayed in main rather than moving with login/
 remote_server.go         Remote mTLS listener: two-entry dispatch table, cert→enrolment→grant, revocation hook
 remote_reconcile.go      RemoteSupervisor: binds/moves/closes that listener as remote.* and audit.* change
-external_mcp.go          stdio/HTTP MCP clients + runtime schema storage (McpConnection iface);
-                         mcpSupervisor restarts a stdio child that dies (ADR-012)
-wire_json.go             Verbatim JSON encoding for the outbound JSON-RPC frame (ADR-013)
-http_mcp.go, oauth.go    HTTP transport + OAuth 2.1 (PKCE, dynamic registration, refresh)
+mcp_ops.go               McpOps: the gated, audited core the CLI, HTTP and IPC MCP doors share
+mcp_permissions.go       TCC permission probing; the darwin half reaches cocoa_darwin.go's cgo, so it
+                         stays with the tray process rather than moving to mcpbroker/
 mcp_cmd.go, exec_cmd.go, service_cmd.go   CLI subcommands
 frontend_server.go       Front-door HTTP server; project routes local, rest falls through;
                          composes the public login mux in front of frontendCredentialAuth
@@ -120,6 +119,23 @@ audit/                   The tool-call audit log engine: the event/actor/config 
                          and the CLI/HTTP/IPC surfaces (audit_cmd.go, audit_routes.go, ipc_audit.go)
                          stay in main, since they reach the router or unexported recorder state
                          directly.
+mcpbroker/               The external-MCP client: the stdio and HTTP transports and their JSON-RPC
+                         framing (external_mcp.go, http_mcp.go), the seatbelt launch decision
+                         (mcp_sandbox.go), the OAuth 2.1 client relay authenticates to an upstream
+                         HTTP MCP with (oauth.go — PKCE, dynamic registration, refresh; nothing to do
+                         with relay's own login), the context/enumerate client (external_mcp_enumerate.go),
+                         ADR-013's verbatim outbound encoder (wire_json.go) and the MCP/OAuth timeouts.
+                         Manager owns one supervised connection per MCP id plus the runtime schema
+                         table, and reports liveness through a SetHealthObserver callback so it needs
+                         no audit dependency. Depends on bridge/config/jsonrpc/mcp/project/service.
+                         Every door stays in main — McpOps (the gated core), mcp_routes.go, mcp_cmd.go,
+                         ipc_mcps.go — as does router.go, which reaches this package only through the
+                         ToolProvider/ToolManager interfaces, the ADR-012 audit translation
+                         (audit_call.go) and mcp_permissions*.go, whose darwin half is cgo.
+                         testseam.go is the only exported way into Manager's unexported connection and
+                         schema tables (SetConnectionForTest / ConnectionForTest /
+                         SetContextSchemaForTest); each panics outside a test binary, and cmd/relay's
+                         router, audit and scoping tests are what need them.
 login/                   The WebAuthn ceremony, pure: registration/assertion verification (webauthn.go,
                          ES256 only, none attestation only), CBOR decode pinned to the CTAP2 canonical
                          subset (webauthn_cbor.go), and the in-memory challenge table (webauthn_challenge.go,
@@ -485,7 +501,7 @@ credential is short-lived by design and renewed by another ceremony. See
 
 **External MCPs are supervised children** — one stdio connection per MCP id,
 shared by every access profile that names it, and therefore restarted when it
-dies rather than left down. `mcpSupervisor` (`external_mcp.go`) waits on the
+dies rather than left down. `mcpSupervisor` (`internal/mcpbroker/external_mcp.go`) waits on the
 reader goroutine, backs off exponentially, and caps restart *intensity*: a child
 that stays up for `MCPRestartStableWindow` resets the counter, so an MCP that
 dies occasionally is recovered forever while one that dies on every spawn is
@@ -684,7 +700,7 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
 
 - Cocoa tray UI (menu, dock) — exercise via `scripts/demo.sh`.
 - Real `launchd` integration — `service_registry` is tested against `cmd/testservice`.
-- Live OAuth round-trips — `oauth_test.go` covers PKCE/dynamic registration in isolation.
+- Live OAuth round-trips — `internal/mcpbroker/oauth_test.go` covers PKCE/dynamic registration in isolation.
 - Notarization / code-signing — exercised by `./build.sh --release`.
 
 ADRs: see [`docs/decisions/`](docs/decisions/). Cross-repo test status:

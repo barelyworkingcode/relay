@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -117,7 +118,7 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 		Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
 		Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
 	addMockSchema(mgr, "macmcp", scopedSchema, 2)
 	r := newTestRouter(t, s, mgr)
@@ -317,7 +318,7 @@ func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
 				allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 				tools:        macmcpToolSurface(),
 			})
-			addMockConn(r.tools.(*ExternalMcpManager), "macmcp",
+			addMockConn(r.tools.(*mcpbroker.Manager), "macmcp",
 				newMockConn("macmcp", macmcpToolSurface(), okHandler(tc.result)))
 			rec := newTestAudit(t, nil)
 			r.audit = rec

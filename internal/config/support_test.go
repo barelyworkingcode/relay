@@ -77,19 +77,3 @@ func sdRead(t *testing.T, dir string) []byte {
 	}
 	return data
 }
-
-// secretMapFromPlain converts an operator-typed (or freshly discovered)
-// plaintext env map into the sealed-in-memory representation used on
-// ExternalMcp.Env / ServiceConfig.Env. The values are plaintext the caller
-// just constructed, not something read back off disk, so NewSecret — not
-// UnmarshalJSON's legacy path — is the right constructor.
-func secretMapFromPlain(m map[string]string) map[string]Secret {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]Secret, len(m))
-	for k, v := range m {
-		out[k] = NewSecret(v)
-	}
-	return out
-}

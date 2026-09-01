@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package mcpbroker
 
 // Uses the real cmd/testmcp stdio peer so spawn, handshake, and connection
 // bookkeeping run for real, not through mocks.
@@ -15,9 +15,9 @@ func stdioMcp(id, bin string) config.ExternalMcp {
 	return config.ExternalMcp{ID: id, DisplayName: id, Transport: "stdio", Command: bin}
 }
 
-func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
+func TestManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
@@ -38,9 +38,9 @@ func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
 	}
 }
 
-func TestExternalMcpManager_Reconcile_RetainsUnchanged(t *testing.T) {
+func TestManager_Reconcile_RetainsUnchanged(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
@@ -58,9 +58,9 @@ func TestExternalMcpManager_Reconcile_RetainsUnchanged(t *testing.T) {
 	}
 }
 
-func TestExternalMcpManager_Reload_RestartsConnection(t *testing.T) {
+func TestManager_Reload_RestartsConnection(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 	cfg := stdioMcp("mcp-x", bin)
@@ -82,5 +82,3 @@ func TestExternalMcpManager_Reload_RestartsConnection(t *testing.T) {
 		t.Errorf("want 1 tool after reload, got %d", got)
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"strings"
 	"testing"
 )
@@ -17,12 +18,24 @@ const loneSurrogateArgs = `{"file_path":"/d0/modes/surrogate.txt","content":"a\u
 
 const replacementUTF8 = "�"
 
-// addConn accepts any McpConnection, including a real stdio one — addMockConn's
-// *mockMcpConn parameter cannot.
-func addConn(mgr *ExternalMcpManager, id string, conn McpConnection) {
-	mgr.mu.Lock()
-	mgr.conns[id] = conn
-	mgr.mu.Unlock()
+// startTestMcp publishes a REAL stdio connection to the in-tree cmd/testmcp
+// peer under id, through the manager's own start path. These tests are about
+// the bytes that reach an MCP, so the mock connection is no use: it never
+// crosses the JSON-RPC framing the U+2028 respelling happens in. The
+// connection type itself is internal to internal/mcpbroker, hence the front
+// door rather than a constructor.
+func startTestMcp(t *testing.T, mgr *mcpbroker.Manager, id string) mcpbroker.Connection {
+	t.Helper()
+	bin := buildTestMcpBinary(t)
+	t.Cleanup(mgr.StopAll)
+	mgr.StartAll(context.Background(), []config.ExternalMcp{
+		{ID: id, DisplayName: id, Transport: "stdio", Command: bin},
+	})
+	conn := mgr.ConnectionForTest(id)
+	if conn == nil {
+		t.Fatalf("testmcp %q did not come up", id)
+	}
+	return conn
 }
 
 func echoedArguments(t *testing.T, result json.RawMessage) json.RawMessage {
@@ -41,8 +54,8 @@ func echoedArguments(t *testing.T, result json.RawMessage) json.RawMessage {
 // arguments into an interface{} and re-encoding them substitutes U+FFFD for an
 // unpaired surrogate on the way in.
 func TestCallTool_LoneSurrogateReachesTheMcpVerbatim(t *testing.T) {
-	mgr := NewExternalMcpManager(nil)
-	addConn(mgr, "fsmcp", newTestMcpConn(t))
+	mgr := mcpbroker.NewManager(nil)
+	startTestMcp(t, mgr, "fsmcp")
 
 	res, err := mgr.CallTool(context.Background(), "fsmcp", "fs_write",
 		json.RawMessage(loneSurrogateArgs), nil)
@@ -86,8 +99,8 @@ func TestCallTool_ArgumentBytesAreForwardedVerbatim(t *testing.T) {
 			"an encoder compacts, and this is the one difference relay cannot suppress that costs nothing"},
 	}
 
-	mgr := NewExternalMcpManager(nil)
-	addConn(mgr, "peer", newTestMcpConn(t))
+	mgr := mcpbroker.NewManager(nil)
+	startTestMcp(t, mgr, "peer")
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,8 +121,8 @@ func TestCallTool_ArgumentBytesAreForwardedVerbatim(t *testing.T) {
 }
 
 func TestCallTool_StillRefusesArgumentsThatAreNotJSON(t *testing.T) {
-	mgr := NewExternalMcpManager(nil)
-	addConn(mgr, "peer", newTestMcpConn(t))
+	mgr := mcpbroker.NewManager(nil)
+	startTestMcp(t, mgr, "peer")
 
 	_, err := mgr.CallTool(context.Background(), "peer", "probe",
 		json.RawMessage(`{"unterminated":`), nil)
@@ -123,10 +136,8 @@ func TestCallTool_StillRefusesArgumentsThatAreNotJSON(t *testing.T) {
 
 func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 	s := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
-	mgr := NewExternalMcpManager(nil)
-	conn := newTestMcpConn(t)
-	conn.SetTools(simpleTools("fs_write"))
-	addConn(mgr, "fsmcp", conn)
+	mgr := mcpbroker.NewManager(nil)
+	startTestMcp(t, mgr, "fsmcp").SetTools(simpleTools("fs_write"))
 
 	r := newTestRouter(t, s, mgr)
 	rec := newTestAudit(t, nil)
@@ -156,8 +167,8 @@ func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 }
 
 func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
-	mgr := NewExternalMcpManager(nil)
-	addConn(mgr, "peer", newTestMcpConn(t))
+	mgr := mcpbroker.NewManager(nil)
+	startTestMcp(t, mgr, "peer")
 
 	args := json.RawMessage("{\"s\":\"a\u2028b\u2029c\"}")
 	res, err := mgr.CallTool(context.Background(), "peer", "probe", args, nil)

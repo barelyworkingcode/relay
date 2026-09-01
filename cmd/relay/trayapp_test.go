@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"os"
 	"strings"
 	"sync"
@@ -247,7 +248,7 @@ func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
 	app := &App{
 		ctx:             ctx,
 		cancel:          cancel,
-		extMgr:          NewExternalMcpManager(nil),
+		extMgr:          mcpbroker.NewManager(nil),
 		registry:        reg,
 		platform:        &recordingPlatform{},
 		frontendChannel: frontendChannel,
@@ -284,7 +285,7 @@ func TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount(t *testing.
 		platform: rp,
 		registry: &trayRegistry{},
 		store:    fixedStore{s: s},
-		extMgr:   NewExternalMcpManager(nil),
+		extMgr:   mcpbroker.NewManager(nil),
 		ipcCtx:   &IPCContext{EnrolmentOps: &EnrolmentOps{Requests: table}},
 	}
 

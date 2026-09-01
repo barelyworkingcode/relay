@@ -39,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -373,7 +374,7 @@ func TestEnrolmentSeam_NoPresenceCallFromALodgeOrFromTheTrayReadingIt(t *testing
 			platform: rp,
 			registry: &trayRegistry{},
 			store:    store,
-			extMgr:   NewExternalMcpManager(nil),
+			extMgr:   mcpbroker.NewManager(nil),
 			ipcCtx:   &IPCContext{EnrolmentOps: ops},
 		}
 

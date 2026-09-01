@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package mcpbroker
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func TestStdioReadOnlyFlag(t *testing.T) {
 }
 
 func TestEnsureSandboxProfile_ReadWriteVsReadOnly(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 
 	rwPath, err := ensureSandboxProfile(false)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestPrepareStdioLaunch_NoRootPassesThrough(t *testing.T) {
 }
 
 func TestPrepareStdioLaunch_SingleDashRootIsStillSandboxed(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	root := t.TempDir()
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestPrepareStdioLaunch_SingleDashRootIsStillSandboxed(t *testing.T) {
 }
 
 func TestPrepareStdioLaunch_WrapsWithSeatbelt(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	root := t.TempDir()
 
 	cfg := &config.ExternalMcp{ID: "fsmcp3", Command: "/usr/local/bin/fsmcp3",
@@ -205,7 +205,7 @@ func TestPrepareStdioLaunch_WrapsWithSeatbelt(t *testing.T) {
 }
 
 func TestPrepareStdioLaunch_ReadOnlyPicksTheReadOnlyProfile(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	root := t.TempDir()
 	cfg := &config.ExternalMcp{ID: "fsmcp3ro", Command: "/usr/local/bin/fsmcp3",
 		Args: []string{"--root", root, "--read-only"}}
@@ -219,7 +219,7 @@ func TestPrepareStdioLaunch_ReadOnlyPicksTheReadOnlyProfile(t *testing.T) {
 }
 
 func TestPrepareStdioLaunch_FailClosed_SandboxExecMissing(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	old := sandboxExecPath
 	sandboxExecPath = filepath.Join(t.TempDir(), "no-such-sandbox-exec")
 	t.Cleanup(func() { sandboxExecPath = old })
@@ -239,7 +239,7 @@ func TestPrepareStdioLaunch_FailClosed_SandboxExecMissing(t *testing.T) {
 // through symlinks (because it does not exist) must be refused rather than
 // sandboxed against the wrong thing.
 func TestPrepareStdioLaunch_FailClosed_RootDoesNotResolve(t *testing.T) {
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	cfg := &config.ExternalMcp{ID: "fsmcp3", Command: "/usr/local/bin/fsmcp3",
 		Args: []string{"--root", filepath.Join(t.TempDir(), "does-not-exist")}}
 	if _, _, err := prepareStdioLaunch(cfg); err == nil {
@@ -250,11 +250,11 @@ func TestPrepareStdioLaunch_FailClosed_RootDoesNotResolve(t *testing.T) {
 	}
 }
 
-func TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testing.T) {
+func TestManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testing.T) {
 	if _, err := os.Stat(sandboxExecPath); err != nil {
 		t.Skipf("sandbox-exec not available on this machine: %v", err)
 	}
-	mkSandboxRelayHome(t)
+	mkEmptySandboxRelayHome(t)
 	bin := buildTestMcpBinary(t)
 	root := t.TempDir()
 	resolvedRoot, err := filepath.EvalSymlinks(root)
@@ -262,7 +262,7 @@ func TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testi
 		t.Fatalf("EvalSymlinks(%q): %v", root, err)
 	}
 
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	cfg := config.ExternalMcp{ID: "fsmcp3-sandboxed", DisplayName: "fsmcp3-sandboxed",
 		Transport: "stdio", Command: bin, Args: []string{"--root", root}}
@@ -278,14 +278,14 @@ func TestExternalMcpManager_StdioRoot_SpawnsUnderSeatbeltAndRecordsRoot(t *testi
 	}
 }
 
-func TestExternalMcpManager_StdioRoot_FailsClosedWhenSandboxExecMissing(t *testing.T) {
-	mkSandboxRelayHome(t)
+func TestManager_StdioRoot_FailsClosedWhenSandboxExecMissing(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
 	old := sandboxExecPath
 	sandboxExecPath = filepath.Join(t.TempDir(), "no-such-sandbox-exec")
 	t.Cleanup(func() { sandboxExecPath = old })
 
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	cfg := config.ExternalMcp{ID: "fsmcp3-unsandboxable", DisplayName: "fsmcp3-unsandboxable",
 		Transport: "stdio", Command: bin, Args: []string{"--root", t.TempDir()}}

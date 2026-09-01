@@ -1,4 +1,4 @@
-package main
+package mcpbroker
 
 import (
 	"crypto/rand"
@@ -438,21 +438,21 @@ func (s *oauthCallbackServer) Close() {
 	<-s.done // wait for Serve goroutine to exit
 }
 
-// oauthResult is startOAuthFlow's return shape: plain strings, never
+// OAuthResult is StartOAuthFlow's return shape: plain strings, never
 // Secret. The CLI's own registration flow (mcp_cmd.go) needs this
 // plaintext to retry discovery with the token it just obtained, and it
 // must do that without ever calling Secret.Reveal — no CLI entry point
 // may reach that method (§5.3.3, AC-29). A caller that persists the
-// result wraps each bearer with NewSecret via toOAuthState, at the point
+// result wraps each bearer with NewSecret via ToOAuthState, at the point
 // of writing — NewSecret is not on AC-29's forbidden list, only Reveal,
 // Unseal and NewKeychainKeyring are.
-type oauthResult struct {
+type OAuthResult struct {
 	ClientID, ClientSecret, AccessToken, RefreshToken, TokenExpiry string
 }
 
-// toOAuthState wraps r for persistence. A nil r (no OAuth applies) yields
+// ToOAuthState wraps r for persistence. A nil r (no OAuth applies) yields
 // a nil OAuthState, matching the pointer field it is assigned into.
-func (r *oauthResult) toOAuthState() *config.OAuthState {
+func (r *OAuthResult) ToOAuthState() *config.OAuthState {
 	if r == nil {
 		return nil
 	}
@@ -465,7 +465,7 @@ func (r *oauthResult) toOAuthState() *config.OAuthState {
 	}
 }
 
-func startOAuthFlow(mcpURL string, openBrowser func(string)) (*oauthResult, error) {
+func StartOAuthFlow(mcpURL string, openBrowser func(string)) (*OAuthResult, error) {
 	discovery, err := discoverOAuth(mcpURL)
 	if err != nil {
 		return nil, fmt.Errorf("OAuth discovery: %w", err)
@@ -522,7 +522,7 @@ func startOAuthFlow(mcpURL string, openBrowser func(string)) (*oauthResult, erro
 		return nil, err
 	}
 
-	oauthState := &oauthResult{
+	oauthState := &OAuthResult{
 		ClientID:     reg.ClientID,
 		ClientSecret: reg.ClientSecret,
 		AccessToken:  tokenResp.AccessToken,

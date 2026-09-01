@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *
 		Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
 		Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
 	addMockSchema(mgr, "macmcp", schema, version)
 	return newTestRouter(t, s, mgr)
@@ -103,7 +104,7 @@ func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 			Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
 			Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 		}
-		mgr := NewExternalMcpManager(nil)
+		mgr := mcpbroker.NewManager(nil)
 		serve := func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
 			return json.RawMessage(`{"content":[{"type":"text","text":"served"}]}`), nil
 		}

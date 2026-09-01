@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // The project is built directly rather than through the create path so these
@@ -26,7 +27,7 @@ func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 		// refuse this today; the guard must not depend on that.
 		ShellTemplates: []config.ShellTemplate{{ID: "tpl-1", Name: "ssh", Command: "/usr/bin/ssh"}},
 	})
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 	svcToken := "service-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	r.serviceTokens.Register(config.HashToken(svcToken))
 	return r, svcToken
@@ -69,7 +70,7 @@ func TestResolvePtyEnv_LocalProjectStillResolves(t *testing.T) {
 	dir := t.TempDir()
 	s := makeSettings(nil, nil, nil)
 	s.Projects[0].Path = dir
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 	svcToken := "service-token-cccccccccccccccccccccccccccccccc"
 	r.serviceTokens.Register(config.HashToken(svcToken))
 

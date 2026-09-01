@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -53,7 +54,7 @@ func makeSettings(perms map[string]config.Permission, disabled map[string][]stri
 	}
 }
 
-func newTestRouter(t *testing.T, s *config.Settings, mgr *ExternalMcpManager) *appRouter {
+func newTestRouter(t *testing.T, s *config.Settings, mgr *mcpbroker.Manager) *appRouter {
 	t.Helper()
 	store := storeWithCache(t.TempDir(), testSealer(), s)
 	return &appRouter{
@@ -76,7 +77,7 @@ func setupRouter(t *testing.T, perms map[string]config.Permission, disabled map[
 			s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
 		}
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	for id, mock := range mocks {
 		addMockConn(mgr, id, mock)
 	}
@@ -100,7 +101,7 @@ func unmarshalTools(t *testing.T, raw json.RawMessage) []mcp.Tool {
 
 func TestResolveAuth_ValidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	stored, settings, err := r.resolveAuth(context.Background(), testToken)
 	if err != nil {
@@ -119,7 +120,7 @@ func TestResolveAuth_ValidToken(t *testing.T) {
 
 func TestResolveAuth_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	_, _, err := r.resolveAuth(context.Background(), "completely-wrong-token")
 	if err == nil {
@@ -129,7 +130,7 @@ func TestResolveAuth_InvalidToken(t *testing.T) {
 
 func TestResolveAuth_EmptyToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	_, _, err := r.resolveAuth(context.Background(), "")
 	if err == nil {
@@ -241,7 +242,7 @@ func TestListTools_EmptyForTokenWithNoPermittedMcps(t *testing.T) {
 
 func TestListTools_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	_, err := r.ListTools(context.Background(), "bad-token")
 	if err == nil {
@@ -407,7 +408,7 @@ func TestCallTool_InjectsProjectIDWhenContextNotSet(t *testing.T) {
 
 func TestCallTool_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	_, err := r.CallTool(context.Background(), "any_tool", nil, "wrong-token")
 	if err == nil {
@@ -444,7 +445,7 @@ func TestCallTool_RoutesToCorrectMcp(t *testing.T) {
 
 func TestValidateAdmin_CorrectSecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	err := r.ValidateAdmin("supersecretadmin")
 	if err != nil {
@@ -454,7 +455,7 @@ func TestValidateAdmin_CorrectSecret(t *testing.T) {
 
 func TestValidateAdmin_WrongSecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	err := r.ValidateAdmin("wrongsecret")
 	if err == nil {
@@ -464,7 +465,7 @@ func TestValidateAdmin_WrongSecret(t *testing.T) {
 
 func TestValidateAdmin_EmptySecret(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	err := r.ValidateAdmin("")
 	if err == nil {
@@ -474,7 +475,7 @@ func TestValidateAdmin_EmptySecret(t *testing.T) {
 
 func TestResolveAuth_ServiceToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, NewExternalMcpManager(nil))
+	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
 	svcToken := "servicetokenservicetokenservicetokenservicetokenservicetokenservic"
 	svcHash := config.HashToken(svcToken)

@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -258,7 +259,7 @@ func (s *serviceTokenStore) Len() int {
 
 var (
 	_ bridge.ToolRouter = (*appRouter)(nil)
-	_ ToolManager       = (*ExternalMcpManager)(nil)
+	_ ToolManager       = (*mcpbroker.Manager)(nil)
 	_ ServiceReloader   = (*service.Registry)(nil)
 )
 

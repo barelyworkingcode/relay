@@ -1,4 +1,4 @@
-package main
+package mcpbroker
 
 import (
 	"bytes"
@@ -32,9 +32,9 @@ type httpOAuth struct {
 	tokenExpiry  time.Time
 }
 
-// toOAuthState converts runtime OAuth state to the persistable OAuthState.
+// ToOAuthState converts runtime OAuth state to the persistable OAuthState.
 // Caller must hold httpMcpConn.mu (or ensure no concurrent access).
-func (o *httpOAuth) toOAuthState() *config.OAuthState {
+func (o *httpOAuth) ToOAuthState() *config.OAuthState {
 	return &config.OAuthState{
 		ClientID:     o.clientID,
 		ClientSecret: config.NewSecret(o.clientSecret),
@@ -132,8 +132,8 @@ func applyStoredOAuthState(conn *httpMcpConn, oauth *config.OAuthState) {
 // applyPlainAuth seeds conn from a bearer this process holds as plaintext
 // and has never sealed or persisted — DiscoverHTTPMcp's path, reachable
 // from the CLI's own OAuth ceremony (mcp_cmd.go). It touches no Secret at
-// all, by construction: oauthResult's fields are plain strings.
-func applyPlainAuth(conn *httpMcpConn, auth *oauthResult) {
+// all, by construction: OAuthResult's fields are plain strings.
+func applyPlainAuth(conn *httpMcpConn, auth *OAuthResult) {
 	if auth == nil {
 		return
 	}
@@ -192,7 +192,7 @@ func (c *httpMcpConn) applyRefreshedToken(meta *oauthMetadata, tokenResp *oauthT
 		// now.After(expiry-window) and refresh on each call — a refresh storm.
 		c.oauth.tokenExpiry = time.Time{}
 	}
-	oauthState := c.oauth.toOAuthState()
+	oauthState := c.oauth.ToOAuthState()
 	c.mu.Unlock()
 
 	if c.onTokenRefresh != nil {
@@ -475,7 +475,7 @@ func (c *httpMcpConn) doClose() {
 	resp.Body.Close()
 }
 
-func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *config.ExternalMcp) error {
+func (m *Manager) startHTTP(ctx context.Context, mcpCfg *config.ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 	applyStoredOAuthState(conn, mcpCfg.OAuthState)
 
@@ -506,15 +506,15 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *config.Exter
 // DiscoverHTTPMcp's auth parameter is plaintext, not a Secret-bearing
 // OAuthState: this is the CLI's own discovery path too (mcp_cmd.go, after
 // completing its own OAuth ceremony), and no CLI entry point may reach
-// Secret.Reveal (§5.3.3, AC-29). auth.toOAuthState wraps it for the
+// Secret.Reveal (§5.3.3, AC-29). auth.ToOAuthState wraps it for the
 // returned config's OAuthState field, which is what persistence writes.
-func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *oauthResult) (*config.ExternalMcp, error) {
+func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *OAuthResult) (*config.ExternalMcp, error) {
 	cfg := config.ExternalMcp{
 		ID:          id,
 		DisplayName: displayName,
 		Transport:   "http",
 		URL:         mcpURL,
-		OAuthState:  auth.toOAuthState(),
+		OAuthState:  auth.ToOAuthState(),
 	}
 
 	conn := newHTTPMcpConn(cfg)

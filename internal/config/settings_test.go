@@ -162,7 +162,7 @@ func TestSettingsJSONRoundTrip(t *testing.T) {
 				DisplayName: "Test MCP",
 				Command:     "/usr/bin/test",
 				Args:        []string{"--flag"},
-				Env:         secretMapFromPlain(map[string]string{"KEY": "VAL"}),
+				Env:         SecretMapFromPlain(map[string]string{"KEY": "VAL"}),
 				Transport:   "stdio",
 			},
 		},

@@ -145,7 +145,7 @@ func ResetMcpPermissions(mcp config.ExternalMcp) (*ResetMcpPermissionsResult, er
 	// launchd and break the responsible-parent chain the primer just
 	// established.
 	cmd := exec.Command(mcp.Command, "--check-permissions")
-	env, err := revealEnvOrErr(mcp.Env)
+	env, err := service.RevealEnv(mcp.Env)
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}

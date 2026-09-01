@@ -32,6 +32,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -46,7 +47,7 @@ type remoteFixture struct {
 	router  *appRouter
 	audit   *audit.AuditRecorder
 	server  *RemoteServer
-	mgr     *ExternalMcpManager
+	mgr     *mcpbroker.Manager
 	project config.Project
 	bundle  *enrolment.Bundle
 	// mcpCalls counts how many times a tool actually reached the (mock) MCP.
@@ -135,7 +136,7 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	}), "seed settings")
 	assertNoErr(t, createErr, "create remote project")
 
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	toolNames := []string{"mail_search"}
 	if opts.secondTool != "" {
 		toolNames = append(toolNames, opts.secondTool)
@@ -222,7 +223,7 @@ func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFix
 	}), "seed settings")
 	assertNoErr(t, createErr, "create remote project")
 
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", readOnlyTools("mail_search"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			f.mcpCalls.Add(1)

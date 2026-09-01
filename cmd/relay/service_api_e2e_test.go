@@ -19,6 +19,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
@@ -28,7 +29,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	reg := &svcRecorder{}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	ops := &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 
 	// execute-class: POST /api/services writes the caller-supplied `command`
@@ -135,7 +136,7 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
@@ -184,7 +185,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
 	enrolmentOps := &EnrolmentOps{Store: store}
 

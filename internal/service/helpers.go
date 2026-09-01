@@ -24,7 +24,14 @@ func envSlice(env map[string]string) []string {
 }
 
 // RevealEnv reveals every value of m, refusing if any could not be
-// unsealed from the sealed store.
+// opened. A spawned child must never receive fewer or different variables
+// than its record configures, so a value the sealed store cannot currently
+// open is refused outright rather than passed through empty or silently
+// dropped — the same "everything that needs a sealed value refuses"
+// principle §5.6 clause 4 names for ResolvePtyEnv and the admin ops,
+// extended to every other consumer of a sealed env value: an external MCP
+// child (internal/mcpbroker) and a TCC permission probe (cmd/relay) spawn
+// through this too, not only a managed service.
 func RevealEnv(m map[string]config.Secret) (map[string]string, error) {
 	if m == nil {
 		return nil, nil

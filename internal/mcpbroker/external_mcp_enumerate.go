@@ -1,4 +1,4 @@
-package main
+package mcpbroker
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 // MCP and classifies the answer. It never returns an error: every outcome
 // is one of the six statuses, because the caller is a picker whose job is
 // to degrade correctly rather than to propagate.
-func (m *ExternalMcpManager) EnumerateContextField(ctx context.Context, mcpID, field string, values map[string]json.RawMessage) project.ContextEnumResult {
+func (m *Manager) EnumerateContextField(ctx context.Context, mcpID, field string, values map[string]json.RawMessage) project.ContextEnumResult {
 	res := project.ContextEnumResult{McpID: mcpID, Field: field}
 
 	m.mu.RLock()
@@ -90,7 +90,7 @@ func (m *ExternalMcpManager) EnumerateContextField(ctx context.Context, mcpID, f
 // rather than a fact about whether the method exists, and matching a
 // specific implementation-defined code here would make the default wrong
 // for any server that picks a different one.
-func (m *ExternalMcpManager) classifyEnumError(res project.ContextEnumResult, mcpID string, err error) project.ContextEnumResult {
+func (m *Manager) classifyEnumError(res project.ContextEnumResult, mcpID string, err error) project.ContextEnumResult {
 	var rpcErr *mcpRPCError
 	if errors.As(err, &rpcErr) {
 		switch rpcErr.Code {
@@ -114,7 +114,7 @@ func (m *ExternalMcpManager) classifyEnumError(res project.ContextEnumResult, mc
 // request is sent to it. Cleared on Stop/StopAll and on a fresh handshake --
 // a reconnect is a new process and may be a new build, so the fact is
 // scoped to the connection that asserted it, never to the settings entry.
-func (m *ExternalMcpManager) latchEnumUnsupported(mcpID string) {
+func (m *Manager) latchEnumUnsupported(mcpID string) {
 	m.mu.Lock()
 	if m.enumUnsupported == nil {
 		m.enumUnsupported = make(map[string]bool)

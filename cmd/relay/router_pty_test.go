@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -34,7 +35,7 @@ func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
 
 	router := &appRouter{
 		store:    store,
-		tools:    NewExternalMcpManager(nil),
+		tools:    mcpbroker.NewManager(nil),
 		services: &fakeServiceReloader{},
 		enhanced: NewEnhancedServiceRegistry(nil),
 	}

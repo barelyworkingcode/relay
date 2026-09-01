@@ -25,6 +25,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -155,7 +156,9 @@ func pgwCases(t *testing.T) []pgwCase {
 			},
 			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance,
-					StartFlow: func(string, func(string)) (*oauthResult, error) { return &oauthResult{AccessToken: "granted"}, nil },
+					StartFlow: func(string, func(string)) (*mcpbroker.OAuthResult, error) {
+						return &mcpbroker.OAuthResult{AccessToken: "granted"}, nil
+					},
 				}
 				_, err := ops.StartOAuth(context.Background(), "pgw-oauth", func(string) {}, auditViaCLI, "")
 				return err

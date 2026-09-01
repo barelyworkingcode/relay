@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -130,14 +131,14 @@ type McpOps struct {
 	// property StartOAuth has to be held to — that a record deleted while all
 	// that was happening is not resurrected by the persist — is otherwise
 	// unreachable without standing up an OAuth server to make it happen in.
-	StartFlow func(mcpURL string, openURL func(string)) (*oauthResult, error)
+	StartFlow func(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error)
 }
 
-func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*oauthResult, error) {
+func (o *McpOps) startFlow(mcpURL string, openURL func(string)) (*mcpbroker.OAuthResult, error) {
 	if o.StartFlow != nil {
 		return o.StartFlow(mcpURL, openURL)
 	}
-	return startOAuthFlow(mcpURL, openURL)
+	return mcpbroker.StartOAuthFlow(mcpURL, openURL)
 }
 
 func (o *McpOps) notify() {
@@ -194,7 +195,7 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (conf
 		return o.addHTTP(f.DisplayName, id, f.URL, f.TccServices, via, credID, grant.ID())
 	}
 
-	result, err := DiscoverExternalMcp(o.Ctx, f.DisplayName, id, f.Command, f.Args, f.Env)
+	result, err := mcpbroker.DiscoverExternalMcp(o.Ctx, f.DisplayName, id, f.Command, f.Args, f.Env)
 	if err != nil {
 		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
 	}
@@ -205,22 +206,22 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (conf
 	return *result, nil
 }
 
-// ErrAuthRequired rides back alongside a fully persisted record, not as a
-// plain error: DiscoverHTTPMcp returns a usable config even when the MCP
-// answered 401, and the record must land so "Authenticate" (StartOAuth) has
-// something to point at. Same shape as ServiceOps' errServiceProcess --
-// committed write, pending side effect -- so callers must check
-// errors.Is(err, ErrAuthRequired) before treating a non-nil error as a
-// failed Add.
+// mcpbroker.ErrAuthRequired rides back alongside a fully persisted record,
+// not as a plain error: mcpbroker.DiscoverHTTPMcp returns a usable config
+// even when the MCP answered 401, and the record must land so "Authenticate"
+// (StartOAuth) has something to point at. Same shape as ServiceOps'
+// errServiceProcess -- committed write, pending side effect -- so callers
+// must check errors.Is(err, mcpbroker.ErrAuthRequired) before treating a
+// non-nil error as a failed Add.
 func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, via, credID, presenceID string) (config.ExternalMcp, error) {
-	result, err := DiscoverHTTPMcp(o.Ctx, displayName, id, mcpURL, nil)
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
+	result, err := mcpbroker.DiscoverHTTPMcp(o.Ctx, displayName, id, mcpURL, nil)
+	if err != nil && !errors.Is(err, mcpbroker.ErrAuthRequired) {
 		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
 	}
 	if result == nil {
 		return config.ExternalMcp{}, fmt.Errorf("%w: discovery returned no configuration", errMcpDiscovery)
 	}
-	needsAuth := errors.Is(err, ErrAuthRequired)
+	needsAuth := errors.Is(err, mcpbroker.ErrAuthRequired)
 	// Applied even though TCC services are mostly a stdio concern: the
 	// digest bound to tcc_services regardless of transport (§6.4), so the
 	// persisted record must honour what the operator approved rather than
@@ -231,7 +232,7 @@ func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, v
 		return config.ExternalMcp{}, perr
 	}
 	if needsAuth {
-		return *result, ErrAuthRequired
+		return *result, mcpbroker.ErrAuthRequired
 	}
 	return *result, nil
 }
@@ -302,7 +303,7 @@ func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
 
 // openURL is a parameter rather than a Platform field on McpOps because
 // starting an OAuth flow is otherwise transport-agnostic (Store, Ctx,
-// startOAuthFlow's own HTTP client): opening a browser window on the host
+// mcpbroker.StartOAuthFlow's own HTTP client): opening a browser window on the host
 // is the one desktop side effect in the whole operation, and threading it
 // through as an argument keeps McpOps itself free of any Platform
 // dependency. The IPC envelope is the only caller today (ADR-014 section 4
@@ -344,7 +345,7 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 		if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
-		s.UpdateOAuthState(id, oauth.toOAuthState())
+		s.UpdateOAuthState(id, oauth.ToOAuthState())
 		secret, _ = s.AdminSecret.Reveal()
 		return nil
 	}); err != nil {
@@ -365,7 +366,7 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 			slog.Warn("mcp reload notify failed", "id", id, "error", err)
 		}
 	}
-	return oauth.toOAuthState(), nil
+	return oauth.ToOAuthState(), nil
 }
 
 // ResetPermissions has no HTTP route (ADR-014 section 4): ResetMcpPermissions

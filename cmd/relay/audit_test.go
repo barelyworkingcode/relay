@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 func newTestAudit(t *testing.T, cfg *config.AuditConfig) *audit.AuditRecorder {
@@ -177,7 +178,7 @@ func TestAudit_RecordsDirectoryAuth(t *testing.T) {
 	settings.Projects[0].Path = dir
 	settings.Projects[0].AllowCwdAuth = true
 
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`)))
 	r := newTestRouter(t, settings, mgr)
 	rec := newTestAudit(t, nil)
@@ -370,7 +371,7 @@ func TestAudit_CallerIdentityOverBridge(t *testing.T) {
 		t.Fatalf("seed settings: %v", err)
 	}
 
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "audite2e", newMockConn("audite2e", simpleTools("probe"), okHandler(`{"content":[]}`)))
 	rec := newTestAudit(t, nil)
 	r := &appRouter{

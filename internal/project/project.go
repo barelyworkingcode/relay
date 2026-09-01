@@ -25,7 +25,7 @@ func CreateWithToken(s *config.Settings, name, path string, mcpIDs, models []str
 }
 
 // surfaces maps MCP IDs to their runtime schema + tool surface (from
-// ExternalMcpManager) for scope derivation. Call within store.With.
+// mcpbroker.Manager) for scope derivation. Call within store.With.
 func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
 	kind = config.NormalizeProjectKind(kind)
 	if name == "" {

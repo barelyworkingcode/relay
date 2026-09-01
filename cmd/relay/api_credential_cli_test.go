@@ -28,6 +28,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // accLegacyToken stands in for RELAY_FRONTEND_TOKEN: the value
@@ -52,7 +53,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string
 	enrolOps := &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	mcpOps := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 
 	dir := mkShortTempDir(t, "acc-fe-")
 	srv, err := NewFrontendServer(

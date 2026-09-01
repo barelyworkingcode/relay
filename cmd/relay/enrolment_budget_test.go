@@ -23,6 +23,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.Enr
 			Budget:      b,
 		})
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "macmcp", mock)
 
 	r := newTestRouter(t, s, mgr)

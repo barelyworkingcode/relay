@@ -27,6 +27,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/login"
 	"github.com/barelyworkingcode/relay/internal/login/loginfake"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 type lrAuditor struct {
@@ -74,7 +75,7 @@ func lrNewServer(t *testing.T) *lrServer {
 	}
 	sock := filepath.Join(mkShortTempDir(t, "lr-"), "frontend.sock")
 	auditor := &lrAuditor{}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: sock, Token: "lr-frontend-token"},

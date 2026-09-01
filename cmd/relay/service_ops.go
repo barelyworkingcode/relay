@@ -97,7 +97,7 @@ func (f serviceFields) toConfig(id string) config.ServiceConfig {
 		DisplayName:      f.DisplayName,
 		Command:          f.Command,
 		Args:             f.Args,
-		Env:              secretMapFromPlain(f.Env),
+		Env:              config.SecretMapFromPlain(f.Env),
 		WorkingDir:       workingDir,
 		Autostart:        autostart,
 		URL:              url,

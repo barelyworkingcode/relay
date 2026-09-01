@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // Tests for FrontendServer. Covers:
@@ -33,7 +34,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 	}
 	enhanced := NewEnhancedServiceRegistry(nil)
 
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store,
 		extMgr,
@@ -187,7 +188,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	if _, err := ops.Create(context.Background(), serviceFields{DisplayName: "Worker", Command: "/bin/sleep", Args: []string{"1"}}, auditViaIPC, ""); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,

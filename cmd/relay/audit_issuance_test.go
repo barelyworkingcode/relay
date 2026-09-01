@@ -27,6 +27,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -472,7 +473,7 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *audit.AuditRecorder)
 		Authz:     NewCredentialAuthorizer(store),
 		Auditor:   audit.ControlAuditorOrNil(rec),
 	}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: rec, Issuance: issuance})
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuance}
 	RegisterProjectRoutes(rr, store, projOps, extMgr, nil, nil, nil, nil)
@@ -626,7 +627,7 @@ func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 	sock := filepath.Join(mkShortTempDir(t, "ai-lr-sock-"), "frontend.sock")
 	auditor := &lrAuditor{}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: sock, Token: "ai-frontend-token"},

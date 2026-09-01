@@ -1,4 +1,4 @@
-package main
+package mcpbroker
 
 // A schema version relay reports is a version it holds a schema for.
 //
@@ -16,8 +16,20 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
+// A minimal v2 context schema. cmd/relay's router_scope_test.go carries an
+// identical const for the same reason the mock connection is duplicated: a
+// _test.go file's symbols do not cross a package boundary.
+const scopedSchema = `{
+  "mail_accounts": {
+    "type": "array", "items": {"type": "string"},
+    "description": "Mail accounts this client may read from or send as",
+    "scope": "restrict", "source": "operator",
+    "applies_to": ["mail_*"], "enumerable": true
+  }
+}`
+
 func TestMcpSurface_StopClearsTheVersionWithTheSchema(t *testing.T) {
-	mgr := NewExternalMcpManager(nil)
+	mgr := NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("mail_search"), nil))
 	addMockSchema(mgr, "macmcp", scopedSchema, 2)
 
@@ -41,7 +53,7 @@ func TestMcpSurface_StopClearsTheVersionWithTheSchema(t *testing.T) {
 // missing schema decides the surface on its own rather than the two maps having
 // to stay in agreement.
 func TestMcpSurface_AVersionIsNeverReportedWithoutItsSchema(t *testing.T) {
-	mgr := NewExternalMcpManager(nil)
+	mgr := NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", simpleTools("mail_search"), nil))
 	mgr.mu.Lock()
 	mgr.schemaVersions["macmcp"] = 2
