@@ -255,19 +255,6 @@ func parseCACertificatePEM(certPEM []byte) (*x509.Certificate, error) {
 	return cert, nil
 }
 
-// caSPKIFromDisk is the CA's RawSubjectPublicKeyInfo — what the comparison
-// code binds, rather than the whole certificate DER --ca-fingerprint pins.
-// Binding the key keeps the code stable across a cosmetic re-issue over the
-// same key, and an attacker cannot exploit the difference: a leaf only
-// verifies under the CA certificate carrying the key that signed it.
-func caSPKIFromDisk() ([]byte, error) {
-	cert, err := LoadCACertificateOnly()
-	if err != nil {
-		return nil, err
-	}
-	return cert.RawSubjectPublicKeyInfo, nil
-}
-
 // CAMaterialFromDisk reads both halves in one pass, for the reconcile tick
 // that pushes them into the pending-request table.
 func CAMaterialFromDisk() (certPEM, spki []byte, err error) {

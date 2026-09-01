@@ -108,14 +108,6 @@ func localTools(names ...string) []mcp.Tool {
 	return tools
 }
 
-func openWorldTools(names ...string) []mcp.Tool {
-	tools := simpleTools(names...)
-	for i := range tools {
-		tools[i].Annotations = json.RawMessage(`{"openWorldHint":true}`)
-	}
-	return tools
-}
-
 // readOnlyTools is simpleTools with both hints declared honestly: read-only
 // and staying on this host. Deliberately a separate helper rather than a
 // default on simpleTools: an unannotated tool being refused to a read-only

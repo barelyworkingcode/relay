@@ -41,12 +41,6 @@ func (a *App) onSettingsClose() {
 	a.settingsOpen.Store(false)
 }
 
-func (a *App) evalSettings(js string) {
-	if a.settingsOpen.Load() {
-		a.platform.EvalSettingsJS(js)
-	}
-}
-
 // emitSettingsEvent sends a named event to the settings UI with JSON-marshaled arguments.
 // Each arg is marshaled individually; json.RawMessage values are passed through as-is.
 // This centralizes JS escaping and marshaling.
@@ -215,12 +209,6 @@ type IPCContext struct {
 	// project created from curl and one created from the tray share the
 	// presence gate and the audit record (ADR-017 decisions 2 and 3).
 	ProjectOps *ProjectOps
-}
-
-// withSettingsReconcile atomically mutates settings, then asynchronously sends
-// a reconcile notification to the bridge. Returns true on success (save succeeded).
-func (ctx *IPCContext) withSettingsReconcile(fn func(*config.Settings)) bool {
-	return ctx.withSettingsNotify(fn, ctx.NotifyReconcile)
 }
 
 // withSettings atomically mutates settings and emits an error event on failure.

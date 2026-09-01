@@ -205,22 +205,6 @@ func mkShortTempDir(t *testing.T, prefix string) string {
 	return dir
 }
 
-func newSandboxRouter(t *testing.T) (*appRouter, config.SettingsStore) {
-	t.Helper()
-	dir := mkSandboxRelayHome(t)
-	store := sealedSettingsStoreAt(dir)
-	if err := store.EnsureInitialized(); err != nil {
-		t.Fatalf("newSandboxRouter: EnsureInitialized: %v", err)
-	}
-	router := &appRouter{
-		store:    store,
-		tools:    mcpbroker.NewManager(nil),
-		services: &fakeServiceReloader{},
-		enhanced: NewEnhancedServiceRegistry(nil),
-	}
-	return router, store
-}
-
 // fakeServiceReloader is a no-op ServiceReloader. Real reloading would
 // require a process supervisor; tests that need service-spawn behavior
 // use the cmd/testservice binary via service_registry_test.go.
