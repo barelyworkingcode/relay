@@ -537,7 +537,7 @@ func (s *RemoteServer) recordConfigRefusal(class control.CapabilityClass, reqTyp
 	})
 }
 
-// resolveCaller is resolveGrant's shared middle: the audit-live check, the
+// resolveCaller is the shared middle of every remote request: the audit-live check, the
 // fingerprint -> enrolment resolution, the project_id defaulting,
 // GrantsProject, and the IsRemote() re-check. The enrolment and project it
 // returns are the ONLY objects a remote request can act on — the
@@ -597,19 +597,7 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Set
 	return settings, enr, proj, nil
 }
 
-// resolveGrant is resolveCaller plus the one thing the tool plane still
-// needs beyond it: the plaintext token. Kept as its own three-line entry
-// point rather than inlined at its one call site, so a future caller that
-// only wants a token — never the enrolment or project — has one.
-func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, error) {
-	_, _, proj, err := s.resolveCaller(fingerprint, projectID)
-	if err != nil {
-		return "", err
-	}
-	return revealProjectToken(proj)
-}
-
-// revealProjectToken is resolveGrant's and handleRequest's shared final
+// revealProjectToken is handleRequest's final
 // step for the tool plane: turning an already-resolved, already-authorized
 // project into the plaintext token CallTool/ListTools need. Never put on
 // the wire — resolved server-side only.
