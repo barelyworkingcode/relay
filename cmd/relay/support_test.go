@@ -503,3 +503,98 @@ func dialUnixWithTimeout(t *testing.T, sock string, timeout time.Duration) net.C
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// fakeServiceServer is a scriptable HTTP server over a Unix socket, standing
+// in for a managed service's internal endpoint (status, actions, ...).
+// Shared by ipc_service_action_test.go; internal/service has its own copy
+// for StatusClient's own tests since a test helper cannot cross a package
+// boundary.
+type fakeServiceServer struct {
+	t         *testing.T
+	socket    string
+	listener  net.Listener
+	server    *http.Server
+	mu        sync.Mutex
+	responses map[string]fakeResponse
+	requests  []recordedRequest
+}
+
+type fakeResponse struct {
+	status int
+	body   []byte
+}
+
+type recordedRequest struct {
+	Method string
+	Path   string
+	Auth   string
+}
+
+func newFakeServiceServer(t *testing.T) *fakeServiceServer {
+	t.Helper()
+	// /tmp because t.TempDir paths blow past macOS's 104-char unix socket
+	// limit (matches the relayLLM-side FakeBridge pattern).
+	dir, err := os.MkdirTemp("/tmp", "fss")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	sockPath := filepath.Join(dir, "svc.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		os.RemoveAll(dir)
+		t.Fatalf("listen unix: %v", err)
+	}
+	f := &fakeServiceServer{
+		t:         t,
+		socket:    sockPath,
+		listener:  ln,
+		responses: make(map[string]fakeResponse),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", f.handle)
+	f.server = &http.Server{Handler: mux}
+	go f.server.Serve(ln)
+	t.Cleanup(func() {
+		_ = f.server.Close()
+		_ = os.RemoveAll(dir)
+	})
+	return f
+}
+
+func (f *fakeServiceServer) script(method, path string, status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responses[method+" "+path] = fakeResponse{status: status, body: []byte(body)}
+}
+
+func (f *fakeServiceServer) recorded() []recordedRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]recordedRequest, len(f.requests))
+	copy(out, f.requests)
+	return out
+}
+
+func (f *fakeServiceServer) handle(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.requests = append(f.requests, recordedRequest{
+		Method: r.Method,
+		Path:   r.URL.Path,
+		Auth:   r.Header.Get("Authorization"),
+	})
+	resp, ok := f.responses[r.Method+" "+r.URL.Path]
+	f.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(resp.status)
+	_, _ = w.Write(resp.body)
+}

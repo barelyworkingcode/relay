@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package service
 
 import (
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -48,7 +48,7 @@ func TestPidFile_RoundTrip(t *testing.T) {
 }
 
 // spawnSleeper starts a `sleep` process in its own process group, mirroring
-// how ServiceRegistry.Start spawns services. In production launchd reaps a
+// how Registry.Start spawns services. In production launchd reaps a
 // killed orphan; in a test we own the child, so the returned cmd must still
 // be Wait()ed after a kill or the zombie lingers. The cleanup hard-kills it
 // if the test fails before that reclaim runs.
@@ -78,7 +78,7 @@ func TestReclaimOrphans_KillsMatchingOrphan(t *testing.T) {
 		t.Fatalf("writePidFile: %v", err)
 	}
 
-	r := NewServiceRegistry()
+	r := NewRegistry()
 	r.ReclaimOrphans([]config.ServiceConfig{{ID: "sleeper", Command: "sleep"}})
 
 	// Reap the now-terminated child so kill(pid, 0) below sees ESRCH.
@@ -112,7 +112,7 @@ func TestReclaimOrphans_SkipsPidRecyclingMismatch(t *testing.T) {
 		t.Fatalf("writePidFile: %v", err)
 	}
 
-	r := NewServiceRegistry()
+	r := NewRegistry()
 	r.ReclaimOrphans([]config.ServiceConfig{{ID: "ghost", Command: "/opt/totally-different-binary"}})
 
 	time.Sleep(200 * time.Millisecond)
@@ -140,7 +140,7 @@ func TestReclaimOrphans_StalePidfile(t *testing.T) {
 		t.Fatalf("writePidFile: %v", err)
 	}
 
-	r := NewServiceRegistry()
+	r := NewRegistry()
 	r.ReclaimOrphans([]config.ServiceConfig{{ID: "dead", Command: "true"}})
 
 	if leftover, _ := readPidFile("dead"); leftover != 0 {

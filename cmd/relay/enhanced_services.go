@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // EnhancedService.proxy is built once at register time and reused for every
@@ -27,32 +26,13 @@ type EnhancedService struct {
 	proxy          *httputil.ReverseProxy
 }
 
-// internalUnixHostURL is a placeholder host: DialContext ignores it (we
-// always dial a Unix socket) but net/url and net/http both need *something*
-// parseable.
-const internalUnixHostURL = "http://internal.relay.localsocket"
-
-var dispatcherTargetURL, _ = url.Parse(internalUnixHostURL)
-
-// newUnixHTTPTransport pins DialContext to one Unix socket. IdleConnTimeout
-// keeps a per-tick transport (the status poller builds one per service per
-// tick) from leaking its idle conn until GC. ResponseHeaderTimeout is
-// deliberately unset: the reverse proxy forwards long-poll routes (e.g.
-// permission prompts) that legitimately withhold headers for minutes.
-func newUnixHTTPTransport(socket string) *http.Transport {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		},
-		IdleConnTimeout: 90 * time.Second,
-	}
-}
+var dispatcherTargetURL, _ = url.Parse(service.InternalUnixHostURL)
 
 // newServiceProxy strips inbound Authorization (the frontend's token,
 // already validated) and injects the service-declared internal token.
 func newServiceProxy(serviceID, internalSocket, internalToken string) *httputil.ReverseProxy {
 	rp := httputil.NewSingleHostReverseProxy(dispatcherTargetURL)
-	rp.Transport = newUnixHTTPTransport(internalSocket)
+	rp.Transport = service.NewUnixHTTPTransport(internalSocket)
 	rp.FlushInterval = -1
 	originalDirector := rp.Director
 	rp.Director = func(req *http.Request) {
@@ -70,9 +50,10 @@ func newServiceProxy(serviceID, internalSocket, internalToken string) *httputil.
 	return rp
 }
 
-// EnhancedServiceRegistry is distinct from ServiceRegistry
-// (service_registry.go), which manages process lifecycle: this one covers
-// only the protocol side -- what services expose, how to reach them.
+// EnhancedServiceRegistry is distinct from service.Registry
+// (internal/service/service_registry.go), which manages process lifecycle:
+// this one covers only the protocol side -- what services expose, how to
+// reach them.
 type EnhancedServiceRegistry struct {
 	mu       sync.RWMutex
 	services map[string]*EnhancedService

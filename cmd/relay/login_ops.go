@@ -14,6 +14,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // bootstrapCodeTTL matches the anchor's whole job: short enough that the
@@ -34,7 +35,7 @@ var errBootstrapCodeInvalid = errors.New("invalid or expired login code")
 // anchor is one at a time, matching the one ceremony it authorises. Does not
 // save; use within store.With, matching Mint.
 func mintBootstrapCode(s *config.Settings) (string, error) {
-	plaintext, err := generateRandomHex(16)
+	plaintext, err := service.GenerateRandomHex(16)
 	if err != nil {
 		return "", err
 	}

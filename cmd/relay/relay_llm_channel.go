@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // Owner-only 0600 in a 0700 parent dir; the token is defense-in-depth on top
@@ -50,7 +51,7 @@ func (c *FrontendChannel) Ensure() (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("create relay config dir: %w", err)
 	}
 
-	token, err := generateRandomHex(32)
+	token, err := service.GenerateRandomHex(32)
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("generate frontend token: %w", err)
 	}

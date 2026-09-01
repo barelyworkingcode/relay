@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // The manifest is the authority: relay refuses get/save for any service that
@@ -62,12 +63,12 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 	switch msg.Op {
 	case configOpGet:
 		ipc.GoFunc(func() {
-			realPath, info, err := resolveConfigPath(decl, allowedRoot)
+			realPath, info, err := service.ResolveConfigPath(decl, allowedRoot)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}
-			data, err := readConfigFile(realPath, info)
+			data, err := service.ReadConfigFile(realPath, info)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
@@ -79,11 +80,11 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 		ipc.GoFunc(func() {
 			// Validate BEFORE resolving/writing so a malformed edit never
 			// touches the file (load-bearing safety property).
-			if err := validateConfigText([]byte(msg.Text), decl.Format); err != nil {
+			if err := service.ValidateConfigText([]byte(msg.Text), decl.Format); err != nil {
 				emitConfigResult(ipc, msg, false, "", "config does not parse: "+err.Error())
 				return
 			}
-			realPath, info, err := resolveConfigPath(decl, allowedRoot)
+			realPath, info, err := service.ResolveConfigPath(decl, allowedRoot)
 			if err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
@@ -92,7 +93,7 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 			// and key order survive on disk; preserve the file's existing
 			// mode (from the same FileInfo just validated, avoiding a
 			// re-stat race).
-			if err := writeConfigFile(realPath, []byte(msg.Text), info.Mode().Perm()); err != nil {
+			if err := service.WriteConfigFile(realPath, []byte(msg.Text), info.Mode().Perm()); err != nil {
 				emitConfigResult(ipc, msg, false, "", err.Error())
 				return
 			}

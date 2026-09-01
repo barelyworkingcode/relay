@@ -3,12 +3,26 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
+
+	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
 // One generation of history is kept by default (a ".1" backup), so any
 // single log occupies at most ~2x this on disk.
 const maxLogBytes = 8 << 20 // 8 MiB
+
+// serviceLogDir returns the directory where rotated logs are stored: relay's
+// own log, the audit log, and every managed service's merged stdout+stderr
+// all share it.
+func serviceLogDir() (string, error) {
+	dir := filepath.Join(bridge.ConfigDir(), "logs")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create log directory: %w", err)
+	}
+	return dir, nil
+}
 
 // Safe for concurrent use: slog writes relay's own log from many goroutines,
 // while a managed service's merged stdout+stderr arrive on a single copy

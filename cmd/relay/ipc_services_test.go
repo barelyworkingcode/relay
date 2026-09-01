@@ -9,12 +9,13 @@ import (
 	"context"
 	"errors"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 	"strings"
 	"sync"
 	"testing"
 )
 
-// svcRecorder is a ServiceManager that records lifecycle calls and lets a test
+// svcRecorder is a service.Manager that records lifecycle calls and lets a test
 // control IsRunning and force a Reload failure.
 type svcRecorder struct {
 	noopServiceManager
@@ -61,7 +62,7 @@ func (r *svcRecorder) RunningIDs() []string {
 	return ids
 }
 
-func newServicesIPC(t *testing.T, store config.SettingsStore, reg ServiceManager) (*IPCContext, *recordingUI) {
+func newServicesIPC(t *testing.T, store config.SettingsStore, reg service.Manager) (*IPCContext, *recordingUI) {
 	ui := &recordingUI{}
 	ipc := &IPCContext{
 		Ctx:                    context.Background(),

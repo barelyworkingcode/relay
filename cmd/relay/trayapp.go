@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -16,6 +18,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // appInstance is the singleton tray app, set by runTrayApp and read by Cocoa
@@ -32,8 +35,12 @@ type App struct {
 	store        config.SettingsStore
 	platform     Platform
 	extMgr       *ExternalMcpManager
-	registry     ServiceManager
+	registry     service.Manager
 	bridgeServer *bridge.BridgeServer
+	// frontendChannel provisions and, on shutdown, closes the frontend
+	// socket/token. Owned here rather than by the registry: the registry
+	// only ever needs the env it produces, wired through Registry.FrontendEnv.
+	frontendChannel *FrontendChannel
 	// remote supervises the mTLS listener remote clients reach relay through:
 	// it binds, rebinds and stops as `remote.enabled` / `remote.listen` change,
 	// so neither needs a restart to take effect. Holds no listener at all
@@ -193,7 +200,7 @@ func runTrayApp() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	registry := NewServiceRegistry()
+	registry := service.NewRegistry()
 
 	app := &App{
 		ctx:           ctx,
@@ -380,7 +387,22 @@ func runTrayApp() {
 	// needed on crash.
 	registry.TokenStore = &router.serviceTokens
 
-	registry.FrontendChannel = NewFrontendChannel()
+	frontendChannel := NewFrontendChannel()
+	app.frontendChannel = frontendChannel
+	registry.FrontendEnv = func() (map[string]string, error) {
+		ep, err := frontendChannel.Ensure()
+		if err != nil {
+			return nil, err
+		}
+		return ep.FrontendEnv(), nil
+	}
+	registry.OpenLog = func(id string) (io.WriteCloser, error) {
+		dir, err := serviceLogDir()
+		if err != nil {
+			return nil, err
+		}
+		return openRotatingLog(filepath.Join(dir, id+".log"))
+	}
 	bs, err := bridge.NewBridgeServer(ctx, router)
 	if err != nil {
 		slog.Error("failed to start bridge server", "error", err)
@@ -390,8 +412,8 @@ func runTrayApp() {
 
 	// Materialize the channel up front so the frontend HTTP server can bind
 	// before any client (Eve, scheduler) tries to dial it. Spawned services
-	// inherit the same credentials via service_registry.
-	frontendEndpoint, err := registry.FrontendChannel.Ensure()
+	// inherit the same credentials via registry.FrontendEnv.
+	frontendEndpoint, err := frontendChannel.Ensure()
 	if err != nil {
 		slog.Error("failed to provision frontend channel", "error", err)
 		os.Exit(1)
@@ -567,7 +589,7 @@ func (a *App) onExternalChange() {
 // short-circuits on the platform when nothing changed.
 //
 // Process-exit menu updates are still event-driven via
-// ServiceRegistry.OnProcessExit (see runTrayApp) so a stopped service's
+// service.Registry.OnProcessExit (see runTrayApp) so a stopped service's
 // toggle flips immediately, not on the next 2s tick.
 func (a *App) statusPoller() {
 	ticker := time.NewTicker(StatusPollInterval)
@@ -978,7 +1000,9 @@ func (a *App) cleanup() {
 		// Unlink the LLM channel sockets after the children that depend on
 		// them have stopped. Tokens persist in-memory until the process
 		// exits.
-		a.registry.CloseFrontendChannel()
+		if a.frontendChannel != nil {
+			a.frontendChannel.Close()
+		}
 		a.wg.Wait()
 		// Last: nothing can produce a tool call any more, so drain the audit
 		// queue and close the log. Closing earlier would drop the shutdown-time

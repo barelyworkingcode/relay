@@ -10,6 +10,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/sealed"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 const testToken = "aaaaaabbbbbbccccccddddddeeeeee0011223344556677889900aabbccddeeff"
@@ -58,7 +59,7 @@ func newTestRouter(t *testing.T, s *config.Settings, mgr *ExternalMcpManager) *a
 	return &appRouter{
 		store:    store,
 		tools:    mgr,
-		services: NewServiceRegistry(),
+		services: service.NewRegistry(),
 		onChange: func() {},
 	}
 }

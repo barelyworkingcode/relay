@@ -13,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 type dispatchedCall struct {
@@ -149,7 +150,7 @@ func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, all
 	return &appRouter{
 		store:    store,
 		tools:    tp,
-		services: NewServiceRegistry(),
+		services: service.NewRegistry(),
 		onChange: func() {},
 		audit:    rec,
 	}, tp
@@ -457,7 +458,7 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 		r := &appRouter{
 			store:    store,
 			tools:    tp,
-			services: NewServiceRegistry(),
+			services: service.NewRegistry(),
 			onChange: func() {},
 			audit:    rec,
 		}

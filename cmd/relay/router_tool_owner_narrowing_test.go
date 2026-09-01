@@ -13,6 +13,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // seededStore hands back a store serving exactly s from memory, with no
@@ -46,7 +47,7 @@ func narrowingRouter(t *testing.T, order []string, proj config.Project, tools ma
 	return &appRouter{
 		store:    seededStore(t, s),
 		tools:    tp,
-		services: NewServiceRegistry(),
+		services: service.NewRegistry(),
 		onChange: func() {},
 	}, tp
 }
@@ -162,7 +163,7 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 			AdminSecret: config.NewSecret("supersecretadmin"),
 		}
 		r := &appRouter{store: seededStore(t, s),
-			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
+			tools: tp, services: service.NewRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {
 			t.Fatalf("an unregistered MCP served a call; dispatched=%v", tp.dispatchedIDs())
 		}
@@ -181,7 +182,7 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 			AdminSecret: config.NewSecret("supersecretadmin"),
 		}
 		r := &appRouter{store: seededStore(t, s),
-			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
+			tools: tp, services: service.NewRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err != nil {
 			t.Fatalf("a granted MCP was refused because an unregistered one also exposes the name: %v", err)
 		}
@@ -276,7 +277,7 @@ func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testi
 				AdminSecret: config.NewSecret("supersecretadmin"),
 			}
 			r := &appRouter{store: seededStore(t, s),
-				tools: tp, services: NewServiceRegistry(), onChange: func() {}, audit: rec}
+				tools: tp, services: service.NewRegistry(), onChange: func() {}, audit: rec}
 
 			if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {
 				t.Fatal("precondition: this grant must be ambiguous")

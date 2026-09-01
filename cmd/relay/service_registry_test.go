@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
@@ -83,7 +85,7 @@ func buildTestServiceBinary(t *testing.T) string {
 // serviceTokens is shared with the registry by pointer — same wiring as
 // trayapp.go — so registry token registrations are visible to the router's
 // auth check.
-func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRouter, *ServiceRegistry) {
+func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRouter, *service.Registry) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -97,9 +99,19 @@ func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRo
 		services: &fakeServiceReloader{},
 		enhanced: enhanced,
 	}
-	reg := NewServiceRegistry()
+	reg := service.NewRegistry()
 	reg.TokenStore = &router.serviceTokens
 	reg.Enhanced = enhanced
+	// Mirrors trayapp.go's production wiring: the registry has no default
+	// log destination, so a test that spawns a real service must supply one
+	// too.
+	reg.OpenLog = func(id string) (io.WriteCloser, error) {
+		dir, err := serviceLogDir()
+		if err != nil {
+			return nil, err
+		}
+		return openRotatingLog(filepath.Join(dir, id+".log"))
+	}
 
 	srv, err := bridge.NewBridgeServer(context.Background(), router)
 	if err != nil {
@@ -134,7 +146,7 @@ func TestServiceRegistry_Spawn_InjectsBridgeEnvAndPidfile(t *testing.T) {
 		t.Fatal("service should be running immediately after Start")
 	}
 
-	pid, err := readPidFile(cfg.ID)
+	pid, err := service.ReadPidFileForTest(cfg.ID)
 	if err != nil {
 		t.Fatalf("readPidFile: %v", err)
 	}
@@ -214,7 +226,7 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 		t.Fatalf("service token not cleaned up; have %d", n)
 	}
 
-	_, err := readPidFile(cfg.ID)
+	_, err := service.ReadPidFileForTest(cfg.ID)
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		_ = err
 	}
@@ -284,9 +296,16 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	reg.FrontendChannel = NewFrontendChannel()
-	t.Cleanup(reg.CloseFrontendChannel)
-	endpoint, err := reg.FrontendChannel.Ensure()
+	frontendChannel := NewFrontendChannel()
+	t.Cleanup(frontendChannel.Close)
+	reg.FrontendEnv = func() (map[string]string, error) {
+		ep, err := frontendChannel.Ensure()
+		if err != nil {
+			return nil, err
+		}
+		return ep.FrontendEnv(), nil
+	}
+	endpoint, err := frontendChannel.Ensure()
 	if err != nil {
 		t.Fatalf("Ensure frontend channel: %v", err)
 	}

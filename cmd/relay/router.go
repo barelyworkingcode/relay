@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 type ToolProvider interface {
@@ -257,7 +258,7 @@ func (s *serviceTokenStore) Len() int {
 var (
 	_ bridge.ToolRouter = (*appRouter)(nil)
 	_ ToolManager       = (*ExternalMcpManager)(nil)
-	_ ServiceReloader   = (*ServiceRegistry)(nil)
+	_ ServiceReloader   = (*service.Registry)(nil)
 )
 
 // resolveAuth: with no token, falls back to directory auth (resolveCwdAuth),

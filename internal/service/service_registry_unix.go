@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package service
 
 import (
 	"fmt"
@@ -13,13 +13,14 @@ import (
 	"time"
 )
 
-func setProcessGroup(cmd *exec.Cmd) {
+// SetProcessGroup configures a process group for the given command.
+func SetProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// killProcessGroup SIGTERMs the group (not just the shell PID, so children
+// KillProcessGroup SIGTERMs the group (not just the shell PID, so children
 // that outlive the shell are also caught), waits 1s, then SIGKILLs.
-func killProcessGroup(cmd *exec.Cmd) {
+func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
 	}
@@ -42,7 +43,8 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func buildCommand(cfg *config.ServiceConfig) (*exec.Cmd, error) {
+// BuildCommand constructs an exec.Cmd for a service based on its config.
+func BuildCommand(cfg *config.ServiceConfig) (*exec.Cmd, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -54,15 +56,15 @@ func buildCommand(cfg *config.ServiceConfig) (*exec.Cmd, error) {
 	}
 
 	cmd := exec.Command(shell, "-l", "-c", fullCmd)
-	setProcessGroup(cmd)
+	SetProcessGroup(cmd)
 	if cfg.WorkingDir != "" {
 		cmd.Dir = cfg.WorkingDir
 	}
-	env, err := revealEnvOrErr(cfg.Env)
+	env, err := RevealEnv(cfg.Env)
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}
-	mergeEnv(cmd, env)
+	MergeEnv(cmd, env)
 	return cmd, nil
 }
 
@@ -83,11 +85,11 @@ func processCommand(pid int) string {
 	return strings.TrimSpace(string(out))
 }
 
-// reclaimOrphan kills pid's process group only if it is still alive AND its
+// ReclaimOrphan kills pid's process group only if it is still alive AND its
 // command line still references expectCommand. Uses a 2s grace window
-// (vs. killProcessGroup's 1s): reclaim runs at tray startup, where a longer
+// (vs. KillProcessGroup's 1s): reclaim runs at tray startup, where a longer
 // wait beats SIGKILLing a daemon mid-shutdown.
-func reclaimOrphan(pid int, expectCommand string) bool {
+func ReclaimOrphan(pid int, expectCommand string) bool {
 	if !processGroupAlive(pid) {
 		return false
 	}

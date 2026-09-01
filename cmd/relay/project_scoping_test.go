@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // testSchemas declares fsmcp's v1 allowed_dirs field, the trigger for the
@@ -55,7 +56,7 @@ func TestProjectTokenScoping(t *testing.T) {
 	r := &appRouter{
 		store:    store,
 		tools:    mgr,
-		services: NewServiceRegistry(),
+		services: service.NewRegistry(),
 		onChange: func() {},
 	}
 

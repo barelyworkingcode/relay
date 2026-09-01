@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"encoding/json"
@@ -15,11 +15,10 @@ import (
 )
 
 // maxConfigFileBytes caps both reads and writes of a service config file.
-// Resource-exhaustion defense (cf. maxStatusBodyBytes in
-// service_status_client.go).
+// Resource-exhaustion defense (cf. maxStatusBodyBytes in StatusClient).
 const maxConfigFileBytes = 1 << 20
 
-// resolveConfigPath re-validates a service-declared config path against live
+// ResolveConfigPath re-validates a service-declared config path against live
 // filesystem state: after symlink eval it must be a regular file, within
 // the size cap, and its resolved real path must stay within allowedRoot
 // (the service's WorkingDir when set, else the config file's own
@@ -29,7 +28,7 @@ const maxConfigFileBytes = 1 << 20
 // downstream trusts. Returns the validated os.FileInfo so callers can
 // re-verify (os.SameFile) that what they open is what was validated here,
 // closing the stat->open TOCTOU window.
-func resolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, os.FileInfo, error) {
+func ResolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, os.FileInfo, error) {
 	if decl == nil {
 		return "", nil, fmt.Errorf("service declares no config file")
 	}
@@ -67,12 +66,12 @@ func resolveConfigPath(decl *bridge.ConfigDecl, allowedRoot string) (string, os.
 	return real, info, nil
 }
 
-// readConfigFile returns the file's raw bytes as opaque text -- comments and
+// ReadConfigFile returns the file's raw bytes as opaque text -- comments and
 // key order are preserved because relay never round-trips through a struct.
-// want is the FileInfo resolveConfigPath validated; the opened descriptor is
+// want is the FileInfo ResolveConfigPath validated; the opened descriptor is
 // checked against it with os.SameFile so a path swapped to a different file
 // between resolve and open is rejected rather than read.
-func readConfigFile(realPath string, want os.FileInfo) ([]byte, error) {
+func ReadConfigFile(realPath string, want os.FileInfo) ([]byte, error) {
 	f, err := os.Open(realPath)
 	if err != nil {
 		return nil, err
@@ -93,10 +92,10 @@ func readConfigFile(realPath string, want os.FileInfo) ([]byte, error) {
 	return data, nil
 }
 
-// validateConfigText checks that edited text parses per format before any
+// ValidateConfigText checks that edited text parses per format before any
 // write. Comments survive on disk only because the caller writes the
 // ORIGINAL edited bytes -- relay does not re-marshal here.
-func validateConfigText(text []byte, format string) error {
+func ValidateConfigText(text []byte, format string) error {
 	if int64(len(text)) > maxConfigFileBytes {
 		return fmt.Errorf("config text exceeds %d byte cap", maxConfigFileBytes)
 	}
@@ -109,9 +108,9 @@ func validateConfigText(text []byte, format string) error {
 	}
 }
 
-// writeConfigFile atomically writes edited config text, preserving the file's
+// WriteConfigFile atomically writes edited config text, preserving the file's
 // existing mode. Caps the write as a final resource-exhaustion guard.
-func writeConfigFile(realPath string, text []byte, perm os.FileMode) error {
+func WriteConfigFile(realPath string, text []byte, perm os.FileMode) error {
 	if int64(len(text)) > maxConfigFileBytes {
 		return fmt.Errorf("refusing to write %d bytes (cap %d)", len(text), maxConfigFileBytes)
 	}

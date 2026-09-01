@@ -5,7 +5,7 @@ package main
 // these tests focus on the envelope — status codes, request/response shape —
 // rather than re-proving validation and restart semantics ServiceOps already
 // covers. svcRecorder (ipc_services_test.go) is reused as the fake
-// ServiceManager rather than duplicated.
+// service.Manager rather than duplicated.
 
 import (
 	"bytes"
@@ -19,9 +19,10 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
-func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (*httptest.Server, config.SettingsStore) {
+func newServiceRoutesServer(t *testing.T, reg service.Manager, onChange func()) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
 	ops := &ServiceOps{Store: store, Registry: reg, OnChange: onChange, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
