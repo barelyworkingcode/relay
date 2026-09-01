@@ -15,14 +15,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-func acsNewAuditRecorder(t *testing.T) *AuditRecorder {
+func acsNewAuditRecorder(t *testing.T) *audit.AuditRecorder {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit", "toolcalls.jsonl")
-	rec, err := NewAuditRecorder(&config.AuditConfig{}, path)
+	rec, err := audit.NewAuditRecorder(&config.AuditConfig{}, path, openAuditWriter)
 	if err != nil {
 		t.Fatalf("NewAuditRecorder: %v", err)
 	}
@@ -89,9 +90,9 @@ func TestAcsControlDecision_ClassRefusalRecordsCredID_UnknownBearerRecordsEmpty(
 	}
 
 	events := readLoggedEvents(t, rec)
-	var control []AuditEvent
+	var control []audit.AuditEvent
 	for _, ev := range events {
-		if ev.Event == AuditEventControlDecision {
+		if ev.Event == audit.AuditEventControlDecision {
 			control = append(control, ev)
 		}
 	}
@@ -100,8 +101,8 @@ func TestAcsControlDecision_ClassRefusalRecordsCredID_UnknownBearerRecordsEmpty(
 	}
 
 	classRefusal := control[0]
-	if classRefusal.Outcome != AuditOutcomeDenied {
-		t.Fatalf("class-refusal outcome = %q, want %q", classRefusal.Outcome, AuditOutcomeDenied)
+	if classRefusal.Outcome != audit.AuditOutcomeDenied {
+		t.Fatalf("class-refusal outcome = %q, want %q", classRefusal.Outcome, audit.AuditOutcomeDenied)
 	}
 	if classRefusal.Actor.CredID != cred.ID {
 		t.Fatalf("class-refusal CredID = %q, want the resolved credential's id %q", classRefusal.Actor.CredID, cred.ID)
@@ -155,12 +156,12 @@ func TestAcsControlDecision_TableRow_ShowsMethodPathClassTransportCredID_NoLeak(
 
 	events := readLoggedEvents(t, rec)
 	ev := onlyEvent(t, events)
-	if ev.Event != AuditEventControlDecision {
-		t.Fatalf("event = %q, want %q", ev.Event, AuditEventControlDecision)
+	if ev.Event != audit.AuditEventControlDecision {
+		t.Fatalf("event = %q, want %q", ev.Event, audit.AuditEventControlDecision)
 	}
 
 	var buf bytes.Buffer
-	writeAuditTable(&buf, []AuditEvent{ev}, false)
+	writeAuditTable(&buf, []audit.AuditEvent{ev}, false)
 	rendered := buf.String()
 
 	for _, want := range []string{"POST", "/api/enrolments", "class=grant", "transport=tcp", cred.ID} {

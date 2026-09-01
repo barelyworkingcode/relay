@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -243,7 +244,7 @@ func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing
 			t.Errorf("record %d recorded a grant the profile does not hold", i)
 		}
 	}
-	if events[1].Outcome != AuditOutcomeDenied {
+	if events[1].Outcome != audit.AuditOutcomeDenied {
 		t.Errorf("the refusal was recorded as %q", events[1].Outcome)
 	}
 	line, err := json.Marshal(events[1])

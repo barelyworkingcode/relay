@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"strings"
@@ -202,7 +203,7 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	dir := t.TempDir()
-	rec, err := NewAuditRecorder(&config.AuditConfig{}, dir+"/audit.jsonl")
+	rec, err := audit.NewAuditRecorder(&config.AuditConfig{}, dir+"/audit.jsonl", openAuditWriter)
 	if err != nil {
 		t.Fatalf("NewAuditRecorder: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	restarted := make(chan struct{})
 	var once sync.Once
 	m.SetHealthObserver(func(ev McpHealthEvent) {
-		rec.RecordMcpSupervision(ev)
+		recordMcpSupervision(rec, ev)
 		if ev.State == McpHealthRestarted {
 			once.Do(func() { close(restarted) })
 		}
@@ -238,13 +239,13 @@ func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	}
 	rec.Flush()
 
-	events := rec.Query(AuditQuery{McpID: "mcp-audited"})
-	var down, up *AuditEvent
+	events := rec.Query(audit.AuditQuery{McpID: "mcp-audited"})
+	var down, up *audit.AuditEvent
 	for i := range events {
 		switch events[i].Event {
-		case AuditEventMcpDown:
+		case audit.AuditEventMcpDown:
 			down = &events[i]
-		case AuditEventMcpUp:
+		case audit.AuditEventMcpUp:
 			up = &events[i]
 		}
 	}
@@ -254,18 +255,18 @@ func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	if up == nil {
 		t.Fatalf("no mcp_up record for a child that came back; got %d events", len(events))
 	}
-	if down.Outcome != AuditOutcomeError || down.Supervision != McpHealthDown {
+	if down.Outcome != audit.AuditOutcomeError || down.Supervision != McpHealthDown {
 		t.Errorf("mcp_down record = outcome %q supervision %q", down.Outcome, down.Supervision)
 	}
 	if down.Error == "" {
 		t.Error("mcp_down record names no cause")
 	}
-	if up.Outcome != AuditOutcomeOK || up.Supervision != McpHealthRestarted {
+	if up.Outcome != audit.AuditOutcomeOK || up.Supervision != McpHealthRestarted {
 		t.Errorf("mcp_up record = outcome %q supervision %q", up.Outcome, up.Supervision)
 	}
-	for _, ev := range []*AuditEvent{down, up} {
-		if ev.Actor.Kind != AuditActorRelay {
-			t.Errorf("%s actor kind = %q, want %q", ev.Event, ev.Actor.Kind, AuditActorRelay)
+	for _, ev := range []*audit.AuditEvent{down, up} {
+		if ev.Actor.Kind != audit.AuditActorRelay {
+			t.Errorf("%s actor kind = %q, want %q", ev.Event, ev.Actor.Kind, audit.AuditActorRelay)
 		}
 		if ev.Actor.ProjectID != "" {
 			t.Errorf("%s attributes a project (%q) to a record about relay itself", ev.Event, ev.Actor.ProjectID)

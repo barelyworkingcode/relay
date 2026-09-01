@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
@@ -311,7 +312,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	// holds the private key — so deleting the stored record is the only thing
 	// that makes this passkey unable to sign in, and therefore the only real
 	// refusal available.
-	if auditErr := recordIssuance(lr.issuance, CredentialIssuance{
+	if auditErr := recordIssuance(lr.issuance, audit.CredentialIssuance{
 		Credential: auditCredentialPasskey,
 		Subject:    id,
 		Name:       passkey.Name,
@@ -403,11 +404,11 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 	// The token is withheld when the mint cannot be recorded: it has not left
 	// this process yet, and a credential whose secret nobody was given
 	// authenticates nothing. The inert record is swept by its own expiry.
-	if auditErr := recordIssuance(lr.issuance, CredentialIssuance{
+	if auditErr := recordIssuance(lr.issuance, audit.CredentialIssuance{
 		Credential: auditCredentialAPI,
 		Subject:    credID,
 		Name:       loginCredentialPrefix + abbreviatePasskeyID(id),
-		Grants:     classStrings(loginCredentialClasses),
+		Grants:     audit.ClassStrings(loginCredentialClasses),
 		Via:        auditViaHTTP,
 	}); auditErr != nil {
 		lr.recordLoginOutcome("", false, auditErr)
@@ -464,7 +465,7 @@ func (lr *loginRoutes) recordLoginOutcome(credID string, allowed bool, err error
 		if errors.Is(err, errWebAuthnRateLimited) {
 			return
 		}
-		reason, _ = capControlString(loginAuditReason(err), loginAuditMaxReasonBytes)
+		reason, _ = audit.CapControlString(loginAuditReason(err), loginAuditMaxReasonBytes)
 	}
 	lr.auditor.RecordDecision(control.ControlDecision{
 		Method:    http.MethodPost,

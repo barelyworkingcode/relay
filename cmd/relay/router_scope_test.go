@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -52,7 +53,7 @@ func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *
 	}
 
 	events := readLoggedEvents(t, rec)
-	if len(events) != 2 || events[0].Outcome != AuditOutcomeDenied {
+	if len(events) != 2 || events[0].Outcome != audit.AuditOutcomeDenied {
 		t.Fatalf("scope refusal recorded as %+v", events[0].Outcome)
 	}
 }
@@ -211,14 +212,14 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 			opts: profileOpts{kind: config.ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
-			outcome: AuditOutcomeDenied,
+			outcome: audit.AuditOutcomeDenied,
 		},
 		{
 			name: "a mutating tool under a read grant", tool: "mail_send",
 			opts: profileOpts{kind: config.ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
-			outcome: AuditOutcomeDenied,
+			outcome: audit.AuditOutcomeDenied,
 		},
 	}
 	for _, tc := range cases {
@@ -255,8 +256,8 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 			t.Fatal("a call with no scope value was allowed")
 		}
 		ev := lastEvent(t, rec)
-		if ev.Outcome != AuditOutcomeDenied {
-			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
+		if ev.Outcome != audit.AuditOutcomeDenied {
+			t.Fatalf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomeDenied)
 		}
 		if ev.Access != config.AccessWrite {
 			t.Errorf("access = %q, want %q", ev.Access, config.AccessWrite)
@@ -287,8 +288,8 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 			t.Fatal("the call over the budget succeeded")
 		}
 		ev := lastEvent(t, rec)
-		if ev.Outcome != AuditOutcomeThrottled {
-			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeThrottled)
+		if ev.Outcome != audit.AuditOutcomeThrottled {
+			t.Fatalf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomeThrottled)
 		}
 		if ev.Access != config.AccessRead || string(ev.Scope["mail_accounts"]) != `["Bob"]` {
 			t.Errorf("throttled record carried access=%q scope=%v, want the authority in force", ev.Access, ev.Scope)
@@ -328,8 +329,8 @@ func TestAudit_ScopeViolationIsAFieldAndNotAnOutcome(t *testing.T) {
 			if ev.ScopeViolation != tc.want {
 				t.Errorf("scope_violation = %v, want %v", ev.ScopeViolation, tc.want)
 			}
-			if strings.Contains(tc.result, `"isError":true`) && ev.Outcome != AuditOutcomeToolError {
-				t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeToolError)
+			if strings.Contains(tc.result, `"isError":true`) && ev.Outcome != audit.AuditOutcomeToolError {
+				t.Errorf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomeToolError)
 			}
 		})
 	}
@@ -353,9 +354,9 @@ func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
 		t.Fatalf("scoped remote call refused: %s %s", resp.Type, resp.Message)
 	}
 	events := readLoggedEvents(t, f.audit)
-	var intent *AuditEvent
+	var intent *audit.AuditEvent
 	for i := range events {
-		if events[i].Phase == AuditPhaseIntent {
+		if events[i].Phase == audit.AuditPhaseIntent {
 			intent = &events[i]
 		}
 	}
@@ -463,7 +464,7 @@ func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *t
 	// omitempty on a map is defined by length, so it treats a nil and an
 	// empty map identically — the distinction has to survive encoding/json,
 	// not just live as a Go nil check.
-	blob, err := json.Marshal(AuditEvent{Access: config.AccessRead, Scope: got})
+	blob, err := json.Marshal(audit.AuditEvent{Access: config.AccessRead, Scope: got})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -487,7 +488,7 @@ func TestScopeFromMeta_PopulatedValueIsCarried(t *testing.T) {
 // as long as the field is not `omitempty` — scopeFromMeta depends on this to
 // keep "no scope declared" and "declared but empty" distinguishable on the wire.
 func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
-	absent, err := json.Marshal(AuditEvent{Access: "read"})
+	absent, err := json.Marshal(audit.AuditEvent{Access: "read"})
 	if err != nil {
 		t.Fatalf("marshal absent: %v", err)
 	}
@@ -495,7 +496,7 @@ func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
 		t.Errorf("absent scope marshaled as %s, want \"scope\":null", absent)
 	}
 
-	empty, err := json.Marshal(AuditEvent{Access: "read", Scope: map[string]json.RawMessage{}})
+	empty, err := json.Marshal(audit.AuditEvent{Access: "read", Scope: map[string]json.RawMessage{}})
 	if err != nil {
 		t.Fatalf("marshal empty: %v", err)
 	}
@@ -503,7 +504,7 @@ func TestAuditEvent_ScopeAbsentVsEmptyMarshalDifferently(t *testing.T) {
 		t.Errorf("empty scope marshaled as %s, want \"scope\":{}", empty)
 	}
 
-	populated, err := json.Marshal(AuditEvent{Access: "read", Scope: map[string]json.RawMessage{
+	populated, err := json.Marshal(audit.AuditEvent{Access: "read", Scope: map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	}})
 	if err != nil {

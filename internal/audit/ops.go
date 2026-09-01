@@ -1,4 +1,4 @@
-package main
+package audit
 
 import (
 	"encoding/json"
@@ -10,12 +10,12 @@ import (
 )
 
 var (
-	// errAuditNotFound exists for symmetry with the other ADR-014 slices and
+	// ErrAuditNotFound exists for symmetry with the other ADR-014 slices and
 	// the shared status mapper's shape; nothing in this read-only slice
 	// currently returns it, because none of its three routes name a resource
 	// by id.
-	errAuditNotFound = errors.New("audit resource not found")
-	errAuditInvalid  = errors.New("invalid audit query")
+	ErrAuditNotFound = errors.New("audit resource not found")
+	ErrAuditInvalid  = errors.New("invalid audit query")
 )
 
 // Carries the reason text verbatim, the same trick serviceValidationError and
@@ -24,11 +24,16 @@ var (
 type auditValidationError struct{ reason string }
 
 func (e *auditValidationError) Error() string        { return e.reason }
-func (e *auditValidationError) Is(target error) bool { return target == errAuditInvalid }
+func (e *auditValidationError) Is(target error) bool { return target == ErrAuditInvalid }
 
-// recorder is nil-safe so a caller can derive an IssuanceAuditor from a slice
+// Recorder is nil-safe so a caller can derive an IssuanceAuditor from a slice
 // that may itself be absent, without a second nil check at every call site.
-func (o *AuditOps) recorder() *AuditRecorder {
+//
+// Exported only because cmd/relay's frontend_server.go needs it to build
+// issuanceAuditorOrNil(auditOps.Recorder()) — main's IssuanceAuditor stays in
+// main (it is the gate-facing half of issuance), so there is no way for it to
+// reach o.Audit without this.
+func (o *AuditOps) Recorder() *AuditRecorder {
 	if o == nil {
 		return nil
 	}
@@ -60,12 +65,12 @@ var auditValidKinds = map[string]bool{
 	AuditActorOperator: true,
 }
 
-// auditQueryFields is the transport-agnostic filter shape behind both doors:
+// AuditQueryFields is the transport-agnostic filter shape behind both doors:
 // the IPC query message embeds AuditQuery directly and ipcQueryAudit
 // translates it here, while GET /api/audit builds one from URL query params.
 // JSON tags mirror AuditQuery's because the settings UI's JS already builds
 // its query_audit payload against that spelling.
-type auditQueryFields struct {
+type AuditQueryFields struct {
 	ProjectID string `json:"project_id,omitempty"`
 	McpID     string `json:"mcp_id,omitempty"`
 	Outcome   string `json:"outcome,omitempty"`
@@ -78,8 +83,8 @@ type auditQueryFields struct {
 	Deep bool `json:"deep,omitempty"`
 }
 
-func auditFieldsFromQuery(q AuditQuery) auditQueryFields {
-	return auditQueryFields{
+func AuditFieldsFromQuery(q AuditQuery) AuditQueryFields {
+	return AuditQueryFields{
 		ProjectID: q.ProjectID,
 		McpID:     q.McpID,
 		Outcome:   q.Outcome,
@@ -91,7 +96,7 @@ func auditFieldsFromQuery(q AuditQuery) auditQueryFields {
 	}
 }
 
-func (f auditQueryFields) toQuery() AuditQuery {
+func (f AuditQueryFields) toQuery() AuditQuery {
 	return AuditQuery{
 		ProjectID: f.ProjectID,
 		McpID:     f.McpID,
@@ -104,7 +109,7 @@ func (f auditQueryFields) toQuery() AuditQuery {
 	}
 }
 
-func (f auditQueryFields) validate() error {
+func (f AuditQueryFields) validate() error {
 	if f.Limit < 0 {
 		return invalidAudit(fmt.Sprintf("limit must be >= 0, got %d", f.Limit))
 	}
@@ -131,7 +136,7 @@ type AuditOps struct {
 // erroring — matching the IPC handler this replaces, which is careful to
 // distinguish "no calls yet" from "not logging" (see auditStatus) rather
 // than reporting the latter as a request failure.
-func (o *AuditOps) Query(f auditQueryFields) ([]AuditEvent, error) {
+func (o *AuditOps) Query(f AuditQueryFields) ([]AuditEvent, error) {
 	if err := f.validate(); err != nil {
 		return nil, err
 	}
@@ -151,12 +156,12 @@ func (o *AuditOps) Query(f auditQueryFields) ([]AuditEvent, error) {
 // default, same as the IPC handler this replaces.
 //
 // The destination directory is always the audit log's own directory and the
-// filename is generated here from the current time — auditQueryFields carries
+// filename is generated here from the current time — AuditQueryFields carries
 // no path field, so a caller has no channel through which to influence where
 // the file lands. This is deliberate: the audit log is the most sensitive
 // read surface in the product, and an export path built from caller input
 // would be a traversal write primitive reachable over HTTP.
-func (o *AuditOps) Export(f auditQueryFields) (string, error) {
+func (o *AuditOps) Export(f AuditQueryFields) (string, error) {
 	if err := f.validate(); err != nil {
 		return "", err
 	}

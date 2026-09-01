@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
@@ -12,7 +13,7 @@ import (
 // operator is entitled to both.
 func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 	allowExternal := false
-	line, ok := auditAuthorityLine(AuditEvent{
+	line, ok := auditAuthorityLine(audit.AuditEvent{
 		Access:        config.AccessWrite,
 		AllowExternal: &allowExternal,
 		Scope:         map[string]json.RawMessage{"allowed_dirs": json.RawMessage(`["/"]`)},
@@ -27,7 +28,7 @@ func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 		t.Errorf("the authority line does not flag the filesystem root: %q", line)
 	}
 
-	bounded, _ := auditAuthorityLine(AuditEvent{
+	bounded, _ := auditAuthorityLine(audit.AuditEvent{
 		Access:        config.AccessWrite,
 		AllowExternal: &allowExternal,
 		Scope:         map[string]json.RawMessage{"allowed_dirs": json.RawMessage(`["/Users/me/project"]`)},

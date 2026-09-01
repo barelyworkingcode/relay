@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -210,16 +211,16 @@ type loginCodeView struct {
 // internal/enrolment's: `relay login` calls them directly, and this is how the
 // WebView door reaches the same ones.
 //
-// Every method is nil-safe, the discipline AuditRecorder follows. A nil core
+// Every method is nil-safe, the discipline audit.AuditRecorder follows. A nil core
 // means the tray wired nothing here, and declining one IPC message is the
 // right failure for that: the WebView's messages all arrive on one thread, so
 // a panic in any handler takes every other tab down with it.
 type LoginOps struct {
 	Store config.SettingsStore
 	// Audit records the issuance and revocation this core performs. Nil-safe
-	// like every AuditRecorder method; nil reads as "auditing is off", which
+	// like every audit.AuditRecorder method; nil reads as "auditing is off", which
 	// records nothing and refuses nothing.
-	Audit *AuditRecorder
+	Audit *audit.AuditRecorder
 	// Gate is the presence check MintBootstrap and RevokePasskey demand
 	// before they touch the store (ADR-017 decisions 3 and 4). A nil Gate
 	// refuses both rather than allowing either — see requireGate.
@@ -378,12 +379,12 @@ func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
 	if err != nil {
 		return config.APICredential{}, err
 	}
-	if err := recordIssuance(o.auditor(), CredentialIssuance{
+	if err := recordIssuance(o.auditor(), audit.CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialAPI,
 		Subject:    removed.ID,
 		Name:       removed.Name,
-		Grants:     classStrings(removed.Classes),
+		Grants:     audit.ClassStrings(removed.Classes),
 		Via:        auditViaIPC,
 	}); err != nil {
 		slog.Error("login session signed out but not recorded in the audit log", "id", removed.ID, "error", err)

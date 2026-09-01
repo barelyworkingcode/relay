@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -43,7 +44,7 @@ type remoteFixture struct {
 	dir     string
 	store   config.SettingsStore
 	router  *appRouter
-	audit   *AuditRecorder
+	audit   *audit.AuditRecorder
 	server  *RemoteServer
 	mgr     *ExternalMcpManager
 	project config.Project
@@ -444,7 +445,7 @@ func TestRemoteServer_EnrolledClientListsToolsAndCallsTool(t *testing.T) {
 		t.Fatal("a remote tool call was not recorded at all")
 	}
 	last := events[len(events)-1]
-	if last.Actor.Kind != AuditActorRemote || last.Actor.ClientID != "hermes-mail" {
+	if last.Actor.Kind != audit.AuditActorRemote || last.Actor.ClientID != "hermes-mail" {
 		t.Errorf("actor = %+v, want the enrolled client attested from the certificate", last.Actor)
 	}
 	if last.Actor.Fingerprint != f.bundle.Enrolment.Fingerprint {
@@ -496,7 +497,7 @@ func TestRemoteServer_CSRSignedClientListsToolsAndCallsTool(t *testing.T) {
 		t.Fatal("a remote tool call was not recorded at all")
 	}
 	last := events[len(events)-1]
-	if last.Actor.Kind != AuditActorRemote || last.Actor.ClientID != "hermes-mail" {
+	if last.Actor.Kind != audit.AuditActorRemote || last.Actor.ClientID != "hermes-mail" {
 		t.Errorf("actor = %+v, want the CSR-signed client attested from the certificate", last.Actor)
 	}
 	if last.Actor.Fingerprint != f.bundle.Enrolment.Fingerprint {
@@ -1063,9 +1064,9 @@ func TestRemoteServer_BudgetIsEnforcedThroughTheListener(t *testing.T) {
 	// legitimate and the pattern of use was not" is a different signal from
 	// denied (never granted) or tool_error (refused inside the MCP).
 	events := readLoggedEvents(t, f.audit)
-	var throttled *AuditEvent
+	var throttled *audit.AuditEvent
 	for i := range events {
-		if events[i].Outcome == AuditOutcomeThrottled {
+		if events[i].Outcome == audit.AuditOutcomeThrottled {
 			throttled = &events[i]
 			break
 		}
@@ -1073,7 +1074,7 @@ func TestRemoteServer_BudgetIsEnforcedThroughTheListener(t *testing.T) {
 	if throttled == nil {
 		t.Fatal("the throttled call produced no audit record with outcome throttled")
 	}
-	if throttled.Actor.Kind != AuditActorRemote || throttled.Actor.ClientID != "hermes-mail" {
+	if throttled.Actor.Kind != audit.AuditActorRemote || throttled.Actor.ClientID != "hermes-mail" {
 		t.Errorf("throttled actor = %+v, want the attested remote client", throttled.Actor)
 	}
 	if throttled.Actor.Fingerprint != f.bundle.Enrolment.Fingerprint {

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -227,9 +228,9 @@ func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--cli-admin"})
 
 	events := aiParse(t, aiLogText(t))
-	var onRecords []AuditEvent
+	var onRecords []audit.AuditEvent
 	for _, ev := range events {
-		if ev.Event == AuditEventConfigChange && ev.Subject == "hermes-mail" {
+		if ev.Event == audit.AuditEventConfigChange && ev.Subject == "hermes-mail" {
 			onRecords = append(onRecords, ev)
 		}
 	}
@@ -249,9 +250,9 @@ func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 
 	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--cli-admin=false"})
 	events = aiParse(t, aiLogText(t))
-	var offRecords []AuditEvent
+	var offRecords []audit.AuditEvent
 	for _, ev := range events {
-		if ev.Event == AuditEventConfigChange && ev.Subject == "hermes-mail" && slices.Contains(ev.Grants, "cli_admin=off") {
+		if ev.Event == audit.AuditEventConfigChange && ev.Subject == "hermes-mail" && slices.Contains(ev.Grants, "cli_admin=off") {
 			offRecords = append(offRecords, ev)
 		}
 	}

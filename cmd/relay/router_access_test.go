@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -276,10 +277,10 @@ func TestCallTool_ReadProfileDeniesAMutatingToolAndAuditsItAsDenied(t *testing.T
 	if len(events) != 2 {
 		t.Fatalf("expected 2 audit records, got %d", len(events))
 	}
-	if events[0].Outcome != AuditOutcomeDenied {
-		t.Errorf("refusal recorded as %q, want %q — relay made this decision", events[0].Outcome, AuditOutcomeDenied)
+	if events[0].Outcome != audit.AuditOutcomeDenied {
+		t.Errorf("refusal recorded as %q, want %q — relay made this decision", events[0].Outcome, audit.AuditOutcomeDenied)
 	}
-	if events[1].Outcome != AuditOutcomeOK || events[1].Access != config.AccessRead {
+	if events[1].Outcome != audit.AuditOutcomeOK || events[1].Access != config.AccessRead {
 		t.Errorf("permitted call recorded as outcome=%q access=%q", events[1].Outcome, events[1].Access)
 	}
 }

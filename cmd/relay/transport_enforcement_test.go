@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
@@ -47,7 +48,7 @@ type teServer struct {
 }
 
 // teNewServer wires a real FrontendServer -- real ServiceOps/EnrolmentOps/
-// AuditOps/McpOps over store, a real 0600 Unix socket, and a real loopback
+// audit.AuditOps/McpOps over store, a real 0600 Unix socket, and a real loopback
 // TCP listener via ListenLoopback -- so a test here exercises
 // registerFrontendRoutes exactly as frontend_server.go calls it, not a
 // synthetic mux. authz is passed straight to NewFrontendServer; nil (like
@@ -62,7 +63,7 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, OnChange: func() { counters.serviceChanges++ }}
 	enrolOps := &EnrolmentOps{Store: store, OnChange: func() { counters.enrolmentChanges++ }}
-	auditOps := &AuditOps{}
+	auditOps := &audit.AuditOps{}
 	mcpOps := &McpOps{Store: store, Ctx: context.Background(), OnChange: func() { counters.mcpChanges++ }}
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	extMgr := NewExternalMcpManager(nil)

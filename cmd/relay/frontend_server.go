@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -170,7 +171,7 @@ type frontendRouteDeps struct {
 	onProjectsChanged ProjectsChangedFn
 	ops               *ServiceOps
 	enrolmentOps      *EnrolmentOps
-	auditOps          *AuditOps
+	auditOps          *audit.AuditOps
 	mcpOps            *McpOps
 	projectOps        *ProjectOps
 	enhanced          *EnhancedServiceRegistry
@@ -256,7 +257,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 //
 // auditOps is ops's counterpart for the Tool Calls tab (ADR-014): the same
 // instance ipc_audit.go's handlers use, so a query run from curl sees
-// identical redaction to one run from the tray. Its embedded *AuditRecorder
+// identical redaction to one run from the tray. Its embedded *audit.AuditRecorder
 // is nil-safe and degrades to an empty result when auditing is off — nothing
 // here needs to special-case that.
 //
@@ -281,7 +282,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -305,7 +306,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		mcpOps:            mcpOps,
 		projectOps:        projectOps,
 		enhanced:          enhanced,
-		issuance:          issuanceAuditorOrNil(auditOps.recorder()),
+		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
 	}
 
 	ensureFrontendTokenIsCredential(store, frontend.Token)

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -93,7 +94,7 @@ func countingMock(result string) (*mockMcpConn, func() int) {
 // budgetRouter builds a router whose settings hold one enrolment per entry in
 // budgets, stored VERBATIM — no normalization — so a zero budget can be proven
 // not to mean "unlimited" on the read path rather than only on the write path.
-func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.EnrolmentBudget) (*appRouter, *AuditRecorder, *fakeClock) {
+func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.EnrolmentBudget) (*appRouter, *audit.AuditRecorder, *fakeClock) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
@@ -118,7 +119,7 @@ func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.Enr
 }
 
 // lastEvent returns the most recent record on disk.
-func lastEvent(t *testing.T, rec *AuditRecorder) AuditEvent {
+func lastEvent(t *testing.T, rec *audit.AuditRecorder) audit.AuditEvent {
 	t.Helper()
 	events := readLoggedEvents(t, rec)
 	if len(events) == 0 {
@@ -160,7 +161,7 @@ func TestEnrolmentBudget_CallWithinBudgetSucceeds(t *testing.T) {
 		t.Errorf("MCP ran %d times, want 3", calls())
 	}
 	for _, ev := range readLoggedEvents(t, rec) {
-		if ev.Outcome == AuditOutcomeThrottled {
+		if ev.Outcome == audit.AuditOutcomeThrottled {
 			t.Errorf("a call inside the budget was logged as throttled: %+v", ev)
 		}
 	}
@@ -193,16 +194,16 @@ func TestEnrolmentBudget_RateRefusalIsThrottledAndTheMcpNeverRuns(t *testing.T) 
 	}
 
 	ev := lastEvent(t, rec)
-	if ev.Outcome != AuditOutcomeThrottled {
+	if ev.Outcome != audit.AuditOutcomeThrottled {
 		t.Errorf("outcome = %q, want %q — throttled is the only outcome that says the grant was legitimate and the use was not",
-			ev.Outcome, AuditOutcomeThrottled)
+			ev.Outcome, audit.AuditOutcomeThrottled)
 	}
 	// No MCP was reached, so there is no side effect for an intent record to
 	// bracket: the refusal is one record, like a denial.
 	if ev.Phase != "" {
 		t.Errorf("phase = %q, want a single standalone record", ev.Phase)
 	}
-	if ev.Actor.Kind != AuditActorRemote || ev.Actor.ClientID != "hermes-mail" {
+	if ev.Actor.Kind != audit.AuditActorRemote || ev.Actor.ClientID != "hermes-mail" {
 		t.Errorf("refusal is not attributable: kind=%q client=%q", ev.Actor.Kind, ev.Actor.ClientID)
 	}
 	if ev.Actor.ProjectID != "test-project" {
@@ -245,8 +246,8 @@ func TestEnrolmentBudget_VolumeOverrunRefusesTheNextCall(t *testing.T) {
 	if calls() != 1 {
 		t.Errorf("MCP ran %d times, want 1: the second call must be refused before it", calls())
 	}
-	if ev := lastEvent(t, rec); ev.Outcome != AuditOutcomeThrottled {
-		t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeThrottled)
+	if ev := lastEvent(t, rec); ev.Outcome != audit.AuditOutcomeThrottled {
+		t.Errorf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomeThrottled)
 	}
 }
 
@@ -405,7 +406,7 @@ func TestEnrolmentBudget_LocalCallsAreUnbudgeted(t *testing.T) {
 		t.Errorf("local calls created %d ledger entries; they must not be accounted at all", n)
 	}
 	for _, ev := range readLoggedEvents(t, rec) {
-		if ev.Outcome == AuditOutcomeThrottled {
+		if ev.Outcome == audit.AuditOutcomeThrottled {
 			t.Fatalf("a local call was throttled: %+v", ev)
 		}
 	}

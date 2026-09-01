@@ -23,6 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -82,14 +83,14 @@ func aiLogText(t *testing.T) string {
 	return string(data)
 }
 
-func aiParse(t *testing.T, text string) []AuditEvent {
+func aiParse(t *testing.T, text string) []audit.AuditEvent {
 	t.Helper()
-	var out []AuditEvent
+	var out []audit.AuditEvent
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		if line == "" {
 			continue
 		}
-		var ev AuditEvent
+		var ev audit.AuditEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatalf("audit log line is not valid JSON: %v\nline: %s", err, line)
 		}
@@ -100,9 +101,9 @@ func aiParse(t *testing.T, text string) []AuditEvent {
 
 // aiOnly finds the single record of the given event kind naming subject, and
 // fails with the whole set when there is not exactly one.
-func aiOnly(t *testing.T, events []AuditEvent, event, subject string) AuditEvent {
+func aiOnly(t *testing.T, events []audit.AuditEvent, event, subject string) audit.AuditEvent {
 	t.Helper()
-	var found []AuditEvent
+	var found []audit.AuditEvent
 	for _, ev := range events {
 		if ev.Event == event && ev.Subject == subject {
 			found = append(found, ev)
@@ -114,7 +115,7 @@ func aiOnly(t *testing.T, events []AuditEvent, event, subject string) AuditEvent
 	return found[0]
 }
 
-func aiSummarise(events []AuditEvent) string {
+func aiSummarise(events []audit.AuditEvent) string {
 	var b strings.Builder
 	for _, ev := range events {
 		fmt.Fprintf(&b, "\n  %s credential=%q subject=%q grants=%v via=%q", ev.Event, ev.Credential, ev.Subject, ev.Grants, ev.Via)
@@ -142,7 +143,7 @@ func aiRefuseSecrets(t *testing.T, logText string, needles map[string]string) {
 }
 
 // aiGrants renders a record's grant list for an assertion message.
-func aiGrants(ev AuditEvent) string { return strings.Join(ev.Grants, ",") }
+func aiGrants(ev audit.AuditEvent) string { return strings.Join(ev.Grants, ",") }
 
 // ---------------------------------------------------------------------------
 // The CLI doors
@@ -166,7 +167,7 @@ func TestIssuance_CLICredentialMintAndRevokeAreRecorded(t *testing.T) {
 	}
 	cred := creds[0]
 
-	issued := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialIssued, cred.ID)
+	issued := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialIssued, cred.ID)
 	if issued.Credential != auditCredentialAPI {
 		t.Errorf("credential = %q, want %q", issued.Credential, auditCredentialAPI)
 	}
@@ -179,13 +180,13 @@ func TestIssuance_CLICredentialMintAndRevokeAreRecorded(t *testing.T) {
 	if issued.Via != auditViaCLI {
 		t.Errorf("via = %q, want %q", issued.Via, auditViaCLI)
 	}
-	if issued.Actor.Kind != AuditActorOperator {
-		t.Errorf("actor.kind = %q, want %q", issued.Actor.Kind, AuditActorOperator)
+	if issued.Actor.Kind != audit.AuditActorOperator {
+		t.Errorf("actor.kind = %q, want %q", issued.Actor.Kind, audit.AuditActorOperator)
 	}
 
 	aiQuiet(t, func() { credentialRevoke(store, []string{"--id", cred.ID}) })
 
-	revoked := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialRevoked, cred.ID)
+	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, cred.ID)
 	if revoked.Credential != auditCredentialAPI || revoked.Via != auditViaCLI {
 		t.Errorf("revocation record = %+v, want an api_credential revoked via cli", revoked)
 	}
@@ -227,7 +228,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 		enrolCreate(store, []string{"--client-id", "hermes-mail", "--grant", profile.ID})
 	})
 
-	issued := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialIssued, "hermes-mail")
+	issued := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialIssued, "hermes-mail")
 	if issued.Credential != auditCredentialEnrolment {
 		t.Errorf("credential = %q, want %q", issued.Credential, auditCredentialEnrolment)
 	}
@@ -246,7 +247,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	assertNoErr(t, err, "read client key")
 
 	aiQuiet(t, func() { enrolRevoke(store, []string{"--client-id", "hermes-mail"}) })
-	revoked := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialRevoked, "hermes-mail")
+	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, "hermes-mail")
 	if revoked.Credential != auditCredentialEnrolment {
 		t.Errorf("credential = %q, want %q", revoked.Credential, auditCredentialEnrolment)
 	}
@@ -285,7 +286,7 @@ func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
 	if anchor == nil {
 		t.Fatal("login enrol stored no bootstrap anchor")
 	}
-	issued := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialIssued, anchor.Expires)
+	issued := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialIssued, anchor.Expires)
 	if issued.Credential != auditCredentialBootstrap {
 		t.Errorf("credential = %q, want %q", issued.Credential, auditCredentialBootstrap)
 	}
@@ -295,7 +296,7 @@ func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
 
 	passkey := aiStorePasskey(t, store, "pk-cli")
 	aiQuiet(t, func() { loginRevoke(store, []string{"--id", passkey.ID}) })
-	revoked := aiOnly(t, aiParse(t, aiLogText(t)), AuditEventCredentialRevoked, passkey.ID)
+	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, passkey.ID)
 	if revoked.Credential != auditCredentialPasskey || revoked.SubjectName != passkey.Name {
 		t.Errorf("revocation record = %+v, want the passkey and its name", revoked)
 	}
@@ -380,15 +381,15 @@ func TestIssuance_TrayAndSettingsWindowActsAreRecorded(t *testing.T) {
 
 	events := readLoggedEvents(t, rec)
 
-	anchor := aiOnly(t, events, AuditEventCredentialIssued, view.Expires)
+	anchor := aiOnly(t, events, audit.AuditEventCredentialIssued, view.Expires)
 	if anchor.Credential != auditCredentialBootstrap || anchor.Via != auditViaTray {
 		t.Errorf("bootstrap record = %+v, want a bootstrap_code issued via tray", anchor)
 	}
-	revokedKey := aiOnly(t, events, AuditEventCredentialRevoked, passkey.ID)
+	revokedKey := aiOnly(t, events, audit.AuditEventCredentialRevoked, passkey.ID)
 	if revokedKey.Credential != auditCredentialPasskey || revokedKey.Via != auditViaIPC {
 		t.Errorf("passkey record = %+v, want a passkey revoked via ipc", revokedKey)
 	}
-	signedOut := aiOnly(t, events, AuditEventCredentialRevoked, session.ID)
+	signedOut := aiOnly(t, events, audit.AuditEventCredentialRevoked, session.ID)
 	if signedOut.Credential != auditCredentialAPI || signedOut.Via != auditViaIPC {
 		t.Errorf("sign-out record = %+v, want an api_credential revoked via ipc", signedOut)
 	}
@@ -419,9 +420,9 @@ func aiMintLoginSession(store config.SettingsStore) (config.APICredential, strin
 
 // aiRecorderAt builds a real rotating recorder at path, the way the tray's
 // does.
-func aiRecorderAt(t *testing.T, path string, cfg *config.AuditConfig) *AuditRecorder {
+func aiRecorderAt(t *testing.T, path string, cfg *config.AuditConfig) *audit.AuditRecorder {
 	t.Helper()
-	rec, err := NewAuditRecorder(cfg, path)
+	rec, err := audit.NewAuditRecorder(cfg, path, openAuditWriter)
 	assertNoErr(t, err, "NewAuditRecorder")
 	if rec == nil {
 		t.Fatal("NewAuditRecorder returned nil for an enabled config")
@@ -440,13 +441,13 @@ func aiRecorderAt(t *testing.T, path string, cfg *config.AuditConfig) *AuditReco
 type aiHTTPFixture struct {
 	srv    *httptest.Server
 	store  config.SettingsStore
-	rec    *AuditRecorder
+	rec    *audit.AuditRecorder
 	bearer string
 	credID string
 	hash   string
 }
 
-func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHTTPFixture {
+func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *audit.AuditRecorder) *aiHTTPFixture {
 	t.Helper()
 	dir, store := aiHome(t)
 	if rec == nil {
@@ -469,7 +470,7 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHT
 		Mux:       mux,
 		Transport: control.TransportSocket,
 		Authz:     NewCredentialAuthorizer(store),
-		Auditor:   controlAuditorOrNil(rec),
+		Auditor:   audit.ControlAuditorOrNil(rec),
 	}
 	extMgr := NewExternalMcpManager(nil)
 	RegisterEnrolmentRoutes(rr, &EnrolmentOps{Store: store, Gate: allowGate(t), Audit: rec, Issuance: issuance})
@@ -516,7 +517,7 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	events := readLoggedEvents(t, f.rec)
 	credID := f.credID
 
-	enrolled := aiOnly(t, events, AuditEventCredentialIssued, "hermes-http")
+	enrolled := aiOnly(t, events, audit.AuditEventCredentialIssued, "hermes-http")
 	if enrolled.Credential != auditCredentialEnrolment || enrolled.Via != auditViaHTTP {
 		t.Errorf("enrolment record = %+v, want an enrolment issued via http", enrolled)
 	}
@@ -524,12 +525,12 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 		t.Errorf("actor.cred_id = %q, want %q — an HTTP issuance must name the credential that asked", enrolled.Actor.CredID, credID)
 	}
 
-	rotation := aiOnly(t, events, AuditEventCredentialIssued, local.ID)
+	rotation := aiOnly(t, events, audit.AuditEventCredentialIssued, local.ID)
 	if rotation.Credential != auditCredentialProject || rotation.Via != auditViaHTTP {
 		t.Errorf("rotation record = %+v, want a project_token issued via http", rotation)
 	}
 
-	revoked := aiOnly(t, events, AuditEventCredentialRevoked, "hermes-http")
+	revoked := aiOnly(t, events, audit.AuditEventCredentialRevoked, "hermes-http")
 	if revoked.Credential != auditCredentialEnrolment {
 		t.Errorf("revocation record = %+v, want an enrolment revoked", revoked)
 	}
@@ -555,9 +556,9 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	})
 }
 
-func aiHasControlDecision(events []AuditEvent, path string) bool {
+func aiHasControlDecision(events []audit.AuditEvent, path string) bool {
 	for _, ev := range events {
-		if ev.Event == AuditEventControlDecision && ev.Path == path {
+		if ev.Event == audit.AuditEventControlDecision && ev.Path == path {
 			return true
 		}
 	}
@@ -580,13 +581,13 @@ func TestIssuance_LoginCeremonyRecordsThePasskeyAndTheCredential(t *testing.T) {
 		t.Fatalf("want 1 registered passkey, got %d", len(stored))
 	}
 
-	registered := aiOnly(t, events, AuditEventCredentialIssued, stored[0].ID)
+	registered := aiOnly(t, events, audit.AuditEventCredentialIssued, stored[0].ID)
 	if registered.Credential != auditCredentialPasskey || registered.Via != auditViaHTTP {
 		t.Errorf("registration record = %+v, want a passkey issued via http", registered)
 	}
 
 	cred := s.loginCredential()
-	minted := aiOnly(t, events, AuditEventCredentialIssued, cred.ID)
+	minted := aiOnly(t, events, audit.AuditEventCredentialIssued, cred.ID)
 	if minted.Credential != auditCredentialAPI {
 		t.Errorf("credential = %q, want %q", minted.Credential, auditCredentialAPI)
 	}
@@ -615,10 +616,10 @@ func aiHexOf(b []byte) string {
 	return sb.String()
 }
 
-// aiNewLoginServer is lrNewServer with an AuditOps carrying a real recorder,
+// aiNewLoginServer is lrNewServer with an audit.AuditOps carrying a real recorder,
 // which is the one ingredient the login routes take their issuance auditor
 // from. It builds the same lrServer so the ceremony helpers there drive it.
-func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
+func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -630,7 +631,7 @@ func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: sock, Token: "ai-frontend-token"},
 		NewEnhancedServiceRegistry(nil),
-		nil, nil, nil, nil, &AuditOps{Audit: rec},
+		nil, nil, nil, nil, &audit.AuditOps{Audit: rec},
 		&McpOps{Store: store, Ctx: context.Background()},
 		&ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(rec)},
 		NewCredentialAuthorizer(store), auditor,
@@ -665,7 +666,7 @@ func aiNewLoginServer(t *testing.T, rec *AuditRecorder) *lrServer {
 // is fail-closed over — distinct from auditing being off, which is not.
 type aiBrokenAuditor struct{ calls int }
 
-func (a *aiBrokenAuditor) RecordIssuance(CredentialIssuance) error {
+func (a *aiBrokenAuditor) RecordIssuance(audit.CredentialIssuance) error {
 	a.calls++
 	return errors.New("audit write: disk is full")
 }
@@ -714,7 +715,7 @@ func TestIssuance_TrayWithholdsTheLoginCodeWhenTheRecordFails(t *testing.T) {
 	// A recorder over a writer that refuses every write is the "sink exists
 	// and fails" state; a nil recorder would be "auditing is off", which is
 	// deliberately not a refusal.
-	rec := newAuditRecorderWith(resolveAuditConfig(&config.AuditConfig{}), "ai-broken", failingWriteCloser{})
+	rec := audit.NewAuditRecorderWith(audit.ResolveAuditConfig(&config.AuditConfig{}), "ai-broken", failingWriteCloser{})
 	t.Cleanup(rec.Close)
 	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
@@ -758,7 +759,7 @@ func TestIssuance_RecordIssuanceIsANoOpForUngatedCallersWhenAuditingIsOff(t *tes
 	if rec != nil {
 		t.Fatal("openCLIIssuanceRecorder built a recorder while auditing is off")
 	}
-	if err := recordIssuance(issuanceAuditorOrNil(rec), CredentialIssuance{Credential: auditCredentialAPI, Subject: "x"}); err != nil {
+	if err := recordIssuance(issuanceAuditorOrNil(rec), audit.CredentialIssuance{Credential: auditCredentialAPI, Subject: "x"}); err != nil {
 		t.Fatalf("recordIssuance refused while auditing is off: %v", err)
 	}
 }
@@ -804,14 +805,14 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 
 	tray := aiRecorderAt(t, path, cfg)
 	const canary = "ai-tray-canary"
-	assertNoErr(t, tray.RecordIssuance(CredentialIssuance{
+	assertNoErr(t, tray.RecordIssuance(audit.CredentialIssuance{
 		Credential: auditCredentialAPI, Subject: canary, Via: auditViaTray,
 	}), "tray record")
 
 	cli, err := openCLIIssuanceRecorder(store)
 	assertNoErr(t, err, "openCLIIssuanceRecorder")
 	for i := 0; i < 40; i++ {
-		assertNoErr(t, cli.RecordIssuance(CredentialIssuance{
+		assertNoErr(t, cli.RecordIssuance(audit.CredentialIssuance{
 			Credential: auditCredentialAPI,
 			Subject:    fmt.Sprintf("ai-cli-%02d", i),
 			Via:        auditViaCLI,
@@ -831,9 +832,9 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 
 	// Every record, from both processes, is a whole line in the one file.
 	events := aiParse(t, aiLogText(t))
-	aiOnly(t, events, AuditEventCredentialIssued, canary)
+	aiOnly(t, events, audit.AuditEventCredentialIssued, canary)
 	for i := 0; i < 40; i++ {
-		aiOnly(t, events, AuditEventCredentialIssued, fmt.Sprintf("ai-cli-%02d", i))
+		aiOnly(t, events, audit.AuditEventCredentialIssued, fmt.Sprintf("ai-cli-%02d", i))
 	}
 
 	// The cost of never rotating from the CLI, stated as an assertion: the
@@ -843,7 +844,7 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 	// finally comes, the whole file goes with it — CLI records included — so
 	// the overshoot costs a soft cap and never a lost record.
 	for i := 0; i < 200; i++ {
-		assertNoErr(t, tray.RecordIssuance(CredentialIssuance{
+		assertNoErr(t, tray.RecordIssuance(audit.CredentialIssuance{
 			Credential: auditCredentialAPI,
 			Subject:    fmt.Sprintf("ai-tray-after-%03d", i),
 			Via:        auditViaTray,
@@ -857,7 +858,7 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 	}
 	rotated := aiParse(t, string(aiRead(t, path+".1"))+string(aiRead(t, path)))
 	for i := 0; i < 40; i++ {
-		aiOnly(t, rotated, AuditEventCredentialIssued, fmt.Sprintf("ai-cli-%02d", i))
+		aiOnly(t, rotated, audit.AuditEventCredentialIssued, fmt.Sprintf("ai-cli-%02d", i))
 	}
 }
 
@@ -877,15 +878,15 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIssuance_RelayAuditRendersAnIssuanceRowLegibly(t *testing.T) {
-	events := []AuditEvent{
-		issuanceEvent(CredentialIssuance{
+	events := []audit.AuditEvent{
+		audit.IssuanceEvent(audit.CredentialIssuance{
 			Credential: auditCredentialAPI,
 			Subject:    "cred_5e2a",
 			Name:       "ci-deploy",
 			Grants:     []string{"read", "grant"},
 			Via:        auditViaCLI,
 		}),
-		issuanceEvent(CredentialIssuance{
+		audit.IssuanceEvent(audit.CredentialIssuance{
 			Revoked:    true,
 			Credential: auditCredentialEnrolment,
 			Subject:    "hermes-mail",
@@ -924,7 +925,7 @@ func TestIssuance_RelayAuditRendersAnIssuanceRowLegibly(t *testing.T) {
 // whose every field has been stuffed with a value that looks like a secret,
 // proving the row is built from the issuance fields and nothing else.
 func TestIssuance_RenderedRowCarriesNoSecret(t *testing.T) {
-	ev := issuanceEvent(CredentialIssuance{
+	ev := audit.IssuanceEvent(audit.CredentialIssuance{
 		Credential: auditCredentialAPI,
 		Subject:    "cred_5e2a",
 		Name:       "ci-deploy",
@@ -938,7 +939,7 @@ func TestIssuance_RenderedRowCarriesNoSecret(t *testing.T) {
 
 	var buf strings.Builder
 	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	writeAuditTable(w, []AuditEvent{ev}, true)
+	writeAuditTable(w, []audit.AuditEvent{ev}, true)
 	assertNoErr(t, w.Flush(), "flush")
 
 	aiRefuseSecrets(t, buf.String(), map[string]string{

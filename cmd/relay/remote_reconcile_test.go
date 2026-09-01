@@ -286,7 +286,7 @@ func TestRemoteSupervisor_EnablingStartsAListenerAndDisablingStopsIt(t *testing.
 // The safe default has to survive reconciliation, which is the one place it
 // could quietly be lost: an absent block and a block that names an address but
 // omits `enabled` must BOTH stay closed, however many times convergence runs.
-// This is deliberately the opposite of AuditConfig's default — a missing audit
+// This is deliberately the opposite of audit.AuditConfig's default — a missing audit
 // block keeps recording, a missing remote enable opens nothing — because
 // starting a network listener nobody asked for is the failure ADR-010 exists to
 // avoid.

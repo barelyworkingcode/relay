@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
@@ -18,6 +19,18 @@ import (
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
+
+// boolOr is a generic "absent means def" reader for a *bool config field. It
+// is not audit-domain logic — it happens to be needed here and by
+// ipc_enrolments.go, both reading unrelated *bool settings fields, so it
+// stays a small shared helper in main rather than exported from
+// internal/audit (which has its own private copy for the same reason).
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
 
 // defaultRemoteListen binds loopback: reaching relay from a VM must be a
 // deliberate act, never the default outcome of leaving a field unset.
@@ -221,7 +234,7 @@ type RemoteServer struct {
 	router RemoteToolRouter
 	store  config.SettingsStore
 	cfg    resolvedRemoteConfig
-	audit  *AuditRecorder
+	audit  *audit.AuditRecorder
 	// configurer is nil in every deployment that never wires one, and a nil
 	// value means the configuration table is absent — handleRequest treats
 	// every config request type as unknown, fail-closed. Deliberately not a
@@ -250,8 +263,8 @@ func (s *RemoteServer) currentSettings() *config.Settings {
 // remoteAuditingLive requires both halves; neither implies the other. The
 // recorder can die under a listener that started cleanly, independently of
 // settings flipping audit.enabled off in another process.
-func remoteAuditingLive(s *config.Settings, audit *AuditRecorder) bool {
-	return audit.Enabled() && resolveAuditConfig(s.Audit).Enabled
+func remoteAuditingLive(s *config.Settings, rec *audit.AuditRecorder) bool {
+	return rec.Enabled() && audit.ResolveAuditConfig(s.Audit).Enabled
 }
 
 type remoteConn struct {
@@ -260,7 +273,7 @@ type remoteConn struct {
 	fingerprint string
 }
 
-func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces) (*RemoteServer, error) {
+func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *audit.AuditRecorder, configurer RemoteConfigurer, surfaces func() project.McpSurfaces) (*RemoteServer, error) {
 	// freshSettings, not Get(): the operator who just edited settings.json is
 	// the same operator watching the listener come up.
 	settings := config.FreshSettings(store)

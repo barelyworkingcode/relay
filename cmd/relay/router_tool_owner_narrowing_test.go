@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -287,8 +288,8 @@ func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testi
 				t.Fatalf("expected 1 audit record, got %d", len(events))
 			}
 			ev := events[0]
-			if ev.Outcome != AuditOutcomeDenied {
-				t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
+			if ev.Outcome != audit.AuditOutcomeDenied {
+				t.Errorf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomeDenied)
 			}
 			// Naming either collider would blame an MCP that never ran.
 			if ev.McpID != "" {

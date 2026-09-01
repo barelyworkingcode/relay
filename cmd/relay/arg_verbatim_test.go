@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
@@ -143,7 +144,7 @@ func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 	}
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Outcome != AuditOutcomeOK {
+	if ev.Outcome != audit.AuditOutcomeOK {
 		t.Fatalf("outcome = %q (%s)", ev.Outcome, ev.Error)
 	}
 	if strings.Contains(string(ev.Args), replacementUTF8) {
@@ -154,82 +155,6 @@ func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
 	}
 }
 
-func TestRedactArgs_CopiesEverythingItIsNotRedacting(t *testing.T) {
-	cases := []struct{ name, in, want string }{
-		{"lone surrogate survives", `{"content":"a\ud800b"}`, `{"content":"a\ud800b"}`},
-		{"key order survives", `{"zebra":1,"apple":2}`, `{"zebra":1,"apple":2}`},
-		{"duplicate keys survive", `{"dir":"/safe","dir":"/etc"}`, `{"dir":"/safe","dir":"/etc"}`},
-		{"number spelling survives", `{"n":1.0,"big":12345678901234567890}`, `{"n":1.0,"big":12345678901234567890}`},
-		{"whitespace is the one rewrite", "{\n  \"a\" : 1\n}", `{"a":1}`},
-		{"nested values survive", `{"o":{"content":"x\udc00"},"a":[1,"y\ud800"]}`, `{"o":{"content":"x\udc00"},"a":[1,"y\ud800"]}`},
-		{"a bare scalar survives", `"a\ud800b"`, `"a\ud800b"`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, size, truncated := redactArgs(json.RawMessage(tc.in), 4096, nil)
-			if truncated {
-				t.Fatal("unexpectedly truncated")
-			}
-			if size != len(tc.in) {
-				t.Errorf("size = %d, want %d (the size recorded is the size received)", size, len(tc.in))
-			}
-			if string(got) != tc.want {
-				t.Errorf("redactArgs =\n got  %s\n want %s", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRedactArgs_StillReplacesCredentialValues(t *testing.T) {
-	cases := []struct{ name, in, want string }{
-		{"top level", `{"api_key":"sk-1","path":"/tmp"}`, `{"api_key":"[redacted]","path":"/tmp"}`},
-		{"case and substring", `{"MyPassWord":"hunter2"}`, `{"MyPassWord":"[redacted]"}`},
-		{"nested object", `{"cfg":{"token":"t","host":"h"}}`, `{"cfg":{"token":"[redacted]","host":"h"}}`},
-		{"inside an array", `{"list":[{"secret":"s"},{"ok":1}]}`, `{"list":[{"secret":"[redacted]"},{"ok":1}]}`},
-		{"whole subtree", `{"credentials":{"a":1,"b":2}}`, `{"credentials":"[redacted]"}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := redactArgs(json.RawMessage(tc.in), 4096, nil)
-			if string(got) != tc.want {
-				t.Errorf("redactArgs =\n got  %s\n want %s", got, tc.want)
-			}
-		})
-	}
-
-	got, _, _ := redactArgs(json.RawMessage(`{"mailbox":"INBOX"}`), 4096, []string{"mailbox"})
-	if string(got) != `{"mailbox":"[redacted]"}` {
-		t.Errorf("extra redact key ignored: %s", got)
-	}
-}
-
-func TestRedactArgs_StaysBoundedAndParseable(t *testing.T) {
-	big := `{"content":"` + strings.Repeat("x", 5000) + `"}`
-	got, size, truncated := redactArgs(json.RawMessage(big), 128, nil)
-	if !truncated {
-		t.Fatal("an over-cap payload was not marked truncated")
-	}
-	if size != len(big) {
-		t.Errorf("size = %d, want the full %d: the record says how much was sent, not how much was kept", size, len(big))
-	}
-	if len(got) > 160 {
-		t.Errorf("capped record is %d bytes, well past the 128-byte cap", len(got))
-	}
-	var s string
-	if err := json.Unmarshal(got, &s); err != nil {
-		t.Fatalf("a truncated record must still be a valid JSON string, got %s: %v", got, err)
-	}
-
-	got, _, _ = redactArgs(json.RawMessage(`{"broken":`), 4096, nil)
-	if err := json.Unmarshal(got, &s); err != nil || s != `{"broken":` {
-		t.Errorf("malformed arguments = %s, want them recorded verbatim as a JSON string", got)
-	}
-}
-
-// Go's encoder spells a raw U+2028/U+2029 inside a json.RawMessage as
-// `\u2028`/`\u2029` even with SetEscapeHTML(false). `\u2028` decodes to U+2028
-// and to nothing else, so relay has not changed what the document means, only
-// how it was spelled.
 func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addConn(mgr, "peer", newTestMcpConn(t))
@@ -255,39 +180,5 @@ func TestCallTool_UnicodeLineSeparatorsAreReSpelledButNotChanged(t *testing.T) {
 	}
 	if sent.S != arrived.S {
 		t.Errorf("the re-spelling changed the value: %q != %q", arrived.S, sent.S)
-	}
-}
-
-func TestRedactArgs_EdgeShapesStillParse(t *testing.T) {
-	for _, in := range []string{
-		`{}`,
-		`[]`,
-		`{"a":{}}`,
-		`{"a\ud800b":1}`,
-		`{"a\"b":1,"c\\":2}`,
-		`{"api_ke\u0079A":"s"}`,
-		`[[{"token":"t"}],{"n":[1,2]}]`,
-		`null`,
-		`{"deep":{"deeper":{"deepest":{"password":"p","ok":"o"}}}}`,
-	} {
-		got, _, truncated := redactArgs(json.RawMessage(in), 4096, nil)
-		if truncated {
-			t.Errorf("%s: unexpectedly truncated", in)
-			continue
-		}
-		if !json.Valid(got) {
-			t.Errorf("%s: produced invalid JSON: %s", in, got)
-		}
-	}
-
-	// An escape inside a key is compared case-insensitively as the DECODED
-	// key, and written back as the bytes it arrived as.
-	got, _, _ := redactArgs(json.RawMessage(`{"api_ke\u0079A":"s"}`), 4096, nil)
-	if string(got) != `{"api_ke\u0079A":"[redacted]"}` {
-		t.Errorf("escaped key = %s, want the key's own bytes with the value redacted", got)
-	}
-	got, _, _ = redactArgs(json.RawMessage(`{"deep":{"deeper":{"password":"p","ok":"o"}}}`), 4096, nil)
-	if string(got) != `{"deep":{"deeper":{"password":"[redacted]","ok":"o"}}}` {
-		t.Errorf("deep redaction = %s", got)
 	}
 }

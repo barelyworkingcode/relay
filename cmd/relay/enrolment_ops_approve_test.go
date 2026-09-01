@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -531,10 +532,10 @@ func TestEnrolmentOpsRefuse_RemovesTheRecordAndAuditsOneControlDecision(t *testi
 	events := aiParse(t, aiLogText(t))
 	found := false
 	for _, e := range events {
-		if e.Event == AuditEventControlDecision && e.Method == "enrolment.request.refuse" {
+		if e.Event == audit.AuditEventControlDecision && e.Method == "enrolment.request.refuse" {
 			found = true
-			if e.Outcome != AuditOutcomeDenied {
-				t.Errorf("a refusal's outcome = %q, want %q", e.Outcome, AuditOutcomeDenied)
+			if e.Outcome != audit.AuditOutcomeDenied {
+				t.Errorf("a refusal's outcome = %q, want %q", e.Outcome, audit.AuditOutcomeDenied)
 			}
 		}
 	}

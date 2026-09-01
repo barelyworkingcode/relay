@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -162,9 +163,9 @@ type EnrolmentOps struct {
 	// Audit answers whether the tool-call audit log is on. Remote access is
 	// gated on it (ADR-010 decision 5), so the remote-config view reports it
 	// alongside the block's own state, the same pair pushFullSettings has
-	// always sent. Nil-safe like every AuditRecorder method; nil reads as
+	// always sent. Nil-safe like every audit.AuditRecorder method; nil reads as
 	// "auditing is off".
-	Audit *AuditRecorder
+	Audit *audit.AuditRecorder
 	// Issuance, when set, overrides Audit as the sink Create/Update/Revoke
 	// record into and requireIssuanceAuditor checks — see auditor()'s doc
 	// comment. Production leaves this nil.
@@ -635,7 +636,7 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolment.UpdateRequest, 
 	// Reported and not undone, matching the passkey-revoke and login-signout
 	// balance: unlike create, there is no side artifact (a private key
 	// already on disk) that an unrecorded update would leave dangling.
-	if auditErr := recordIssuance(o.auditor(), CredentialIssuance{
+	if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
 		Credential: auditCredentialEnrolment,
 		Subject:    after.ClientID,
 		Grants:     after.ProjectIDs,
@@ -690,7 +691,7 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 	// Reported and not undone: a revocation narrows, and refusing to narrow
 	// one because the log is broken would make a failing disk the reason a
 	// compromised client stays enrolled.
-	if auditErr := recordIssuance(o.auditor(), CredentialIssuance{
+	if auditErr := recordIssuance(o.auditor(), audit.CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialEnrolment,
 		Subject:    revoked.ClientID,
@@ -713,7 +714,7 @@ func (o *EnrolmentOps) auditEnabled() bool {
 // leaves Issuance nil and relies on Audit alone (which RemoteConfig also
 // reads directly, for Enabled() rather than for recording), but a test
 // exercising §7.4's hard dependency needs to inject a sink that fails in a
-// specific way without being a real *AuditRecorder, and Issuance is the
+// specific way without being a real *audit.AuditRecorder, and Issuance is the
 // seam for that.
 func (o *EnrolmentOps) auditor() IssuanceAuditor {
 	if o.Issuance != nil {

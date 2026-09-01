@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -184,7 +185,7 @@ type IPCContext struct {
 	SkillLister SkillLister
 	// Audit backs the Tool Calls tab. Nil when auditing is off; every method
 	// on the recorder is nil-safe, so handlers don't guard on it.
-	Audit *AuditRecorder
+	Audit *audit.AuditRecorder
 	// Ops is the shared core behind both the Services tab and
 	// RegisterServiceRoutes (ADR-014) — the IPC handlers in ipc_services.go
 	// are thin adapters over it.
@@ -196,7 +197,7 @@ type IPCContext struct {
 	// AuditOps is Ops's counterpart for the Tool Calls tab and
 	// RegisterAuditRoutes (ADR-014) — ipc_audit.go's handlers are thin
 	// adapters over it too.
-	AuditOps *AuditOps
+	AuditOps *audit.AuditOps
 	// LoginOps is Ops's counterpart for the Passkeys tab (ADR-016) —
 	// ipc_login.go's handlers are thin adapters over it. Unlike the others
 	// it has no HTTP door at all: registering and revoking a passkey is a

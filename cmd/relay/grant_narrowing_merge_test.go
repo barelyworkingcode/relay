@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
@@ -136,7 +137,7 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 	countConfigChanges := func() int {
 		n := 0
 		for _, e := range readLoggedEvents(t, rec) {
-			if e.Event == AuditEventConfigChange && e.Credential == auditCredentialProjectGrant {
+			if e.Event == audit.AuditEventConfigChange && e.Credential == auditCredentialProjectGrant {
 				n++
 			}
 		}

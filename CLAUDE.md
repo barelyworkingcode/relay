@@ -42,11 +42,14 @@ tokens.go                hashToken, auth sentinel errors
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
 router.go                Bridge auth (service vs project tokens), tool filtering, access mode, scope presence, _meta injection
-audit.go                 Tool-call audit log: event model, async writer, ring, redaction, query
-audit_call.go            Nil-safe per-call event builder used by the router instrumentation
+audit_call.go            Nil-safe per-call event builder used by the router instrumentation; reads AuditRecorder
+                         via RedactCallArgs/PreviewResult rather than its unexported config
 audit_cmd.go             `relay audit` CLI
-audit_issuance.go        credential_issued / credential_revoked: the record every mint and revoke writes,
-                         the CLI's own append-only recorder, and the fail-closed rule for issuance
+audit_start.go           Wires the audit engine to what it does not own: relay's log directory and log rotation
+audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requireIssuanceAuditor (ADR-017 §7.4,
+                         and MUST stay an unqualified identifier in this package — gate_ast_scan_test.go matches
+                         its call sites as a bare *ast.Ident), recordEnrolmentIssued/recordBootstrapIssued/etc.,
+                         and the CLI's own append-only recorder
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
@@ -103,6 +106,22 @@ service/                 Background service supervision: process lifecycle and e
                          spawning. Depends on bridge/config; the frontend channel's lifecycle and log
                          rotation are main's, wired into Registry.FrontendEnv/OpenLog as callbacks so
                          the package never depends on either concrete type.
+audit/                   The tool-call audit log engine: the event/actor/config model, the async
+                         writer, the in-memory ring, byte-level JSON redaction (ADR-012), AuditQuery,
+                         and AuditOps (the read-only core behind both the HTTP and IPC audit doors).
+                         Also the self-contained half of issuance recording (CredentialIssuance,
+                         RecordIssuance, OpenCLIIssuanceRecorder) — the gate-facing half
+                         (IssuanceAuditor, requireIssuanceAuditor, the recordEnrolment/Bootstrap/
+                         ProjectToken/PasskeyIssued helpers) stays in main, because
+                         requireIssuanceAuditor must stay an unqualified identifier for
+                         gate_ast_scan_test.go's AST match to keep seeing its call sites. Depends on
+                         config; log rotation is main's (log_rotate.go, shared with relay's own log
+                         and every service's log) and reaches this package only via the OpenWriter
+                         callback NewAuditRecorder/StartAuditRecorder take, the same pattern
+                         service.Registry.OpenLog uses. The router instrumentation (audit_call.go)
+                         and the CLI/HTTP/IPC surfaces (audit_cmd.go, audit_routes.go, ipc_audit.go)
+                         stay in main, since they reach the router or unexported recorder state
+                         directly.
 ```
 
 ## Projects

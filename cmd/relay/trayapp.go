@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -51,7 +52,7 @@ type App struct {
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
 	// audit is the tool-call recorder. Nil when auditing is disabled or failed
 	// to start; every method on it is nil-safe.
-	audit *AuditRecorder
+	audit *audit.AuditRecorder
 	// settingsOpen gates UI emits on whether the Settings window is up. Written
 	// on the main thread (open/close) but read from background goroutines (the
 	// status poller, HTTP-driven project refresh), so it must be atomic.
@@ -275,12 +276,14 @@ func runTrayApp() {
 	// rather than taking the tray down with it: the recorder is observability,
 	// not an authorization control, and relay is more useful running blind than
 	// not running at all. The Tool Calls tab surfaces the disabled state.
-	audit := startAuditRecorder(store.Get())
-	app.audit = audit
+	// Named rec rather than audit in this scope: a local audit would shadow
+	// the internal/audit package import that the rest of this function needs.
+	rec := startAuditRecorder(store.Get())
+	app.audit = rec
 	// serviceOps is constructed above, before the audit recorder exists, so
 	// its Issuance field is wired here rather than in the literal. Gate was
 	// already set there — the real provider has no such ordering constraint.
-	serviceOps.Issuance = issuanceAuditorOrNil(audit)
+	serviceOps.Issuance = issuanceAuditorOrNil(rec)
 
 	// A dead external MCP used to be invisible: every client got
 	// `read response: EOF` and nothing in relay said the server behind them was
@@ -288,7 +291,7 @@ func runTrayApp() {
 	// abandonment, and this is where those reports become rows in the log an
 	// operator is told to treat as ground truth. Installed here rather than at
 	// construction because the manager is built before the recorder exists.
-	extMgr.SetHealthObserver(audit.RecordMcpSupervision)
+	extMgr.SetHealthObserver(func(ev McpHealthEvent) { recordMcpSupervision(rec, ev) })
 
 	// Create and start bridge server.
 	router := &appRouter{
@@ -297,12 +300,12 @@ func runTrayApp() {
 		services: app.registry,
 		enhanced: enhancedRegistry,
 		onChange: app.onExternalChange,
-		audit:    audit,
+		audit:    rec,
 	}
 	// router implements SkillLister (ListTools); set it on the IPC context
 	// now that it exists so the Projects-tab "Regen Now" button can run.
 	app.ipcCtx.SkillLister = router
-	app.ipcCtx.Audit = audit
+	app.ipcCtx.Audit = rec
 	router.serviceOps = serviceOps
 
 	// credentialOps is admin_op's only door onto CredentialOps (ADR-017
@@ -310,14 +313,14 @@ func runTrayApp() {
 	// and has no Settings tab of its own, so it is wired straight onto the
 	// router rather than threaded through IPCContext the way the other five
 	// cores are.
-	credentialOps := &CredentialOps{Store: store, Gate: presenceGate, Issuance: issuanceAuditorOrNil(audit)}
+	credentialOps := &CredentialOps{Store: store, Gate: presenceGate, Issuance: issuanceAuditorOrNil(rec)}
 	router.credentialOps = credentialOps
 
 	// auditOps is the one core behind both the Tool Calls tab (via
 	// app.ipcCtx.AuditOps) and RegisterAuditRoutes on the frontend server
 	// (ADR-014). Read-only, so unlike serviceOps/enrolmentOps it carries no
 	// OnChange — a query changes nothing another view needs to learn about.
-	auditOps := &AuditOps{Audit: audit}
+	auditOps := &audit.AuditOps{Audit: rec}
 	app.ipcCtx.AuditOps = auditOps
 
 	// enrolmentOps is the one core behind both the Remote Clients tab (via
@@ -327,7 +330,7 @@ func runTrayApp() {
 	// in sync with an enrolment created or revoked from curl.
 	enrolmentOps := &EnrolmentOps{
 		Store: store,
-		Audit: audit,
+		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullSettings)
@@ -344,7 +347,7 @@ func runTrayApp() {
 	// open window in sync with a revoke made from a terminal.
 	loginOps := &LoginOps{
 		Store: store,
-		Audit: audit,
+		Audit: rec,
 		Gate:  presenceGate,
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullSettings)
@@ -364,7 +367,7 @@ func runTrayApp() {
 		Store:           store,
 		Ctx:             ctx,
 		Gate:            presenceGate,
-		Issuance:        issuanceAuditorOrNil(audit),
+		Issuance:        issuanceAuditorOrNil(rec),
 		NotifyReconcile: bridge.SendReconcile,
 		NotifyReloadMcp: bridge.SendReloadMcp,
 		OnChange: func() {
@@ -376,7 +379,7 @@ func runTrayApp() {
 
 	// Live-tail the Tool Calls tab. Fires on the audit writer goroutine, so
 	// hop to main before touching the WebView.
-	audit.SetSink(func(ev AuditEvent) {
+	rec.SetSink(func(ev audit.AuditEvent) {
 		if !app.settingsOpen.Load() {
 			return
 		}
@@ -447,13 +450,13 @@ func runTrayApp() {
 	projectOps := &ProjectOps{
 		Store:    store,
 		Gate:     presenceGate,
-		Issuance: issuanceAuditorOrNil(audit),
+		Issuance: issuanceAuditorOrNil(rec),
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		},
 	}
 	app.ipcCtx.ProjectOps = projectOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, NewCredentialAuthorizer(store), controlAuditorOrNil(audit))
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -511,7 +514,7 @@ func runTrayApp() {
 	// made `remote.listen` the one setting in relay that needed a quit, and
 	// made `audit.enabled: false` a refusal that only held until the next
 	// launch. statusPoller drives the convergence from here on.
-	app.remote = NewRemoteSupervisor(ctx, store, router, audit, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
+	app.remote = NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
 	app.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
 
 	// Wires the Remote Clients tab's Pending requests panel and the tray's

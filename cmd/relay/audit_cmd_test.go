@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
@@ -14,14 +15,14 @@ import (
 func boolPtr(b bool) *bool { return &b }
 
 func TestAuditDetail_MarksScopeViolationEvenWithNoOtherDetail(t *testing.T) {
-	ev := AuditEvent{Outcome: AuditOutcomeToolError, ScopeViolation: true}
+	ev := audit.AuditEvent{Outcome: audit.AuditOutcomeToolError, ScopeViolation: true}
 	if got := auditDetail(ev); got != "scope_violation: true" {
 		t.Errorf("auditDetail = %q, want a bare scope_violation marker", got)
 	}
 }
 
 func TestAuditDetail_ScopeViolationMarkerLeadsExistingDetail(t *testing.T) {
-	ev := AuditEvent{Outcome: AuditOutcomeToolError, ScopeViolation: true, Error: "no such mailbox"}
+	ev := audit.AuditEvent{Outcome: audit.AuditOutcomeToolError, ScopeViolation: true, Error: "no such mailbox"}
 	got := auditDetail(ev)
 	if !strings.HasPrefix(got, "scope_violation: true") {
 		t.Errorf("auditDetail = %q, want the marker first", got)
@@ -32,7 +33,7 @@ func TestAuditDetail_ScopeViolationMarkerLeadsExistingDetail(t *testing.T) {
 }
 
 func TestAuditDetail_OrdinaryToolErrorIsUnmarked(t *testing.T) {
-	ev := AuditEvent{Outcome: AuditOutcomeToolError, Args: json.RawMessage(`{"path":"/tmp/x"}`)}
+	ev := audit.AuditEvent{Outcome: audit.AuditOutcomeToolError, Args: json.RawMessage(`{"path":"/tmp/x"}`)}
 	got := auditDetail(ev)
 	if strings.Contains(got, "scope_violation") {
 		t.Errorf("auditDetail = %q, an ordinary tool_error must not mention scope_violation", got)
@@ -45,7 +46,7 @@ func TestAuditDetail_OrdinaryToolErrorIsUnmarked(t *testing.T) {
 func TestAuditDetail_DeniedRecordShowsWhichLayerRefused(t *testing.T) {
 	// auditDetail must not truncate or otherwise obscure relay's own refusal
 	// message.
-	ev := AuditEvent{Outcome: AuditOutcomeDenied,
+	ev := audit.AuditEvent{Outcome: audit.AuditOutcomeDenied,
 		Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"}
 	got := auditDetail(ev)
 	if got != "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'" {
@@ -72,13 +73,13 @@ func TestAuditScopeSummary_AbsentEmptyAndPopulatedReadDifferently(t *testing.T) 
 func TestAuditAuthorityLine_OmittedWhenNothingWasRecorded(t *testing.T) {
 	// A service token, a list event, or a refusal before an MCP resolved: none
 	// of these ever reach setAuthority, so Access stays "".
-	if _, ok := auditAuthorityLine(AuditEvent{}); ok {
+	if _, ok := auditAuthorityLine(audit.AuditEvent{}); ok {
 		t.Error("authority line rendered for a record with no recorded authority")
 	}
 }
 
 func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
-	ev := AuditEvent{Access: config.AccessRead, AllowExternal: boolPtr(false),
+	ev := audit.AuditEvent{Access: config.AccessRead, AllowExternal: boolPtr(false),
 		Scope: map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)}}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
@@ -95,7 +96,7 @@ func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
 // schema-less MCP still reads scope=(none declared) even though root is
 // populated.
 func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
-	ev := AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true),
+	ev := audit.AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true),
 		McpRoot: "/Users/admin/source/barelyworkingcode/testfolder"}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
@@ -112,7 +113,7 @@ func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
 // Subtle: no root= segment at all, not an empty one that would read as
 // "spawned with an empty root".
 func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
-	ev := AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true)}
+	ev := audit.AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true)}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
 		t.Fatal("authority line was omitted for a record that carried authority")
@@ -125,7 +126,7 @@ func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
 func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 	// AllowExternal is a pointer specifically so "not recorded" and "recorded
 	// false" don't collide; the CLI must keep that distinction visible too.
-	ev := AuditEvent{Access: config.AccessWrite}
+	ev := audit.AuditEvent{Access: config.AccessWrite}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
 		t.Fatal("authority line omitted")
@@ -136,8 +137,8 @@ func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 }
 
 func TestWriteAuditTable_DefaultShapeUnchanged(t *testing.T) {
-	events := []AuditEvent{
-		{Outcome: AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
+	events := []audit.AuditEvent{
+		{Outcome: audit.AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
 			Access: config.AccessRead, AllowExternal: boolPtr(false),
 			Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"},
 	}
@@ -158,8 +159,8 @@ func TestWriteAuditTable_DefaultShapeUnchanged(t *testing.T) {
 }
 
 func TestWriteAuditTable_AuthorityFlagAddsALinePerConfinedCall(t *testing.T) {
-	events := []AuditEvent{
-		{Outcome: AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
+	events := []audit.AuditEvent{
+		{Outcome: audit.AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
 			Access: config.AccessRead, AllowExternal: boolPtr(false),
 			Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"},
 	}
@@ -177,8 +178,8 @@ func TestWriteAuditTable_AuthorityFlagAddsALinePerConfinedCall(t *testing.T) {
 }
 
 func TestWriteAuditTable_AuthorityFlagSkipsRecordsWithNoAuthority(t *testing.T) {
-	events := []AuditEvent{
-		{Outcome: AuditOutcomeOK, Tool: "list_services", Actor: AuditActor{Kind: AuditActorService}},
+	events := []audit.AuditEvent{
+		{Outcome: audit.AuditOutcomeOK, Tool: "list_services", Actor: audit.AuditActor{Kind: audit.AuditActorService}},
 	}
 	var buf bytes.Buffer
 	writeAuditTable(&buf, events, true)

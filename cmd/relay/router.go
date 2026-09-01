@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -191,7 +192,7 @@ type appRouter struct {
 	onChange func()
 	// Nil disables auditing entirely -- every call site goes through
 	// nil-safe helpers, so nothing branches on it.
-	audit *AuditRecorder
+	audit *audit.AuditRecorder
 	// budgets enforces each enrolment's rolling call-rate and result-volume
 	// caps for remote callers (ADR-010 decision 7). The zero value enforces
 	// (see enrolment.Budgets), so there is no way to end up with an
@@ -340,12 +341,12 @@ func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Set
 }
 
 func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
-	au := r.beginAudit(ctx, AuditEventListTools)
+	au := r.beginAudit(ctx, audit.AuditEventListTools)
 
 	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		au.setUnauthenticated(ctx, token)
-		au.done(AuditOutcomeUnauthorized, err)
+		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
 	au.setActor(ctx, stored, settings, token)
@@ -375,7 +376,7 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 	}
 
 	au.setToolCount(len(tools))
-	au.done(AuditOutcomeOK, nil)
+	au.done(audit.AuditOutcomeOK, nil)
 	return json.Marshal(tools)
 }
 
@@ -385,12 +386,12 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 // name-prefix fallback in toolCategory is deliberately NOT used for keys, as
 // it produces noise like "Generate" from generate_image.
 func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
-	au := r.beginAudit(ctx, AuditEventListSkills)
+	au := r.beginAudit(ctx, audit.AuditEventListSkills)
 
 	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		au.setUnauthenticated(ctx, token)
-		au.done(AuditOutcomeUnauthorized, err)
+		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
 	au.setActor(ctx, stored, settings, token)
@@ -451,7 +452,7 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 		total += len(bySlug[slug].Tools)
 	}
 	au.setToolCount(total)
-	au.done(AuditOutcomeOK, nil)
+	au.done(audit.AuditOutcomeOK, nil)
 	return buckets, nil
 }
 
@@ -555,13 +556,13 @@ func grantedMcpIDsForToken(stored *config.StoredToken, isServiceToken bool, s *c
 // refused ones -- a denied or unauthenticated call is precisely what a
 // security review is looking for, so it is audited too.
 func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
-	au := r.beginAudit(ctx, AuditEventCallTool)
+	au := r.beginAudit(ctx, audit.AuditEventCallTool)
 	au.setTool(name, args)
 
 	stored, settings, err := r.resolveAuth(ctx, token)
 	if err != nil {
 		au.setUnauthenticated(ctx, token)
-		au.done(AuditOutcomeUnauthorized, err)
+		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
 	au.setActor(ctx, stored, settings, token)
@@ -579,7 +580,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	})
 	if len(owners) == 0 {
 		err := fmt.Errorf("unknown tool: %s", name)
-		au.done(AuditOutcomeError, err)
+		au.done(audit.AuditOutcomeError, err)
 		return nil, err
 	}
 	// Resolved BEFORE au.setMcp and everything below it: the schema read,
@@ -588,7 +589,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// to give them.
 	extID, err := resolveToolOwner(stored, isServiceToken, name, owners, grantedMcpIDsForToken(stored, isServiceToken, settings))
 	if err != nil {
-		au.done(AuditOutcomeDenied, err)
+		au.done(audit.AuditOutcomeDenied, err)
 		return nil, err
 	}
 	au.setMcp(extID)
@@ -630,7 +631,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: MCP '%s' publishes a context schema relay cannot read, so no grant on it can be enforced (%s)",
 				extID, schema.MalformedReason()))
-			au.done(AuditOutcomeDenied, err)
+			au.done(audit.AuditOutcomeDenied, err)
 			return nil, err
 		}
 
@@ -647,12 +648,12 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: this grant scopes MCP '%s' by %s, which '%s' does not declare in its live context schema — relay cannot enforce a scope it cannot place, so no call to this MCP is dispatched under this grant",
 				extID, project.QuoteNames(unplaced), extID))
-			au.done(AuditOutcomeDenied, err)
+			au.done(audit.AuditOutcomeDenied, err)
 			return nil, err
 		}
 
 		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
-			au.done(AuditOutcomeDenied, err)
+			au.done(audit.AuditOutcomeDenied, err)
 			return nil, err
 		}
 		// Presence re-check, ahead of the budget check: a call with no
@@ -678,11 +679,11 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
 				"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
 				extID, name, f.Name))
-			au.done(AuditOutcomeDenied, err)
+			au.done(audit.AuditOutcomeDenied, err)
 			return nil, err
 		}
 		if err := checkScopePresence(schema, project.ContextValues(stored.Context[extID]), extID, name); err != nil {
-			au.done(AuditOutcomeDenied, err)
+			au.done(audit.AuditOutcomeDenied, err)
 			return nil, err
 		}
 	}
@@ -700,7 +701,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 		// operator edits the enrolment mid-call.
 		budget = enrolment.BudgetFor(settings, rc)
 		if err := r.budgets.Admit(rc, budget); err != nil {
-			au.done(AuditOutcomeThrottled, err)
+			au.done(audit.AuditOutcomeThrottled, err)
 			return nil, err
 		}
 	}
@@ -711,7 +712,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// callers.
 	if err := au.intent(); err != nil {
 		err = fmt.Errorf("audit: refusing tool call that cannot be recorded: %w", err)
-		au.done(AuditOutcomeError, err)
+		au.done(audit.AuditOutcomeError, err)
 		return nil, err
 	}
 

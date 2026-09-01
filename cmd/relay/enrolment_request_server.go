@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
@@ -92,7 +93,7 @@ var _ EnrolmentRequestSink = (*enrolmentRequestTable)(nil)
 // never audited (spec §2).
 type EnrolmentRequestServer struct {
 	sink     EnrolmentRequestSink
-	audit    *AuditRecorder
+	audit    *audit.AuditRecorder
 	cfg      resolvedRemoteConfig
 	listener net.Listener
 
@@ -316,7 +317,7 @@ func retryAfterSeconds(d time.Duration) int {
 // is what re-evaluates the LIVE remote.enabled / audit.enabled combination
 // on every tick and tears this listener down the moment auditing stops
 // being live, exactly as it already does for RemoteServer.
-func NewEnrolmentRequestServer(ctx context.Context, sink EnrolmentRequestSink, audit *AuditRecorder, cfg resolvedRemoteConfig) (*EnrolmentRequestServer, error) {
+func NewEnrolmentRequestServer(ctx context.Context, sink EnrolmentRequestSink, audit *audit.AuditRecorder, cfg resolvedRemoteConfig) (*EnrolmentRequestServer, error) {
 	if !cfg.Enabled {
 		slog.Debug("enrolment-request listener not enabled; no socket opened")
 		return nil, nil

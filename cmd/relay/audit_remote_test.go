@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 )
@@ -39,18 +40,18 @@ func remoteCtx(clientID string) context.Context {
 // readLogFile parses the audit log without flushing. Used from inside an MCP
 // handler, where the point is what is *already* durably on disk at the moment
 // the tool is invoked — flushing first would destroy the thing being measured.
-func readLogFile(t *testing.T, rec *AuditRecorder) []AuditEvent {
+func readLogFile(t *testing.T, rec *audit.AuditRecorder) []audit.AuditEvent {
 	t.Helper()
 	data, err := os.ReadFile(rec.Path())
 	if err != nil {
 		t.Fatalf("read audit log: %v", err)
 	}
-	var out []AuditEvent
+	var out []audit.AuditEvent
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
-		var ev AuditEvent
+		var ev audit.AuditEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatalf("audit log line is not valid JSON: %v\nline: %s", err, line)
 		}
@@ -67,8 +68,8 @@ func TestAuditRemote_IntentIsOnDiskBeforeTheMcpRuns(t *testing.T) {
 	mkSandboxRelayHome(t)
 
 	// The recorder has to exist before the mock, because the mock reads its log.
-	var rec *AuditRecorder
-	var seen []AuditEvent
+	var rec *audit.AuditRecorder
+	var seen []audit.AuditEvent
 	mock := newMockConn("macmcp", localTools("mail_search"),
 		func(context.Context, string, interface{}) (json.RawMessage, error) {
 			// Read the log from inside the tool call: whatever is here now was
@@ -91,11 +92,11 @@ func TestAuditRemote_IntentIsOnDiskBeforeTheMcpRuns(t *testing.T) {
 		t.Fatalf("log held %d records when the MCP ran, want exactly the intent: %+v", len(seen), seen)
 	}
 	ev := seen[0]
-	if ev.Phase != AuditPhaseIntent {
-		t.Errorf("phase = %q, want %q", ev.Phase, AuditPhaseIntent)
+	if ev.Phase != audit.AuditPhaseIntent {
+		t.Errorf("phase = %q, want %q", ev.Phase, audit.AuditPhaseIntent)
 	}
-	if ev.Outcome != AuditOutcomePending {
-		t.Errorf("outcome = %q, want %q", ev.Outcome, AuditOutcomePending)
+	if ev.Outcome != audit.AuditOutcomePending {
+		t.Errorf("outcome = %q, want %q", ev.Outcome, audit.AuditOutcomePending)
 	}
 	if ev.Tool != "mail_search" || ev.Actor.ClientID != "hermes-mail" {
 		t.Errorf("intent record is missing attribution: tool=%q client=%q", ev.Tool, ev.Actor.ClientID)
@@ -126,7 +127,7 @@ func TestAuditRemote_FailedIntentRefusesTheCallAndTheMcpNeverRuns(t *testing.T) 
 	// Break the sink the way a full or unwritable disk would: the file handle
 	// goes away underneath the writer, so the encode fails for real rather than
 	// through a test-only switch in production code.
-	if err := rec.w.Close(); err != nil {
+	if err := rec.CloseWriterForTest(); err != nil {
 		t.Fatalf("close audit sink: %v", err)
 	}
 
@@ -157,7 +158,7 @@ func TestAuditLocal_UnwritableSinkStillCompletesTheCall(t *testing.T) {
 		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
-	if err := rec.w.Close(); err != nil {
+	if err := rec.CloseWriterForTest(); err != nil {
 		t.Fatalf("close audit sink: %v", err)
 	}
 
@@ -192,13 +193,13 @@ func TestAuditRemote_IntentAndCompletionShareOneEventID(t *testing.T) {
 	}
 	// readLoggedEvents preserves file order: intent first, completion second.
 	intent, completion := events[0], events[1]
-	if intent.Phase != AuditPhaseIntent || completion.Phase != AuditPhaseCompletion {
+	if intent.Phase != audit.AuditPhaseIntent || completion.Phase != audit.AuditPhaseCompletion {
 		t.Fatalf("phases = %q then %q, want intent then completion", intent.Phase, completion.Phase)
 	}
 	if intent.ID == "" || intent.ID != completion.ID {
 		t.Errorf("ids = %q and %q, want one shared id", intent.ID, completion.ID)
 	}
-	if completion.Outcome != AuditOutcomeOK {
+	if completion.Outcome != audit.AuditOutcomeOK {
 		t.Errorf("completion outcome = %q, want ok (error=%q)", completion.Outcome, completion.Error)
 	}
 	if completion.ResultBytes == 0 {
@@ -225,14 +226,14 @@ func TestAuditRemote_DeniedCallIsOneRecordWithNoIntent(t *testing.T) {
 	}
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Outcome != AuditOutcomeDenied {
+	if ev.Outcome != audit.AuditOutcomeDenied {
 		t.Errorf("outcome = %q, want denied", ev.Outcome)
 	}
 	if ev.Phase != "" {
 		t.Errorf("phase = %q, want empty for a call that never reached an MCP", ev.Phase)
 	}
 	// The refusal is still attributable to the certificate that made it.
-	if ev.Actor.Kind != AuditActorRemote || ev.Actor.ClientID != "hermes-mail" {
+	if ev.Actor.Kind != audit.AuditActorRemote || ev.Actor.ClientID != "hermes-mail" {
 		t.Errorf("denied remote call lost its attestation: %+v", ev.Actor)
 	}
 }
@@ -262,11 +263,11 @@ func TestAuditRemote_ActorIsAttestedAndProcessFieldsAreAbsent(t *testing.T) {
 	}
 	for _, ev := range events {
 		a := ev.Actor
-		if a.Kind != AuditActorRemote {
-			t.Errorf("actor kind = %q, want %q", a.Kind, AuditActorRemote)
+		if a.Kind != audit.AuditActorRemote {
+			t.Errorf("actor kind = %q, want %q", a.Kind, audit.AuditActorRemote)
 		}
-		if a.Auth != AuditAuthMTLS {
-			t.Errorf("actor auth = %q, want %q", a.Auth, AuditAuthMTLS)
+		if a.Auth != audit.AuditAuthMTLS {
+			t.Errorf("actor auth = %q, want %q", a.Auth, audit.AuditAuthMTLS)
 		}
 		if a.ClientID != "hermes-mail" {
 			t.Errorf("client_id = %q, want hermes-mail", a.ClientID)
@@ -321,10 +322,10 @@ func TestAuditRemote_UnauthorizedKeepsTheAttestedIdentity(t *testing.T) {
 	}
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Outcome != AuditOutcomeUnauthorized {
+	if ev.Outcome != audit.AuditOutcomeUnauthorized {
 		t.Errorf("outcome = %q, want unauthorized", ev.Outcome)
 	}
-	if ev.Actor.Kind != AuditActorRemote || ev.Actor.Fingerprint != testFingerprint {
+	if ev.Actor.Kind != audit.AuditActorRemote || ev.Actor.Fingerprint != testFingerprint {
 		t.Errorf("unauthorized remote call lost its attestation: %+v", ev.Actor)
 	}
 }
@@ -350,7 +351,7 @@ func TestAuditLocal_StillWritesExactlyOneRecordWithNoPhase(t *testing.T) {
 	if ev.Phase != "" {
 		t.Errorf("phase = %q, want absent: a local call is one record, exactly as before", ev.Phase)
 	}
-	if ev.Actor.Kind != AuditActorProject || ev.Actor.Auth != AuditAuthToken {
+	if ev.Actor.Kind != audit.AuditActorProject || ev.Actor.Auth != audit.AuditAuthToken {
 		t.Errorf("actor = %q/%q, want project/token", ev.Actor.Kind, ev.Actor.Auth)
 	}
 	if ev.Actor.ClientID != "" || ev.Actor.Fingerprint != "" || ev.Actor.RemoteAddr != "" {
@@ -376,14 +377,14 @@ func TestAuditLocal_DropsRatherThanBlockingWhenTheQueueIsFull(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	blocked := make(chan struct{})
-	rec.SetSink(func(AuditEvent) {
+	rec.SetSink(func(audit.AuditEvent) {
 		close(blocked)
 		wg.Wait()
 	})
-	rec.Record(AuditEvent{ID: "wedge"})
+	rec.Record(audit.AuditEvent{ID: "wedge"})
 	<-blocked
-	for i := 0; i < auditQueueSize+50; i++ {
-		rec.Record(AuditEvent{ID: "flood"})
+	for i := 0; i < audit.AuditQueueSize+50; i++ {
+		rec.Record(audit.AuditEvent{ID: "flood"})
 	}
 	defer func() {
 		rec.SetSink(nil)
@@ -414,34 +415,34 @@ func TestAuditLocal_DropsRatherThanBlockingWhenTheQueueIsFull(t *testing.T) {
 
 func TestAuditQuery_KindAndThrottledFilters(t *testing.T) {
 	rec := newTestAudit(t, nil)
-	rec.Record(AuditEvent{ID: "local", Event: AuditEventCallTool, Tool: "read_file", Outcome: AuditOutcomeOK,
-		Actor: AuditActor{Kind: AuditActorProject, ProjectID: "p1"}})
-	rec.Record(AuditEvent{ID: "remote-ok", Event: AuditEventCallTool, Tool: "mail_search", Outcome: AuditOutcomeOK,
-		Phase: AuditPhaseCompletion,
-		Actor: AuditActor{Kind: AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"}})
-	rec.Record(AuditEvent{ID: "remote-throttled", Event: AuditEventCallTool, Tool: "mail_get_emails",
-		Outcome: AuditOutcomeThrottled,
-		Actor:   AuditActor{Kind: AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"}})
+	rec.Record(audit.AuditEvent{ID: "local", Event: audit.AuditEventCallTool, Tool: "read_file", Outcome: audit.AuditOutcomeOK,
+		Actor: audit.AuditActor{Kind: audit.AuditActorProject, ProjectID: "p1"}})
+	rec.Record(audit.AuditEvent{ID: "remote-ok", Event: audit.AuditEventCallTool, Tool: "mail_search", Outcome: audit.AuditOutcomeOK,
+		Phase: audit.AuditPhaseCompletion,
+		Actor: audit.AuditActor{Kind: audit.AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"}})
+	rec.Record(audit.AuditEvent{ID: "remote-throttled", Event: audit.AuditEventCallTool, Tool: "mail_get_emails",
+		Outcome: audit.AuditOutcomeThrottled,
+		Actor:   audit.AuditActor{Kind: audit.AuditActorRemote, ProjectID: "p1", ClientID: "hermes-mail"}})
 	rec.Flush()
 
-	got := rec.Query(AuditQuery{Kind: AuditActorRemote})
+	got := rec.Query(audit.AuditQuery{Kind: audit.AuditActorRemote})
 	if len(got) != 2 {
 		t.Fatalf("kind=remote returned %d events, want 2: %+v", len(got), got)
 	}
 	for _, ev := range got {
-		if ev.Actor.Kind != AuditActorRemote {
+		if ev.Actor.Kind != audit.AuditActorRemote {
 			t.Errorf("kind filter let a %q actor through", ev.Actor.Kind)
 		}
 	}
 
-	if got := rec.Query(AuditQuery{Outcome: AuditOutcomeThrottled}); len(got) != 1 || got[0].ID != "remote-throttled" {
+	if got := rec.Query(audit.AuditQuery{Outcome: audit.AuditOutcomeThrottled}); len(got) != 1 || got[0].ID != "remote-throttled" {
 		t.Errorf("outcome=throttled returned %+v", got)
 	}
 	// Combined, the way an operator asks "what did that VM get cut off for".
-	if got := rec.Query(AuditQuery{Kind: AuditActorRemote, Outcome: AuditOutcomeThrottled}); len(got) != 1 {
+	if got := rec.Query(audit.AuditQuery{Kind: audit.AuditActorRemote, Outcome: audit.AuditOutcomeThrottled}); len(got) != 1 {
 		t.Errorf("kind+outcome returned %+v", got)
 	}
-	if got := rec.Query(AuditQuery{Kind: AuditActorProject}); len(got) != 1 || got[0].ID != "local" {
+	if got := rec.Query(audit.AuditQuery{Kind: audit.AuditActorProject}); len(got) != 1 || got[0].ID != "local" {
 		t.Errorf("kind=project returned %+v", got)
 	}
 }
@@ -464,10 +465,10 @@ func TestAuditCmd_KindFilterMatchesLoggedRecords(t *testing.T) {
 	}
 
 	events := readLoggedEvents(t, rec)
-	q := AuditQuery{Kind: AuditActorRemote}
+	q := audit.AuditQuery{Kind: audit.AuditActorRemote}
 	matched := 0
 	for i := range events {
-		if q.matches(&events[i]) {
+		if q.Matches(&events[i]) {
 			matched++
 		}
 	}

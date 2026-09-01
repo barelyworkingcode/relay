@@ -3,10 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
 
+	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
@@ -41,81 +39,11 @@ const (
 	// auditViaRemote is the enrolment-certificate door: the remote listener's
 	// configuration plane (ADR-018 decision 4). Unlike every other `via`, the
 	// caller here is attested by TLS rather than by ownership of the config
-	// dir or a resolved control-plane credential, so issuanceActor gives it
-	// its own branch rather than folding it into the operator default.
+	// dir or a resolved control-plane credential, so internal/audit's
+	// issuanceActor gives it its own branch rather than folding it into the
+	// operator default.
 	auditViaRemote = "remote"
 )
-
-// Subject, Name and Grants can all be caller-chosen — an enrolment's client id
-// arrives in the body of POST /api/enrolments — so they are bounded here for
-// the reason audit_control.go bounds Path and Method: what matters is that the
-// on-disk record's size is decided by relay and not by whoever is driving the
-// door.
-const (
-	auditMaxIssuanceFieldBytes = 256
-	auditMaxIssuanceGrants     = 64
-)
-
-// CredentialIssuance is one issuance or revocation. There is deliberately no
-// field for a plaintext, a hash, key material, or a public key: this type is
-// the whole input to the record, so a leak would have to be added here first,
-// where it is visible, rather than slipping in at one of the seven doors that
-// build one.
-type CredentialIssuance struct {
-	// Revoked picks the event kind. False is issuance, which is the direction
-	// that widens and therefore the one that is fail-closed below. Ignored
-	// when ConfigChange is set.
-	Revoked bool
-
-	// ConfigChange marks this record as a config_change event rather than
-	// credential_issued/credential_revoked: the gated act mutated settings
-	// (registering an MCP or service, starting OAuth, widening a project's
-	// grant shape) but issued nothing a holder could authenticate with.
-	// Calling that credential_issued would be a lie, and leaving it
-	// unrecorded would break the ADR's detection argument (§7.5).
-	ConfigChange bool
-
-	// Credential is one of the auditCredential* values; Subject is the
-	// identifier of the thing issued, revoked or changed.
-	Credential string
-	Subject    string
-
-	// Name is the human-readable label where the kind has one distinct from
-	// its identifier — a credential's --name, a passkey's display name.
-	Name string
-
-	// Grants is the class set for an api_credential, the granted
-	// access-profile ids for an enrolment, or the changed field names for a
-	// config_change project grant. Nil for a kind that has none of these.
-	// For an enrolment's config_change on cli_admin the entry carries the
-	// resulting state (e.g. "cli_admin=on") rather than the bare field
-	// name: for a boolean the direction IS the content, and a record
-	// saying only "cli_admin changed" cannot answer the question it
-	// exists for.
-	Grants []string
-
-	// Via is one of the auditVia* values.
-	Via string
-
-	// CredID names the control-plane credential that asked for this, and is
-	// set only for Via == auditViaHTTP: the other doors authorize by
-	// ownership of the config dir, where there is no credential to name.
-	CredID string
-
-	// ClientID and Fingerprint attribute an act to the enrolment certificate
-	// that made it, set only for Via == auditViaRemote. A remote act has no
-	// control-plane credential and no config-dir ownership to name — the
-	// certificate IS the identity, resolved by TLS before the request was
-	// ever read.
-	ClientID    string
-	Fingerprint string
-
-	// PresenceID is the nonce id (presence.Grant.ID()) that authorised this
-	// act, when it was gated (ADR-017 implementation spec §7.5). Empty for
-	// an ungated issuance — nothing here changes for those. Always empty
-	// for Via == auditViaRemote: NarrowForEnrolment is deliberately ungated.
-	PresenceID string
-}
 
 // IssuanceAuditor is the issuance counterpart to control.ControlAuditor, and a
 // separate interface rather than a method added to that one: the doors that
@@ -126,16 +54,16 @@ type CredentialIssuance struct {
 // fail-closed: "I could not record this" and "I recorded this" must not be
 // indistinguishable at a door that is about to hand someone a credential.
 type IssuanceAuditor interface {
-	RecordIssuance(iss CredentialIssuance) error
+	RecordIssuance(iss audit.CredentialIssuance) error
 }
 
-var _ IssuanceAuditor = (*AuditRecorder)(nil)
+var _ IssuanceAuditor = (*audit.AuditRecorder)(nil)
 
-// issuanceAuditorOrNil is controlAuditorOrNil's twin and exists for the same
-// subtlety: a nil *AuditRecorder boxed into this interface produces a non-nil
-// IssuanceAuditor, and every nil check against this type is written on the
-// interface.
-func issuanceAuditorOrNil(rec *AuditRecorder) IssuanceAuditor {
+// issuanceAuditorOrNil is audit.ControlAuditorOrNil's twin and exists for the same
+// subtlety: a nil *audit.AuditRecorder boxed into this interface produces a
+// non-nil IssuanceAuditor, and every nil check against this type is written
+// on the interface.
+func issuanceAuditorOrNil(rec *audit.AuditRecorder) IssuanceAuditor {
 	if rec == nil {
 		return nil
 	}
@@ -146,10 +74,10 @@ func issuanceAuditorOrNil(rec *AuditRecorder) IssuanceAuditor {
 // no sink an act could be recorded in.
 var errIssuanceAuditingRequired = errors.New(`refusing to issue — the tool-call audit log is disabled ("audit": {"enabled": false} in settings.json), and with sealed config active issuance auditing is a hard dependency, not a courtesy (ADR-017 Consequences; the same rule ADR-010 applies to the remote listener). Set "audit": {"enabled": true} and restart relay. ` + "`relay audit --path`" + ` names the file relay would write to.`)
 
-// issuanceAuditorReadiness is implemented by *AuditRecorder. A test fake
-// that implements only IssuanceAuditor and not this is treated as ready by
-// requireIssuanceAuditor: a fake wired to unconditionally accept a record IS
-// a sink, by construction, so there is nothing for this check to add.
+// issuanceAuditorReadiness is implemented by *audit.AuditRecorder. A test
+// fake that implements only IssuanceAuditor and not this is treated as ready
+// by requireIssuanceAuditor: a fake wired to unconditionally accept a record
+// IS a sink, by construction, so there is nothing for this check to add.
 type issuanceAuditorReadiness interface{ Ready() bool }
 
 // requireIssuanceAuditor is decision 3.4's hard dependency (§7.4): a gated
@@ -163,6 +91,13 @@ type issuanceAuditorReadiness interface{ Ready() bool }
 // than being one optional subsystem — refusing every one of them to start
 // would destroy the read half and the tray's own recovery UI over a single
 // misconfigured field.
+//
+// This is deliberate: requireIssuanceAuditor stays an unqualified identifier
+// in package main. cmd/relay/gate_ast_scan_test.go's
+// TestGate_EveryIssuanceAuditorCallSiteHasACase matches call sites with
+// call.Fun.(*ast.Ident), which a qualified audit.RequireIssuanceAuditor call
+// would not satisfy — the scan would silently stop verifying that every
+// gated core audits its issuance.
 func requireIssuanceAuditor(a IssuanceAuditor) error {
 	if a == nil {
 		return errIssuanceAuditingRequired
@@ -179,7 +114,7 @@ func requireIssuanceAuditor(a IssuanceAuditor) error {
 // the same durable, fail-closed RecordIssuance path recordIssuance does —
 // there is no second sink for a config_change to go missing in.
 func recordConfigChange(a IssuanceAuditor, credential, subject string, grants []string, via, credID, presenceID string) error {
-	return recordIssuance(a, CredentialIssuance{
+	return recordIssuance(a, audit.CredentialIssuance{
 		ConfigChange: true,
 		Credential:   credential,
 		Subject:      subject,
@@ -196,7 +131,7 @@ func recordConfigChange(a IssuanceAuditor, credential, subject string, grants []
 // carries ClientID/Fingerprint instead of a CredID, and there is no presence
 // grant to name — the caller (NarrowForEnrolment) is deliberately ungated.
 func recordConfigChangeRemote(a IssuanceAuditor, credential, subject string, grants []string, caller bridge.RemoteCaller) error {
-	return recordIssuance(a, CredentialIssuance{
+	return recordIssuance(a, audit.CredentialIssuance{
 		ConfigChange: true,
 		Credential:   credential,
 		Subject:      subject,
@@ -215,7 +150,7 @@ func recordConfigChangeRemote(a IssuanceAuditor, credential, subject string, gra
 // configuration relay explicitly supports (docs/audit-log.md, "Turning it off,
 // and what it costs"). A sink that exists and FAILS is the opposite case and
 // is what the error return is for.
-func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
+func recordIssuance(a IssuanceAuditor, iss audit.CredentialIssuance) error {
 	if a == nil {
 		return nil
 	}
@@ -231,7 +166,7 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // path would not withhold the credential. enrolment.Revoke removes the
 // record AND the emitted bundle, which is what makes the refusal real.
 func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e config.Enrolment, via, credID, presenceID string) error {
-	err := recordIssuance(a, CredentialIssuance{
+	err := recordIssuance(a, audit.CredentialIssuance{
 		Credential: auditCredentialEnrolment,
 		Subject:    e.ClientID,
 		Grants:     e.ProjectIDs,
@@ -257,7 +192,7 @@ func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e conf
 // that tells two of them apart — which is exactly what a reader needs to match
 // a code against the registration that later consumed it.
 func recordBootstrapIssued(a IssuanceAuditor, expires, via, presenceID string) error {
-	return recordIssuance(a, CredentialIssuance{
+	return recordIssuance(a, audit.CredentialIssuance{
 		Credential: auditCredentialBootstrap,
 		Subject:    expires,
 		Via:        via,
@@ -270,7 +205,7 @@ func recordBootstrapIssued(a IssuanceAuditor, expires, via, presenceID string) e
 // issuance because that is the direction that widens: the new token is the one
 // somebody will hold.
 func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID, presenceID string) error {
-	return recordIssuance(a, CredentialIssuance{
+	return recordIssuance(a, audit.CredentialIssuance{
 		Credential: auditCredentialProject,
 		Subject:    projectID,
 		Via:        via,
@@ -281,9 +216,10 @@ func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID, presen
 
 // recordPasskeyRevoked records a removed passkey. The stored public key has no
 // path into the record: passkeyView withholds X and Y from every operator
-// surface for the same reason, and CredentialIssuance has no field for them.
+// surface for the same reason, and audit.CredentialIssuance has no field for
+// them.
 func recordPasskeyRevoked(a IssuanceAuditor, p config.Passkey, via, presenceID string) error {
-	return recordIssuance(a, CredentialIssuance{
+	return recordIssuance(a, audit.CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialPasskey,
 		Subject:    p.ID,
@@ -293,157 +229,26 @@ func recordPasskeyRevoked(a IssuanceAuditor, p config.Passkey, via, presenceID s
 	})
 }
 
-// RecordIssuance writes one issuance or revocation and does not return until
-// the bytes are on disk.
-//
-// Durable rather than queued, unlike RecordDecision: the fail-open queue
-// exists so a slow sink can never delay a tool call, and delaying an issuance
-// until its record is down is exactly the point here — the caller refuses the
-// act when this returns an error (ADR-010 decision 5's ordering, applied to
-// issuance in docs/audit-log.md).
-func (r *AuditRecorder) RecordIssuance(iss CredentialIssuance) error {
-	// A recorder with no sink behind it is the same state as no recorder at
-	// all — there is no file an act could have gone unrecorded in — so it is
-	// answered the way auditing being off is answered, not the way a failing
-	// write is.
-	if !r.Enabled() || !r.hasSink() {
-		return nil
-	}
-	return r.RecordDurable(issuanceEvent(iss))
-}
-
-func issuanceEvent(iss CredentialIssuance) AuditEvent {
-	event := AuditEventCredentialIssued
-	switch {
-	case iss.ConfigChange:
-		event = AuditEventConfigChange
-	case iss.Revoked:
-		event = AuditEventCredentialRevoked
-	}
-	subject, subjectCut := capControlString(iss.Subject, auditMaxIssuanceFieldBytes)
-	name, nameCut := capControlString(iss.Name, auditMaxIssuanceFieldBytes)
-	grants, grantsCut := capIssuanceGrants(iss.Grants)
-	return AuditEvent{
-		ID:                newAuditID(),
-		TS:                time.Now().UTC(),
-		Event:             event,
-		Outcome:           AuditOutcomeOK,
-		Credential:        iss.Credential,
-		Subject:           subject,
-		SubjectName:       name,
-		Grants:            grants,
-		Via:               iss.Via,
-		IssuanceTruncated: subjectCut || nameCut || grantsCut,
-		Actor:             issuanceActor(iss),
-		PresenceID:        iss.PresenceID,
-	}
-}
-
-// classStrings widens a class set into the plain strings the record carries,
-// keeping AuditEvent's on-disk shape independent of the authorization
-// package's types the way Class and control.Transport already are.
-func classStrings[T ~string](classes []T) []string {
-	if len(classes) == 0 {
-		return nil
-	}
-	out := make([]string, len(classes))
-	for i, c := range classes {
-		out[i] = string(c)
-	}
-	return out
-}
-
-// capIssuanceGrants bounds both the number of entries and each entry, so a
-// caller cannot spend the retention window through a grant list any more than
-// through a path.
-func capIssuanceGrants(grants []string) ([]string, bool) {
-	if len(grants) == 0 {
-		return nil, false
-	}
-	cut := false
-	if len(grants) > auditMaxIssuanceGrants {
-		grants = grants[:auditMaxIssuanceGrants]
-		cut = true
-	}
-	out := make([]string, len(grants))
-	for i, g := range grants {
-		capped, entryCut := capControlString(g, auditMaxIssuanceFieldBytes)
-		out[i] = capped
-		cut = cut || entryCut
-	}
-	return out, cut
-}
-
-// issuanceActor attributes the act. An HTTP door has a resolved credential to
-// name and is recorded as `control`, the same actor its control_decision row
-// carries. Every other door authorizes by ownership of the config dir, so
-// there is no credential — the pid, the process and above all the PARENT are
-// the attribution, and the parent is the field that answers which agent ran
-// `relay credential mint`.
-func issuanceActor(iss CredentialIssuance) AuditActor {
-	if iss.Via == auditViaHTTP {
-		return AuditActor{Kind: AuditActorControl, Auth: AuditAuthToken, CredID: iss.CredID}
-	}
-	if iss.Via == auditViaRemote {
-		return AuditActor{Kind: AuditActorRemote, Auth: AuditAuthMTLS, ClientID: iss.ClientID, Fingerprint: iss.Fingerprint}
-	}
-	pid := os.Getpid()
-	proc, parent := ProcessNames(pid)
-	return AuditActor{Kind: AuditActorOperator, Auth: AuditAuthNone, PID: pid, Proc: proc, Parent: parent}
-}
-
-// openCLIIssuanceRecorder gives one CLI process a recorder of its own.
-// Returns (nil, nil) when settings say auditing is off, and an error when a
-// sink that should exist cannot be opened — the two are different answers and
-// every caller here treats only the second as a reason to refuse.
-//
-// This is deliberate: the writer is a plain O_APPEND file and NOT the
-// rotatingWriter the tray uses. Rotation renames the log out from under every
-// other open descriptor, and the tray holds one for the life of the app; a CLI
-// process that rotated would leave the tray writing into a file it had already
-// moved, and further CLI rotations would then shift that file out of the
-// generation window entirely. Appending cannot do that to anyone. Each record
-// is one write(2) on a descriptor opened O_APPEND, which the kernel serialises
-// against every other appender, so two processes interleave whole lines and
-// never half of one.
-//
-// What it costs is a soft cap rather than a hard one. The tray's writer counts
-// only the bytes it has itself written since it opened the file, so appends it
-// did not make are invisible to its accounting and the log can exceed
-// max_file_bytes by whatever CLI processes added. That is repaired two ways
-// and neither loses a record: the tray rotates on its own accounting
-// eventually, taking the whole file — CLI records included — into the next
-// generation, and relay's next start re-stats the file and picks up its true
-// size. Issuance is an operator act at human rate, so the overshoot is a few
-// hundred bytes per invocation.
-func openCLIIssuanceRecorder(store config.SettingsStore) (*AuditRecorder, error) {
-	cfg := store.Get().Audit
-	resolved := resolveAuditConfig(cfg)
-	if !resolved.Enabled {
-		return nil, nil
-	}
-	path, err := auditLogPath()
+// openCLIIssuanceRecorder is a thin adapter over audit.OpenCLIIssuanceRecorder:
+// it supplies the one thing that function needs and does not own, where
+// relay's rotated logs live (serviceLogDir, log_rotate.go).
+func openCLIIssuanceRecorder(store config.SettingsStore) (*audit.AuditRecorder, error) {
+	dir, err := serviceLogDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve audit log path: %w", err)
+		return nil, fmt.Errorf("resolve audit log dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("audit log dir: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open audit log: %w", err)
-	}
-	// The ring backs a live UI tail and this process has no UI; one slot keeps
-	// the allocation from scaling with a setting that means nothing here.
-	resolved.RingSize = 1
-	return newAuditRecorderWith(resolved, path, f), nil
+	return audit.OpenCLIIssuanceRecorder(store, dir)
 }
 
 // cliIssuanceAuditor is what every issuing subcommand opens first. It exits
 // rather than returning an error: a CLI process that cannot open the sink has
 // nothing else to do, and proceeding would be the unrecorded issuance this
 // whole path exists to prevent.
-func cliIssuanceAuditor(store config.SettingsStore) (*AuditRecorder, func()) {
+//
+// This is dead code today (no caller outside its own test) and already
+// flagged by the unused linter; it is not exported to make it reachable, and
+// stays that way on purpose.
+func cliIssuanceAuditor(store config.SettingsStore) (*audit.AuditRecorder, func()) {
 	rec, err := openCLIIssuanceRecorder(store)
 	if err != nil {
 		exitError("cannot open the audit log to record this (%v); nothing was issued or revoked. "+
