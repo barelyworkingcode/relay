@@ -674,8 +674,6 @@ func (m McpSurfaces) Schema(mcpID string) ContextSchema {
 	return ParseContextSchema(s.Schema, s.SchemaVersion)
 }
 
-func (m McpSurfaces) ToolNames(mcpID string) []string { return m[mcpID].Tools }
-
 // ScopeNotePrefix marks a note relay appended, so ListTools and
 // ListSkillBuckets rebuilding the same tool must not double-append.
 const ScopeNotePrefix = "Scope: "

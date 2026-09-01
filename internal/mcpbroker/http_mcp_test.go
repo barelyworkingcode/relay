@@ -30,14 +30,6 @@ func readJSONRPCID(r *http.Request) int64 {
 	return req.ID
 }
 
-func jsonRPCHandler(result string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := readJSONRPCID(r)
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, id, result)
-	}
-}
-
 func TestHTTPMcpConn_SendRequest_Concurrent(t *testing.T) {
 	var mu sync.Mutex
 	requestCount := 0
