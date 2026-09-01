@@ -891,12 +891,6 @@ func (m *Manager) Tools(id string) []mcp.Tool {
 	return nil
 }
 
-func (m *Manager) GetContextSchema(id string) json.RawMessage {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.schemas[id]
-}
-
 // The tool list is part of the snapshot because ADR-011 decision 5's
 // question — would this grant leave the MCP with no usable tools — cannot be
 // answered from a schema alone: a field's applies_to has to be measured

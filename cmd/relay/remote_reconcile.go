@@ -101,8 +101,7 @@ func (sup *RemoteSupervisor) EnrolTable() EnrolmentRequestApprovalSink {
 	return sup.enrolTable
 }
 
-// EnrolAddr and EnrolServer mirror Addr and Server for the enrolment-request
-// listener.
+// EnrolAddr mirrors Addr for the enrolment-request listener.
 func (sup *RemoteSupervisor) EnrolAddr() string {
 	if sup == nil {
 		return ""
@@ -110,15 +109,6 @@ func (sup *RemoteSupervisor) EnrolAddr() string {
 	sup.mu.Lock()
 	defer sup.mu.Unlock()
 	return sup.enrolServer.Addr()
-}
-
-func (sup *RemoteSupervisor) EnrolServer() *EnrolmentRequestServer {
-	if sup == nil {
-		return nil
-	}
-	sup.mu.Lock()
-	defer sup.mu.Unlock()
-	return sup.enrolServer
 }
 
 func (sup *RemoteSupervisor) Reconcile() error {

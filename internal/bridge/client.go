@@ -213,10 +213,6 @@ func SendReloadMcp(id, token string) error {
 	return sendAdmin(ReqReloadExternalMcp, id, token)
 }
 
-func SendReloadService(id, token string) error {
-	return sendAdmin(ReqReloadService, id, token)
-}
-
 // bridgeTimeout bounds inactivity, not total call time: it is reset on every
 // frame received during a streaming call (see sendStreaming), so a tool that
 // legitimately streams progress for minutes stays alive. A var (not const) so
