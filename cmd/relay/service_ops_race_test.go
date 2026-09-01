@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"testing"
 )
 
@@ -21,11 +22,11 @@ import (
 // validated before calling With. Every other method is promoted straight
 // through the embedded interface.
 type sorHookStore struct {
-	SettingsStore
+	config.SettingsStore
 	preWith func()
 }
 
-func (h *sorHookStore) With(fn func(*Settings)) error {
+func (h *sorHookStore) With(fn func(*config.Settings)) error {
 	if h.preWith != nil {
 		trigger := h.preWith
 		h.preWith = nil
@@ -55,12 +56,12 @@ func (r *sorRaceRegistry) IsRunning(id string) bool {
 	return false
 }
 
-func (r *sorRaceRegistry) Start(c *ServiceConfig) error {
+func (r *sorRaceRegistry) Start(c *config.ServiceConfig) error {
 	r.started = append(r.started, c.ID)
 	return nil
 }
 
-func (r *sorRaceRegistry) Reload(id string, _ *ServiceConfig) error {
+func (r *sorRaceRegistry) Reload(id string, _ *config.ServiceConfig) error {
 	r.reloaded = append(r.reloaded, id)
 	return nil
 }
@@ -69,9 +70,9 @@ func (r *sorRaceRegistry) Stop(id string) {
 	r.stopped = append(r.stopped, id)
 }
 
-func sorSeedService(t *testing.T, store SettingsStore, cfg ServiceConfig) {
+func sorSeedService(t *testing.T, store config.SettingsStore, cfg config.ServiceConfig) {
 	t.Helper()
-	if err := store.With(func(s *Settings) { s.UpsertService(cfg) }); err != nil {
+	if err := store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
 }
@@ -84,7 +85,7 @@ func sorSeedService(t *testing.T, store SettingsStore, cfg ServiceConfig) {
 // caller-supplied command for a service settings no longer has.
 func TestServiceOpsRace_UpdateLosesToConcurrentRemove(t *testing.T) {
 	store := newCLISandboxStore(t)
-	sorSeedService(t, store, ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/old"})
+	sorSeedService(t, store, config.ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/old"})
 
 	reg := &sorRaceRegistry{}
 	ops := &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -113,7 +114,7 @@ func TestServiceOpsRace_UpdateLosesToConcurrentRemove(t *testing.T) {
 // state. Only the removal that actually commits may report success.
 func TestServiceOpsRace_RemoveDuringConcurrentRemove(t *testing.T) {
 	store := newCLISandboxStore(t)
-	sorSeedService(t, store, ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/x"})
+	sorSeedService(t, store, config.ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/x"})
 
 	reg := &sorRaceRegistry{}
 	hooked := &sorHookStore{SettingsStore: store}
@@ -136,7 +137,7 @@ func TestServiceOpsRace_RemoveDuringConcurrentRemove(t *testing.T) {
 // autostart call's own (former) existence check but before its write.
 func TestServiceOpsRace_SetAutostartDuringConcurrentRemove(t *testing.T) {
 	store := newCLISandboxStore(t)
-	sorSeedService(t, store, ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/x"})
+	sorSeedService(t, store, config.ServiceConfig{ID: "svc", DisplayName: "Svc", Command: "/bin/x"})
 
 	reg := &sorRaceRegistry{}
 	hooked := &sorHookStore{SettingsStore: store}
@@ -159,8 +160,8 @@ func TestServiceOpsRace_SetAutostartDuringConcurrentRemove(t *testing.T) {
 // case above.
 func TestServiceOpsRace_McpRemoveDuringConcurrentRemove(t *testing.T) {
 	store := newCLISandboxStore(t)
-	if err := store.With(func(s *Settings) {
-		s.UpsertExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "MCP One", Command: "/bin/x"})
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertExternalMcp(config.ExternalMcp{ID: "mcp1", DisplayName: "MCP One", Command: "/bin/x"})
 	}); err != nil {
 		t.Fatalf("seed mcp: %v", err)
 	}

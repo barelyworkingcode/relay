@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,7 @@ type svcRecorder struct {
 	startErr  error
 }
 
-func (r *svcRecorder) Start(c *ServiceConfig) error {
+func (r *svcRecorder) Start(c *config.ServiceConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started = append(r.started, c.ID)
@@ -37,7 +38,7 @@ func (r *svcRecorder) Stop(id string) {
 	defer r.mu.Unlock()
 	r.stopped = append(r.stopped, id)
 }
-func (r *svcRecorder) Reload(id string, _ *ServiceConfig) error {
+func (r *svcRecorder) Reload(id string, _ *config.ServiceConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reloaded = append(r.reloaded, id)
@@ -60,7 +61,7 @@ func (r *svcRecorder) RunningIDs() []string {
 	return ids
 }
 
-func newServicesIPC(t *testing.T, store SettingsStore, reg ServiceManager) (*IPCContext, *recordingUI) {
+func newServicesIPC(t *testing.T, store config.SettingsStore, reg ServiceManager) (*IPCContext, *recordingUI) {
 	ui := &recordingUI{}
 	ipc := &IPCContext{
 		Ctx:                    context.Background(),
@@ -92,9 +93,9 @@ func lastSettingsError(t *testing.T, ui *recordingUI) string {
 	return ""
 }
 
-func seedService(t *testing.T, store SettingsStore, cfg ServiceConfig) {
+func seedService(t *testing.T, store config.SettingsStore, cfg config.ServiceConfig) {
 	t.Helper()
-	if err := store.With(func(s *Settings) { s.UpsertService(cfg) }); err != nil {
+	if err := store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
 }
@@ -155,7 +156,7 @@ func TestIPCAddService_ValidationErrors(t *testing.T) {
 
 func TestIPCUpdateService_RunningTriggersReload(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
 	ipc, _ := newServicesIPC(t, store, reg)
 
@@ -164,14 +165,14 @@ func TestIPCUpdateService_RunningTriggersReload(t *testing.T) {
 	if len(reg.reloaded) != 1 || reg.reloaded[0] != "svc1" {
 		t.Errorf("running service should be reloaded; reloaded=%v", reg.reloaded)
 	}
-	if cfg, _ := store.Get().findServiceByID("svc1"); cfg == nil || cfg.Command != "/bin/new" {
+	if cfg, _ := config.FindServiceByID(store.Get(), "svc1"); cfg == nil || cfg.Command != "/bin/new" {
 		t.Errorf("updated command not persisted: %+v", cfg)
 	}
 }
 
 func TestIPCUpdateService_NotRunningSkipsReload(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{} // not running
 	ipc, ui := newServicesIPC(t, store, reg)
 
@@ -187,7 +188,7 @@ func TestIPCUpdateService_NotRunningSkipsReload(t *testing.T) {
 
 func TestIPCUpdateService_RestartFailureEmitsError(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}, reloadErr: errors.New("boom")}
 	ipc, ui := newServicesIPC(t, store, reg)
 
@@ -209,13 +210,13 @@ func TestIPCUpdateService_CommandRequired(t *testing.T) {
 
 func TestIPCRemoveService_RemovesAndStops(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 	reg := &svcRecorder{}
 	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcRemoveService(ipc, mustJSON(t, ipcIDMsg{ID: "svc1"}))
 
-	if cfg, _ := store.Get().findServiceByID("svc1"); cfg != nil {
+	if cfg, _ := config.FindServiceByID(store.Get(), "svc1"); cfg != nil {
 		t.Error("service should have been removed from settings")
 	}
 	if !ui.hasEvent("onServiceRemoved") {
@@ -228,7 +229,7 @@ func TestIPCRemoveService_RemovesAndStops(t *testing.T) {
 
 func TestIPCStopService_StopsAsync(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 	reg := &svcRecorder{}
 	ipc, ui := newServicesIPC(t, store, reg)
 
@@ -245,7 +246,7 @@ func TestIPCStopService_StopsAsync(t *testing.T) {
 // A validation failure commits nothing, so the UI must not be told the edit landed.
 func TestIPCUpdateService_RunningValidationFailureIsNotReportedAsUpdated(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
 	ipc, ui := newServicesIPC(t, store, reg)
 
@@ -258,7 +259,7 @@ func TestIPCUpdateService_RunningValidationFailureIsNotReportedAsUpdated(t *test
 	if msg != "command is required" {
 		t.Fatalf("error = %q, want %q", msg, "command is required")
 	}
-	if svc, _ := store.Get().findServiceByID("svc1"); svc.Command != "/bin/old" {
+	if svc, _ := config.FindServiceByID(store.Get(), "svc1"); svc.Command != "/bin/old" {
 		t.Fatalf("command should be untouched, got %q", svc.Command)
 	}
 }
@@ -266,13 +267,13 @@ func TestIPCUpdateService_RunningValidationFailureIsNotReportedAsUpdated(t *test
 // A restart failure DID commit the edit, so the view has to be refreshed.
 func TestIPCUpdateService_RestartFailureStillRefreshesUI(t *testing.T) {
 	store := newCLISandboxStore(t)
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}, reloadErr: errors.New("boom")}
 	ipc, ui := newServicesIPC(t, store, reg)
 
 	ipcUpdateService(ipc, mustJSON(t, ipcServiceMsg{ID: "svc1", DisplayName: "Svc1", Command: "/bin/new"}))
 
-	if svc, _ := store.Get().findServiceByID("svc1"); svc.Command != "/bin/new" {
+	if svc, _ := config.FindServiceByID(store.Get(), "svc1"); svc.Command != "/bin/new" {
 		t.Fatalf("the edit committed, got %q", svc.Command)
 	}
 	var sawStatus bool

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -258,7 +259,7 @@ func TestManager_ToolOwnersUnknown(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "net-mcp", &mockMcpConn{
 		tools:  simpleTools("net_fetch"),
-		config: ExternalMcp{ID: "net-mcp"},
+		config: config.ExternalMcp{ID: "net-mcp"},
 	})
 	if owners := mgr.ToolOwners("no_such_tool"); len(owners) != 0 {
 		t.Errorf("expected no owners, got %v", owners)
@@ -273,7 +274,7 @@ func TestManager_ToolsWithConnection(t *testing.T) {
 	}
 	addMockConn(mgr, "test-mcp", &mockMcpConn{
 		tools:  expectedTools,
-		config: ExternalMcp{ID: "test-mcp", DisplayName: "Test MCP"},
+		config: config.ExternalMcp{ID: "test-mcp", DisplayName: "Test MCP"},
 	})
 
 	tools := mgr.Tools("test-mcp")
@@ -292,7 +293,7 @@ func TestManager_ToolOwnersWithConnection(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "net-mcp", &mockMcpConn{
 		tools:  simpleTools("net_fetch"),
-		config: ExternalMcp{ID: "net-mcp", DisplayName: "Net MCP", Command: "/usr/bin/net-mcp"},
+		config: config.ExternalMcp{ID: "net-mcp", DisplayName: "Net MCP", Command: "/usr/bin/net-mcp"},
 	})
 
 	owners := mgr.ToolOwners("net_fetch")
@@ -314,7 +315,7 @@ func TestManager_ToolOwnersAllOwnersSorted(t *testing.T) {
 		for _, id := range order {
 			addMockConn(mgr, id, &mockMcpConn{
 				tools:  simpleTools("fs_read", "only_"+id),
-				config: ExternalMcp{ID: id},
+				config: config.ExternalMcp{ID: id},
 			})
 		}
 		got := mgr.ToolOwners("fs_read")
@@ -437,11 +438,11 @@ func TestManager_MultipleConnectionsFindCorrectOwner(t *testing.T) {
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "mcp-alpha", &mockMcpConn{
 		tools:  simpleTools("alpha_tool"),
-		config: ExternalMcp{ID: "mcp-alpha", DisplayName: "Alpha"},
+		config: config.ExternalMcp{ID: "mcp-alpha", DisplayName: "Alpha"},
 	})
 	addMockConn(mgr, "mcp-beta", &mockMcpConn{
 		tools:  simpleTools("beta_tool"),
-		config: ExternalMcp{ID: "mcp-beta", DisplayName: "Beta"},
+		config: config.ExternalMcp{ID: "mcp-beta", DisplayName: "Beta"},
 	})
 
 	if owners := mgr.ToolOwners("beta_tool"); len(owners) != 1 || owners[0] != "mcp-beta" {

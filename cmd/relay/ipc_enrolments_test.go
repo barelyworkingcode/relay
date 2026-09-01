@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // newEnrolmentIPC stands up an IPCContext over a sandboxed store whose config
@@ -30,7 +31,7 @@ import (
 // this surface calls on it is Enabled(), and starting a writer goroutine to
 // answer one bool would be the tail wagging the dog. A nil recorder is the
 // genuine "auditing is off" state — Enabled() is nil-safe.
-func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, SettingsStore, *recordingUI) {
+func newEnrolmentIPC(t *testing.T, auditEnabled bool) (*IPCContext, config.SettingsStore, *recordingUI) {
 	t.Helper()
 	_, store := newEnrolmentSandbox(t)
 	ui := &recordingUI{}
@@ -86,7 +87,7 @@ func emittedJSON(t *testing.T, ui *recordingUI) string {
 
 func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	ipcCreateEnrolment(ipc, mustRaw(t, map[string]interface{}{
 		"client_id":   "hermes-mail",
@@ -97,7 +98,7 @@ func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected onEnrolmentCreated; got %+v", ui.events)
 	}
-	var created Enrolment
+	var created config.Enrolment
 	if err := json.Unmarshal(args[0].(json.RawMessage), &created); err != nil {
 		t.Fatalf("unmarshal enrolment: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 	if created.Budget.MaxCalls != defaultEnrolmentMaxCalls {
 		t.Errorf("unset budget did not default: %+v", created.Budget)
 	}
-	if store.Get().FindEnrolment("hermes-mail") == nil {
+	if findEnrolment(store.Get(), "hermes-mail") == nil {
 		t.Error("enrolment was not persisted")
 	}
 
@@ -134,7 +135,7 @@ func TestIPCCreateEnrolment_PersistsAndEmitsBundleDirectory(t *testing.T) {
 // byte of it may ride out on an IPC event, in any field, on any argument.
 func TestIPCCreateEnrolment_NeverEmitsKeyMaterial(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	ipcCreateEnrolment(ipc, mustRaw(t, map[string]interface{}{
 		"client_id":   "hermes-mail",
@@ -181,7 +182,7 @@ func TestIPCCreateEnrolment_NeverEmitsKeyMaterial(t *testing.T) {
 // — it names the project so the operator knows which grant to drop.
 func TestIPCCreateEnrolment_RefusesLocalProjectGrant(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", t.TempDir())
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", t.TempDir())
 
 	ipcCreateEnrolment(ipc, mustRaw(t, map[string]interface{}{
 		"client_id":   "hermes-mail",
@@ -226,7 +227,7 @@ func TestIPCCreateEnrolment_RequiresClientID(t *testing.T) {
 // A duplicate client id is refused rather than shadowing the first record.
 func TestIPCCreateEnrolment_RefusesDuplicateClientID(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	body := mustRaw(t, map[string]interface{}{
 		"client_id":   "hermes-mail",
 		"project_ids": []string{mail.ID},
@@ -256,12 +257,12 @@ func TestIPCCreateEnrolment_RefusesDuplicateClientID(t *testing.T) {
 // property, so the test asserts on it directly.
 func TestIPCRevokeEnrolment_DeletesRecordBundleAndFiresHook(t *testing.T) {
 	ipc, store, ui := newEnrolmentIPC(t, true)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	ipcCreateEnrolment(ipc, mustRaw(t, map[string]interface{}{
 		"client_id":   "hermes-mail",
 		"project_ids": []string{mail.ID},
 	}))
-	created := store.Get().FindEnrolment("hermes-mail")
+	created := findEnrolment(store.Get(), "hermes-mail")
 	if created == nil {
 		t.Fatal("setup: enrolment was not created")
 	}
@@ -289,7 +290,7 @@ func TestIPCRevokeEnrolment_DeletesRecordBundleAndFiresHook(t *testing.T) {
 	if got, _ := args[1].(string); got != fingerprint {
 		t.Errorf("revoked event fingerprint = %q, want the full %q", got, fingerprint)
 	}
-	if store.Get().FindEnrolment("hermes-mail") != nil {
+	if findEnrolment(store.Get(), "hermes-mail") != nil {
 		t.Error("the enrolment record survived revocation")
 	}
 	if _, err := os.Stat(bundleDir); !os.IsNotExist(err) {
@@ -341,7 +342,7 @@ func TestIPCUpdateRemoteConfig_CreatingTheBlockDoesNotEnableIt(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:9911" {
 		t.Errorf("listen = %q", cfg.Listen)
 	}
-	if cfg.resolve().Enabled {
+	if resolveRemoteConfig(cfg).Enabled {
 		t.Error("a block created by setting an address resolved to enabled")
 	}
 
@@ -425,7 +426,7 @@ func TestIPCUpdateRemoteConfig_BlankListenStaysBlank(t *testing.T) {
 	if cfg == nil || cfg.Listen != "" {
 		t.Fatalf("blank listen was not stored blank: %+v", cfg)
 	}
-	if got := cfg.resolve().Listen; got != defaultRemoteListen {
+	if got := resolveRemoteConfig(cfg).Listen; got != defaultRemoteListen {
 		t.Errorf("blank listen resolved to %q, want %q", got, defaultRemoteListen)
 	}
 }
@@ -458,13 +459,13 @@ func TestRemoteConfigView_ReportsAuditAsTheGateOnRemoteAccess(t *testing.T) {
 // correct before any message is exchanged.
 func TestRenderSettingsHTML_SeedsEnrolmentsAndRemoteBlock(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	if _, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
 		t.Fatalf("createEnrolment: %v", err)
 	}
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		enabled := true
-		s.Remote = &RemoteConfig{Enabled: &enabled, Listen: "127.0.0.1:9910"}
+		s.Remote = &config.RemoteConfig{Enabled: &enabled, Listen: "127.0.0.1:9910"}
 	})
 
 	s := store.Get()

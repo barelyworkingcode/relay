@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,7 @@ func TestLive_RelayLLM_RegistersAndServesStatus(t *testing.T) {
 	router, reg := startSandboxBridge(t, enhanced)
 	_ = router
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "relayLLM",
 		DisplayName: "Relay LLM",
 		Command:     binPath,
@@ -76,7 +77,7 @@ func TestLive_RelayLLM_ManifestMatchesFixture(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "relayLLM",
 		DisplayName: "Relay LLM",
 		Command:     binPath,

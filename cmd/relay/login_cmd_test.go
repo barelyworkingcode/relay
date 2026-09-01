@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 // so a test can read settings.json off disk the way an operator's shell
 // session would never do, but a test proving the plaintext never lands
 // there needs to.
-func lcNewStore(t *testing.T) (SettingsStore, string) {
+func lcNewStore(t *testing.T) (config.SettingsStore, string) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -98,8 +99,8 @@ func TestLoginList_CLINeverPrintsKeyMaterial(t *testing.T) {
 
 	const xMarker = "AAAASECRETXCOORDAAAA"
 	const yMarker = "BBBBSECRETYCOORDBBBB"
-	err := store.With(func(s *Settings) {
-		s.Passkeys = append(s.Passkeys, Passkey{
+	err := store.With(func(s *config.Settings) {
+		s.Passkeys = append(s.Passkeys, config.Passkey{
 			ID:      "cred-id-0123456789abcdef",
 			Name:    "test-passkey",
 			X:       []byte(xMarker),

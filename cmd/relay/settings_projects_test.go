@@ -2,20 +2,21 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"reflect"
 	"slices"
 	"testing"
 )
 
-func newProjectsTestStore(t *testing.T) SettingsStore {
+func newProjectsTestStore(t *testing.T) config.SettingsStore {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	store.With(func(s *Settings) {
-		s.ExternalMcps = []ExternalMcp{
+	store.With(func(s *config.Settings) {
+		s.ExternalMcps = []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
@@ -32,12 +33,12 @@ func fsSchemas() McpSurfaces {
 	}
 }
 
-func createTestProject(t *testing.T, store SettingsStore, name, path string, mcpIDs []string) Project {
+func createTestProject(t *testing.T, store config.SettingsStore, name, path string, mcpIDs []string) config.Project {
 	t.Helper()
-	var proj Project
-	store.With(func(s *Settings) {
+	var proj config.Project
+	store.With(func(s *config.Settings) {
 		var err error
-		proj, err = s.CreateProjectWithToken(name, path, mcpIDs, []string{"*"}, nil, fsSchemas())
+		proj, err = createProjectWithToken(s, name, path, mcpIDs, []string{"*"}, nil, fsSchemas())
 		if err != nil {
 			t.Fatalf("CreateProjectWithToken: %v", err)
 		}
@@ -54,7 +55,7 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 	var newPlain string
 	var ok bool
 	var rotErr error
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		newPlain, ok, rotErr = s.RotateProjectToken(proj.ID)
 	})
 	if rotErr != nil {
@@ -66,7 +67,7 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 	if newPlain == "" || newPlain == oldPlain {
 		t.Fatalf("rotated token unchanged or empty: old=%q new=%q", oldPlain, newPlain)
 	}
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	afterPlain, _ := after.Token.Reveal()
 	if afterPlain != newPlain {
 		t.Errorf("stored plaintext = %q; want %q", afterPlain, newPlain)
@@ -74,7 +75,7 @@ func TestRotateProjectToken_ReplacesPlaintextAndHash(t *testing.T) {
 	if after.TokenHash == oldHash {
 		t.Errorf("hash unchanged after rotation: %q", oldHash)
 	}
-	if after.TokenHash != hashToken(newPlain) {
+	if after.TokenHash != config.HashToken(newPlain) {
 		t.Errorf("stored hash does not match new plaintext")
 	}
 }
@@ -84,7 +85,7 @@ func TestRotateProjectToken_OldTokenRejectedOnNextAuth(t *testing.T) {
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 	oldPlain, _ := proj.Token.Reveal()
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		_, _, _ = s.RotateProjectToken(proj.ID)
 	})
 
@@ -98,7 +99,7 @@ func TestRotateProjectToken_UnknownIDReturnsFalse(t *testing.T) {
 	store := newProjectsTestStore(t)
 	var plain string
 	var ok bool
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		plain, ok, _ = s.RotateProjectToken("nope")
 	})
 	if ok || plain != "" {
@@ -110,10 +111,10 @@ func TestUpdateProjectDisabledTools_ReplacesSlice(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript", "openApp"})
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	got := after.DisabledTools["macmcp"]
 	want := []string{"runScript", "openApp"}
 	if !reflect.DeepEqual(got, want) {
@@ -126,10 +127,10 @@ func TestUpdateProjectDisabledTools_EmptySliceDeletesKey(t *testing.T) {
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 	// Creating an fsmcp project already auto-disables fs_bash, so DisabledTools
 	// is non-empty before this call.
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "fsmcp", nil)
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if _, present := after.DisabledTools["fsmcp"]; present {
 		t.Errorf("expected fsmcp key deleted, got %v", after.DisabledTools)
 	}
@@ -139,10 +140,10 @@ func TestUpdateProjectDisabledTools_RefusesNotInAllowedMcps(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"shouldNotPersist"})
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if _, present := after.DisabledTools["macmcp"]; present {
 		t.Fatalf("disabled_tools[macmcp] persisted despite macmcp not in AllowedMcpIDs: %v", after.DisabledTools)
 	}
@@ -152,10 +153,10 @@ func TestUpdateProjectDisabledTools_DeduplicatesAndDropsEmpty(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "fsmcp", []string{"a", "a", "", "b"})
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	got := after.DisabledTools["fsmcp"]
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("dedup/empty-skip wrong: got %v", got)
@@ -166,10 +167,10 @@ func TestUpdateProjectDisabledTools_WildcardProjectAcceptsAnyMcp(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "WildAlpha", t.TempDir(), []string{"*"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript"})
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if !slices.Contains(after.DisabledTools["macmcp"], "runScript") {
 		t.Errorf("wildcard project rejected disabled-tools update for macmcp: %v", after.DisabledTools)
 	}
@@ -179,18 +180,18 @@ func TestSetProjectGenerateSkill_TogglesFlag(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.SetProjectGenerateSkill(proj.ID, true)
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if !after.GenerateSkill {
 		t.Errorf("GenerateSkill not set to true")
 	}
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.SetProjectGenerateSkill(proj.ID, false)
 	})
-	after, _ = store.Get().findProjectByID(proj.ID)
+	after, _ = config.FindProjectByID(store.Get(), proj.ID)
 	if after.GenerateSkill {
 		t.Errorf("GenerateSkill not cleared")
 	}
@@ -200,11 +201,11 @@ func TestSyncProjectToken_PreservesUserDisabledToolsAcrossMcpResync(t *testing.T
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript"})
-		s.UpdateProjectMcps(proj.ID, []string{"macmcp"}, fsSchemas())
+		updateProjectMcps(s, proj.ID, []string{"macmcp"}, fsSchemas())
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if _, present := after.DisabledTools["fsmcp"]; present {
 		t.Errorf("fsmcp disabled-tools survived MCP removal: %v", after.DisabledTools)
 	}
@@ -220,11 +221,11 @@ func TestSyncProjectToken_WildcardPreservesPriorDisabledTools(t *testing.T) {
 	store := newProjectsTestStore(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})
 
-	store.With(func(s *Settings) {
+	store.With(func(s *config.Settings) {
 		s.UpdateProjectDisabledTools(proj.ID, "macmcp", []string{"runScript"})
-		s.UpdateProjectMcps(proj.ID, []string{"*"}, fsSchemas())
+		updateProjectMcps(s, proj.ID, []string{"*"}, fsSchemas())
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if !slices.Contains(after.DisabledTools["macmcp"], "runScript") {
 		t.Errorf("expected macmcp disabled tools preserved across wildcard switch, got %v", after.DisabledTools)
 	}
@@ -235,7 +236,7 @@ func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.
 	dir := t.TempDir()
 	proj := createTestProject(t, store, "Alpha", dir, []string{"fsmcp"})
 
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	var ctxMap map[string]interface{}
 	if err := json.Unmarshal(after.Context["fsmcp"], &ctxMap); err != nil {
 		t.Fatalf("expected fsmcp context to be set for a local project: %v", err)
@@ -255,21 +256,21 @@ func TestSyncProjectToken_LocalStillGetsAllowedDirsAndFsBashDisabled(t *testing.
 // validation would have caught the same grant.
 func TestSyncProjectToken_RemoteNeverWritesAllowedDirs(t *testing.T) {
 	store := newProjectsTestStore(t)
-	var proj Project
-	store.With(func(s *Settings) {
-		proj = Project{
+	var proj config.Project
+	store.With(func(s *config.Settings) {
+		proj = config.Project{
 			ID:            "remote-1",
 			Name:          "Bypassed",
-			Kind:          ProjectKindRemote,
+			Kind:          config.ProjectKindRemote,
 			Path:          "", // remote projects have no path
 			AllowedMcpIDs: []string{"fsmcp"},
 			CreatedAt:     "now",
 		}
 		s.AddProject(proj)
-		p, _ := s.findProjectByID(proj.ID)
-		s.SyncProjectToken(p, fsSchemas())
+		p, _ := config.FindProjectByID(s, proj.ID)
+		syncProjectToken(s, p, fsSchemas())
 	})
-	after, _ := store.Get().findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if after == nil {
 		t.Fatal("project not found after SyncProjectToken")
 	}

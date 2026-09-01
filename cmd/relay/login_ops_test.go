@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/barelyworkingcode/relay/internal/config"
 	"testing"
 	"time"
 )
@@ -9,21 +10,21 @@ func TestConsumeBootstrapCode_VerifiesOnceThenRefusesReplay(t *testing.T) {
 	store := newCLISandboxStore(t)
 
 	var plaintext string
-	err := store.With(func(s *Settings) {
+	err := store.With(func(s *config.Settings) {
 		var mintErr error
 		plaintext, mintErr = mintBootstrapCode(s)
 		assertNoErr(t, mintErr, "mintBootstrapCode")
 	})
 	assertNoErr(t, err, "store.With mint")
 
-	err = store.With(func(s *Settings) {
+	err = store.With(func(s *config.Settings) {
 		if cErr := consumeBootstrapCode(s, plaintext); cErr != nil {
 			t.Fatalf("first consume: got %v, want nil", cErr)
 		}
 	})
 	assertNoErr(t, err, "store.With consume 1")
 
-	err = store.With(func(s *Settings) {
+	err = store.With(func(s *config.Settings) {
 		if cErr := consumeBootstrapCode(s, plaintext); cErr != errBootstrapCodeInvalid {
 			t.Fatalf("replay: got %v, want errBootstrapCodeInvalid", cErr)
 		}
@@ -37,16 +38,16 @@ func TestConsumeBootstrapCode_VerifiesOnceThenRefusesReplay(t *testing.T) {
 // leaks which of the three happened to a caller with no access to the
 // config dir (ADR-016 decision 2).
 func TestConsumeBootstrapCode_ExpiredWrongAndAbsentAreIdentical(t *testing.T) {
-	sAbsent := &Settings{}
+	sAbsent := &config.Settings{}
 	errAbsent := consumeBootstrapCode(sAbsent, "whatever")
 
-	sExpired := &Settings{}
+	sExpired := &config.Settings{}
 	plaintext, err := mintBootstrapCode(sExpired)
 	assertNoErr(t, err, "mintBootstrapCode (expired case)")
 	sExpired.LoginBootstrap.Expires = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
 	errExpired := consumeBootstrapCode(sExpired, plaintext)
 
-	sWrong := &Settings{}
+	sWrong := &config.Settings{}
 	_, err = mintBootstrapCode(sWrong)
 	assertNoErr(t, err, "mintBootstrapCode (wrong-code case)")
 	errWrong := consumeBootstrapCode(sWrong, "not-the-real-code")
@@ -66,7 +67,7 @@ func TestConsumeBootstrapCode_ExpiredWrongAndAbsentAreIdentical(t *testing.T) {
 }
 
 func TestMintBootstrapCode_ReplacesRatherThanAccumulates(t *testing.T) {
-	s := &Settings{}
+	s := &config.Settings{}
 	first, err := mintBootstrapCode(s)
 	assertNoErr(t, err, "mint 1")
 	firstHash := s.LoginBootstrap.Hash
@@ -90,7 +91,7 @@ func TestMintBootstrapCode_ReplacesRatherThanAccumulates(t *testing.T) {
 }
 
 func TestConsumeBootstrapCode_WrongCodeDoesNotConsumeTheRealOne(t *testing.T) {
-	s := &Settings{}
+	s := &config.Settings{}
 	real, err := mintBootstrapCode(s)
 	assertNoErr(t, err, "mint")
 
@@ -118,7 +119,7 @@ func TestMintBootstrapCode_CrossProcessConsumable(t *testing.T) {
 	assertNoErr(t, storeA.EnsureInitialized(), "EnsureInitialized")
 
 	var plaintext string
-	err := storeA.With(func(s *Settings) {
+	err := storeA.With(func(s *config.Settings) {
 		var mintErr error
 		plaintext, mintErr = mintBootstrapCode(s)
 		assertNoErr(t, mintErr, "mintBootstrapCode")
@@ -126,7 +127,7 @@ func TestMintBootstrapCode_CrossProcessConsumable(t *testing.T) {
 	assertNoErr(t, err, "store A mint")
 
 	storeB := sealedSettingsStoreAt(dir)
-	err = storeB.With(func(s *Settings) {
+	err = storeB.With(func(s *config.Settings) {
 		if cErr := consumeBootstrapCode(s, plaintext); cErr != nil {
 			t.Fatalf("cross-process consume: %v", cErr)
 		}

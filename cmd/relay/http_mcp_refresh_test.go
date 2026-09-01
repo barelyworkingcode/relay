@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,13 +38,13 @@ func refreshTokenServer(t *testing.T, status int, body string) *httptest.Server 
 // newRefreshableConn builds an httpMcpConn whose token expires at `expiry`, with
 // its OAuth metadata pre-pointed at tokenURL (so no network discovery runs).
 func newRefreshableConn(mcpURL, tokenURL string, expiry time.Time, accessToken string) *httpMcpConn {
-	oauth := &OAuthState{
-		AccessToken:  NewSecret(accessToken),
-		RefreshToken: NewSecret("old-rt"),
+	oauth := &config.OAuthState{
+		AccessToken:  config.NewSecret(accessToken),
+		RefreshToken: config.NewSecret("old-rt"),
 		ClientID:     "cid",
 		TokenExpiry:  expiry.UTC().Format(time.RFC3339),
 	}
-	conn := newHTTPMcpConn(ExternalMcp{ID: "http-mcp", Transport: "http", URL: mcpURL, OAuthState: oauth})
+	conn := newHTTPMcpConn(config.ExternalMcp{ID: "http-mcp", Transport: "http", URL: mcpURL, OAuthState: oauth})
 	applyStoredOAuthState(conn, oauth)
 	conn.oauth.meta = &oauthMetadata{TokenEndpoint: tokenURL + "/token"}
 	return conn
@@ -57,8 +58,8 @@ func TestHTTPMcp_AutoRefresh_UsesNewTokenAndPersists(t *testing.T) {
 
 	// Expiry 10s out → inside the 30s refresh window → proactive refresh fires.
 	conn := newRefreshableConn(mcpSrv.URL, tokenSrv.URL, time.Now().Add(10*time.Second), "old-at")
-	var persisted *OAuthState
-	conn.onTokenRefresh = func(o *OAuthState) { persisted = o }
+	var persisted *config.OAuthState
+	conn.onTokenRefresh = func(o *config.OAuthState) { persisted = o }
 
 	res, err := conn.SendRequest(context.Background(), "tools/list", nil)
 	if err != nil {
@@ -89,7 +90,7 @@ func TestHTTPMcp_AutoRefresh_TransientFailureProceedsWithValidToken(t *testing.T
 	// fail the call; the still-valid token is used.
 	conn := newRefreshableConn(mcpSrv.URL, tokenSrv.URL, time.Now().Add(10*time.Second), "old-at")
 	refreshed := false
-	conn.onTokenRefresh = func(*OAuthState) { refreshed = true }
+	conn.onTokenRefresh = func(*config.OAuthState) { refreshed = true }
 
 	if _, err := conn.SendRequest(context.Background(), "tools/list", nil); err != nil {
 		t.Fatalf("should proceed with still-valid token despite refresh failure: %v", err)

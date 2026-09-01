@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"slices"
 	"strings"
 	"testing"
 )
 
-func fullScopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage) *appRouter {
+func fullScopedProfile(t *testing.T, kind config.ProjectKind, values map[string]json.RawMessage) *appRouter {
 	t.Helper()
 	return newProfileRouter(t, profileOpts{
 		kind:          kind,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: values,
 		schema:        macmcpSchema,
@@ -40,7 +41,7 @@ func bucketToolNames(t *testing.T, r *appRouter) []string {
 // file_dirs is source: "project_path"; an access profile has no path, so no
 // value can ever exist for it.
 func TestListTools_WithholdsAToolThisGrantCanNeverCall(t *testing.T) {
-	r := fullScopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := fullScopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts":  json.RawMessage(`["Bob"]`),
 		"mail_mailboxes": json.RawMessage(`["INBOX"]`),
 	})
@@ -69,7 +70,7 @@ func TestListTools_WithholdsAToolThisGrantCanNeverCall(t *testing.T) {
 // transient gap stays listed and loud, and only an unsatisfiable one is
 // withheld.
 func TestListTools_KeepsAToolWhoseValueIsMerelyUnset(t *testing.T) {
-	r := fullScopedProfile(t, ProjectKindRemote, nil)
+	r := fullScopedProfile(t, config.ProjectKindRemote, nil)
 	listed := listedToolNames(t, r)
 	if !slices.Contains(listed, "mail_search") {
 		t.Fatalf("a tool whose scope is merely unset was withheld: %v", listed)
@@ -84,7 +85,7 @@ func TestListTools_KeepsAToolWhoseValueIsMerelyUnset(t *testing.T) {
 // A local project has a path; SyncProjectToken derives file_dirs, so nothing
 // is withheld from it.
 func TestListTools_ALocalProjectKeepsItsPathScopedTools(t *testing.T) {
-	r := fullScopedProfile(t, ProjectKindLocal, map[string]json.RawMessage{
+	r := fullScopedProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
 		"mail_accounts":  json.RawMessage(`["Bob"]`),
 		"mail_mailboxes": json.RawMessage(`["INBOX"]`),
 		"file_dirs":      json.RawMessage(`["/tmp/test"]`),
@@ -97,7 +98,7 @@ func TestListTools_ALocalProjectKeepsItsPathScopedTools(t *testing.T) {
 // Naming two of three restrictions while omitting the one that decides the
 // call is worse than saying nothing.
 func TestScopeNote_NamesEveryGoverningFieldIncludingTheUnsetOne(t *testing.T) {
-	r := fullScopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := fullScopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
 	raw, err := r.ListTools(context.Background(), testToken)
@@ -124,11 +125,10 @@ func TestScopeNote_NamesEveryGoverningFieldIncludingTheUnsetOne(t *testing.T) {
 // macMCP has dozens of tools, so a broad grant always answers "some tools
 // survive"; only a grant naming solely the unsatisfiable tool exposes this.
 func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *testing.T) {
-	s := &Settings{}
 	proj := remoteProjectGranting("macmcp")
 	proj.AllowedTools = map[string][]string{"macmcp": {"mail_save_attachment"}}
 
-	err := s.ValidateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()})
+	err := validateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()})
 	if err == nil {
 		t.Fatal("a profile whose every granted tool needs a project path saved cleanly and can call nothing")
 	}
@@ -139,7 +139,7 @@ func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *tes
 	}
 
 	proj.AllowedTools = map[string][]string{"macmcp": {"mail_*"}}
-	if err := s.ValidateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
+	if err := validateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
 		t.Fatalf("a grant retaining usable tools was refused: %v", err)
 	}
 }
@@ -148,13 +148,12 @@ func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *tes
 // asking "are the zero tools you named all dead" is vacuously no, and would
 // wrongly permit the grant decision 5 is built on refusing.
 func TestValidateProjectGrants_AnIncompleteGrantIsJudgedAgainstTheWholeSurface(t *testing.T) {
-	s := &Settings{}
 	proj := remoteProjectGranting("fsmcp")
-	if err := s.ValidateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
+	if err := validateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
 		t.Fatal("a profile with no allowed_tools yet was granted an MCP no tool of which can work")
 	}
 	proj.AllowedTools = map[string][]string{"fsmcp": {"nosuch_tool"}}
-	if err := s.ValidateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
+	if err := validateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
 		t.Fatal("an allowlist matching no tool was read as a grant of no governed tools")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,7 +21,7 @@ const maxSessionBodyBytes = 1 << 20
 // pattern: Go's ServeMux routes "POST /api/sessions/" (trailing slash) to
 // the "/" catch-all, bypassing a guard mounted only on the exact
 // "POST /api/sessions" pattern.
-func newSessionModelGuard(store SettingsStore, next http.Handler) http.HandlerFunc {
+func newSessionModelGuard(store config.SettingsStore, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !isSessionCreatePath(r.URL.Path) {
 			next.ServeHTTP(w, r)
@@ -84,26 +85,26 @@ func isSessionCreatePath(p string) bool {
 // unrestricted — folded together, a remote project would permit every
 // model, the most permissive outcome reached through the most restrictive
 // configuration.
-func refuseRemoteSession(store SettingsStore, projectID string) error {
+func refuseRemoteSession(store config.SettingsStore, projectID string) error {
 	if projectID == "" {
 		return nil
 	}
-	proj, _ := store.Get().findProjectByID(projectID)
+	proj, _ := config.FindProjectByID(store.Get(), projectID)
 	if proj == nil || !proj.IsRemote() {
 		return nil
 	}
 	return fmt.Errorf("project %s is a remote project and cannot host a session", projectID)
 }
 
-func modelAllowedForProject(store SettingsStore, projectID, model string) bool {
+func modelAllowedForProject(store config.SettingsStore, projectID, model string) bool {
 	if projectID == "" || model == "" {
 		return true // no project scope, or server-default model
 	}
-	proj, _ := store.Get().findProjectByID(projectID)
+	proj, _ := config.FindProjectByID(store.Get(), projectID)
 	if proj == nil {
 		return true // unknown project — let relayLLM produce the authoritative error
 	}
-	if len(proj.AllowedModels) == 0 || isWildcard(proj.AllowedModels) {
+	if len(proj.AllowedModels) == 0 || config.IsWildcard(proj.AllowedModels) {
 		return true // unrestricted
 	}
 	return slices.Contains(proj.AllowedModels, model)

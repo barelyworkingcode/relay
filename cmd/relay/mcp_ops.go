@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -99,7 +100,7 @@ func mcpRegisterReason(id string, f mcpFields) string {
 // waiting to be closed -- see StartOAuth and ResetPermissions below for how
 // their logic still moves here without pulling the desktop dependency in.
 type McpOps struct {
-	Store SettingsStore
+	Store config.SettingsStore
 	Ctx   context.Context
 	// Gate is the presence check Add and StartOAuth demand before they
 	// touch the store (ADR-017 decisions 3 and 4): the caller chooses what
@@ -145,48 +146,48 @@ func (o *McpOps) notify() {
 	}
 }
 
-func (o *McpOps) List() []ExternalMcp {
+func (o *McpOps) List() []config.ExternalMcp {
 	m := o.Store.Get().ExternalMcps
 	if m == nil {
-		return []ExternalMcp{}
+		return []config.ExternalMcp{}
 	}
 	return m
 }
 
-func (o *McpOps) Get(id string) (ExternalMcp, error) {
-	mcp, _ := o.Store.Get().findMcpByID(id)
+func (o *McpOps) Get(id string) (config.ExternalMcp, error) {
+	mcp, _ := config.FindExternalMcpByID(o.Store.Get(), id)
 	if mcp == nil {
-		return ExternalMcp{}, fmt.Errorf("%w: %s", errMcpNotFound, id)
+		return config.ExternalMcp{}, fmt.Errorf("%w: %s", errMcpNotFound, id)
 	}
 	return *mcp, nil
 }
 
-func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (ExternalMcp, error) {
+func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (config.ExternalMcp, error) {
 	id := f.resolvedID()
 	if id == "" {
-		return ExternalMcp{}, invalidMcp("display name is required")
+		return config.ExternalMcp{}, invalidMcp("display name is required")
 	}
 
 	if f.Transport == "http" {
 		if f.URL == "" {
-			return ExternalMcp{}, invalidMcp("URL is required for HTTP transport")
+			return config.ExternalMcp{}, invalidMcp("URL is required for HTTP transport")
 		}
 		// The SSRF guard: f.URL is caller-supplied and relay is about to
 		// connect to it. Must run on every door that can reach Add, with
 		// no weakening -- this is the same call ipcAddExternalMcp made.
 		if err := validateMcpURL(f.URL); err != nil {
-			return ExternalMcp{}, invalidMcp(err.Error())
+			return config.ExternalMcp{}, invalidMcp(err.Error())
 		}
 	} else if f.Command == "" {
-		return ExternalMcp{}, invalidMcp("command is required for stdio transport")
+		return config.ExternalMcp{}, invalidMcp("command is required for stdio transport")
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return ExternalMcp{}, err
+		return config.ExternalMcp{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "mcp.register", f.presenceDigest(id), mcpRegisterReason(id, f))
 	if err != nil {
-		return ExternalMcp{}, err
+		return config.ExternalMcp{}, err
 	}
 
 	if f.Transport == "http" {
@@ -195,11 +196,11 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (Exte
 
 	result, err := DiscoverExternalMcp(o.Ctx, f.DisplayName, id, f.Command, f.Args, f.Env)
 	if err != nil {
-		return ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
+		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
 	}
 	result.TccServices = f.TccServices
 	if err := o.persist(*result, via, credID, grant.ID()); err != nil {
-		return ExternalMcp{}, err
+		return config.ExternalMcp{}, err
 	}
 	return *result, nil
 }
@@ -211,13 +212,13 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (Exte
 // committed write, pending side effect -- so callers must check
 // errors.Is(err, ErrAuthRequired) before treating a non-nil error as a
 // failed Add.
-func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, via, credID, presenceID string) (ExternalMcp, error) {
+func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, via, credID, presenceID string) (config.ExternalMcp, error) {
 	result, err := DiscoverHTTPMcp(o.Ctx, displayName, id, mcpURL, nil)
 	if err != nil && !errors.Is(err, ErrAuthRequired) {
-		return ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
+		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
 	}
 	if result == nil {
-		return ExternalMcp{}, fmt.Errorf("%w: discovery returned no configuration", errMcpDiscovery)
+		return config.ExternalMcp{}, fmt.Errorf("%w: discovery returned no configuration", errMcpDiscovery)
 	}
 	needsAuth := errors.Is(err, ErrAuthRequired)
 	// Applied even though TCC services are mostly a stdio concern: the
@@ -227,7 +228,7 @@ func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, v
 	result.TccServices = tccServices
 
 	if perr := o.persist(*result, via, credID, presenceID); perr != nil {
-		return ExternalMcp{}, perr
+		return config.ExternalMcp{}, perr
 	}
 	if needsAuth {
 		return *result, ErrAuthRequired
@@ -235,9 +236,9 @@ func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, v
 	return *result, nil
 }
 
-func (o *McpOps) persist(cfg ExternalMcp, via, credID, presenceID string) error {
+func (o *McpOps) persist(cfg config.ExternalMcp, via, credID, presenceID string) error {
 	var secret string
-	if err := o.Store.With(func(s *Settings) {
+	if err := o.Store.With(func(s *config.Settings) {
 		s.UpsertExternalMcp(cfg)
 		secret, _ = s.AdminSecret.Reveal()
 	}); err != nil {
@@ -274,8 +275,8 @@ func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
 	}
 
 	var secret string
-	if err := withDeclinable(o.Store, func(s *Settings) error {
-		if _, idx := s.findMcpByID(id); idx < 0 {
+	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
 		s.RemoveExternalMcp(id)
@@ -307,7 +308,7 @@ func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
 // dependency. The IPC envelope is the only caller today (ADR-014 section 4
 // -- OAuth needs a local callback listener and a real browser, so it has no
 // HTTP route), and it supplies ctx.Platform.OpenURL.
-func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string), via, credID string) (*OAuthState, error) {
+func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string), via, credID string) (*config.OAuthState, error) {
 	mcp, err := o.Get(id)
 	if err != nil {
 		return nil, err
@@ -339,8 +340,8 @@ func (o *McpOps) StartOAuth(ctx context.Context, id string, openURL func(string)
 	// silently match nothing and this method report a persisted OAuth state
 	// that never landed — and, worse, rewrite settings.json to say so.
 	var secret string
-	if err := withDeclinable(o.Store, func(s *Settings) error {
-		if _, idx := s.findMcpByID(id); idx < 0 {
+	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		if _, idx := config.FindExternalMcpByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errMcpNotFound, id)
 		}
 		s.UpdateOAuthState(id, oauth.toOAuthState())

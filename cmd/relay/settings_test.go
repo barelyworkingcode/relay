@@ -2,21 +2,22 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func newTestSettings(t *testing.T, mcps []ExternalMcp) *Settings {
+func newTestSettings(t *testing.T, mcps []config.ExternalMcp) *config.Settings {
 	t.Helper()
 	if mcps == nil {
-		mcps = []ExternalMcp{}
+		mcps = []config.ExternalMcp{}
 	}
-	return &Settings{
+	return &config.Settings{
 		Version:      1,
 		ExternalMcps: mcps,
-		Services:     []ServiceConfig{},
+		Services:     []config.ServiceConfig{},
 	}
 }
 
@@ -24,7 +25,7 @@ func TestAddExternalMcp(t *testing.T) {
 	t.Run("adds MCP to slice", func(t *testing.T) {
 		s := newTestSettings(t, nil)
 
-		mcp := ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
+		mcp := config.ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"}
 		s.AddExternalMcp(mcp)
 
 		if len(s.ExternalMcps) != 1 {
@@ -39,7 +40,7 @@ func TestAddExternalMcp(t *testing.T) {
 func TestRemoveExternalMcp(t *testing.T) {
 	t.Run("removes MCP from slice", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"})
+		s.AddExternalMcp(config.ExternalMcp{ID: "mcp1", DisplayName: "Test MCP"})
 
 		s.RemoveExternalMcp("mcp1")
 
@@ -50,7 +51,7 @@ func TestRemoveExternalMcp(t *testing.T) {
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddExternalMcp(ExternalMcp{ID: "keep"})
+		s.AddExternalMcp(config.ExternalMcp{ID: "keep"})
 		s.RemoveExternalMcp("nonexistent")
 		if len(s.ExternalMcps) != 1 {
 			t.Fatalf("expected 1 MCP, got %d", len(s.ExternalMcps))
@@ -61,19 +62,19 @@ func TestRemoveExternalMcp(t *testing.T) {
 func TestUpdateExternalMcp(t *testing.T) {
 	t.Run("replaces config by ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddExternalMcp(ExternalMcp{
+		s.AddExternalMcp(config.ExternalMcp{
 			ID:          "mcp1",
 			DisplayName: "Old",
 			Command:     "/old",
 		})
 
-		s.UpdateExternalMcp(ExternalMcp{
+		s.UpdateExternalMcp(config.ExternalMcp{
 			ID:          "mcp1",
 			DisplayName: "New",
 			Command:     "/new",
 		})
 
-		mcp, _ := s.findMcpByID("mcp1")
+		mcp, _ := config.FindExternalMcpByID(s, "mcp1")
 		if mcp == nil {
 			t.Fatal("MCP should still exist after update")
 		}
@@ -87,17 +88,17 @@ func TestUpdateExternalMcp(t *testing.T) {
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.UpdateExternalMcp(ExternalMcp{ID: "nonexistent", DisplayName: "Ghost"})
+		s.UpdateExternalMcp(config.ExternalMcp{ID: "nonexistent", DisplayName: "Ghost"})
 	})
 }
 
 func TestFindMcpByID(t *testing.T) {
 	t.Run("finds existing MCP", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "First"})
-		s.AddExternalMcp(ExternalMcp{ID: "mcp2", DisplayName: "Second"})
+		s.AddExternalMcp(config.ExternalMcp{ID: "mcp1", DisplayName: "First"})
+		s.AddExternalMcp(config.ExternalMcp{ID: "mcp2", DisplayName: "Second"})
 
-		mcp, idx := s.findMcpByID("mcp2")
+		mcp, idx := config.FindExternalMcpByID(s, "mcp2")
 		if mcp == nil {
 			t.Fatal("expected to find MCP")
 		}
@@ -111,7 +112,7 @@ func TestFindMcpByID(t *testing.T) {
 
 	t.Run("returns nil for missing ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		mcp, idx := s.findMcpByID("nope")
+		mcp, idx := config.FindExternalMcpByID(s, "nope")
 		if mcp != nil {
 			t.Fatal("expected nil for missing ID")
 		}
@@ -124,10 +125,10 @@ func TestFindMcpByID(t *testing.T) {
 func TestFindServiceByID(t *testing.T) {
 	t.Run("finds existing service", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "Alpha"})
-		s.AddService(ServiceConfig{ID: "svc2", DisplayName: "Beta"})
+		s.AddService(config.ServiceConfig{ID: "svc1", DisplayName: "Alpha"})
+		s.AddService(config.ServiceConfig{ID: "svc2", DisplayName: "Beta"})
 
-		svc, idx := s.findServiceByID("svc1")
+		svc, idx := config.FindServiceByID(s, "svc1")
 		if svc == nil {
 			t.Fatal("expected to find service")
 		}
@@ -141,7 +142,7 @@ func TestFindServiceByID(t *testing.T) {
 
 	t.Run("returns nil for missing ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		svc, idx := s.findServiceByID("nope")
+		svc, idx := config.FindServiceByID(s, "nope")
 		if svc != nil {
 			t.Fatal("expected nil for missing ID")
 		}
@@ -154,8 +155,8 @@ func TestFindServiceByID(t *testing.T) {
 func TestAddRemoveService(t *testing.T) {
 	t.Run("add and remove", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "One"})
-		s.AddService(ServiceConfig{ID: "svc2", DisplayName: "Two"})
+		s.AddService(config.ServiceConfig{ID: "svc1", DisplayName: "One"})
+		s.AddService(config.ServiceConfig{ID: "svc2", DisplayName: "Two"})
 
 		if len(s.Services) != 2 {
 			t.Fatalf("expected 2 services, got %d", len(s.Services))
@@ -174,10 +175,10 @@ func TestAddRemoveService(t *testing.T) {
 func TestUpdateService(t *testing.T) {
 	t.Run("updates existing service", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.AddService(ServiceConfig{ID: "svc1", DisplayName: "Old", Command: "/old"})
-		s.UpdateService(ServiceConfig{ID: "svc1", DisplayName: "New", Command: "/new"})
+		s.AddService(config.ServiceConfig{ID: "svc1", DisplayName: "Old", Command: "/old"})
+		s.UpdateService(config.ServiceConfig{ID: "svc1", DisplayName: "New", Command: "/new"})
 
-		svc, _ := s.findServiceByID("svc1")
+		svc, _ := config.FindServiceByID(s, "svc1")
 		if svc.DisplayName != "New" {
 			t.Fatalf("expected 'New', got %q", svc.DisplayName)
 		}
@@ -188,18 +189,18 @@ func TestUpdateService(t *testing.T) {
 
 	t.Run("no-op for unknown ID", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.UpdateService(ServiceConfig{ID: "nonexistent"})
+		s.UpdateService(config.ServiceConfig{ID: "nonexistent"})
 	})
 }
 
 func TestUpdateOAuthState(t *testing.T) {
 	s := newTestSettings(t, nil)
-	s.AddExternalMcp(ExternalMcp{ID: "mcp1", Transport: "http", URL: "https://example.com"})
+	s.AddExternalMcp(config.ExternalMcp{ID: "mcp1", Transport: "http", URL: "https://example.com"})
 
-	oauth := &OAuthState{ClientID: "cid", AccessToken: NewSecret("at")}
+	oauth := &config.OAuthState{ClientID: "cid", AccessToken: config.NewSecret("at")}
 	s.UpdateOAuthState("mcp1", oauth)
 
-	mcp, _ := s.findMcpByID("mcp1")
+	mcp, _ := config.FindExternalMcpByID(s, "mcp1")
 	if mcp.OAuthState == nil {
 		t.Fatal("OAuthState should be set")
 	}
@@ -212,9 +213,9 @@ func TestUpdateOAuthState(t *testing.T) {
 
 func TestAllExternalMcpIDs(t *testing.T) {
 	s := newTestSettings(t, nil)
-	s.AddExternalMcp(ExternalMcp{ID: "b"})
-	s.AddExternalMcp(ExternalMcp{ID: "a"})
-	s.AddExternalMcp(ExternalMcp{ID: "c"})
+	s.AddExternalMcp(config.ExternalMcp{ID: "b"})
+	s.AddExternalMcp(config.ExternalMcp{ID: "a"})
+	s.AddExternalMcp(config.ExternalMcp{ID: "c"})
 
 	ids := s.AllExternalMcpIDs()
 	if len(ids) != 3 {
@@ -230,19 +231,19 @@ func TestAllExternalMcpIDs(t *testing.T) {
 
 func TestIsHTTP(t *testing.T) {
 	t.Run("http transport", func(t *testing.T) {
-		m := &ExternalMcp{Transport: "http"}
+		m := &config.ExternalMcp{Transport: "http"}
 		if !m.IsHTTP() {
 			t.Fatal("expected true for http transport")
 		}
 	})
 	t.Run("stdio transport", func(t *testing.T) {
-		m := &ExternalMcp{Transport: "stdio"}
+		m := &config.ExternalMcp{Transport: "stdio"}
 		if m.IsHTTP() {
 			t.Fatal("expected false for stdio transport")
 		}
 	})
 	t.Run("empty transport", func(t *testing.T) {
-		m := &ExternalMcp{}
+		m := &config.ExternalMcp{}
 		if m.IsHTTP() {
 			t.Fatal("expected false for empty transport")
 		}
@@ -250,7 +251,7 @@ func TestIsHTTP(t *testing.T) {
 }
 
 func TestDefaultSettings(t *testing.T) {
-	s := defaultSettings()
+	s := config.DefaultSettings()
 	if s.Version != 1 {
 		t.Fatalf("expected version 1, got %d", s.Version)
 	}
@@ -266,7 +267,7 @@ func TestDefaultSettings(t *testing.T) {
 }
 
 func TestSettingsCache(t *testing.T) {
-	newStore := func(t *testing.T) (*FileSettingsStore, string) {
+	newStore := func(t *testing.T) (*config.FileSettingsStore, string) {
 		t.Helper()
 		dir := t.TempDir()
 		return sealedSettingsStoreAt(dir), filepath.Join(dir, "settings.json")
@@ -300,8 +301,8 @@ func TestSettingsCache(t *testing.T) {
 	t.Run("With writes to disk and updates cache", func(t *testing.T) {
 		store, sp := newStore(t)
 
-		err := store.With(func(s *Settings) {
-			s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{
+		err := store.With(func(s *config.Settings) {
+			s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{
 				ID:          "cache-test-mcp",
 				DisplayName: "Cache Test",
 			})
@@ -326,7 +327,7 @@ func TestSettingsCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to read settings from disk: %v", err)
 		}
-		var diskSettings Settings
+		var diskSettings config.Settings
 		if err := json.Unmarshal(data, &diskSettings); err != nil {
 			t.Fatalf("failed to parse settings from disk: %v", err)
 		}
@@ -345,19 +346,19 @@ func TestSettingsCache(t *testing.T) {
 	t.Run("Reload refreshes cache from disk", func(t *testing.T) {
 		store, sp := newStore(t)
 
-		err := store.With(func(s *Settings) {
-			s.ExternalMcps = []ExternalMcp{{ID: "original", DisplayName: "Original"}}
+		err := store.With(func(s *config.Settings) {
+			s.ExternalMcps = []config.ExternalMcp{{ID: "original", DisplayName: "Original"}}
 		})
 		if err != nil {
 			t.Fatalf("With failed: %v", err)
 		}
 
-		modified := Settings{
+		modified := config.Settings{
 			Version:      1,
-			ExternalMcps: []ExternalMcp{{ID: "disk-written", DisplayName: "Disk"}},
-			Services:     []ServiceConfig{},
+			ExternalMcps: []config.ExternalMcp{{ID: "disk-written", DisplayName: "Disk"}},
+			Services:     []config.ServiceConfig{},
 		}
-		if err := sealAllSecrets(&modified, testSealer()); err != nil {
+		if err := config.SealAllSecrets(&modified, testSealer()); err != nil {
 			t.Fatalf("seal: %v", err)
 		}
 		data, err2 := json.Marshal(modified)
@@ -405,7 +406,7 @@ func TestSettingsCache(t *testing.T) {
 	t.Run("With does not generate AdminSecret", func(t *testing.T) {
 		store, _ := newStore(t)
 
-		err := store.With(func(s *Settings) {})
+		err := store.With(func(s *config.Settings) {})
 		if err != nil {
 			t.Fatalf("With failed: %v", err)
 		}
@@ -418,14 +419,14 @@ func TestSettingsCache(t *testing.T) {
 }
 
 func TestSettingsClone_MapIsolation(t *testing.T) {
-	original := &Settings{
+	original := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{{
+		ExternalMcps: []config.ExternalMcp{{
 			ID:          "mcp-a",
 			DisplayName: "A",
 			Env:         secretMapFromPlain(map[string]string{"FOO": "bar"}),
 		}},
-		Services: []ServiceConfig{{
+		Services: []config.ServiceConfig{{
 			ID:  "svc-a",
 			Env: secretMapFromPlain(map[string]string{"BAZ": "qux"}),
 		}},
@@ -433,9 +434,9 @@ func TestSettingsClone_MapIsolation(t *testing.T) {
 
 	cp := original.Clone()
 
-	cp.ExternalMcps[0].Env["FOO"] = NewSecret("changed")
-	cp.ExternalMcps[0].Env["NEW"] = NewSecret("added")
-	cp.Services[0].Env["BAZ"] = NewSecret("changed")
+	cp.ExternalMcps[0].Env["FOO"] = config.NewSecret("changed")
+	cp.ExternalMcps[0].Env["NEW"] = config.NewSecret("added")
+	cp.Services[0].Env["BAZ"] = config.NewSecret("changed")
 
 	if got, _ := original.ExternalMcps[0].Env["FOO"].Reveal(); got != "bar" {
 		t.Fatal("original ExternalMcp Env was corrupted")
@@ -449,13 +450,13 @@ func TestSettingsClone_MapIsolation(t *testing.T) {
 }
 
 func TestSettingsClone_AllFieldsCovered(t *testing.T) {
-	original := &Settings{
+	original := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{{
+		ExternalMcps: []config.ExternalMcp{{
 			ID:  "mcp1",
 			Env: secretMapFromPlain(map[string]string{"K": "V"}),
 		}},
-		Services: []ServiceConfig{{
+		Services: []config.ServiceConfig{{
 			ID:  "svc1",
 			Env: secretMapFromPlain(map[string]string{"A": "B"}),
 		}},
@@ -500,229 +501,10 @@ func checkMapCopy[K comparable, V any](t *testing.T, name string, orig, cp map[K
 	cp[zeroK] = zeroV
 }
 
-func TestLoad(t *testing.T) {
-	newStore := func(t *testing.T) (*FileSettingsStore, string) {
-		t.Helper()
-		dir := t.TempDir()
-		store := sealedSettingsStoreAt(dir)
-		return store, store.path()
-	}
-
-	t.Run("sets version to 1 if missing", func(t *testing.T) {
-		store, sp := newStore(t)
-		data := []byte(`{"external_mcps":[],"services":[]}`)
-		if err := os.WriteFile(sp, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1, got %d", s.Version)
-		}
-	})
-
-	t.Run("ensures nil slices become non-nil", func(t *testing.T) {
-		store, sp := newStore(t)
-		data := []byte(`{"version":1}`)
-		if err := os.WriteFile(sp, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		s := store.load()
-		if s.ExternalMcps == nil {
-			t.Fatal("ExternalMcps should not be nil")
-		}
-		if s.Services == nil {
-			t.Fatal("Services should not be nil")
-		}
-	})
-
-	t.Run("returns defaults for missing file", func(t *testing.T) {
-		store, _ := newStore(t)
-		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1, got %d", s.Version)
-		}
-	})
-
-	t.Run("returns defaults for invalid JSON", func(t *testing.T) {
-		store, sp := newStore(t)
-		if err := os.WriteFile(sp, []byte(`{not json`), 0600); err != nil {
-			t.Fatal(err)
-		}
-		s := store.load()
-		if s.Version != 1 {
-			t.Fatalf("expected version 1 for invalid JSON, got %d", s.Version)
-		}
-	})
-}
-
-func TestSave(t *testing.T) {
-	newStore := func(t *testing.T) (*FileSettingsStore, string) {
-		t.Helper()
-		dir := t.TempDir()
-		store := sealedSettingsStoreAt(dir)
-		return store, store.path()
-	}
-
-	t.Run("writes valid JSON", func(t *testing.T) {
-		store, sp := newStore(t)
-		s := &Settings{
-			Version:      1,
-			ExternalMcps: []ExternalMcp{{ID: "save-test", DisplayName: "Save Test"}},
-			Services:     []ServiceConfig{},
-		}
-		err := store.save(s)
-		if err != nil {
-			t.Fatalf("save failed: %v", err)
-		}
-
-		data, err := os.ReadFile(sp)
-		if err != nil {
-			t.Fatalf("failed to read back: %v", err)
-		}
-		var loaded Settings
-		if err := json.Unmarshal(data, &loaded); err != nil {
-			t.Fatalf("written file is not valid JSON: %v", err)
-		}
-		if len(loaded.ExternalMcps) != 1 || loaded.ExternalMcps[0].ID != "save-test" {
-			t.Fatal("saved data does not match")
-		}
-	})
-
-	t.Run("no temp file left behind", func(t *testing.T) {
-		store, sp := newStore(t)
-		s := defaultSettings()
-		_ = store.save(s)
-
-		tmp := sp + ".tmp"
-		if _, err := os.Stat(tmp); !os.IsNotExist(err) {
-			t.Fatal("temp file should not remain after successful save")
-		}
-	})
-
-	t.Run("creates directory if missing", func(t *testing.T) {
-		base := t.TempDir()
-		dir := filepath.Join(base, "nested")
-		store := sealedSettingsStoreAt(dir)
-		s := defaultSettings()
-		err := store.save(s)
-		if err != nil {
-			t.Fatalf("save failed: %v", err)
-		}
-
-		info, err := os.Stat(dir)
-		if err != nil {
-			t.Fatalf("settings dir should exist: %v", err)
-		}
-		if !info.IsDir() {
-			t.Fatal("settings dir should be a directory")
-		}
-	})
-}
-
-func TestEnsureAdminSecret(t *testing.T) {
-	t.Run("generates secret when empty", func(t *testing.T) {
-		s := defaultSettings()
-		ensureAdminSecret(s)
-		pt, ok := s.AdminSecret.Reveal()
-		if !ok || pt == "" {
-			t.Fatal("AdminSecret should be generated")
-		}
-		if len(pt) != 32 {
-			t.Fatalf("expected 32 hex chars, got %d", len(pt))
-		}
-	})
-
-	t.Run("does not overwrite existing secret", func(t *testing.T) {
-		s := defaultSettings()
-		s.AdminSecret = NewSecret("keep-me")
-		ensureAdminSecret(s)
-		if pt, _ := s.AdminSecret.Reveal(); pt != "keep-me" {
-			t.Fatalf("expected 'keep-me', got %q", pt)
-		}
-	})
-}
-
-// A Settings value must go through sealAllSecrets before it can be
-// marshalled at all (§4.4) — this pins that a document sealed that way
-// still round-trips its clear fields untouched, and its sealed fields open
-// back to the exact plaintext they held before the round trip.
-func TestSettingsJSONRoundTrip(t *testing.T) {
-	original := &Settings{
-		Version: 1,
-		ExternalMcps: []ExternalMcp{
-			{
-				ID:          "mcp1",
-				DisplayName: "Test MCP",
-				Command:     "/usr/bin/test",
-				Args:        []string{"--flag"},
-				Env:         secretMapFromPlain(map[string]string{"KEY": "VAL"}),
-				Transport:   "stdio",
-			},
-		},
-		Services: []ServiceConfig{
-			{
-				ID:          "svc1",
-				DisplayName: "Test Service",
-				Command:     "/usr/bin/svc",
-				Args:        []string{},
-				Env:         map[string]Secret{},
-				Autostart:   true,
-			},
-		},
-		AdminSecret: NewSecret("secret123"),
-	}
-
-	if err := sealAllSecrets(original, testSealer()); err != nil {
-		t.Fatalf("seal failed: %v", err)
-	}
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-
-	var restored Settings
-	if err := json.Unmarshal(data, &restored); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-	if errs := openAllSecrets(&restored, testSealer()); len(errs) != 0 {
-		t.Fatalf("open failed: %v", errs)
-	}
-
-	if restored.Version != 1 {
-		t.Fatalf("version: got %d, want 1", restored.Version)
-	}
-	if len(restored.ExternalMcps) != 1 {
-		t.Fatalf("mcps: got %d, want 1", len(restored.ExternalMcps))
-	}
-	if got, _ := restored.ExternalMcps[0].Env["KEY"].Reveal(); got != "VAL" {
-		t.Fatal("env KEY should be VAL")
-	}
-	if len(restored.Services) != 1 || !restored.Services[0].Autostart {
-		t.Fatal("service autostart should be true")
-	}
-	if pt, _ := restored.AdminSecret.Reveal(); pt != "secret123" {
-		t.Fatalf("admin secret: got %q, want 'secret123'", pt)
-	}
-}
-
-func TestEdgeCases(t *testing.T) {
-	t.Run("store path is under dir", func(t *testing.T) {
-		dir := t.TempDir()
-		store := sealedSettingsStoreAt(dir)
-		path := store.path()
-		if filepath.Dir(path) != dir {
-			t.Fatalf("store.path() %q should be inside dir %q", path, dir)
-		}
-		if filepath.Base(path) != "settings.json" {
-			t.Fatalf("settings file should be named settings.json, got %q", filepath.Base(path))
-		}
-	})
-}
-
 func TestUpsertExternalMcp(t *testing.T) {
 	t.Run("inserts new MCP and returns false", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		cfg := ExternalMcp{ID: "new-mcp", DisplayName: "New"}
+		cfg := config.ExternalMcp{ID: "new-mcp", DisplayName: "New"}
 		updated := s.UpsertExternalMcp(cfg)
 		if updated {
 			t.Fatal("expected insert (false), got update (true)")
@@ -733,10 +515,10 @@ func TestUpsertExternalMcp(t *testing.T) {
 	})
 
 	t.Run("updates existing MCP and returns true", func(t *testing.T) {
-		s := newTestSettings(t, []ExternalMcp{
+		s := newTestSettings(t, []config.ExternalMcp{
 			{ID: "mcp1", DisplayName: "Old", Command: "old-cmd"},
 		})
-		cfg := ExternalMcp{ID: "mcp1", DisplayName: "Updated", Command: "new-cmd"}
+		cfg := config.ExternalMcp{ID: "mcp1", DisplayName: "Updated", Command: "new-cmd"}
 		updated := s.UpsertExternalMcp(cfg)
 		if !updated {
 			t.Fatal("expected update (true), got insert (false)")
@@ -753,7 +535,7 @@ func TestUpsertExternalMcp(t *testing.T) {
 func TestUpsertService(t *testing.T) {
 	t.Run("inserts new service and returns false", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		cfg := ServiceConfig{ID: "svc1", DisplayName: "Svc 1", Command: "cmd"}
+		cfg := config.ServiceConfig{ID: "svc1", DisplayName: "Svc 1", Command: "cmd"}
 		updated := s.UpsertService(cfg)
 		if updated {
 			t.Fatal("expected insert (false), got update (true)")
@@ -765,8 +547,8 @@ func TestUpsertService(t *testing.T) {
 
 	t.Run("updates existing service and returns true", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.Services = []ServiceConfig{{ID: "svc1", DisplayName: "Old", Command: "old-cmd"}}
-		cfg := ServiceConfig{ID: "svc1", DisplayName: "New", Command: "new-cmd"}
+		s.Services = []config.ServiceConfig{{ID: "svc1", DisplayName: "Old", Command: "old-cmd"}}
+		cfg := config.ServiceConfig{ID: "svc1", DisplayName: "New", Command: "new-cmd"}
 		updated := s.UpsertService(cfg)
 		if !updated {
 			t.Fatal("expected update (true), got insert (false)")
@@ -783,7 +565,7 @@ func TestUpsertService(t *testing.T) {
 func TestMergeServiceDefaults(t *testing.T) {
 	t.Run("fills zero-value fields from existing", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.Services = []ServiceConfig{{
+		s.Services = []config.ServiceConfig{{
 			ID:         "svc1",
 			Command:    "cmd",
 			Args:       []string{"--flag"},
@@ -791,7 +573,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 			WorkingDir: "/old/dir",
 			URL:        "http://old",
 		}}
-		cfg := ServiceConfig{ID: "svc1", Command: "new-cmd"}
+		cfg := config.ServiceConfig{ID: "svc1", Command: "new-cmd"}
 		s.MergeServiceDefaults(&cfg)
 		if cfg.Command != "new-cmd" {
 			t.Fatal("should not overwrite non-zero Command")
@@ -812,14 +594,14 @@ func TestMergeServiceDefaults(t *testing.T) {
 
 	t.Run("does not overwrite non-zero fields", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		s.Services = []ServiceConfig{{
+		s.Services = []config.ServiceConfig{{
 			ID:         "svc1",
 			Args:       []string{"--old"},
 			Env:        secretMapFromPlain(map[string]string{"OLD": "1"}),
 			WorkingDir: "/old",
 			URL:        "http://old",
 		}}
-		cfg := ServiceConfig{
+		cfg := config.ServiceConfig{
 			ID:         "svc1",
 			Args:       []string{"--new"},
 			Env:        secretMapFromPlain(map[string]string{"NEW": "2"}),
@@ -843,7 +625,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 
 	t.Run("no-op for unknown service", func(t *testing.T) {
 		s := newTestSettings(t, nil)
-		cfg := ServiceConfig{ID: "missing", Command: "cmd"}
+		cfg := config.ServiceConfig{ID: "missing", Command: "cmd"}
 		s.MergeServiceDefaults(&cfg)
 		if cfg.Command != "cmd" {
 			t.Fatal("should not mutate when service not found")
@@ -852,7 +634,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 }
 
 func TestResolveMcpID(t *testing.T) {
-	s := newTestSettings(t, []ExternalMcp{
+	s := newTestSettings(t, []config.ExternalMcp{
 		{ID: "mcp1", DisplayName: "My MCP"},
 		{ID: "mcp2", DisplayName: "Other MCP"},
 	})
@@ -890,7 +672,7 @@ func TestResolveMcpID(t *testing.T) {
 
 func TestResolveServiceID(t *testing.T) {
 	s := newTestSettings(t, nil)
-	s.Services = []ServiceConfig{
+	s.Services = []config.ServiceConfig{
 		{ID: "svc1", DisplayName: "My Service"},
 		{ID: "svc2", DisplayName: "Other Service"},
 	}
@@ -964,10 +746,10 @@ func TestValidateProjectGrants_RefusesFilesystemMcpInEitherSchemaShape(t *testin
 	}
 	for name, schema := range shapes {
 		t.Run(name, func(t *testing.T) {
-			s := &Settings{Projects: []Project{{
-				ID: "p1", Name: "Remote", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"fsmcp"},
+			s := &config.Settings{Projects: []config.Project{{
+				ID: "p1", Name: "Remote", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"fsmcp"},
 			}}}
-			err := s.ValidateProjectGrants(&s.Projects[0], McpSurfaces{
+			err := validateProjectGrants(&s.Projects[0], McpSurfaces{
 				"fsmcp": {Schema: json.RawMessage(schema)},
 			})
 			if err == nil {

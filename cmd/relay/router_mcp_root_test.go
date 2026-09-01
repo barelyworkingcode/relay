@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -25,17 +26,17 @@ func fsmcpV3ToolSurface() []mcp.Tool {
 
 func rootedProfile(t *testing.T, root string) *appRouter {
 	t.Helper()
-	proj := Project{
-		ID: "test-project", Name: "test", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"fsmcp3"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
+	proj := config.Project{
+		ID: "test-project", Name: "test", Kind: config.ProjectKindRemote,
+		AllowedMcpIDs: []string{"fsmcp3"}, Token: config.NewSecret(testToken), TokenHash: config.HashToken(testToken),
 		AllowedTools: map[string][]string{"fsmcp3": {"fs_*"}},
-		Access:       map[string]string{"fsmcp3": AccessWrite},
+		Access:       map[string]string{"fsmcp3": config.AccessWrite},
 	}
-	s := &Settings{
+	s := &config.Settings{
 		Version:      1,
-		ExternalMcps: []ExternalMcp{{ID: "fsmcp3", DisplayName: "fsMCP v3"}},
-		Projects:     []Project{proj},
-		AdminSecret:  NewSecret("supersecretadmin"),
+		ExternalMcps: []config.ExternalMcp{{ID: "fsmcp3", DisplayName: "fsMCP v3"}},
+		Projects:     []config.Project{proj},
+		AdminSecret:  config.NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	conn := newMockConn("fsmcp3", fsmcpV3ToolSurface(),

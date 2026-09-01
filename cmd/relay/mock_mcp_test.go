@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -13,7 +14,7 @@ type mockMcpConn struct {
 	sendNotificationFn func(method string)
 	closeFn            func()
 	tools              []mcp.Tool
-	config             ExternalMcp
+	config             config.ExternalMcp
 	notifications      []string
 	closed             bool
 }
@@ -39,9 +40,9 @@ func (m *mockMcpConn) Close() {
 	}
 }
 
-func (m *mockMcpConn) GetTools() []mcp.Tool      { return m.tools }
-func (m *mockMcpConn) SetTools(tools []mcp.Tool) { m.tools = tools }
-func (m *mockMcpConn) GetConfig() ExternalMcp    { return m.config }
+func (m *mockMcpConn) GetTools() []mcp.Tool          { return m.tools }
+func (m *mockMcpConn) SetTools(tools []mcp.Tool)     { m.tools = tools }
+func (m *mockMcpConn) GetConfig() config.ExternalMcp { return m.config }
 
 // decodedToolParams renders the tools/call params a mock connection was handed
 // as decoded Go values, for tests that want to assert on `_meta`.
@@ -77,7 +78,7 @@ func addMockSchema(mgr *ExternalMcpManager, id, schema string, version int) {
 func newMockConn(id string, tools []mcp.Tool, sendFn func(context.Context, string, interface{}) (json.RawMessage, error)) *mockMcpConn {
 	return &mockMcpConn{
 		tools:           tools,
-		config:          ExternalMcp{ID: id},
+		config:          config.ExternalMcp{ID: id},
 		sendRequestFunc: sendFn,
 	}
 }

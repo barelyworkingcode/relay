@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -77,7 +78,7 @@ func TestAuditAuthorityLine_OmittedWhenNothingWasRecorded(t *testing.T) {
 }
 
 func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
-	ev := AuditEvent{Access: AccessRead, AllowExternal: boolPtr(false),
+	ev := AuditEvent{Access: config.AccessRead, AllowExternal: boolPtr(false),
 		Scope: map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)}}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
@@ -94,7 +95,7 @@ func TestAuditAuthorityLine_RendersModeOutboundAndScope(t *testing.T) {
 // schema-less MCP still reads scope=(none declared) even though root is
 // populated.
 func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
-	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true),
+	ev := AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true),
 		McpRoot: "/Users/admin/source/barelyworkingcode/testfolder"}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
@@ -111,7 +112,7 @@ func TestAuditAuthorityLine_RootIsDistinctFromScope(t *testing.T) {
 // Subtle: no root= segment at all, not an empty one that would read as
 // "spawned with an empty root".
 func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
-	ev := AuditEvent{Access: AccessWrite, AllowExternal: boolPtr(true)}
+	ev := AuditEvent{Access: config.AccessWrite, AllowExternal: boolPtr(true)}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
 		t.Fatal("authority line was omitted for a record that carried authority")
@@ -124,7 +125,7 @@ func TestAuditAuthorityLine_NoRootOmitsTheField(t *testing.T) {
 func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 	// AllowExternal is a pointer specifically so "not recorded" and "recorded
 	// false" don't collide; the CLI must keep that distinction visible too.
-	ev := AuditEvent{Access: AccessWrite}
+	ev := AuditEvent{Access: config.AccessWrite}
 	line, ok := auditAuthorityLine(ev)
 	if !ok {
 		t.Fatal("authority line omitted")
@@ -137,7 +138,7 @@ func TestAuditAuthorityLine_AllowExternalNilIsNotApplicable(t *testing.T) {
 func TestWriteAuditTable_DefaultShapeUnchanged(t *testing.T) {
 	events := []AuditEvent{
 		{Outcome: AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
-			Access: AccessRead, AllowExternal: boolPtr(false),
+			Access: config.AccessRead, AllowExternal: boolPtr(false),
 			Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"},
 	}
 	var buf bytes.Buffer
@@ -159,7 +160,7 @@ func TestWriteAuditTable_DefaultShapeUnchanged(t *testing.T) {
 func TestWriteAuditTable_AuthorityFlagAddsALinePerConfinedCall(t *testing.T) {
 	events := []AuditEvent{
 		{Outcome: AuditOutcomeDenied, Tool: "capture_screenshot", McpID: "macmcp",
-			Access: AccessRead, AllowExternal: boolPtr(false),
+			Access: config.AccessRead, AllowExternal: boolPtr(false),
 			Error: "access denied: tool 'capture_screenshot' is not in the allowed tools for MCP 'macmcp'"},
 	}
 	var buf bytes.Buffer

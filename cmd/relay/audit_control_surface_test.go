@@ -15,13 +15,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
 func acsNewAuditRecorder(t *testing.T) *AuditRecorder {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit", "toolcalls.jsonl")
-	rec, err := NewAuditRecorder(&AuditConfig{}, path)
+	rec, err := NewAuditRecorder(&config.AuditConfig{}, path)
 	if err != nil {
 		t.Fatalf("NewAuditRecorder: %v", err)
 	}
@@ -44,13 +45,13 @@ func acsDoBearer(t *testing.T, method, url, token string) int {
 	return resp.StatusCode
 }
 
-func acsMintCredential(t *testing.T, store SettingsStore, classes ...control.CapabilityClass) (APICredential, string) {
+func acsMintCredential(t *testing.T, store config.SettingsStore, classes ...control.CapabilityClass) (config.APICredential, string) {
 	t.Helper()
-	var cred APICredential
+	var cred config.APICredential
 	var plaintext string
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		var err error
-		cred, plaintext, err = s.Mint("acs-cred", classes)
+		cred, plaintext, err = mintAPICredentialForever(s, "acs-cred", classes)
 		assertNoErr(t, err, "Mint")
 	}), "store.With mint")
 	return cred, plaintext
@@ -124,16 +125,16 @@ func TestAcsControlDecision_ClassRefusalRecordsCredID_UnknownBearerRecordsEmpty(
 func TestAcsControlDecision_TableRow_ShowsMethodPathClassTransportCredID_NoLeak(t *testing.T) {
 	store := newCLISandboxStore(t)
 	const plaintext = "acs-render-plaintext-do-not-leak-114400"
-	var cred APICredential
-	assertNoErr(t, store.With(func(s *Settings) {
-		cred = APICredential{
+	var cred config.APICredential
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		cred = config.APICredential{
 			ID:      "acs-render-cred",
 			Name:    "acs-render",
-			Hash:    hashToken(plaintext),
+			Hash:    config.HashToken(plaintext),
 			Classes: []control.CapabilityClass{control.ClassGrant},
 			Created: "2026-01-01T00:00:00Z",
 		}
-		s.AddAPICredential(cred)
+		addAPICredential(s, cred)
 	}), "store.With add credential")
 
 	authz := NewCredentialAuthorizer(store)

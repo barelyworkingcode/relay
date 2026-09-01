@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -377,9 +378,9 @@ func intOr(v, def int) int {
 
 // A nil receiver resolves to the full default set, so settings.json written
 // before this feature existed behaves as if auditing was always on.
-func (c *AuditConfig) resolve() resolvedAuditConfig {
+func resolveAuditConfig(c *config.AuditConfig) resolvedAuditConfig {
 	if c == nil {
-		c = &AuditConfig{}
+		c = &config.AuditConfig{}
 	}
 	maxFile := c.MaxFileBytes
 	if maxFile <= 0 {
@@ -668,8 +669,8 @@ type AuditRecorder struct {
 
 // A disabled config returns nil, which every call site treats as
 // "auditing off".
-func NewAuditRecorder(cfg *AuditConfig, path string) (*AuditRecorder, error) {
-	resolved := cfg.resolve()
+func NewAuditRecorder(cfg *config.AuditConfig, path string) (*AuditRecorder, error) {
+	resolved := resolveAuditConfig(cfg)
 	if !resolved.Enabled {
 		return nil, nil
 	}
@@ -1075,7 +1076,7 @@ func readAuditTail(path string, budget int64) []AuditEvent {
 // Auditing is observability, not an authorization control, so a broken sink
 // degrades to "no audit log" rather than taking relay down — the Tool Calls
 // tab makes the disabled state visible instead of pretending.
-func startAuditRecorder(s *Settings) *AuditRecorder {
+func startAuditRecorder(s *config.Settings) *AuditRecorder {
 	path, err := auditLogPath()
 	if err != nil {
 		slog.Error("audit log disabled: cannot resolve log dir", "error", err)

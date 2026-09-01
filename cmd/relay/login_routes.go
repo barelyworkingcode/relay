@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -72,7 +73,7 @@ var (
 // 5. It is built only where an origin exists to verify against — see
 // FrontendServer.ListenLoopback.
 type loginRoutes struct {
-	store    SettingsStore
+	store    config.SettingsStore
 	verifier *WebAuthnVerifier
 	auditor  control.ControlAuditor
 	// issuance records the two credentials this surface hands out — a
@@ -83,7 +84,7 @@ type loginRoutes struct {
 	issuance IssuanceAuditor
 }
 
-func newLoginRoutes(store SettingsStore, verifier *WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
+func newLoginRoutes(store config.SettingsStore, verifier *WebAuthnVerifier, auditor control.ControlAuditor) *loginRoutes {
 	return &loginRoutes{store: store, verifier: verifier, auditor: auditor}
 }
 
@@ -198,7 +199,7 @@ func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
 		// endpoint hands an unauthenticated caller the registered ids. They
 		// are opaque and are not verifiers, and the login document discloses
 		// that passkeys exist anyway.
-		for _, p := range freshSettings(lr.store).Passkeys {
+		for _, p := range config.FreshSettings(lr.store).Passkeys {
 			resp.Credentials = append(resp.Credentials, p.ID)
 		}
 	}
@@ -239,7 +240,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	result, err := lr.verifier.VerifyRegistration(WebAuthnRegistrationInput{
 		ClientDataJSON:    clientData,
 		AttestationObject: attestation,
-		Existing:          loginCredentials(freshSettings(lr.store)),
+		Existing:          loginCredentials(config.FreshSettings(lr.store)),
 	})
 	if err != nil {
 		lr.recordLoginOutcome("", false, err)
@@ -249,7 +250,7 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
 	now := time.Now().UTC()
-	passkey := Passkey{
+	passkey := config.Passkey{
 		ID:               id,
 		Name:             "browser passkey " + now.Format(time.RFC3339),
 		X:                result.PublicKeyX,
@@ -274,10 +275,10 @@ func (lr *loginRoutes) register(w http.ResponseWriter, req loginVerifyRequest) {
 	// registration, which needs no code and no credential, would drive relay's
 	// settings writer for whatever can reach the listener.
 	var refusal error
-	saveErr := withDeclinable(lr.store, func(s *Settings) error {
+	saveErr := config.WithDeclinable(lr.store, func(s *config.Settings) error {
 		if len(s.Passkeys) >= MaxRegisteredPasskeys {
 			refusal = fmt.Errorf("%w: %d registered", errWebAuthnPasskeyLimit, len(s.Passkeys))
-		} else if slices.ContainsFunc(s.Passkeys, func(p Passkey) bool { return p.ID == id }) {
+		} else if slices.ContainsFunc(s.Passkeys, func(p config.Passkey) bool { return p.ID == id }) {
 			refusal = errWebAuthnDuplicateCred
 		} else if err := consumeBootstrapCode(s, req.Code); err != nil {
 			refusal = err
@@ -364,7 +365,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 		AuthenticatorData: authData,
 		Signature:         signature,
 		UserHandle:        userHandle,
-		Credentials:       loginCredentials(freshSettings(lr.store)),
+		Credentials:       loginCredentials(config.FreshSettings(lr.store)),
 	})
 	if err != nil {
 		var counter *webauthnCounterError
@@ -378,7 +379,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 
 	id := base64.RawURLEncoding.EncodeToString(result.CredentialID)
 	var token, expires, credID string
-	saveErr := withDeclinable(lr.store, func(s *Settings) error {
+	saveErr := config.WithDeclinable(lr.store, func(s *config.Settings) error {
 		if result.UpdateSignCount {
 			for i := range s.Passkeys {
 				if s.Passkeys[i].ID == id {
@@ -387,7 +388,7 @@ func (lr *loginRoutes) assert(w http.ResponseWriter, req loginVerifyRequest) {
 			}
 		}
 		reapExpiredAPICredentials(s)
-		cred, plaintext, err := s.MintFor(loginCredentialName(id), loginCredentialClasses, loginCredentialTTL)
+		cred, plaintext, err := mintAPICredentialFor(s, loginCredentialName(id), loginCredentialClasses, loginCredentialTTL)
 		if err != nil {
 			return err
 		}
@@ -514,7 +515,7 @@ func loginAuditReason(err error) string {
 // values. A record whose encoded fields do not decode is dropped rather than
 // repaired: it then resolves to nothing, which is the same refusal an unknown
 // credential id gets.
-func loginCredentials(s *Settings) []WebAuthnCredential {
+func loginCredentials(s *config.Settings) []WebAuthnCredential {
 	if s == nil {
 		return nil
 	}

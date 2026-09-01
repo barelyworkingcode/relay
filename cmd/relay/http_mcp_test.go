@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -56,7 +57,7 @@ func TestHTTPMcpConn_SendRequest_Concurrent(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -98,7 +99,7 @@ func TestHTTPMcpConn_SendRequest_401(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -123,7 +124,7 @@ func TestHTTPMcpConn_SendRequest_SessionID(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -153,7 +154,7 @@ func TestHTTPMcpConn_SSEResponse(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -180,7 +181,7 @@ func TestHTTPMcpConn_SSEMultiLineData(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -212,7 +213,7 @@ func TestHTTPMcpConn_SSENoTrailingBlankLine(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -245,7 +246,7 @@ func TestHTTPMcpConn_SSEInterleavedNotification(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,
@@ -283,7 +284,7 @@ func TestHTTPMcpConn_SendRequest_TimesOutHungServerEvenWithNoCallerDeadline(t *t
 	defer srv.Close()
 	defer close(release)
 
-	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
+	conn := newHTTPMcpConn(config.ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
 	start := time.Now()
 	if _, err := conn.SendRequest(context.Background(), "slow", nil); err == nil {
 		t.Fatal("expected a timeout error from a hung server")
@@ -303,7 +304,7 @@ func TestHTTPMcpConn_SendRequest_RejectsOversizedSessionID(t *testing.T) {
 	})
 	defer srv.Close()
 
-	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
+	conn := newHTTPMcpConn(config.ExternalMcp{ID: "t", Transport: "http", URL: srv.URL})
 	_, err := conn.SendRequest(context.Background(), "test", nil)
 	if err == nil || !strings.Contains(err.Error(), "oversized") {
 		t.Fatalf("expected oversized-session-id error, got: %v", err)
@@ -319,7 +320,7 @@ func TestHTTPMcpConn_SendRequest_RejectsOversizedSessionID(t *testing.T) {
 // Deliberate: a stale past expiry would make every subsequent request
 // believe a refresh is due — a refresh storm.
 func TestHTTPMcpConn_RefreshWithoutExpiresIn_DisablesProactiveRefresh(t *testing.T) {
-	conn := newHTTPMcpConn(ExternalMcp{ID: "t", Transport: "http", URL: "https://example.test/mcp"})
+	conn := newHTTPMcpConn(config.ExternalMcp{ID: "t", Transport: "http", URL: "https://example.test/mcp"})
 	conn.oauth.refreshToken = "rt"
 	conn.oauth.tokenExpiry = time.Now().Add(-time.Hour) // stale/past expiry
 
@@ -350,7 +351,7 @@ func TestHTTPMcpConn_SendNotification(t *testing.T) {
 	})
 	defer srv.Close()
 
-	cfg := ExternalMcp{
+	cfg := config.ExternalMcp{
 		ID:        "test",
 		Transport: "http",
 		URL:       srv.URL,

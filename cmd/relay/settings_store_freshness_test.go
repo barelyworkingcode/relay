@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ func ssfBumpModTime(t *testing.T, path string) {
 // store, one minted read-class credential, and the legacy frontend token.
 type ssfStack struct {
 	dir       string
-	store     *FileSettingsStore
+	store     *config.FileSettingsStore
 	srv       *accServer
 	readToken string
 }
@@ -131,7 +132,7 @@ func TestSSFEveryDegradedSettingsStateFailsClosed(t *testing.T) {
 		{"credentials emptied in file", func(t *testing.T, k *ssfStack) {
 			raw, err := os.ReadFile(k.settingsPath())
 			assertNoErr(t, err, "read settings")
-			var s Settings
+			var s config.Settings
 			assertNoErr(t, json.Unmarshal(raw, &s), "unmarshal settings")
 			s.APICredentials = nil
 			out, err := json.MarshalIndent(&s, "", "  ")
@@ -174,18 +175,18 @@ func TestSSFDeletingSettingsRevokesAnEnrolment(t *testing.T) {
 	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
-	proj := mkStoreProject(t, store, ProjectKindRemote, "ssf-remote", "")
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.AddEnrolment(Enrolment{ClientID: "ssf-client", Fingerprint: "ssf-fp", ProjectIDs: []string{proj.ID}})
+	proj := mkStoreProject(t, store, config.ProjectKindRemote, "ssf-remote", "")
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		addEnrolment(s, config.Enrolment{ClientID: "ssf-client", Fingerprint: "ssf-fp", ProjectIDs: []string{proj.ID}})
 	}), "add enrolment")
 
-	if freshSettings(store).FindEnrolmentByFingerprint("ssf-fp") == nil {
+	if findEnrolmentByFingerprint(config.FreshSettings(store), "ssf-fp") == nil {
 		t.Fatal("the enrolment is not resolvable before the deletion; the fixture proves nothing")
 	}
 
 	assertNoErr(t, os.Remove(filepath.Join(dir, "settings.json")), "remove settings")
 
-	if freshSettings(store).FindEnrolmentByFingerprint("ssf-fp") != nil {
+	if findEnrolmentByFingerprint(config.FreshSettings(store), "ssf-fp") != nil {
 		t.Fatal("the enrolment still resolves after settings.json was deleted; a certificate the file no longer grants must stop being enrolled")
 	}
 }
@@ -205,7 +206,7 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 	if got := store.ReloadIfChanged(); got != nil {
 		t.Fatalf("a settings file that was never created is not a change, got %+v", got)
 	}
-	if got := freshSettings(store); got == nil {
+	if got := config.FreshSettings(store); got == nil {
 		t.Fatal("freshSettings returned nil on a fresh install")
 	}
 
@@ -217,10 +218,10 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 		t.Fatal("EnsureInitialized did not generate an admin secret")
 	}
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "ssf-first", DisplayName: "ssf-first", Command: "/bin/true"})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "ssf-first", DisplayName: "ssf-first", Command: "/bin/true"})
 	}), "first mutation after a fresh start")
-	if _, idx := sealedSettingsStoreAt(dir).Get().findServiceByID("ssf-first"); idx < 0 {
+	if _, idx := config.FindServiceByID(sealedSettingsStoreAt(dir).Get(), "ssf-first"); idx < 0 {
 		t.Fatal("the first mutation after a fresh start did not reach disk")
 	}
 }
@@ -231,24 +232,20 @@ func TestSSFFirstStartWithNoSettingsFileWorks(t *testing.T) {
 // the absent file for a deletion and empty them.
 func TestSSFWithPersistsSettingsThatWereNeverOnDisk(t *testing.T) {
 	dir := mkShortTempDir(t, "ssf-nofile-")
-	store := &FileSettingsStore{
-		dir:    dir,
-		sealer: testSealer(),
-		cache: &Settings{
-			Version:     currentSettingsVersion,
-			Projects:    []Project{{ID: "ssf-p", Name: "ssf", Path: dir}},
-			AdminSecret: NewSecret("ssf-secret"),
-		},
-	}
+	store := storeWithCache(dir, testSealer(), &config.Settings{
+		Version:     config.CurrentSettingsVersion,
+		Projects:    []config.Project{{ID: "ssf-p", Name: "ssf", Path: dir}},
+		AdminSecret: config.NewSecret("ssf-secret"),
+	})
 
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		if len(s.Projects) == 0 {
 			t.Fatal("With emptied settings that were never written to disk; a file that was never created is not a deleted file")
 		}
 		s.Projects[0].AllowCwdAuth = true
 	}), "With over a store whose settings are not on disk yet")
 
-	proj, _ := sealedSettingsStoreAt(dir).Get().findProjectByID("ssf-p")
+	proj, _ := config.FindProjectByID(sealedSettingsStoreAt(dir).Get(), "ssf-p")
 	if proj == nil {
 		t.Fatal("the project never reached disk")
 	}
@@ -282,23 +279,23 @@ func TestSSFCrossProcessWriteSurvivesTheNextWith(t *testing.T) {
 
 	_, plaintext, err := mintAPICredential(cliStore, credentialMintRequest{Name: "ssf-cli", Classes: []string{"read"}})
 	assertNoErr(t, err, "mint from the CLI process")
-	assertNoErr(t, cliStore.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "ssf-cli-svc", DisplayName: "ssf-cli-svc", Command: "/bin/true"})
+	assertNoErr(t, cliStore.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "ssf-cli-svc", DisplayName: "ssf-cli-svc", Command: "/bin/true"})
 	}), "register a service from the CLI process")
 
 	// The tray's own next mutation, made from a cache that predates both.
-	assertNoErr(t, trayStore.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "ssf-tray-svc", DisplayName: "ssf-tray-svc", Command: "/bin/true"})
+	assertNoErr(t, trayStore.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "ssf-tray-svc", DisplayName: "ssf-tray-svc", Command: "/bin/true"})
 	}), "the tray's next write")
 
 	onDisk := sealedSettingsStoreAt(dir).Get()
-	if onDisk.AuthenticateAPICredential(plaintext) == nil {
+	if authenticateAPICredential(onDisk, plaintext) == nil {
 		t.Error("the credential the CLI minted is gone from settings.json after the tray's next write; its plaintext was printed once and cannot be reissued")
 	}
-	if _, idx := onDisk.findServiceByID("ssf-cli-svc"); idx < 0 {
+	if _, idx := config.FindServiceByID(onDisk, "ssf-cli-svc"); idx < 0 {
 		t.Error("the service the CLI registered is gone from settings.json after the tray's next write")
 	}
-	if _, idx := onDisk.findServiceByID("ssf-tray-svc"); idx < 0 {
+	if _, idx := config.FindServiceByID(onDisk, "ssf-tray-svc"); idx < 0 {
 		t.Error("the tray's own write did not land")
 	}
 
@@ -316,22 +313,22 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 	trayStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, trayStore.EnsureInitialized(), "EnsureInitialized (tray)")
 
-	proj := mkStoreProject(t, trayStore, ProjectKindLocal, "ssf-owned", t.TempDir())
+	proj := mkStoreProject(t, trayStore, config.ProjectKindLocal, "ssf-owned", t.TempDir())
 
 	// Sealed, like the tray: a CLI-shaped store (no sealer) now refuses
 	// every write by design (§5.4), so a second WRITING process here is
 	// modeled the same way the tray itself is until brokering (S6) lands.
 	cliStore := sealedSettingsStoreAt(dir)
 	assertNoErr(t, cliStore.EnsureInitialized(), "EnsureInitialized (cli)")
-	assertNoErr(t, cliStore.With(func(s *Settings) {
-		s.UpsertExternalMcp(ExternalMcp{ID: "ssf-cli-mcp", DisplayName: "ssf-cli-mcp", Command: "/bin/true"})
+	assertNoErr(t, cliStore.With(func(s *config.Settings) {
+		s.UpsertExternalMcp(config.ExternalMcp{ID: "ssf-cli-mcp", DisplayName: "ssf-cli-mcp", Command: "/bin/true"})
 	}), "register an MCP from the CLI process")
 
 	// The callback sees the post-reload state, so a record the caller read
 	// before calling With is still the record the callback finds.
 	var seen bool
-	assertNoErr(t, trayStore.With(func(s *Settings) {
-		p, _ := s.findProjectByID(proj.ID)
+	assertNoErr(t, trayStore.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, proj.ID)
 		if p == nil {
 			return
 		}
@@ -343,7 +340,7 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 	}
 
 	onDisk := sealedSettingsStoreAt(dir).Get()
-	updated, _ := onDisk.findProjectByID(proj.ID)
+	updated, _ := config.FindProjectByID(onDisk, proj.ID)
 	if updated == nil {
 		t.Fatal("the project is gone from settings.json")
 	}
@@ -353,7 +350,7 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 	if updated.TokenHash != proj.TokenHash {
 		t.Error("the project's token hash changed; the reload replaced the record rather than the callback mutating it")
 	}
-	if _, idx := onDisk.findMcpByID("ssf-cli-mcp"); idx < 0 {
+	if _, idx := config.FindExternalMcpByID(onDisk, "ssf-cli-mcp"); idx < 0 {
 		t.Error("the MCP the CLI registered was clobbered by the tray's update")
 	}
 }
@@ -447,19 +444,19 @@ func TestSSFMutationOverAnUnusableFileRefusesAndLeavesItAlone(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			k := ssfNewStack(t)
 			path := k.settingsPath()
-			proj := mkStoreProject(t, k.store, ProjectKindLocal, "ssf-keep-me", t.TempDir())
+			proj := mkStoreProject(t, k.store, config.ProjectKindLocal, "ssf-keep-me", t.TempDir())
 			k.assertAllReach(t)
 
 			d.apply(t, path)
 			before := ssfRawSettings(t, path)
 
-			err := k.store.With(func(s *Settings) {
-				s.UpsertService(ServiceConfig{ID: "ssf-new", DisplayName: "ssf-new", Command: "/bin/true"})
+			err := k.store.With(func(s *config.Settings) {
+				s.UpsertService(config.ServiceConfig{ID: "ssf-new", DisplayName: "ssf-new", Command: "/bin/true"})
 			})
 			if err == nil {
 				t.Error("With reported success over a settings.json it could not read; the caller has no way to learn its change was applied to defaults")
 			}
-			if !errors.Is(err, errSettingsUnreadable) {
+			if !errors.Is(err, config.ErrSettingsUnreadable) {
 				t.Errorf("With error = %v, want one matching errSettingsUnreadable so a caller can tell a refusal from a save that failed", err)
 			}
 
@@ -467,12 +464,12 @@ func TestSSFMutationOverAnUnusableFileRefusesAndLeavesItAlone(t *testing.T) {
 			if !bytes.Equal(before, after) {
 				t.Fatalf("settings.json was rewritten by a mutation that could not be based on it\nbefore: %q\nafter:  %q", before, after)
 			}
-			var wrote Settings
+			var wrote config.Settings
 			if json.Unmarshal(after, &wrote) == nil {
-				if _, idx := wrote.findServiceByID("ssf-new"); idx >= 0 {
+				if _, idx := config.FindServiceByID(&wrote, "ssf-new"); idx >= 0 {
 					t.Error("the refused mutation reached disk: settings.json now holds defaults plus that one change")
 				}
-				if p, _ := wrote.findProjectByID(proj.ID); p == nil {
+				if p, _ := config.FindProjectByID(&wrote, proj.ID); p == nil {
 					t.Error("the project is gone from settings.json after a mutation the store refused to make")
 				}
 			}
@@ -493,28 +490,28 @@ func TestSSFStoreRecoversOnceTheFileIsUsableAgain(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			k := ssfNewStack(t)
 			path := k.settingsPath()
-			proj := mkStoreProject(t, k.store, ProjectKindLocal, "ssf-keep-me", t.TempDir())
+			proj := mkStoreProject(t, k.store, config.ProjectKindLocal, "ssf-keep-me", t.TempDir())
 			good := ssfRawSettings(t, path)
 
 			d.apply(t, path)
-			if err := k.store.With(func(s *Settings) {}); err == nil {
+			if err := k.store.With(func(s *config.Settings) {}); err == nil {
 				t.Fatal("With did not refuse while the file was unusable; the fixture proves nothing")
 			}
 
 			d.repair(t, path, good)
 
-			assertNoErr(t, k.store.With(func(s *Settings) {
-				s.UpsertService(ServiceConfig{ID: "ssf-recovered", DisplayName: "ssf-recovered", Command: "/bin/true"})
+			assertNoErr(t, k.store.With(func(s *config.Settings) {
+				s.UpsertService(config.ServiceConfig{ID: "ssf-recovered", DisplayName: "ssf-recovered", Command: "/bin/true"})
 			}), "mutation once settings.json was usable again")
 
 			onDisk := sealedSettingsStoreAt(k.dir).Get()
-			if _, idx := onDisk.findServiceByID("ssf-recovered"); idx < 0 {
+			if _, idx := config.FindServiceByID(onDisk, "ssf-recovered"); idx < 0 {
 				t.Error("the mutation made after recovery did not reach disk")
 			}
-			if p, _ := onDisk.findProjectByID(proj.ID); p == nil {
+			if p, _ := config.FindProjectByID(onDisk, proj.ID); p == nil {
 				t.Error("the project did not survive the round trip through the unusable state")
 			}
-			if onDisk.AuthenticateAPICredential(k.readToken) == nil {
+			if authenticateAPICredential(onDisk, k.readToken) == nil {
 				t.Error("the credential did not survive the round trip through the unusable state")
 			}
 			for _, p := range k.probes() {
@@ -539,8 +536,8 @@ func TestSSFEnsureInitializedRefusesAnUnusableFile(t *testing.T) {
 			path := filepath.Join(dir, "settings.json")
 			seed := sealedSettingsStoreAt(dir)
 			assertNoErr(t, seed.EnsureInitialized(), "EnsureInitialized (seed)")
-			assertNoErr(t, seed.With(func(s *Settings) {
-				s.UpsertService(ServiceConfig{ID: "ssf-keep-me", DisplayName: "ssf-keep-me", Command: "/bin/true"})
+			assertNoErr(t, seed.With(func(s *config.Settings) {
+				s.UpsertService(config.ServiceConfig{ID: "ssf-keep-me", DisplayName: "ssf-keep-me", Command: "/bin/true"})
 			}), "seed a record worth losing")
 
 			d.apply(t, path)
@@ -551,7 +548,7 @@ func TestSSFEnsureInitializedRefusesAnUnusableFile(t *testing.T) {
 			if err == nil {
 				t.Error("EnsureInitialized succeeded over a settings.json it could not read; at tray start that is a silent total wipe on every launch")
 			}
-			if !errors.Is(err, errSettingsUnreadable) {
+			if !errors.Is(err, config.ErrSettingsUnreadable) {
 				t.Errorf("EnsureInitialized error = %v, want one matching errSettingsUnreadable", err)
 			}
 			if after := ssfRawSettings(t, path); !bytes.Equal(before, after) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -20,14 +21,14 @@ type schemaProviderFunc func() McpSurfaces
 
 func (f schemaProviderFunc) AllMcpSurfaces() McpSurfaces { return f() }
 
-func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
+func newProjectRoutesServer(t *testing.T) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	store.With(func(s *Settings) {
-		s.ExternalMcps = []ExternalMcp{
+	store.With(func(s *config.Settings) {
+		s.ExternalMcps = []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
@@ -38,9 +39,9 @@ func newProjectRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
 	return httptest.NewServer(mux), store
 }
 
-type mcpToolsProviderFunc func(id string) []ToolInfo
+type mcpToolsProviderFunc func(id string) []config.ToolInfo
 
-func (f mcpToolsProviderFunc) ToolInfos(id string) []ToolInfo { return f(id) }
+func (f mcpToolsProviderFunc) ToolInfos(id string) []config.ToolInfo { return f(id) }
 
 type fixedTokenLister struct{}
 
@@ -52,14 +53,14 @@ func (fixedTokenLister) ListSkillBuckets(_ context.Context, _ string) ([]SkillBu
 	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
-func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, onChange func()) (*httptest.Server, SettingsStore) {
+func newProjectRoutesServerFull(t *testing.T, tools MCPToolsProvider, lister SkillLister, onChange func()) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	store.With(func(s *Settings) {
-		s.ExternalMcps = []ExternalMcp{
+	store.With(func(s *config.Settings) {
+		s.ExternalMcps = []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
@@ -123,7 +124,7 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d, body %s", resp.StatusCode, body)
 	}
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v (body: %s)", err, body)
 	}
@@ -149,7 +150,7 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get: status %d, body %s", resp.StatusCode, body)
 	}
-	var fetched Project
+	var fetched config.Project
 	if err := json.Unmarshal(body, &fetched); err != nil {
 		t.Fatalf("decode fetched: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestProjectRoutes_CreateAndGet(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list: status %d, body %s", resp.StatusCode, body)
 	}
-	var listed []Project
+	var listed []config.Project
 	if err := json.Unmarshal(body, &listed); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d body %s", resp.StatusCode, body)
 	}
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
 	}
-	var renamed Project
+	var renamed config.Project
 	if err := json.Unmarshal(body, &renamed); err != nil {
 		t.Fatalf("decode renamed: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("clear: status %d body %s", resp.StatusCode, body)
 	}
-	var cleared Project
+	var cleared config.Project
 	if err := json.Unmarshal(body, &cleared); err != nil {
 		t.Fatalf("decode cleared: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 		"allowed_mcp_ids": []string{"fsmcp"},
 		"allowed_models":  []string{"claude-opus"},
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
 	}
-	var renamed Project
+	var renamed config.Project
 	if err := json.Unmarshal(body, &renamed); err != nil {
 		t.Fatalf("decode renamed: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestProjectRoutes_PartialUpdate(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("template update: status %d body %s", resp.StatusCode, body)
 	}
-	var withTemplates Project
+	var withTemplates config.Project
 	if err := json.Unmarshal(body, &withTemplates); err != nil {
 		t.Fatalf("decode templates: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 		"path":            tmpDir,
 		"session_folders": []string{"Bugs", " ", "Bugs", "Experiments"},
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("folder update: status %d body %s", resp.StatusCode, body)
 	}
-	var updated Project
+	var updated config.Project
 	if err := json.Unmarshal(body, &updated); err != nil {
 		t.Fatalf("decode updated: %v", err)
 	}
@@ -377,7 +378,7 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rename: status %d body %s", resp.StatusCode, body)
 	}
-	var renamed Project
+	var renamed config.Project
 	if err := json.Unmarshal(body, &renamed); err != nil {
 		t.Fatalf("decode renamed: %v", err)
 	}
@@ -391,7 +392,7 @@ func TestProjectRoutes_SessionFolders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("clear: status %d body %s", resp.StatusCode, body)
 	}
-	var cleared Project
+	var cleared config.Project
 	if err := json.Unmarshal(body, &cleared); err != nil {
 		t.Fatalf("decode cleared: %v", err)
 	}
@@ -420,7 +421,7 @@ func TestProjectRoutes_Delete(t *testing.T) {
 		"name": "Gamma",
 		"path": t.TempDir(),
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 			"denied_tools":  []string{"Write"},
 		},
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -481,7 +482,7 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update policy: status %d body %s", resp.StatusCode, body)
 	}
-	var updated Project
+	var updated config.Project
 	if err := json.Unmarshal(body, &updated); err != nil {
 		t.Fatalf("decode updated: %v", err)
 	}
@@ -499,7 +500,7 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 		t.Fatalf("clear policy: status %d", resp.StatusCode)
 	}
 	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
-	var after Project
+	var after config.Project
 	json.Unmarshal(body, &after)
 	if after.PermissionPolicy != nil {
 		t.Errorf("policy not cleared by empty struct: %+v", after.PermissionPolicy)
@@ -550,7 +551,7 @@ func TestProjectRoutes_RotateToken_NewTokenInvalidatesOld(t *testing.T) {
 		"path":            tmpDir,
 		"allowed_mcp_ids": []string{"fsmcp"},
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode created: %v", err)
 	}
@@ -598,7 +599,7 @@ func TestProjectRoutes_RegenSkill_OK(t *testing.T) {
 		"allowed_mcp_ids": []string{"fsmcp"},
 		"generate_skill":  true,
 	})
-	var created Project
+	var created config.Project
 	_ = json.Unmarshal(body, &created)
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/regen_skill", nil)
@@ -624,7 +625,7 @@ func TestProjectRoutes_RegenSkill_NoListerReturns503(t *testing.T) {
 		"path":            tmpDir,
 		"allowed_mcp_ids": []string{"fsmcp"},
 	})
-	var created Project
+	var created config.Project
 	_ = json.Unmarshal(body, &created)
 
 	resp, _ := doJSON(t, "POST", srv.URL+"/api/projects/"+created.ID+"/regen_skill", nil)
@@ -634,9 +635,9 @@ func TestProjectRoutes_RegenSkill_NoListerReturns503(t *testing.T) {
 }
 
 func TestProjectRoutes_ListMcpTools_ReturnsLiveList(t *testing.T) {
-	provider := mcpToolsProviderFunc(func(id string) []ToolInfo {
+	provider := mcpToolsProviderFunc(func(id string) []config.ToolInfo {
 		if id == "fsmcp" {
-			return []ToolInfo{{Name: "fs_read"}, {Name: "fs_write"}}
+			return []config.ToolInfo{{Name: "fs_read"}, {Name: "fs_write"}}
 		}
 		return nil
 	})
@@ -647,7 +648,7 @@ func TestProjectRoutes_ListMcpTools_ReturnsLiveList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d body %s", resp.StatusCode, body)
 	}
-	var infos []ToolInfo
+	var infos []config.ToolInfo
 	if err := json.Unmarshal(body, &infos); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -657,7 +658,7 @@ func TestProjectRoutes_ListMcpTools_ReturnsLiveList(t *testing.T) {
 }
 
 func TestProjectRoutes_ListMcpTools_UnknownMcp404(t *testing.T) {
-	provider := mcpToolsProviderFunc(func(id string) []ToolInfo { return nil })
+	provider := mcpToolsProviderFunc(func(id string) []config.ToolInfo { return nil })
 	srv, _ := newProjectRoutesServerFull(t, provider, nil, nil)
 	defer srv.Close()
 
@@ -689,7 +690,7 @@ func TestProjectRoutes_OnChangeFires(t *testing.T) {
 		"path":            tmpDir,
 		"allowed_mcp_ids": []string{"fsmcp"},
 	})
-	var created Project
+	var created config.Project
 	_ = json.Unmarshal(body, &created)
 
 	if changed != 1 {
@@ -715,8 +716,8 @@ func TestProjectRoutes_OnChangeFires(t *testing.T) {
 }
 
 func TestProjectRoutes_ListMcpTools_DoesNotLeakCredentials(t *testing.T) {
-	provider := mcpToolsProviderFunc(func(id string) []ToolInfo {
-		return []ToolInfo{{Name: "fs_read", Description: "read"}}
+	provider := mcpToolsProviderFunc(func(id string) []config.ToolInfo {
+		return []config.ToolInfo{{Name: "fs_read", Description: "read"}}
 	})
 	srv, _ := newProjectRoutesServerFull(t, provider, nil, nil)
 	defer srv.Close()
@@ -750,7 +751,7 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 		"allowed_mcp_ids": []string{"fsmcp"},
 		"generate_skill":  true,
 	})
-	var created Project
+	var created config.Project
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
@@ -764,7 +765,7 @@ func TestProjectRoutes_FullLifecycle(t *testing.T) {
 	// created.Token is stripped by projectView, so read the real plaintext
 	// from the store — otherwise this check would compare against an empty
 	// string and pass vacuously.
-	stored, _ := store.Get().findProjectByID(created.ID)
+	stored, _ := config.FindProjectByID(store.Get(), created.ID)
 	if stored == nil {
 		t.Fatalf("project not found in store")
 	}

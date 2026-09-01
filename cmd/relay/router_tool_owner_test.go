@@ -14,10 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
-func collidingRouter(t *testing.T, perms map[string]Permission, order []string, served *string) *appRouter {
+func collidingRouter(t *testing.T, perms map[string]config.Permission, order []string, served *string) *appRouter {
 	t.Helper()
 	mocks := map[string]*mockMcpConn{}
 	for _, id := range order {
@@ -40,10 +41,10 @@ func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
 	const runs = 20
 	for i := 0; i < runs; i++ {
 		var served string
-		r := collidingRouter(t, map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn},
+		r := collidingRouter(t, map[string]config.Permission{"mcp-a": config.PermOn, "mcp-b": config.PermOn},
 			[]string{"mcp-a", "mcp-b"}, &served)
 		const svcToken = "svc-token-for-ambiguity-test-0011223344556677"
-		r.serviceTokens.Register(hashToken(svcToken))
+		r.serviceTokens.Register(config.HashToken(svcToken))
 
 		_, err := r.CallTool(context.Background(), "fs_read", nil, svcToken)
 		if err == nil {

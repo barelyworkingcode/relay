@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
@@ -119,7 +120,7 @@ func TestServiceRegistry_Spawn_InjectsBridgeEnvAndPidfile(t *testing.T) {
 	router, reg := startSandboxBridge(t, enhanced)
 	_ = router
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "svc-spawn-test",
 		DisplayName: "Test Spawn",
 		Command:     binPath,
@@ -152,7 +153,7 @@ func TestServiceRegistry_Spawn_RegistersManifest(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "svc-manifest",
 		DisplayName: "Test Manifest",
 		Command:     binPath,
@@ -188,7 +189,7 @@ func TestServiceRegistry_Stop_CleansTokenAndPidfile(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	router, reg := startSandboxBridge(t, enhanced)
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "svc-stop",
 		DisplayName: "Test Stop",
 		Command:     binPath,
@@ -224,7 +225,7 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	router, reg := startSandboxBridge(t, enhanced)
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "svc-reload",
 		DisplayName: "Test Reload",
 		Command:     binPath,
@@ -295,7 +296,7 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	frontendEnvFile := filepath.Join(dumpDir, "frontend.env")
 
 	falseVal := false
-	backend := &ServiceConfig{
+	backend := &config.ServiceConfig{
 		ID:               "svc-backend",
 		DisplayName:      "Backend",
 		Command:          binPath,
@@ -307,7 +308,7 @@ func TestServiceRegistry_Spawn_FrontendCredsIsolation(t *testing.T) {
 	}
 	t.Cleanup(func() { reg.Stop(backend.ID) })
 
-	frontend := &ServiceConfig{
+	frontend := &config.ServiceConfig{
 		ID:          "svc-frontend",
 		DisplayName: "Frontend",
 		Command:     binPath,
@@ -360,7 +361,7 @@ func TestServiceRegistry_StartAllAutostart_OnlyStartsEnabled(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	configs := []ServiceConfig{
+	configs := []config.ServiceConfig{
 		{ID: "svc-auto", DisplayName: "Auto", Command: binPath, Autostart: true},
 		{ID: "svc-manual", DisplayName: "Manual", Command: binPath, Autostart: false},
 	}
@@ -391,7 +392,7 @@ func TestServiceRegistry_OnProcessExit_FiresAfterExit(t *testing.T) {
 		}
 	}
 
-	cfg := &ServiceConfig{
+	cfg := &config.ServiceConfig{
 		ID:          "svc-exit",
 		DisplayName: "Test Exit",
 		Command:     binPath,

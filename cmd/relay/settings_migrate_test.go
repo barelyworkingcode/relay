@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -21,7 +22,7 @@ import (
 func TestMigration_SealsARealDirtyConfigDir(t *testing.T) {
 	dir := mkSandboxRelayHome(t)
 	rawBefore := sdRead(t, dir)
-	var before Settings
+	var before config.Settings
 	assertNoErr(t, json.Unmarshal(rawBefore, &before), "unmarshal fixture")
 	if len(before.Projects) == 0 {
 		t.Fatal("fixture has no projects; this test proves nothing")
@@ -37,14 +38,14 @@ func TestMigration_SealsARealDirtyConfigDir(t *testing.T) {
 		if !ok || pt == "" {
 			t.Fatalf("fixture project %s has no legacy plaintext token; this test proves nothing", p.ID)
 		}
-		if hashToken(pt) != p.TokenHash {
+		if config.HashToken(pt) != p.TokenHash {
 			t.Fatalf("fixture project %s: sha256(token) != token_hash; fix the fixture, not this test", p.ID)
 		}
 		plaintexts = append(plaintexts, pt)
 	}
 
 	keyring := sealed.NewMemoryKeyring("", nil)
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	assertNoErr(t, err, "ResolveSealedStore")
 	if store.Sealer() == nil {
 		t.Fatal("a dirty-but-unsealed fixture with no key yet must resolve to a working (freshly created) sealer")
@@ -86,13 +87,13 @@ func TestMigration_SealsARealDirtyConfigDir(t *testing.T) {
 func TestMigration_RefusesOnTokenHashMismatch(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	body := `{"version":1,"admin_secret":"admin-plain","projects":[` +
-		`{"id":"proj-bad","name":"Bad","token":"actual-token","token_hash":"` + hashToken("different-token") + `"}` +
+		`{"id":"proj-bad","name":"Bad","token":"actual-token","token_hash":"` + config.HashToken("different-token") + `"}` +
 		`],"external_mcps":[],"services":[]}`
 	path := filepath.Join(dir, "settings.json")
 	assertNoErr(t, os.WriteFile(path, []byte(body), 0600), "seed dirty settings.json")
 
 	keyring := sealed.NewMemoryKeyring("", nil)
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	assertNoErr(t, err, "ResolveSealedStore")
 
 	err = store.EnsureInitialized()
@@ -124,7 +125,7 @@ func TestMigration_NamesStaleCopiesAndDeletesNothing(t *testing.T) {
 	assertNoErr(t, os.WriteFile(stalePath, staleBody, 0600), "seed stale copy")
 
 	keyring := sealed.NewMemoryKeyring("", nil)
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	assertNoErr(t, err, "ResolveSealedStore")
 
 	stdout := captureStdout(t, func() {
@@ -165,7 +166,7 @@ func TestMigration_CAKeyIsFoldedIntoSealedFile(t *testing.T) {
 	assertNoErr(t, err, "read ca.key.sealed")
 	var env sealed.Envelope
 	assertNoErr(t, json.Unmarshal(sealedData, &env), "parse ca.key.sealed")
-	keyPEM, err := sealer.Unseal(env, []byte(caAADPrefix+"ca.key"))
+	keyPEM, err := sealer.Unseal(env, []byte(config.CAAADPrefix+"ca.key"))
 	assertNoErr(t, err, "unseal ca.key.sealed")
 
 	// Roll back to the legacy, pre-migration shape.

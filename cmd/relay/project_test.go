@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -18,23 +19,23 @@ func testSchemas() McpSurfaces {
 // An unsafe path would feed fsMCP's allowed_dirs and the skill-write target
 // directly.
 func TestProjectCreate_RejectsUnsafePath(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	for _, bad := range []string{"", "relative/dir", "../escape", "/ok/../../etc"} {
-		if _, err := s.CreateProjectWithToken("P", bad, nil, nil, nil, nil); err == nil {
+		if _, err := createProjectWithToken(s, "P", bad, nil, nil, nil, nil); err == nil {
 			t.Fatalf("expected rejection of unsafe path %q", bad)
 		}
 	}
 	if len(s.Projects) != 0 {
 		t.Fatalf("no project should have been created from invalid paths; got %d", len(s.Projects))
 	}
-	if _, err := s.CreateProjectWithToken("P", t.TempDir(), nil, nil, nil, nil); err != nil {
+	if _, err := createProjectWithToken(s, "P", t.TempDir(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("clean absolute path should be accepted: %v", err)
 	}
 }
 
 func TestProjectCreateRemote_NoPathSucceeds(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected pathless remote project to be created, got: %v", err)
 	}
@@ -52,8 +53,8 @@ func TestProjectCreateRemote_NoPathSucceeds(t *testing.T) {
 // Empty grant list is a valid resting state (enroll now, grant tools later)
 // — unlike the wildcard, which is always rejected.
 func TestProjectCreateRemote_ZeroAllowedMcpsValid(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected zero-MCP remote project to be created, got: %v", err)
 	}
@@ -63,8 +64,8 @@ func TestProjectCreateRemote_ZeroAllowedMcpsValid(t *testing.T) {
 }
 
 func TestProjectCreateRemote_RejectsPath(t *testing.T) {
-	s := &Settings{Version: 1}
-	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "/some/host/dir", nil, nil, nil, nil); err == nil {
+	s := &config.Settings{Version: 1}
+	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "/some/host/dir", nil, nil, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with a path")
 	}
 	if len(s.Projects) != 0 {
@@ -75,8 +76,8 @@ func TestProjectCreateRemote_RejectsPath(t *testing.T) {
 // Deliberate: "*" would let a future MCP registration silently widen what a
 // remote machine can reach, with nothing to review.
 func TestProjectCreateRemote_RejectsWildcardMcps(t *testing.T) {
-	s := &Settings{Version: 1}
-	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", []string{"*"}, nil, nil, nil); err == nil {
+	s := &config.Settings{Version: 1}
+	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"*"}, nil, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with wildcard allowed_mcp_ids")
 	}
 }
@@ -85,15 +86,15 @@ func TestProjectCreateRemote_RejectsWildcardMcps(t *testing.T) {
 // unrestricted, so a non-empty list is the only shape that would mean
 // something — and remote has no model-scoping story yet.
 func TestProjectCreateRemote_RejectsNonEmptyModels(t *testing.T) {
-	s := &Settings{Version: 1}
-	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", nil, []string{"claude-opus"}, nil, nil); err == nil {
+	s := &config.Settings{Version: 1}
+	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", nil, []string{"claude-opus"}, nil, nil); err == nil {
 		t.Fatal("expected rejection of remote project with non-empty allowed_models")
 	}
 }
 
 func TestProjectCreateRemote_RejectsPathScopedMcpGrant(t *testing.T) {
-	s := &Settings{Version: 1}
-	_, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Agent VM", "", []string{"fsmcp"}, nil, nil, testSchemas())
+	s := &config.Settings{Version: 1}
+	_, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Agent VM", "", []string{"fsmcp"}, nil, nil, testSchemas())
 	if err == nil {
 		t.Fatal("expected rejection of remote project granted a path-scoped MCP")
 	}
@@ -107,7 +108,7 @@ func TestProjectCreateRemote_RejectsPathScopedMcpGrant(t *testing.T) {
 
 func TestProjectKind_ZeroValueRoundTripsAsLocal(t *testing.T) {
 	raw := []byte(`{"id":"p1","name":"NoKindKey","path":"/tmp/x","allowed_mcp_ids":["*"],"allowed_models":["*"]}`)
-	var proj Project
+	var proj config.Project
 	if err := json.Unmarshal(raw, &proj); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -122,13 +123,13 @@ func TestProjectKind_ZeroValueRoundTripsAsLocal(t *testing.T) {
 // Deliberate: local never writes "kind":"local" — it persists as the absent
 // key, the same wire shape as before this field existed.
 func TestProjectKind_LocalSerializesWithNoKindKey(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithToken("Local", t.TempDir(), nil, nil, nil, nil)
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithToken(s, "Local", t.TempDir(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken: %v", err)
 	}
-	sealMe := &Settings{Projects: []Project{proj}}
-	if err := sealAllSecrets(sealMe, testSealer()); err != nil {
+	sealMe := &config.Settings{Projects: []config.Project{proj}}
+	if err := config.SealAllSecrets(sealMe, testSealer()); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	b, err := json.Marshal(sealMe.Projects[0])
@@ -143,18 +144,18 @@ func TestProjectKind_LocalSerializesWithNoKindKey(t *testing.T) {
 func TestProjectCreate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 			{ID: "searchmcp", DisplayName: "searchMCP"},
 		},
-		Services: []ServiceConfig{},
-		Projects: []Project{},
+		Services: []config.ServiceConfig{},
+		Projects: []config.Project{},
 	}
 
-	proj, err := s.CreateProjectWithToken("TestProject", tmpDir, []string{"fsmcp", "macmcp"}, []string{"claude-opus"}, nil, testSchemas())
+	proj, err := createProjectWithToken(s, "TestProject", tmpDir, []string{"fsmcp", "macmcp"}, []string{"claude-opus"}, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -214,10 +215,10 @@ func TestProjectCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticateProject failed: %v", err)
 	}
-	if authTok.Permissions["fsmcp"] == PermOff {
+	if authTok.Permissions["fsmcp"] == config.PermOff {
 		t.Error("fsmcp should be allowed (in allowed list)")
 	}
-	if authTok.Permissions["searchmcp"] != PermOff {
+	if authTok.Permissions["searchmcp"] != config.PermOff {
 		t.Error("expected searchmcp PermOff (not in allowed list)")
 	}
 }
@@ -225,25 +226,25 @@ func TestProjectCreate(t *testing.T) {
 func TestProjectUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 			{ID: "searchmcp", DisplayName: "searchMCP"},
 		},
-		Services: []ServiceConfig{},
-		Projects: []Project{},
+		Services: []config.ServiceConfig{},
+		Projects: []config.Project{},
 	}
 
-	proj, err := s.CreateProjectWithToken("UpdateTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
+	proj, err := createProjectWithToken(s, "UpdateTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
 
-	s.UpdateProjectMcps(proj.ID, []string{"macmcp", "searchmcp"}, testSchemas())
+	updateProjectMcps(s, proj.ID, []string{"macmcp", "searchmcp"}, testSchemas())
 
-	p2, _ := s.findProjectByID(proj.ID)
+	p2, _ := config.FindProjectByID(s, proj.ID)
 	if len(p2.AllowedMcpIDs) != 2 {
 		t.Fatalf("expected 2 allowed MCPs after update, got %d", len(p2.AllowedMcpIDs))
 	}
@@ -253,13 +254,13 @@ func TestProjectUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticateProject failed: %v", err)
 	}
-	if authTok.Permissions["fsmcp"] != PermOff {
+	if authTok.Permissions["fsmcp"] != config.PermOff {
 		t.Error("expected fsmcp PermOff after update (removed from allowed)")
 	}
-	if authTok.Permissions["macmcp"] == PermOff {
+	if authTok.Permissions["macmcp"] == config.PermOff {
 		t.Error("macmcp should be allowed after update")
 	}
-	if authTok.Permissions["searchmcp"] == PermOff {
+	if authTok.Permissions["searchmcp"] == config.PermOff {
 		t.Error("searchmcp should be allowed after update")
 	}
 }
@@ -267,16 +268,16 @@ func TestProjectUpdate(t *testing.T) {
 func TestProjectDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 		},
-		Services: []ServiceConfig{},
-		Projects: []Project{},
+		Services: []config.ServiceConfig{},
+		Projects: []config.Project{},
 	}
 
-	proj, err := s.CreateProjectWithToken("DeleteTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
+	proj, err := createProjectWithToken(s, "DeleteTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -301,18 +302,18 @@ func TestProjectDelete(t *testing.T) {
 func TestProjectTokenScoping(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 		},
-		Services:    []ServiceConfig{},
-		Projects:    []Project{},
-		AdminSecret: NewSecret("test-admin"),
+		Services:    []config.ServiceConfig{},
+		Projects:    []config.Project{},
+		AdminSecret: config.NewSecret("test-admin"),
 	}
 
-	proj, err := s.CreateProjectWithToken("ScopeTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
+	proj, err := createProjectWithToken(s, "ScopeTest", tmpDir, []string{"fsmcp"}, nil, nil, testSchemas())
 	if err != nil {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestProjectTokenScoping(t *testing.T) {
 			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 		}))
 
-	store := &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()}
+	store := storeWithCache(t.TempDir(), testSealer(), s)
 	r := &appRouter{
 		store:    store,
 		tools:    mgr,
@@ -388,12 +389,12 @@ func TestProjectPersistence(t *testing.T) {
 	projectDir := t.TempDir()
 
 	var projToken string
-	err := store.With(func(s *Settings) {
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{
+	err := store.With(func(s *config.Settings) {
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{
 			ID:          "fsmcp",
 			DisplayName: "fsMCP",
 		})
-		proj, err := s.CreateProjectWithToken("PersistTest", projectDir, []string{"fsmcp"}, []string{"claude-opus"}, nil, testSchemas())
+		proj, err := createProjectWithToken(s, "PersistTest", projectDir, []string{"fsmcp"}, []string{"claude-opus"}, nil, testSchemas())
 		if err != nil {
 			t.Fatalf("CreateProjectWithToken failed: %v", err)
 		}
@@ -422,11 +423,11 @@ func TestProjectPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected project token to authenticate after reload: %v", err)
 	}
-	if authTok.Permissions["fsmcp"] == PermOff {
+	if authTok.Permissions["fsmcp"] == config.PermOff {
 		t.Error("fsmcp should be allowed on authenticated project token")
 	}
 
-	err = store.With(func(s *Settings) {
+	err = store.With(func(s *config.Settings) {
 		s.RemoveProject(proj.ID)
 	})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"log/slog"
 	"strings"
 )
@@ -110,12 +111,12 @@ func (a *App) pushFullSettings() {
 // the Projects tab. Missing MCPs (not registered or not connected yet) are
 // represented as empty slices so the UI renders consistently — the picker
 // handles empties with an "authenticate this MCP first" hint.
-func (a *App) buildToolCache(s *Settings) map[string][]ToolInfo {
-	out := make(map[string][]ToolInfo, len(s.ExternalMcps))
+func (a *App) buildToolCache(s *config.Settings) map[string][]config.ToolInfo {
+	out := make(map[string][]config.ToolInfo, len(s.ExternalMcps))
 	for _, m := range s.ExternalMcps {
 		infos := a.extMgr.ToolInfos(m.ID)
 		if infos == nil {
-			infos = []ToolInfo{}
+			infos = []config.ToolInfo{}
 		}
 		out[m.ID] = infos
 	}
@@ -156,7 +157,7 @@ func (a *App) EmitEvent(name string, args ...interface{}) {
 // IPCContext provides dependencies to IPC handlers, replacing *App coupling.
 type IPCContext struct {
 	Ctx                    context.Context
-	Store                  SettingsStore
+	Store                  config.SettingsStore
 	UI                     SettingsUI
 	Platform               Platform
 	Registry               ServiceManager
@@ -215,13 +216,13 @@ type IPCContext struct {
 
 // withSettingsReconcile atomically mutates settings, then asynchronously sends
 // a reconcile notification to the bridge. Returns true on success (save succeeded).
-func (ctx *IPCContext) withSettingsReconcile(fn func(*Settings)) bool {
+func (ctx *IPCContext) withSettingsReconcile(fn func(*config.Settings)) bool {
 	return ctx.withSettingsNotify(fn, ctx.NotifyReconcile)
 }
 
 // withSettings atomically mutates settings and emits an error event on failure.
 // Returns true on success.
-func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
+func (ctx *IPCContext) withSettings(fn func(*config.Settings)) bool {
 	return ctx.withSettingsNotify(fn, nil)
 }
 
@@ -230,9 +231,9 @@ func (ctx *IPCContext) withSettings(fn func(*Settings)) bool {
 // thread during bridge round-trips that may trigger MCP process spawning or
 // network I/O. Settings are persisted to disk before the notification is sent,
 // so the notification handler reads the updated state.
-func (ctx *IPCContext) withSettingsNotify(fn func(*Settings), notify func(string) error) bool {
+func (ctx *IPCContext) withSettingsNotify(fn func(*config.Settings), notify func(string) error) bool {
 	var secret string
-	if err := ctx.Store.With(func(s *Settings) {
+	if err := ctx.Store.With(func(s *config.Settings) {
 		fn(s)
 		secret, _ = s.AdminSecret.Reveal()
 	}); err != nil {

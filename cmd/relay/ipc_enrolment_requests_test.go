@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 // leaves nil (every door that predates this slice does). table is returned
 // too so a test can lodge directly into it, the way aoLodge does but
 // against a caller-visible table rather than a throwaway one.
-func newEnrolmentRequestsIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI, *enrolmentRequestTable) {
+func newEnrolmentRequestsIPC(t *testing.T) (*IPCContext, config.SettingsStore, *recordingUI, *enrolmentRequestTable) {
 	t.Helper()
 	_, store := newEnrolmentSandbox(t)
 	ui := &recordingUI{}
@@ -156,7 +157,7 @@ func TestIPCListEnrolmentRequests_EmptyTableEmitsEmptyList(t *testing.T) {
 
 func TestIPCApproveEnrolmentRequest_PersistsAndEmitsBundleAndRefreshesList(t *testing.T) {
 	ipc, store, ui, table := newEnrolmentRequestsIPC(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	l, err := table.Lodge(genClientCSRPEM(t, "hermes-mail"), "vm-mail-a", "", "", "10.0.0.5:41233")
 	assertNoErr(t, err, "Lodge")
@@ -174,14 +175,14 @@ func TestIPCApproveEnrolmentRequest_PersistsAndEmitsBundleAndRefreshesList(t *te
 	if !ok {
 		t.Fatalf("expected onEnrolmentCreated; got %+v", ui.events)
 	}
-	var enrolment Enrolment
+	var enrolment config.Enrolment
 	if err := json.Unmarshal(created[0].(json.RawMessage), &enrolment); err != nil {
 		t.Fatalf("unmarshal enrolment: %v", err)
 	}
 	if enrolment.ClientID != "hermes-mail" || !enrolment.GrantsProject(mail.ID) {
 		t.Fatalf("emitted enrolment does not match the approval: %+v", enrolment)
 	}
-	if store.Get().FindEnrolment("hermes-mail") == nil {
+	if findEnrolment(store.Get(), "hermes-mail") == nil {
 		t.Error("approved enrolment was not persisted")
 	}
 
@@ -223,7 +224,7 @@ func TestIPCApproveEnrolmentRequest_RequiresRequestIDAndClientID(t *testing.T) {
 
 func TestIPCApproveEnrolmentRequest_UnknownRequestIDRefuses(t *testing.T) {
 	ipc, store, ui, _ := newEnrolmentRequestsIPC(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	ipcApproveEnrolmentRequest(ipc, mustRaw(t, map[string]interface{}{
 		"request_id":  "req_does_not_exist",
@@ -299,7 +300,7 @@ func TestIPCRefuseEnrolmentRequest_RequiresRequestID(t *testing.T) {
 // cannot disagree -- see remoteConfigViewOf's own doc comment.
 func TestRemoteConfigView_CarriesCAFingerprintMatchingDiskRead(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	if _, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}); err != nil {
 		t.Fatalf("createEnrolment: %v", err)
 	}

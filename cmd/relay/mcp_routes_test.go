@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -22,7 +23,7 @@ import (
 // same as production (frontend_server.go): a genuine pattern collision
 // between the two would panic right here at registration, before any test
 // runs a request.
-func newMcpRoutesServer(t *testing.T) (*httptest.Server, SettingsStore) {
+func newMcpRoutesServer(t *testing.T) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
 	ops := &McpOps{Store: store, Ctx: context.Background(), Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -218,12 +219,12 @@ func TestMcpRoutes_NeverLeaksOAuthSecrets(t *testing.T) {
 	const clientSecret = "s3cr3t-oauth-client-secret"
 	const accessToken = "s3cr3t-oauth-access-token"
 	const refreshToken = "s3cr3t-oauth-refresh-token"
-	if err := store.With(func(s *Settings) {
-		s.UpdateOAuthState(created.ID, &OAuthState{
+	if err := store.With(func(s *config.Settings) {
+		s.UpdateOAuthState(created.ID, &config.OAuthState{
 			ClientID:     "some-oauth-client-id",
-			ClientSecret: NewSecret(clientSecret),
-			AccessToken:  NewSecret(accessToken),
-			RefreshToken: NewSecret(refreshToken),
+			ClientSecret: config.NewSecret(clientSecret),
+			AccessToken:  config.NewSecret(accessToken),
+			RefreshToken: config.NewSecret(refreshToken),
 			TokenExpiry:  "2099-01-01T00:00:00Z",
 		})
 	}); err != nil {

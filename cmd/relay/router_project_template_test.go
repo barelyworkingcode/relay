@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
-func seedShellTemplates(t *testing.T, r *appRouter, projID string, tmpls []ShellTemplate) {
+func seedShellTemplates(t *testing.T, r *appRouter, projID string, tmpls []config.ShellTemplate) {
 	t.Helper()
-	if err := r.store.With(func(s *Settings) {
+	if err := r.store.With(func(s *config.Settings) {
 		s.UpdateProjectShellTemplates(projID, tmpls)
 	}); err != nil {
 		t.Fatalf("seed shell templates: %v", err)
@@ -19,7 +20,7 @@ func seedShellTemplates(t *testing.T, r *appRouter, projID string, tmpls []Shell
 
 func TestResolveProjectTemplate_Found(t *testing.T) {
 	router, proj, svcToken := newPtyTestRouter(t)
-	want := ShellTemplate{
+	want := config.ShellTemplate{
 		ID:          "ssh-prod",
 		Name:        "Prod SSH",
 		Command:     "ssh",
@@ -28,7 +29,7 @@ func TestResolveProjectTemplate_Found(t *testing.T) {
 		Description: "ssh into prod",
 		Icon:        "shell",
 	}
-	seedShellTemplates(t, router, proj.ID, []ShellTemplate{want})
+	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{want})
 
 	resp, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
@@ -66,7 +67,7 @@ func TestResolveProjectTemplate_UnknownProject(t *testing.T) {
 
 func TestResolveProjectTemplate_UnknownTemplate(t *testing.T) {
 	router, proj, svcToken := newPtyTestRouter(t)
-	seedShellTemplates(t, router, proj.ID, []ShellTemplate{{ID: "present", Name: "Present", Command: "ssh"}})
+	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{{ID: "present", Name: "Present", Command: "ssh"}})
 
 	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
@@ -79,7 +80,7 @@ func TestResolveProjectTemplate_UnknownTemplate(t *testing.T) {
 
 func TestResolveProjectTemplate_RequiresServiceToken(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
-	seedShellTemplates(t, router, proj.ID, []ShellTemplate{{ID: "t", Name: "T", Command: "ssh"}})
+	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{{ID: "t", Name: "T", Command: "ssh"}})
 
 	projTok, _ := proj.Token.Reveal()
 	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{

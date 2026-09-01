@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -13,29 +14,29 @@ import (
 // the remote kind exists to prevent.
 func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) {
 	dir := t.TempDir()
-	s := &Settings{ExternalMcps: []ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}}}
+	s := &config.Settings{ExternalMcps: []config.ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}}}
 	schemas := func() McpSurfaces {
 		return McpSurfaces{"fsmcp": {Schema: json.RawMessage(`{"allowed_dirs":{"type":"array"}}`)}}
 	}
 
-	proj, err := s.CreateProjectWithToken("Local", dir, []string{"fsmcp"}, nil, nil, schemas())
+	proj, err := createProjectWithToken(s, "Local", dir, []string{"fsmcp"}, nil, nil, schemas())
 	if err != nil {
 		t.Fatalf("create local: %v", err)
 	}
-	stored, _ := s.findProjectByID(proj.ID)
+	stored, _ := config.FindProjectByID(s, proj.ID)
 	if len(stored.Context["fsmcp"]) == 0 {
 		t.Fatalf("precondition: local project should have fsmcp allowed_dirs context, got %+v", stored.Context)
 	}
 
 	// Conversion attempt 1: flip kind, clear path, keep the filesystem grant.
-	remote := ProjectKindRemote
+	remote := config.ProjectKindRemote
 	empty := ""
 	_, _, err = applyProjectUpdate(s, proj.ID, projectUpdateFields{Kind: &remote, Path: &empty}, schemas)
 	if err == nil {
 		t.Fatal("converting a project holding a filesystem-scoped MCP to remote must be refused")
 	}
 
-	after, _ := s.findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(s, proj.ID)
 	if after.IsRemote() || after.Path != dir {
 		t.Fatalf("refused conversion mutated the project: kind=%q path=%q", after.Kind, after.Path)
 	}
@@ -47,7 +48,7 @@ func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) 
 	}, schemas); err != nil {
 		t.Fatalf("dropping the grant should make conversion legal: %v", err)
 	}
-	converted, _ := s.findProjectByID(proj.ID)
+	converted, _ := config.FindProjectByID(s, proj.ID)
 	if !converted.IsRemote() {
 		t.Fatal("project did not convert to remote")
 	}
@@ -62,10 +63,10 @@ func TestProjectConvertLocalToRemote_CannotInheritFilesystemScope(t *testing.T) 
 // no-ops" is the same rule that already removes the path, the skill toggle,
 // the shell templates, the model allowlist and directory auth.
 func TestProjectCreateRemote_RejectsPermissionPolicy(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	_, err := applyProjectCreate(s, projectCreateFields{
-		Name: "Hermes Mail", Kind: ProjectKindRemote,
-		PermissionPolicy: &PermissionPolicy{DefaultMode: "bypassPermissions"},
+		Name: "Hermes Mail", Kind: config.ProjectKindRemote,
+		PermissionPolicy: &config.PermissionPolicy{DefaultMode: "bypassPermissions"},
 	}, nil)
 	if err == nil {
 		t.Fatal("a profile carrying a permission policy was accepted")
@@ -81,10 +82,10 @@ func TestProjectCreateRemote_RejectsPermissionPolicy(t *testing.T) {
 // An EMPTY policy is not a policy. The update path already reads one as "clear
 // it", so refusing on it would refuse the very request that clears one.
 func TestProjectCreateRemote_AcceptsAnEmptyPermissionPolicy(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	created, err := applyProjectCreate(s, projectCreateFields{
-		Name: "Hermes Mail", Kind: ProjectKindRemote,
-		PermissionPolicy: &PermissionPolicy{},
+		Name: "Hermes Mail", Kind: config.ProjectKindRemote,
+		PermissionPolicy: &config.PermissionPolicy{},
 	}, nil)
 	if err != nil {
 		t.Fatalf("an emptied policy was refused as a policy: %v", err)
@@ -95,10 +96,10 @@ func TestProjectCreateRemote_AcceptsAnEmptyPermissionPolicy(t *testing.T) {
 }
 
 func TestProjectCreateRemote_RejectsChatTemplates(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	_, err := applyProjectCreate(s, projectCreateFields{
-		Name: "Hermes Mail", Kind: ProjectKindRemote,
-		ChatTemplates: []ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}},
+		Name: "Hermes Mail", Kind: config.ProjectKindRemote,
+		ChatTemplates: []config.ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}},
 	}, nil)
 	if err == nil {
 		t.Fatal("a profile carrying a chat template was accepted")
@@ -111,8 +112,8 @@ func TestProjectCreateRemote_RejectsChatTemplates(t *testing.T) {
 	}
 	// The lower-level mutator refuses it too, so a caller that reaches past
 	// applyProjectCreate cannot store one either.
-	if _, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Hermes Mail", "", nil, nil,
-		[]ChatTemplate{{ID: "t1", Name: "Default"}}, nil); err == nil {
+	if _, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Hermes Mail", "", nil, nil,
+		[]config.ChatTemplate{{ID: "t1", Name: "Default"}}, nil); err == nil {
 		t.Fatal("CreateProjectWithTokenKind stored chat templates on a remote record")
 	}
 }
@@ -124,15 +125,15 @@ func TestProjectCreateRemote_RejectsChatTemplates(t *testing.T) {
 // no door in it.
 func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *testing.T) {
 	dir := t.TempDir()
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithToken("Local", dir, nil, nil,
-		[]ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}}, nil)
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithToken(s, "Local", dir, nil, nil,
+		[]config.ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}}, nil)
 	if err != nil {
 		t.Fatalf("create local: %v", err)
 	}
-	s.UpdateProjectPermissionPolicy(proj.ID, &PermissionPolicy{DefaultMode: "acceptEdits"})
+	s.UpdateProjectPermissionPolicy(proj.ID, &config.PermissionPolicy{DefaultMode: "acceptEdits"})
 
-	remote := ProjectKindRemote
+	remote := config.ProjectKindRemote
 	empty := ""
 	noSurfaces := func() McpSurfaces { return nil }
 
@@ -140,20 +141,20 @@ func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *tes
 	if _, _, err := applyProjectUpdate(s, proj.ID, projectUpdateFields{Kind: &remote, Path: &empty}, noSurfaces); err == nil {
 		t.Fatal("converting a project that still carries a policy and templates was allowed")
 	}
-	after, _ := s.findProjectByID(proj.ID)
+	after, _ := config.FindProjectByID(s, proj.ID)
 	if after.IsRemote() {
 		t.Fatal("a refused conversion mutated the record")
 	}
 
-	noTemplates := []ChatTemplate{}
+	noTemplates := []config.ChatTemplate{}
 	if _, _, err := applyProjectUpdate(s, proj.ID, projectUpdateFields{
 		Kind: &remote, Path: &empty,
 		ChatTemplates:    &noTemplates,
-		PermissionPolicy: &PermissionPolicy{},
+		PermissionPolicy: &config.PermissionPolicy{},
 	}, noSurfaces); err != nil {
 		t.Fatalf("clearing both should make the conversion legal: %v", err)
 	}
-	converted, _ := s.findProjectByID(proj.ID)
+	converted, _ := config.FindProjectByID(s, proj.ID)
 	if !converted.IsRemote() {
 		t.Fatal("project did not convert")
 	}
@@ -164,11 +165,11 @@ func TestProjectConvertLocalToRemote_ClearingTheInertControlsMakesItLegal(t *tes
 }
 
 func TestProjectLocal_KeepsItsPolicyAndTemplates(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	created, err := applyProjectCreate(s, projectCreateFields{
 		Name: "Workspace", Path: t.TempDir(),
-		PermissionPolicy: &PermissionPolicy{DefaultMode: "acceptEdits"},
-		ChatTemplates:    []ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}},
+		PermissionPolicy: &config.PermissionPolicy{DefaultMode: "acceptEdits"},
+		ChatTemplates:    []config.ChatTemplate{{ID: "t1", Name: "Default", Model: "claude-opus"}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("a local project was refused: %v", err)

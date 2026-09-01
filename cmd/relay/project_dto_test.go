@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"net/http"
 	"testing"
 )
@@ -11,8 +12,8 @@ func TestProjectRoutes_FrontendOmitsToken(t *testing.T) {
 	defer srv.Close()
 
 	var id string
-	if err := store.With(func(s *Settings) {
-		p, err := s.CreateProjectWithToken("Secret", t.TempDir(), nil, nil, nil, nil)
+	if err := store.With(func(s *config.Settings) {
+		p, err := createProjectWithToken(s, "Secret", t.TempDir(), nil, nil, nil, nil)
 		if err == nil {
 			id = p.ID
 		}

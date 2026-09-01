@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"slices"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestAllowedTools_ValidationRefusesEveryOverBroadSpelling(t *testing.T) {
 			continue // literal "*" — narrow, not broad; asserted below
 		}
 		t.Run(pattern, func(t *testing.T) {
-			proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+			proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 				AllowedTools: map[string][]string{"macmcp": {pattern}}}
 			err := validateProjectPermissions(proj, v2Surfaces())
 			if err == nil {
@@ -72,7 +73,7 @@ func TestAllowedTools_ValidationKeepsNamePatterns(t *testing.T) {
 		"[cm]ail_*",
 	} {
 		t.Run(pattern, func(t *testing.T) {
-			proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+			proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 				AllowedTools: map[string][]string{"macmcp": {pattern}}}
 			if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
 				t.Fatalf("pattern %q was refused: %v", pattern, err)
@@ -91,9 +92,9 @@ func TestAllowedTools_MatcherRefusesEveryOverBroadSpelling(t *testing.T) {
 			continue
 		}
 		t.Run(pattern, func(t *testing.T) {
-			tok := &StoredToken{ProjectKind: ProjectKindRemote,
+			tok := &config.StoredToken{ProjectKind: config.ProjectKindRemote,
 				AllowedTools: map[string][]string{"macmcp": {pattern}},
-				Access:       map[string]string{"macmcp": AccessWrite}}
+				Access:       map[string]string{"macmcp": config.AccessWrite}}
 			for _, tool := range surface {
 				if tok.ToolAllowed("macmcp", tool.Name) {
 					t.Errorf("pattern %q admitted %q", pattern, tool.Name)
@@ -118,7 +119,7 @@ func TestListTools_AnOverBroadAllowlistIsNotTheWholeMcp(t *testing.T) {
 	for _, pattern := range []string{"**", "*_*", "[a-z]*", "*e*"} {
 		t.Run(pattern, func(t *testing.T) {
 			r := newProfileRouter(t, profileOpts{
-				kind:         ProjectKindRemote,
+				kind:         config.ProjectKindRemote,
 				allowedTools: map[string][]string{"macmcp": {pattern}},
 			})
 			if got := listedToolNames(t, r); len(got) != 0 {
@@ -133,9 +134,9 @@ func TestListTools_AnOverBroadAllowlistIsNotTheWholeMcp(t *testing.T) {
 	}
 
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 		// mail_send needs the outbound grant too (decision 2c) — given here
 		// so the test isolates the pattern, not the grant.
 		allowExternal: map[string]bool{"macmcp": true},
@@ -216,24 +217,24 @@ func TestOverBroadRuleDoesNotReachAppliesTo(t *testing.T) {
 // Deliberate: pinned because the property is one edit away from being
 // untrue — swap Contains for a glob and this becomes live silently.
 func TestAllowedMcpIDs_AreMatchedLiterallyAndNotAsGlobs(t *testing.T) {
-	mcps := []ExternalMcp{{ID: "macmcp"}, {ID: "fsmcp"}}
+	mcps := []config.ExternalMcp{{ID: "macmcp"}, {ID: "fsmcp"}}
 	for _, pattern := range []string{"**", "?*", "*_*", "mac*", "[a-z]*"} {
-		s := &Settings{ExternalMcps: mcps}
-		proj := &Project{ID: "p1", Name: "Profile", Kind: ProjectKindRemote,
+		s := &config.Settings{ExternalMcps: mcps}
+		proj := &config.Project{ID: "p1", Name: "Profile", Kind: config.ProjectKindRemote,
 			AllowedMcpIDs: []string{pattern}}
-		tok := s.storedTokenForProject(proj, "hash")
+		tok := config.StoredTokenForProject(s, proj, "hash")
 		for _, id := range []string{"macmcp", "fsmcp"} {
-			if tok.Permissions[id] != PermOff {
+			if tok.Permissions[id] != config.PermOff {
 				t.Errorf("allowed_mcp_ids [%q] granted %q — the list is being matched as a pattern", pattern, id)
 			}
 		}
 	}
 	// The single "*" is still special: refused for a profile, kept for local.
-	local := &Project{ID: "p2", Name: "Local", Path: "/tmp/x", AllowedMcpIDs: []string{"*"}}
-	if tok := (&Settings{ExternalMcps: mcps}).storedTokenForProject(local, "hash"); len(tok.Permissions) != 0 {
+	local := &config.Project{ID: "p2", Name: "Local", Path: "/tmp/x", AllowedMcpIDs: []string{"*"}}
+	if tok := config.StoredTokenForProject(&config.Settings{ExternalMcps: mcps}, local, "hash"); len(tok.Permissions) != 0 {
 		t.Errorf(`a local project's ["*"] stopped meaning every MCP: %v`, tok.Permissions)
 	}
-	if err := validateProjectShape(&Project{Kind: ProjectKindRemote, AllowedMcpIDs: []string{"*"}}); err == nil {
+	if err := validateProjectShape(&config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"*"}}); err == nil {
 		t.Error(`a profile was allowed allowed_mcp_ids: ["*"]`)
 	}
 }

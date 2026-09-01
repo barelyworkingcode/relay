@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -46,7 +47,7 @@ func TestPendingEnrolmentRequestView_CarriesTheComparisonState(t *testing.T) {
 	}
 
 	byID := map[string]pendingEnrolmentRequestView{}
-	for _, v := range pendingEnrolmentRequestViewsOf(table.List(), &Settings{}) {
+	for _, v := range pendingEnrolmentRequestViewsOf(table.List(), &config.Settings{}) {
 		byID[v.RequestID] = v
 	}
 
@@ -77,12 +78,12 @@ func TestPendingEnrolmentRequestView_SuggestsAFreeClientID(t *testing.T) {
 		t.Fatalf("Lodge: %v", err)
 	}
 
-	free := pendingEnrolmentRequestViewsOf(table.List(), &Settings{})
+	free := pendingEnrolmentRequestViewsOf(table.List(), &config.Settings{})
 	if free[0].SuggestedClientID != "hermes-mail" {
 		t.Errorf("suggestion for a free label = %q, want hermes-mail", free[0].SuggestedClientID)
 	}
 
-	taken := &Settings{Enrolments: []Enrolment{{ClientID: "hermes-mail"}}}
+	taken := &config.Settings{Enrolments: []config.Enrolment{{ClientID: "hermes-mail"}}}
 	collided := pendingEnrolmentRequestViewsOf(table.List(), taken)
 	if collided[0].SuggestedClientID != "hermes-mail-2" {
 		t.Errorf("suggestion for a taken label = %q, want hermes-mail-2", collided[0].SuggestedClientID)
@@ -103,7 +104,7 @@ func TestPendingEnrolmentRequestView_MarshalsTheNewFields(t *testing.T) {
 		t.Fatalf("Poll: %v", err)
 	}
 
-	data, err := json.Marshal(pendingEnrolmentRequestViewsOf(table.List(), &Settings{})[0])
+	data, err := json.Marshal(pendingEnrolmentRequestViewsOf(table.List(), &config.Settings{})[0])
 	assertNoErr(t, err, "marshal view")
 	for _, want := range []string{`"sas":`, `"sas_ready":true`, `"sas_failed":false`, `"is_legacy_request":false`, `"requested_profile":"p_mail"`, `"suggested_client_id":"vm-mail-a"`} {
 		if !strings.Contains(string(data), want) {

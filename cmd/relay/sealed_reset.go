@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -31,7 +32,7 @@ func sealedResetDigest(settingsKeyID string, keyring sealed.Keyring) presence.Di
 // works regardless of what the Settings WebView can currently render: a
 // degraded store's own recovery path must not depend on machinery that
 // might itself be part of what is degraded.
-func sealedResetReason(s *Settings) string {
+func sealedResetReason(s *config.Settings) string {
 	return fmt.Sprintf(
 		"reset the sealed store, permanently deleting %d project token(s), %d control-plane credential(s), "+
 			"%d enrolment(s) and the certificate authority that signed them, and %d passkey(s)",
@@ -54,7 +55,7 @@ func sealedResetReason(s *Settings) string {
 // program where minting a brand new key is correct, because the operator
 // standing at the keyboard just proved it with their password, which is
 // exactly what §5.5.1 reserves this act for and no other.
-func resetSealedStore(ctx context.Context, dir string, store *FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate) error {
+func resetSealedStore(ctx context.Context, dir string, store *config.FileSettingsStore, keyring sealed.Keyring, gate *presence.Gate) error {
 	s := store.Get()
 	digest := sealedResetDigest(s.SealedKeyID, keyring)
 	if _, err := requireGate(gate, ctx, "sealed.reset", digest, sealedResetReason(s)); err != nil {

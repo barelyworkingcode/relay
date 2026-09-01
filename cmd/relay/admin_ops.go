@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"time"
@@ -102,8 +103,8 @@ func requireServiceOps(r *appRouter) (*ServiceOps, error) {
 // verifier, never the token), so the mint response is just the record plus
 // the one plaintext moment alongside it.
 type credentialMintResult struct {
-	Credential APICredential `json:"credential"`
-	Token      string        `json:"token"`
+	Credential config.APICredential `json:"credential"`
+	Token      string               `json:"token"`
 }
 
 type credentialRevokeRequest struct {
@@ -149,9 +150,9 @@ func adminCredentialRevoke(ctx context.Context, r *appRouter, args json.RawMessa
 // to disk failed, the reason so the CLI can say so rather than claiming a
 // clean success.
 type enrolmentCreateResult struct {
-	Enrolment   Enrolment `json:"enrolment"`
-	Dir         string    `json:"dir,omitempty"`
-	BundleError string    `json:"bundle_error,omitempty"`
+	Enrolment   config.Enrolment `json:"enrolment"`
+	Dir         string           `json:"dir,omitempty"`
+	BundleError string           `json:"bundle_error,omitempty"`
 }
 
 func adminEnrolmentCreate(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -179,11 +180,11 @@ func adminEnrolmentCreate(ctx context.Context, r *appRouter, args json.RawMessag
 // themselves. Certificates are public; there is no field here, and none is
 // to be added, that could carry a private key.
 type enrolmentSignResult struct {
-	Enrolment   Enrolment `json:"enrolment"`
-	Dir         string    `json:"dir,omitempty"`
-	CertPEM     string    `json:"cert_pem"`
-	CAPEM       string    `json:"ca_pem"`
-	BundleError string    `json:"bundle_error,omitempty"`
+	Enrolment   config.Enrolment `json:"enrolment"`
+	Dir         string           `json:"dir,omitempty"`
+	CertPEM     string           `json:"cert_pem"`
+	CAPEM       string           `json:"ca_pem"`
+	BundleError string           `json:"bundle_error,omitempty"`
 	// RequestExpired is set only by adminEnrolmentRequestApprove (Sign has
 	// no pending row to expire): the row was swept between lodge and
 	// approve, but the enrolment above committed anyway. enrolApprove must
@@ -234,8 +235,8 @@ func adminEnrolmentSign(ctx context.Context, r *appRouter, args json.RawMessage)
 }
 
 type enrolmentUpdateResult struct {
-	Before Enrolment `json:"before"`
-	After  Enrolment `json:"after"`
+	Before config.Enrolment `json:"before"`
+	After  config.Enrolment `json:"after"`
 }
 
 func adminEnrolmentUpdate(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
@@ -483,17 +484,17 @@ func adminServiceRegister(ctx context.Context, r *appRouter, args json.RawMessag
 		return nil, err
 	}
 	id := req.resolvedID()
-	var config ServiceConfig
+	var cfg config.ServiceConfig
 	var opErr error
 	if _, getErr := ops.Get(id); getErr == nil {
-		config, opErr = ops.Update(ctx, id, req, auditViaCLI, "")
+		cfg, opErr = ops.Update(ctx, id, req, auditViaCLI, "")
 	} else {
-		config, opErr = ops.Create(ctx, req, auditViaCLI, "")
+		cfg, opErr = ops.Create(ctx, req, auditViaCLI, "")
 	}
 	if opErr != nil && !errors.Is(opErr, errServiceProcess) {
 		return nil, opErr
 	}
-	view := serviceViewOf(config, ops.Registry.IsRunning(config.ID))
+	view := serviceViewOf(cfg, ops.Registry.IsRunning(cfg.ID))
 	view = withProcessError(view, opErr)
 	return marshalAdminResult(view)
 }

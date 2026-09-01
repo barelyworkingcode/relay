@@ -584,7 +584,7 @@ window.__RELAY_INIT__ = {
 </script>
 <script>
 (() => {
-  // ../../web/src/lib/pure.js
+  // web/src/lib/pure.js
   var ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -784,7 +784,7 @@ window.__RELAY_INIT__ = {
     return String(s).replace(/\s+/g, " ").slice(0, 140);
   }
 
-  // ../../web/src/app.js
+  // web/src/app.js
   var EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
   var SERVICES_INIT = window.__RELAY_INIT__.services;
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;

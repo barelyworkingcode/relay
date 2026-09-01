@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -33,7 +34,7 @@ import (
 const accLegacyToken = "acc-frontend-token"
 
 type accServer struct {
-	store    SettingsStore
+	store    config.SettingsStore
 	sockHTTP *http.Client
 	tcpBase  string
 }
@@ -43,7 +44,7 @@ type accServer struct {
 // real credentialAuthorizer over the same store. frontendToken is what the
 // server is told RELAY_FRONTEND_TOKEN is; "" builds a server with no
 // credential of its own, which is the fail-closed case.
-func accNewServer(t *testing.T, store SettingsStore, frontendToken string) *accServer {
+func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string) *accServer {
 	t.Helper()
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -129,7 +130,7 @@ func accAssertForbidden(t *testing.T, resp *http.Response, body []byte, what str
 	}
 }
 
-func accMint(t *testing.T, store SettingsStore, name string, classes ...string) string {
+func accMint(t *testing.T, store config.SettingsStore, name string, classes ...string) string {
 	t.Helper()
 	_, plaintext, err := mintAPICredential(store, credentialMintRequest{Name: name, Classes: classes})
 	assertNoErr(t, err, "mint %q", name)
@@ -147,7 +148,7 @@ func accMint(t *testing.T, store SettingsStore, name string, classes ...string) 
 func TestACCMintedCredentialAuthenticatesAndReachesOnlyItsClasses(t *testing.T) {
 	store := newCLISandboxStore(t)
 	srv := accNewServer(t, store, accLegacyToken)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "acc-proj", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "acc-proj", t.TempDir())
 
 	token := accMint(t, store, "acc-reader", "read")
 
@@ -166,7 +167,7 @@ func TestACCMintedCredentialAuthenticatesAndReachesOnlyItsClasses(t *testing.T) 
 	resp, body = srv.socket(t, "POST", "/api/services", token, map[string]any{"display_name": "acc-phantom", "command": "/bin/true"})
 	accAssertForbidden(t, resp, body, "read credential on execute-class POST /api/services")
 
-	if svc, _ := store.Get().findServiceByID("acc-phantom"); svc != nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "acc-phantom"); svc != nil {
 		t.Fatal("a read-only credential reached ServiceOps.Create")
 	}
 	if len(store.Get().Projects) != 1 {
@@ -204,9 +205,9 @@ func TestACCUnknownAndAbsentBearersAreRefusedIdentically(t *testing.T) {
 func TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports(t *testing.T) {
 	store := newCLISandboxStore(t)
 	srv := accNewServer(t, store, accLegacyToken)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "acc-proj", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "acc-proj", t.TempDir())
 
-	var legacy *APICredential
+	var legacy *config.APICredential
 	for i, c := range store.Get().APICredentials {
 		if c.Name == legacyFrontendCredentialName {
 			legacy = &store.Get().APICredentials[i]
@@ -215,7 +216,7 @@ func TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports(t *testing.T
 	if legacy == nil {
 		t.Fatal("the frontend token was never recorded as a credential; Eve would 401 against its own injected token")
 	}
-	if legacy.Hash != hashToken(accLegacyToken) {
+	if legacy.Hash != config.HashToken(accLegacyToken) {
 		t.Fatal("the legacy credential's hash is not the frontend token's")
 	}
 	if !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) {
@@ -248,7 +249,7 @@ func TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports(t *testing.T
 func TestACCGrantCredentialReachesRotateTokenAndEnrolments(t *testing.T) {
 	store := newCLISandboxStore(t)
 	srv := accNewServer(t, store, accLegacyToken)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "acc-proj", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "acc-proj", t.TempDir())
 
 	token := accMint(t, store, "acc-granter", "grant")
 
@@ -257,7 +258,7 @@ func TestACCGrantCredentialReachesRotateTokenAndEnrolments(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rotate_token: status = %d, want 200; body=%s", resp.StatusCode, body)
 	}
-	if rotated, _ := store.Get().findProjectByID(proj.ID); rotated == nil || rotated.TokenHash == proj.TokenHash {
+	if rotated, _ := config.FindProjectByID(store.Get(), proj.ID); rotated == nil || rotated.TokenHash == proj.TokenHash {
 		t.Fatal("rotate_token answered but the project's token hash did not move")
 	}
 
@@ -302,7 +303,7 @@ func TestACCExecuteCredentialIsSocketOnly(t *testing.T) {
 	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 		t.Fatalf("Content-Type = %q says a handler answered; the route must be absent from the TCP mux", resp.Header.Get("Content-Type"))
 	}
-	if svc, _ := store.Get().findServiceByID("acc-phantom"); svc != nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "acc-phantom"); svc != nil {
 		t.Fatal("POST /api/services reached ServiceOps.Create over TCP")
 	}
 }
@@ -499,7 +500,7 @@ func TestACCMintAndRevokeRefuseTheReservedLegacyName(t *testing.T) {
 		t.Fatal("a refused mint still wrote a credential")
 	}
 
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		migrateFrontendTokenToCredential(s, accLegacyToken)
 	}), "seed the legacy credential")
 	legacyID := store.Get().APICredentials[0].ID
@@ -546,7 +547,7 @@ func TestACCMintReturnsAPlaintextThatIsNeverStored(t *testing.T) {
 	if plaintext == "" || plaintext == cred.Hash {
 		t.Fatalf("plaintext %q is not a distinct secret from the stored hash", plaintext)
 	}
-	if cred.Hash != hashToken(plaintext) {
+	if cred.Hash != config.HashToken(plaintext) {
 		t.Fatal("the stored hash is not the plaintext's")
 	}
 	raw, err := json.Marshal(store.Get())
@@ -652,8 +653,8 @@ func TestACCExpiredCredentialIs401ExactlyLikeAnUnknownOne(t *testing.T) {
 	accAssertReached(t, resp, body, "a live credential before its expiry")
 
 	// Backdate rather than sleep: the stored record is what the gate reads.
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.FindAPICredential(cred.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		findAPICredential(s, cred.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate the credential")
 
 	expiredResp, expiredBody := srv.socket(t, "GET", "/api/services", plaintext, nil)
@@ -666,7 +667,7 @@ func TestACCExpiredCredentialIs401ExactlyLikeAnUnknownOne(t *testing.T) {
 			expiredResp.StatusCode, expiredBody, unknownResp.StatusCode, unknownBody)
 	}
 
-	if store.Get().FindAPICredential(cred.ID) == nil {
+	if findAPICredential(store.Get(), cred.ID) == nil {
 		t.Fatal("the refusal deleted the record; reaping is lazy and happens on the next mint")
 	}
 }
@@ -681,11 +682,11 @@ func TestACCMintReapsExpiredCredentials(t *testing.T) {
 	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
 	assertNoErr(t, err, "mint dead")
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		findAPICredential(s, dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate")
 
-	if store.Get().FindAPICredential(dead.ID) == nil {
+	if findAPICredential(store.Get(), dead.ID) == nil {
 		t.Fatal("nothing may sweep the expired record before the next mint")
 	}
 
@@ -693,11 +694,11 @@ func TestACCMintReapsExpiredCredentials(t *testing.T) {
 	assertNoErr(t, err, "mint trigger")
 
 	s := store.Get()
-	if s.FindAPICredential(dead.ID) != nil {
+	if findAPICredential(s, dead.ID) != nil {
 		t.Fatal("the mint did not reap the expired credential")
 	}
 	for _, keep := range []string{live.ID, forever.ID} {
-		if s.FindAPICredential(keep) == nil {
+		if findAPICredential(s, keep) == nil {
 			t.Fatalf("the reap swept %q, which has not expired", keep)
 		}
 	}
@@ -735,8 +736,8 @@ func TestACCListHidesExpiredUnlessAsked(t *testing.T) {
 	assertNoErr(t, err, "mint forever")
 	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
 	assertNoErr(t, err, "mint dead")
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		findAPICredential(s, dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate")
 
 	plain := accCapture(t, func() { credentialList(store, nil) })
@@ -769,8 +770,8 @@ func TestACCListSaysSoWhenEveryCredentialHasExpired(t *testing.T) {
 	store := newCLISandboxStore(t)
 	dead, _, err := mintAPICredential(store, credentialMintRequest{Name: "acc-dead", Classes: []string{"read"}, TTL: time.Hour})
 	assertNoErr(t, err, "mint")
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.FindAPICredential(dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		findAPICredential(s, dead.ID).Expires = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}), "backdate")
 
 	out := accCapture(t, func() { credentialList(store, nil) })

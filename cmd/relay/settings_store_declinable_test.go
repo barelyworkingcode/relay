@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	if err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("before") }); err != nil {
+	if err := store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("before") }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -49,8 +50,8 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 	beforeBytes := sdRead(t, dir)
 
 	refusal := fmt.Errorf("declined on purpose")
-	err := store.WithDeclinable(func(s *Settings) error {
-		s.AdminSecret = NewSecret("after")
+	err := store.WithDeclinable(func(s *config.Settings) error {
+		s.AdminSecret = config.NewSecret("after")
 		return refusal
 	})
 	if err != refusal {
@@ -69,7 +70,7 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 	}
 
 	// The other half: a callback that returns nil still saves.
-	if err := store.WithDeclinable(func(s *Settings) error { s.AdminSecret = NewSecret("committed"); return nil }); err != nil {
+	if err := store.WithDeclinable(func(s *config.Settings) error { s.AdminSecret = config.NewSecret("committed"); return nil }); err != nil {
 		t.Fatalf("WithDeclinable (committing): %v", err)
 	}
 	if got, _ := store.Get().AdminSecret.Reveal(); got != "committed" {
@@ -87,14 +88,14 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T) {
 	const canary = "sd-canary-credential"
 
-	run := func(t *testing.T, flood int) *Settings {
+	run := func(t *testing.T, flood int) *config.Settings {
 		t.Helper()
 		dir := mkEmptySandboxRelayHome(t)
 		stale := sealedSettingsStoreAt(dir)
 		if err := stale.EnsureInitialized(); err != nil {
 			t.Fatalf("EnsureInitialized: %v", err)
 		}
-		if err := stale.With(func(s *Settings) { s.AdminSecret = NewSecret("seeded") }); err != nil {
+		if err := stale.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("seeded") }); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		seen := sdStat(t, dir).ModTime()
@@ -102,7 +103,7 @@ func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T
 		// A second store standing in for `relay credential mint` in its own
 		// process: it commits, and is told the write succeeded.
 		committer := sealedSettingsStoreAt(dir)
-		if err := committer.With(func(s *Settings) { s.AdminSecret = NewSecret(canary) }); err != nil {
+		if err := committer.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret(canary) }); err != nil {
 			t.Fatalf("committing writer: %v", err)
 		}
 		if err := os.Chtimes(sdSettingsPath(dir), seen, seen); err != nil {
@@ -113,7 +114,7 @@ func TestSettingsStore_ADeclinedWriteCannotLoseAnotherWritersChange(t *testing.T
 		}
 
 		for i := 0; i < flood; i++ {
-			err := stale.WithDeclinable(func(s *Settings) error {
+			err := stale.WithDeclinable(func(s *config.Settings) error {
 				return fmt.Errorf("refused %d", i)
 			})
 			if err == nil {
@@ -151,10 +152,10 @@ func TestSettingsStore_ConcurrentWritersNeverProduceAnUnparseableFile(t *testing
 		writers = 6
 		rounds  = 12
 	)
-	bulk := func(n int) []Project {
-		out := make([]Project, 0, n)
+	bulk := func(n int) []config.Project {
+		out := make([]config.Project, 0, n)
 		for i := 0; i < n; i++ {
-			out = append(out, Project{
+			out = append(out, config.Project{
 				ID:            fmt.Sprintf("project-%04d", i),
 				Name:          strings.Repeat("n", 120),
 				Path:          "/tmp/" + strings.Repeat("p", 200),
@@ -175,7 +176,7 @@ func TestSettingsStore_ConcurrentWritersNeverProduceAnUnparseableFile(t *testing
 			t.Errorf("%s: read settings.json: %v", where, err)
 			return
 		}
-		var s Settings
+		var s config.Settings
 		if err := json.Unmarshal(data, &s); err != nil {
 			t.Errorf("%s: settings.json is unparseable after concurrent writes (%d bytes): %v\ntail: %q",
 				where, len(data), err, tailOf(data, 120))
@@ -204,8 +205,8 @@ func TestSettingsStore_ConcurrentWritersNeverProduceAnUnparseableFile(t *testing
 			defer wg.Done()
 			store := sealedSettingsStoreAt(dir)
 			for r := 0; r < rounds; r++ {
-				if err := store.With(func(s *Settings) {
-					s.AdminSecret = NewSecret(fmt.Sprintf("writer-%d-round-%d", w, r))
+				if err := store.With(func(s *config.Settings) {
+					s.AdminSecret = config.NewSecret(fmt.Sprintf("writer-%d-round-%d", w, r))
 					s.Projects = bulk(200 + w*90)
 				}); err != nil {
 					t.Errorf("writer %d round %d: %v", w, r, err)

@@ -17,10 +17,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (*httptest.Server, SettingsStore) {
+func newServiceRoutesServer(t *testing.T, reg ServiceManager, onChange func()) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
 	ops := &ServiceOps{Store: store, Registry: reg, OnChange: onChange, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -130,7 +131,7 @@ func TestServiceRoutes_CreateAutostartStartsService(t *testing.T) {
 func TestServiceRoutes_UpdateValidation(t *testing.T) {
 	srv, store := newServiceRoutesServer(t, &svcRecorder{}, nil)
 	defer srv.Close()
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/services/svc1", map[string]interface{}{
 		"display_name": "Svc1",
@@ -145,7 +146,7 @@ func TestServiceRoutes_UpdateRestartsOnlyIfRunning(t *testing.T) {
 		reg := &svcRecorder{running: map[string]bool{"svc1": true}}
 		srv, store := newServiceRoutesServer(t, reg, nil)
 		defer srv.Close()
-		seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+		seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 
 		resp, body := doJSON(t, "PUT", srv.URL+"/api/services/svc1", map[string]interface{}{
 			"display_name": "Svc1",
@@ -163,7 +164,7 @@ func TestServiceRoutes_UpdateRestartsOnlyIfRunning(t *testing.T) {
 		reg := &svcRecorder{}
 		srv, store := newServiceRoutesServer(t, reg, nil)
 		defer srv.Close()
-		seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
+		seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/old"})
 
 		resp, body := doJSON(t, "PUT", srv.URL+"/api/services/svc1", map[string]interface{}{
 			"display_name": "Svc1",
@@ -175,7 +176,7 @@ func TestServiceRoutes_UpdateRestartsOnlyIfRunning(t *testing.T) {
 		if len(reg.reloaded) != 0 {
 			t.Errorf("stopped service should not be reloaded; reloaded=%v", reg.reloaded)
 		}
-		if cfg, _ := store.Get().findServiceByID("svc1"); cfg == nil || cfg.Command != "/bin/new" {
+		if cfg, _ := config.FindServiceByID(store.Get(), "svc1"); cfg == nil || cfg.Command != "/bin/new" {
 			t.Errorf("updated command not persisted: %+v", cfg)
 		}
 	})
@@ -185,13 +186,13 @@ func TestServiceRoutes_Delete(t *testing.T) {
 	reg := &svcRecorder{}
 	srv, store := newServiceRoutesServer(t, reg, nil)
 	defer srv.Close()
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 
 	resp, _ := doJSON(t, "DELETE", srv.URL+"/api/services/svc1", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d", resp.StatusCode)
 	}
-	if cfg, _ := store.Get().findServiceByID("svc1"); cfg != nil {
+	if cfg, _ := config.FindServiceByID(store.Get(), "svc1"); cfg != nil {
 		t.Error("service should have been removed from settings")
 	}
 	if len(reg.stopped) != 1 || reg.stopped[0] != "svc1" {
@@ -208,7 +209,7 @@ func TestServiceRoutes_StartStop(t *testing.T) {
 	reg := &svcRecorder{}
 	srv, store := newServiceRoutesServer(t, reg, nil)
 	defer srv.Close()
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/services/svc1/start", nil)
 	if resp.StatusCode != http.StatusOK {
@@ -230,7 +231,7 @@ func TestServiceRoutes_StartStop(t *testing.T) {
 func TestServiceRoutes_Autostart(t *testing.T) {
 	srv, store := newServiceRoutesServer(t, &svcRecorder{}, nil)
 	defer srv.Close()
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x", Autostart: false})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x", Autostart: false})
 
 	resp, body := doJSON(t, "PUT", srv.URL+"/api/services/svc1/autostart", map[string]interface{}{
 		"autostart": true,
@@ -238,7 +239,7 @@ func TestServiceRoutes_Autostart(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("autostart: status %d, body %s", resp.StatusCode, body)
 	}
-	if cfg, _ := store.Get().findServiceByID("svc1"); cfg == nil || !cfg.Autostart {
+	if cfg, _ := config.FindServiceByID(store.Get(), "svc1"); cfg == nil || !cfg.Autostart {
 		t.Errorf("autostart flag not persisted: %+v", cfg)
 	}
 }
@@ -247,8 +248,8 @@ func TestServiceRoutes_ListRunningState(t *testing.T) {
 	reg := &svcRecorder{running: map[string]bool{"svc1": true}}
 	srv, store := newServiceRoutesServer(t, reg, nil)
 	defer srv.Close()
-	seedService(t, store, ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
-	seedService(t, store, ServiceConfig{ID: "svc2", DisplayName: "Svc2", Command: "/bin/y"})
+	seedService(t, store, config.ServiceConfig{ID: "svc1", DisplayName: "Svc1", Command: "/bin/x"})
+	seedService(t, store, config.ServiceConfig{ID: "svc2", DisplayName: "Svc2", Command: "/bin/y"})
 
 	_, body := doJSON(t, "GET", srv.URL+"/api/services", nil)
 	var listed []serviceView
@@ -325,11 +326,11 @@ func TestServiceRoutes_OnChangeFires(t *testing.T) {
 // A store whose mutations always fail, so a test can tell "nothing was
 // persisted" apart from "persisted, but the process action failed".
 type failingStore struct {
-	SettingsStore
+	config.SettingsStore
 	err error
 }
 
-func (f *failingStore) With(func(*Settings)) error { return f.err }
+func (f *failingStore) With(func(*config.Settings)) error { return f.err }
 
 func TestServiceRoutes_CreateSurvivesAutostartFailure(t *testing.T) {
 	reg := &svcRecorder{startErr: errors.New("exec: no such file")}
@@ -354,7 +355,7 @@ func TestServiceRoutes_CreateSurvivesAutostartFailure(t *testing.T) {
 	if view.ProcessError == "" {
 		t.Fatal("a failed autostart must be reported in process_error, not swallowed")
 	}
-	if svc, _ := store.Get().findServiceByID("flaky"); svc == nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "flaky"); svc == nil {
 		t.Fatal("the record must be persisted even though autostart failed")
 	}
 }
@@ -374,7 +375,7 @@ func TestServiceRoutes_CreateReportsFailedPersist(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("a create that persisted nothing must not report success, got %d: %s", resp.StatusCode, body)
 	}
-	if svc, _ := base.Get().findServiceByID("doomed"); svc != nil {
+	if svc, _ := config.FindServiceByID(base.Get(), "doomed"); svc != nil {
 		t.Fatal("nothing should have been persisted")
 	}
 }
@@ -432,8 +433,8 @@ func doJSONAuth(t *testing.T, method, url string, body interface{}, token string
 func TestServiceOps_UpdatePreservesFrontendConsumerOptOut(t *testing.T) {
 	store := newCLISandboxStore(t)
 	optOut := false
-	if err := store.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "backend", DisplayName: "Backend", Command: "/bin/old", FrontendConsumer: &optOut})
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "backend", DisplayName: "Backend", Command: "/bin/old", FrontendConsumer: &optOut})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -443,7 +444,7 @@ func TestServiceOps_UpdatePreservesFrontendConsumerOptOut(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	svc, _ := store.Get().findServiceByID("backend")
+	svc, _ := config.FindServiceByID(store.Get(), "backend")
 	if svc == nil {
 		t.Fatal("service vanished")
 	}

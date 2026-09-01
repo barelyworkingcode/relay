@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // A var rather than a const so a test can point it at a path that does not
@@ -61,7 +62,7 @@ func ensureSandboxProfile(readOnly bool) (string, error) {
 		return "", fmt.Errorf("sandbox profile dir: %w", err)
 	}
 	path := filepath.Join(dir, name)
-	if err := atomicWriteFile(path, []byte(body), 0600); err != nil {
+	if err := config.AtomicWriteFile(path, []byte(body), 0600); err != nil {
 		return "", fmt.Errorf("write sandbox profile: %w", err)
 	}
 	return path, nil
@@ -154,7 +155,7 @@ func stdioReadOnlyFlag(args []string) bool {
 //
 // cfg.ResolvedRoot is set on success so the caller, and through it the audit
 // log, can name the directory without re-deriving it from Args.
-func prepareStdioLaunch(cfg *ExternalMcp) (command string, args []string, err error) {
+func prepareStdioLaunch(cfg *config.ExternalMcp) (command string, args []string, err error) {
 	root, ok := stdioRootFlag(cfg.Args)
 	if !ok {
 		// Said out loud, at the same level as the seatbelt log line below:

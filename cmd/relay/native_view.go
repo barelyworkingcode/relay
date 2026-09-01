@@ -1,5 +1,7 @@
 package main
 
+import "github.com/barelyworkingcode/relay/internal/config"
+
 import "fmt"
 
 // The tray's own Settings window is not the eve/HTTP boundary projectView
@@ -19,14 +21,14 @@ import "fmt"
 // as "this project has no token", which is not what a missing key means.
 const sealUnavailablePlaceholder = "unavailable — the sealed store cannot be opened"
 
-func revealForUI(s Secret) string {
+func revealForUI(s config.Secret) string {
 	if pt, ok := s.Reveal(); ok {
 		return pt
 	}
 	return sealUnavailablePlaceholder
 }
 
-func revealEnvForUI(m map[string]Secret) map[string]string {
+func revealEnvForUI(m map[string]config.Secret) map[string]string {
 	if m == nil {
 		return nil
 	}
@@ -41,15 +43,15 @@ func revealEnvForUI(m map[string]Secret) map[string]string {
 // shallower one wins for both directions of encoding/json's promotion
 // rule) with its revealed plaintext.
 type nativeProject struct {
-	Project
+	config.Project
 	Token string `json:"token"`
 }
 
-func projectToNativeView(p Project) nativeProject {
+func projectToNativeView(p config.Project) nativeProject {
 	return nativeProject{Project: p, Token: revealForUI(p.Token)}
 }
 
-func projectsToNativeView(ps []Project) []nativeProject {
+func projectsToNativeView(ps []config.Project) []nativeProject {
 	out := make([]nativeProject, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, projectToNativeView(p))
@@ -65,7 +67,7 @@ type nativeOAuthState struct {
 	TokenExpiry  string `json:"token_expiry,omitempty"`
 }
 
-func nativeOAuthStateOf(o *OAuthState) *nativeOAuthState {
+func nativeOAuthStateOf(o *config.OAuthState) *nativeOAuthState {
 	if o == nil {
 		return nil
 	}
@@ -79,12 +81,12 @@ func nativeOAuthStateOf(o *OAuthState) *nativeOAuthState {
 }
 
 type nativeExternalMcp struct {
-	ExternalMcp
+	config.ExternalMcp
 	Env        map[string]string `json:"env"`
 	OAuthState *nativeOAuthState `json:"oauth_state,omitempty"`
 }
 
-func externalMcpToNativeView(m ExternalMcp) nativeExternalMcp {
+func externalMcpToNativeView(m config.ExternalMcp) nativeExternalMcp {
 	return nativeExternalMcp{
 		ExternalMcp: m,
 		Env:         revealEnvForUI(m.Env),
@@ -92,7 +94,7 @@ func externalMcpToNativeView(m ExternalMcp) nativeExternalMcp {
 	}
 }
 
-func externalMcpsToNativeView(ms []ExternalMcp) []nativeExternalMcp {
+func externalMcpsToNativeView(ms []config.ExternalMcp) []nativeExternalMcp {
 	out := make([]nativeExternalMcp, 0, len(ms))
 	for _, m := range ms {
 		out = append(out, externalMcpToNativeView(m))
@@ -101,15 +103,15 @@ func externalMcpsToNativeView(ms []ExternalMcp) []nativeExternalMcp {
 }
 
 type nativeServiceConfig struct {
-	ServiceConfig
+	config.ServiceConfig
 	Env map[string]string `json:"env"`
 }
 
-func serviceConfigToNativeView(c ServiceConfig) nativeServiceConfig {
+func serviceConfigToNativeView(c config.ServiceConfig) nativeServiceConfig {
 	return nativeServiceConfig{ServiceConfig: c, Env: revealEnvForUI(c.Env)}
 }
 
-func serviceConfigsToNativeView(cs []ServiceConfig) []nativeServiceConfig {
+func serviceConfigsToNativeView(cs []config.ServiceConfig) []nativeServiceConfig {
 	out := make([]nativeServiceConfig, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, serviceConfigToNativeView(c))
@@ -124,7 +126,7 @@ func serviceConfigsToNativeView(cs []ServiceConfig) []nativeServiceConfig {
 // dropped — the same "everything that needs a sealed value refuses"
 // principle §5.6 clause 4 names for ResolvePtyEnv and the admin ops,
 // extended to every other consumer of a sealed env value.
-func revealEnvOrErr(m map[string]Secret) (map[string]string, error) {
+func revealEnvOrErr(m map[string]config.Secret) (map[string]string, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -144,13 +146,13 @@ func revealEnvOrErr(m map[string]Secret) (map[string]string, error) {
 // ExternalMcp.Env / ServiceConfig.Env. The values are plaintext relay
 // itself just received, not something read back off disk, so NewSecret —
 // not UnmarshalJSON's legacy path — is the right constructor (§4.3).
-func secretMapFromPlain(m map[string]string) map[string]Secret {
+func secretMapFromPlain(m map[string]string) map[string]config.Secret {
 	if m == nil {
 		return nil
 	}
-	out := make(map[string]Secret, len(m))
+	out := make(map[string]config.Secret, len(m))
 	for k, v := range m {
-		out[k] = NewSecret(v)
+		out[k] = config.NewSecret(v)
 	}
 	return out
 }

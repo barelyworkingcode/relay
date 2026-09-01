@@ -6,6 +6,7 @@ package main
 // anything path.Match would parse further.
 
 import (
+	"github.com/barelyworkingcode/relay/internal/config"
 	"path"
 	"strings"
 	"testing"
@@ -118,7 +119,7 @@ func TestHasGlobMeta_OrdinaryCharactersAreNotFlagged(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNarrowsOnly_RefusesAllowedToolsKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := Project{
+	stored := config.Project{
 		AllowedMcpIDs: []string{"macmcp", "other"},
 		AllowedTools:  map[string][]string{"macmcp": {"mail_search"}, "other": {"other_tool"}},
 	}
@@ -134,12 +135,12 @@ func TestNarrowsOnly_RefusesAllowedToolsKeyOnAnMcpNotInTheResultingSet(t *testin
 }
 
 func TestNarrowsOnly_RefusesAccessKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := Project{
+	stored := config.Project{
 		AllowedMcpIDs: []string{"macmcp", "other"},
-		Access:        map[string]string{"macmcp": AccessRead, "other": AccessRead},
+		Access:        map[string]string{"macmcp": config.AccessRead, "other": config.AccessRead},
 	}
 	narrowedIDs := []string{"macmcp"}
-	access := map[string]string{"other": AccessRead}
+	access := map[string]string{"other": config.AccessRead}
 	err := narrowsOnly(stored, remoteNarrowFields{AllowedMcpIDs: &narrowedIDs, Access: &access})
 	if err == nil {
 		t.Fatal("narrowsOnly accepted an access key for an MCP dropped from allowed_mcp_ids")
@@ -150,7 +151,7 @@ func TestNarrowsOnly_RefusesAccessKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
 }
 
 func TestNarrowsOnly_RefusesAllowExternalKeyOnAnMcpNotInTheResultingSet(t *testing.T) {
-	stored := Project{
+	stored := config.Project{
 		AllowedMcpIDs: []string{"macmcp", "other"},
 		AllowExternal: map[string]bool{"macmcp": false, "other": false},
 	}

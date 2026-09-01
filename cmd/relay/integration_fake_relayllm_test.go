@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 func TestIntegration_FakeRelayLLM_DispatchesEveryDeclaredRoute(t *testing.T) {
@@ -146,7 +147,7 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 		enhanced: enhanced,
 	}
 	const svcTokenPlain = "svc-token-fake-relayllm"
-	router.serviceTokens.Register(hashToken(svcTokenPlain))
+	router.serviceTokens.Register(config.HashToken(svcTokenPlain))
 
 	srv, err := bridge.NewBridgeServer(context.Background(), router)
 	assertNoErr(t, err, "NewBridgeServer")

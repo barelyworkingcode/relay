@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 // newEnrolmentSandbox returns a sandboxed store whose config dir also holds
 // the CA and the emitted bundles, so nothing here can touch the real
 // ~/Library/Application Support/relay.
-func newEnrolmentSandbox(t *testing.T) (string, SettingsStore) {
+func newEnrolmentSandbox(t *testing.T) (string, config.SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -27,12 +28,12 @@ func newEnrolmentSandbox(t *testing.T) (string, SettingsStore) {
 
 // mkStoreProject creates a project of the given kind in the store and returns
 // it. path must be empty for a remote project (validateProjectShape).
-func mkStoreProject(t *testing.T, store SettingsStore, kind ProjectKind, name, path string) Project {
+func mkStoreProject(t *testing.T, store config.SettingsStore, kind config.ProjectKind, name, path string) config.Project {
 	t.Helper()
-	var proj Project
+	var proj config.Project
 	var createErr error
-	assertNoErr(t, store.With(func(s *Settings) {
-		proj, createErr = s.CreateProjectWithTokenKind(kind, name, path, []string{}, []string{}, nil, nil)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		proj, createErr = createProjectWithTokenKind(s, kind, name, path, []string{}, []string{}, nil, nil)
 	}), "create %s project", kind)
 	assertNoErr(t, createErr, "create %s project", kind)
 	return proj
@@ -43,7 +44,7 @@ func mkStoreProject(t *testing.T, store SettingsStore, kind ProjectKind, name, p
 // than by defeating any of them.
 func TestCreateEnrolment_RefusesLocalProjectGrant(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", dir)
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", dir)
 
 	_, err := createEnrolment(store, enrolmentRequest{
 		ClientID:   "hermes-mail",
@@ -70,7 +71,7 @@ func TestCreateEnrolment_RefusesLocalProjectGrant(t *testing.T) {
 // files that get copied to the client machine.
 func TestCreateEnrolment_RemoteProjectGrantSucceedsAndEmitsBundle(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	bundle, err := createEnrolment(store, enrolmentRequest{
 		ClientID:   "hermes-mail",
@@ -123,11 +124,11 @@ func TestCreateEnrolment_RemoteProjectGrantSucceedsAndEmitsBundle(t *testing.T) 
 	// Resolution at connection time is by certificate, and it is the
 	// certificate that carries the grant.
 	s := store.Get()
-	resolved := s.FindEnrolmentByFingerprint(e.Fingerprint)
+	resolved := findEnrolmentByFingerprint(s, e.Fingerprint)
 	if resolved == nil || resolved.ClientID != "hermes-mail" {
 		t.Fatalf("FindEnrolmentByFingerprint did not resolve the enrolment: %+v", resolved)
 	}
-	if s.FindEnrolmentByFingerprint("sha256:"+strings.Repeat("0", 64)) != nil {
+	if findEnrolmentByFingerprint(s, "sha256:"+strings.Repeat("0", 64)) != nil {
 		t.Fatal("an unknown fingerprint must resolve to nothing")
 	}
 	if resolved.GrantsProject("proj-nobody-granted") {
@@ -171,8 +172,8 @@ func TestCreateEnrolment_RefusesDuplicateAndUnsafeClientIDs(t *testing.T) {
 // Nothing may assume one-per-machine.
 func TestEnrolments_AreKeyedByCertificateNotByMachine(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
-	cal := mkStoreProject(t, store, ProjectKindRemote, "Calendar", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
+	cal := mkStoreProject(t, store, config.ProjectKindRemote, "Calendar", "")
 
 	a, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "enrol hermes-mail")
@@ -188,7 +189,7 @@ func TestEnrolments_AreKeyedByCertificateNotByMachine(t *testing.T) {
 	if len(s.Enrolments) != 3 {
 		t.Fatalf("want 3 co-existing enrolments, got %d", len(s.Enrolments))
 	}
-	holders := s.EnrolmentsGrantingProject(mail.ID)
+	holders := enrolmentsGrantingProject(s, mail.ID)
 	if len(holders) != 2 {
 		t.Fatalf("want 2 enrolments granting Mail, got %v", holders)
 	}
@@ -197,10 +198,10 @@ func TestEnrolments_AreKeyedByCertificateNotByMachine(t *testing.T) {
 	_, err = revokeEnrolment(store, "hermes-mail")
 	assertNoErr(t, err, "revoke hermes-mail")
 	after := store.Get()
-	if len(after.Enrolments) != 2 || after.FindEnrolment("hermes-cal") == nil || after.FindEnrolment("hermes-triage") == nil {
+	if len(after.Enrolments) != 2 || findEnrolment(after, "hermes-cal") == nil || findEnrolment(after, "hermes-triage") == nil {
 		t.Fatalf("revoking one enrolment disturbed the others: %+v", after.Enrolments)
 	}
-	if after.FindEnrolmentByFingerprint(c.Enrolment.Fingerprint) == nil {
+	if findEnrolmentByFingerprint(after, c.Enrolment.Fingerprint) == nil {
 		t.Fatal("a surviving enrolment stopped resolving by certificate")
 	}
 }
@@ -217,7 +218,7 @@ func TestEnrolmentFingerprint_RoundTripsThroughSettingsAtFullLength(t *testing.T
 	// that only kept the value in memory cannot pass.
 	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	assertNoErr(t, err, "read settings.json")
-	var onDisk Settings
+	var onDisk config.Settings
 	assertNoErr(t, json.Unmarshal(raw, &onDisk), "parse settings.json")
 
 	if len(onDisk.Enrolments) != 1 {
@@ -253,17 +254,17 @@ func mustMarshal(t *testing.T, v any) []byte {
 // constrained local→remote conversion: refuse the edit that would strand a
 // credential rather than allowing it and cleaning up afterwards.
 func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
-	s := &Settings{}
-	mail, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	s := &config.Settings{}
+	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create remote project")
-	s.AddEnrolment(Enrolment{
+	addEnrolment(s, config.Enrolment{
 		ClientID:    "hermes-mail",
 		Fingerprint: "sha256:" + strings.Repeat("a", 64),
 		ProjectIDs:  []string{mail.ID},
 	})
 	schemas := func() McpSurfaces { return nil }
 
-	local := ProjectKindLocal
+	local := config.ProjectKindLocal
 	path := t.TempDir()
 	_, _, err = applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas)
 	if err == nil {
@@ -274,20 +275,20 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 	}
 
 	// The refusal must have changed nothing.
-	after, _ := s.findProjectByID(mail.ID)
+	after, _ := config.FindProjectByID(s, mail.ID)
 	if !after.IsRemote() || after.Path != "" {
 		t.Fatalf("refused conversion mutated the project: kind=%q path=%q", after.Kind, after.Path)
 	}
 
 	// Revoking the enrolment makes the conversion legal — capability and
 	// device revocation stay independent, and neither strands the other.
-	if _, ok := s.RemoveEnrolment("hermes-mail"); !ok {
+	if _, ok := removeEnrolment(s, "hermes-mail"); !ok {
 		t.Fatal("RemoveEnrolment did not find the enrolment it just stored")
 	}
 	if _, _, err := applyProjectUpdate(s, mail.ID, projectUpdateFields{Kind: &local, Path: &path}, schemas); err != nil {
 		t.Fatalf("conversion should be legal once no enrolment grants the project: %v", err)
 	}
-	converted, _ := s.findProjectByID(mail.ID)
+	converted, _ := config.FindProjectByID(s, mail.ID)
 	if converted.IsRemote() {
 		t.Fatal("project did not convert to local after the enrolment was revoked")
 	}
@@ -297,25 +298,25 @@ func TestProjectConvertRemoteToLocal_RefusedWhileEnrolled(t *testing.T) {
 // mutator refuses the same conversion on its own, so a caller that skips
 // applyProjectUpdate cannot produce the silent widening.
 func TestUpdateProjectKind_RefusesRemoteToLocalWhileEnrolled(t *testing.T) {
-	s := &Settings{}
-	mail, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
+	s := &config.Settings{}
+	mail, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Mail", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create remote project")
-	s.AddEnrolment(Enrolment{
+	addEnrolment(s, config.Enrolment{
 		ClientID:    "hermes-mail",
 		Fingerprint: "sha256:" + strings.Repeat("b", 64),
 		ProjectIDs:  []string{mail.ID},
 	})
 
-	s.UpdateProjectKind(mail.ID, ProjectKindLocal)
-	if proj, _ := s.findProjectByID(mail.ID); !proj.IsRemote() {
+	updateProjectKind(s, mail.ID, config.ProjectKindLocal)
+	if proj, _ := config.FindProjectByID(s, mail.ID); !proj.IsRemote() {
 		t.Fatal("UpdateProjectKind converted an enrolled remote project to local")
 	}
 
 	// Unrelated projects, and remote→remote no-ops, stay unaffected.
-	other, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Calendar", "", []string{}, []string{}, nil, nil)
+	other, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{}, []string{}, nil, nil)
 	assertNoErr(t, err, "create second remote project")
-	s.UpdateProjectKind(other.ID, ProjectKindLocal)
-	if proj, _ := s.findProjectByID(other.ID); proj.IsRemote() {
+	updateProjectKind(s, other.ID, config.ProjectKindLocal)
+	if proj, _ := config.FindProjectByID(s, other.ID); proj.IsRemote() {
 		t.Fatal("an unenrolled remote project must still be convertible")
 	}
 }
@@ -347,7 +348,7 @@ func TestRevokeEnrolment_RemovesRecordFiresHookAndDeletesBundle(t *testing.T) {
 	if len(s.Enrolments) != 0 {
 		t.Fatalf("revocation left the record behind: %+v", s.Enrolments)
 	}
-	if s.FindEnrolmentByFingerprint(bundle.Enrolment.Fingerprint) != nil {
+	if findEnrolmentByFingerprint(s, bundle.Enrolment.Fingerprint) != nil {
 		t.Fatal("a revoked certificate still resolves to an enrolment")
 	}
 	if _, err := os.Stat(bundle.Dir); !os.IsNotExist(err) {
@@ -374,8 +375,8 @@ func TestRevokeEnrolment_WorksWithNoHookInstalled(t *testing.T) {
 // zero must still never mean "unlimited" after the retune, exactly as before
 // it.
 func TestNormalizeEnrolmentBudget_ZeroFieldsTakeTheRetunedDefaults(t *testing.T) {
-	got := normalizeEnrolmentBudget(EnrolmentBudget{})
-	want := EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20}
+	got := normalizeEnrolmentBudget(config.EnrolmentBudget{})
+	want := config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20}
 	if got != want {
 		t.Fatalf("normalizeEnrolmentBudget(zero) = %+v, want %+v", got, want)
 	}
@@ -397,7 +398,7 @@ func TestNormalizeEnrolmentBudget_ZeroFieldsTakeTheRetunedDefaults(t *testing.T)
 // fingerprint, created-at) untouched — and so does the certificate on disk.
 func TestUpdateEnrolment_ChangesOnlyNamedField(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	bundle, err := createEnrolment(store, enrolmentRequest{
 		ClientID:   "hermes-mail",
 		ProjectIDs: []string{mail.ID},
@@ -434,7 +435,7 @@ func TestUpdateEnrolment_ChangesOnlyNamedField(t *testing.T) {
 	if string(gotCertPEM) != string(origCertPEM) {
 		t.Fatal("the certificate on disk changed after a budget-only update")
 	}
-	stored := store.Get().FindEnrolment("hermes-mail")
+	stored := findEnrolment(store.Get(), "hermes-mail")
 	if stored == nil || stored.Fingerprint != before.Fingerprint {
 		t.Fatalf("the persisted fingerprint moved: %+v", stored)
 	}
@@ -447,7 +448,7 @@ func TestUpdateEnrolment_UnsetFieldsPreserveStoredValueNotDefault(t *testing.T) 
 	_, store := newEnrolmentSandbox(t)
 	_, err := createEnrolment(store, enrolmentRequest{
 		ClientID: "hermes-mail",
-		Budget:   EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
+		Budget:   config.EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
 	})
 	assertNoErr(t, err, "createEnrolment")
 
@@ -473,7 +474,7 @@ func TestUpdateEnrolment_ExplicitZeroResetsToDefault(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	_, err := createEnrolment(store, enrolmentRequest{
 		ClientID: "hermes-mail",
-		Budget:   EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
+		Budget:   config.EnrolmentBudget{WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20},
 	})
 	assertNoErr(t, err, "createEnrolment")
 
@@ -511,9 +512,9 @@ func TestUpdateEnrolment_RefusesUnknownClientID(t *testing.T) {
 // legitimate replacement (including replacing down to zero grants) works.
 func TestUpdateEnrolment_GrantsValidateAndReplaceWholeList(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
-	cal := mkStoreProject(t, store, ProjectKindRemote, "Calendar", "")
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", dir)
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
+	cal := mkStoreProject(t, store, config.ProjectKindRemote, "Calendar", "")
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", dir)
 
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
@@ -537,7 +538,7 @@ func TestUpdateEnrolment_GrantsValidateAndReplaceWholeList(t *testing.T) {
 		t.Fatalf("want a refusal naming the local project, got: %v", err)
 	}
 	// The refusal changed nothing.
-	stored := store.Get().FindEnrolment("hermes-mail")
+	stored := findEnrolment(store.Get(), "hermes-mail")
 	if stored == nil || !slices.Equal(stored.ProjectIDs, []string{cal.ID}) {
 		t.Fatalf("a refused grant update mutated the stored record: %+v", stored)
 	}
@@ -559,11 +560,11 @@ func TestUpdateEnrolment_GrantsValidateAndReplaceWholeList(t *testing.T) {
 // change would turn an unrelated budget edit into a refusal.
 func TestUpdateEnrolment_BudgetOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
 
-	assertNoErr(t, store.With(func(s *Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
 
 	newMaxCalls := 42
 	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{
@@ -583,7 +584,7 @@ func TestUpdateEnrolment_BudgetOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
 // enrolments key at all — the same round-trip guarantee Project.Kind has.
 func TestSettings_OmitsEnrolmentsWhenNoneExist(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	assertNoErr(t, err, "read settings.json")
 	if strings.Contains(string(raw), "enrolments") {
@@ -608,7 +609,7 @@ func parseCSRForTest(t *testing.T, csrPEM []byte) *x509.CertificateRequest {
 // returned bundle's KeyPath is empty.
 func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
 
 	bundle, err := signEnrolment(store, enrolmentRequest{
@@ -641,7 +642,7 @@ func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
 		t.Fatalf("bundle dir %s: err=%v mode=%v, want 0700", bundle.Dir, err, info.Mode().Perm())
 	}
 
-	stored := store.Get().FindEnrolment("hermes-mail")
+	stored := findEnrolment(store.Get(), "hermes-mail")
 	if stored == nil {
 		t.Fatal("enrolment was not persisted")
 	}
@@ -659,7 +660,7 @@ func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
 	if got := FingerprintCert(parseCertPEM(t, certPEM)); got != stored.Fingerprint {
 		t.Fatalf("recorded fingerprint %q != emitted certificate's %q", stored.Fingerprint, got)
 	}
-	if resolved := store.Get().FindEnrolmentByFingerprint(stored.Fingerprint); resolved == nil || resolved.ClientID != "hermes-mail" {
+	if resolved := findEnrolmentByFingerprint(store.Get(), stored.Fingerprint); resolved == nil || resolved.ClientID != "hermes-mail" {
 		t.Fatalf("FindEnrolmentByFingerprint did not resolve the signed enrolment: %+v", resolved)
 	}
 }
@@ -670,7 +671,7 @@ func TestSignEnrolment_HappyPathEmitsCertOnlyBundle(t *testing.T) {
 // issued certificate's CN is --client-id, never the CSR's.
 func TestSignEnrolment_ClientIDCollisionRefusedButCSR_CNCollisionAloneSucceeds(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	seeded, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "seed existing enrolment")
 	certBefore, err := os.ReadFile(seeded.CertPath)
@@ -711,7 +712,7 @@ func TestSignEnrolment_ClientIDCollisionRefusedButCSR_CNCollisionAloneSucceeds(t
 // first client id.
 func TestSignEnrolment_DuplicateSPKIRefusedNamingFirstClientID(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	assertNoErr(t, err, "generate shared key")
@@ -738,20 +739,20 @@ func TestSignEnrolment_DuplicateSPKIRefusedNamingFirstClientID(t *testing.T) {
 // indistinguishable from a relay-generated one.
 func TestWriteSignedCertBundle_RefusesWhenClientKeyAlreadyExists(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	// Seed a stale client.key the way createEnrolment would have left one.
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "seed a host-generated enrolment with a client.key")
 	// Revoke the record but leave the key file behind, simulating an
 	// operator who deleted only the settings entry.
-	assertNoErr(t, store.With(func(s *Settings) { s.Enrolments = nil }), "clear the record, leaving the bundle dir")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.Enrolments = nil }), "clear the record, leaving the bundle dir")
 
 	keyPath := filepath.Join(dir, enrolmentBundleDir, "hermes-mail", "client.key")
 	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("test setup: stale client.key not present: %v", err)
 	}
 
-	e := Enrolment{ClientID: "hermes-mail"}
+	e := config.Enrolment{ClientID: "hermes-mail"}
 	_, err = writeSignedCertBundle(e, []byte("cert"), []byte("ca"))
 	if err == nil || !strings.Contains(err.Error(), "client.key") {
 		t.Fatalf("want a refusal naming client.key, got: %v", err)
@@ -764,7 +765,7 @@ func TestWriteSignedCertBundle_RefusesWhenClientKeyAlreadyExists(t *testing.T) {
 // by filename.
 func TestSignEnrolment_LeavesNoPrivateKeyMaterialInTheSandbox(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
 	_, err := signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}}, csr)
 	assertNoErr(t, err, "signEnrolment")
@@ -793,7 +794,7 @@ func TestSignEnrolment_LeavesNoPrivateKeyMaterialInTheSandbox(t *testing.T) {
 // reused rather than reimplemented.
 func TestSignEnrolment_RefusesLocalProjectGrant(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", dir)
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", dir)
 	csr := parseCSRForTest(t, genClientCSRPEM(t, "hermes-mail"))
 
 	_, err := signEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{local.ID}}, csr)

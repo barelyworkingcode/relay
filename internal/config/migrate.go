@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -31,10 +31,10 @@ func needsSealedMigration(s *Settings) bool {
 // caKeyAwaitsMigration reports whether a plaintext ca.key sits beside a
 // config dir that has no ca.key.sealed yet (§5.7 clause 2).
 func caKeyAwaitsMigration(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, caKeyFile)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, CAKeyFile)); err != nil {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(dir, caKeySealedFile))
+	_, err := os.Stat(filepath.Join(dir, CAKeySealedFile))
 	return err != nil
 }
 
@@ -57,7 +57,7 @@ func (ss *FileSettingsStore) migrateLocked(s *Settings) error {
 		if !ok {
 			return fmt.Errorf("migration refused: project %s (%q) has no readable token", p.ID, p.Name)
 		}
-		if hashToken(pt) != p.TokenHash {
+		if HashToken(pt) != p.TokenHash {
 			return fmt.Errorf("migration refused: project %s (%q) token does not match its stored token_hash — this file is not what relay thinks it is", p.ID, p.Name)
 		}
 	}
@@ -75,7 +75,7 @@ func (ss *FileSettingsStore) migrateLocked(s *Settings) error {
 		ss.lastModTime = info.ModTime().UnixNano()
 	}
 
-	if err := migrateCAKey(ss.dir, ss.sealer); err != nil {
+	if err := MigrateCAKey(ss.dir, ss.sealer); err != nil {
 		return fmt.Errorf("migration: %w", err)
 	}
 
@@ -84,17 +84,15 @@ func (ss *FileSettingsStore) migrateLocked(s *Settings) error {
 	return nil
 }
 
-// caAADPrefix namespaces ca.key.sealed's associated data from settings
+// CAAADPrefix namespaces ca.key.sealed's associated data from settings
 // fields (sealAADPrefix): it is a different file with its own format, not
 // an entry in the sealed set forEachSecret enumerates.
-const caAADPrefix = "relay-ca-v1\x00"
-
-// migrateCAKey folds a plaintext ca.key into ca.key.sealed and only then
+// MigrateCAKey folds a plaintext ca.key into ca.key.sealed and only then
 // removes the plaintext (§4.7 step 4) — a crash between the two leaves
 // both, which loadCA resolves in favour of the sealed one, and the reverse
 // order can lose the CA and every enrolment it signed.
-func migrateCAKey(dir string, sealer sealed.Sealer) error {
-	keyPath := filepath.Join(dir, caKeyFile)
+func MigrateCAKey(dir string, sealer sealed.Sealer) error {
+	keyPath := filepath.Join(dir, CAKeyFile)
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -102,7 +100,7 @@ func migrateCAKey(dir string, sealer sealed.Sealer) error {
 		}
 		return fmt.Errorf("read %s: %w", keyPath, err)
 	}
-	if err := sealCAKeyFile(dir, sealer, keyPEM); err != nil {
+	if err := SealCAKeyFile(dir, sealer, keyPEM); err != nil {
 		return err
 	}
 	if err := os.Remove(keyPath); err != nil {
@@ -111,11 +109,11 @@ func migrateCAKey(dir string, sealer sealed.Sealer) error {
 	return nil
 }
 
-// sealCAKeyFile seals keyPEM and atomically writes ca.key.sealed. Shared by
-// migrateCAKey and generateCA (enrolment_ca.go), which never writes a
+// SealCAKeyFile seals keyPEM and atomically writes ca.key.sealed. Shared by
+// MigrateCAKey and generateCA (enrolment_ca.go), which never writes a
 // plaintext ca.key at all.
-func sealCAKeyFile(dir string, sealer sealed.Sealer, keyPEM []byte) error {
-	env, err := sealer.Seal(keyPEM, []byte(caAADPrefix+"ca.key"))
+func SealCAKeyFile(dir string, sealer sealed.Sealer, keyPEM []byte) error {
+	env, err := sealer.Seal(keyPEM, []byte(CAAADPrefix+"ca.key"))
 	if err != nil {
 		return fmt.Errorf("seal ca.key: %w", err)
 	}
@@ -123,7 +121,7 @@ func sealCAKeyFile(dir string, sealer sealed.Sealer, keyPEM []byte) error {
 	if err != nil {
 		return fmt.Errorf("marshal sealed ca.key: %w", err)
 	}
-	return atomicWriteFile(filepath.Join(dir, caKeySealedFile), data, 0600)
+	return AtomicWriteFile(filepath.Join(dir, CAKeySealedFile), data, 0600)
 }
 
 // warnStalePlaintextCopies scans dir for settings.json* files other than

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -28,7 +29,7 @@ import (
 // applyProjectUpdate / RotateProjectToken directly, so neither can drift
 // from the other's gate.
 type ProjectOps struct {
-	Store SettingsStore
+	Store config.SettingsStore
 	// Gate is the presence check Create, Update and RotateToken demand
 	// before they touch the store. A nil Gate refuses all three — see
 	// requireGate.
@@ -212,29 +213,29 @@ func projectGrantUpdateReason(id string, f projectUpdateFields, cwdAuthTurningOn
 // widening act project.grant exists to prompt for (§6.4's note that the op
 // "fires on any project create or update whose request sets any of the
 // listed fields").
-func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces McpSurfaces, via, credID string) (Project, error) {
+func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces McpSurfaces, via, credID string) (config.Project, error) {
 	if strings.TrimSpace(f.Name) == "" {
-		return Project{}, fmt.Errorf("project name is required")
+		return config.Project{}, fmt.Errorf("project name is required")
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "project.grant", f.presenceDigest(),
 		fmt.Sprintf("create the project %q and grant it its initial scope", f.Name))
 	if err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
 
-	var created Project
+	var created config.Project
 	var createErr error
-	if err := o.Store.With(func(s *Settings) {
+	if err := o.Store.With(func(s *config.Settings) {
 		created, createErr = applyProjectCreate(s, f, surfaces)
 	}); err != nil {
-		return Project{}, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
+		return config.Project{}, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
 	}
 	if createErr != nil {
-		return Project{}, createErr
+		return config.Project{}, createErr
 	}
 	if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, created.ID,
 		projectCreateGrantFieldNames(f), via, credID, grant.ID()); auditErr != nil {
@@ -247,35 +248,35 @@ func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces
 // Update gates only when the request touches the configure subset
 // (projectUpdateTouchesGrant) — AC-16c requires that a rename or a
 // chat-template edit not prompt.
-func (o *ProjectOps) Update(ctx context.Context, id string, f projectUpdateFields, surfaces func() McpSurfaces, via, credID string) (Project, bool, error) {
+func (o *ProjectOps) Update(ctx context.Context, id string, f projectUpdateFields, surfaces func() McpSurfaces, via, credID string) (config.Project, bool, error) {
 	touchesGrant := projectUpdateTouchesGrant(f)
 	var presenceID string
 	if touchesGrant {
 		if err := requireIssuanceAuditor(o.Issuance); err != nil {
-			return Project{}, false, err
+			return config.Project{}, false, err
 		}
 		cwdAuthTurningOn := f.AllowCwdAuth != nil && *f.AllowCwdAuth
 		grant, err := requireGate(o.Gate, ctx, "project.grant", f.presenceDigest(id),
 			projectGrantUpdateReason(id, f, cwdAuthTurningOn))
 		if err != nil {
-			return Project{}, false, err
+			return config.Project{}, false, err
 		}
 		presenceID = grant.ID()
 	}
 
-	var updated Project
+	var updated config.Project
 	var found bool
 	var updateErr error
-	if err := o.Store.With(func(s *Settings) {
+	if err := o.Store.With(func(s *config.Settings) {
 		updated, found, updateErr = applyProjectUpdate(s, id, f, surfaces)
 	}); err != nil {
-		return Project{}, false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
+		return config.Project{}, false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
 	}
 	if updateErr != nil {
-		return Project{}, true, updateErr
+		return config.Project{}, true, updateErr
 	}
 	if !found {
-		return Project{}, false, nil
+		return config.Project{}, false, nil
 	}
 	if touchesGrant {
 		if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, id,
@@ -304,7 +305,7 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	var newPlaintext string
 	var ok bool
 	var genErr error
-	if err := o.Store.With(func(s *Settings) {
+	if err := o.Store.With(func(s *config.Settings) {
 		newPlaintext, ok, genErr = s.RotateProjectToken(id)
 	}); err != nil {
 		return "", false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
@@ -337,7 +338,7 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 // keeps the read side to "the caller's own posture" the spec defines it
 // as. handleRemoteNarrowGrant's result rides through this same method, so
 // it is covered without a separate fix.
-func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
+func (o *ProjectOps) DescribeGrant(s *config.Settings, proj *config.Project) grantView {
 	v := newGrantView(s, *proj)
 	v.Enrolments = nil
 	return v
@@ -356,7 +357,7 @@ func (o *ProjectOps) DescribeGrant(s *Settings, proj *Project) grantView {
 // what's already stored so an untouched id keeps its stored value; keys
 // for an MCP falling out of the resulting allowed_mcp_ids are left for
 // SyncProjectToken's existing pruning rather than carried forward stale.
-func narrowUpdateFields(stored Project, f remoteNarrowFields) projectUpdateFields {
+func narrowUpdateFields(stored config.Project, f remoteNarrowFields) projectUpdateFields {
 	resultMcpIDs := stored.AllowedMcpIDs
 	if f.AllowedMcpIDs != nil {
 		resultMcpIDs = *f.AllowedMcpIDs
@@ -455,20 +456,20 @@ func remoteNarrowFieldNames(f remoteNarrowFields) []string {
 func (o *ProjectOps) NarrowForEnrolment(
 	ctx context.Context, projectID string, f remoteNarrowFields,
 	caller bridge.RemoteCaller, surfaces func() McpSurfaces,
-) (Project, []string, error) {
+) (config.Project, []string, error) {
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return Project{}, nil, err
+		return config.Project{}, nil, err
 	}
 
-	var updated Project
+	var updated config.Project
 	var found, noop bool
-	err := withDeclinable(o.Store, func(s *Settings) error {
+	err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
 		// Resolved INSIDE the callback, not from a value the caller
 		// captured earlier: the store's lock is what makes "narrower than
 		// what is stored right now" an answerable question rather than a
 		// race with whatever else touched this project between the request
 		// arriving and this closure running.
-		proj, _ := s.findProjectByID(projectID)
+		proj, _ := config.FindProjectByID(s, projectID)
 		if proj == nil {
 			return fmt.Errorf("project %q no longer exists", projectID)
 		}
@@ -485,10 +486,10 @@ func (o *ProjectOps) NarrowForEnrolment(
 		return applyErr
 	})
 	if err != nil && !noop {
-		return Project{}, nil, err
+		return config.Project{}, nil, err
 	}
 	if !found {
-		return Project{}, nil, fmt.Errorf("project %q no longer exists", projectID)
+		return config.Project{}, nil, fmt.Errorf("project %q no longer exists", projectID)
 	}
 	if noop {
 		// Nothing changed: no write happened (withDeclinable declined it

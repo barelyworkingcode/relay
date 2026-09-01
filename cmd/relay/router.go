@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -36,12 +37,12 @@ type ToolProvider interface {
 
 type ToolManager interface {
 	ToolProvider
-	Reconcile(ctx context.Context, mcps []ExternalMcp)
-	Reload(ctx context.Context, id string, cfg *ExternalMcp) error
+	Reconcile(ctx context.Context, mcps []config.ExternalMcp)
+	Reload(ctx context.Context, id string, cfg *config.ExternalMcp) error
 }
 
 type ServiceReloader interface {
-	Reload(id string, cfg *ServiceConfig) error
+	Reload(id string, cfg *config.ServiceConfig) error
 }
 
 // checkToolAccess applies the layers in this order deliberately: which MCP,
@@ -55,8 +56,8 @@ type ServiceReloader interface {
 // annotations; pass nil for an MCP-level check. A nil tool with a non-empty
 // toolName means relay could not find the definition, which both of those
 // checks treat as a denial (see readOnlyHintTrue and toolIsOpenWorld).
-func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) error {
-	if perm, ok := tok.Permissions[mcpID]; ok && perm == PermOff {
+func checkToolAccess(tok *config.StoredToken, mcpID, toolName string, tool *mcp.Tool) error {
+	if perm, ok := tok.Permissions[mcpID]; ok && perm == config.PermOff {
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: MCP '%s' is disabled for this token", mcpID))
 	}
 	if toolName == "" {
@@ -76,7 +77,7 @@ func checkToolAccess(tok *StoredToken, mcpID, toolName string, tool *mcp.Tool) e
 	// mutating tool defeats the mode. Still stronger than the resource layer:
 	// a false hint is a lie in a published tool list an operator can read and
 	// diff, where an ignored _meta leaves no trace anywhere.
-	if tok.AccessMode(mcpID) != AccessWrite {
+	if tok.AccessMode(mcpID) != config.AccessWrite {
 		if !readOnlyHintTrue(tool) {
 			return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("access denied: tool '%s' is not annotated read-only and this grant is read-only for MCP '%s'", toolName, mcpID))
 		}
@@ -182,7 +183,7 @@ func findTool(tools []mcp.Tool, name string) *mcp.Tool {
 }
 
 type appRouter struct {
-	store    SettingsStore
+	store    config.SettingsStore
 	tools    ToolManager
 	services ServiceReloader
 	enhanced *EnhancedServiceRegistry
@@ -220,16 +221,16 @@ const serviceTokenName = "service"
 // services that use them disappear together.
 type serviceTokenStore struct {
 	mu     sync.Mutex
-	hashes map[string]*StoredToken // hash -> synthetic StoredToken with full access
+	hashes map[string]*config.StoredToken // hash -> synthetic StoredToken with full access
 }
 
 func (s *serviceTokenStore) Register(hash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.hashes == nil {
-		s.hashes = make(map[string]*StoredToken)
+		s.hashes = make(map[string]*config.StoredToken)
 	}
-	s.hashes[hash] = &StoredToken{
+	s.hashes[hash] = &config.StoredToken{
 		Name: serviceTokenName,
 		Hash: hash,
 	}
@@ -241,7 +242,7 @@ func (s *serviceTokenStore) Remove(hash string) {
 	delete(s.hashes, hash)
 }
 
-func (s *serviceTokenStore) Lookup(hash string) *StoredToken {
+func (s *serviceTokenStore) Lookup(hash string) *config.StoredToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hashes[hash]
@@ -263,14 +264,14 @@ var (
 // opt-in per project. A token that is present but wrong is always a hard
 // failure -- the fallback must never rescue a bad credential, only the
 // absence of one.
-func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken, *Settings, error) {
+func (r *appRouter) resolveAuth(ctx context.Context, token string) (*config.StoredToken, *config.Settings, error) {
 	if token == "" {
 		return r.resolveCwdAuth(ctx)
 	}
 
 	s := r.store.Get()
 
-	hash := hashToken(token)
+	hash := config.HashToken(token)
 	if tok := r.serviceTokens.Lookup(hash); tok != nil {
 		return tok, s, nil
 	}
@@ -279,7 +280,7 @@ func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken
 		return stored, s, nil
 	}
 
-	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrInvalidToken)
+	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrInvalidToken)
 }
 
 // resolveCwdAuth authenticates a tokenless caller by the working directory it
@@ -287,14 +288,14 @@ func (r *appRouter) resolveAuth(ctx context.Context, token string) (*StoredToken
 // token scope -- this identifies a caller, it does not widen one. Grants are
 // logged: directory auth has no deliberate hand-off to point at afterwards,
 // so the log is the audit trail.
-func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings, error) {
+func (r *appRouter) resolveCwdAuth(ctx context.Context) (*config.StoredToken, *config.Settings, error) {
 	cwd := bridge.CallerCwdFromContext(ctx)
 	if cwd == "" {
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, ErrNoToken)
+		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrNoToken)
 	}
 
 	s := r.store.Get()
-	stored := s.AuthenticateProjectByPath(cwd)
+	stored := authenticateProjectByPath(s, cwd)
 	if stored == nil {
 		slog.Debug("cwd auth rejected", "cwd", cwd)
 		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
@@ -312,7 +313,7 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*StoredToken, *Settings
 // calls on. Logged rather than only withheld, so a name that vanishes from a
 // listing isn't the silent half of the failure; the log fires only for a
 // configuration that is already broken.
-func (r *appRouter) ambiguousToolNames(stored *StoredToken, s *Settings, isServiceToken bool) map[string]bool {
+func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Settings, isServiceToken bool) map[string]bool {
 	owners := map[string]int{}
 	for _, ext := range s.ExternalMcps {
 		for _, t := range r.tools.Tools(ext.ID) {
@@ -466,7 +467,7 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 // candidate for a name a read-only grant admits on nobody else, and capture
 // a call the operator meant for another server. The three layers here are
 // all things a human typed into settings.json.
-func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
+func grantRoutesToolTo(tok *config.StoredToken, mcpID, toolName string) bool {
 	if checkToolAccess(tok, mcpID, "", nil) != nil {
 		return false
 	}
@@ -499,7 +500,7 @@ func grantRoutesToolTo(tok *StoredToken, mcpID, toolName string) bool {
 // outside the grant. When no owner is granted even at the MCP level, the
 // call is refused here, in terms of the grant's own MCPs -- never by naming
 // an MCP the caller was never granted.
-func resolveToolOwner(stored *StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
+func resolveToolOwner(stored *config.StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
 		if isServiceToken || grantRoutesToolTo(stored, id, toolName) {
@@ -538,7 +539,7 @@ func noGrantedOwnerError(toolName string, granted []string) error {
 // grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP
 // level -- the set a noGrantedOwnerError refusal is allowed to name, since
 // the caller already knows it holds them.
-func grantedMcpIDsForToken(stored *StoredToken, isServiceToken bool, s *Settings) []string {
+func grantedMcpIDsForToken(stored *config.StoredToken, isServiceToken bool, s *config.Settings) []string {
 	var ids []string
 	for _, ext := range s.ExternalMcps {
 		if isServiceToken || checkToolAccess(stored, ext.ID, "", nil) == nil {
@@ -573,7 +574,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// live connection relay holds no configuration for is not a candidate
 	// for anything.
 	owners = slices.DeleteFunc(owners, func(id string) bool {
-		return !slices.ContainsFunc(settings.ExternalMcps, func(m ExternalMcp) bool { return m.ID == id })
+		return !slices.ContainsFunc(settings.ExternalMcps, func(m config.ExternalMcp) bool { return m.ID == id })
 	})
 	if len(owners) == 0 {
 		err := fmt.Errorf("unknown tool: %s", name)
@@ -691,12 +692,12 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// call must not invoke the tool; refusing after the tool has run would
 	// interdict nothing.
 	rc, isRemote := bridge.RemoteCallerFromContext(ctx)
-	var budget EnrolmentBudget
+	var budget config.EnrolmentBudget
 	if isRemote {
 		// Resolved once and reused below, so admission and accounting for
 		// one call are always governed by the same numbers even if an
 		// operator edits the enrolment mid-call.
-		budget = settings.enrolmentBudget(rc)
+		budget = enrolmentBudget(settings, rc)
 		if err := r.budgets.admit(rc, budget); err != nil {
 			au.done(AuditOutcomeThrottled, err)
 			return nil, err
@@ -831,7 +832,7 @@ type scopeView struct {
 	scoped bool
 }
 
-func newScopeView(r *appRouter, stored *StoredToken, mcpID string, isServiceToken bool) scopeView {
+func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string, isServiceToken bool) scopeView {
 	if isServiceToken || stored == nil {
 		return scopeView{}
 	}
@@ -898,7 +899,7 @@ func (r *appRouter) ReconcileExternalMcps(ctx context.Context) {
 // EmitSkills is idempotent -- it skips the write when on-disk content
 // already matches -- so a pass that touches no files is normal, not a
 // no-op failure.
-func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) {
+func (r *appRouter) regenProjectSkills(ctx context.Context, settings *config.Settings) {
 	processed := 0
 	for _, proj := range settings.Projects {
 		if !proj.GenerateSkill {
@@ -919,7 +920,7 @@ func (r *appRouter) regenProjectSkills(ctx context.Context, settings *Settings) 
 
 func (r *appRouter) ReloadService(id string) error {
 	settings := r.store.Reload()
-	svc, _ := settings.findServiceByID(id)
+	svc, _ := config.FindServiceByID(settings, id)
 	if svc == nil {
 		slog.Warn("reload: no service found", "id", id)
 		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("no service registered with id %q", id))
@@ -964,7 +965,7 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 	if err := r.requireServiceToken(token, "GetProject"); err != nil {
 		return nil, err
 	}
-	proj, _ := r.store.Get().findProjectByID(id)
+	proj, _ := config.FindProjectByID(r.store.Get(), id)
 	if proj == nil {
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
 	}
@@ -982,12 +983,12 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	}
 
 	s := r.store.Get()
-	var proj *Project
+	var proj *config.Project
 	if req.ProjectID != "" {
 		// Validating that the requested directory belongs to the project
 		// matters: without it a service token could bind an arbitrary cwd
 		// to another project's token (confused deputy).
-		proj, _ = s.findProjectByID(req.ProjectID)
+		proj, _ = config.FindProjectByID(s, req.ProjectID)
 		if proj == nil {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
 		}
@@ -1029,7 +1030,7 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 		return bridge.ShellTemplateResponse{}, err
 	}
 
-	proj, _ := r.store.Get().findProjectByID(req.ProjectID)
+	proj, _ := config.FindProjectByID(r.store.Get(), req.ProjectID)
 	if proj == nil {
 		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
 	}
@@ -1066,7 +1067,7 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 // process's working directory -- a host shell coming up holding a remote
 // project's credential. Refusing here rather than teaching dirWithinProject
 // about kinds keeps that helper a pure containment predicate.
-func refuseRemotePty(proj *Project) error {
+func refuseRemotePty(proj *config.Project) error {
 	if !proj.IsRemote() {
 		return nil
 	}
@@ -1077,7 +1078,7 @@ func refuseRemotePty(proj *Project) error {
 // findProjectForPty accepts either an explicit project identifier (ID or
 // name) or a directory match against Project.Path, since a terminal_create
 // request may carry only the working directory.
-func findProjectForPty(s *Settings, project, directory string) *Project {
+func findProjectForPty(s *config.Settings, project, directory string) *config.Project {
 	for i := range s.Projects {
 		p := &s.Projects[i]
 		if project != "" && (p.ID == project || p.Name == project) {
@@ -1188,7 +1189,7 @@ func realpathBestEffort(p string) string {
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 	settings := r.store.Reload()
-	mcpCfg, _ := settings.findMcpByID(id)
+	mcpCfg, _ := config.FindExternalMcpByID(settings, id)
 	if mcpCfg == nil {
 		slog.Warn("reload: no external MCP found", "id", id)
 		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("no external MCP registered with id %q", id))

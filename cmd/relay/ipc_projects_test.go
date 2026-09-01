@@ -9,18 +9,19 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
 type fakeTools struct {
-	infos map[string][]ToolInfo
+	infos map[string][]config.ToolInfo
 	// surfaces is what mcpSurfacesFrom hands to the apply layer. Nil (the
 	// default) means SyncProjectToken skips scope derivation; a test that
 	// exercises a v2 contextSchema sets it.
 	surfaces McpSurfaces
 }
 
-func (f *fakeTools) ToolInfos(id string) []ToolInfo {
+func (f *fakeTools) ToolInfos(id string) []config.ToolInfo {
 	if f == nil {
 		return nil
 	}
@@ -53,21 +54,21 @@ func (f *fakeSkillLister) ListSkillBuckets(_ context.Context, _ string) ([]Skill
 	return []SkillBucket{{Key: "Files", Slug: "files", Tools: []mcp.Tool{{Name: "fs_read", Description: "read a file"}}}}, nil
 }
 
-func newProjectsIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI, *fakeSkillLister) {
+func newProjectsIPC(t *testing.T) (*IPCContext, config.SettingsStore, *recordingUI, *fakeSkillLister) {
 	t.Helper()
 	_ = mkSandboxRelayHome(t)
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	store.With(func(s *Settings) {
-		s.ExternalMcps = []ExternalMcp{
+	store.With(func(s *config.Settings) {
+		s.ExternalMcps = []config.ExternalMcp{
 			{ID: "fsmcp", DisplayName: "fsMCP"},
 			{ID: "macmcp", DisplayName: "macMCP"},
 		}
 	})
 	tools := &fakeTools{
-		infos: map[string][]ToolInfo{
+		infos: map[string][]config.ToolInfo{
 			"fsmcp":  {{Name: "fs_read"}, {Name: "fs_write"}, {Name: "fs_bash"}},
 			"macmcp": {{Name: "runScript"}, {Name: "openApp"}},
 		},
@@ -130,7 +131,7 @@ func TestIPCCreateProject_HappyPath(t *testing.T) {
 		t.Fatalf("expected onProjectAdded event; got events=%+v", ui.events)
 	}
 	rawAdded := args[0].(json.RawMessage)
-	var added Project
+	var added config.Project
 	if err := json.Unmarshal(rawAdded, &added); err != nil {
 		t.Fatalf("unmarshal added: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestIPCCreateProject_HappyPath(t *testing.T) {
 	if added.Name != "Alpha" || addedToken == "" {
 		t.Fatalf("unexpected added project: %+v", added)
 	}
-	persisted, _ := store.Get().findProjectByID(added.ID)
+	persisted, _ := config.FindProjectByID(store.Get(), added.ID)
 	if persisted == nil || persisted.Name != "Alpha" {
 		t.Errorf("project not persisted")
 	}
@@ -158,9 +159,9 @@ func TestIPCCreateProject_AppliesGenerateSkillAndDisabledTools(t *testing.T) {
 
 	ipcCreateProject(ipc, raw)
 	args, _ := findEvent(ui, "onProjectAdded")
-	var added Project
+	var added config.Project
 	_ = json.Unmarshal(args[0].(json.RawMessage), &added)
-	persisted, _ := store.Get().findProjectByID(added.ID)
+	persisted, _ := config.FindProjectByID(store.Get(), added.ID)
 	if !persisted.GenerateSkill {
 		t.Errorf("generate_skill not set")
 	}
@@ -208,7 +209,7 @@ func TestIPCUpdateProject_PatchesNamedFieldsOnly(t *testing.T) {
 	if _, ok := findEvent(ui, "onProjectUpdated"); !ok {
 		t.Fatalf("expected onProjectUpdated")
 	}
-	persisted, _ := store.Get().findProjectByID(proj.ID)
+	persisted, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if persisted.Name != "Bravo" {
 		t.Errorf("name = %q; want Bravo", persisted.Name)
 	}
@@ -231,7 +232,7 @@ func TestIPCRemoveProject_DeletesAndEmits(t *testing.T) {
 	if args[0].(string) != proj.ID {
 		t.Errorf("emit had wrong id: %v", args[0])
 	}
-	if p, _ := store.Get().findProjectByID(proj.ID); p != nil {
+	if p, _ := config.FindProjectByID(store.Get(), proj.ID); p != nil {
 		t.Errorf("project still present after remove")
 	}
 }
@@ -319,7 +320,7 @@ func TestIPCUpdateProjectDisabledTools_PersistsAndEmits(t *testing.T) {
 	if _, ok := findEvent(ui, "onProjectUpdated"); !ok {
 		t.Fatalf("expected onProjectUpdated event")
 	}
-	persisted, _ := store.Get().findProjectByID(proj.ID)
+	persisted, _ := config.FindProjectByID(store.Get(), proj.ID)
 	if !reflect.DeepEqual(persisted.DisabledTools["macmcp"], []string{"runScript"}) {
 		t.Errorf("disabled_tools not persisted: %v", persisted.DisabledTools)
 	}
@@ -337,7 +338,7 @@ func TestIPCListMcpTools_ReturnsLiveList(t *testing.T) {
 	if args[0].(string) != "macmcp" {
 		t.Fatalf("event had wrong id")
 	}
-	var infos []ToolInfo
+	var infos []config.ToolInfo
 	_ = json.Unmarshal(args[1].(json.RawMessage), &infos)
 	if len(infos) != 2 {
 		t.Fatalf("expected 2 tools for macmcp, got %d: %+v", len(infos), infos)
@@ -354,7 +355,7 @@ func TestIPCListMcpTools_NoToolsProviderEmitsEmptyList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected onMcpToolsListed even with nil provider")
 	}
-	var infos []ToolInfo
+	var infos []config.ToolInfo
 	_ = json.Unmarshal(args[1].(json.RawMessage), &infos)
 	if len(infos) != 0 {
 		t.Errorf("expected empty list, got %+v", infos)
@@ -376,7 +377,7 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 	if !ok {
 		t.Fatalf("expected onProjectAdded; events=%+v", ui.events)
 	}
-	var created Project
+	var created config.Project
 	_ = json.Unmarshal(args[0].(json.RawMessage), &created)
 
 	skillPath := filepath.Join(projectSkillDir(created), "relay-files", "SKILL.md")
@@ -392,7 +393,7 @@ func TestProjectLifecycle_CreateWithSkill_Delete_CleansUpSkillFile(t *testing.T)
 	if _, err := readFileExists(skillPath); err == nil {
 		t.Fatalf("SKILL.md still present after project delete: %s", skillPath)
 	}
-	if p, _ := store.Get().findProjectByID(created.ID); p != nil {
+	if p, _ := config.FindProjectByID(store.Get(), created.ID); p != nil {
 		t.Fatalf("project still in store after delete")
 	}
 }
@@ -419,9 +420,9 @@ func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected onProjectAdded; got events=%+v", ui.events)
 	}
-	var added Project
+	var added config.Project
 	_ = json.Unmarshal(args[0].(json.RawMessage), &added)
-	if persisted, _ := store.Get().findProjectByID(added.ID); !persisted.AllowCwdAuth {
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); !persisted.AllowCwdAuth {
 		t.Fatalf("allow_cwd_auth not persisted on create")
 	}
 
@@ -430,7 +431,7 @@ func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
 		ID:                  added.ID,
 		projectUpdateFields: projectUpdateFields{AllowCwdAuth: &off},
 	}))
-	if persisted, _ := store.Get().findProjectByID(added.ID); persisted.AllowCwdAuth {
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); persisted.AllowCwdAuth {
 		t.Errorf("allow_cwd_auth still set after patching it off")
 	}
 
@@ -445,7 +446,7 @@ func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
 		ID:                  added.ID,
 		projectUpdateFields: projectUpdateFields{Name: &newName},
 	}))
-	if persisted, _ := store.Get().findProjectByID(added.ID); !persisted.AllowCwdAuth {
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); !persisted.AllowCwdAuth {
 		t.Errorf("allow_cwd_auth cleared by an unrelated patch")
 	}
 }

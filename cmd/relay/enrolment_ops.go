@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -40,9 +41,9 @@ func invalidEnrolment(reason string) error {
 
 // enrolmentFields is the create request; JSON tags match ipcCreateEnrolmentMsg's.
 type enrolmentFields struct {
-	ClientID   string          `json:"client_id"`
-	ProjectIDs []string        `json:"project_ids"`
-	Budget     EnrolmentBudget `json:"budget"`
+	ClientID   string                 `json:"client_id"`
+	ProjectIDs []string               `json:"project_ids"`
+	Budget     config.EnrolmentBudget `json:"budget"`
 }
 
 // presenceDigest binds an enrolment.create grant to exactly the client id,
@@ -103,10 +104,10 @@ func enrolmentCreateReason(clientID string, projectIDs []string) string {
 // body and carries a digest bound to enrolment.create. A sign request that
 // decoded into it would be one field away from being handed to Create.
 type enrolmentSignFields struct {
-	ClientID   string          `json:"client_id"`
-	ProjectIDs []string        `json:"project_ids"`
-	Budget     EnrolmentBudget `json:"budget"`
-	CSRPEM     string          `json:"csr_pem"`
+	ClientID   string                 `json:"client_id"`
+	ProjectIDs []string               `json:"project_ids"`
+	Budget     config.EnrolmentBudget `json:"budget"`
+	CSRPEM     string                 `json:"csr_pem"`
 }
 
 // presenceDigest binds an enrolment.sign grant to exactly the client id,
@@ -145,7 +146,7 @@ var errEnrolmentUnrecorded = errors.New("enrolment created but could not be reco
 // and giving this type no field that names the key file is what makes that
 // true by construction rather than by discipline at every call site.
 type EnrolmentCreated struct {
-	Enrolment Enrolment
+	Enrolment config.Enrolment
 	Dir       string
 	// CertPEM and CAPEM are populated by Sign and Approve (never by Create,
 	// whose caller has always read its bundle off Dir): the certificate,
@@ -163,7 +164,7 @@ type EnrolmentCreated struct {
 // carrying the operator's say-so for the third listener (spec §1). Neither
 // door reimplements enrolment_requests:true-with-enabled:false as a
 // save-time refusal here: that check lives once, at resolve time
-// (RemoteConfig.resolveEnrolment), so a value this handler accepted and the
+// (resolveRemoteEnrolment), so a value this handler accepted and the
 // value the supervisor later refuses to serve can never disagree about
 // which one is authoritative.
 type remoteConfigFields struct {
@@ -178,7 +179,7 @@ type remoteConfigFields struct {
 // WebView IPC door (ipc_enrolments.go); neither holds validation or logic
 // beyond decoding a request and spelling the result.
 type EnrolmentOps struct {
-	Store SettingsStore
+	Store config.SettingsStore
 	// Audit answers whether the tool-call audit log is on. Remote access is
 	// gated on it (ADR-010 decision 5), so the remote-config view reports it
 	// alongside the block's own state, the same pair pushFullSettings has
@@ -210,18 +211,18 @@ func (o *EnrolmentOps) notify() {
 	}
 }
 
-func (o *EnrolmentOps) List() []Enrolment {
+func (o *EnrolmentOps) List() []config.Enrolment {
 	e := o.Store.Get().Enrolments
 	if e == nil {
-		return []Enrolment{}
+		return []config.Enrolment{}
 	}
 	return e
 }
 
-func (o *EnrolmentOps) Get(clientID string) (Enrolment, error) {
-	e := o.Store.Get().FindEnrolment(clientID)
+func (o *EnrolmentOps) Get(clientID string) (config.Enrolment, error) {
+	e := findEnrolment(o.Store.Get(), clientID)
 	if e == nil {
-		return Enrolment{}, fmt.Errorf("%w: %s", errEnrolmentNotFound, clientID)
+		return config.Enrolment{}, fmt.Errorf("%w: %s", errEnrolmentNotFound, clientID)
 	}
 	return *e, nil
 }
@@ -344,10 +345,10 @@ func (o *EnrolmentOps) completeSigning(req enrolmentRequest, csr *x509.Certifica
 // all — ADR-018 decision 6 keeps that a separate, discrete act from any
 // door (§3).
 type approveFields struct {
-	RequestID  string          `json:"request_id"`
-	ClientID   string          `json:"client_id"`
-	ProjectIDs []string        `json:"project_ids"`
-	Budget     EnrolmentBudget `json:"budget"`
+	RequestID  string                 `json:"request_id"`
+	ClientID   string                 `json:"client_id"`
+	ProjectIDs []string               `json:"project_ids"`
+	Budget     config.EnrolmentBudget `json:"budget"`
 }
 
 // enrolmentApproveReason names the approval act distinctly from a plain
@@ -509,7 +510,7 @@ func (o *EnrolmentOps) approvedProjects(ids []string) []approvedProject {
 	out := make([]approvedProject, 0, len(ids))
 	for _, id := range ids {
 		name := id
-		if proj, _ := s.findProjectByID(id); proj != nil && strings.TrimSpace(proj.Name) != "" {
+		if proj, _ := config.FindProjectByID(s, id); proj != nil && strings.TrimSpace(proj.Name) != "" {
 			name = proj.Name
 		}
 		out = append(out, approvedProject{ID: id, Name: name})
@@ -534,7 +535,7 @@ func sasIncompleteDetail(rec pendingRecordView) string {
 // and the loser is refused loudly there rather than quietly overwriting.
 // Returns "" when the label is unusable or every suffix to -99 is taken,
 // which the caller renders as "no suggestion", never as a chosen id.
-func suggestClientID(s *Settings, label string) string {
+func suggestClientID(s *config.Settings, label string) string {
 	label = strings.TrimSpace(label)
 	if label == "" || !isSafeID(label) || len(label) > maxEnrolmentLabelBytes {
 		return ""
@@ -542,12 +543,12 @@ func suggestClientID(s *Settings, label string) string {
 	if s == nil {
 		return label
 	}
-	if e := s.FindEnrolment(label); e == nil {
+	if e := findEnrolment(s, label); e == nil {
 		return label
 	}
 	for n := 2; n <= 99; n++ {
 		candidate := fmt.Sprintf("%s-%d", label, n)
-		if e := s.FindEnrolment(candidate); e == nil {
+		if e := findEnrolment(s, candidate); e == nil {
 			return candidate
 		}
 	}
@@ -559,7 +560,7 @@ func suggestClientID(s *Settings, label string) string {
 // — a client that just collected a certificate has no other way to learn
 // where to point relayremote list/call next.
 func (o *EnrolmentOps) relayAddr() string {
-	return o.Store.Get().Remote.resolve().Listen
+	return resolveRemoteConfig(o.Store.Get().Remote).Listen
 }
 
 // Refuse is the operator's explicit decline (spec §2, §3) — deliberately
@@ -634,18 +635,18 @@ func enrolmentUpdateReason(req enrolmentUpdateRequest) string {
 // from revoke+recreate). Gated because a grant-list replacement is exactly
 // the "widens one" case §6.4's table calls out, even though ADR-017's own
 // table names only create and revoke.
-func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, via, credID string) (before, after Enrolment, err error) {
+func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, via, credID string) (before, after config.Enrolment, err error) {
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	if req.ClientID == "" {
-		return Enrolment{}, Enrolment{}, invalidEnrolment("client id is required")
+		return config.Enrolment{}, config.Enrolment{}, invalidEnrolment("client id is required")
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
-		return Enrolment{}, Enrolment{}, err
+		return config.Enrolment{}, config.Enrolment{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "enrolment.update", req.presenceDigest(), enrolmentUpdateReason(req))
 	if err != nil {
-		return Enrolment{}, Enrolment{}, err
+		return config.Enrolment{}, config.Enrolment{}, err
 	}
 
 	before, after, err = updateEnrolment(o.Store, req)
@@ -682,19 +683,19 @@ func (o *EnrolmentOps) Update(ctx context.Context, req enrolmentUpdateRequest, v
 // Returns the revoked record: once it is gone the fingerprint is the only
 // thing tying this client's past calls to an identity, and re-reading it
 // beforehand would race a concurrent revoke of the same id.
-func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (Enrolment, error) {
+func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string) (config.Enrolment, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
-		return Enrolment{}, invalidEnrolment("client id is required")
+		return config.Enrolment{}, invalidEnrolment("client id is required")
 	}
 
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
-		return Enrolment{}, err
+		return config.Enrolment{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "enrolment.revoke",
 		singleStringDigest("enrolment.revoke", "client_id", clientID), fmt.Sprintf("revoke the enrolment %q", clientID))
 	if err != nil {
-		return Enrolment{}, err
+		return config.Enrolment{}, err
 	}
 
 	// Goes through revokeEnrolment, never RemoveEnrolment directly:
@@ -704,7 +705,7 @@ func (o *EnrolmentOps) Revoke(ctx context.Context, clientID, via, credID string)
 	// settings record would leave it working indefinitely.
 	revoked, err := revokeEnrolment(o.Store, clientID)
 	if err != nil {
-		return Enrolment{}, err
+		return config.Enrolment{}, err
 	}
 	// Reported and not undone: a revocation narrows, and refusing to narrow
 	// one because the log is broken would make a failing disk the reason a
@@ -761,13 +762,13 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 		}
 	}
 
-	if err := o.Store.With(func(s *Settings) {
+	if err := o.Store.With(func(s *config.Settings) {
 		if f.Remove {
 			s.Remote = nil
 			return
 		}
 		if s.Remote == nil {
-			s.Remote = &RemoteConfig{}
+			s.Remote = &config.RemoteConfig{}
 		}
 		// Empty stays empty rather than being filled with the default: the
 		// listener applies resolve()'s loopback default itself, and writing
@@ -792,7 +793,7 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 			// the enrolment-request door is a thing the operator says, and
 			// enrolment_requests:true-with-enabled:false is refused where
 			// it has always been refused — at resolve time
-			// (RemoteConfig.resolveEnrolment) — not duplicated here.
+			// (resolveRemoteEnrolment) — not duplicated here.
 			s.Remote.EnrolmentRequests = nil
 		}
 	}); err != nil {

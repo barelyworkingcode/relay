@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
@@ -47,7 +48,7 @@ type McpSurfaceProvider interface {
 // project picker UI needs this to render the per-tool selector. Implemented
 // by *ExternalMcpManager; nil-safe in route handlers.
 type MCPToolsProvider interface {
-	ToolInfos(id string) []ToolInfo
+	ToolInfos(id string) []config.ToolInfo
 }
 
 // enumHTTPStatus maps an enumeration outcome onto an HTTP code.
@@ -101,7 +102,7 @@ type ProjectsChangedFn func()
 // auto-discovers all of them from .claude/skills/, and Pi.Dev gets pointed at
 // this root via --skill in its PTY template. User-authored skills can live
 // alongside under the same root — relay only touches its own "relay-*" dirs.
-func projectSkillDir(proj Project) string {
+func projectSkillDir(proj config.Project) string {
 	if proj.Path == "" {
 		return ""
 	}
@@ -112,7 +113,7 @@ func projectSkillDir(proj Project) string {
 // project's GenerateSkill flag. Toggling on regenerates; deletion removes.
 // Toggling off leaves stale files in place — the user removes them manually
 // if desired. Best-effort: errors are logged, not returned.
-func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project) {
+func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.Project) {
 	if !proj.GenerateSkill {
 		return
 	}
@@ -147,7 +148,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj Project
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(rr *control.RouteRegistrar, store SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
@@ -156,14 +157,14 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store SettingsStore, ops 
 	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects := store.Get().Projects
 		if projects == nil {
-			projects = []Project{}
+			projects = []config.Project{}
 		}
 		// projectView strips the plaintext token from the frontend response.
 		writeJSON(w, http.StatusOK, projectsToView(projects))
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
-		proj, _ := store.Get().findProjectByID(r.PathValue("id"))
+		proj, _ := config.FindProjectByID(store.Get(), r.PathValue("id"))
 		if proj == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
@@ -233,9 +234,9 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store SettingsStore, ops 
 	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var existed bool
-		var removed Project
-		if err := store.With(func(s *Settings) {
-			proj, _ := s.findProjectByID(id)
+		var removed config.Project
+		if err := store.With(func(s *config.Settings) {
+			proj, _ := config.FindProjectByID(s, id)
 			if proj == nil {
 				return
 			}
@@ -309,7 +310,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store SettingsStore, ops 
 			return
 		}
 		id := r.PathValue("id")
-		proj, _ := store.Get().findProjectByID(id)
+		proj, _ := config.FindProjectByID(store.Get(), id)
 		if proj == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
@@ -399,7 +400,7 @@ var validPermissionModes = map[string]bool{
 // validatePermissionPolicy rejects unknown modes and oversized tool lists.
 // Tool patterns are not parsed here — Claude CLI accepts a wide grammar
 // (e.g. "Bash(ls *)") and we don't want to drift from upstream rules.
-func validatePermissionPolicy(p *PermissionPolicy) error {
+func validatePermissionPolicy(p *config.PermissionPolicy) error {
 	if p == nil {
 		return nil
 	}

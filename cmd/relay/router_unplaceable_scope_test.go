@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -21,18 +22,18 @@ func unplaceableScopeRouter(t *testing.T, schema string, version int, captured *
 		}
 		return json.RawMessage(`{"content":[{"type":"text","text":"served"}]}`), nil
 	}
-	proj := Project{
-		ID: "probe", Name: "probe", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
+	proj := config.Project{
+		ID: "probe", Name: "probe", Kind: config.ProjectKindRemote,
+		AllowedMcpIDs: []string{"macmcp"}, Token: config.NewSecret(testToken), TokenHash: config.HashToken(testToken),
 		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		Access:       map[string]string{"macmcp": AccessWrite},
+		Access:       map[string]string{"macmcp": config.AccessWrite},
 		Context: map[string]json.RawMessage{
 			"macmcp": json.RawMessage(`{"allowed_dirs":["/Users/admin/project"]}`),
 		},
 	}
-	s := &Settings{
-		Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-		Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
+	s := &config.Settings{
+		Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
+		Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
@@ -88,18 +89,18 @@ func TestCallTool_APlaceableScopeIsUnaffected(t *testing.T) {
 // harmless remnant into an outage.
 func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
-		proj := Project{
-			ID: "probe", Name: "probe", Kind: ProjectKindRemote,
-			AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
+		proj := config.Project{
+			ID: "probe", Name: "probe", Kind: config.ProjectKindRemote,
+			AllowedMcpIDs: []string{"macmcp"}, Token: config.NewSecret(testToken), TokenHash: config.HashToken(testToken),
 			AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
-			Access:       map[string]string{"macmcp": AccessWrite},
+			Access:       map[string]string{"macmcp": config.AccessWrite},
 			Context: map[string]json.RawMessage{
 				"macmcp": json.RawMessage(`{"gone_field":` + empty + `}`),
 			},
 		}
-		s := &Settings{
-			Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-			Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
+		s := &config.Settings{
+			Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
+			Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 		}
 		mgr := NewExternalMcpManager(nil)
 		serve := func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
@@ -157,7 +158,7 @@ func TestAudit_UnplacedScopeDoesNotShareAStringWithNoneDeclared(t *testing.T) {
 
 	// The reverse direction: a genuinely scope-nothing MCP keeps the quiet
 	// string.
-	quiet, _ := auditAuthorityLine(AuditEvent{Access: AccessRead, AllowExternal: new(bool)})
+	quiet, _ := auditAuthorityLine(AuditEvent{Access: config.AccessRead, AllowExternal: new(bool)})
 	if !strings.Contains(quiet, "(none declared)") {
 		t.Errorf("an MCP with no scope concept lost its own rendering: %q", quiet)
 	}

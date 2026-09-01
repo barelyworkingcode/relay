@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"time"
 )
 
@@ -21,9 +22,9 @@ const (
 )
 
 type ipcCreateEnrolmentMsg struct {
-	ClientID   string          `json:"client_id"`
-	ProjectIDs []string        `json:"project_ids"`
-	Budget     EnrolmentBudget `json:"budget"`
+	ClientID   string                 `json:"client_id"`
+	ProjectIDs []string               `json:"project_ids"`
+	Budget     config.EnrolmentBudget `json:"budget"`
 }
 
 type ipcEnrolmentIDMsg struct {
@@ -55,10 +56,10 @@ type ipcEnrolmentRequestIDMsg struct {
 // see approveFields' own doc comment for why that field must not exist on
 // ANY caller of Approve, this one included.
 type ipcApproveEnrolmentRequestMsg struct {
-	RequestID  string          `json:"request_id"`
-	ClientID   string          `json:"client_id"`
-	ProjectIDs []string        `json:"project_ids"`
-	Budget     EnrolmentBudget `json:"budget"`
+	RequestID  string                 `json:"request_id"`
+	ClientID   string                 `json:"client_id"`
+	ProjectIDs []string               `json:"project_ids"`
+	Budget     config.EnrolmentBudget `json:"budget"`
 }
 
 // pendingEnrolmentRequestView is the Pending requests panel's projection of
@@ -126,7 +127,7 @@ func pendingEnrolmentRequestViewOf(v enrolmentRequestView) pendingEnrolmentReque
 // is computed against rather than a store, so the projection stays a pure
 // function of what the caller already read — the count in the tray menu and
 // the rows in the panel come from one read, never two.
-func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView, s *Settings) []pendingEnrolmentRequestView {
+func pendingEnrolmentRequestViewsOf(views []enrolmentRequestView, s *config.Settings) []pendingEnrolmentRequestView {
 	out := make([]pendingEnrolmentRequestView, 0, len(views))
 	for _, v := range views {
 		pv := pendingEnrolmentRequestViewOf(v)
@@ -179,8 +180,8 @@ type remoteConfigView struct {
 	EnrolmentEffective string `json:"enrolment_effective"`
 }
 
-func remoteConfigViewOf(s *Settings, auditEnabled bool) remoteConfigView {
-	resolved := s.Remote.resolve()
+func remoteConfigViewOf(s *config.Settings, auditEnabled bool) remoteConfigView {
+	resolved := resolveRemoteConfig(s.Remote)
 	v := remoteConfigView{
 		Configured:         s.Remote != nil,
 		Enabled:            resolved.Enabled,
@@ -202,8 +203,8 @@ func remoteConfigViewOf(s *Settings, auditEnabled bool) remoteConfigView {
 	return v
 }
 
-func enrolmentBudgetDefaults() EnrolmentBudget {
-	return normalizeEnrolmentBudget(EnrolmentBudget{})
+func enrolmentBudgetDefaults() config.EnrolmentBudget {
+	return normalizeEnrolmentBudget(config.EnrolmentBudget{})
 }
 
 func ipcCreateEnrolment(ctx *IPCContext, raw json.RawMessage) {

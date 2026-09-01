@@ -33,39 +33,38 @@ import (
 )
 
 // gatedMutatorNames is §6.7's list verbatim, plus the generic settings-write
-// entry points (With, WithDeclinable, withDeclinable) every mutation goes
+// entry points (With, WithDeclinable) every mutation goes
 // through. Matching is by identifier name, not by resolved type — go/ast
 // alone cannot tell a *Settings receiver from an unrelated one — which is
 // why the allowlist below also has to admit files that call these SAME
 // names for a reason unconnected to a gated operation (the WebAuthn login
-// ceremony's own MintFor, the frontend-token migration's own With, and so
+// ceremony's own mintAPICredentialFor, the frontend-token migration's own With, and so
 // on): the test's job is to make every call site visible and reviewed, not
 // to prove each one is a gated act.
 var gatedMutatorNames = map[string]bool{
 	"With":                       true,
 	"WithDeclinable":             true,
-	"withDeclinable":             true,
-	"MintFor":                    true,
-	"AddAPICredential":           true,
-	"RemoveAPICredential":        true,
+	"mintAPICredentialFor":       true,
+	"addAPICredential":           true,
+	"removeAPICredential":        true,
 	"RotateProjectToken":         true,
 	"UpsertExternalMcp":          true,
 	"RemoveExternalMcp":          true,
 	"UpsertService":              true,
 	"RemoveService":              true,
-	"AddEnrolment":               true,
-	"RemoveEnrolment":            true,
+	"addEnrolment":               true,
+	"removeEnrolment":            true,
 	"mintBootstrapCode":          true,
 	"applyProjectCreate":         true,
 	"applyProjectUpdate":         true,
 	"UpdateProjectAllowedTools":  true,
 	"UpdateProjectAccess":        true,
-	"UpdateProjectContext":       true,
-	"UpdateProjectMcps":          true,
+	"updateProjectContext":       true,
+	"updateProjectMcps":          true,
 	"SetProjectAllowCwdAuth":     true,
 	"UpdateProjectAllowExternal": true,
-	"UpdateProjectKind":          true,
-	"UpdateProjectPath":          true,
+	"updateProjectKind":          true,
+	"updateProjectPath":          true,
 }
 
 // gateAllowlistedFiles is the exact, reviewed set of files permitted to call
@@ -91,11 +90,15 @@ var gateAllowlistedFiles = map[string]string{
 
 	// Where the mutators themselves, and the free functions a core
 	// delegates to, are defined.
-	"settings.go":       "defines every s.* mutator method the cores and the free functions below call",
-	"settings_store.go": "defines With / WithDeclinable / withDeclinable themselves",
-	"api_credential.go": "defines MintFor, AddAPICredential, RemoveAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
-	"enrolment.go":      "defines createEnrolment/updateEnrolment/revokeEnrolment and calls AddEnrolment/RemoveEnrolment/withDeclinable from inside them",
-	"project_apply.go":  "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
+	// The persisted mutators themselves (With, WithDeclinable, and the
+	// s.* methods) are declared in internal/config, which this scan does
+	// not read: package main can only reach them through that package's
+	// exported surface, so every crossing still appears here as a call
+	// site in one of the files below.
+	"settings_project_scope.go": "defines the updateProject* grant-shape mutators the cores and project_apply.go call",
+	"api_credential.go":         "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
+	"enrolment.go":              "defines createEnrolment/updateEnrolment/revokeEnrolment and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
+	"project_apply.go":          "defines applyProjectCreate/applyProjectUpdate, which call the UpdateProject* grant-shape mutators as their own sub-mutations",
 
 	// Legitimately ungated mutations that share a name with a gated
 	// mutator (§6.7's matching is by identifier, not by resolved type):
@@ -104,8 +107,8 @@ var gateAllowlistedFiles = map[string]string{
 	"project_routes.go":  "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
 	"ipc_handlers.go":    "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
 	"trayapp.go":         "the frontend-token migration's one-time store.With call; not a gated op",
-	"frontend_server.go": "ensureFrontendTokenIsCredential's withDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
-	"login_routes.go":    "the WebAuthn ceremony's own MintFor (a signed assertion is a different presence factor from this gate) and withDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
+	"frontend_server.go": "ensureFrontendTokenIsCredential's config.WithDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
+	"login_routes.go":    "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
 
 	// S6 brokered every mutating CLI command over admin_op (ADR-017
 	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
@@ -240,26 +243,31 @@ func TestGate_AllowlistNamesOnlyRealFiles(t *testing.T) {
 // today, since nothing outside the allowlisted cores currently calls any
 // mutator by name. Pinning the literal set is what makes a silent drop
 // visible.
+//
+// Case is load-bearing here. A mutator declared as a package-level function
+// in main is lowercase; one still declared as a method on an internal/config
+// type keeps its exported name. Matching is by identifier, so a name pinned
+// in the wrong case matches nothing and silently gates nothing.
 var wantGatedMutatorNames = []string{
-	"With", "WithDeclinable", "withDeclinable",
-	"MintFor",
-	"AddAPICredential", "RemoveAPICredential",
+	"With", "WithDeclinable",
+	"mintAPICredentialFor",
+	"addAPICredential", "removeAPICredential",
 	"RotateProjectToken",
 	"UpsertExternalMcp", "RemoveExternalMcp",
 	"UpsertService", "RemoveService",
-	"AddEnrolment", "RemoveEnrolment",
+	"addEnrolment", "removeEnrolment",
 	"mintBootstrapCode",
 	"applyProjectCreate", "applyProjectUpdate",
-	"UpdateProjectAllowedTools", "UpdateProjectAccess", "UpdateProjectContext",
-	"UpdateProjectMcps", "SetProjectAllowCwdAuth", "UpdateProjectAllowExternal",
-	"UpdateProjectKind", "UpdateProjectPath",
+	"UpdateProjectAllowedTools", "UpdateProjectAccess", "updateProjectContext",
+	"updateProjectMcps", "SetProjectAllowCwdAuth", "UpdateProjectAllowExternal",
+	"updateProjectKind", "updateProjectPath",
 }
 
 // wantGateAllowlistedFiles pins gateAllowlistedFiles' key set the same way.
 var wantGateAllowlistedFiles = []string{
 	"credential_ops.go", "project_ops.go", "mcp_ops.go", "service_ops.go",
 	"enrolment_ops.go", "login_ops.go",
-	"settings.go", "settings_store.go", "api_credential.go", "enrolment.go", "project_apply.go",
+	"settings_project_scope.go", "api_credential.go", "enrolment.go", "project_apply.go",
 	"project_routes.go", "ipc_handlers.go", "trayapp.go", "frontend_server.go", "login_routes.go",
 }
 

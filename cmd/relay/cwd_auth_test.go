@@ -10,10 +10,11 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
-func cwdProject(t *testing.T, path string, allowCwd bool) *Settings {
+func cwdProject(t *testing.T, path string, allowCwd bool) *config.Settings {
 	t.Helper()
 	s := makeSettings(nil, nil, nil)
 	s.Projects[0].Path = path
@@ -26,7 +27,7 @@ func TestAuthenticateProjectByPath_OptedIn(t *testing.T) {
 	s := cwdProject(t, dir, true)
 
 	for _, cwd := range []string{dir, filepath.Join(dir, "sub", "deeper")} {
-		stored := s.AuthenticateProjectByPath(cwd)
+		stored := authenticateProjectByPath(s, cwd)
 		if stored == nil {
 			t.Fatalf("cwd %q: expected a StoredToken", cwd)
 		}
@@ -40,7 +41,7 @@ func TestAuthenticateProjectByPath_RequiresOptIn(t *testing.T) {
 	dir := t.TempDir()
 	s := cwdProject(t, dir, false)
 
-	if stored := s.AuthenticateProjectByPath(dir); stored != nil {
+	if stored := authenticateProjectByPath(s, dir); stored != nil {
 		t.Fatalf("expected nil for a project that did not opt in, got %+v", stored)
 	}
 }
@@ -56,7 +57,7 @@ func TestAuthenticateProjectByPath_NoMatch(t *testing.T) {
 		"escaping suffix": filepath.Join(s.Projects[0].Path, "..", "elsewhere"),
 	}
 	for name, cwd := range cases {
-		if stored := s.AuthenticateProjectByPath(cwd); stored != nil {
+		if stored := authenticateProjectByPath(s, cwd); stored != nil {
 			t.Errorf("%s (%q): expected nil, got project %q", name, cwd, stored.ProjectID)
 		}
 	}
@@ -70,7 +71,7 @@ func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
 	}
 
 	s := cwdProject(t, outer, true)
-	s.Projects = append(s.Projects, Project{
+	s.Projects = append(s.Projects, config.Project{
 		ID:            "inner-project",
 		Name:          "inner",
 		Path:          inner,
@@ -78,10 +79,10 @@ func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
 		AllowCwdAuth:  true,
 	})
 
-	if got := s.AuthenticateProjectByPath(inner); got == nil || got.ProjectID != "inner-project" {
+	if got := authenticateProjectByPath(s, inner); got == nil || got.ProjectID != "inner-project" {
 		t.Errorf("inner dir resolved to %v, want inner-project", got)
 	}
-	if got := s.AuthenticateProjectByPath(filepath.Join(outer, "docs")); got == nil || got.ProjectID != "test-project" {
+	if got := authenticateProjectByPath(s, filepath.Join(outer, "docs")); got == nil || got.ProjectID != "test-project" {
 		t.Errorf("outer dir resolved to %v, want test-project", got)
 	}
 }
@@ -97,7 +98,7 @@ func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 	}
 
 	s := cwdProject(t, outer, true)
-	s.Projects = append(s.Projects, Project{
+	s.Projects = append(s.Projects, config.Project{
 		ID:            "inner-project",
 		Name:          "inner",
 		Path:          inner,
@@ -105,7 +106,7 @@ func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 		AllowCwdAuth:  false,
 	})
 
-	got := s.AuthenticateProjectByPath(inner)
+	got := authenticateProjectByPath(s, inner)
 	if got == nil || got.ProjectID != "test-project" {
 		t.Fatalf("resolved to %v, want the opted-in parent test-project", got)
 	}
@@ -114,15 +115,15 @@ func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
 func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
 	dir := t.TempDir()
 	s := makeSettings(
-		map[string]Permission{"fsmcp": PermOn, "macmcp": PermOff},
+		map[string]config.Permission{"fsmcp": config.PermOn, "macmcp": config.PermOff},
 		map[string][]string{"fsmcp": {"write_file"}},
 		map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":["/x"]}`)},
 	)
 	s.Projects[0].Path = dir
 	s.Projects[0].AllowCwdAuth = true
 
-	byToken := s.AuthenticateProjectByHash(hashToken(testToken))
-	byPath := s.AuthenticateProjectByPath(filepath.Join(dir, "sub"))
+	byToken := s.AuthenticateProjectByHash(config.HashToken(testToken))
+	byPath := authenticateProjectByPath(s, filepath.Join(dir, "sub"))
 	if byToken == nil || byPath == nil {
 		t.Fatal("both auth paths must resolve")
 	}
@@ -193,12 +194,12 @@ func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
 	dir := t.TempDir()
 	mock := newMockConn("fsmcp", simpleTools("read_file", "write_file"), nil)
 	r := setupRouter(t,
-		map[string]Permission{"fsmcp": PermOn},
+		map[string]config.Permission{"fsmcp": config.PermOn},
 		map[string][]string{"fsmcp": {"write_file"}},
 		nil,
 		map[string]*mockMcpConn{"fsmcp": mock},
 	)
-	if err := r.store.With(func(s *Settings) {
+	if err := r.store.With(func(s *config.Settings) {
 		s.Projects[0].Path = dir
 		s.Projects[0].AllowCwdAuth = true
 	}); err != nil {

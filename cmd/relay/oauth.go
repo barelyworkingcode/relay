@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"html"
 	"io"
 	"log/slog"
@@ -451,15 +452,15 @@ type oauthResult struct {
 
 // toOAuthState wraps r for persistence. A nil r (no OAuth applies) yields
 // a nil OAuthState, matching the pointer field it is assigned into.
-func (r *oauthResult) toOAuthState() *OAuthState {
+func (r *oauthResult) toOAuthState() *config.OAuthState {
 	if r == nil {
 		return nil
 	}
-	return &OAuthState{
+	return &config.OAuthState{
 		ClientID:     r.ClientID,
-		ClientSecret: NewSecret(r.ClientSecret),
-		AccessToken:  NewSecret(r.AccessToken),
-		RefreshToken: NewSecret(r.RefreshToken),
+		ClientSecret: config.NewSecret(r.ClientSecret),
+		AccessToken:  config.NewSecret(r.AccessToken),
+		RefreshToken: config.NewSecret(r.RefreshToken),
 		TokenExpiry:  r.TokenExpiry,
 	}
 }

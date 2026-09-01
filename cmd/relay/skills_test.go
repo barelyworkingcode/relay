@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -71,7 +72,7 @@ func dirExists(t *testing.T, path string) bool {
 }
 
 func TestRenderBucketSkillMd_NoTokenLeakage(t *testing.T) {
-	proj := Project{Name: "acme", Token: NewSecret("secret-plaintext-token-do-not-leak")}
+	proj := config.Project{Name: "acme", Token: config.NewSecret("secret-plaintext-token-do-not-leak")}
 	bucket := SkillBucket{
 		Key:  "Files",
 		Slug: "files",
@@ -128,7 +129,7 @@ func TestRenderBucketSkillMd_DescriptionIsYAMLQuoted(t *testing.T) {
 		{Name: "weather_current", Description: "Get the current weather for a location."},
 		{Name: "weather_forecast", Description: "Get the forecast."},
 	}}
-	out := renderBucketSkillMd(Project{Name: "p", Token: NewSecret("t")}, bucket)
+	out := renderBucketSkillMd(config.Project{Name: "p", Token: config.NewSecret("t")}, bucket)
 
 	var descLine string
 	for _, l := range strings.Split(out, "\n") {
@@ -204,7 +205,7 @@ func imageAndMailLister() stubLister {
 
 func TestEmitSkills_WritesPerBucketFiles(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 
 	paths, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways)
 	if err != nil {
@@ -232,7 +233,7 @@ func TestEmitSkills_WritesPerBucketFiles(t *testing.T) {
 
 func TestEmitSkills_DescriptionContainsCapabilityKeywords(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	if _, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways); err != nil {
 		t.Fatalf("EmitSkills: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestEmitSkills_DescriptionContainsCapabilityKeywords(t *testing.T) {
 func TestEmitSkills_PrunesStaleRelayDirs(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay-old", "stale")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
 
 	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
@@ -273,7 +274,7 @@ func TestEmitSkills_PrunesStaleRelayDirs(t *testing.T) {
 func TestEmitSkills_MigratesLegacyRelayDir(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay", "legacy single-dir layout")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
 
 	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
@@ -292,7 +293,7 @@ func TestEmitSkills_EmptyToolsPrunesEverything(t *testing.T) {
 	writeSkillDir(t, root, "relay", "x")
 	writeSkillDir(t, root, "relay-mail", "x")
 	writeSkillDir(t, root, "deploy", "user-authored skill")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 
 	if _, err := EmitSkills(context.Background(), stubLister{}, proj, root, RegenAlways); err != nil {
 		t.Fatalf("EmitSkills: %v", err)
@@ -307,7 +308,7 @@ func TestEmitSkills_EmptyToolsPrunesEverything(t *testing.T) {
 
 func TestEmitSkills_Idempotent(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := imageAndMailLister()
 
 	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenAlways); err != nil {
@@ -327,7 +328,7 @@ func TestEmitSkills_Idempotent(t *testing.T) {
 
 func TestEmitSkills_NoTokenLeakageAcrossAllFiles(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	proj := Project{Name: "p1", Token: NewSecret("super-secret-token")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("super-secret-token")}
 	if _, err := EmitSkills(context.Background(), imageAndMailLister(), proj, root, RegenAlways); err != nil {
 		t.Fatalf("EmitSkills: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestEmitSkills_NoTokenLeakageAcrossAllFiles(t *testing.T) {
 func TestEmitSkills_RegenNever(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay-mail", "preexisting")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := stubLister{err: errors.New("must not be called")}
 
 	paths, err := EmitSkills(context.Background(), lister, proj, root, RegenNever)
@@ -372,7 +373,7 @@ func TestEmitSkills_SkipIfExists_CreatesMissingButPreservesExisting(t *testing.T
 	root := filepath.Join(t.TempDir(), "skills")
 	writeSkillDir(t, root, "relay-mail", "OLD")
 	writeSkillDir(t, root, "relay-old", "stale")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := stubLister{tools: []mcp.Tool{
 		{Name: "generate_image", Category: "Image"},
 		{Name: "mail_send", Category: "Mail"},
@@ -394,7 +395,7 @@ func TestEmitSkills_SkipIfExists_CreatesMissingButPreservesExisting(t *testing.T
 
 func TestEmitSkills_SkipIfExists_GeneratesWhenEmpty(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
-	proj := Project{Name: "p1", Token: NewSecret("tok")}
+	proj := config.Project{Name: "p1", Token: config.NewSecret("tok")}
 	lister := stubLister{tools: []mcp.Tool{{Name: "generate_image", Category: "Image"}}}
 
 	if _, err := EmitSkills(context.Background(), lister, proj, root, RegenSkipIfExists); err != nil {
@@ -436,7 +437,7 @@ func TestRemoveSkill_NonExistentRoot(t *testing.T) {
 
 func TestAppRouter_ListSkillBuckets(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn, "mcp-c": PermOff},
+		map[string]config.Permission{"mcp-a": config.PermOn, "mcp-b": config.PermOn, "mcp-c": config.PermOff},
 		map[string][]string{"mcp-a": {"mail_archive"}}, // disabled tool excluded
 		nil,
 		map[string]*mockMcpConn{

@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 )
 
 // errUnsealedSecret is what Secret.MarshalJSON returns when it is asked to
-// serialise a value that has not been through sealAllSecrets. Every residue
+// serialise a value that has not been through SealAllSecrets. Every residue
 // path in the program — json.Marshal(settings), json.Marshal(a Project), an
 // slog call, a future export route — reaches this before it reaches disk,
 // which is what turns a silent plaintext leak into a loud test failure
@@ -35,7 +35,7 @@ type Secret struct {
 	// env is the envelope this Secret was last parsed from, or last sealed
 	// into. It survives a successful open (so re-marshalling an unmodified,
 	// already-sealed Settings without going through the store still works)
-	// and is overwritten on every reseal — see sealAllSecrets, which always
+	// and is overwritten on every reseal — see SealAllSecrets, which always
 	// calls Seal fresh rather than asking whether the old envelope is still
 	// valid.
 	env *sealed.Envelope
@@ -68,7 +68,7 @@ func (s Secret) String() string { return "<sealed>" }
 
 // MarshalJSON refuses to serialise a Secret that has not been sealed. A
 // Secret's only source of a JSON-safe representation is env, populated by
-// sealAllSecrets immediately before every save (settings_seal.go) — a value
+// SealAllSecrets immediately before every save (settings_seal.go) — a value
 // reaching here with env == nil has skipped that step, which is exactly the
 // condition ADR-017's residue rule exists to make unrepresentable rather
 // than merely unlikely.

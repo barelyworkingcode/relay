@@ -10,20 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/google/uuid"
 )
 
-// AddAPICredential appends unconditionally. Does not save; use within
-// store.With, matching AddEnrolment/AddService.
-func (s *Settings) AddAPICredential(c APICredential) {
+// addAPICredential appends unconditionally. Does not save; use within
+// store.With, matching addEnrolment/AddService.
+func addAPICredential(s *config.Settings, c config.APICredential) {
 	s.APICredentials = append(s.APICredentials, c)
 }
 
-// RemoveAPICredential returns the deleted credential so a caller can log
+// removeAPICredential returns the deleted credential so a caller can log
 // what was revoked without holding onto the live settings slice. Does not
 // save; use within store.With.
-func (s *Settings) RemoveAPICredential(id string) (APICredential, bool) {
+func removeAPICredential(s *config.Settings, id string) (config.APICredential, bool) {
 	for i := range s.APICredentials {
 		if s.APICredentials[i].ID == id {
 			removed := s.APICredentials[i]
@@ -31,13 +32,13 @@ func (s *Settings) RemoveAPICredential(id string) (APICredential, bool) {
 			return removed, true
 		}
 	}
-	return APICredential{}, false
+	return config.APICredential{}, false
 }
 
-// FindAPICredential looks up by id, never by token or hash — resolving a
-// live request goes through AuthenticateAPICredential instead, which is the
+// findAPICredential looks up by id, never by token or hash — resolving a
+// live request goes through authenticateAPICredential instead, which is the
 // only path that touches a hash.
-func (s *Settings) FindAPICredential(id string) *APICredential {
+func findAPICredential(s *config.Settings, id string) *config.APICredential {
 	for i := range s.APICredentials {
 		if s.APICredentials[i].ID == id {
 			return &s.APICredentials[i]
@@ -50,7 +51,7 @@ func (s *Settings) FindAPICredential(id string) *APICredential {
 // findProjectByTokenHash is: both sides are SHA-256 hashes, and a lookup
 // that walks the list with a byte-equal comparison is a timing oracle over
 // every credential on the host.
-func (s *Settings) findAPICredentialByHash(hash string) *APICredential {
+func findAPICredentialByHash(s *config.Settings, hash string) *config.APICredential {
 	want := []byte(hash)
 	for i := range s.APICredentials {
 		if subtle.ConstantTimeCompare([]byte(s.APICredentials[i].Hash), want) == 1 {
@@ -60,7 +61,7 @@ func (s *Settings) findAPICredentialByHash(hash string) *APICredential {
 	return nil
 }
 
-// AuthenticateAPICredential resolves a bearer token to the credential that
+// authenticateAPICredential resolves a bearer token to the credential that
 // minted it. An empty token, a token matching nothing, and a token matching
 // an EXPIRED credential are deliberately indistinguishable to the caller —
 // those distinctions are exactly what a timing or error-message oracle would
@@ -70,21 +71,21 @@ func (s *Settings) findAPICredentialByHash(hash string) *APICredential {
 // Expiry is enforced here rather than at reaping time: reaping is lazy, so
 // an expired record outlives its lifetime on disk by design and only this
 // check stands between it and a request.
-func (s *Settings) AuthenticateAPICredential(plaintext string) *APICredential {
+func authenticateAPICredential(s *config.Settings, plaintext string) *config.APICredential {
 	if plaintext == "" {
 		return nil
 	}
-	cred := s.findAPICredentialByHash(hashToken(plaintext))
+	cred := findAPICredentialByHash(s, config.HashToken(plaintext))
 	if cred == nil || cred.Expired(time.Now()) {
 		return nil
 	}
 	return cred
 }
 
-// Mint creates a credential that never expires. Does not save; use within
-// store.With.
-func (s *Settings) Mint(name string, classes []control.CapabilityClass) (APICredential, string, error) {
-	return s.MintFor(name, classes, 0)
+// mintAPICredentialForever creates a credential that never expires. Does not
+// save; use within store.With.
+func mintAPICredentialForever(s *config.Settings, name string, classes []control.CapabilityClass) (config.APICredential, string, error) {
+	return mintAPICredentialFor(s, name, classes, 0)
 }
 
 // mintAPICredential validates and mints, returning the PLAINTEXT token
@@ -94,44 +95,44 @@ func (s *Settings) Mint(name string, classes []control.CapabilityClass) (APICred
 // CredentialOps.Mint is the only caller left: it validates first (so a
 // malformed request never reaches the gate) and wraps this with the
 // presence check and the issuance record, but the mint itself — and the
-// store.With it runs inside — lives here, in the same file as MintFor and
-// AddAPICredential, not in credential_cmd.go: a CLI process never calls
+// store.With it runs inside — lives here, in the same file as mintAPICredentialFor and
+// addAPICredential, not in credential_cmd.go: a CLI process never calls
 // this directly (AC-15), only the gated core does.
-func mintAPICredential(store SettingsStore, req credentialMintRequest) (APICredential, string, error) {
+func mintAPICredential(store config.SettingsStore, req credentialMintRequest) (config.APICredential, string, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		return APICredential{}, "", errors.New("a credential name is required")
+		return config.APICredential{}, "", errors.New("a credential name is required")
 	}
 	if name == legacyFrontendCredentialName {
-		return APICredential{}, "", errReservedCredentialName
+		return config.APICredential{}, "", errReservedCredentialName
 	}
 	classes, err := parseCapabilityClasses(req.Classes)
 	if err != nil {
-		return APICredential{}, "", err
+		return config.APICredential{}, "", err
 	}
 	if req.TTL < 0 {
-		return APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
+		return config.APICredential{}, "", fmt.Errorf("a negative lifetime (%s) is not a credential; omit --ttl for one that never expires", req.TTL)
 	}
 
-	var cred APICredential
+	var cred config.APICredential
 	var plaintext string
 	var mintErr error
 	// Reaped in the same store.With as the mint, which is the whole of the
 	// reaping schedule: this is a write that was happening anyway, so
 	// sweeping here costs nothing and needs no timer.
-	if err := store.With(func(s *Settings) {
+	if err := store.With(func(s *config.Settings) {
 		reapExpiredAPICredentials(s)
-		cred, plaintext, mintErr = s.MintFor(name, classes, req.TTL)
+		cred, plaintext, mintErr = mintAPICredentialFor(s, name, classes, req.TTL)
 	}); err != nil {
-		return APICredential{}, "", fmt.Errorf("save settings: %w", err)
+		return config.APICredential{}, "", fmt.Errorf("save settings: %w", err)
 	}
 	if mintErr != nil {
-		return APICredential{}, "", mintErr
+		return config.APICredential{}, "", mintErr
 	}
 	return cred, plaintext, nil
 }
 
-func revokeAPICredential(store SettingsStore, id string) (APICredential, error) {
+func revokeAPICredential(store config.SettingsStore, id string) (config.APICredential, error) {
 	return revokeAPICredentialIf(store, id, nil)
 }
 
@@ -145,16 +146,16 @@ func revokeAPICredential(store SettingsStore, id string) (APICredential, error) 
 // separate Get() then With() is a TOCTOU window on a file two processes
 // write, and a gate on the far side of that window is a gate that can be
 // stepped around.
-func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICredential) error) (APICredential, error) {
+func revokeAPICredentialIf(store config.SettingsStore, id string, permitted func(config.APICredential) error) (config.APICredential, error) {
 	if strings.TrimSpace(id) == "" {
-		return APICredential{}, errors.New("a credential id is required")
+		return config.APICredential{}, errors.New("a credential id is required")
 	}
 
-	var removed APICredential
+	var removed config.APICredential
 	var found bool
 	var refusal error
-	if err := store.With(func(s *Settings) {
-		cred := s.FindAPICredential(id)
+	if err := store.With(func(s *config.Settings) {
+		cred := findAPICredential(s, id)
 		if cred == nil {
 			return
 		}
@@ -169,20 +170,20 @@ func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICre
 				return
 			}
 		}
-		removed, _ = s.RemoveAPICredential(id)
+		removed, _ = removeAPICredential(s, id)
 	}); err != nil {
-		return APICredential{}, fmt.Errorf("save settings: %w", err)
+		return config.APICredential{}, fmt.Errorf("save settings: %w", err)
 	}
 	if !found {
-		return APICredential{}, fmt.Errorf("no credential found with id %q", id)
+		return config.APICredential{}, fmt.Errorf("no credential found with id %q", id)
 	}
 	if refusal != nil {
-		return APICredential{}, refusal
+		return config.APICredential{}, refusal
 	}
 	return removed, nil
 }
 
-// MintFor creates a new credential, appends it to s, and returns the record
+// mintAPICredentialFor creates a new credential, appends it to s, and returns the record
 // alongside the PLAINTEXT token. The plaintext exists only in this return
 // value and is never stored or reconstructable from the record afterward —
 // the caller (an IPC/CLI/HTTP handler) is responsible for handing it to the
@@ -194,23 +195,23 @@ func revokeAPICredentialIf(store SettingsStore, id string, permitted func(APICre
 // land on it rather than mint something inert; a caller that means "now" has
 // no reason to mint at all. Callers that take a lifetime from an operator
 // refuse a negative one at the point of entry instead.
-func (s *Settings) MintFor(name string, classes []control.CapabilityClass, ttl time.Duration) (APICredential, string, error) {
+func mintAPICredentialFor(s *config.Settings, name string, classes []control.CapabilityClass, ttl time.Duration) (config.APICredential, string, error) {
 	plaintext, err := generateRandomHex(32)
 	if err != nil {
-		return APICredential{}, "", err
+		return config.APICredential{}, "", err
 	}
 	now := time.Now().UTC()
-	cred := APICredential{
+	cred := config.APICredential{
 		ID:      uuid.New().String(),
 		Name:    name,
-		Hash:    hashToken(plaintext),
+		Hash:    config.HashToken(plaintext),
 		Classes: classes,
 		Created: now.Format(time.RFC3339),
 	}
 	if ttl > 0 {
 		cred.Expires = now.Add(ttl).Format(time.RFC3339)
 	}
-	s.AddAPICredential(cred)
+	addAPICredential(s, cred)
 	return cred, plaintext, nil
 }
 
@@ -222,12 +223,12 @@ func (s *Settings) MintFor(name string, classes []control.CapabilityClass, ttl t
 // more writers than it wants (ADR-016 decision 3).
 //
 // Reaping is housekeeping, not enforcement: an expired credential stops
-// authenticating the moment it expires (AuthenticateAPICredential), whether
+// authenticating the moment it expires (authenticateAPICredential), whether
 // or not anything has swept it yet.
-func reapExpiredAPICredentials(s *Settings) bool {
+func reapExpiredAPICredentials(s *config.Settings) bool {
 	now := time.Now()
 	before := len(s.APICredentials)
-	s.APICredentials = slices.DeleteFunc(s.APICredentials, func(c APICredential) bool {
+	s.APICredentials = slices.DeleteFunc(s.APICredentials, func(c config.APICredential) bool {
 		return c.Expired(now)
 	})
 	return len(s.APICredentials) != before
@@ -260,11 +261,11 @@ const legacyFrontendCredentialName = "legacy-frontend-token"
 // new relay process from accumulating a fresh legacy credential every time
 // it starts, while still keeping the ONE legacy credential's hash current
 // with whatever token this process just handed its own children.
-func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
+func migrateFrontendTokenToCredential(s *config.Settings, frontendToken string) bool {
 	if frontendToken == "" {
 		return false
 	}
-	hash := hashToken(frontendToken)
+	hash := config.HashToken(frontendToken)
 	classes := []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
 	for i := range s.APICredentials {
 		if s.APICredentials[i].Name != legacyFrontendCredentialName {
@@ -281,7 +282,7 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 		s.APICredentials[i].Classes = classes
 		return true
 	}
-	s.AddAPICredential(APICredential{
+	addAPICredential(s, config.APICredential{
 		ID:      uuid.New().String(),
 		Name:    legacyFrontendCredentialName,
 		Hash:    hash,
@@ -294,10 +295,10 @@ func migrateFrontendTokenToCredential(s *Settings, frontendToken string) bool {
 // credentialAuthorizer implements control.Authorizer against
 // Settings.APICredentials.
 type credentialAuthorizer struct {
-	store SettingsStore
+	store config.SettingsStore
 }
 
-func NewCredentialAuthorizer(store SettingsStore) *credentialAuthorizer {
+func NewCredentialAuthorizer(store config.SettingsStore) *credentialAuthorizer {
 	return &credentialAuthorizer{store: store}
 }
 
@@ -323,7 +324,7 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class control.Capabili
 	if !ok {
 		return control.ErrNoCredential
 	}
-	cred := freshSettings(a.store).AuthenticateAPICredential(token)
+	cred := authenticateAPICredential(config.FreshSettings(a.store), token)
 	if cred == nil {
 		return control.ErrNoCredential
 	}

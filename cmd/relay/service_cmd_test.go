@@ -1,5 +1,7 @@
 package main
 
+import "github.com/barelyworkingcode/relay/internal/config"
+
 // register, unregister and restart are brokered (ADR-017 decision 2), so a
 // test exercising them needs a real bridge server behind a wired ServiceOps
 // — newBrokerRouter + serveBroker give it one, over the same store the
@@ -7,7 +9,7 @@ package main
 
 import "testing"
 
-func newCLISandboxStore(t *testing.T) SettingsStore {
+func newCLISandboxStore(t *testing.T) config.SettingsStore {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)

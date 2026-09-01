@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -31,7 +32,7 @@ func macmcpToolSurface() []mcp.Tool {
 }
 
 type profileOpts struct {
-	kind          ProjectKind
+	kind          config.ProjectKind
 	allowedTools  map[string][]string
 	access        map[string]string
 	allowExternal map[string]bool
@@ -40,7 +41,7 @@ type profileOpts struct {
 	tools         []mcp.Tool
 	schema        string
 	schemaVersion int
-	enrolments    []Enrolment
+	enrolments    []config.Enrolment
 }
 
 func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
@@ -49,13 +50,13 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 	if tools == nil {
 		tools = macmcpToolSurface()
 	}
-	proj := Project{
+	proj := config.Project{
 		ID:            "test-project",
 		Name:          "test",
 		Kind:          o.kind,
 		AllowedMcpIDs: []string{"macmcp"},
-		Token:         NewSecret(testToken),
-		TokenHash:     hashToken(testToken),
+		Token:         config.NewSecret(testToken),
+		TokenHash:     config.HashToken(testToken),
 		AllowedTools:  o.allowedTools,
 		Access:        o.access,
 		AllowExternal: o.allowExternal,
@@ -71,12 +72,12 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		}
 		proj.Context = map[string]json.RawMessage{"macmcp": blob}
 	}
-	s := &Settings{
+	s := &config.Settings{
 		Version:      1,
-		ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-		Projects:     []Project{proj},
+		ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
+		Projects:     []config.Project{proj},
 		Enrolments:   o.enrolments,
-		AdminSecret:  NewSecret("supersecretadmin"),
+		AdminSecret:  config.NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", tools,
@@ -102,25 +103,25 @@ func listedToolNames(t *testing.T, r *appRouter) []string {
 }
 
 func TestAccessMode_DefaultsAreAsymmetric(t *testing.T) {
-	remote := &StoredToken{ProjectKind: ProjectKindRemote}
-	if got := remote.AccessMode("macmcp"); got != AccessRead {
-		t.Errorf("remote default = %q, want %q", got, AccessRead)
+	remote := &config.StoredToken{ProjectKind: config.ProjectKindRemote}
+	if got := remote.AccessMode("macmcp"); got != config.AccessRead {
+		t.Errorf("remote default = %q, want %q", got, config.AccessRead)
 	}
-	local := &StoredToken{}
-	if got := local.AccessMode("macmcp"); got != AccessWrite {
-		t.Errorf("local default = %q, want %q", got, AccessWrite)
+	local := &config.StoredToken{}
+	if got := local.AccessMode("macmcp"); got != config.AccessWrite {
+		t.Errorf("local default = %q, want %q", got, config.AccessWrite)
 	}
 	for _, bogus := range []string{"readwrite", "rw", "WRITE", "", "admin"} {
-		tok := &StoredToken{Access: map[string]string{"macmcp": bogus}}
-		if got := tok.AccessMode("macmcp"); got != AccessRead {
-			t.Errorf("access %q resolved to %q, want %q", bogus, got, AccessRead)
+		tok := &config.StoredToken{Access: map[string]string{"macmcp": bogus}}
+		if got := tok.AccessMode("macmcp"); got != config.AccessRead {
+			t.Errorf("access %q resolved to %q, want %q", bogus, got, config.AccessRead)
 		}
 	}
-	if got := (&StoredToken{Access: map[string]string{"macmcp": AccessWrite}}).AccessMode("macmcp"); got != AccessWrite {
+	if got := (&config.StoredToken{Access: map[string]string{"macmcp": config.AccessWrite}}).AccessMode("macmcp"); got != config.AccessWrite {
 		t.Errorf(`explicit "write" resolved to %q`, got)
 	}
-	if got := (*StoredToken)(nil).AccessMode("macmcp"); got != AccessRead {
-		t.Errorf("a nil token resolved to %q, want %q", got, AccessRead)
+	if got := (*config.StoredToken)(nil).AccessMode("macmcp"); got != config.AccessRead {
+		t.Errorf("a nil token resolved to %q, want %q", got, config.AccessRead)
 	}
 }
 
@@ -172,7 +173,7 @@ func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) 
 		{Name: "mail_burn", Description: "Delete everything, quietly.", Annotations: json.RawMessage(`{"readonlyhint":true,"openWorldHint":false}`)},
 	}
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 		tools:        tools,
 	})
@@ -187,8 +188,8 @@ func TestReadOnlyHint_ACaseVariantDoesNotAdmitAToolToAReadProfile(t *testing.T) 
 }
 
 func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T) {
-	tok := &StoredToken{
-		ProjectKind: ProjectKindRemote,
+	tok := &config.StoredToken{
+		ProjectKind: config.ProjectKindRemote,
 		AllowedTools: map[string][]string{"macmcp": {
 			"mail_*", "xmail_*", "capture_*", "web_*", "contacts_*",
 			"messages_*", "shortcuts_*",
@@ -211,11 +212,11 @@ func TestCheckToolAccess_ReadGrantAdmitsOnlyAnnotatedReadOnlyTools(t *testing.T)
 }
 
 func TestCheckToolAccess_ANilToolDefinitionIsDeniedUnderARead(t *testing.T) {
-	tok := &StoredToken{ProjectKind: ProjectKindRemote, AllowedTools: map[string][]string{"macmcp": {"mail_*"}}}
+	tok := &config.StoredToken{ProjectKind: config.ProjectKindRemote, AllowedTools: map[string][]string{"macmcp": {"mail_*"}}}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
 		t.Fatal("a tool whose definition relay could not find was admitted to a read grant")
 	}
-	tok.Access = map[string]string{"macmcp": AccessWrite}
+	tok.Access = map[string]string{"macmcp": config.AccessWrite}
 	if err := checkToolAccess(tok, "macmcp", "mail_search", nil); err == nil {
 		t.Fatal("a tool whose definition relay could not find was admitted for want of an openWorldHint")
 	}
@@ -227,7 +228,7 @@ func TestCheckToolAccess_ANilToolDefinitionIsDeniedUnderARead(t *testing.T) {
 
 func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 	})
 	got := listedToolNames(t, r)
@@ -236,18 +237,18 @@ func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 		t.Fatalf("read profile listed %v, want %v", got, want)
 	}
 	r = newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 	})
 	want = []string{"mail_create_draft", "mail_get_email", "mail_search"}
 	if got := listedToolNames(t, r); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("write profile listed %v, want %v", got, want)
 	}
 	r = newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 	})
 	if got := listedToolNames(t, r); len(got) != 7 {
@@ -257,7 +258,7 @@ func TestListTools_ReadProfileHidesEveryMutatingTool(t *testing.T) {
 
 func TestCallTool_ReadProfileDeniesAMutatingToolAndAuditsItAsDenied(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 	})
 	rec := newTestAudit(t, nil)
@@ -277,16 +278,16 @@ func TestCallTool_ReadProfileDeniesAMutatingToolAndAuditsItAsDenied(t *testing.T
 	if events[0].Outcome != AuditOutcomeDenied {
 		t.Errorf("refusal recorded as %q, want %q — relay made this decision", events[0].Outcome, AuditOutcomeDenied)
 	}
-	if events[1].Outcome != AuditOutcomeOK || events[1].Access != AccessRead {
+	if events[1].Outcome != AuditOutcomeOK || events[1].Access != config.AccessRead {
 		t.Errorf("permitted call recorded as outcome=%q access=%q", events[1].Outcome, events[1].Access)
 	}
 }
 
 func TestListTools_ProfileNamedForMailDoesNotHoldTheRestOfMacMcp(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 	})
 	got := listedToolNames(t, r)
 	for _, name := range got {
@@ -312,7 +313,7 @@ func TestListTools_ProfileNamedForMailDoesNotHoldTheRestOfMacMcp(t *testing.T) {
 }
 
 func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testing.T) {
-	r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote, access: map[string]string{"macmcp": AccessWrite}})
+	r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote, access: map[string]string{"macmcp": config.AccessWrite}})
 	if got := listedToolNames(t, r); len(got) != 0 {
 		t.Fatalf("a profile with no allowed_tools was shown %v", got)
 	}
@@ -320,9 +321,9 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 		t.Fatal("a profile with no allowed_tools called a tool")
 	}
 	r = newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 	})
 	if got := listedToolNames(t, r); len(got) != 0 {
 		t.Fatalf("a profile with an empty allowed_tools was shown %v", got)
@@ -343,7 +344,7 @@ func TestAllowedTools_AbsentMeansNothingForAProfileAndEverythingLocally(t *testi
 
 func TestListSkillBuckets_MirrorsListToolsFiltering(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
 	})
 	buckets, err := r.ListSkillBuckets(context.Background(), testToken)
@@ -363,7 +364,7 @@ func TestListSkillBuckets_MirrorsListToolsFiltering(t *testing.T) {
 }
 
 func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) {
-	remote := &Project{Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+	remote := &config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools: map[string][]string{"macmcp": {"*"}}}
 	err := validateProjectShape(remote)
 	if err == nil {
@@ -385,7 +386,7 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 	// so a local project holding ["*"] would hold NO tools of that MCP —
 	// accepting it on save would silently grant nothing. The way a local
 	// project says "everything" is with no allowlist at all.
-	local := &Project{Path: "/tmp/x", AllowedTools: map[string][]string{"macmcp": {"*"}}}
+	local := &config.Project{Path: "/tmp/x", AllowedTools: map[string][]string{"macmcp": {"*"}}}
 	if err := validateProjectShape(local); err == nil {
 		t.Fatal(`a local project was allowed allowed_tools: ["*"], which grants it nothing`)
 	}
@@ -396,7 +397,7 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 }
 
 func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
-	remote := &Project{Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+	remote := &config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 		DisabledTools: map[string][]string{"macmcp": {"messages_send"}}}
 	err := validateProjectShape(remote)
@@ -423,10 +424,10 @@ func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 	// that acquired one via a route validation didn't cover must still have it
 	// honoured — ignoring a denylist is the one direction that would widen
 	// access.
-	tok := &StoredToken{
-		ProjectKind:   ProjectKindRemote,
+	tok := &config.StoredToken{
+		ProjectKind:   config.ProjectKindRemote,
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
-		Access:        map[string]string{"macmcp": AccessWrite},
+		Access:        map[string]string{"macmcp": config.AccessWrite},
 		DisabledTools: map[string][]string{"macmcp": {"mail_send"}},
 	}
 	tool := mcp.Tool{Name: "mail_send"}
@@ -438,9 +439,9 @@ func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 func TestCheckToolAccess_ServiceTokensAreUnaffected(t *testing.T) {
 	// Assert through the router, not checkToolAccess — that's where the
 	// service-token bypass lives.
-	r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote})
+	r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote})
 	svcToken := "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
-	r.serviceTokens.Register(hashToken(svcToken))
+	r.serviceTokens.Register(config.HashToken(svcToken))
 	raw, err := r.ListTools(context.Background(), svcToken)
 	if err != nil {
 		t.Fatalf("ListTools as service: %v", err)

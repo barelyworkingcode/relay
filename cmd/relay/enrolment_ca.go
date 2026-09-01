@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -83,9 +84,9 @@ func LoadOrCreateCA(sealer sealed.Sealer) (*RelayCA, error) {
 
 	if _, err := os.Stat(keyPath); err == nil {
 		if sealer == nil {
-			return nil, fmt.Errorf("%w: ca.key exists in plaintext but there is no sealer to migrate it", errSealUnavailable)
+			return nil, fmt.Errorf("%w: ca.key exists in plaintext but there is no sealer to migrate it", config.ErrSealUnavailable)
 		}
-		if err := migrateCAKey(filepath.Dir(keyPath), sealer); err != nil {
+		if err := config.MigrateCAKey(filepath.Dir(keyPath), sealer); err != nil {
 			return nil, err
 		}
 		return loadSealedCA(sealedKeyPath, certPath, sealer)
@@ -97,14 +98,14 @@ func LoadOrCreateCA(sealer sealed.Sealer) (*RelayCA, error) {
 	}
 
 	if sealer == nil {
-		return nil, fmt.Errorf("%w: no CA exists yet and there is no sealer to create one under", errSealUnavailable)
+		return nil, fmt.Errorf("%w: no CA exists yet and there is no sealer to create one under", config.ErrSealUnavailable)
 	}
 	return generateCA(sealedKeyPath, certPath, sealer)
 }
 
 func loadSealedCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA, error) {
 	if sealer == nil {
-		return nil, fmt.Errorf("%w: ca.key.sealed exists but there is no sealer to open it", errSealUnavailable)
+		return nil, fmt.Errorf("%w: ca.key.sealed exists but there is no sealer to open it", config.ErrSealUnavailable)
 	}
 	data, err := os.ReadFile(sealedKeyPath)
 	if err != nil {
@@ -114,7 +115,7 @@ func loadSealedCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayC
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("%s is not a valid sealed envelope: %w", sealedKeyPath, err)
 	}
-	keyPEM, err := sealer.Unseal(env, []byte(caAADPrefix+"ca.key"))
+	keyPEM, err := sealer.Unseal(env, []byte(config.CAAADPrefix+"ca.key"))
 	if err != nil {
 		return nil, fmt.Errorf("%s could not be opened: %w", sealedKeyPath, err)
 	}
@@ -185,10 +186,10 @@ func generateCA(sealedKeyPath, certPath string, sealer sealed.Sealer) (*RelayCA,
 	}
 	// Sealed from the start: a freshly generated CA never has a plaintext
 	// ca.key written for it (§5.7 clause 3).
-	if err := sealCAKeyFile(filepath.Dir(sealedKeyPath), sealer, keyPEM); err != nil {
+	if err := config.SealCAKeyFile(filepath.Dir(sealedKeyPath), sealer, keyPEM); err != nil {
 		return nil, err
 	}
-	if err := atomicWriteFile(certPath, certPEM, 0600); err != nil {
+	if err := config.AtomicWriteFile(certPath, certPEM, 0600); err != nil {
 		return nil, fmt.Errorf("write ca certificate: %w", err)
 	}
 	return &RelayCA{key: key, cert: cert, certPEM: certPEM}, nil

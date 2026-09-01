@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"io"
 	"os"
 	"sort"
@@ -22,7 +23,7 @@ func runGrantCommand(args []string) {
 	asJSON := fs.Bool("json", false, "emit the grants as JSON instead of a table")
 	fs.Parse(args)
 
-	s := NewSettingsStore().Get()
+	s := config.NewSettingsStore().Get()
 	records := selectGrantRecords(s.Projects, *projectID)
 	if len(records) == 0 {
 		if *projectID != "" {
@@ -50,16 +51,16 @@ func runGrantCommand(args []string) {
 
 // selectGrantRecords resolves --project against both the id and the name:
 // Settings shows the name, an audit line shows the id.
-func selectGrantRecords(projects []Project, selector string) []Project {
+func selectGrantRecords(projects []config.Project, selector string) []config.Project {
 	if selector == "" {
-		out := make([]Project, len(projects))
+		out := make([]config.Project, len(projects))
 		copy(out, projects)
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		return out
 	}
 	for _, p := range projects {
 		if p.ID == selector || p.Name == selector {
-			return []Project{p}
+			return []config.Project{p}
 		}
 	}
 	return nil
@@ -98,12 +99,12 @@ type grantView struct {
 	Enrolments []grantEnrolmentView `json:"enrolments,omitempty"`
 }
 
-func newGrantView(s *Settings, p Project) grantView {
+func newGrantView(s *config.Settings, p config.Project) grantView {
 	// Built as a StoredToken and read through its methods, not the Project
 	// fields directly, so the asymmetric defaults (ADR-011 decision 2) resolve
 	// through the same code the router uses — a CLI that re-derived them would
 	// be a second copy of the rule, free to disagree the day it changes.
-	tok := &StoredToken{
+	tok := &config.StoredToken{
 		ProjectKind:   p.Kind,
 		Access:        p.Access,
 		AllowedTools:  p.AllowedTools,
@@ -149,9 +150,9 @@ func newGrantView(s *Settings, p Project) grantView {
 // grantedMcpIDs expands the wildcard the way SyncProjectToken does, to every
 // MCP relay knows about: that is what the grant actually reaches, and
 // printing "*" would hide the number the operator needs.
-func grantedMcpIDs(s *Settings, p Project) []string {
+func grantedMcpIDs(s *config.Settings, p config.Project) []string {
 	ids := p.AllowedMcpIDs
-	if isWildcard(ids) {
+	if config.IsWildcard(ids) {
 		ids = s.AllExternalMcpIDs()
 	}
 	out := make([]string, len(ids))
@@ -162,7 +163,7 @@ func grantedMcpIDs(s *Settings, p Project) []string {
 
 // grantToolText mirrors StoredToken.ToolAllowed's asymmetric default in
 // words; keep the two in sync or this misdescribes what a call would do.
-func grantToolText(tok *StoredToken, p Project, mcpID string) string {
+func grantToolText(tok *config.StoredToken, p config.Project, mcpID string) string {
 	patterns := p.AllowedTools[mcpID]
 	if len(patterns) > 0 {
 		return strings.Join(patterns, ", ")

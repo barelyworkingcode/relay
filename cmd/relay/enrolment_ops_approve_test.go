@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -50,7 +51,7 @@ func TestPresenceGatedOps_NoEnrolmentApproveEntry(t *testing.T) {
 
 func TestEnrolmentOpsApprove_SignsOverTheStoredCSRsPublicKey(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:41233")
 
 	rec, ok := table.Get(l.RequestID)
@@ -177,7 +178,7 @@ func TestEnrolmentRequestApproval_GrantCannotBeRedeemedForADifferentKey(t *testi
 
 func TestEnrolmentOpsApprove_DeniedLeavesPendingRecordAndWritesNoEnrolment(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
 
 	g, err := presence.NewGate(presencetest.Deny())
@@ -201,7 +202,7 @@ func TestEnrolmentOpsApprove_DeniedLeavesPendingRecordAndWritesNoEnrolment(t *te
 // refuses without ever reaching signEnrolment.
 func TestEnrolmentOpsApprove_NoSessionRefusesWithoutSigning(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
 
 	g, err := presence.NewGate(presencetest.NoSession())
@@ -227,7 +228,7 @@ func TestEnrolmentOpsApprove_NoSessionRefusesWithoutSigning(t *testing.T) {
 
 func TestEnrolmentOpsApprove_MalformedStoredCSRRefusesWithZeroProviderCalls(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table := newEnrolmentRequestTable()
 	// Lodge itself would never store this (it runs ParseClientCSR before
 	// admitting a row) -- direct map access, legal white-box test code in
@@ -262,7 +263,7 @@ func TestEnrolmentOpsApprove_MalformedStoredCSRRefusesWithZeroProviderCalls(t *t
 
 func TestEnrolmentOpsApprove_DuplicateSPKIRefusedNamingTheExistingClient(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	assertNoErr(t, err, "generate shared key")
@@ -299,7 +300,7 @@ func TestEnrolmentOpsApprove_DuplicateSPKIRefusedNamingTheExistingClient(t *test
 
 func TestEnrolmentOpsApprove_UnrecordedIssuanceRevokesAndPollNeverApproves(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
 
 	broken := &aiBrokenAuditor{}
@@ -313,7 +314,7 @@ func TestEnrolmentOpsApprove_UnrecordedIssuanceRevokesAndPollNeverApproves(t *te
 	if broken.calls != 1 {
 		t.Errorf("issuance auditor called %d times, want 1", broken.calls)
 	}
-	if store.Get().FindEnrolment("hermes-mail") != nil {
+	if findEnrolment(store.Get(), "hermes-mail") != nil {
 		t.Fatal("the enrolment must be revoked when its issuance cannot be recorded")
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "enrolments", "hermes-mail")); statErr == nil {
@@ -337,7 +338,7 @@ func TestEnrolmentOpsApprove_UnrecordedIssuanceRevokesAndPollNeverApproves(t *te
 
 func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
 
 	// A legacy `enrol create` bundle already left a client.key at the
@@ -356,7 +357,7 @@ func TestEnrolmentOpsApprove_BundleWriteFailureStillDeliversTheCertificate(t *te
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered when only the on-host bundle write failed (spec §11.7)")
 	}
-	if store.Get().FindEnrolment("hermes-mail") == nil {
+	if findEnrolment(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment record must have landed even though the bundle write failed")
 	}
 
@@ -396,7 +397,7 @@ func (s *sweptDuringApprovalSink) Get(requestID string) (pendingRecordView, bool
 
 func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	table := newEnrolmentRequestTable()
 	now := time.Now()
@@ -421,7 +422,7 @@ func TestEnrolmentOpsApprove_RowSweptDuringPresencePromptStillDeliversAndSaysSo(
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered even though the row was swept mid-approval")
 	}
-	if store.Get().FindEnrolment("hermes-mail") == nil {
+	if findEnrolment(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment must be real and recorded even though the row expired")
 	}
 
@@ -462,7 +463,7 @@ func (s *refusedDuringApprovalSink) Get(requestID string) (pendingRecordView, bo
 
 func TestEnrolmentOpsApprove_RowRefusedDuringPresencePromptStillDeliversAndSaysSoDistinctlyFromExpiry(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:1")
 
 	sink := &refusedDuringApprovalSink{enrolmentRequestTable: table, requestID: l.RequestID}
@@ -490,7 +491,7 @@ func TestEnrolmentOpsApprove_RowRefusedDuringPresencePromptStillDeliversAndSaysS
 	if created.CertPEM == "" || created.CAPEM == "" {
 		t.Fatal("the certificate must still be delivered even though the row was refused mid-approval")
 	}
-	if store.Get().FindEnrolment("hermes-mail") == nil {
+	if findEnrolment(store.Get(), "hermes-mail") == nil {
 		t.Fatal("the enrolment must be real and recorded even though the row was refused mid-approval")
 	}
 

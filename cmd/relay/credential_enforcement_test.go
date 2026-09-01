@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -122,16 +123,16 @@ func TestCredentialEnforcement_Handle_ErrorVariantMatrix_StatusAndNoLeak(t *test
 // credential regardless, and an unrelated pre-existing credential must ride
 // along untouched.
 func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.T) {
-	s := &Settings{}
+	s := &config.Settings{}
 
-	other := APICredential{
+	other := config.APICredential{
 		ID:      "other-tool-id",
 		Name:    "other-tool",
-		Hash:    hashToken("other-tool-token"),
+		Hash:    config.HashToken("other-tool-token"),
 		Classes: []control.CapabilityClass{control.ClassRead},
 		Created: "2020-01-01T00:00:00Z",
 	}
-	s.AddAPICredential(other)
+	addAPICredential(s, other)
 
 	const restarts = 7
 	var lastToken string
@@ -144,7 +145,7 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 		t.Fatalf("want 2 credentials (other + legacy) after %d restarts, got %d: %+v", restarts, len(s.APICredentials), s.APICredentials)
 	}
 
-	var legacy *APICredential
+	var legacy *config.APICredential
 	for i := range s.APICredentials {
 		if s.APICredentials[i].Name == legacyFrontendCredentialName {
 			legacy = &s.APICredentials[i]
@@ -153,7 +154,7 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 	if legacy == nil {
 		t.Fatal("no credential named legacyFrontendCredentialName survived the restart sequence")
 	}
-	if legacy.Hash != hashToken(lastToken) {
+	if legacy.Hash != config.HashToken(lastToken) {
 		t.Fatal("legacy credential's hash does not match the LATEST restart's token")
 	}
 	if len(legacy.Classes) != 3 || !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) || !legacy.Grants(control.ClassProxy) {
@@ -165,15 +166,15 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 
 	for i := 0; i < restarts-1; i++ {
 		stale := "boot-token-" + strconv.Itoa(i)
-		if s.AuthenticateAPICredential(stale) != nil {
+		if authenticateAPICredential(s, stale) != nil {
 			t.Fatalf("a token from an earlier restart (%q) still authenticates", stale)
 		}
 	}
-	if s.AuthenticateAPICredential(lastToken) == nil {
+	if authenticateAPICredential(s, lastToken) == nil {
 		t.Fatal("the latest restart's token does not authenticate")
 	}
 
-	found := s.FindAPICredential("other-tool-id")
+	found := findAPICredential(s, "other-tool-id")
 	if found == nil {
 		t.Fatal("migration removed the unrelated pre-existing credential")
 	}
@@ -185,7 +186,7 @@ func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.
 func TestCredentialEnforcement_MigratedCredential_DeniedGrantAndExecute_ThroughRealStack(t *testing.T) {
 	store := newCLISandboxStore(t)
 	const frontendToken = "ce-migrated-frontend-token"
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		if !migrateFrontendTokenToCredential(s, frontendToken) {
 			t.Fatal("migration reported no change on first call")
 		}
@@ -266,16 +267,16 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 	store := newCLISandboxStore(t)
 	const plaintext = "ce-distinctive-plaintext-do-not-leak-798234"
 
-	var cred APICredential
-	assertNoErr(t, store.With(func(s *Settings) {
-		cred = APICredential{
+	var cred config.APICredential
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		cred = config.APICredential{
 			ID:      "ce-leak-cred",
 			Name:    "ce-leak-check",
-			Hash:    hashToken(plaintext),
+			Hash:    config.HashToken(plaintext),
 			Classes: []control.CapabilityClass{control.ClassRead},
 			Created: "2026-01-01T00:00:00Z",
 		}
-		s.AddAPICredential(cred)
+		addAPICredential(s, cred)
 	}), "store.With add credential")
 
 	authz := NewCredentialAuthorizer(store)

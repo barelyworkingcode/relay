@@ -7,11 +7,12 @@ package main
 
 import (
 	"context"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"testing"
 )
 
-func stdioMcp(id, bin string) ExternalMcp {
-	return ExternalMcp{ID: id, DisplayName: id, Transport: "stdio", Command: bin}
+func stdioMcp(id, bin string) config.ExternalMcp {
+	return config.ExternalMcp{ID: id, DisplayName: id, Transport: "stdio", Command: bin}
 }
 
 func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
@@ -27,7 +28,7 @@ func TestExternalMcpManager_Reconcile_StopsRemovedAndStartsAdded(t *testing.T) {
 		t.Fatal("mcp-old should be connected after startOne")
 	}
 
-	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-new", bin)})
+	m.Reconcile(ctx, []config.ExternalMcp{stdioMcp("mcp-new", bin)})
 
 	if m.IsConnected("mcp-old") {
 		t.Error("mcp-old should have been stopped by reconcile")
@@ -47,7 +48,7 @@ func TestExternalMcpManager_Reconcile_RetainsUnchanged(t *testing.T) {
 		t.Fatalf("startOne mcp-keep: %v", err)
 	}
 
-	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-keep", bin), stdioMcp("mcp-add", bin)})
+	m.Reconcile(ctx, []config.ExternalMcp{stdioMcp("mcp-keep", bin), stdioMcp("mcp-add", bin)})
 
 	if !m.IsConnected("mcp-keep") {
 		t.Error("retained MCP should still be connected after reconcile")

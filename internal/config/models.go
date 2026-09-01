@@ -1,9 +1,11 @@
-package main
+package config
 
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/control"
@@ -476,11 +478,17 @@ func normalizeProjectKind(kind ProjectKind) ProjectKind {
 	return ""
 }
 
+// NormalizeProjectKind preserves the empty representation of a local
+// project in settings.json.
+func NormalizeProjectKind(kind ProjectKind) ProjectKind {
+	return normalizeProjectKind(kind)
+}
+
 func (c *ServiceConfig) Validate() error {
 	if c.ID == "" {
 		return fmt.Errorf("service ID is required")
 	}
-	if !isSafeID(c.ID) {
+	if !IsSafeID(c.ID) {
 		return fmt.Errorf("service ID %q is invalid: use only letters, digits, '.', '_', '-' (no path separators)", c.ID)
 	}
 	if c.DisplayName == "" {
@@ -490,4 +498,106 @@ func (c *ServiceConfig) Validate() error {
 		return fmt.Errorf("service command is required")
 	}
 	return nil
+}
+
+// IsSafeID guards persisted IDs that are used as filenames by application
+// adapters.
+func IsSafeID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func toolAllowedByPatterns(patterns []string, toolName string) bool {
+	for _, pattern := range patterns {
+		if pattern == "" || overBroadToolPattern(pattern) {
+			continue
+		}
+		if ok, err := path.Match(pattern, toolName); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+func overBroadToolPattern(pattern string) bool {
+	if toolPatternLiteral(pattern) == "" {
+		return true
+	}
+	for _, probe := range []string{
+		"zqx_abcdefghijklmnopqrstuvwxyz_0123456789",
+		"ZQX-ABCDEFGHIJKLMNOPQRSTUVWXYZ.0123456789",
+		"z",
+	} {
+		if ok, err := path.Match(pattern, probe); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+func toolPatternLiteral(pattern string) string {
+	var lit strings.Builder
+	for i := 0; i < len(pattern); {
+		switch c := pattern[i]; c {
+		case '*', '?':
+			i++
+		case '\\':
+			i++
+			if i < len(pattern) {
+				lit.WriteByte(pattern[i])
+				i++
+			}
+		case '[':
+			i++
+			if i < len(pattern) && pattern[i] == '^' {
+				i++
+			}
+			for first := true; i < len(pattern); first = false {
+				if pattern[i] == ']' && !first {
+					i++
+					break
+				}
+				if pattern[i] == '\\' {
+					i++
+				}
+				i++
+			}
+		default:
+			lit.WriteByte(c)
+			i++
+		}
+	}
+	return lit.String()
+}
+
+// AuditConfig is the persisted configuration of the audit recorder.
+type AuditConfig struct {
+	Enabled               *bool    `json:"enabled,omitempty"`
+	LogArgs               *bool    `json:"log_args,omitempty"`
+	LogLists              *bool    `json:"log_lists,omitempty"`
+	MaxArgBytes           int      `json:"max_arg_bytes,omitempty"`
+	MaxResultPreviewBytes int      `json:"max_result_preview_bytes,omitempty"`
+	RingSize              int      `json:"ring_size,omitempty"`
+	MaxFileBytes          int64    `json:"max_file_bytes,omitempty"`
+	Generations           int      `json:"generations,omitempty"`
+	RedactKeys            []string `json:"redact_keys,omitempty"`
+}
+
+// RemoteConfig is the persisted configuration of remote listeners.
+type RemoteConfig struct {
+	Enabled *bool  `json:"enabled,omitempty"`
+	Listen  string `json:"listen,omitempty"`
+
+	EnrolmentRequests *bool  `json:"enrolment_requests,omitempty"`
+	EnrolmentListen   string `json:"enrolment_listen,omitempty"`
 }

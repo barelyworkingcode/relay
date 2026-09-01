@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ import (
 // relay writes from several processes (docs/tokens.md), and the operation that
 // caused it decided there was nothing to do.
 
-func odwSandbox(t *testing.T) (string, *FileSettingsStore) {
+func odwSandbox(t *testing.T) (string, *config.FileSettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -31,7 +32,7 @@ func odwSandbox(t *testing.T) (string, *FileSettingsStore) {
 // sorHookStore (service_ops_race_test.go) deliberately does not, which is what
 // makes it a stand-in for a store that cannot decline.
 type odwHookStore struct {
-	*FileSettingsStore
+	*config.FileSettingsStore
 	preWrite func()
 }
 
@@ -43,7 +44,7 @@ func (h *odwHookStore) fire() {
 	}
 }
 
-func (h *odwHookStore) WithDeclinable(fn func(*Settings) error) error {
+func (h *odwHookStore) WithDeclinable(fn func(*config.Settings) error) error {
 	h.fire()
 	return h.FileSettingsStore.WithDeclinable(fn)
 }
@@ -52,7 +53,7 @@ func (h *odwHookStore) WithDeclinable(fn func(*Settings) error) error {
 // it. Without it a regression that stopped reaching WithDeclinable would land
 // on "the fixture proves nothing" instead of on the assertion this test exists
 // for.
-func (h *odwHookStore) With(fn func(*Settings)) error {
+func (h *odwHookStore) With(fn func(*config.Settings)) error {
 	h.fire()
 	return h.FileSettingsStore.With(fn)
 }
@@ -78,19 +79,19 @@ func (before odwSnapshot) assertUntouched(t *testing.T, dir, what string) {
 	}
 }
 
-func odwSeedService(t *testing.T, store SettingsStore) {
+func odwSeedService(t *testing.T, store config.SettingsStore) {
 	t.Helper()
-	if err := store.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "keeper", DisplayName: "Keeper", Command: "/bin/true"})
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "keeper", DisplayName: "Keeper", Command: "/bin/true"})
 	}); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
 }
 
-func odwSeedMcp(t *testing.T, store SettingsStore) {
+func odwSeedMcp(t *testing.T, store config.SettingsStore) {
 	t.Helper()
-	if err := store.With(func(s *Settings) {
-		s.UpsertExternalMcp(ExternalMcp{ID: "keeper", DisplayName: "Keeper", Command: "/bin/true"})
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertExternalMcp(config.ExternalMcp{ID: "keeper", DisplayName: "Keeper", Command: "/bin/true"})
 	}); err != nil {
 		t.Fatalf("seed mcp: %v", err)
 	}
@@ -102,14 +103,14 @@ func odwSeedMcp(t *testing.T, store SettingsStore) {
 func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 	cases := []struct {
 		name string
-		seed func(t *testing.T, dir string, store *FileSettingsStore)
-		run  func(t *testing.T, dir string, store *FileSettingsStore) error
+		seed func(t *testing.T, dir string, store *config.FileSettingsStore)
+		run  func(t *testing.T, dir string, store *config.FileSettingsStore) error
 		want error
 	}{
 		{
 			name: "ServiceOps.Update",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedService(t, store) },
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedService(t, store) },
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 				_, err := ops.Update(context.Background(), "ghost", serviceFields{Command: "/bin/new"}, auditViaIPC, "")
 				return err
@@ -118,8 +119,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 		},
 		{
 			name: "ServiceOps.Remove",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedService(t, store) },
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedService(t, store) },
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
 			},
@@ -127,8 +128,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 		},
 		{
 			name: "ServiceOps.SetAutostart",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedService(t, store) },
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedService(t, store) },
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}}
 				return ops.SetAutostart("ghost", true)
 			},
@@ -136,8 +137,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 		},
 		{
 			name: "McpOps.Remove",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) { odwSeedMcp(t, store) },
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedMcp(t, store) },
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
 			},
@@ -145,14 +146,14 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 		},
 		{
 			name: "revokePasskey",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) {
-				if err := store.With(func(s *Settings) {
-					s.Passkeys = append(s.Passkeys, Passkey{ID: "keeper", Name: "Keeper"})
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) {
+				if err := store.With(func(s *config.Settings) {
+					s.Passkeys = append(s.Passkeys, config.Passkey{ID: "keeper", Name: "Keeper"})
 				}); err != nil {
 					t.Fatalf("seed passkey: %v", err)
 				}
 			},
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				_, err := revokePasskey(store, "ghost")
 				return err
 			},
@@ -160,8 +161,8 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 		},
 		{
 			name: "revokeEnrolment",
-			seed: func(t *testing.T, _ string, store *FileSettingsStore) {},
-			run: func(t *testing.T, _ string, store *FileSettingsStore) error {
+			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) {},
+			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				_, err := revokeEnrolment(store, "ghost")
 				return err
 			},
@@ -206,7 +207,7 @@ func TestUpdateEnrolmentThatFindsNothingWritesNothing(t *testing.T) {
 // here is that the refusal did not rewrite the file to say so.
 func TestCreateEnrolmentThatIsRefusedWritesNothing(t *testing.T) {
 	dir, store := odwSandbox(t)
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", t.TempDir())
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", t.TempDir())
 	before := odwSnap(t, dir)
 
 	_, err := createEnrolment(store, enrolmentRequest{
@@ -240,7 +241,7 @@ func TestFrontendTokenMigrationThatFindsNothingToDoWritesNothing(t *testing.T) {
 		t.Fatal("the migration never reached its write, so the fixture proves nothing")
 	}
 	before.assertUntouched(t, dir, "ensureFrontendTokenIsCredential")
-	if freshSettings(store).AuthenticateAPICredential(token) == nil {
+	if authenticateAPICredential(config.FreshSettings(store), token) == nil {
 		t.Fatal("the token does not authenticate after the second migration declined")
 	}
 }
@@ -252,8 +253,8 @@ func TestFrontendTokenMigrationThatFindsNothingToDoWritesNothing(t *testing.T) {
 // server involved.
 func TestStartOAuthDoesNotResurrectAnMcpRemovedMidCeremony(t *testing.T) {
 	dir, store := odwSandbox(t)
-	if err := store.With(func(s *Settings) {
-		s.UpsertExternalMcp(ExternalMcp{
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertExternalMcp(config.ExternalMcp{
 			ID:          "authy",
 			DisplayName: "Authy",
 			Transport:   "http",

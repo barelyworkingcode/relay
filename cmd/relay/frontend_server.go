@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -160,7 +161,7 @@ func (s *FrontendServer) ServeLoopback() error {
 // can build the TCP mux later from the same ingredients, without a second
 // copy of NewFrontendServer's parameter list.
 type frontendRouteDeps struct {
-	store             SettingsStore
+	store             config.SettingsStore
 	mcps              McpSurfaceProvider
 	tools             MCPToolsProvider
 	enum              ContextEnumerator
@@ -279,7 +280,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -401,11 +402,11 @@ var errFrontendTokenAlreadyCredential = errors.New("frontend token is already re
 // Not fatal, matching the tray's stance on the same migration: a relay that
 // fails this still starts, and frontendCredentialAuth then refuses the legacy
 // token rather than admitting it unclassed.
-func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
+func ensureFrontendTokenIsCredential(store config.SettingsStore, token string) {
 	if store == nil || token == "" {
 		return
 	}
-	if freshSettings(store).AuthenticateAPICredential(token) != nil {
+	if authenticateAPICredential(config.FreshSettings(store), token) != nil {
 		return
 	}
 	// This is subtle: the migration's own bool is the decline. The pre-check
@@ -413,7 +414,7 @@ func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
 	// resolves again, so another process migrating in the gap is the case that
 	// reaches here with nothing left to do — and a save there would rewrite
 	// settings.json for no change on every relay start that lost that race.
-	err := withDeclinable(store, func(s *Settings) error {
+	err := config.WithDeclinable(store, func(s *config.Settings) error {
 		if !migrateFrontendTokenToCredential(s, token) {
 			return errFrontendTokenAlreadyCredential
 		}
@@ -434,7 +435,7 @@ func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
 // "is this anyone?" and "may they do this?", and only the second may narrow.
 //
 // Resolution runs before any handler, so an unauthenticated WS upgrade never
-// allocates a session, and goes through Settings.findAPICredentialByHash,
+// allocates a session, and goes through findAPICredentialByHash,
 // which compares in constant time over every credential on the host.
 //
 // An empty credential set fails CLOSED. The frontend channel always mints a
@@ -444,11 +445,11 @@ func ensureFrontendTokenIsCredential(store SettingsStore, token string) {
 //
 // Absent, malformed and unknown bearers all get the same 401 with the same
 // body, deliberately — a message that told them apart would be an oracle.
-func frontendCredentialAuth(store SettingsStore, next http.Handler) http.Handler {
+func frontendCredentialAuth(store config.SettingsStore, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var s *Settings
+		var s *config.Settings
 		if store != nil {
-			s = freshSettings(store)
+			s = config.FreshSettings(store)
 		}
 		if s == nil || len(s.APICredentials) == 0 {
 			slog.Error("frontend: no API credentials configured — rejecting all requests (fail closed)")
@@ -460,7 +461,7 @@ func frontendCredentialAuth(store SettingsStore, next http.Handler) http.Handler
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if s.AuthenticateAPICredential(token) == nil {
+		if authenticateAPICredential(s, token) == nil {
 			slog.Warn("frontend: bad bearer token",
 				"method", r.Method, "path", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

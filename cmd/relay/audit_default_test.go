@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -27,7 +28,7 @@ func adControlDoor(t *testing.T, rec *AuditRecorder) {
 	rr.Mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/enrolments", nil))
 }
 
-func adStartRecorder(t *testing.T, s *Settings) *AuditRecorder {
+func adStartRecorder(t *testing.T, s *config.Settings) *AuditRecorder {
 	t.Helper()
 	rec := startAuditRecorder(s)
 	if rec != nil {
@@ -38,7 +39,7 @@ func adStartRecorder(t *testing.T, s *Settings) *AuditRecorder {
 
 func TestAdSettingsWithNoAuditBlockRecordsAControlDecision(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	s := &Settings{Version: currentSettingsVersion}
+	s := &config.Settings{Version: config.CurrentSettingsVersion}
 	if s.Audit != nil {
 		t.Fatal("fixture is not the case under test: it carries an audit block")
 	}
@@ -62,7 +63,7 @@ func TestAdSettingsWithNoAuditBlockRecordsAControlDecision(t *testing.T) {
 func TestAdExplicitlyDisabledAuditRecordsNothing(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	off := false
-	s := &Settings{Version: currentSettingsVersion, Audit: &AuditConfig{Enabled: &off}}
+	s := &config.Settings{Version: config.CurrentSettingsVersion, Audit: &config.AuditConfig{Enabled: &off}}
 
 	rec := adStartRecorder(t, s)
 	if rec.Enabled() {
@@ -80,7 +81,7 @@ func TestAdExplicitlyDisabledAuditRecordsNothing(t *testing.T) {
 // Round-trip: neither absence nor an explicit false may change meaning
 // ---------------------------------------------------------------------------
 
-func adWriteSettings(t *testing.T, dir, body string) *FileSettingsStore {
+func adWriteSettings(t *testing.T, dir, body string) *config.FileSettingsStore {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o600); err != nil {
 		t.Fatalf("seed settings.json: %v", err)
@@ -105,12 +106,12 @@ func TestAdExistingSettingsWithNoAuditBlockRoundTripUnchanged(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	store := adWriteSettings(t, dir, `{"version":1,"external_mcps":[],"services":[],"projects":[]}`)
 
-	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = NewSecret("rewritten") }), "With")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("rewritten") }), "With")
 
 	if raw, ok := adReadRawSettings(t, dir)["audit"]; ok {
 		t.Errorf("a rewrite invented an audit block the operator never wrote: %s", raw)
 	}
-	if !store.Get().Audit.resolve().Enabled {
+	if !resolveAuditConfig(store.Get().Audit).Enabled {
 		t.Error("an absent audit block resolved to disabled after a rewrite")
 	}
 }
@@ -120,13 +121,13 @@ func TestAdExistingExplicitFalseSurvivesARewrite(t *testing.T) {
 	store := adWriteSettings(t, dir,
 		`{"version":1,"external_mcps":[],"services":[],"projects":[],"audit":{"enabled":false}}`)
 
-	assertNoErr(t, store.With(func(s *Settings) { s.AdminSecret = NewSecret("rewritten") }), "With")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("rewritten") }), "With")
 
 	raw, ok := adReadRawSettings(t, dir)["audit"]
 	if !ok {
 		t.Fatal("the audit block vanished on rewrite, so an operator's choice to disable reads as absent — which now means enabled")
 	}
-	var cfg AuditConfig
+	var cfg config.AuditConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("audit block is not valid JSON: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestAdExistingExplicitFalseSurvivesARewrite(t *testing.T) {
 	if *cfg.Enabled {
 		t.Errorf("enabled = true after rewrite, want false")
 	}
-	if store.Get().Audit.resolve().Enabled {
+	if resolveAuditConfig(store.Get().Audit).Enabled {
 		t.Error("an explicit false resolved to enabled after a rewrite")
 	}
 }
@@ -154,7 +155,7 @@ func TestAdNewInstallWritesAuditEnabledExplicitly(t *testing.T) {
 	if !ok {
 		t.Fatal("a new install's settings.json has no audit block, so what an operator reads there does not say what relay is doing")
 	}
-	var cfg AuditConfig
+	var cfg config.AuditConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("audit block is not valid JSON: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestAdNewInstallWritesAuditEnabledExplicitly(t *testing.T) {
 
 func TestAdDefaultInstallLogIsBounded(t *testing.T) {
 	mkEmptySandboxRelayHome(t)
-	rec := adStartRecorder(t, &Settings{Version: currentSettingsVersion})
+	rec := adStartRecorder(t, &config.Settings{Version: config.CurrentSettingsVersion})
 	if rec == nil {
 		t.Fatal("no recorder for a default install")
 	}
@@ -193,13 +194,13 @@ func TestAdDefaultInstallLogIsBounded(t *testing.T) {
 // ADR-010's rule is unchanged: it is now reachable only by an explicit opt-out
 // ---------------------------------------------------------------------------
 
-func adRemoteStore(t *testing.T, audit *AuditConfig) (string, SettingsStore) {
+func adRemoteStore(t *testing.T, audit *config.AuditConfig) (string, config.SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: "127.0.0.1:0"}
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: "127.0.0.1:0"}
 		s.Audit = audit
 	}), "seed settings")
 	return dir, store
@@ -207,7 +208,7 @@ func adRemoteStore(t *testing.T, audit *AuditConfig) (string, SettingsStore) {
 
 func TestAdRemoteListenerStillRefusesWithAuditExplicitlyDisabled(t *testing.T) {
 	off := false
-	_, store := adRemoteStore(t, &AuditConfig{Enabled: &off})
+	_, store := adRemoteStore(t, &config.AuditConfig{Enabled: &off})
 	rec := adStartRecorder(t, store.Get())
 
 	rs, err := NewRemoteServer(context.Background(), store, &appRouter{store: store, audit: rec}, rec, nil, nil)

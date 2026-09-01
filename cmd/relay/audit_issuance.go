@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // The vocabulary of things relay issues. Each names a kind of credential, not
@@ -228,7 +229,7 @@ func recordIssuance(a IssuanceAuditor, iss CredentialIssuance) error {
 // a certificate over a key the client generated — so withholding the bundle
 // path would not withhold the credential. revokeEnrolment removes the
 // record AND the emitted bundle, which is what makes the refusal real.
-func recordEnrolmentIssued(a IssuanceAuditor, store SettingsStore, e Enrolment, via, credID, presenceID string) error {
+func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e config.Enrolment, via, credID, presenceID string) error {
 	err := recordIssuance(a, CredentialIssuance{
 		Credential: auditCredentialEnrolment,
 		Subject:    e.ClientID,
@@ -280,7 +281,7 @@ func recordProjectTokenRotated(a IssuanceAuditor, projectID, via, credID, presen
 // recordPasskeyRevoked records a removed passkey. The stored public key has no
 // path into the record: passkeyView withholds X and Y from every operator
 // surface for the same reason, and CredentialIssuance has no field for them.
-func recordPasskeyRevoked(a IssuanceAuditor, p Passkey, via, presenceID string) error {
+func recordPasskeyRevoked(a IssuanceAuditor, p config.Passkey, via, presenceID string) error {
 	return recordIssuance(a, CredentialIssuance{
 		Revoked:    true,
 		Credential: auditCredentialPasskey,
@@ -414,9 +415,9 @@ func issuanceActor(iss CredentialIssuance) AuditActor {
 // generation, and relay's next start re-stats the file and picks up its true
 // size. Issuance is an operator act at human rate, so the overshoot is a few
 // hundred bytes per invocation.
-func openCLIIssuanceRecorder(store SettingsStore) (*AuditRecorder, error) {
+func openCLIIssuanceRecorder(store config.SettingsStore) (*AuditRecorder, error) {
 	cfg := store.Get().Audit
-	resolved := cfg.resolve()
+	resolved := resolveAuditConfig(cfg)
 	if !resolved.Enabled {
 		return nil, nil
 	}
@@ -441,7 +442,7 @@ func openCLIIssuanceRecorder(store SettingsStore) (*AuditRecorder, error) {
 // rather than returning an error: a CLI process that cannot open the sink has
 // nothing else to do, and proceeding would be the unrecorded issuance this
 // whole path exists to prevent.
-func cliIssuanceAuditor(store SettingsStore) (*AuditRecorder, func()) {
+func cliIssuanceAuditor(store config.SettingsStore) (*AuditRecorder, func()) {
 	rec, err := openCLIIssuanceRecorder(store)
 	if err != nil {
 		exitError("cannot open the audit log to record this (%v); nothing was issued or revoked. "+

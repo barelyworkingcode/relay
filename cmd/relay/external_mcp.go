@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -51,12 +52,12 @@ type McpConnection interface {
 	Close()
 	GetTools() []mcp.Tool
 	SetTools([]mcp.Tool)
-	GetConfig() ExternalMcp
+	GetConfig() config.ExternalMcp
 }
 
 // Injected at ExternalMcpManager construction to decouple from Settings
 // persistence.
-type OnTokenRefreshFunc func(mcpID string, oauth *OAuthState)
+type OnTokenRefreshFunc func(mcpID string, oauth *config.OAuthState)
 
 type ExternalMcpManager struct {
 	mu             sync.RWMutex
@@ -97,7 +98,7 @@ type baseMcpConn struct {
 	nextID  atomic.Int64
 	toolsMu sync.RWMutex // protects tools
 	tools   []mcp.Tool
-	config  ExternalMcp
+	config  config.ExternalMcp
 }
 
 func (b *baseMcpConn) allocID() int64 {
@@ -118,7 +119,7 @@ func (b *baseMcpConn) SetTools(tools []mcp.Tool) {
 	b.tools = tools
 }
 
-func (b *baseMcpConn) GetConfig() ExternalMcp { return b.config }
+func (b *baseMcpConn) GetConfig() config.ExternalMcp { return b.config }
 
 type externalMcpConn struct {
 	baseMcpConn
@@ -208,7 +209,7 @@ func (c *externalMcpConn) routeNotification(line []byte) {
 
 type handshakeResult struct {
 	Tools     []mcp.Tool
-	ToolInfos []ToolInfo
+	ToolInfos []config.ToolInfo
 	// Read from the SAME serverInfo object and stored together everywhere
 	// after this: the version decides how the schema is read at all (absent
 	// or < 2 is v1). A schema that arrived without its version would
@@ -247,9 +248,9 @@ func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, er
 		return nil, fmt.Errorf("parse tools: %w", err)
 	}
 
-	toolInfos := make([]ToolInfo, 0, len(toolsResult.Tools))
+	toolInfos := make([]config.ToolInfo, 0, len(toolsResult.Tools))
 	for _, t := range toolsResult.Tools {
-		toolInfos = append(toolInfos, ToolInfo{
+		toolInfos = append(toolInfos, config.ToolInfo{
 			Name:        t.Name,
 			Description: t.Description,
 			Category:    toolCategory(t),
@@ -380,11 +381,11 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 
 // Each MCP handshake involves network I/O, so parallel startup avoids linear
 // growth in startup time as MCPs are added.
-func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []ExternalMcp) {
+func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []config.ExternalMcp) {
 	var wg sync.WaitGroup
 	for i := range mcps {
 		wg.Add(1)
-		go func(cfg *ExternalMcp) {
+		go func(cfg *config.ExternalMcp) {
 			defer wg.Done()
 			if err := m.startOne(ctx, cfg); err != nil {
 				logMcpStartError(cfg.ID, err)
@@ -404,7 +405,7 @@ func logMcpStartError(id string, err error) {
 	}
 }
 
-func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) error {
+func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *config.ExternalMcp) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -425,7 +426,7 @@ func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *ExternalMcp) 
 }
 
 // The caller is responsible for calling Close() on error or when done.
-func spawnStdioConn(command string, args []string, env map[string]string, config *ExternalMcp) (*externalMcpConn, error) {
+func spawnStdioConn(command string, args []string, env map[string]string, cfg *config.ExternalMcp) (*externalMcpConn, error) {
 	cmd := exec.Command(command, args...)
 	setProcessGroup(cmd)
 	mergeEnv(cmd, env)
@@ -453,8 +454,8 @@ func spawnStdioConn(command string, args []string, env map[string]string, config
 		progressSem: make(chan struct{}, maxInflightProgress),
 		readerDone:  make(chan struct{}),
 	}
-	if config != nil {
-		conn.config = *config
+	if cfg != nil {
+		conn.config = *cfg
 	}
 
 	go conn.readLoop(stdout)
@@ -472,7 +473,7 @@ const maxInflightProgress = 64
 // finalizeConnection), and retired again if that first connect fails — an MCP
 // that never came up is not a child to supervise, it is a configuration
 // error, and it is already logged as one.
-func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *ExternalMcp) error {
+func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *config.ExternalMcp) error {
 	sup := m.installSupervisor(mcpCfg)
 	conn, err := m.connectStdio(startCtx, sup)
 	if err != nil {
@@ -568,7 +569,7 @@ type McpHealthEvent struct {
 type mcpSupervisor struct {
 	mgr    *ExternalMcpManager
 	id     string
-	cfg    ExternalMcp
+	cfg    config.ExternalMcp
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -590,7 +591,7 @@ type mcpSupervisor struct {
 // The manager's own lifecycle is the right owner and already exists: Stop,
 // Reload and StopAll each end supervision explicitly, and the tray calls
 // StopAll during cleanup.
-func (m *ExternalMcpManager) installSupervisor(cfg *ExternalMcp) *mcpSupervisor {
+func (m *ExternalMcpManager) installSupervisor(cfg *config.ExternalMcp) *mcpSupervisor {
 	ctx, cancel := context.WithCancel(context.Background())
 	sup := &mcpSupervisor{mgr: m, id: cfg.ID, cfg: *cfg, ctx: ctx, cancel: cancel}
 
@@ -789,8 +790,8 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) {
-	desired := make(map[string]*ExternalMcp, len(mcps))
+func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []config.ExternalMcp) {
+	desired := make(map[string]*config.ExternalMcp, len(mcps))
 	for i := range mcps {
 		desired[mcps[i].ID] = &mcps[i]
 	}
@@ -804,7 +805,7 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 			toStop = append(toStop, id)
 		}
 	}
-	var toStart []*ExternalMcp
+	var toStart []*config.ExternalMcp
 	for _, mcpCfg := range mcps {
 		if m.needsStartLocked(mcpCfg.ID) {
 			cfg := mcpCfg
@@ -820,7 +821,7 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []ExternalMcp) 
 	var wg sync.WaitGroup
 	for _, cfg := range toStart {
 		wg.Add(1)
-		go func(c *ExternalMcp) {
+		go func(c *config.ExternalMcp) {
 			defer wg.Done()
 			if err := m.startOne(ctx, c); err != nil {
 				logMcpStartError(c.ID, err)
@@ -861,7 +862,7 @@ func (m *ExternalMcpManager) needsStartLocked(id string) bool {
 	}
 }
 
-func (m *ExternalMcpManager) Reload(ctx context.Context, id string, cfg *ExternalMcp) error {
+func (m *ExternalMcpManager) Reload(ctx context.Context, id string, cfg *config.ExternalMcp) error {
 	m.Stop(id)
 	return m.startOne(ctx, cfg)
 }
@@ -962,7 +963,7 @@ func toolNames(tools []mcp.Tool) []string {
 	return out
 }
 
-func (m *ExternalMcpManager) ToolInfos(id string) []ToolInfo {
+func (m *ExternalMcpManager) ToolInfos(id string) []config.ToolInfo {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -970,9 +971,9 @@ func (m *ExternalMcpManager) ToolInfos(id string) []ToolInfo {
 		return nil
 	}
 	tools := conn.GetTools()
-	infos := make([]ToolInfo, len(tools))
+	infos := make([]config.ToolInfo, len(tools))
 	for i, t := range tools {
-		infos[i] = ToolInfo{Name: t.Name, Description: t.Description, Category: toolCategory(t)}
+		infos[i] = config.ToolInfo{Name: t.Name, Description: t.Description, Category: toolCategory(t)}
 	}
 	return infos
 }
@@ -1155,7 +1156,7 @@ func (m *ExternalMcpManager) StopAll() {
 }
 
 // Shared by both stdio and HTTP discovery paths.
-func discoverMcp(ctx context.Context, conn McpConnection, base ExternalMcp) (*ExternalMcp, error) {
+func discoverMcp(ctx context.Context, conn McpConnection, base config.ExternalMcp) (*config.ExternalMcp, error) {
 	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -1167,7 +1168,7 @@ func discoverMcp(ctx context.Context, conn McpConnection, base ExternalMcp) (*Ex
 }
 
 // One-shot spawn, handshake, tool listing, then kill.
-func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, args []string, env map[string]string) (*ExternalMcp, error) {
+func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, args []string, env map[string]string) (*config.ExternalMcp, error) {
 	conn, err := spawnStdioConn(command, args, env, nil)
 	if err != nil {
 		return nil, err
@@ -1178,7 +1179,7 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 	discoverCtx, cancel := context.WithTimeout(ctx, MCPDiscoveryTimeout)
 	defer cancel()
 
-	return discoverMcp(discoverCtx, conn, ExternalMcp{
+	return discoverMcp(discoverCtx, conn, config.ExternalMcp{
 		ID:          id,
 		DisplayName: displayName,
 		Command:     command,

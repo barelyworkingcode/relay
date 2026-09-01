@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
@@ -51,8 +52,8 @@ func pollWireKeys(t *testing.T, data []byte) map[string]any {
 // the Mac has something to match against.
 func TestEnrolmentPoll_ApprovedPayloadNamesEachGrantedProfile(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Hermes Mail Inbox", "")
-	cal := mkStoreProject(t, store, ProjectKindRemote, "Hermes Calendar", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Hermes Mail Inbox", "")
+	cal := mkStoreProject(t, store, config.ProjectKindRemote, "Hermes Calendar", "")
 	table, l := aoLodge(t, "hermes-mail", "10.0.0.5:41233")
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: pgwWithIssuance(t), Requests: table}
@@ -79,7 +80,7 @@ func TestEnrolmentPoll_ApprovedPayloadNamesEachGrantedProfile(t *testing.T) {
 		t.Fatalf("projects = %+v, want one entry per granted id", approved.Projects)
 	}
 	s := store.Get()
-	for i, want := range []Project{mail, cal} {
+	for i, want := range []config.Project{mail, cal} {
 		got := approved.Projects[i]
 		if got.ID != want.ID {
 			t.Fatalf("projects[%d].id = %q, want %q", i, got.ID, want.ID)
@@ -107,7 +108,7 @@ func TestEnrolmentPoll_ApprovedPayloadNamesEachGrantedProfile(t *testing.T) {
 func TestEnrolmentPoll_PendingRefusedAndUnknownCarryNoProfileName(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
 	const profileName = "Hermes Mail Inbox"
-	profile := mkStoreProject(t, store, ProjectKindRemote, profileName, "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, profileName, "")
 
 	table := newEnrolmentRequestTable()
 	approvedRow, err := table.Lodge(genClientCSRPEM(t, "hermes-approved"), "", "", "", "10.0.0.5:1")
@@ -165,9 +166,9 @@ func TestEnrolmentPoll_PendingRefusedAndUnknownCarryNoProfileName(t *testing.T) 
 // the id the client already holds.
 func TestEnrolmentApprovedProjects_UnnamedOrMissingProfileDegradesToTheID(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	named := mkStoreProject(t, store, ProjectKindRemote, "Hermes Mail Inbox", "")
-	blank := mkStoreProject(t, store, ProjectKindRemote, "To Be Blanked", "")
-	assertNoErr(t, store.With(func(s *Settings) {
+	named := mkStoreProject(t, store, config.ProjectKindRemote, "Hermes Mail Inbox", "")
+	blank := mkStoreProject(t, store, config.ProjectKindRemote, "To Be Blanked", "")
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		s.UpdateProjectName(blank.ID, "   ")
 	}), "blank the profile's name")
 

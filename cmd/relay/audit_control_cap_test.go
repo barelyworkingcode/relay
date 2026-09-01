@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -236,7 +237,7 @@ func TestControlAudit_RefusalFloodCannotRotateRetentionWindowClean(t *testing.T)
 		attackerPath = 400_000 // matches the size demonstrated against relay
 	)
 
-	rec := newTestAudit(t, &AuditConfig{
+	rec := newTestAudit(t, &config.AuditConfig{
 		MaxFileBytes: maxFileBytes,
 		Generations:  generations,
 	})

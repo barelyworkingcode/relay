@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -15,7 +16,7 @@ import (
 // password for an act that was going to refuse anyway.
 func TestEnrolmentOpsSign_MalformedCSRRefusedWithZeroProviderCalls(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	recording := presencetest.NewRecording(nil)
 	gate, err := presence.NewGate(recording)
@@ -48,7 +49,7 @@ func TestEnrolmentSignFields_DigestBindsEveryFieldIncludingTheCSRKey(t *testing.
 	base := enrolmentSignFields{
 		ClientID:   "hermes",
 		ProjectIDs: []string{"proj-a"},
-		Budget:     EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20},
+		Budget:     config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20},
 	}
 	baseDigest := base.presenceDigest(csrA)
 
@@ -59,9 +60,9 @@ func TestEnrolmentSignFields_DigestBindsEveryFieldIncludingTheCSRKey(t *testing.
 	sameCSRVariants := []variant{
 		{"client id", enrolmentSignFields{ClientID: "hermes-2", ProjectIDs: base.ProjectIDs, Budget: base.Budget}},
 		{"grant set", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: []string{"proj-b"}, Budget: base.Budget}},
-		{"window seconds", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: EnrolmentBudget{WindowSeconds: 1800, MaxCalls: base.Budget.MaxCalls, MaxResultBytes: base.Budget.MaxResultBytes}}},
-		{"max calls", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: EnrolmentBudget{WindowSeconds: base.Budget.WindowSeconds, MaxCalls: 5, MaxResultBytes: base.Budget.MaxResultBytes}}},
-		{"max result bytes", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: EnrolmentBudget{WindowSeconds: base.Budget.WindowSeconds, MaxCalls: base.Budget.MaxCalls, MaxResultBytes: 1 << 20}}},
+		{"window seconds", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: config.EnrolmentBudget{WindowSeconds: 1800, MaxCalls: base.Budget.MaxCalls, MaxResultBytes: base.Budget.MaxResultBytes}}},
+		{"max calls", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: config.EnrolmentBudget{WindowSeconds: base.Budget.WindowSeconds, MaxCalls: 5, MaxResultBytes: base.Budget.MaxResultBytes}}},
+		{"max result bytes", enrolmentSignFields{ClientID: base.ClientID, ProjectIDs: base.ProjectIDs, Budget: config.EnrolmentBudget{WindowSeconds: base.Budget.WindowSeconds, MaxCalls: base.Budget.MaxCalls, MaxResultBytes: 1 << 20}}},
 	}
 	for _, v := range sameCSRVariants {
 		if v.f.presenceDigest(csrA) == baseDigest {
@@ -136,8 +137,8 @@ func TestEnrolmentOpsSign_AsksTheGateUnderItsOwnOpName(t *testing.T) {
 // this pins both branches via presencetest.Recording.Reasons().
 func TestEnrolmentOpsSign_PresenceReasonNamesTheGrantsOrTheirAbsence(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profileA := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
-	profileB := mkStoreProject(t, store, ProjectKindRemote, "Calendar", "")
+	profileA := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
+	profileB := mkStoreProject(t, store, config.ProjectKindRemote, "Calendar", "")
 
 	recording := presencetest.NewRecording(nil)
 	gate, err := presence.NewGate(recording)
@@ -177,7 +178,7 @@ func TestEnrolmentOpsSign_PresenceReasonNamesTheGrantsOrTheirAbsence(t *testing.
 // presence_id.
 func TestEnrolmentOpsSign_WritesExactlyOneCredentialIssuedRecord(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	rec := startAuditRecorder(store.Get())
 	if rec == nil {
 		t.Fatal("startAuditRecorder returned nil — auditing is off in this store's settings")
@@ -215,7 +216,7 @@ func TestEnrolmentOpsSign_WritesExactlyOneCredentialIssuedRecord(t *testing.T) {
 // undo Create already has.
 func TestEnrolmentOpsSign_UnrecordedIssuanceRevokesAndRemovesTheBundle(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	broken := &aiBrokenAuditor{}
 
 	ops := &EnrolmentOps{Store: store, Gate: allowGate(t), Issuance: broken}
@@ -231,7 +232,7 @@ func TestEnrolmentOpsSign_UnrecordedIssuanceRevokesAndRemovesTheBundle(t *testin
 	if broken.calls != 1 {
 		t.Errorf("issuance auditor called %d times, want 1", broken.calls)
 	}
-	if store.Get().FindEnrolment("hermes-mail") != nil {
+	if findEnrolment(store.Get(), "hermes-mail") != nil {
 		t.Fatal("the enrolment must be revoked when its issuance cannot be recorded")
 	}
 	if _, statErr := os.Stat(dir + "/enrolments/hermes-mail"); statErr == nil {

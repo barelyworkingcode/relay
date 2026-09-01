@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // Every method on auditCall tolerates a nil receiver, so the router
@@ -94,7 +95,7 @@ func (a *auditCall) setMcp(id string) {
 
 // token is the credential the caller presented, used only to distinguish a
 // token hand-off from directory auth — the value itself is never recorded.
-func (a *auditCall) setActor(ctx context.Context, stored *StoredToken, settings *Settings, token string) {
+func (a *auditCall) setActor(ctx context.Context, stored *config.StoredToken, settings *config.Settings, token string) {
 	if a == nil || stored == nil {
 		return
 	}
@@ -123,7 +124,7 @@ func (a *auditCall) setActor(ctx context.Context, stored *StoredToken, settings 
 
 // Shared by every actor kind: whichever way a caller was identified, the
 // project it is acting as comes from relay's own auth resolution.
-func (a *auditCall) setProject(stored *StoredToken, settings *Settings) {
+func (a *auditCall) setProject(stored *config.StoredToken, settings *config.Settings) {
 	a.ev.Actor.ProjectID = stored.ProjectID
 	a.ev.Actor.ProjectName = projectNameFor(stored, settings)
 }
@@ -328,9 +329,9 @@ func resultIsScopeViolation(result json.RawMessage) bool {
 
 // Prefers the live settings lookup; falls back to the "project:<name>" form
 // already carried on the StoredToken when the project has since been deleted.
-func projectNameFor(stored *StoredToken, settings *Settings) string {
+func projectNameFor(stored *config.StoredToken, settings *config.Settings) string {
 	if settings != nil && stored.ProjectID != "" {
-		if proj, _ := settings.findProjectByID(stored.ProjectID); proj != nil {
+		if proj, _ := config.FindProjectByID(settings, stored.ProjectID); proj != nil {
 			return proj.Name
 		}
 	}

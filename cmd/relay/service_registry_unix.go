@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"os/exec"
 	"strconv"
@@ -41,23 +42,23 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func buildCommand(config *ServiceConfig) (*exec.Cmd, error) {
+func buildCommand(cfg *config.ServiceConfig) (*exec.Cmd, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
 
-	fullCmd := shellQuote(config.Command)
-	for _, arg := range config.Args {
+	fullCmd := shellQuote(cfg.Command)
+	for _, arg := range cfg.Args {
 		fullCmd += " " + shellQuote(arg)
 	}
 
 	cmd := exec.Command(shell, "-l", "-c", fullCmd)
 	setProcessGroup(cmd)
-	if config.WorkingDir != "" {
-		cmd.Dir = config.WorkingDir
+	if cfg.WorkingDir != "" {
+		cmd.Dir = cfg.WorkingDir
 	}
-	env, err := revealEnvOrErr(config.Env)
+	env, err := revealEnvOrErr(cfg.Env)
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}

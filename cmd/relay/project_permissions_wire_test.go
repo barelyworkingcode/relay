@@ -12,17 +12,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-func newV2ProjectRoutesServer(t *testing.T) (string, SettingsStore) {
+func newV2ProjectRoutesServer(t *testing.T) (string, config.SettingsStore) {
 	t.Helper()
 	store := sealedSettingsStoreAt(t.TempDir())
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	store.With(func(s *Settings) {
-		s.ExternalMcps = []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}}
+	store.With(func(s *config.Settings) {
+		s.ExternalMcps = []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}}
 	})
 	ops := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	mux := http.NewServeMux()
@@ -57,10 +58,10 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	if created.Kind != ProjectKindRemote {
+	if created.Kind != config.ProjectKindRemote {
 		t.Errorf("kind missing from the view: %q", created.Kind)
 	}
-	if got := created.Access["macmcp"]; got != AccessRead {
+	if got := created.Access["macmcp"]; got != config.AccessRead {
 		t.Errorf("access missing from the view: %#v", created.Access)
 	}
 	if got := created.AllowedTools["macmcp"]; len(got) != 1 || got[0] != "mail_*" {
@@ -70,8 +71,8 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 		t.Errorf("context missing from the view: %s", created.Context["macmcp"])
 	}
 
-	stored, _ := store.Get().findProjectByID(created.ID)
-	if stored == nil || stored.Access["macmcp"] != AccessRead {
+	stored, _ := config.FindProjectByID(store.Get(), created.ID)
+	if stored == nil || stored.Access["macmcp"] != config.AccessRead {
 		t.Fatalf("the mode did not persist: %#v", stored)
 	}
 
@@ -83,7 +84,7 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(body, &fetched); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
-	if fetched.Access["macmcp"] != AccessRead || len(fetched.AllowedTools["macmcp"]) != 1 {
+	if fetched.Access["macmcp"] != config.AccessRead || len(fetched.AllowedTools["macmcp"]) != 1 {
 		t.Errorf("GET does not show what the POST accepted: %#v", fetched)
 	}
 
@@ -99,7 +100,7 @@ func TestProjectRoutes_PermissionSetRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(body, &updated); err != nil {
 		t.Fatalf("decode update: %v", err)
 	}
-	if updated.Access["macmcp"] != AccessWrite {
+	if updated.Access["macmcp"] != config.AccessWrite {
 		t.Errorf("mode did not change: %#v", updated.Access)
 	}
 	if len(updated.AllowedTools["macmcp"]) != 1 || !strings.Contains(string(updated.Context["macmcp"]), "INBOX") {
@@ -143,8 +144,8 @@ func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) 
 		if !strings.Contains(string(body), bad.says) {
 			t.Errorf("%s: refusal does not name the problem (%q): %s", bad.label, bad.says, body)
 		}
-		stored, _ := store.Get().findProjectByID(created.ID)
-		if stored == nil || !strings.Contains(string(stored.Context["macmcp"]), "Bob") || stored.Access["macmcp"] != AccessRead {
+		stored, _ := config.FindProjectByID(store.Get(), created.ID)
+		if stored == nil || !strings.Contains(string(stored.Context["macmcp"]), "Bob") || stored.Access["macmcp"] != config.AccessRead {
 			t.Fatalf("%s: a refused patch mutated the stored record: %#v", bad.label, stored)
 		}
 	}
@@ -208,7 +209,7 @@ func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 		t.Fatalf("want 1 project, got %d", len(projects))
 	}
 	id := projects[0].ID
-	if projects[0].Access["macmcp"] != AccessRead || len(projects[0].AllowedTools["macmcp"]) != 1 {
+	if projects[0].Access["macmcp"] != config.AccessRead || len(projects[0].AllowedTools["macmcp"]) != 1 {
 		t.Fatalf("create did not persist the permission set: %#v", projects[0])
 	}
 
@@ -216,7 +217,7 @@ func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 		"id":      id,
 		"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": []string{"Bob"}, "mail_mailboxes": []string{"INBOX"}}},
 	}))
-	stored, _ := store.Get().findProjectByID(id)
+	stored, _ := config.FindProjectByID(store.Get(), id)
 	if !strings.Contains(string(stored.Context["macmcp"]), "INBOX") {
 		t.Fatalf("update did not persist the scope: %s", stored.Context["macmcp"])
 	}
@@ -233,7 +234,7 @@ func TestIpcUpdateProject_PermissionSetRoundTrips(t *testing.T) {
 	if len(args) == 0 || !strings.Contains(fmt.Sprint(args[0]), "mail_folders") {
 		t.Errorf("IPC refusal does not name the field: %v", args)
 	}
-	stored, _ = store.Get().findProjectByID(id)
+	stored, _ = config.FindProjectByID(store.Get(), id)
 	if !strings.Contains(string(stored.Context["macmcp"]), "INBOX") {
 		t.Errorf("a refused IPC patch mutated the record: %s", stored.Context["macmcp"])
 	}
@@ -265,7 +266,7 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 	if !created.AllowExternal["macmcp"] {
 		t.Errorf("allow_external missing from the view: %#v", created.AllowExternal)
 	}
-	stored, _ := store.Get().findProjectByID(created.ID)
+	stored, _ := config.FindProjectByID(store.Get(), created.ID)
 	if stored == nil || !stored.AllowExternal["macmcp"] {
 		t.Fatalf("the outbound grant did not persist: %#v", stored)
 	}
@@ -288,7 +289,7 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update: status %d", resp.StatusCode)
 	}
-	stored, _ = store.Get().findProjectByID(created.ID)
+	stored, _ = config.FindProjectByID(store.Get(), created.ID)
 	if !stored.AllowExternal["macmcp"] {
 		t.Error("a patch of the mode revoked the outbound grant")
 	}
@@ -299,7 +300,7 @@ func TestProjectRoutes_TheOutboundGrantRoundTripsAndCanBeCleared(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("clear: status %d: %s", resp.StatusCode, body)
 	}
-	stored, _ = store.Get().findProjectByID(created.ID)
+	stored, _ = config.FindProjectByID(store.Get(), created.ID)
 	if stored.AllowExternal["macmcp"] {
 		t.Errorf("an emptied allow_external left the grant standing: %#v", stored.AllowExternal)
 	}

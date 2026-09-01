@@ -1,5 +1,7 @@
 package main
 
+import "github.com/barelyworkingcode/relay/internal/config"
+
 import "testing"
 
 // frontendCredsEnabled gates whether relay injects its front-door bearer into a
@@ -18,7 +20,7 @@ func TestFrontendCredsEnabled(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := frontendCredsEnabled(&ServiceConfig{FrontendConsumer: tc.fc}); got != tc.want {
+			if got := frontendCredsEnabled(&config.ServiceConfig{FrontendConsumer: tc.fc}); got != tc.want {
 				t.Errorf("frontendCredsEnabled = %v, want %v", got, tc.want)
 			}
 		})
@@ -29,10 +31,10 @@ func TestFrontendCredsEnabled(t *testing.T) {
 // the default (inject) — MergeServiceDefaults preserves the prior opt-out.
 func TestMergeServiceDefaults_PreservesFrontendConsumer(t *testing.T) {
 	fls := false
-	s := &Settings{Services: []ServiceConfig{
+	s := &config.Settings{Services: []config.ServiceConfig{
 		{ID: "svc", DisplayName: "S", Command: "/bin/x", FrontendConsumer: &fls},
 	}}
-	cfg := ServiceConfig{ID: "svc", Command: "/bin/x"} // nil FrontendConsumer (flag absent)
+	cfg := config.ServiceConfig{ID: "svc", Command: "/bin/x"} // nil FrontendConsumer (flag absent)
 	s.MergeServiceDefaults(&cfg)
 	if cfg.FrontendConsumer == nil || *cfg.FrontendConsumer {
 		t.Errorf("FrontendConsumer not preserved on re-register: %v", cfg.FrontendConsumer)

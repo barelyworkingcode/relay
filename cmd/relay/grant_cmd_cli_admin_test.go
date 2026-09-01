@@ -8,13 +8,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
 
 func TestGrantView_ShowsEnrolmentsAndCLIAdminState(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment on")
@@ -26,7 +27,7 @@ func TestGrantView_ShowsEnrolmentsAndCLIAdminState(t *testing.T) {
 	assertNoErr(t, err, "updateEnrolment turning cli-admin on")
 
 	s := store.Get()
-	proj, _ := s.findProjectByID(mail.ID)
+	proj, _ := config.FindProjectByID(s, mail.ID)
 	if proj == nil {
 		t.Fatal("the profile vanished")
 	}
@@ -81,10 +82,10 @@ func TestGrantView_ShowsEnrolmentsAndCLIAdminState(t *testing.T) {
 // text output must not print an empty "enrolments:" section for it.
 func TestGrantView_LocalProjectHasNoEnrolmentsSection(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	local := mkStoreProject(t, store, ProjectKindLocal, "Notes", dir)
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Notes", dir)
 
 	s := store.Get()
-	proj, _ := s.findProjectByID(local.ID)
+	proj, _ := config.FindProjectByID(s, local.ID)
 	if proj == nil {
 		t.Fatal("the project vanished")
 	}

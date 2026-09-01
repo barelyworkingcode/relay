@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
-func newPtyTestRouter(t *testing.T) (*appRouter, Project, string) {
+func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
@@ -19,10 +20,10 @@ func newPtyTestRouter(t *testing.T) (*appRouter, Project, string) {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 
-	var proj Project
+	var proj config.Project
 	var createErr error
-	if err := store.With(func(s *Settings) {
-		proj, createErr = s.CreateProjectWithToken("PtyProj", t.TempDir(), nil, nil, nil, nil)
+	if err := store.With(func(s *config.Settings) {
+		proj, createErr = createProjectWithToken(s, "PtyProj", t.TempDir(), nil, nil, nil, nil)
 	}); err != nil {
 		t.Fatalf("store.With: %v", err)
 	}
@@ -37,7 +38,7 @@ func newPtyTestRouter(t *testing.T) (*appRouter, Project, string) {
 		enhanced: NewEnhancedServiceRegistry(nil),
 	}
 	const svcToken = "svc-token-pty-test"
-	router.serviceTokens.Register(hashToken(svcToken))
+	router.serviceTokens.Register(config.HashToken(svcToken))
 	return router, proj, svcToken
 }
 
