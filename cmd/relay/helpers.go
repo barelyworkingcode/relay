@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -24,21 +23,6 @@ func validateMcpURL(rawURL string) error {
 		return fmt.Errorf("URL is missing a host")
 	}
 	return nil
-}
-
-func mergeEnv(cmd *exec.Cmd, env map[string]string) {
-	if len(env) == 0 {
-		return
-	}
-	cmd.Env = append(cmd.Environ(), envSlice(env)...)
-}
-
-func envSlice(env map[string]string) []string {
-	out := make([]string, 0, len(env))
-	for k, v := range env {
-		out = append(out, k+"="+v)
-	}
-	return out
 }
 
 func unmarshalIPC[T any](raw json.RawMessage, handler string) (*T, bool) {

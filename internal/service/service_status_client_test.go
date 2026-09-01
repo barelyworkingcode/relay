@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"context"
@@ -100,7 +100,7 @@ func TestServiceStatusClient_GetStatus_HappyPath(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("GET", "/api/status", 200, `{"uptimeSeconds":42,"instances":[]}`)
 
-	client := NewServiceStatusClient(srv.socket, "tok123")
+	client := NewStatusClient(srv.socket, "tok123")
 	got, err := client.GetStatus(context.Background(), "/api/status")
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -128,7 +128,7 @@ func TestServiceStatusClient_GetStatus_ErrorBodyPropagates(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("GET", "/api/status", 500, `{"error":"boom"}`)
 
-	client := NewServiceStatusClient(srv.socket, "tok")
+	client := NewStatusClient(srv.socket, "tok")
 	_, err := client.GetStatus(context.Background(), "/api/status")
 	if err == nil {
 		t.Fatal("expected error on 5xx, got nil")
@@ -147,7 +147,7 @@ func TestServiceStatusClient_GetStatus_BodyCapped(t *testing.T) {
 	big := strings.Repeat("a", maxStatusBodyBytes+1024)
 	srv.script("GET", "/api/status", 200, big)
 
-	client := NewServiceStatusClient(srv.socket, "tok")
+	client := NewStatusClient(srv.socket, "tok")
 	got, err := client.GetStatus(context.Background(), "/api/status")
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -158,7 +158,7 @@ func TestServiceStatusClient_GetStatus_BodyCapped(t *testing.T) {
 }
 
 func TestServiceStatusClient_GetStatus_DialFailureIsError(t *testing.T) {
-	client := NewServiceStatusClient("/tmp/relay-test-nonexistent-socket.sock", "tok")
+	client := NewStatusClient("/tmp/relay-test-nonexistent-socket.sock", "tok")
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if _, err := client.GetStatus(ctx, "/api/status"); err == nil {
@@ -170,7 +170,7 @@ func TestServiceStatusClient_DoAction_NoContentIsSuccess(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("DELETE", "/api/llama/instances/qwen3-8b", 204, "")
 
-	client := NewServiceStatusClient(srv.socket, "tok")
+	client := NewStatusClient(srv.socket, "tok")
 	body, err := client.DoAction(context.Background(), "DELETE", "/api/llama/instances/qwen3-8b")
 	if err != nil {
 		t.Fatalf("DoAction: %v", err)
@@ -184,7 +184,7 @@ func TestServiceStatusClient_DoAction_4xxIsError(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("DELETE", "/api/llama/instances/missing", 404, `{"error":"no such instance"}`)
 
-	client := NewServiceStatusClient(srv.socket, "tok")
+	client := NewStatusClient(srv.socket, "tok")
 	_, err := client.DoAction(context.Background(), "DELETE", "/api/llama/instances/missing")
 	if err == nil {
 		t.Fatal("expected error on 404")

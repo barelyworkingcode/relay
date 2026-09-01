@@ -1,9 +1,10 @@
-package main
+package service
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,7 +15,28 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-type ServiceManager interface {
+// Environment variable names for services (from bridge package).
+const (
+	EnvBridgeSocket       = bridge.EnvBridgeSocket
+	EnvServiceID          = bridge.EnvServiceID
+	EnvServiceToken       = bridge.EnvServiceToken
+	EnvServiceTokenLegacy = bridge.EnvServiceTokenLegacy
+	EnvMcpCommand         = bridge.EnvMcpCommand
+)
+
+// TokenStore registers and tracks service authentication tokens.
+type TokenStore interface {
+	Register(hash string)
+	Remove(hash string)
+}
+
+// EnhancedRegistry tracks registered services for dispatch.
+type EnhancedRegistry interface {
+	Forget(serviceID string)
+}
+
+// Manager manages the lifecycle of background services.
+type Manager interface {
 	Start(cfg *config.ServiceConfig) error
 	Stop(id string)
 	Reload(id string, cfg *config.ServiceConfig) error
@@ -25,48 +47,53 @@ type ServiceManager interface {
 	ReclaimOrphans(configs []config.ServiceConfig)
 	StartAllAutostart(configs []config.ServiceConfig)
 	StopAll()
-	CloseFrontendChannel()
 }
 
-var _ ServiceManager = (*ServiceRegistry)(nil)
+var _ Manager = (*Registry)(nil)
 
 type serviceProcess struct {
 	cmd       *exec.Cmd
-	logFile   *rotatingWriter
+	logFile   io.WriteCloser
 	done      chan struct{}
 	tokenHash string
 }
 
-type ServiceRegistry struct {
+// Registry manages background service processes and their lifecycle.
+type Registry struct {
 	mu        sync.Mutex
 	processes map[string]*serviceProcess
 
-	// TokenStore, FrontendChannel, Enhanced, and OnProcessExit are all set
-	// once during initialization, before any services are started, so
+	// TokenStore, FrontendEnv, OpenLog, Enhanced, and OnProcessExit are all
+	// set once during initialization, before any services are started, so
 	// concurrent reads from reaper goroutines need no lock of their own.
-	TokenStore      *serviceTokenStore
-	FrontendChannel *FrontendChannel
-	Enhanced        *EnhancedServiceRegistry
-	OnProcessExit   func()
+	TokenStore TokenStore
+	// FrontendEnv provisions the frontend socket/token and returns the
+	// environment variables a frontend-consuming service needs. Nil means no
+	// frontend channel is wired up (no consumer will get credentials). A
+	// callback rather than a manager type: the registry has no business
+	// depending on the frontend channel's concrete type or owning its
+	// lifecycle -- main provisions it, main closes it, the registry only
+	// needs the env it produces.
+	FrontendEnv func() (map[string]string, error)
+	// OpenLog opens the log destination for a spawned service's merged
+	// stdout+stderr, keyed by service id. A callback rather than a concrete
+	// writer type: log rotation is general-purpose infrastructure shared
+	// with relay's own log and the audit log, so it is main's to own.
+	OpenLog       func(id string) (io.WriteCloser, error)
+	Enhanced      EnhancedRegistry
+	OnProcessExit func()
 }
 
-func NewServiceRegistry() *ServiceRegistry {
-	return &ServiceRegistry{
+// NewRegistry creates a new service registry.
+func NewRegistry() *Registry {
+	return &Registry{
 		processes: make(map[string]*serviceProcess),
 	}
 }
 
-func serviceLogDir() (string, error) {
-	dir := filepath.Join(bridge.ConfigDir(), "logs")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create log directory: %w", err)
-	}
-	return dir, nil
-}
-
 // Start spawns the service through the platform shell so the user's profile
 // (PATH, env) is loaded.
-func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
+func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid service config: %w", err)
 	}
@@ -78,14 +105,14 @@ func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
 		return nil
 	}
 
-	cmd, err := buildCommand(cfg)
+	cmd, err := BuildCommand(cfg)
 	if err != nil {
 		return fmt.Errorf("build command for %q: %w", cfg.ID, err)
 	}
 
 	var tokenHash string
 	if r.TokenStore != nil {
-		rawToken, err := generateRandomHex(32)
+		rawToken, err := GenerateRandomHex(32)
 		if err != nil {
 			return fmt.Errorf("generate service token for %q: %w", cfg.ID, err)
 		}
@@ -95,7 +122,7 @@ func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
 		relayBin, _ := os.Executable()
 		relayBin, _ = filepath.EvalSymlinks(relayBin)
 
-		mergeEnv(cmd, map[string]string{
+		MergeEnv(cmd, map[string]string{
 			EnvServiceToken: rawToken,
 			// Transition: also set the legacy name so an un-migrated service
 			// (older relayLLM) still authenticates. Drop after relayLLM ships
@@ -108,14 +135,14 @@ func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
 	// Frontend creds (RELAY_FRONTEND_SOCKET/TOKEN) go only to frontend
 	// consumers (e.g. eve); backends never dial the front door, and handing
 	// them the bearer would leak it into any process they spawn.
-	if r.FrontendChannel != nil && frontendCredsEnabled(cfg) {
-		endpoint, err := r.FrontendChannel.Ensure()
+	if r.FrontendEnv != nil && frontendCredsEnabled(cfg) {
+		env, err := r.FrontendEnv()
 		if err != nil {
 			return fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
 		}
-		mergeEnv(cmd, endpoint.FrontendEnv())
+		MergeEnv(cmd, env)
 	}
-	mergeEnv(cmd, map[string]string{
+	MergeEnv(cmd, map[string]string{
 		EnvBridgeSocket: bridge.SocketPath(),
 		EnvServiceID:    cfg.ID,
 	})
@@ -127,15 +154,13 @@ func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
 		}
 	}()
 
-	logDir, err := serviceLogDir()
-	if err != nil {
-		return err
+	if r.OpenLog == nil {
+		return fmt.Errorf("start %q: no log destination configured", cfg.ID)
 	}
-	logPath := filepath.Join(logDir, cfg.ID+".log")
 	// Assigning an io.Writer (not *os.File) makes Go pump the child's merged
 	// stdout+stderr through one copy goroutine, which cmd.Wait awaits before
 	// the reaper closes the writer below.
-	logFile, err := openRotatingLog(logPath)
+	logFile, err := r.OpenLog(cfg.ID)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
@@ -192,10 +217,10 @@ func frontendCredsEnabled(cfg *config.ServiceConfig) bool {
 	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
 }
 
-// generateRandomHex returns a random hex string, or an error rather than a
+// GenerateRandomHex returns a random hex string, or an error rather than a
 // zero/partial token if the CSPRNG read fails -- a token derived from a
 // failed read would be predictable.
-func generateRandomHex(n int) (string, error) {
+func GenerateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto/rand failed: %w", err)
@@ -206,13 +231,13 @@ func generateRandomHex(n int) (string, error) {
 // Stop kills a service and waits for it to exit. The process stays in the
 // map while stopping so IsRunning returns true, preventing a concurrent
 // Start from spawning a duplicate.
-func (r *ServiceRegistry) Stop(id string) {
+func (r *Registry) Stop(id string) {
 	r.mu.Lock()
 	proc, ok := r.processes[id]
 	r.mu.Unlock()
 
 	if ok {
-		killProcessGroup(proc.cmd)
+		KillProcessGroup(proc.cmd)
 		<-proc.done
 
 		r.mu.Lock()
@@ -224,12 +249,12 @@ func (r *ServiceRegistry) Stop(id string) {
 	}
 }
 
-func (r *ServiceRegistry) Reload(id string, cfg *config.ServiceConfig) error {
+func (r *Registry) Reload(id string, cfg *config.ServiceConfig) error {
 	r.Stop(id)
 	return r.Start(cfg)
 }
 
-func (r *ServiceRegistry) IsRunning(id string) bool {
+func (r *Registry) IsRunning(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.isRunningLocked(id)
@@ -237,7 +262,7 @@ func (r *ServiceRegistry) IsRunning(id string) bool {
 
 // isRunningLocked also reaps: an exited process is removed from the map as
 // a side effect. Caller must hold r.mu.
-func (r *ServiceRegistry) isRunningLocked(id string) bool {
+func (r *Registry) isRunningLocked(id string) bool {
 	proc, ok := r.processes[id]
 	if !ok {
 		return false
@@ -258,7 +283,7 @@ func (r *ServiceRegistry) isRunningLocked(id string) bool {
 // already in use". Reads each service's pidfile, confirms the pid still
 // belongs to that service (ps lookup, to defeat pid recycling), then SIGTERMs
 // the process group. Stale pidfiles are silently removed.
-func (r *ServiceRegistry) ReclaimOrphans(configs []config.ServiceConfig) {
+func (r *Registry) ReclaimOrphans(configs []config.ServiceConfig) {
 	for i := range configs {
 		cfg := &configs[i]
 		pid, err := readPidFile(cfg.ID)
@@ -269,7 +294,7 @@ func (r *ServiceRegistry) ReclaimOrphans(configs []config.ServiceConfig) {
 		if pid == 0 {
 			continue
 		}
-		if reclaimOrphan(pid, cfg.Command) {
+		if ReclaimOrphan(pid, cfg.Command) {
 			slog.Warn("reclaimed orphan service from previous session",
 				"id", cfg.ID, "pid", pid)
 		}
@@ -277,7 +302,7 @@ func (r *ServiceRegistry) ReclaimOrphans(configs []config.ServiceConfig) {
 	}
 }
 
-func (r *ServiceRegistry) StartAllAutostart(configs []config.ServiceConfig) {
+func (r *Registry) StartAllAutostart(configs []config.ServiceConfig) {
 	for i := range configs {
 		if configs[i].Autostart {
 			if err := r.Start(&configs[i]); err != nil {
@@ -289,7 +314,7 @@ func (r *ServiceRegistry) StartAllAutostart(configs []config.ServiceConfig) {
 
 // StopAll stops every running service concurrently so one slow shutdown
 // doesn't block the others.
-func (r *ServiceRegistry) StopAll() {
+func (r *Registry) StopAll() {
 	r.mu.Lock()
 	procs := make(map[string]*serviceProcess, len(r.processes))
 	for id, proc := range r.processes {
@@ -302,7 +327,7 @@ func (r *ServiceRegistry) StopAll() {
 		wg.Add(1)
 		go func(p *serviceProcess) {
 			defer wg.Done()
-			killProcessGroup(p.cmd)
+			KillProcessGroup(p.cmd)
 			<-p.done
 		}(proc)
 	}
@@ -317,7 +342,7 @@ func (r *ServiceRegistry) StopAll() {
 	r.mu.Unlock()
 }
 
-func (r *ServiceRegistry) RunningIDs() []string {
+func (r *Registry) RunningIDs() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ids := make([]string, 0, len(r.processes))
@@ -329,7 +354,7 @@ func (r *ServiceRegistry) RunningIDs() []string {
 	return ids
 }
 
-func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
+func (r *Registry) PIDsByServiceID() map[string]int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]int, len(r.processes))
@@ -345,13 +370,7 @@ func (r *ServiceRegistry) PIDsByServiceID() map[string]int {
 	return out
 }
 
-func (r *ServiceRegistry) CloseFrontendChannel() {
-	if r.FrontendChannel != nil {
-		r.FrontendChannel.Close()
-	}
-}
-
-func (r *ServiceRegistry) CleanupDead() {
+func (r *Registry) CleanupDead() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

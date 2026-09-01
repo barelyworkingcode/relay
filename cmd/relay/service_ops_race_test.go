@@ -35,7 +35,7 @@ func (h *sorHookStore) With(fn func(*config.Settings)) error {
 	return h.SettingsStore.With(fn)
 }
 
-// sorRaceRegistry is a ServiceManager whose IsRunning runs a caller-supplied
+// sorRaceRegistry is a service.Manager whose IsRunning runs a caller-supplied
 // trigger exactly once -- the deterministic stand-in for "a concurrent
 // Remove completes between Update's read and its commit" that the ADR-015
 // finding calls for, in place of a timing-dependent goroutine race.

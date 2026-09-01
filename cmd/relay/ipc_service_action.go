@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // Restricted to identifier-shaped keys so a malformed manifest can't smuggle
@@ -60,7 +61,7 @@ func ipcServiceAction(ipc *IPCContext, raw json.RawMessage) {
 	}
 
 	// Off-main so a slow service can't block the UI on a 10s timeout.
-	client := NewServiceStatusClient(rec.InternalSocket, rec.InternalToken)
+	client := service.NewStatusClient(rec.InternalSocket, rec.InternalToken)
 	method := action.Method
 	ipc.GoFunc(func() {
 		defer client.CloseIdleConnections()

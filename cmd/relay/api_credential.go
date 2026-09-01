@@ -12,6 +12,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -196,7 +197,7 @@ func revokeAPICredentialIf(store config.SettingsStore, id string, permitted func
 // no reason to mint at all. Callers that take a lifetime from an operator
 // refuse a negative one at the point of entry instead.
 func mintAPICredentialFor(s *config.Settings, name string, classes []control.CapabilityClass, ttl time.Duration) (config.APICredential, string, error) {
-	plaintext, err := generateRandomHex(32)
+	plaintext, err := service.GenerateRandomHex(32)
 	if err != nil {
 		return config.APICredential{}, "", err
 	}

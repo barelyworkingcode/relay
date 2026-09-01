@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"bytes"
@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-type ServiceStatusClient struct {
+// StatusClient polls a service's status endpoint over a Unix socket.
+type StatusClient struct {
 	socket string
 	token  string
 	http   *http.Client
@@ -26,13 +27,14 @@ const statusFetchTimeout = 5 * time.Second
 // fans out to every service each tick.
 const maxStatusBodyBytes = 10 << 20
 
-func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
-	return &ServiceStatusClient{
+// NewStatusClient creates a client for polling a service's status endpoint.
+func NewStatusClient(socket, token string) *StatusClient {
+	return &StatusClient{
 		socket: socket,
 		token:  token,
 		http: &http.Client{
 			Timeout:   statusFetchTimeout,
-			Transport: newUnixHTTPTransport(socket),
+			Transport: NewUnixHTTPTransport(socket),
 		},
 	}
 }
@@ -40,27 +42,28 @@ func NewServiceStatusClient(socket, token string) *ServiceStatusClient {
 // GetStatus fetches the JSON body of a service's manifest-declared status
 // path. Relay stays payload-agnostic -- the bytes flow straight through to
 // the settings UI's generic renderer.
-func (c *ServiceStatusClient) GetStatus(ctx context.Context, path string) (json.RawMessage, error) {
+func (c *StatusClient) GetStatus(ctx context.Context, path string) (json.RawMessage, error) {
 	return c.do(ctx, http.MethodGet, path, nil)
 }
 
-func (c *ServiceStatusClient) DoAction(ctx context.Context, method, path string) (json.RawMessage, error) {
+// DoAction performs an action on a service.
+func (c *StatusClient) DoAction(ctx context.Context, method, path string) (json.RawMessage, error) {
 	return c.do(ctx, method, path, nil)
 }
 
 // CloseIdleConnections must be called by callers that build a client per use
 // (the status poller fans out one per service per tick), or each keep-alive
 // Unix-socket conn -- plus its reader goroutine and FD -- lingers until GC.
-func (c *ServiceStatusClient) CloseIdleConnections() {
+func (c *StatusClient) CloseIdleConnections() {
 	c.http.CloseIdleConnections()
 }
 
-func (c *ServiceStatusClient) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
+func (c *StatusClient) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
 	var reader io.Reader
 	if len(body) > 0 {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, internalUnixHostURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, InternalUnixHostURL+path, reader)
 	if err != nil {
 		return nil, err
 	}

@@ -3,7 +3,7 @@ package main
 // Coverage for the pure, deterministic tray logic: menu construction
 // (updateMenuWithSettings), click routing (onMenuClick/toggleService), and the
 // drain-then-kill shutdown ordering (cleanup). None of this touches Cocoa — it
-// runs against a recording Platform and a fake ServiceManager — yet it was
+// runs against a recording Platform and a fake service.Manager — yet it was
 // previously untested despite being exactly the off-by-one-prone (menu-ID →
 // service-ID) and ordering-sensitive (orphan-prevention) code that breaks the
 // tray silently.
@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -55,17 +56,16 @@ func (p *recordingPlatform) lastMenu() string {
 	return p.menus[len(p.menus)-1]
 }
 
-// trayRegistry is a ServiceManager that records lifecycle calls and lets a test
+// trayRegistry is a service.Manager that records lifecycle calls and lets a test
 // control which services are "running". Embeds noopServiceManager for the
 // methods the tray tests don't exercise.
 type trayRegistry struct {
 	noopServiceManager
-	mu                 sync.Mutex
-	running            map[string]bool
-	started            []string
-	stopped            []string
-	stopAllCount       int
-	closeFrontendCount int
+	mu           sync.Mutex
+	running      map[string]bool
+	started      []string
+	stopped      []string
+	stopAllCount int
 }
 
 func (r *trayRegistry) Start(c *config.ServiceConfig) error {
@@ -103,11 +103,6 @@ func (r *trayRegistry) PIDsByServiceID() map[string]int {
 	return out
 }
 func (r *trayRegistry) StopAll() { r.mu.Lock(); defer r.mu.Unlock(); r.stopAllCount++ }
-func (r *trayRegistry) CloseFrontendChannel() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.closeFrontendCount++
-}
 
 // menuEntry mirrors the fields updateMenuWithSettings marshals.
 type menuEntry struct {
@@ -235,14 +230,27 @@ func TestOnMenuClick_NonServiceIDDoesNotToggle(t *testing.T) {
 }
 
 func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	reg := &trayRegistry{}
+	frontendChannel := NewFrontendChannel()
+	ep, err := frontendChannel.Ensure()
+	if err != nil {
+		t.Fatalf("Ensure frontend channel: %v", err)
+	}
+	// Ensure only reserves the path; simulate a live socket so Close's
+	// removal is observable.
+	if err := os.WriteFile(ep.Socket, nil, 0600); err != nil {
+		t.Fatalf("seed frontend socket file: %v", err)
+	}
 	app := &App{
-		ctx:      ctx,
-		cancel:   cancel,
-		extMgr:   NewExternalMcpManager(nil),
-		registry: reg,
-		platform: &recordingPlatform{},
+		ctx:             ctx,
+		cancel:          cancel,
+		extMgr:          NewExternalMcpManager(nil),
+		registry:        reg,
+		platform:        &recordingPlatform{},
+		frontendChannel: frontendChannel,
 	}
 
 	app.cleanup()
@@ -254,8 +262,8 @@ func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
 	if reg.stopAllCount != 1 {
 		t.Errorf("StopAll called %d times, want exactly 1 (idempotent)", reg.stopAllCount)
 	}
-	if reg.closeFrontendCount != 1 {
-		t.Errorf("CloseFrontendChannel called %d times, want exactly 1", reg.closeFrontendCount)
+	if _, err := os.Stat(ep.Socket); !os.IsNotExist(err) {
+		t.Errorf("frontend socket should be removed by cleanup, stat err=%v", err)
 	}
 }
 

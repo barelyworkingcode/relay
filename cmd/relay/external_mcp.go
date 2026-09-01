@@ -21,6 +21,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // Only the stdio connection implements this; HTTP/mock connections don't,
@@ -429,8 +430,8 @@ func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *config.Extern
 // The caller is responsible for calling Close() on error or when done.
 func spawnStdioConn(command string, args []string, env map[string]string, cfg *config.ExternalMcp) (*externalMcpConn, error) {
 	cmd := exec.Command(command, args...)
-	setProcessGroup(cmd)
-	mergeEnv(cmd, env)
+	service.SetProcessGroup(cmd)
+	service.MergeEnv(cmd, env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -1542,7 +1543,7 @@ func (c *externalMcpConn) Close() {
 			c.stdin.Close()
 		}
 		if c.cmd != nil {
-			killProcessGroup(c.cmd)
+			service.KillProcessGroup(c.cmd)
 			_ = c.cmd.Wait()
 		}
 		// Wait for readLoop to finish so no goroutine is leaked and all pending

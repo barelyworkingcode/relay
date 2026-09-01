@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,7 +149,7 @@ func ResetMcpPermissions(mcp config.ExternalMcp) (*ResetMcpPermissionsResult, er
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}
-	mergeEnv(cmd, env)
+	service.MergeEnv(cmd, env)
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

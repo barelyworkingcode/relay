@@ -73,11 +73,9 @@ frontend_dispatcher.go   Manifest-driven HTTP + WS dispatcher (longest-prefix ma
 frontend_model_guard.go  Enforces a project's allowed_models before relayLLM sees the request
 relay_llm_channel.go     Provisions the frontend socket + bearer token (filename legacy; contents are the generic FrontendChannel)
 enhanced_services.go     In-memory registry of enhanced services; per-service reverse proxy
-service_registry.go      Background process management + ephemeral service tokens
-service_pidfile.go       Pidfiles under run/; enables orphan reclaim after a force-quit
-service_status_client.go, service_status_poller.go   Generic per-service status polling + action dispatch
+log_rotate.go            RotatingWriter + serviceLogDir: shared by relay's own log, the audit log,
+                         and every managed service's log via service.Registry.OpenLog
 ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
-service_config_file.go   resolveConfigPath security gate for the manifest config editor
 settings_html.go         Settings WKWebView HTML/JS
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
                          frameconn.go is the framing/scanner/deadline plumbing BOTH listeners share;
@@ -96,6 +94,15 @@ project/                 The project domain — the unit a grant is scoped to: c
                          parameter, so it never reaches the MCP manager. Depends on
                          config/enrolment; the presence gate, the router, the routes, the IPC
                          handlers and the DTO stay in main.
+service/                 Background service supervision: process lifecycle and ephemeral service
+                         tokens (service_registry.go), pidfiles under run/ for orphan reclaim after
+                         a force-quit (service_pidfile.go), generic per-service status polling and
+                         action dispatch (service_status_client.go, poller.go), the manifest config
+                         editor's ResolveConfigPath security gate (service_config_file.go), and the
+                         exec.Cmd/env helpers (helpers.go, http.go) shared with external MCP
+                         spawning. Depends on bridge/config; the frontend channel's lifecycle and log
+                         rotation are main's, wired into Registry.FrontendEnv/OpenLog as callbacks so
+                         the package never depends on either concrete type.
 ```
 
 ## Projects

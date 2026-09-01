@@ -11,6 +11,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 type fixedStore struct{ s *config.Settings }
@@ -65,7 +66,7 @@ func (r *recordingUI) hasEvent(name string) bool {
 }
 
 // GoFunc runs inline, so emitted events are observable synchronously.
-func newConfigIPC(t *testing.T, reg *EnhancedServiceRegistry, mgr ServiceManager, serviceID, workdir string) (*IPCContext, *recordingUI) {
+func newConfigIPC(t *testing.T, reg *EnhancedServiceRegistry, mgr service.Manager, serviceID, workdir string) (*IPCContext, *recordingUI) {
 	t.Helper()
 	ui := &recordingUI{}
 	store := fixedStore{s: &config.Settings{Services: []config.ServiceConfig{{ID: serviceID, WorkingDir: workdir}}}}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 	"log/slog"
 	"strings"
 )
@@ -161,7 +162,7 @@ type IPCContext struct {
 	Store                  config.SettingsStore
 	UI                     SettingsUI
 	Platform               Platform
-	Registry               ServiceManager
+	Registry               service.Manager
 	Enhanced               *EnhancedServiceRegistry
 	UpdateMenu             func()
 	PushServiceStatusBatch func()          // re-poll and emit after an action lands

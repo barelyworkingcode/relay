@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"fmt"
@@ -6,13 +6,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
 // Pidfiles let the next tray session reclaim services orphaned when the
 // current process is SIGKILLed or force-quit -- see ReclaimOrphans in
-// service_registry.go for the recovery flow.
+// Registry for the recovery flow.
 
 func pidFileDir() (string, error) {
 	dir := filepath.Join(bridge.ConfigDir(), "run")
@@ -66,4 +67,15 @@ func readPidFile(id string) (int, error) {
 		return 0, fmt.Errorf("parse pidfile %s: %w", path, err)
 	}
 	return pid, nil
+}
+
+// ReadPidFileForTest exposes readPidFile to a caller outside this package
+// that needs to confirm a spawned service's pidfile actually landed. It
+// panics outside a test binary: main has no legitimate reason to read a
+// pidfile it did not itself write through Registry.Start.
+func ReadPidFileForTest(id string) (int, error) {
+	if !testing.Testing() {
+		panic("service: ReadPidFileForTest is a test seam and must not be reached in a shipped binary")
+	}
+	return readPidFile(id)
 }

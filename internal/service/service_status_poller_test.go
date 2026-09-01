@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"context"
@@ -10,12 +10,19 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
+// fakeSnapshotPoller is a SnapshotPoller over a fixed, test-supplied list of
+// records -- standing in for EnhancedServiceRegistry (main), which is the
+// only production implementer.
+type fakeSnapshotPoller struct{ records []ServiceRecord }
+
+func (f *fakeSnapshotPoller) All() []ServiceRecord { return f.records }
+
 // FetchedAt ticks every poll; if it were part of the digest, the
 // settings-window emit suppression would never fire and the WebView would
 // re-render every 2s in steady state.
 func TestBatchDigest_IgnoresFetchedAt(t *testing.T) {
-	mk := func(when int64) []ServiceStatusSnapshot {
-		return []ServiceStatusSnapshot{{
+	mk := func(when int64) []StatusSnapshot {
+		return []StatusSnapshot{{
 			ServiceID: "svc-a",
 			Manifest:  bridge.Manifest{Routes: []string{"/api/a/"}},
 			OK:        true,
@@ -23,16 +30,16 @@ func TestBatchDigest_IgnoresFetchedAt(t *testing.T) {
 			FetchedAt: when,
 		}}
 	}
-	d1 := batchDigest(mk(1000))
-	d2 := batchDigest(mk(time.Now().UnixMilli()))
+	d1 := BatchDigest(mk(1000))
+	d2 := BatchDigest(mk(time.Now().UnixMilli()))
 	if d1 != d2 {
 		t.Errorf("digest changed despite identical content (only FetchedAt differs); suppression won't fire")
 	}
 }
 
 func TestBatchDigest_DetectsStatusChange(t *testing.T) {
-	mk := func(body string) []ServiceStatusSnapshot {
-		return []ServiceStatusSnapshot{{
+	mk := func(body string) []StatusSnapshot {
+		return []StatusSnapshot{{
 			ServiceID: "svc-a",
 			Manifest:  bridge.Manifest{Routes: []string{"/api/a/"}},
 			OK:        true,
@@ -40,29 +47,21 @@ func TestBatchDigest_DetectsStatusChange(t *testing.T) {
 			FetchedAt: 0,
 		}}
 	}
-	if batchDigest(mk(`{"x":1}`)) == batchDigest(mk(`{"x":2}`)) {
+	if BatchDigest(mk(`{"x":1}`)) == BatchDigest(mk(`{"x":2}`)) {
 		t.Error("digest collision on different payloads — change detection is broken")
 	}
 }
 
-func TestPollServiceStatuses_MultiService_IncludesStatuslessEntries(t *testing.T) {
-	reg := NewEnhancedServiceRegistry(nil)
-
+func TestPollStatuses_MultiService_IncludesStatuslessEntries(t *testing.T) {
 	srvA := newFakeServiceServer(t)
 	srvA.script("GET", "/api/status", 200, `{"uptimeSeconds":10}`)
 	mfA := bridge.Manifest{
 		Routes: []string{"/api/a/"},
 		Status: &bridge.StatusDecl{Path: "/api/status"},
 	}
-	if err := reg.RegisterManifest("svc-a", srvA.socket, "tok-a", mfA); err != nil {
-		t.Fatalf("register svc-a: %v", err)
-	}
 
 	srvB := newFakeServiceServer(t)
 	mfB := bridge.Manifest{Routes: []string{"/api/b/"}}
-	if err := reg.RegisterManifest("svc-b", srvB.socket, "tok-b", mfB); err != nil {
-		t.Fatalf("register svc-b: %v", err)
-	}
 
 	srvC := newFakeServiceServer(t)
 	srvC.script("GET", "/api/status", 503, `{"error":"unavailable"}`)
@@ -70,11 +69,14 @@ func TestPollServiceStatuses_MultiService_IncludesStatuslessEntries(t *testing.T
 		Routes: []string{"/api/c/"},
 		Status: &bridge.StatusDecl{Path: "/api/status"},
 	}
-	if err := reg.RegisterManifest("svc-c", srvC.socket, "tok-c", mfC); err != nil {
-		t.Fatalf("register svc-c: %v", err)
-	}
 
-	batch := pollServiceStatuses(context.Background(), reg)
+	poller := &fakeSnapshotPoller{records: []ServiceRecord{
+		{ServiceID: "svc-a", InternalSocket: srvA.socket, InternalToken: "tok-a", Manifest: mfA},
+		{ServiceID: "svc-b", InternalSocket: srvB.socket, InternalToken: "tok-b", Manifest: mfB},
+		{ServiceID: "svc-c", InternalSocket: srvC.socket, InternalToken: "tok-c", Manifest: mfC},
+	}}
+
+	batch := PollStatuses(context.Background(), poller)
 	if len(batch) != 3 {
 		t.Fatalf("batch size: got %d, want 3 (%+v)", len(batch), batch)
 	}
@@ -105,21 +107,20 @@ func TestPollServiceStatuses_MultiService_IncludesStatuslessEntries(t *testing.T
 	}
 }
 
-func TestPollServiceStatuses_EmptyRegistry_ReturnsNil(t *testing.T) {
-	reg := NewEnhancedServiceRegistry(nil)
-	if got := pollServiceStatuses(context.Background(), reg); got != nil {
+func TestPollStatuses_EmptyRegistry_ReturnsNil(t *testing.T) {
+	poller := &fakeSnapshotPoller{}
+	if got := PollStatuses(context.Background(), poller); got != nil {
 		t.Errorf("expected nil batch for empty registry, got %+v", got)
 	}
 }
 
-func TestPollServiceStatuses_NilRegistry_IsSafe(t *testing.T) {
-	if got := pollServiceStatuses(context.Background(), nil); got != nil {
+func TestPollStatuses_NilRegistry_IsSafe(t *testing.T) {
+	if got := PollStatuses(context.Background(), nil); got != nil {
 		t.Errorf("expected nil for nil registry, got %+v", got)
 	}
 }
 
-func TestPollServiceStatuses_BatchCarriesManifest(t *testing.T) {
-	reg := NewEnhancedServiceRegistry(nil)
+func TestPollStatuses_BatchCarriesManifest(t *testing.T) {
 	srv := newFakeServiceServer(t)
 	srv.script("GET", "/api/status", 200, `{}`)
 	mf := bridge.Manifest{
@@ -127,9 +128,11 @@ func TestPollServiceStatuses_BatchCarriesManifest(t *testing.T) {
 		Status:  &bridge.StatusDecl{Path: "/api/status"},
 		Actions: []bridge.ActionDecl{{ID: "do-thing", Label: "Do", Method: "POST", PathTemplate: "/api/x/do"}},
 	}
-	_ = reg.RegisterManifest("svc-x", srv.socket, "tok", mf)
+	poller := &fakeSnapshotPoller{records: []ServiceRecord{
+		{ServiceID: "svc-x", InternalSocket: srv.socket, InternalToken: "tok", Manifest: mf},
+	}}
 
-	batch := pollServiceStatuses(context.Background(), reg)
+	batch := PollStatuses(context.Background(), poller)
 	if len(batch) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(batch))
 	}

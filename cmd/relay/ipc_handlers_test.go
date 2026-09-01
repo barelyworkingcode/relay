@@ -113,7 +113,7 @@ func (noopStore) ReloadIfChanged() *config.Settings    { return config.DefaultSe
 func (noopStore) With(fn func(*config.Settings)) error { fn(config.DefaultSettings()); return nil }
 func (noopStore) Sealer() sealed.Sealer                { return nil }
 
-// noopServiceManager satisfies ServiceManager with no-op methods. Used
+// noopServiceManager satisfies service.Manager with no-op methods. Used
 // only as a placeholder so handler tests can construct an IPCContext.
 type noopServiceManager struct{}
 
@@ -127,4 +127,3 @@ func (noopServiceManager) CleanupDead()                               {}
 func (noopServiceManager) ReclaimOrphans([]config.ServiceConfig)      {}
 func (noopServiceManager) StartAllAutostart([]config.ServiceConfig)   {}
 func (noopServiceManager) StopAll()                                   {}
-func (noopServiceManager) CloseFrontendChannel()                      {}

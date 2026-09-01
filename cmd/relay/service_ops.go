@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 var (
@@ -148,7 +149,7 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 // and spelling the result.
 type ServiceOps struct {
 	Store    config.SettingsStore
-	Registry ServiceManager
+	Registry service.Manager
 	// Gate is the presence check Create and Update demand before they
 	// touch the store (ADR-017 decisions 3 and 4): a service's `command`
 	// is what relay will run, the caller's choice (ADR-015 decision 1).
