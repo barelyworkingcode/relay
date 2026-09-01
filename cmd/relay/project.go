@@ -10,22 +10,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/google/uuid"
 )
 
-// CreateProjectWithToken is a thin wrapper over CreateProjectWithTokenKind,
+// createProjectWithToken is a thin wrapper over createProjectWithTokenKind,
 // kept with its original signature so no existing caller or test has to
 // change. Call within store.With.
-func (s *Settings) CreateProjectWithToken(name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
-	return s.CreateProjectWithTokenKind(ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
+func createProjectWithToken(s *config.Settings, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+	return createProjectWithTokenKind(s, config.ProjectKindLocal, name, path, mcpIDs, models, templates, surfaces)
 }
 
 // surfaces maps MCP IDs to their runtime schema + tool surface (from
 // ExternalMcpManager) for scope derivation. Call within store.With.
-func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path string, mcpIDs, models []string, templates []ChatTemplate, surfaces McpSurfaces) (Project, error) {
-	kind = normalizeProjectKind(kind)
+func createProjectWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path string, mcpIDs, models []string, templates []config.ChatTemplate, surfaces McpSurfaces) (config.Project, error) {
+	kind = config.NormalizeProjectKind(kind)
 	if name == "" {
-		return Project{}, fmt.Errorf("project name is required")
+		return config.Project{}, fmt.Errorf("project name is required")
 	}
 	if mcpIDs == nil {
 		mcpIDs = []string{}
@@ -38,20 +39,20 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
 	// gets full path/MCP/model validation.
-	candidate := Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
+	candidate := config.Project{Kind: kind, Path: path, AllowedMcpIDs: mcpIDs, AllowedModels: models, ChatTemplates: templates}
 	if err := validateProjectShape(&candidate); err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
-		return Project{}, err
+	if err := validateProjectGrants(&candidate, surfaces); err != nil {
+		return config.Project{}, err
 	}
 
 	plaintext, hash, err := generateProjectToken()
 	if err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
 
-	proj := Project{
+	proj := config.Project{
 		ID:            uuid.New().String(),
 		Kind:          kind,
 		Name:          name,
@@ -59,13 +60,13 @@ func (s *Settings) CreateProjectWithTokenKind(kind ProjectKind, name, path strin
 		AllowedMcpIDs: mcpIDs,
 		AllowedModels: models,
 		ChatTemplates: templates,
-		Token:         NewSecret(plaintext),
+		Token:         config.NewSecret(plaintext),
 		TokenHash:     hash,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
 	s.Projects = append(s.Projects, proj)
-	s.SyncProjectToken(&s.Projects[len(s.Projects)-1], surfaces)
+	syncProjectToken(s, &s.Projects[len(s.Projects)-1], surfaces)
 
 	return proj, nil
 }
@@ -77,7 +78,7 @@ func generateProjectToken() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return plaintext, hashToken(plaintext), nil
+	return plaintext, config.HashToken(plaintext), nil
 }
 
 // validateProjectPath rejects a relative path (interpreted against relay's
@@ -108,7 +109,7 @@ func validateProjectPath(path string) error {
 // A remote project is a capability grant to a client on another machine,
 // not a host directory, so every host-directory-flavored feature below must
 // be absent.
-func validateProjectShape(proj *Project) error {
+func validateProjectShape(proj *config.Project) error {
 	// Kind-independent, and checked first: an over-broad allowed_tools entry
 	// grants every tool of the MCP for a profile, and is a no-op for a local
 	// project — refusing both keeps validation and enforcement the same rule
@@ -140,7 +141,7 @@ func validateProjectShape(proj *Project) error {
 	// a remote grant it would let registering a new MCP silently widen what
 	// the client can reach with no diff to review. An empty list is fine —
 	// zero grants is the expected resting state before widening deliberately.
-	if isWildcard(proj.AllowedMcpIDs) {
+	if config.IsWildcard(proj.AllowedMcpIDs) {
 		return fmt.Errorf(`remote project must not use the "*" wildcard for allowed_mcp_ids: it would let a future MCP registration silently widen what the remote client can reach; list MCP IDs explicitly`)
 	}
 	// A denylist cannot bound a client, and an inert control is worse than
@@ -181,7 +182,7 @@ func validateProjectShape(proj *Project) error {
 
 // validateAllowedToolPatterns walks entries in MCP-name order so a record
 // with two bad patterns names the same one every time.
-func validateAllowedToolPatterns(proj *Project) error {
+func validateAllowedToolPatterns(proj *config.Project) error {
 	for _, mcpID := range sortedKeys(proj.AllowedTools) {
 		for _, pattern := range proj.AllowedTools[mcpID] {
 			if err := validateToolPattern(mcpID, pattern); err != nil {
@@ -224,7 +225,7 @@ func validateToolPattern(mcpID, pattern string) error {
 // emptied policy is stored as nil (applyProjectUpdate) — otherwise
 // converting a local project to a profile by clearing its policy would be
 // refused for still having one.
-func permissionPolicyIsEmpty(p *PermissionPolicy) bool {
+func permissionPolicyIsEmpty(p *config.PermissionPolicy) bool {
 	return p == nil || (p.DefaultMode == "" && len(p.AllowedTools) == 0 && len(p.DeniedTools) == 0)
 }
 
@@ -237,14 +238,14 @@ func permissionPolicyIsEmpty(p *PermissionPolicy) bool {
 // function does not have: what the MCP declared at runtime. Shape is
 // answerable from the record alone; whether "mail_accounts" is a field
 // macMCP has is answerable only from the live surface.
-func validateProjectPermissions(proj *Project, surfaces McpSurfaces) error {
+func validateProjectPermissions(proj *config.Project, surfaces McpSurfaces) error {
 	// AccessMode already reads anything but exactly "write" as read (fail
 	// closed), but a typo like "wrIte" silently narrowing was never
 	// surfaced to the operator until here.
 	for _, mcpID := range sortedKeys(proj.Access) {
 		mode := proj.Access[mcpID]
-		if mode != AccessRead && mode != AccessWrite {
-			return fmt.Errorf("access for %q must be %q or %q, not %q", mcpID, AccessRead, AccessWrite, mode)
+		if mode != config.AccessRead && mode != config.AccessWrite {
+			return fmt.Errorf("access for %q must be %q or %q, not %q", mcpID, config.AccessRead, config.AccessWrite, mode)
 		}
 	}
 
@@ -347,4 +348,41 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// authenticateProjectByPath returns nil when dir is empty, matches nothing,
+// or matches only projects that have NOT opted into AllowCwdAuth — every
+// failure mode is "no access", never "all access". The scope granted is
+// identical to the project's token: opting in changes how a caller is
+// *identified*, never what the project is allowed to reach.
+//
+// Nested projects resolve to the most specific match (longest project path
+// containing dir), so a project nested inside another wins for its own
+// subtree.
+func authenticateProjectByPath(s *config.Settings, dir string) *config.StoredToken {
+	if dir == "" {
+		return nil
+	}
+	var best *config.Project
+	bestLen := -1
+	for i := range s.Projects {
+		p := &s.Projects[i]
+		// Check the opt-in first: a project that hasn't enabled directory
+		// auth must not even participate in the longest-match race, or it
+		// could shadow an opted-in parent and turn a valid grant into a
+		// denial.
+		if !p.AllowCwdAuth || p.Path == "" {
+			continue
+		}
+		if !dirWithinProject(dir, p.Path) {
+			continue
+		}
+		if n := len(realpathBestEffort(p.Path)); n > bestLen {
+			best, bestLen = p, n
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return config.StoredTokenForProject(s, best, best.TokenHash)
 }

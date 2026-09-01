@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -22,7 +22,7 @@ func fieldAAD(path string) []byte {
 }
 
 // forEachSecret is the single place the sealed set (§4.1, §4.3) is
-// enumerated. sealAllSecrets and openAllSecrets are both one pass over it,
+// enumerated. SealAllSecrets and openAllSecrets are both one pass over it,
 // and TestSecrets_ForEachVisitsEverySecretField (settings_seal_test.go)
 // walks *Settings by reflection and fails if a Secret field exists that a
 // path here does not reach — so a Secret added later and not enumerated
@@ -74,7 +74,7 @@ func forEachSecret(s *Settings, fn func(path string, sec *Secret) error) error {
 	return nil
 }
 
-// sealAllSecrets seals every Secret in s under sealer, from the plaintext
+// SealAllSecrets seals every Secret in s under sealer, from the plaintext
 // each currently holds. It is called immediately before every
 // json.MarshalIndent in FileSettingsStore.save (§4.5) — sealing happens
 // before serialisation, not to the file afterwards, so the bytes handed to
@@ -93,7 +93,7 @@ func forEachSecret(s *Settings, fn func(path string, sec *Secret) error) error {
 // silently dropped the unopenable field, or resealed an empty string over
 // it, would destroy the only copy of a value relay could not currently
 // prove was safe to discard.
-func sealAllSecrets(s *Settings, sealer sealed.Sealer) error {
+func SealAllSecrets(s *Settings, sealer sealed.Sealer) error {
 	return forEachSecret(s, func(path string, sec *Secret) error {
 		if sec.closed {
 			return fmt.Errorf("sealed value for %s could not be resealed: no plaintext is available", path)
@@ -158,7 +158,7 @@ func verifyProjectTokenHashes(s *Settings) map[string]error {
 		if !ok {
 			continue
 		}
-		if hashToken(pt) != p.TokenHash {
+		if HashToken(pt) != p.TokenHash {
 			path := fmt.Sprintf("projects/%s/token", p.ID)
 			errs[path] = fmt.Errorf("sealed value for %s does not match its stored token_hash", path)
 			p.Token = Secret{closed: true}

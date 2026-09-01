@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/dop251/goja"
 )
 
@@ -38,7 +39,7 @@ func notifierTrayApp(t *testing.T) (*App, *recordingPlatform, *enrolmentRequestT
 	mkEmptySandboxRelayHome(t)
 	rp := &recordingPlatform{}
 	table := newEnrolmentRequestTable()
-	s := &Settings{}
+	s := &config.Settings{}
 	clk := newFakeClock()
 	app := &App{
 		platform: rp,
@@ -148,7 +149,7 @@ func TestUpdateMenuWithSettings_BuildsTheNotifierWhenNoneWasInstalled(t *testing
 	mkEmptySandboxRelayHome(t)
 	rp := &recordingPlatform{}
 	table := newEnrolmentRequestTable()
-	s := &Settings{}
+	s := &config.Settings{}
 	app := &App{
 		platform: rp,
 		registry: &trayRegistry{},
@@ -384,7 +385,7 @@ func TestNotificationClickAndTrayLineClick_AreTheSameAct(t *testing.T) {
 	app := &App{
 		platform: rp,
 		registry: &trayRegistry{},
-		store:    fixedStore{s: &Settings{}},
+		store:    fixedStore{s: &config.Settings{}},
 		extMgr:   NewExternalMcpManager(nil),
 	}
 

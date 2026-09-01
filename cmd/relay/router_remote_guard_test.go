@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // The project is built directly rather than through the create path so these
@@ -14,20 +15,20 @@ import (
 func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 	t.Helper()
 	s := makeSettings(nil, nil, nil)
-	s.Projects = append(s.Projects, Project{
+	s.Projects = append(s.Projects, config.Project{
 		ID:            "remote-proj",
 		Name:          "remote",
-		Kind:          ProjectKindRemote,
+		Kind:          config.ProjectKindRemote,
 		AllowedMcpIDs: []string{},
-		Token:         NewSecret("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-		TokenHash:     hashToken("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		Token:         config.NewSecret("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		TokenHash:     config.HashToken("remote-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		// Carried from a former life as a local project. Validation would
 		// refuse this today; the guard must not depend on that.
-		ShellTemplates: []ShellTemplate{{ID: "tpl-1", Name: "ssh", Command: "/usr/bin/ssh"}},
+		ShellTemplates: []config.ShellTemplate{{ID: "tpl-1", Name: "ssh", Command: "/usr/bin/ssh"}},
 	})
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 	svcToken := "service-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	r.serviceTokens.Register(hashToken(svcToken))
+	r.serviceTokens.Register(config.HashToken(svcToken))
 	return r, svcToken
 }
 
@@ -70,7 +71,7 @@ func TestResolvePtyEnv_LocalProjectStillResolves(t *testing.T) {
 	s.Projects[0].Path = dir
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 	svcToken := "service-token-cccccccccccccccccccccccccccccccc"
-	r.serviceTokens.Register(hashToken(svcToken))
+	r.serviceTokens.Register(config.HashToken(svcToken))
 
 	resp, err := r.ResolvePtyEnv(context.Background(),
 		bridge.PtyEnvRequest{ProjectID: "test-project", Directory: dir}, svcToken)

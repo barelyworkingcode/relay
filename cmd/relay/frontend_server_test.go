@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // Tests for FrontendServer. Covers:
@@ -249,7 +251,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("an authenticated configure route must reach its handler, got %d", resp.StatusCode)
 	}
-	if svc, _ := store.Get().findServiceByID("worker"); svc == nil || !svc.Autostart {
+	if svc, _ := config.FindServiceByID(store.Get(), "worker"); svc == nil || !svc.Autostart {
 		t.Fatal("the configure route must have actually run on TCP")
 	}
 
@@ -276,7 +278,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	if strings.Contains(resp.Header.Get("Allow"), "POST") {
 		t.Fatalf("Allow = %q names POST, so some pattern claims it on TCP", resp.Header.Get("Allow"))
 	}
-	if svc, _ := store.Get().findServiceByID("phantom"); svc != nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "phantom"); svc != nil {
 		t.Fatal("the execute route must never have reached ServiceOps.Create on TCP")
 	}
 }

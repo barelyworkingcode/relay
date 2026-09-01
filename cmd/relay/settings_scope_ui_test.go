@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/dop251/goja"
 )
 
@@ -285,7 +286,7 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &create); err != nil {
 		t.Fatalf("editor payload did not decode as a create: %v\n%s", err, raw)
 	}
-	if create.Access["macmcp"] != AccessRead {
+	if create.Access["macmcp"] != config.AccessRead {
 		t.Errorf(`"access" did not reach projectCreateFields.Access — check the json tag: %#v`, create.Access)
 	}
 	if len(create.AllowedTools["macmcp"]) != 1 {
@@ -303,12 +304,12 @@ func TestProjectForm_PayloadDecodesIntoTheSharedDTOs(t *testing.T) {
 		t.Fatalf("a pointer field stayed nil, which the update path reads as 'no change': %#v", update)
 	}
 
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	created, err := applyProjectCreate(s, create, v2Surfaces())
 	if err != nil {
 		t.Fatalf("the editor's own payload was refused by applyProjectCreate: %v", err)
 	}
-	if created.Access["macmcp"] != AccessRead || !strings.Contains(string(created.Context["macmcp"]), "Bob") {
+	if created.Access["macmcp"] != config.AccessRead || !strings.Contains(string(created.Context["macmcp"]), "Bob") {
 		t.Errorf("the permission set did not survive the create: %#v", created)
 	}
 }

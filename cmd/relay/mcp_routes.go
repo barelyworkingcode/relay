@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -28,7 +29,7 @@ type mcpView struct {
 	AuthRequired bool `json:"auth_required,omitempty"`
 }
 
-func mcpViewOf(m ExternalMcp) mcpView {
+func mcpViewOf(m config.ExternalMcp) mcpView {
 	return mcpView{
 		ID:          m.ID,
 		DisplayName: m.DisplayName,

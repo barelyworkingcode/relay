@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -18,13 +19,13 @@ func fsTools() []mcp.Tool { return simpleTools("fs_read", "fs_write", "fs_list")
 
 // fsProfile builds a grant on a v1 filesystem MCP with every other layer wide
 // open, so the only thing that can refuse is the one under test.
-func fsProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage) *appRouter {
+func fsProfile(t *testing.T, kind config.ProjectKind, values map[string]json.RawMessage) *appRouter {
 	t.Helper()
 	return newProfileRouter(t, profileOpts{
 		kind:          kind,
 		tools:         fsTools(),
 		allowedTools:  map[string][]string{"macmcp": {"fs_*"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: values,
 		schema:        fsmcpV1Schema,
@@ -33,7 +34,7 @@ func fsProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage
 }
 
 func TestCallTool_AProfileCannotForgeAV1FilesystemScope(t *testing.T) {
-	r := fsProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := fsProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/Users/admin/.ssh"]`),
 	})
 	for _, tool := range []string{"fs_read", "fs_write", "fs_list"} {
@@ -53,7 +54,7 @@ func TestCallTool_AProfileCannotForgeAV1FilesystemScope(t *testing.T) {
 // forged value and letting the call through would turn a confinement relay
 // disbelieves into no confinement at all.
 func TestCallTool_TheV1RefusalDoesNotDependOnAValueBeingThere(t *testing.T) {
-	r := fsProfile(t, ProjectKindRemote, nil)
+	r := fsProfile(t, config.ProjectKindRemote, nil)
 	if _, err := r.CallTool(context.Background(), "fs_read", json.RawMessage(`{}`), testToken); err == nil {
 		t.Fatal("a profile reached a v1 filesystem MCP with no scope at all")
 	}
@@ -64,9 +65,9 @@ func TestCallTool_TheV1RefusalDoesNotDependOnAValueBeingThere(t *testing.T) {
 // it is present and non-empty, which is all that check asks.
 func TestCallTool_AProfileCannotForgeAV2ProjectPathScope(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: map[string]json.RawMessage{
 			"mail_accounts":  json.RawMessage(`["Bob"]`),
@@ -89,7 +90,7 @@ func TestCallTool_AProfileCannotForgeAV2ProjectPathScope(t *testing.T) {
 }
 
 func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
-	r := fsProfile(t, ProjectKindLocal, map[string]json.RawMessage{
+	r := fsProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
 	})
 	if _, err := r.CallTool(context.Background(), "fs_read", json.RawMessage(`{}`), testToken); err != nil {
@@ -98,7 +99,7 @@ func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
 }
 
 func TestAudit_AV1CallRecordsTheScopeItWasConfinedBy(t *testing.T) {
-	r := fsProfile(t, ProjectKindLocal, map[string]json.RawMessage{
+	r := fsProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
 		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
 	})
 	rec := newTestAudit(t, nil)
@@ -125,10 +126,10 @@ func TestAudit_AV1CallRecordsTheScopeItWasConfinedBy(t *testing.T) {
 // field answers no question at all.
 func TestAudit_AMcpWithNoScopeConceptStillRecordsNone(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:          ProjectKindLocal,
+		kind:          config.ProjectKindLocal,
 		tools:         fsTools(),
 		allowedTools:  map[string][]string{"macmcp": {"fs_*"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 	})
 	rec := newTestAudit(t, nil)

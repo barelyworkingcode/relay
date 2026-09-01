@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -38,12 +39,12 @@ import (
 type remoteFixture struct {
 	t       *testing.T
 	dir     string
-	store   SettingsStore
+	store   config.SettingsStore
 	router  *appRouter
 	audit   *AuditRecorder
 	server  *RemoteServer
 	mgr     *ExternalMcpManager
-	project Project
+	project config.Project
 	bundle  *enrolmentBundle
 	// mcpCalls counts how many times a tool actually reached the (mock) MCP.
 	// Several tests assert on it being zero: a refusal that happens after the
@@ -75,7 +76,7 @@ type remoteFixtureOpts struct {
 	// budget, when non-nil, is stored on the enrolment instead of the
 	// conservative defaults, so a test can drive throttling deterministically
 	// without making hundreds of calls.
-	budget *EnrolmentBudget
+	budget *config.EnrolmentBudget
 	// secondTool, when non-empty, names a second tool the mock macmcp
 	// connection exposes alongside "mail_search". Empty (the default) keeps
 	// every existing fixture consumer's "exactly one tool" assumption
@@ -106,25 +107,25 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 	}
 
 	var createErr error
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: "macmcp", DisplayName: "macMCP"})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: "macmcp", DisplayName: "macMCP"})
 		if !opts.noRemoteBlock {
-			s.Remote = &RemoteConfig{Enabled: enabled, Listen: listen}
+			s.Remote = &config.RemoteConfig{Enabled: enabled, Listen: listen}
 		}
-		f.project, createErr = s.CreateProjectWithTokenKind(
-			ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
+		f.project, createErr = createProjectWithTokenKind(s,
+			config.ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
 		// A profile names the tools it may call (ADR-011 decision 2b); with no
 		// allowed_tools it holds none of them, which is the fail-closed default
 		// and would make every fixture below assert on a denial. These tests
 		// are about the transport, the budget and the audit path, so they grant
 		// the one tool they exercise.
 		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_*"}})
-		if p, _ := s.findProjectByID(f.project.ID); p != nil {
+		if p, _ := config.FindProjectByID(s, f.project.ID); p != nil {
 			f.project = *p
 		}
 		for i := 0; i < opts.extraProjects; i++ {
-			if _, err := s.CreateProjectWithTokenKind(
-				ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
+			if _, err := createProjectWithTokenKind(s,
+				config.ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
 				createErr = err
 			}
 		}
@@ -198,20 +199,20 @@ func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFix
 	}
 
 	var createErr error
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: "macmcp", DisplayName: "macMCP"})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: "macmcp", DisplayName: "macMCP"})
 		if !opts.noRemoteBlock {
-			s.Remote = &RemoteConfig{Enabled: enabled, Listen: listen}
+			s.Remote = &config.RemoteConfig{Enabled: enabled, Listen: listen}
 		}
-		f.project, createErr = s.CreateProjectWithTokenKind(
-			ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
+		f.project, createErr = createProjectWithTokenKind(s,
+			config.ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
 		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_*"}})
-		if p, _ := s.findProjectByID(f.project.ID); p != nil {
+		if p, _ := config.FindProjectByID(s, f.project.ID); p != nil {
 			f.project = *p
 		}
 		for i := 0; i < opts.extraProjects; i++ {
-			if _, err := s.CreateProjectWithTokenKind(
-				ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
+			if _, err := createProjectWithTokenKind(s,
+				config.ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
 				createErr = err
 			}
 		}
@@ -515,7 +516,7 @@ func TestRemoteServer_CSRSignedClientListsToolsAndCallsTool(t *testing.T) {
 func TestRemoteServer_CSRSignedClientWorksWithTheRequestChannelDisabled(t *testing.T) {
 	f, key := newRemoteFixtureCSRSigned(t, remoteFixtureOpts{})
 
-	resolved, err := f.store.Get().Remote.resolveEnrolment()
+	resolved, err := resolveRemoteEnrolment(f.store.Get().Remote)
 	assertNoErr(t, err, "resolveEnrolment")
 	if resolved.Enabled {
 		t.Fatal("the enrolment-request channel must be disabled for this regression to mean anything")
@@ -552,13 +553,13 @@ func TestRemoteServer_ProjectIDIsOptionalForOneGrantAndRequiredForSeveral(t *tes
 	// Widen the enrolment to two grants without touching the certificate:
 	// capability and device revocation are independent.
 	var second string
-	assertNoErr(t, f.store.With(func(s *Settings) {
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
 		for _, p := range s.Projects {
 			if p.ID != f.project.ID {
 				second = p.ID
 			}
 		}
-		s.UpdateEnrolmentGrants("hermes-mail", []string{f.project.ID, second})
+		updateEnrolmentGrants(s, "hermes-mail", []string{f.project.ID, second})
 	}), "widen grants")
 
 	c := f.dial()
@@ -745,10 +746,10 @@ func TestRemoteServer_RefusesAProjectTheEnrolmentDoesNotGrant(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 
 	// A second remote project exists but is granted to nobody.
-	var ungranted Project
+	var ungranted config.Project
 	var err error
-	assertNoErr(t, f.store.With(func(s *Settings) {
-		ungranted, err = s.CreateProjectWithTokenKind(ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
+		ungranted, err = createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
 	}), "create ungranted project")
 	assertNoErr(t, err, "create ungranted project")
 
@@ -778,10 +779,10 @@ func TestRemoteServer_RefusesAProjectThatIsNoLongerRemote(t *testing.T) {
 
 	// Bypass every validated path: flip the kind in place, leaving the
 	// enrolment's grant pointing at what is now a local project.
-	assertNoErr(t, f.store.With(func(s *Settings) {
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
 		for i := range s.Projects {
 			if s.Projects[i].ID == f.project.ID {
-				s.Projects[i].Kind = ProjectKindLocal
+				s.Projects[i].Kind = config.ProjectKindLocal
 				s.Projects[i].Path = "/tmp"
 			}
 		}
@@ -806,7 +807,7 @@ func TestRemoteServer_RefusesAProjectThatNoLongerExists(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 	c := f.dial()
 
-	assertNoErr(t, f.store.With(func(s *Settings) { s.RemoveProject(f.project.ID) }), "remove project")
+	assertNoErr(t, f.store.With(func(s *config.Settings) { s.RemoveProject(f.project.ID) }), "remove project")
 
 	resp := c.roundTrip(`{"type":"ListTools"}`)
 	if resp.Type != bridge.RespError {
@@ -881,10 +882,10 @@ func TestRemoteServer_DoesNotStartWhenDisabledOrUnstated(t *testing.T) {
 // The listen default binds loopback, so misconfiguration cannot expose the
 // control plane to a LAN and same-machine development needs no configuration.
 func TestRemoteConfig_DefaultsToLoopback(t *testing.T) {
-	if got := (&RemoteConfig{Enabled: ptr(true)}).resolve(); got.Listen != "127.0.0.1:9910" || !got.Enabled {
+	if got := resolveRemoteConfig(&config.RemoteConfig{Enabled: ptr(true)}); got.Listen != "127.0.0.1:9910" || !got.Enabled {
 		t.Fatalf("resolved config = %+v, want loopback:9910 enabled", got)
 	}
-	if got := (*RemoteConfig)(nil).resolve(); got.Enabled {
+	if got := resolveRemoteConfig((*config.RemoteConfig)(nil)); got.Enabled {
 		t.Fatal("an absent block resolved to enabled")
 	}
 }
@@ -1024,7 +1025,7 @@ func TestRemoteServer_TypelessFrameIsRefused(t *testing.T) {
 // only binds a synthetic context protects nothing.
 func TestRemoteServer_BudgetIsEnforcedThroughTheListener(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{
-		budget: &EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 2, MaxResultBytes: 1 << 20},
+		budget: &config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 2, MaxResultBytes: 1 << 20},
 	})
 	c := f.dial()
 	if c == nil {

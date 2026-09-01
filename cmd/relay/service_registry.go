@@ -11,18 +11,19 @@ import (
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 type ServiceManager interface {
-	Start(config *ServiceConfig) error
+	Start(cfg *config.ServiceConfig) error
 	Stop(id string)
-	Reload(id string, cfg *ServiceConfig) error
+	Reload(id string, cfg *config.ServiceConfig) error
 	IsRunning(id string) bool
 	RunningIDs() []string
 	PIDsByServiceID() map[string]int
 	CleanupDead()
-	ReclaimOrphans(configs []ServiceConfig)
-	StartAllAutostart(configs []ServiceConfig)
+	ReclaimOrphans(configs []config.ServiceConfig)
+	StartAllAutostart(configs []config.ServiceConfig)
 	StopAll()
 	CloseFrontendChannel()
 }
@@ -65,30 +66,30 @@ func serviceLogDir() (string, error) {
 
 // Start spawns the service through the platform shell so the user's profile
 // (PATH, env) is loaded.
-func (r *ServiceRegistry) Start(config *ServiceConfig) error {
-	if err := config.Validate(); err != nil {
+func (r *ServiceRegistry) Start(cfg *config.ServiceConfig) error {
+	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid service config: %w", err)
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.isRunningLocked(config.ID) {
+	if r.isRunningLocked(cfg.ID) {
 		return nil
 	}
 
-	cmd, err := buildCommand(config)
+	cmd, err := buildCommand(cfg)
 	if err != nil {
-		return fmt.Errorf("build command for %q: %w", config.ID, err)
+		return fmt.Errorf("build command for %q: %w", cfg.ID, err)
 	}
 
 	var tokenHash string
 	if r.TokenStore != nil {
 		rawToken, err := generateRandomHex(32)
 		if err != nil {
-			return fmt.Errorf("generate service token for %q: %w", config.ID, err)
+			return fmt.Errorf("generate service token for %q: %w", cfg.ID, err)
 		}
-		tokenHash = hashToken(rawToken)
+		tokenHash = config.HashToken(rawToken)
 		r.TokenStore.Register(tokenHash)
 
 		relayBin, _ := os.Executable()
@@ -107,16 +108,16 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	// Frontend creds (RELAY_FRONTEND_SOCKET/TOKEN) go only to frontend
 	// consumers (e.g. eve); backends never dial the front door, and handing
 	// them the bearer would leak it into any process they spawn.
-	if r.FrontendChannel != nil && frontendCredsEnabled(config) {
+	if r.FrontendChannel != nil && frontendCredsEnabled(cfg) {
 		endpoint, err := r.FrontendChannel.Ensure()
 		if err != nil {
-			return fmt.Errorf("provision frontend channel for %s: %w", config.ID, err)
+			return fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
 		}
 		mergeEnv(cmd, endpoint.FrontendEnv())
 	}
 	mergeEnv(cmd, map[string]string{
 		EnvBridgeSocket: bridge.SocketPath(),
-		EnvServiceID:    config.ID,
+		EnvServiceID:    cfg.ID,
 	})
 
 	committed := false
@@ -130,7 +131,7 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 	if err != nil {
 		return err
 	}
-	logPath := filepath.Join(logDir, config.ID+".log")
+	logPath := filepath.Join(logDir, cfg.ID+".log")
 	// Assigning an io.Writer (not *os.File) makes Go pump the child's merged
 	// stdout+stderr through one copy goroutine, which cmd.Wait awaits before
 	// the reaper closes the writer below.
@@ -144,13 +145,13 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		return fmt.Errorf("failed to start '%s': %w", config.DisplayName, err)
+		return fmt.Errorf("failed to start '%s': %w", cfg.DisplayName, err)
 	}
 	committed = true
 
 	// Best-effort: pidfile failure must not abort a successful spawn.
-	if err := writePidFile(config.ID, cmd.Process.Pid); err != nil {
-		slog.Warn("write pidfile failed", "id", config.ID, "error", err)
+	if err := writePidFile(cfg.ID, cmd.Process.Pid); err != nil {
+		slog.Warn("write pidfile failed", "id", cfg.ID, "error", err)
 	}
 
 	proc := &serviceProcess{
@@ -162,7 +163,7 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 
 	// Defers run LIFO: logFile.Close -> close(done) -> OnProcessExit,
 	// ensuring done is closed before the exit callback reads process state.
-	serviceID := config.ID
+	serviceID := cfg.ID
 	go func() {
 		defer func() {
 			if r.OnProcessExit != nil {
@@ -183,11 +184,11 @@ func (r *ServiceRegistry) Start(config *ServiceConfig) error {
 		}
 	}()
 
-	r.processes[config.ID] = proc
+	r.processes[cfg.ID] = proc
 	return nil
 }
 
-func frontendCredsEnabled(cfg *ServiceConfig) bool {
+func frontendCredsEnabled(cfg *config.ServiceConfig) bool {
 	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
 }
 
@@ -223,7 +224,7 @@ func (r *ServiceRegistry) Stop(id string) {
 	}
 }
 
-func (r *ServiceRegistry) Reload(id string, cfg *ServiceConfig) error {
+func (r *ServiceRegistry) Reload(id string, cfg *config.ServiceConfig) error {
 	r.Stop(id)
 	return r.Start(cfg)
 }
@@ -257,7 +258,7 @@ func (r *ServiceRegistry) isRunningLocked(id string) bool {
 // already in use". Reads each service's pidfile, confirms the pid still
 // belongs to that service (ps lookup, to defeat pid recycling), then SIGTERMs
 // the process group. Stale pidfiles are silently removed.
-func (r *ServiceRegistry) ReclaimOrphans(configs []ServiceConfig) {
+func (r *ServiceRegistry) ReclaimOrphans(configs []config.ServiceConfig) {
 	for i := range configs {
 		cfg := &configs[i]
 		pid, err := readPidFile(cfg.ID)
@@ -276,7 +277,7 @@ func (r *ServiceRegistry) ReclaimOrphans(configs []ServiceConfig) {
 	}
 }
 
-func (r *ServiceRegistry) StartAllAutostart(configs []ServiceConfig) {
+func (r *ServiceRegistry) StartAllAutostart(configs []config.ServiceConfig) {
 	for i := range configs {
 		if configs[i].Autostart {
 			if err := r.Start(&configs[i]); err != nil {

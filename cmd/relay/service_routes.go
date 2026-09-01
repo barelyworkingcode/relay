@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -24,7 +25,7 @@ type serviceView struct {
 	ProcessError string `json:"process_error,omitempty"`
 }
 
-func serviceViewOf(c ServiceConfig, running bool) serviceView {
+func serviceViewOf(c config.ServiceConfig, running bool) serviceView {
 	return serviceView{
 		ID:               c.ID,
 		DisplayName:      c.DisplayName,

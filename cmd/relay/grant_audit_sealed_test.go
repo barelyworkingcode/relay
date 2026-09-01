@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -19,11 +20,11 @@ func TestGrantAndAudit_UnaffectedByAKeyTheCLINeverHas(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	sealed := sealedSettingsStoreAt(dir)
 	assertNoErr(t, sealed.EnsureInitialized(), "EnsureInitialized")
-	assertNoErr(t, sealed.With(func(s *Settings) {
-		hash := hashToken("grant-audit-token")
-		s.Projects = append(s.Projects, Project{
+	assertNoErr(t, sealed.With(func(s *config.Settings) {
+		hash := config.HashToken("grant-audit-token")
+		s.Projects = append(s.Projects, config.Project{
 			ID: "gaproj", Name: "Grant Audit Project", Path: t.TempDir(),
-			Token: NewSecret("grant-audit-token"), TokenHash: hash,
+			Token: config.NewSecret("grant-audit-token"), TokenHash: hash,
 			AllowedMcpIDs: []string{"*"},
 		})
 	}), "seed a project")

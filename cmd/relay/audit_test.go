@@ -11,9 +11,10 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-func newTestAudit(t *testing.T, cfg *AuditConfig) *AuditRecorder {
+func newTestAudit(t *testing.T, cfg *config.AuditConfig) *AuditRecorder {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit", "toolcalls.jsonl")
 	rec, err := NewAuditRecorder(cfg, path)
@@ -26,7 +27,7 @@ func newTestAudit(t *testing.T, cfg *AuditConfig) *AuditRecorder {
 	return rec
 }
 
-func auditedRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, mocks map[string]*mockMcpConn, cfg *AuditConfig) (*appRouter, *AuditRecorder) {
+func auditedRouter(t *testing.T, perms map[string]config.Permission, disabled map[string][]string, mocks map[string]*mockMcpConn, cfg *config.AuditConfig) (*appRouter, *AuditRecorder) {
 	t.Helper()
 	r := setupRouter(t, perms, disabled, nil, mocks)
 	rec := newTestAudit(t, cfg)
@@ -66,7 +67,7 @@ func onlyEvent(t *testing.T, events []AuditEvent) AuditEvent {
 func TestAudit_RecordsSuccessfulCall(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{"content":[{"type":"text","text":"hi"}]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	args := json.RawMessage(`{"path":"/tmp/notes.md"}`)
@@ -104,7 +105,7 @@ func TestAudit_RecordsSuccessfulCall(t *testing.T) {
 func TestAudit_RecordsDeniedCall(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file", "fs_bash"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn},
+		map[string]config.Permission{"fsmcp": config.PermOn},
 		map[string][]string{"fsmcp": {"fs_bash"}},
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
@@ -130,7 +131,7 @@ func TestAudit_RecordsDeniedCall(t *testing.T) {
 func TestAudit_RecordsUnauthorizedCall(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	if _, err := r.CallTool(context.Background(), "read_file", json.RawMessage(`{}`), "not-a-real-token"); err == nil {
@@ -155,7 +156,7 @@ func TestAudit_RecordsUnauthorizedCall(t *testing.T) {
 }
 
 func TestAudit_RecordsUnknownTool(t *testing.T) {
-	r, rec := auditedRouter(t, map[string]Permission{"fsmcp": PermOn}, nil, nil, nil)
+	r, rec := auditedRouter(t, map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil, nil)
 
 	if _, err := r.CallTool(context.Background(), "no_such_tool", nil, testToken); err == nil {
 		t.Fatal("expected an error for an unknown tool")
@@ -172,7 +173,7 @@ func TestAudit_RecordsDirectoryAuth(t *testing.T) {
 
 	// The store hands out settings by value, so the project must be opted
 	// into directory auth before the router is built from it.
-	settings := makeSettings(map[string]Permission{"fsmcp": PermOn}, nil, nil)
+	settings := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
 	settings.Projects[0].Path = dir
 	settings.Projects[0].AllowCwdAuth = true
 
@@ -203,7 +204,7 @@ func TestAudit_RecordsProtocolLevelToolError(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"),
 		okHandler(`{"isError":true,"content":[{"type":"text","text":"no such file"}]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	if _, err := r.CallTool(context.Background(), "read_file", json.RawMessage(`{}`), testToken); err != nil {
@@ -232,7 +233,7 @@ func TestAudit_ToolErrorIsFilterable(t *testing.T) {
 			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 		})
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	if _, err := r.CallTool(context.Background(), "list_dir", json.RawMessage(`{}`), testToken); err != nil {
@@ -261,7 +262,7 @@ func TestAudit_ToolErrorIsFilterable(t *testing.T) {
 func TestAudit_ListEventsOffByDefault(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), nil)
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	if _, err := r.ListTools(context.Background(), testToken); err != nil {
@@ -277,9 +278,9 @@ func TestAudit_ListEventsWhenEnabled(t *testing.T) {
 	on := true
 	mock := newMockConn("fsmcp", simpleTools("read_file", "write_file"), nil)
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock},
-		&AuditConfig{LogLists: &on})
+		&config.AuditConfig{LogLists: &on})
 
 	if _, err := r.ListTools(context.Background(), testToken); err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -296,7 +297,7 @@ func TestAudit_ListEventsWhenEnabled(t *testing.T) {
 
 func TestAudit_NilRecorderIsInert(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`))
-	r := setupRouter(t, map[string]Permission{"fsmcp": PermOn}, nil, nil,
+	r := setupRouter(t, map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{"fsmcp": mock})
 	r.audit = nil
 
@@ -310,7 +311,7 @@ func TestAudit_NilRecorderIsInert(t *testing.T) {
 
 func TestAudit_DisabledConfigYieldsNoRecorder(t *testing.T) {
 	off := false
-	rec := newTestAudit(t, &AuditConfig{Enabled: &off})
+	rec := newTestAudit(t, &config.AuditConfig{Enabled: &off})
 	if rec != nil {
 		t.Fatal("disabled config produced a recorder")
 	}
@@ -472,7 +473,7 @@ func TestAuditQuery_ScopeViolationFiltersOnTheFieldNotTheOutcome(t *testing.T) {
 }
 
 func TestAuditQuery_DeepReadsBeyondTheRing(t *testing.T) {
-	rec := newTestAudit(t, &AuditConfig{RingSize: 2})
+	rec := newTestAudit(t, &config.AuditConfig{RingSize: 2})
 	for _, id := range []string{"1", "2", "3", "4"} {
 		rec.Record(AuditEvent{ID: id, Event: AuditEventCallTool, Tool: "t" + id, Outcome: AuditOutcomeOK})
 	}
@@ -531,8 +532,8 @@ func TestAuditRecorder_ConcurrentRecord(t *testing.T) {
 }
 
 func TestAuditConfig_NilResolvesToEnabledDefaults(t *testing.T) {
-	var cfg *AuditConfig
-	got := cfg.resolve()
+	var cfg *config.AuditConfig
+	got := resolveAuditConfig(cfg)
 	if !got.Enabled || !got.LogArgs {
 		t.Errorf("nil config resolved to enabled=%v log_args=%v, want both true", got.Enabled, got.LogArgs)
 	}
@@ -552,7 +553,7 @@ func TestAuditConfig_NilResolvesToEnabledDefaults(t *testing.T) {
 
 func TestAuditConfig_ExplicitFalseIsHonored(t *testing.T) {
 	off := false
-	got := (&AuditConfig{LogArgs: &off}).resolve()
+	got := resolveAuditConfig(&config.AuditConfig{LogArgs: &off})
 	if got.LogArgs {
 		t.Error("explicit log_args=false was overridden by the default")
 	}
@@ -565,9 +566,9 @@ func TestAudit_ArgsOmittedWhenLogArgsDisabled(t *testing.T) {
 	off := false
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock},
-		&AuditConfig{LogArgs: &off})
+		&config.AuditConfig{LogArgs: &off})
 
 	if _, err := r.CallTool(context.Background(), "read_file", json.RawMessage(`{"path":"/secret"}`), testToken); err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -585,9 +586,9 @@ func TestAudit_ArgsOmittedWhenLogArgsDisabled(t *testing.T) {
 func TestAudit_ResultPreviewOptIn(t *testing.T) {
 	mock := newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{"content":"hello world"}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock},
-		&AuditConfig{MaxResultPreviewBytes: 8})
+		&config.AuditConfig{MaxResultPreviewBytes: 8})
 
 	if _, err := r.CallTool(context.Background(), "read_file", nil, testToken); err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -608,15 +609,15 @@ func TestAudit_CallerIdentityOverBridge(t *testing.T) {
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	if err := store.With(func(s *Settings) {
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: "audite2e", DisplayName: "Audit E2E"})
-		s.Projects = append(s.Projects, Project{
+	if err := store.With(func(s *config.Settings) {
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: "audite2e", DisplayName: "Audit E2E"})
+		s.Projects = append(s.Projects, config.Project{
 			ID:            "audit-e2e",
 			Name:          "audit-e2e",
 			Path:          dir,
 			AllowedMcpIDs: []string{"audite2e"},
-			Token:         NewSecret(testToken),
-			TokenHash:     hashToken(testToken),
+			Token:         config.NewSecret(testToken),
+			TokenHash:     config.HashToken(testToken),
 		})
 	}); err != nil {
 		t.Fatalf("seed settings: %v", err)

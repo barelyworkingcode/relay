@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"reflect"
 	"testing"
 )
@@ -15,7 +16,7 @@ import (
 // but it shows up here as shared backing storage, which is exactly the
 // condition under which mutating the copy would corrupt the original.
 func TestSettings_CloneCopiesEveryField(t *testing.T) {
-	orig := &Settings{}
+	orig := &config.Settings{}
 	counter := 0
 	fillDistinct(reflect.ValueOf(orig).Elem(), &counter)
 
@@ -67,9 +68,9 @@ func fillDistinct(v reflect.Value, counter *int) {
 		// cannot Set them without the "obtained using unexported field"
 		// panic. NewSecret builds one through its normal exported
 		// constructor instead of walking its fields.
-		if v.Type() == reflect.TypeOf(Secret{}) {
+		if v.Type() == reflect.TypeOf(config.Secret{}) {
 			*counter++
-			v.Set(reflect.ValueOf(NewSecret(fmt.Sprintf("s%d", *counter))))
+			v.Set(reflect.ValueOf(config.NewSecret(fmt.Sprintf("s%d", *counter))))
 			return
 		}
 		for i := 0; i < v.NumField(); i++ {
@@ -94,7 +95,7 @@ func checkIndependent(t *testing.T, path string, orig, clone reflect.Value) {
 	// ever replaced wholesale, never mutated in place — so a Clone that
 	// shares that pointer with the original cannot corrupt it the way a
 	// shared *bool or slice would, and there is nothing to check here.
-	if clone.Type() == reflect.TypeOf(Secret{}) {
+	if clone.Type() == reflect.TypeOf(config.Secret{}) {
 		return
 	}
 	switch clone.Kind() {
@@ -149,10 +150,10 @@ func checkIndependent(t *testing.T, path string, orig, clone reflect.Value) {
 // "no change", an empty one means "clear", and the two must not collapse
 // into each other on the way through Clone.
 func TestSettings_CloneNilStaysNil(t *testing.T) {
-	orig := &Settings{
-		ExternalMcps: []ExternalMcp{{ID: "mcp-nil"}},
-		Services:     []ServiceConfig{{ID: "svc-nil"}},
-		Projects:     []Project{{ID: "proj-nil"}},
+	orig := &config.Settings{
+		ExternalMcps: []config.ExternalMcp{{ID: "mcp-nil"}},
+		Services:     []config.ServiceConfig{{ID: "svc-nil"}},
+		Projects:     []config.Project{{ID: "proj-nil"}},
 	}
 
 	clone := orig.Clone()
@@ -189,8 +190,8 @@ func TestSettings_CloneNilStaysNil(t *testing.T) {
 
 	// An explicit empty (non-nil) collection must stay non-nil too — the
 	// other half of the same distinction.
-	origEmpty := &Settings{
-		Projects: []Project{{
+	origEmpty := &config.Settings{
+		Projects: []config.Project{{
 			ID:            "proj-empty",
 			AllowedMcpIDs: []string{},
 			Access:        map[string]string{},

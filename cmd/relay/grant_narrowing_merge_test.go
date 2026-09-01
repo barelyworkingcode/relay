@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant is RED against the
@@ -25,10 +26,10 @@ import (
 // whole-map replace built from only the id the request named.
 func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		p, _ := s.findProjectByID(mail.ID)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, mail.ID)
 		if p == nil {
 			t.Fatal("seeded project vanished")
 		}
@@ -37,7 +38,7 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 			"macmcp": {"mail_search", "mail_send"},
 			"other":  {"other_tool"},
 		}
-		p.Access = map[string]string{"macmcp": AccessWrite, "other": AccessWrite}
+		p.Access = map[string]string{"macmcp": config.AccessWrite, "other": config.AccessWrite}
 		p.AllowExternal = map[string]bool{"macmcp": true, "other": true}
 	}), "widen behind the guards")
 
@@ -46,7 +47,7 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
 	tools := map[string][]string{"macmcp": {"mail_search"}}
-	access := map[string]string{"macmcp": AccessRead}
+	access := map[string]string{"macmcp": config.AccessRead}
 	external := map[string]bool{"macmcp": false}
 	_, changed, err := ops.NarrowForEnrolment(context.Background(), mail.ID,
 		remoteNarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},
@@ -56,7 +57,7 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 		t.Fatal("expected a genuine narrowing to report changed fields")
 	}
 
-	proj, _ := store.Get().findProjectByID(mail.ID)
+	proj, _ := config.FindProjectByID(store.Get(), mail.ID)
 	if proj == nil {
 		t.Fatal("the project vanished")
 	}
@@ -68,11 +69,11 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 		t.Errorf("stored allowed_tools[other] = %v, want [other_tool] unchanged — narrowing macmcp must not touch an MCP the request never named", got)
 	}
 
-	if got := proj.Access["macmcp"]; got != AccessRead {
-		t.Errorf("stored access[macmcp] = %q, want %q", got, AccessRead)
+	if got := proj.Access["macmcp"]; got != config.AccessRead {
+		t.Errorf("stored access[macmcp] = %q, want %q", got, config.AccessRead)
 	}
-	if got := proj.Access["other"]; got != AccessWrite {
-		t.Errorf("stored access[other] = %q, want %q unchanged", got, AccessWrite)
+	if got := proj.Access["other"]; got != config.AccessWrite {
+		t.Errorf("stored access[other] = %q, want %q unchanged", got, config.AccessWrite)
 	}
 
 	if got := proj.AllowExternal["macmcp"]; got != false {
@@ -95,10 +96,10 @@ func TestNarrowForEnrolment_UntouchedMcpKeepsItsStoredGrant(t *testing.T) {
 // every time.
 func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		p, _ := s.findProjectByID(mail.ID)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, mail.ID)
 		if p == nil {
 			t.Fatal("seeded project vanished")
 		}
@@ -107,7 +108,7 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 			"macmcp": {"mail_search", "mail_send"},
 			"other":  {"other_tool"},
 		}
-		p.Access = map[string]string{"macmcp": AccessWrite, "other": AccessWrite}
+		p.Access = map[string]string{"macmcp": config.AccessWrite, "other": config.AccessWrite}
 		p.AllowExternal = map[string]bool{"macmcp": true, "other": true}
 	}), "widen behind the guards")
 
@@ -116,9 +117,9 @@ func TestNarrowForEnrolment_ReplaySafeUnderMergeSemantics(t *testing.T) {
 	surfaces := func() McpSurfaces { return McpSurfaces{"macmcp": macmcpSurface()} }
 	caller := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: "sha256:" + strings.Repeat("a", 64)}
 
-	narrow := func() (Project, []string, error) {
+	narrow := func() (config.Project, []string, error) {
 		tools := map[string][]string{"macmcp": {"mail_search"}}
-		access := map[string]string{"macmcp": AccessRead}
+		access := map[string]string{"macmcp": config.AccessRead}
 		external := map[string]bool{"macmcp": false}
 		return ops.NarrowForEnrolment(context.Background(), mail.ID,
 			remoteNarrowFields{AllowedTools: &tools, Access: &access, AllowExternal: &external},

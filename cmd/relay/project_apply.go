@@ -1,23 +1,25 @@
 package main
 
+import "github.com/barelyworkingcode/relay/internal/config"
+
 import "encoding/json"
 
 // projectCreateFields is the transport-agnostic body for creating a project.
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
 // create orchestration lives in exactly one place (applyProjectCreate).
 type projectCreateFields struct {
-	Name             string              `json:"name"`
-	Path             string              `json:"path"`
-	Kind             ProjectKind         `json:"kind,omitempty"`
-	AllowedMcpIDs    []string            `json:"allowed_mcp_ids"`
-	AllowedModels    []string            `json:"allowed_models"`
-	ChatTemplates    []ChatTemplate      `json:"chat_templates"`
-	ShellTemplates   []ShellTemplate     `json:"shell_templates"`
-	PermissionPolicy *PermissionPolicy   `json:"permission_policy,omitempty"`
-	GenerateSkill    bool                `json:"generate_skill,omitempty"`
-	AllowCwdAuth     bool                `json:"allow_cwd_auth,omitempty"`
-	DisabledTools    map[string][]string `json:"disabled_tools,omitempty"`
-	SessionFolders   []string            `json:"session_folders,omitempty"`
+	Name             string                   `json:"name"`
+	Path             string                   `json:"path"`
+	Kind             config.ProjectKind       `json:"kind,omitempty"`
+	AllowedMcpIDs    []string                 `json:"allowed_mcp_ids"`
+	AllowedModels    []string                 `json:"allowed_models"`
+	ChatTemplates    []config.ChatTemplate    `json:"chat_templates"`
+	ShellTemplates   []config.ShellTemplate   `json:"shell_templates"`
+	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
+	GenerateSkill    bool                     `json:"generate_skill,omitempty"`
+	AllowCwdAuth     bool                     `json:"allow_cwd_auth,omitempty"`
+	DisabledTools    map[string][]string      `json:"disabled_tools,omitempty"`
+	SessionFolders   []string                 `json:"session_folders,omitempty"`
 	// AllowedTools, Access and Context are the permission set an operator can
 	// type (ADR-011 decisions 2, 2b and 6): a confinement an operator cannot
 	// express is a confinement that does not exist.
@@ -34,18 +36,18 @@ type projectCreateFields struct {
 // "not in the request" (no change); set pointers fully replace the prior value.
 // Shared by the HTTP PUT route and the IPC update handler.
 type projectUpdateFields struct {
-	Name             *string              `json:"name,omitempty"`
-	Path             *string              `json:"path,omitempty"`
-	Kind             *ProjectKind         `json:"kind,omitempty"`
-	AllowedMcpIDs    *[]string            `json:"allowed_mcp_ids,omitempty"`
-	AllowedModels    *[]string            `json:"allowed_models,omitempty"`
-	ChatTemplates    *[]ChatTemplate      `json:"chat_templates,omitempty"`
-	ShellTemplates   *[]ShellTemplate     `json:"shell_templates,omitempty"`
-	PermissionPolicy *PermissionPolicy    `json:"permission_policy,omitempty"`
-	GenerateSkill    *bool                `json:"generate_skill,omitempty"`
-	AllowCwdAuth     *bool                `json:"allow_cwd_auth,omitempty"`
-	DisabledTools    *map[string][]string `json:"disabled_tools,omitempty"`
-	SessionFolders   *[]string            `json:"session_folders,omitempty"`
+	Name             *string                  `json:"name,omitempty"`
+	Path             *string                  `json:"path,omitempty"`
+	Kind             *config.ProjectKind      `json:"kind,omitempty"`
+	AllowedMcpIDs    *[]string                `json:"allowed_mcp_ids,omitempty"`
+	AllowedModels    *[]string                `json:"allowed_models,omitempty"`
+	ChatTemplates    *[]config.ChatTemplate   `json:"chat_templates,omitempty"`
+	ShellTemplates   *[]config.ShellTemplate  `json:"shell_templates,omitempty"`
+	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
+	GenerateSkill    *bool                    `json:"generate_skill,omitempty"`
+	AllowCwdAuth     *bool                    `json:"allow_cwd_auth,omitempty"`
+	DisabledTools    *map[string][]string     `json:"disabled_tools,omitempty"`
+	SessionFolders   *[]string                `json:"session_folders,omitempty"`
 	// Pointers for the same nil-means-no-change reason as everything above:
 	// an operator editing a project's name must not clear its scope, and a
 	// cleared scope must be an empty object, not indistinguishable from an
@@ -62,7 +64,7 @@ type projectUpdateFields struct {
 // *before* invoking, so a bad policy never creates a project that has to be
 // rolled back. Returns the fully-resolved project (re-read after the
 // sub-mutations).
-func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces) (Project, error) {
+func applyProjectCreate(s *config.Settings, f projectCreateFields, surfaces McpSurfaces) (config.Project, error) {
 	// GenerateSkill, AllowCwdAuth, ShellTemplates, PermissionPolicy,
 	// ChatTemplates and the permission-set fields are not parameters of
 	// CreateProjectWithTokenKind — they are applied by sub-mutations below,
@@ -72,7 +74,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	// edit: validating the full requested shape here, before anything is
 	// created, means a request that fails on e.g. remote+generate_skill
 	// never leaves a half-built project to roll back.
-	candidate := Project{
+	candidate := config.Project{
 		Kind:             f.Kind,
 		Path:             f.Path,
 		AllowedMcpIDs:    f.AllowedMcpIDs,
@@ -89,23 +91,23 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 		ChatTemplates:    f.ChatTemplates,
 	}
 	if err := validateProjectShape(&candidate); err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
 	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
-	if err := s.ValidateProjectGrants(&candidate, surfaces); err != nil {
-		return Project{}, err
+	if err := validateProjectGrants(&candidate, surfaces); err != nil {
+		return config.Project{}, err
 	}
 
-	created, err := s.CreateProjectWithTokenKind(
-		f.Kind, f.Name, f.Path,
+	created, err := createProjectWithTokenKind(
+		s, f.Kind, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
 		surfaces,
 	)
 	if err != nil {
-		return Project{}, err
+		return config.Project{}, err
 	}
 	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
@@ -131,7 +133,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	// Last, because it re-runs SyncProjectToken, which prunes by the MCP set
 	// the record ends up with.
 	if len(f.Context) > 0 {
-		s.UpdateProjectContext(created.ID, f.Context, surfaces)
+		updateProjectContext(s, created.ID, f.Context, surfaces)
 	}
 	if len(f.ShellTemplates) > 0 {
 		s.UpdateProjectShellTemplates(created.ID, f.ShellTemplates)
@@ -139,7 +141,7 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 	for mcpID, disabled := range f.DisabledTools {
 		s.UpdateProjectDisabledTools(created.ID, mcpID, disabled)
 	}
-	if proj, _ := s.findProjectByID(created.ID); proj != nil {
+	if proj, _ := config.FindProjectByID(s, created.ID); proj != nil {
 		created = *proj
 	}
 	return created, nil
@@ -152,10 +154,10 @@ func applyProjectCreate(s *Settings, f projectCreateFields, surfaces McpSurfaces
 // NOTHING is mutated. surfaces is a lazy fetch invoked only when a path/MCP
 // change or a remote-shaped result actually needs it, so the common rename
 // stays allocation-free.
-func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces func() McpSurfaces) (Project, bool, error) {
-	proj, _ := s.findProjectByID(id)
+func applyProjectUpdate(s *config.Settings, id string, f projectUpdateFields, surfaces func() McpSurfaces) (config.Project, bool, error) {
+	proj, _ := config.FindProjectByID(s, id)
 	if proj == nil {
-		return Project{}, false, nil
+		return config.Project{}, false, nil
 	}
 
 	// Validate the FINAL shape the patch would produce, not the touched
@@ -213,7 +215,7 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 		candidate.Context = *f.Context
 	}
 	if err := validateProjectShape(&candidate); err != nil {
-		return Project{}, true, err
+		return config.Project{}, true, err
 	}
 	// A project that stops being remote strands every enrolment granting it,
 	// so the conversion is refused while any exists (ADR-010 decision 3).
@@ -223,8 +225,8 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	// the check there would turn a pre-existing bad grant into a wall in
 	// front of the very edit that might fix it.
 	if !candidate.IsRemote() && (proj.IsRemote() || f.Kind != nil) {
-		if err := s.ValidateProjectEnrolments(&candidate); err != nil {
-			return Project{}, true, err
+		if err := validateProjectEnrolments(s, &candidate); err != nil {
+			return config.Project{}, true, err
 		}
 	}
 
@@ -244,12 +246,12 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 	}
 	if needPermissionsCheck {
 		if err := validateProjectPermissions(&candidate, sc); err != nil {
-			return Project{}, true, err
+			return config.Project{}, true, err
 		}
 	}
 	if needGrantsCheck {
-		if err := s.ValidateProjectGrants(&candidate, sc); err != nil {
-			return Project{}, true, err
+		if err := validateProjectGrants(&candidate, sc); err != nil {
+			return config.Project{}, true, err
 		}
 	}
 
@@ -257,13 +259,13 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 		s.UpdateProjectName(id, *f.Name)
 	}
 	if f.Kind != nil {
-		s.UpdateProjectKind(id, *f.Kind)
+		updateProjectKind(s, id, *f.Kind)
 	}
 	if f.Path != nil {
-		s.UpdateProjectPath(id, *f.Path, sc)
+		updateProjectPath(s, id, *f.Path, sc)
 	}
 	if f.AllowedMcpIDs != nil {
-		s.UpdateProjectMcps(id, *f.AllowedMcpIDs, sc)
+		updateProjectMcps(s, id, *f.AllowedMcpIDs, sc)
 	}
 	if f.AllowedModels != nil {
 		s.UpdateProjectModels(id, *f.AllowedModels)
@@ -302,14 +304,14 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 		s.UpdateProjectAllowExternal(id, *f.AllowExternal)
 	}
 	if f.Context != nil {
-		s.UpdateProjectContext(id, *f.Context, sc)
+		updateProjectContext(s, id, *f.Context, sc)
 	}
 	if f.DisabledTools != nil {
 		// Full replace: any MCP key omitted from the request resets to "all
 		// tools allowed", so both the existing and new keys are walked to
 		// let removals propagate.
 		existing := map[string]bool{}
-		if proj, _ := s.findProjectByID(id); proj != nil {
+		if proj, _ := config.FindProjectByID(s, id); proj != nil {
 			for k := range proj.DisabledTools {
 				existing[k] = true
 			}
@@ -324,8 +326,8 @@ func applyProjectUpdate(s *Settings, id string, f projectUpdateFields, surfaces 
 		}
 	}
 
-	if proj, _ := s.findProjectByID(id); proj != nil {
+	if proj, _ := config.FindProjectByID(s, id); proj != nil {
 		return *proj, true, nil
 	}
-	return Project{}, false, nil
+	return config.Project{}, false, nil
 }

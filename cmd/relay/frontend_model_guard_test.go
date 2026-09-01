@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/barelyworkingcode/relay/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,10 +9,10 @@ import (
 	"testing"
 )
 
-func restrictedProject(t *testing.T, store SettingsStore, models []string) Project {
+func restrictedProject(t *testing.T, store config.SettingsStore, models []string) config.Project {
 	t.Helper()
 	proj := createTestProject(t, store, "Restricted", t.TempDir(), []string{"fsmcp"})
-	if err := store.With(func(s *Settings) {
+	if err := store.With(func(s *config.Settings) {
 		s.UpdateProjectModels(proj.ID, models)
 	}); err != nil {
 		t.Fatalf("UpdateProjectModels: %v", err)
@@ -235,17 +236,17 @@ func TestSessionModelGuard_IgnoresNonPost(t *testing.T) {
 
 // Built by hand rather than through the create path, so a refusal proves the
 // guard itself acted — not that validation happened to run upstream.
-func remoteProject(t *testing.T, store SettingsStore) Project {
+func remoteProject(t *testing.T, store config.SettingsStore) config.Project {
 	t.Helper()
-	var out Project
-	if err := store.With(func(s *Settings) {
-		out = Project{
+	var out config.Project
+	if err := store.With(func(s *config.Settings) {
+		out = config.Project{
 			ID:            "remote-session-proj",
 			Name:          "remote",
-			Kind:          ProjectKindRemote,
+			Kind:          config.ProjectKindRemote,
 			AllowedMcpIDs: []string{},
-			Token:         NewSecret("tok-remote-session"),
-			TokenHash:     hashToken("tok-remote-session"),
+			Token:         config.NewSecret("tok-remote-session"),
+			TokenHash:     config.HashToken("tok-remote-session"),
 		}
 		s.Projects = append(s.Projects, out)
 	}); err != nil {

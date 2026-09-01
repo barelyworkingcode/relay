@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -105,25 +106,25 @@ func TestIPCDispatch_HandlerSurvivesMalformedPayload(t *testing.T) {
 // errors. Suitable for handler tests that don't care about persistence.
 type noopStore struct{}
 
-func (noopStore) EnsureInitialized() error      { return nil }
-func (noopStore) Get() *Settings                { return defaultSettings() }
-func (noopStore) Reload() *Settings             { return defaultSettings() }
-func (noopStore) ReloadIfChanged() *Settings    { return defaultSettings() }
-func (noopStore) With(fn func(*Settings)) error { fn(defaultSettings()); return nil }
-func (noopStore) Sealer() sealed.Sealer         { return nil }
+func (noopStore) EnsureInitialized() error             { return nil }
+func (noopStore) Get() *config.Settings                { return config.DefaultSettings() }
+func (noopStore) Reload() *config.Settings             { return config.DefaultSettings() }
+func (noopStore) ReloadIfChanged() *config.Settings    { return config.DefaultSettings() }
+func (noopStore) With(fn func(*config.Settings)) error { fn(config.DefaultSettings()); return nil }
+func (noopStore) Sealer() sealed.Sealer                { return nil }
 
 // noopServiceManager satisfies ServiceManager with no-op methods. Used
 // only as a placeholder so handler tests can construct an IPCContext.
 type noopServiceManager struct{}
 
-func (noopServiceManager) Start(*ServiceConfig) error          { return nil }
-func (noopServiceManager) Stop(string)                         {}
-func (noopServiceManager) Reload(string, *ServiceConfig) error { return nil }
-func (noopServiceManager) IsRunning(string) bool               { return false }
-func (noopServiceManager) RunningIDs() []string                { return nil }
-func (noopServiceManager) PIDsByServiceID() map[string]int     { return map[string]int{} }
-func (noopServiceManager) CleanupDead()                        {}
-func (noopServiceManager) ReclaimOrphans([]ServiceConfig)      {}
-func (noopServiceManager) StartAllAutostart([]ServiceConfig)   {}
-func (noopServiceManager) StopAll()                            {}
-func (noopServiceManager) CloseFrontendChannel()               {}
+func (noopServiceManager) Start(*config.ServiceConfig) error          { return nil }
+func (noopServiceManager) Stop(string)                                {}
+func (noopServiceManager) Reload(string, *config.ServiceConfig) error { return nil }
+func (noopServiceManager) IsRunning(string) bool                      { return false }
+func (noopServiceManager) RunningIDs() []string                       { return nil }
+func (noopServiceManager) PIDsByServiceID() map[string]int            { return map[string]int{} }
+func (noopServiceManager) CleanupDead()                               {}
+func (noopServiceManager) ReclaimOrphans([]config.ServiceConfig)      {}
+func (noopServiceManager) StartAllAutostart([]config.ServiceConfig)   {}
+func (noopServiceManager) StopAll()                                   {}
+func (noopServiceManager) CloseFrontendChannel()                      {}

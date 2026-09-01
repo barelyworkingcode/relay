@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
@@ -69,8 +70,8 @@ func (p *collidingProvider) CallTool(_ context.Context, id, name string, _ json.
 // that was in force.
 func (p *collidingProvider) McpSurfaceFor(string) McpSurface { return McpSurface{} }
 
-func (p *collidingProvider) Reconcile(context.Context, []ExternalMcp)           {}
-func (p *collidingProvider) Reload(context.Context, string, *ExternalMcp) error { return nil }
+func (p *collidingProvider) Reconcile(context.Context, []config.ExternalMcp)           {}
+func (p *collidingProvider) Reload(context.Context, string, *config.ExternalMcp) error { return nil }
 
 func (p *collidingProvider) dispatches() []dispatchedCall {
 	p.mu.Lock()
@@ -124,27 +125,28 @@ func newCollisionRouter(t *testing.T, rec *AuditRecorder, dir string, order, all
 	t.Helper()
 	tp := newCollidingProvider(order, collisionTools())
 
-	mcps := make([]ExternalMcp, 0, 3)
+	mcps := make([]config.ExternalMcp, 0, 3)
 	for _, id := range []string{collisionMcpA, collisionMcpB, collisionMcpC} {
-		mcps = append(mcps, ExternalMcp{ID: id, DisplayName: id})
+		mcps = append(mcps, config.ExternalMcp{ID: id, DisplayName: id})
 	}
-	s := &Settings{
+	s := &config.Settings{
 		Version:      1,
 		ExternalMcps: mcps,
-		Projects: []Project{{
+		Projects: []config.Project{{
 			ID:            "collision-project",
 			Name:          "collision",
 			Path:          "/tmp/collision",
 			AllowedMcpIDs: slices.Clone(allowedMcpIDs),
-			Token:         NewSecret(testToken),
-			TokenHash:     hashToken(testToken),
+			Token:         config.NewSecret(testToken),
+			TokenHash:     config.HashToken(testToken),
 			DisabledTools: disabled,
 			Context:       collisionScopes(),
 		}},
-		AdminSecret: NewSecret("supersecretadmin"),
+		AdminSecret: config.NewSecret("supersecretadmin"),
 	}
+	store := config.NewSettingsStoreWithCache(dir, testSealer(), s)
 	return &appRouter{
-		store:    &FileSettingsStore{cache: s, dir: dir, sealer: testSealer()},
+		store:    store,
 		tools:    tp,
 		services: NewServiceRegistry(),
 		onChange: func() {},
@@ -435,23 +437,24 @@ func TestCallTool_SingleMcpBehaviourIsUnchanged(t *testing.T) {
 		t.Helper()
 		rec := newTestAudit(t, nil)
 		tp := newCollidingProvider(soloOrder, soloTools)
-		s := &Settings{
+		s := &config.Settings{
 			Version:      1,
-			ExternalMcps: []ExternalMcp{{ID: collisionMcpA, DisplayName: collisionMcpA}, {ID: collisionMcpC, DisplayName: collisionMcpC}},
-			Projects: []Project{{
+			ExternalMcps: []config.ExternalMcp{{ID: collisionMcpA, DisplayName: collisionMcpA}, {ID: collisionMcpC, DisplayName: collisionMcpC}},
+			Projects: []config.Project{{
 				ID:            "solo-project",
 				Name:          "solo",
 				Path:          "/tmp/solo",
 				AllowedMcpIDs: allowed,
-				Token:         NewSecret(testToken),
-				TokenHash:     hashToken(testToken),
+				Token:         config.NewSecret(testToken),
+				TokenHash:     config.HashToken(testToken),
 				DisabledTools: disabled,
 				Context:       collisionScopes(),
 			}},
-			AdminSecret: NewSecret("supersecretadmin"),
+			AdminSecret: config.NewSecret("supersecretadmin"),
 		}
+		store := config.NewSettingsStoreWithCache(t.TempDir(), testSealer(), s)
 		r := &appRouter{
-			store:    &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
+			store:    store,
 			tools:    tp,
 			services: NewServiceRegistry(),
 			onChange: func() {},
@@ -548,22 +551,22 @@ func newRealManagerCollisionRouter(t *testing.T, allowedMcpIDs []string) (*appRo
 	addMockConn(mgr, collisionMcpA, newMockConn(collisionMcpA, simpleTools(collidingTool), a.handler(collisionMcpA)))
 	addMockConn(mgr, collisionMcpB, newMockConn(collisionMcpB, simpleTools(collidingTool), b.handler(collisionMcpB)))
 
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: collisionMcpA, DisplayName: collisionMcpA},
 			{ID: collisionMcpB, DisplayName: collisionMcpB},
 		},
-		Projects: []Project{{
+		Projects: []config.Project{{
 			ID:            "collision-project",
 			Name:          "collision",
 			Path:          "/tmp/collision",
 			AllowedMcpIDs: slices.Clone(allowedMcpIDs),
-			Token:         NewSecret(testToken),
-			TokenHash:     hashToken(testToken),
+			Token:         config.NewSecret(testToken),
+			TokenHash:     config.HashToken(testToken),
 			Context:       collisionScopes(),
 		}},
-		AdminSecret: NewSecret("supersecretadmin"),
+		AdminSecret: config.NewSecret("supersecretadmin"),
 	}
 	return newTestRouter(t, s, mgr), a, b
 }

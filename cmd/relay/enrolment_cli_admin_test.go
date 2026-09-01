@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
@@ -43,7 +44,7 @@ func TestEnrolment_CLIAdminAbsentMeansOffAndRoundTripsAbsent(t *testing.T) {
 	}
 	store := sealedSettingsStoreAt(dir)
 
-	e := store.Get().FindEnrolment("hermes-mail")
+	e := findEnrolment(store.Get(), "hermes-mail")
 	if e == nil {
 		t.Fatal("fixture enrolment did not load")
 	}
@@ -53,7 +54,7 @@ func TestEnrolment_CLIAdminAbsentMeansOffAndRoundTripsAbsent(t *testing.T) {
 
 	// Force a rewrite (a no-op mutation still rewrites the whole file) and
 	// check the key never got invented.
-	assertNoErr(t, store.With(func(s *Settings) {}), "With")
+	assertNoErr(t, store.With(func(s *config.Settings) {}), "With")
 	raw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	assertNoErr(t, err, "read settings.json after rewrite")
 	if strings.Contains(string(raw), "cli_admin") {
@@ -66,8 +67,8 @@ func TestEnrolment_CLIAdminAbsentMeansOffAndRoundTripsAbsent(t *testing.T) {
 // change (a bool rides the value copy), so this pins that it keeps working
 // rather than re-testing cloneEnrolment's implementation.
 func TestSettingsClone_CarriesCLIAdminAndIsolatesTheCopy(t *testing.T) {
-	s := &Settings{
-		Enrolments: []Enrolment{{ClientID: "hermes-mail", CLIAdmin: true}},
+	s := &config.Settings{
+		Enrolments: []config.Enrolment{{ClientID: "hermes-mail", CLIAdmin: true}},
 	}
 	clone := s.Clone()
 	if len(clone.Enrolments) != 1 || !clone.Enrolments[0].CLIAdmin {
@@ -118,7 +119,7 @@ func TestEnrolmentUpdateRequest_DigestBindsCLIAdmin(t *testing.T) {
 // names cli-admin and the client id. Turning it off also prompts.
 func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
 
@@ -151,7 +152,7 @@ func TestEnrolmentOpsUpdate_CLIAdminPromptsBothDirections(t *testing.T) {
 // AC-5: toggling with a nil gate refuses before touching the store.
 func TestEnrolmentOpsUpdate_CLIAdminNilGateRefusesBeforeTouchingStore(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
 
@@ -169,7 +170,7 @@ func TestEnrolmentOpsUpdate_CLIAdminNilGateRefusesBeforeTouchingStore(t *testing
 // provider is ever called.
 func TestEnrolmentOpsUpdate_CLIAdminAuditingOffRefusesBeforeProvider(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
 
@@ -194,11 +195,11 @@ func TestEnrolmentOpsUpdate_CLIAdminAuditingOffRefusesBeforeProvider(t *testing.
 // toggled, mirroring TestUpdateEnrolment_BudgetOnlyUpdateSurvivesDanglingGrant.
 func TestUpdateEnrolment_CLIAdminOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-mail", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment")
 
-	assertNoErr(t, store.With(func(s *Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.RemoveProject(mail.ID) }), "delete the granted profile out from under the enrolment")
 
 	on := true
 	_, after, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: "hermes-mail", CLIAdmin: &on})
@@ -218,7 +219,7 @@ func TestUpdateEnrolment_CLIAdminOnlyUpdateSurvivesDanglingGrant(t *testing.T) {
 // TestEnrolUpdate_CLIDispatchesTheParsedRequestThroughTheBroker does.
 func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 	store := newCLISandboxStore(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	enrolCreateForCLITest(t, store, "hermes-mail", []string{mail.ID})
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
@@ -262,7 +263,7 @@ func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 // and omits the key otherwise.
 func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 	store := newCLISandboxStore(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	enrolCreateForCLITest(t, store, "hermes-mail", []string{mail.ID})
 	enrolCreateForCLITest(t, store, "hermes-off", []string{mail.ID})
 
@@ -319,7 +320,7 @@ func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 // PROFILES and CALLS/WINDOW, "on" when set and "-" when not.
 func TestEnrolList_PrintsCLIAdminColumn(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	_, err := createEnrolment(store, enrolmentRequest{ClientID: "hermes-on", ProjectIDs: []string{mail.ID}})
 	assertNoErr(t, err, "createEnrolment on")
 	_, err = createEnrolment(store, enrolmentRequest{ClientID: "hermes-off", ProjectIDs: []string{mail.ID}})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -77,7 +78,7 @@ func (f serviceFields) resolvedID() string {
 // were pointers. Update's absent-preserves-existing behaviour is layered on
 // top of this in ServiceOps.Update, not here -- toConfig alone cannot know
 // what "existing" is.
-func (f serviceFields) toConfig(id string) ServiceConfig {
+func (f serviceFields) toConfig(id string) config.ServiceConfig {
 	var workingDir string
 	if f.WorkingDir != nil {
 		workingDir = *f.WorkingDir
@@ -90,7 +91,7 @@ func (f serviceFields) toConfig(id string) ServiceConfig {
 	if f.Autostart != nil {
 		autostart = *f.Autostart
 	}
-	return ServiceConfig{
+	return config.ServiceConfig{
 		ID:               id,
 		DisplayName:      f.DisplayName,
 		Command:          f.Command,
@@ -146,7 +147,7 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 // IPC door (ipc_services.go); neither holds logic beyond decoding a request
 // and spelling the result.
 type ServiceOps struct {
-	Store    SettingsStore
+	Store    config.SettingsStore
 	Registry ServiceManager
 	// Gate is the presence check Create and Update demand before they
 	// touch the store (ADR-017 decisions 3 and 4): a service's `command`
@@ -169,74 +170,74 @@ func (o *ServiceOps) notify() {
 	}
 }
 
-func (o *ServiceOps) List() []ServiceConfig {
+func (o *ServiceOps) List() []config.ServiceConfig {
 	svcs := o.Store.Get().Services
 	if svcs == nil {
-		return []ServiceConfig{}
+		return []config.ServiceConfig{}
 	}
 	return svcs
 }
 
-func (o *ServiceOps) Get(id string) (ServiceConfig, error) {
-	svc, _ := o.Store.Get().findServiceByID(id)
+func (o *ServiceOps) Get(id string) (config.ServiceConfig, error) {
+	svc, _ := config.FindServiceByID(o.Store.Get(), id)
 	if svc == nil {
-		return ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
+		return config.ServiceConfig{}, fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
 	return *svc, nil
 }
 
-func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (ServiceConfig, error) {
+func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID string) (config.ServiceConfig, error) {
 	id := f.resolvedID()
 	if id == "" {
-		return ServiceConfig{}, invalidService("display name is required")
+		return config.ServiceConfig{}, invalidService("display name is required")
 	}
 	if f.Command == "" {
-		return ServiceConfig{}, invalidService("command is required")
+		return config.ServiceConfig{}, invalidService("command is required")
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return ServiceConfig{}, err
+		return config.ServiceConfig{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
 		fmt.Sprintf("register the service %q (%s) that runs %s", f.DisplayName, id, f.Command))
 	if err != nil {
-		return ServiceConfig{}, err
+		return config.ServiceConfig{}, err
 	}
 
-	config := f.toConfig(id)
-	if err := o.Store.With(func(s *Settings) { s.UpsertService(config) }); err != nil {
-		return ServiceConfig{}, fmt.Errorf("save service: %w", err)
+	cfg := f.toConfig(id)
+	if err := o.Store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
+		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
 	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, grant.ID()); err != nil {
 		slog.Error("service registered but not recorded in the audit log", "id", id, "error", err)
 	}
 
 	var startErr error
-	if config.Autostart {
-		startErr = o.Registry.Start(&config)
+	if cfg.Autostart {
+		startErr = o.Registry.Start(&cfg)
 	}
 	o.notify()
 	if startErr != nil {
-		return config, fmt.Errorf("%w: autostart failed: %v", errServiceProcess, startErr)
+		return cfg, fmt.Errorf("%w: autostart failed: %v", errServiceProcess, startErr)
 	}
-	return config, nil
+	return cfg, nil
 }
 
 // Restart is conditional on current state, not on the request: starting a
 // stopped service as a side effect of editing it would surprise a caller who
 // asked only for an edit.
-func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (ServiceConfig, error) {
+func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via, credID string) (config.ServiceConfig, error) {
 	if f.Command == "" {
-		return ServiceConfig{}, invalidService("command is required")
+		return config.ServiceConfig{}, invalidService("command is required")
 	}
 
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
-		return ServiceConfig{}, err
+		return config.ServiceConfig{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
 		fmt.Sprintf("update the service %q to run %s", id, f.Command))
 	if err != nil {
-		return ServiceConfig{}, err
+		return config.ServiceConfig{}, err
 	}
 
 	// IsRunning is sampled before the commit, same as the config merge below;
@@ -245,13 +246,13 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	// id atomically with the write and declines when it is gone.
 	wasRunning := o.Registry.IsRunning(id)
 
-	var config ServiceConfig
-	if err := withDeclinable(o.Store, func(s *Settings) error {
-		existing, idx := s.findServiceByID(id)
+	var cfg config.ServiceConfig
+	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		existing, idx := config.FindServiceByID(s, id)
 		if idx < 0 {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
-		config = f.toConfig(id)
+		cfg = f.toConfig(id)
 		// Every pointer/nil-able field on serviceFields means the same thing
 		// on Update: the request didn't mention it, so the stored value
 		// carries forward unchanged rather than being reset to that field's
@@ -259,30 +260,30 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 		// (added to close the same hole for --workdir, --url, --autostart,
 		// --env and --args) follow it exactly.
 		if f.FrontendConsumer == nil {
-			config.FrontendConsumer = existing.FrontendConsumer
+			cfg.FrontendConsumer = existing.FrontendConsumer
 		}
 		if f.WorkingDir == nil {
-			config.WorkingDir = existing.WorkingDir
+			cfg.WorkingDir = existing.WorkingDir
 		}
 		if f.URL == nil {
-			config.URL = existing.URL
+			cfg.URL = existing.URL
 		}
 		if f.Autostart == nil {
-			config.Autostart = existing.Autostart
+			cfg.Autostart = existing.Autostart
 		}
 		if f.Args == nil {
-			config.Args = existing.Args
+			cfg.Args = existing.Args
 		}
 		if f.Env == nil {
-			config.Env = existing.Env
+			cfg.Env = existing.Env
 		}
-		s.UpdateService(config)
+		s.UpdateService(cfg)
 		return nil
 	}); err != nil {
 		if errors.Is(err, errServiceNotFound) {
-			return ServiceConfig{}, err
+			return config.ServiceConfig{}, err
 		}
-		return ServiceConfig{}, fmt.Errorf("save service: %w", err)
+		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
 	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, grant.ID()); err != nil {
 		slog.Error("service updated but not recorded in the audit log", "id", id, "error", err)
@@ -290,13 +291,13 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 
 	var reloadErr error
 	if wasRunning {
-		reloadErr = o.Registry.Reload(id, &config)
+		reloadErr = o.Registry.Reload(id, &cfg)
 	}
 	o.notify()
 	if reloadErr != nil {
-		return config, fmt.Errorf("%w: restart failed: %v", errServiceProcess, reloadErr)
+		return cfg, fmt.Errorf("%w: restart failed: %v", errServiceProcess, reloadErr)
 	}
-	return config, nil
+	return cfg, nil
 }
 
 func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
@@ -310,8 +311,8 @@ func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
 		return err
 	}
 
-	if err := withDeclinable(o.Store, func(s *Settings) error {
-		if _, idx := s.findServiceByID(id); idx < 0 {
+	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		if _, idx := config.FindServiceByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
 		s.RemoveService(id)
@@ -331,8 +332,8 @@ func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
 }
 
 func (o *ServiceOps) SetAutostart(id string, on bool) error {
-	if err := withDeclinable(o.Store, func(s *Settings) error {
-		if _, idx := s.findServiceByID(id); idx < 0 {
+	if err := config.WithDeclinable(o.Store, func(s *config.Settings) error {
+		if _, idx := config.FindServiceByID(s, id); idx < 0 {
 			return fmt.Errorf("%w: %s", errServiceNotFound, id)
 		}
 		s.SetServiceAutostart(id, on)
@@ -348,7 +349,7 @@ func (o *ServiceOps) SetAutostart(id string, on bool) error {
 }
 
 func (o *ServiceOps) Start(id string) error {
-	svc, _ := o.Store.Get().findServiceByID(id)
+	svc, _ := config.FindServiceByID(o.Store.Get(), id)
 	if svc == nil {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}
@@ -368,7 +369,7 @@ func (o *ServiceOps) Start(id string) error {
 // a live process no door can stop — a service unregistered by the CLI while
 // still running is exactly that state.
 func (o *ServiceOps) Stop(id string) error {
-	_, idx := o.Store.Get().findServiceByID(id)
+	_, idx := config.FindServiceByID(o.Store.Get(), id)
 	if idx < 0 && !o.Registry.IsRunning(id) {
 		return fmt.Errorf("%w: %s", errServiceNotFound, id)
 	}

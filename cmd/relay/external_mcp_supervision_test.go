@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"strings"
 	"sync"
@@ -201,7 +202,7 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	dir := t.TempDir()
-	rec, err := NewAuditRecorder(&AuditConfig{}, dir+"/audit.jsonl")
+	rec, err := NewAuditRecorder(&config.AuditConfig{}, dir+"/audit.jsonl")
 	if err != nil {
 		t.Fatalf("NewAuditRecorder: %v", err)
 	}
@@ -351,7 +352,7 @@ func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 	}
 
 	copyFile(t, bin, doomed)
-	m.Reconcile(ctx, []ExternalMcp{stdioMcp("mcp-abandoned", doomed)})
+	m.Reconcile(ctx, []config.ExternalMcp{stdioMcp("mcp-abandoned", doomed)})
 
 	if !m.IsConnected("mcp-abandoned") {
 		t.Fatal("reconcile did not restart an abandoned MCP")

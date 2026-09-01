@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,13 +92,13 @@ func countingMock(result string) (*mockMcpConn, func() int) {
 // budgetRouter builds a router whose settings hold one enrolment per entry in
 // budgets, stored VERBATIM — no normalization — so a zero budget can be proven
 // not to mean "unlimited" on the read path rather than only on the write path.
-func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]EnrolmentBudget) (*appRouter, *AuditRecorder, *fakeClock) {
+func budgetRouter(t *testing.T, mock *mockMcpConn, budgets map[string]config.EnrolmentBudget) (*appRouter, *AuditRecorder, *fakeClock) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
-	s := makeSettings(map[string]Permission{"macmcp": PermOn}, nil, nil)
+	s := makeSettings(map[string]config.Permission{"macmcp": config.PermOn}, nil, nil)
 	for clientID, b := range budgets {
-		s.Enrolments = append(s.Enrolments, Enrolment{
+		s.Enrolments = append(s.Enrolments, config.Enrolment{
 			ClientID:    clientID,
 			Fingerprint: budgetFingerprint(clientID),
 			ProjectIDs:  []string{"test-project"},
@@ -154,7 +155,7 @@ const budgetResult = `{"content":[{"type":"text","text":"3 messages"}]}`
 
 func TestEnrolmentBudget_CallWithinBudgetSucceeds(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
-	r, rec, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, rec, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 60, MaxCalls: 10, MaxResultBytes: 1 << 20},
 	})
 
@@ -179,7 +180,7 @@ func TestEnrolmentBudget_CallWithinBudgetSucceeds(t *testing.T) {
 // refusing to let anyone read, so the invocation count is the real assertion.
 func TestEnrolmentBudget_RateRefusalIsThrottledAndTheMcpNeverRuns(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
-	r, rec, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, rec, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 60, MaxCalls: 2, MaxResultBytes: 1 << 20},
 	})
 
@@ -232,7 +233,7 @@ func TestEnrolmentBudget_RateRefusalIsThrottledAndTheMcpNeverRuns(t *testing.T) 
 func TestEnrolmentBudget_VolumeOverrunRefusesTheNextCall(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
 	// Half a result's worth: the very first call overshoots.
-	r, rec, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, rec, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 60, MaxCalls: 100, MaxResultBytes: int64(len(budgetResult) / 2)},
 	})
 
@@ -262,7 +263,7 @@ func TestEnrolmentBudget_VolumeOverrunRefusesTheNextCall(t *testing.T) {
 // byte cap, a client that paces itself is still cut off.
 func TestEnrolmentBudget_VolumeBindsEvenWhenTheRateIsFine(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
-	r, _, clk := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, clk := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 600, MaxCalls: 1000, MaxResultBytes: int64(2 * len(budgetResult))},
 	})
 
@@ -293,7 +294,7 @@ func TestEnrolmentBudget_VolumeBindsEvenWhenTheRateIsFine(t *testing.T) {
 // individual call ages out, not all at once on a boundary.
 func TestEnrolmentBudget_WindowRollsOverPerCall(t *testing.T) {
 	mock, _ := countingMock(budgetResult)
-	r, _, clk := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, clk := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 60, MaxCalls: 2, MaxResultBytes: 1 << 30},
 	})
 	ctx := budgetCtx("hermes-mail")
@@ -331,7 +332,7 @@ func TestEnrolmentBudget_WindowRollsOverPerCall(t *testing.T) {
 // permanently locked out by its first big result.
 func TestEnrolmentBudget_VolumeAgesOutOfTheWindow(t *testing.T) {
 	mock, _ := countingMock(budgetResult)
-	r, _, clk := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, clk := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 60, MaxCalls: 100, MaxResultBytes: int64(len(budgetResult))},
 	})
 	ctx := budgetCtx("hermes-mail")
@@ -361,7 +362,7 @@ func TestEnrolmentBudget_VolumeAgesOutOfTheWindow(t *testing.T) {
 // point of it.
 func TestEnrolmentBudget_EnrolmentsAreIndependent(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
-	r, _, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail":   {WindowSeconds: 60, MaxCalls: 1, MaxResultBytes: int64(len(budgetResult))},
 		"hermes-triage": {WindowSeconds: 60, MaxCalls: 1, MaxResultBytes: int64(len(budgetResult))},
 	})
@@ -397,7 +398,7 @@ func TestEnrolmentBudget_EnrolmentsAreIndependent(t *testing.T) {
 func TestEnrolmentBudget_LocalCallsAreUnbudgeted(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
 	// A budget so tight that any accounting at all would refuse the second call.
-	r, rec, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, rec, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {WindowSeconds: 3600, MaxCalls: 1, MaxResultBytes: 1},
 	})
 
@@ -425,27 +426,27 @@ func TestEnrolmentBudget_LocalCallsAreUnbudgeted(t *testing.T) {
 
 func TestEnrolmentBudget_ZeroAndAbsentResolveToDefaults(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
-	s.Enrolments = append(s.Enrolments, Enrolment{
+	s.Enrolments = append(s.Enrolments, config.Enrolment{
 		ClientID:    "hermes-mail",
 		Fingerprint: budgetFingerprint("hermes-mail"),
 		// Hand-edited settings.json with the budget key stripped.
-		Budget: EnrolmentBudget{},
+		Budget: config.EnrolmentBudget{},
 	})
-	want := normalizeEnrolmentBudget(EnrolmentBudget{})
+	want := normalizeEnrolmentBudget(config.EnrolmentBudget{})
 
 	known := bridge.RemoteCaller{ClientID: "hermes-mail", Fingerprint: budgetFingerprint("hermes-mail")}
-	if got := s.enrolmentBudget(known); got != want {
+	if got := enrolmentBudget(s, known); got != want {
 		t.Errorf("a zero stored budget resolved to %+v, want the conservative defaults %+v", got, want)
 	}
 	// Unreachable in practice — the listener closes a connection whose
 	// certificate resolves to nothing — which is exactly why it must fail
 	// closed rather than exempt.
 	unknown := bridge.RemoteCaller{ClientID: "stranger", Fingerprint: budgetFingerprint("stranger")}
-	if got := s.enrolmentBudget(unknown); got != want {
+	if got := enrolmentBudget(s, unknown); got != want {
 		t.Errorf("an unresolved fingerprint resolved to %+v, want the conservative defaults %+v", got, want)
 	}
-	var nilSettings *Settings
-	if got := nilSettings.enrolmentBudget(known); got != want {
+	var nilSettings *config.Settings
+	if got := enrolmentBudget(nilSettings, known); got != want {
 		t.Errorf("nil settings resolved to %+v, want the conservative defaults %+v", got, want)
 	}
 }
@@ -454,7 +455,7 @@ func TestEnrolmentBudget_ZeroAndAbsentResolveToDefaults(t *testing.T) {
 // the default, rather than never.
 func TestEnrolmentBudget_ZeroBudgetStillThrottles(t *testing.T) {
 	mock, calls := countingMock(budgetResult)
-	r, _, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		"hermes-mail": {},
 	})
 
@@ -488,7 +489,7 @@ func TestEnrolmentBudget_ConcurrentCallsAccountExactly(t *testing.T) {
 		perResult = len(budgetResult)
 	)
 	mock, calls := countingMock(budgetResult)
-	r, _, _ := budgetRouter(t, mock, map[string]EnrolmentBudget{
+	r, _, _ := budgetRouter(t, mock, map[string]config.EnrolmentBudget{
 		clientID: {WindowSeconds: 3600, MaxCalls: maxCalls, MaxResultBytes: 1 << 30},
 	})
 
@@ -539,9 +540,9 @@ func TestEnrolmentBudget_ConcurrentEnrolmentsStayIndependent(t *testing.T) {
 	const enrolments = 8
 	mock, calls := countingMock(budgetResult)
 
-	budgets := map[string]EnrolmentBudget{}
+	budgets := map[string]config.EnrolmentBudget{}
 	for i := 0; i < enrolments; i++ {
-		budgets[fmt.Sprintf("agent-%d", i)] = EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 2, MaxResultBytes: 1 << 30}
+		budgets[fmt.Sprintf("agent-%d", i)] = config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 2, MaxResultBytes: 1 << 30}
 	}
 	r, _, _ := budgetRouter(t, mock, budgets)
 

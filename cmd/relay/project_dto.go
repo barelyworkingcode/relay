@@ -1,5 +1,7 @@
 package main
 
+import "github.com/barelyworkingcode/relay/internal/config"
+
 import "encoding/json"
 
 // projectView is the projection of a Project safe to expose to a caller that
@@ -23,24 +25,24 @@ type projectView struct {
 	ID               string                     `json:"id"`
 	Name             string                     `json:"name"`
 	Path             string                     `json:"path"`
-	Kind             ProjectKind                `json:"kind,omitempty"`
+	Kind             config.ProjectKind         `json:"kind,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
-	ChatTemplates    []ChatTemplate             `json:"chat_templates,omitempty"`
-	ShellTemplates   []ShellTemplate            `json:"shell_templates,omitempty"`
+	ChatTemplates    []config.ChatTemplate      `json:"chat_templates,omitempty"`
+	ShellTemplates   []config.ShellTemplate     `json:"shell_templates,omitempty"`
 	CreatedAt        string                     `json:"created_at"`
 	DisabledTools    map[string][]string        `json:"disabled_tools,omitempty"`
 	Context          map[string]json.RawMessage `json:"context,omitempty"`
 	AllowedTools     map[string][]string        `json:"allowed_tools,omitempty"`
 	Access           map[string]string          `json:"access,omitempty"`
 	AllowExternal    map[string]bool            `json:"allow_external,omitempty"`
-	PermissionPolicy *PermissionPolicy          `json:"permission_policy,omitempty"`
+	PermissionPolicy *config.PermissionPolicy   `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
 	AllowCwdAuth     bool                       `json:"allow_cwd_auth,omitempty"`
 	SessionFolders   []string                   `json:"session_folders,omitempty"`
 }
 
-func projectToView(p Project) projectView {
+func projectToView(p config.Project) projectView {
 	return projectView{
 		ID:               p.ID,
 		Name:             p.Name,
@@ -63,7 +65,7 @@ func projectToView(p Project) projectView {
 	}
 }
 
-func projectsToView(ps []Project) []projectView {
+func projectsToView(ps []config.Project) []projectView {
 	out := make([]projectView, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, projectToView(p))

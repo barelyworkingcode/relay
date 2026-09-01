@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"crypto/rand"
@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"testing"
 
 	"github.com/tidwall/jsonc"
 
@@ -50,7 +51,7 @@ type DeclinableSettingsStore interface {
 // a refusal that mutated s on its way out has to be rolled back here or the
 // refusal would persist half of what it refused. Such a store still writes;
 // only DeclinableSettingsStore can promise the file was not touched at all.
-func withDeclinable(store SettingsStore, fn func(s *Settings) error) error {
+func WithDeclinable(store SettingsStore, fn func(s *Settings) error) error {
 	if d, ok := store.(DeclinableSettingsStore); ok {
 		return d.WithDeclinable(fn)
 	}
@@ -115,18 +116,18 @@ type FileSettingsStore struct {
 
 // errSettingsUnreadable is what a caller matches with errors.Is to tell a
 // refusal to write from a write that was attempted and failed.
-var errSettingsUnreadable = errors.New("settings file exists but could not be read")
+var ErrSettingsUnreadable = errors.New("settings file exists but could not be read")
 
 // errSealerRequired is what every write on a sealer-less, non-degraded
 // store refuses with — the CLI's shape (§5.4). Never wraps a reason: there
 // is nothing to name beyond "this process never had a sealer," which is
 // what distinguishes it from errSealUnavailable.
-var errSealerRequired = errors.New("this process holds no sealing key and cannot write settings.json")
+var ErrSealerRequired = errors.New("this process holds no sealing key and cannot write settings.json")
 
 // errSealUnavailable is what every write on a degraded tray store refuses
 // with (§5.6 clause 3). Always wraps the named reason a caller matches with
 // errors.Is and reads with Error().
-var errSealUnavailable = errors.New("sealed store is unavailable")
+var ErrSealUnavailable = errors.New("sealed store is unavailable")
 
 func NewSettingsStore() *FileSettingsStore {
 	return &FileSettingsStore{dir: bridge.ConfigDir()}
@@ -142,6 +143,23 @@ func NewSettingsStoreAt(dir string) *FileSettingsStore {
 // degraded state — use NewSettingsStoreDegraded for that.
 func NewSettingsStoreSealed(dir string, sealer sealed.Sealer) *FileSettingsStore {
 	return &FileSettingsStore{dir: dir, sealer: sealer}
+}
+
+// NewSettingsStoreWithCache is the first-start shape held open for tests:
+// settings already in hand, nothing written out yet. fileSeen stays false,
+// so an absent settings.json under dir reads as "not created yet" rather
+// than as a deletion that must invalidate cache.
+//
+// It panics outside a test binary. A constructor that hands a caller a store
+// serving settings no write ever produced is a weakening, and a weakening
+// introduced for a test is the one most likely to survive into production
+// (ADR-016 decision 8); production builds one through NewSettingsStoreSealed
+// and a write.
+func NewSettingsStoreWithCache(dir string, sealer sealed.Sealer, cache *Settings) *FileSettingsStore {
+	if !testing.Testing() {
+		panic("config: NewSettingsStoreWithCache is a test seam and must not be reached in a shipped binary")
+	}
+	return &FileSettingsStore{dir: dir, sealer: sealer, cache: cache}
 }
 
 // NewSettingsStoreDegraded is the tray's constructor for §5.6: a keyring
@@ -174,7 +192,7 @@ func (ss *FileSettingsStore) SealStatus() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if ss.sealUnavailable != nil {
-		return fmt.Errorf("%w: %v", errSealUnavailable, ss.sealUnavailable)
+		return fmt.Errorf("%w: %v", ErrSealUnavailable, ss.sealUnavailable)
 	}
 	for _, err := range ss.sealErrors {
 		return err
@@ -186,9 +204,9 @@ func (ss *FileSettingsStore) path() string {
 	return filepath.Join(ss.dir, "settings.json")
 }
 
-const currentSettingsVersion = 1
+const CurrentSettingsVersion = 1
 
-func defaultSettings() *Settings {
+func DefaultSettings() *Settings {
 	// This is deliberate: the block is redundant with AuditConfig.resolve(),
 	// which already reads an absent one as enabled, and reads as noise to
 	// delete. A new install must be able to learn what auditing is doing by
@@ -197,7 +215,7 @@ func defaultSettings() *Settings {
 	// (ADR-010: no remote listener) is in docs/audit-log.md.
 	auditEnabled := true
 	return &Settings{
-		Version:      currentSettingsVersion,
+		Version:      CurrentSettingsVersion,
 		ExternalMcps: []ExternalMcp{},
 		Services:     []ServiceConfig{},
 		Projects:     []Project{},
@@ -230,14 +248,14 @@ func (ss *FileSettingsStore) load() *Settings {
 			slog.Warn("failed to read settings file", "error", err)
 			ss.readErr = err
 		}
-		return defaultSettings()
+		return DefaultSettings()
 	}
 	ss.fileSeen = true
 	var s Settings
 	if err := json.Unmarshal(jsonc.ToJSON(data), &s); err != nil {
 		slog.Warn("failed to parse settings file, using defaults", "error", err)
 		ss.readErr = err
-		return defaultSettings()
+		return DefaultSettings()
 	}
 	ss.readErr = nil
 
@@ -257,7 +275,7 @@ func (ss *FileSettingsStore) unreadableErrLocked() error {
 	if ss.readErr == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %s: %w", errSettingsUnreadable, ss.path(), ss.readErr)
+	return fmt.Errorf("%w: %s: %w", ErrSettingsUnreadable, ss.path(), ss.readErr)
 }
 
 func ensureSlice[T any](s *[]T) {
@@ -274,7 +292,7 @@ func ensureMap[K comparable, V any](m *map[K]V) {
 
 func (s *Settings) normalize() {
 	if s.Version == 0 {
-		s.Version = currentSettingsVersion
+		s.Version = CurrentSettingsVersion
 	}
 	ensureSlice(&s.ExternalMcps)
 	ensureSlice(&s.Services)
@@ -311,7 +329,7 @@ func (s *Settings) normalize() {
 // A unique name stops the tearing. It does NOT make a cross-process
 // read-modify-write atomic: that stays last-writer-wins, exactly as
 // FileSettingsStore.With documents.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -371,11 +389,11 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	// step already prevents from ever being written.
 	if ss.sealer == nil {
 		if ss.sealUnavailable != nil {
-			return fmt.Errorf("%w: %v", errSealUnavailable, ss.sealUnavailable)
+			return fmt.Errorf("%w: %v", ErrSealUnavailable, ss.sealUnavailable)
 		}
-		return errSealerRequired
+		return ErrSealerRequired
 	}
-	if err := sealAllSecrets(s, ss.sealer); err != nil {
+	if err := SealAllSecrets(s, ss.sealer); err != nil {
 		return err
 	}
 
@@ -393,7 +411,7 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	// which resolves to empty settings and takes every project, credential and
 	// enrolment out of service until the file is repaired. atomicWriteFile's
 	// fsyncs close that window.
-	if err := atomicWriteFile(ss.path(), data, 0600); err != nil {
+	if err := AtomicWriteFile(ss.path(), data, 0600); err != nil {
 		return fmt.Errorf("write settings: %w", err)
 	}
 	ss.fileSeen = true
@@ -496,7 +514,7 @@ func (ss *FileSettingsStore) EnsureInitialized() error {
 // file that has been deleted is something to report — it comes back through
 // the branch above as absent settings, with nothing left to authenticate
 // against.
-func freshSettings(store SettingsStore) *Settings {
+func FreshSettings(store SettingsStore) *Settings {
 	if s := store.ReloadIfChanged(); s != nil {
 		return s
 	}
@@ -567,7 +585,7 @@ func (ss *FileSettingsStore) reloadIfChangedLocked() bool {
 		slog.Warn("settings file has been deleted; settings now resolve to empty")
 		ss.fileSeen = false
 		ss.readErr = nil
-		ss.cache = defaultSettings()
+		ss.cache = DefaultSettings()
 		// Zeroed so a settings.json restored from a backup still reads as a
 		// change: a restored file's modtime can predate the deleted one's.
 		ss.lastModTime = 0

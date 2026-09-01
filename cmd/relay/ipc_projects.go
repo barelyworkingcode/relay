@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"log/slog"
 )
 
@@ -122,10 +123,10 @@ func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var removed Project
+	var removed config.Project
 	var existed bool
-	okSettings := ctx.withSettings(func(s *Settings) {
-		proj, _ := s.findProjectByID(msg.ID)
+	okSettings := ctx.withSettings(func(s *config.Settings) {
+		proj, _ := config.FindProjectByID(s, msg.ID)
 		if proj == nil {
 			return
 		}
@@ -193,7 +194,7 @@ func ipcRegenProjectSkill(ctx *IPCContext, raw json.RawMessage) {
 		ctx.UI.EmitEvent("onProjectSkillRegen", msg.ID, false, "skill regeneration not available")
 		return
 	}
-	proj, _ := ctx.Store.Get().findProjectByID(msg.ID)
+	proj, _ := config.FindProjectByID(ctx.Store.Get(), msg.ID)
 	if proj == nil {
 		ctx.UI.EmitEvent("onProjectSkillRegen", msg.ID, false, "project not found")
 		return
@@ -223,14 +224,14 @@ func ipcUpdateProjectDisabledTools(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var updated Project
+	var updated config.Project
 	var found bool
-	okSettings := ctx.withSettings(func(s *Settings) {
-		if proj, _ := s.findProjectByID(msg.ID); proj == nil {
+	okSettings := ctx.withSettings(func(s *config.Settings) {
+		if proj, _ := config.FindProjectByID(s, msg.ID); proj == nil {
 			return
 		}
 		s.UpdateProjectDisabledTools(msg.ID, msg.McpID, msg.Disabled)
-		if proj, _ := s.findProjectByID(msg.ID); proj != nil {
+		if proj, _ := config.FindProjectByID(s, msg.ID); proj != nil {
 			updated = *proj
 			found = true
 		}
@@ -253,12 +254,12 @@ func ipcListMcpTools(ctx *IPCContext, raw json.RawMessage) {
 	if !ok || msg.McpID == "" {
 		return
 	}
-	var infos []ToolInfo
+	var infos []config.ToolInfo
 	if ctx.Tools != nil {
 		infos = ctx.Tools.ToolInfos(msg.McpID)
 	}
 	if infos == nil {
-		infos = []ToolInfo{}
+		infos = []config.ToolInfo{}
 	}
 	ctx.UI.EmitEvent("onMcpToolsListed", msg.McpID, marshalForUI(infos))
 }

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"maps"
 	"slices"
 	"strings"
@@ -62,7 +63,7 @@ func hasGlobMeta(pattern string) bool {
 // narrowsOnly is the one check standing between a remote's own request and
 // a widening of its stored grant. Every rule refuses with a message naming
 // the field and the offending value; nothing here mutates stored.
-func narrowsOnly(stored Project, f remoteNarrowFields) error {
+func narrowsOnly(stored config.Project, f remoteNarrowFields) error {
 	resultMcpIDs := stored.AllowedMcpIDs
 	if f.AllowedMcpIDs != nil {
 		for _, id := range *f.AllowedMcpIDs {
@@ -103,8 +104,8 @@ func narrowsOnly(stored Project, f remoteNarrowFields) error {
 				return fmt.Errorf("access: %q is not in the resulting allowed_mcp_ids", mcpID)
 			}
 			mode := (*f.Access)[mcpID]
-			if mode != AccessRead {
-				return fmt.Errorf("access for %q: narrowing may only request %q, not %q", mcpID, AccessRead, mode)
+			if mode != config.AccessRead {
+				return fmt.Errorf("access for %q: narrowing may only request %q, not %q", mcpID, config.AccessRead, mode)
 			}
 		}
 	}
@@ -139,7 +140,7 @@ func narrowsOnly(stored Project, f remoteNarrowFields) error {
 // a byte-for-byte resend. Comparing what would actually be written is what
 // keeps this the same question applyProjectUpdate's mutators are about to
 // answer.
-func narrowingIsNoop(stored Project, f remoteNarrowFields) bool {
+func narrowingIsNoop(stored config.Project, f remoteNarrowFields) bool {
 	merged := narrowUpdateFields(stored, f)
 	if merged.AllowedMcpIDs != nil && !slices.Equal(*merged.AllowedMcpIDs, stored.AllowedMcpIDs) {
 		return false

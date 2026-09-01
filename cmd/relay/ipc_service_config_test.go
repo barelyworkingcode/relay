@@ -9,17 +9,18 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
-type fixedStore struct{ s *Settings }
+type fixedStore struct{ s *config.Settings }
 
-func (f fixedStore) EnsureInitialized() error      { return nil }
-func (f fixedStore) Get() *Settings                { return f.s }
-func (f fixedStore) Reload() *Settings             { return f.s }
-func (f fixedStore) ReloadIfChanged() *Settings    { return f.s }
-func (f fixedStore) With(fn func(*Settings)) error { fn(f.s); return nil }
-func (f fixedStore) Sealer() sealed.Sealer         { return nil }
+func (f fixedStore) EnsureInitialized() error             { return nil }
+func (f fixedStore) Get() *config.Settings                { return f.s }
+func (f fixedStore) Reload() *config.Settings             { return f.s }
+func (f fixedStore) ReloadIfChanged() *config.Settings    { return f.s }
+func (f fixedStore) With(fn func(*config.Settings)) error { fn(f.s); return nil }
+func (f fixedStore) Sealer() sealed.Sealer                { return nil }
 
 type recordingServiceManager struct {
 	noopServiceManager
@@ -28,7 +29,7 @@ type recordingServiceManager struct {
 }
 
 func (m *recordingServiceManager) IsRunning(string) bool { return m.running }
-func (m *recordingServiceManager) Reload(id string, _ *ServiceConfig) error {
+func (m *recordingServiceManager) Reload(id string, _ *config.ServiceConfig) error {
 	m.reloadIDs = append(m.reloadIDs, id)
 	return nil
 }
@@ -67,7 +68,7 @@ func (r *recordingUI) hasEvent(name string) bool {
 func newConfigIPC(t *testing.T, reg *EnhancedServiceRegistry, mgr ServiceManager, serviceID, workdir string) (*IPCContext, *recordingUI) {
 	t.Helper()
 	ui := &recordingUI{}
-	store := fixedStore{s: &Settings{Services: []ServiceConfig{{ID: serviceID, WorkingDir: workdir}}}}
+	store := fixedStore{s: &config.Settings{Services: []config.ServiceConfig{{ID: serviceID, WorkingDir: workdir}}}}
 	ipc := &IPCContext{
 		Ctx:                    context.Background(),
 		Store:                  store,

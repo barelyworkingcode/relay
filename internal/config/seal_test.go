@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -121,7 +121,7 @@ func TestSealAllSecrets_RoundTripsThroughOpen(t *testing.T) {
 		}},
 	}
 
-	if err := sealAllSecrets(s, sealer); err != nil {
+	if err := SealAllSecrets(s, sealer); err != nil {
 		t.Fatalf("sealAllSecrets: %v", err)
 	}
 
@@ -195,8 +195,8 @@ func TestVerifyProjectTokenHashes(t *testing.T) {
 	good := NewSecret("good-token")
 	s := &Settings{
 		Projects: []Project{
-			{ID: "ok", Token: good, TokenHash: hashToken("good-token")},
-			{ID: "bad", Token: NewSecret("bad-token"), TokenHash: hashToken("something-else")},
+			{ID: "ok", Token: good, TokenHash: HashToken("good-token")},
+			{ID: "bad", Token: NewSecret("bad-token"), TokenHash: HashToken("something-else")},
 		},
 	}
 	errs := verifyProjectTokenHashes(s)
@@ -216,7 +216,7 @@ func TestVerifyProjectTokenHashes(t *testing.T) {
 	// The revoked Secret can never be resealed — sealAllSecrets refuses
 	// the whole write rather than silently dropping or re-sealing an
 	// empty placeholder over it (§4.5).
-	if err := sealAllSecrets(s, testSealer()); err == nil {
+	if err := SealAllSecrets(s, testSealer()); err == nil {
 		t.Fatal("sealAllSecrets succeeded over a project whose token could not be resealed")
 	}
 }

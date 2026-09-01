@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -154,9 +155,9 @@ func TestContextField_AnEmptyAppliesToEntryGovernsEverything(t *testing.T) {
 func TestCallTool_RefusesEveryToolOfAnMcpWhoseSchemaCannotBeRead(t *testing.T) {
 	broken := `{"mail_accounts":{"type":"array","scope":"restrict","source":"operator","applies_to":"mail_*"}}`
 	r := newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: map[string]json.RawMessage{"mail_accounts": json.RawMessage(`["Bob"]`)},
 		schema:        broken,

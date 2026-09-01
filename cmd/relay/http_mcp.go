@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
@@ -33,12 +34,12 @@ type httpOAuth struct {
 
 // toOAuthState converts runtime OAuth state to the persistable OAuthState.
 // Caller must hold httpMcpConn.mu (or ensure no concurrent access).
-func (o *httpOAuth) toOAuthState() *OAuthState {
-	return &OAuthState{
+func (o *httpOAuth) toOAuthState() *config.OAuthState {
+	return &config.OAuthState{
 		ClientID:     o.clientID,
-		ClientSecret: NewSecret(o.clientSecret),
-		AccessToken:  NewSecret(o.accessToken),
-		RefreshToken: NewSecret(o.refreshToken),
+		ClientSecret: config.NewSecret(o.clientSecret),
+		AccessToken:  config.NewSecret(o.accessToken),
+		RefreshToken: config.NewSecret(o.refreshToken),
 		TokenExpiry:  o.tokenExpiry.UTC().Format(time.RFC3339),
 	}
 }
@@ -61,7 +62,7 @@ type httpMcpConn struct {
 
 	oauth httpOAuth
 
-	onTokenRefresh func(oauth *OAuthState)
+	onTokenRefresh func(oauth *config.OAuthState)
 }
 
 // sessionSnapshot holds pre-snapshotted OAuth and session state,
@@ -89,7 +90,7 @@ func (c *httpMcpConn) snapshot() sessionSnapshot {
 // is what keeps Secret.Reveal — forbidden on every CLI path, §5.3.3 — out
 // of this constructor, which both a CLI process (DiscoverHTTPMcp) and the
 // tray (startHTTP) call.
-func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
+func newHTTPMcpConn(cfg config.ExternalMcp) *httpMcpConn {
 	conn := &httpMcpConn{
 		url:        cfg.URL,
 		httpClient: &http.Client{
@@ -110,7 +111,7 @@ func newHTTPMcpConn(cfg ExternalMcp) *httpMcpConn {
 // first request then gets the same ErrAuthRequired an expired token
 // already produces, which is the existing, well-trodden path back to
 // re-authenticating.
-func applyStoredOAuthState(conn *httpMcpConn, oauth *OAuthState) {
+func applyStoredOAuthState(conn *httpMcpConn, oauth *config.OAuthState) {
 	if oauth == nil {
 		return
 	}
@@ -474,13 +475,13 @@ func (c *httpMcpConn) doClose() {
 	resp.Body.Close()
 }
 
-func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp) error {
+func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *config.ExternalMcp) error {
 	conn := newHTTPMcpConn(*mcpCfg)
 	applyStoredOAuthState(conn, mcpCfg.OAuthState)
 
 	if m.onTokenRefresh != nil {
 		id := mcpCfg.ID
-		conn.onTokenRefresh = func(oauth *OAuthState) {
+		conn.onTokenRefresh = func(oauth *config.OAuthState) {
 			m.onTokenRefresh(id, oauth)
 		}
 	}
@@ -507,8 +508,8 @@ func (m *ExternalMcpManager) startHTTP(ctx context.Context, mcpCfg *ExternalMcp)
 // completing its own OAuth ceremony), and no CLI entry point may reach
 // Secret.Reveal (§5.3.3, AC-29). auth.toOAuthState wraps it for the
 // returned config's OAuthState field, which is what persistence writes.
-func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *oauthResult) (*ExternalMcp, error) {
-	cfg := ExternalMcp{
+func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *oauthResult) (*config.ExternalMcp, error) {
+	cfg := config.ExternalMcp{
 		ID:          id,
 		DisplayName: displayName,
 		Transport:   "http",
@@ -528,7 +529,7 @@ func DiscoverHTTPMcp(ctx context.Context, displayName, id, mcpURL string, auth *
 	result, err := discoverMcp(discoverCtx, conn, cfg)
 	if err != nil {
 		if errors.Is(err, ErrAuthRequired) {
-			cfg.DiscoveredTools = []ToolInfo{}
+			cfg.DiscoveredTools = []config.ToolInfo{}
 			return &cfg, ErrAuthRequired
 		}
 		return nil, err

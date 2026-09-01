@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"log/slog"
 	"sync"
 )
@@ -24,7 +25,7 @@ import (
 // comparison and was silently ignored.
 type RemoteSupervisor struct {
 	ctx    context.Context
-	store  SettingsStore
+	store  config.SettingsStore
 	router RemoteToolRouter
 	audit  *AuditRecorder
 	// configurer and surfaces are threaded straight through to every
@@ -57,7 +58,7 @@ type RemoteSupervisor struct {
 	lastEnrolReport string
 }
 
-func NewRemoteSupervisor(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces, goFunc func(func())) *RemoteSupervisor {
+func NewRemoteSupervisor(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces, goFunc func(func())) *RemoteSupervisor {
 	return &RemoteSupervisor{
 		ctx: ctx, store: store, router: router, audit: audit,
 		configurer: configurer, surfaces: surfaces, goFunc: goFunc,
@@ -127,7 +128,7 @@ func (sup *RemoteSupervisor) Reconcile() error {
 		return nil
 	}
 
-	settings := freshSettings(sup.store)
+	settings := config.FreshSettings(sup.store)
 
 	toolErr := sup.reconcileToolListenerLocked(settings)
 	enrolErr := sup.reconcileEnrolmentListenerLocked(settings)
@@ -139,8 +140,8 @@ func (sup *RemoteSupervisor) Reconcile() error {
 // a second listener — only its "nothing changed" comparison (sup.server's
 // own Listen) is now scoped to this listener alone, never the enrolment
 // one's.
-func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *Settings) error {
-	desired := settings.Remote.resolve()
+func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *config.Settings) error {
+	desired := resolveRemoteConfig(settings.Remote)
 
 	if !desired.Enabled {
 		sup.stopLocked("settings no longer enable the remote listener")
@@ -208,8 +209,8 @@ func (sup *RemoteSupervisor) reconcileToolListenerLocked(settings *Settings) err
 // config can itself be an error (resolveEnrolment refuses
 // enrolment_requests:true with enabled:false), which is reported and
 // returned exactly like a failed bind.
-func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *Settings) error {
-	desired, cfgErr := settings.Remote.resolveEnrolment()
+func (sup *RemoteSupervisor) reconcileEnrolmentListenerLocked(settings *config.Settings) error {
+	desired, cfgErr := resolveRemoteEnrolment(settings.Remote)
 	if cfgErr != nil {
 		sup.stopEnrolLocked("enrolment-request configuration is invalid")
 		sup.reportEnrolLocked("", cfgErr)

@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
@@ -442,7 +443,7 @@ func TestSAS_AC10_AC11_IncompleteComparisonRefusedBeforeTheGate(t *testing.T) {
 	for _, tc := range sasIncompleteCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			_, store := newEnrolmentSandbox(t)
-			profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 			table := newEnrolmentRequestTable()
 			seedCAInto(t, table)
 			requestID := tc.prepare(t, table)
@@ -474,7 +475,7 @@ func TestSAS_AC10_AC11_IncompleteComparisonRefusedOverIPC(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ipc, store, ui, table := newEnrolmentRequestsIPC(t)
 			seedCAInto(t, table)
-			mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 			requestID := tc.prepare(t, table)
 
 			ipcApproveEnrolmentRequest(ipc, mustRaw(t, map[string]interface{}{
@@ -504,7 +505,7 @@ func TestSAS_AC10_AC11_IncompleteComparisonRefusedFromTheCLIDoor(t *testing.T) {
 	for _, tc := range sasIncompleteCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newCLISandboxStore(t)
-			profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 			table := newEnrolmentRequestTable()
 			seedCAInto(t, table)
 			requestID := tc.prepare(t, table)
@@ -545,7 +546,7 @@ func TestSAS_AC10_AC11_IncompleteComparisonRefusedFromTheCLIDoor(t *testing.T) {
 
 func TestSAS_AC12_LegacyRequestRowIsStillApprovable(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table := newEnrolmentRequestTable()
 	seedCAInto(t, table)
 
@@ -596,7 +597,7 @@ func TestSAS_AC14_NoResultTypeCarriesTheComparisonCode(t *testing.T) {
 	// And behaviourally: a fully populated pair of results, marshalled,
 	// contains the row's six characters nowhere.
 	_, store := newEnrolmentSandbox(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	table := newEnrolmentRequestTable()
 	seedCAInto(t, table)
 
@@ -773,12 +774,12 @@ func TestSAS_RequestedProfileIsBoundedAndOnlyEverDisplayed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSuggestClientID_SuffixesOnCollisionAndRefusesUnusableLabels(t *testing.T) {
-	s := &Settings{}
+	s := &config.Settings{}
 	if got := suggestClientID(s, "hermes-mail"); got != "hermes-mail" {
 		t.Fatalf("free label suggested %q", got)
 	}
 
-	s.Enrolments = []Enrolment{{ClientID: "hermes-mail"}, {ClientID: "hermes-mail-2"}}
+	s.Enrolments = []config.Enrolment{{ClientID: "hermes-mail"}, {ClientID: "hermes-mail-2"}}
 	if got := suggestClientID(s, "hermes-mail"); got != "hermes-mail-3" {
 		t.Fatalf("collision suggested %q, want hermes-mail-3", got)
 	}
@@ -790,9 +791,9 @@ func TestSuggestClientID_SuffixesOnCollisionAndRefusesUnusableLabels(t *testing.
 	}
 
 	// Every suffix taken: no suggestion rather than a wrong one.
-	full := &Settings{Enrolments: []Enrolment{{ClientID: "taken"}}}
+	full := &config.Settings{Enrolments: []config.Enrolment{{ClientID: "taken"}}}
 	for n := 2; n <= 99; n++ {
-		full.Enrolments = append(full.Enrolments, Enrolment{ClientID: "taken-" + itoaForTest(n)})
+		full.Enrolments = append(full.Enrolments, config.Enrolment{ClientID: "taken-" + itoaForTest(n)})
 	}
 	if got := suggestClientID(full, "taken"); got != "" {
 		t.Fatalf("suggested %q when every candidate is taken", got)

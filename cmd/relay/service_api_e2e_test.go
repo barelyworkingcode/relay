@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -98,7 +99,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	if status, body := call("PUT", "/api/services/worker/autostart", map[string]interface{}{"autostart": true}); status != http.StatusOK {
 		t.Fatalf("autostart: %d %s", status, body)
 	}
-	if svc, _ := store.Get().findServiceByID("worker"); svc == nil || !svc.Autostart {
+	if svc, _ := config.FindServiceByID(store.Get(), "worker"); svc == nil || !svc.Autostart {
 		t.Fatal("autostart must be persisted to settings")
 	}
 
@@ -117,7 +118,7 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	if status, body := call("DELETE", "/api/services/worker", nil); status != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", status, body)
 	}
-	if svc, _ := store.Get().findServiceByID("worker"); svc != nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "worker"); svc != nil {
 		t.Fatal("delete must remove the record from settings")
 	}
 	reg.mu.Lock()
@@ -218,7 +219,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	if allow := resp.Header.Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
 		t.Fatalf("Allow = %q; want http.ServeMux's own 405 naming only the methods it serves", allow)
 	}
-	if svc, _ := store.Get().findServiceByID("phantom"); svc != nil {
+	if svc, _ := config.FindServiceByID(store.Get(), "phantom"); svc != nil {
 		t.Fatal("POST /api/services must never have reached ServiceOps.Create on TCP")
 	}
 

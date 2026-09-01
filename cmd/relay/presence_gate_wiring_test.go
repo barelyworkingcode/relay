@@ -22,11 +22,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
 
-func pgwSandbox(t *testing.T) (string, SettingsStore) {
+func pgwSandbox(t *testing.T) (string, config.SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -44,8 +45,8 @@ func pgwSandbox(t *testing.T) (string, SettingsStore) {
 // operation itself did.
 type pgwCase struct {
 	op   string
-	seed func(t *testing.T, store SettingsStore)
-	run  func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
+	seed func(t *testing.T, store config.SettingsStore)
+	run  func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
 }
 
 // pgwCases covers every gated operation exercisable through this table's
@@ -55,87 +56,87 @@ type pgwCase struct {
 // method on an ops core any of the other rows' shape could construct — see
 // the comment on TestGate_EveryImplementedOpRefusesWithoutGate.
 func pgwCases(t *testing.T) []pgwCase {
-	noSeed := func(*testing.T, SettingsStore) {}
+	noSeed := func(*testing.T, config.SettingsStore) {}
 	return []pgwCase{
-		{"credential.mint", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+		{"credential.mint", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &CredentialOps{Store: store, Gate: gate, Issuance: issuance}
 			_, _, err := ops.Mint(context.Background(), credentialMintRequest{Name: "eve-view", Classes: []string{"read"}}, auditViaCLI, "")
 			return err
 		}},
 		{"credential.revoke",
-			func(t *testing.T, store SettingsStore) {
+			func(t *testing.T, store config.SettingsStore) {
 				_, _, err := mintAPICredential(store, credentialMintRequest{Name: "to-revoke", Classes: []string{"read"}})
 				assertNoErr(t, err, "seed credential")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				cred := store.Get().APICredentials[len(store.Get().APICredentials)-1]
 				ops := &CredentialOps{Store: store, Gate: gate, Issuance: issuance}
 				_, err := ops.Revoke(context.Background(), cred.ID, auditViaCLI, "")
 				return err
 			}},
 		{"enrolment.create",
-			func(t *testing.T, store SettingsStore) {
-				mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			func(t *testing.T, store config.SettingsStore) {
+				mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				profile := store.Get().Projects[0]
 				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
 				_, err := ops.Create(context.Background(), enrolmentFields{ClientID: "pgw-client", ProjectIDs: []string{profile.ID}}, auditViaCLI, "")
 				return err
 			}},
 		{"enrolment.update",
-			func(t *testing.T, store SettingsStore) {
-				profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			func(t *testing.T, store config.SettingsStore) {
+				profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 				if _, err := createEnrolment(store, enrolmentRequest{ClientID: "pgw-update", ProjectIDs: []string{profile.ID}}); err != nil {
 					t.Fatalf("seed enrolment: %v", err)
 				}
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
 				calls := 5
 				_, _, err := ops.Update(context.Background(), enrolmentUpdateRequest{ClientID: "pgw-update", Budget: enrolmentBudgetUpdate{MaxCalls: &calls}}, auditViaCLI, "")
 				return err
 			}},
 		{"enrolment.revoke",
-			func(t *testing.T, store SettingsStore) {
-				profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			func(t *testing.T, store config.SettingsStore) {
+				profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 				if _, err := createEnrolment(store, enrolmentRequest{ClientID: "pgw-revoke", ProjectIDs: []string{profile.ID}}); err != nil {
 					t.Fatalf("seed enrolment: %v", err)
 				}
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
 				_, err := ops.Revoke(context.Background(), "pgw-revoke", auditViaCLI, "")
 				return err
 			}},
 		{"enrolment.sign",
-			func(t *testing.T, store SettingsStore) {
-				mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+			func(t *testing.T, store config.SettingsStore) {
+				mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				profile := store.Get().Projects[0]
 				ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
 				csrPEM := genClientCSRPEM(t, "pgw-sign-client")
 				_, err := ops.Sign(context.Background(), enrolmentSignFields{ClientID: "pgw-sign-client", ProjectIDs: []string{profile.ID}, CSRPEM: string(csrPEM)}, auditViaCLI, "")
 				return err
 			}},
-		{"login.bootstrap.mint", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+		{"login.bootstrap.mint", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &LoginOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
 			_, err := ops.MintBootstrap(context.Background(), auditViaCLI)
 			return err
 		}},
 		{"login.passkey.revoke",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.Passkeys = append(s.Passkeys, Passkey{ID: "pgw-passkey", Name: "pgw"})
+			func(t *testing.T, store config.SettingsStore) {
+				assertNoErr(t, store.With(func(s *config.Settings) {
+					s.Passkeys = append(s.Passkeys, config.Passkey{ID: "pgw-passkey", Name: "pgw"})
 				}), "seed passkey")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &LoginOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
 				_, err := ops.RevokePasskey(context.Background(), "pgw-passkey")
 				return err
 			}},
-		{"mcp.register", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+		{"mcp.register", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			// stdio against the real cmd/testmcp peer, never a network
 			// address: the hermetic suite must not depend on DNS or a real
 			// socket (ADR-001/ADR-002), and http transport would need both.
@@ -144,34 +145,34 @@ func pgwCases(t *testing.T) []pgwCase {
 			return err
 		}},
 		{"mcp.oauth.start",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.UpsertExternalMcp(ExternalMcp{ID: "pgw-oauth", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
+			func(t *testing.T, store config.SettingsStore) {
+				assertNoErr(t, store.With(func(s *config.Settings) {
+					s.UpsertExternalMcp(config.ExternalMcp{ID: "pgw-oauth", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
 				}), "seed mcp")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance,
 					StartFlow: func(string, func(string)) (*oauthResult, error) { return &oauthResult{AccessToken: "granted"}, nil },
 				}
 				_, err := ops.StartOAuth(context.Background(), "pgw-oauth", func(string) {}, auditViaCLI, "")
 				return err
 			}},
-		{"service.register", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+		{"service.register", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance}
 			_, err := ops.Create(context.Background(), serviceFields{DisplayName: "pgw-svc", Command: "/bin/true"}, auditViaCLI, "")
 			return err
 		}},
 		{"project.rotate_token",
-			func(t *testing.T, store SettingsStore) {
-				mkStoreProject(t, store, ProjectKindLocal, "pgw-project", t.TempDir())
+			func(t *testing.T, store config.SettingsStore) {
+				mkStoreProject(t, store, config.ProjectKindLocal, "pgw-project", t.TempDir())
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				proj := store.Get().Projects[0]
 				ops := &ProjectOps{Store: store, Gate: gate, Issuance: issuance}
 				_, _, err := ops.RotateToken(context.Background(), proj.ID, auditViaCLI, "")
 				return err
 			}},
-		{"project.grant", noSeed, func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+		{"project.grant", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &ProjectOps{Store: store, Gate: gate, Issuance: issuance}
 			_, err := ops.Create(context.Background(), projectCreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
@@ -187,8 +188,8 @@ func pgwCases(t *testing.T) []pgwCase {
 // source instead of against itself.
 type pgwUngatedCase struct {
 	method string
-	seed   func(t *testing.T, store SettingsStore)
-	run    func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
+	seed   func(t *testing.T, store config.SettingsStore)
+	run    func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
 }
 
 // pgwUngatedCases covers every core method retired from presence.GatedOps
@@ -209,22 +210,22 @@ type pgwUngatedCase struct {
 func pgwUngatedCases(t *testing.T) []pgwUngatedCase {
 	return []pgwUngatedCase{
 		{"McpOps.Remove",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.UpsertExternalMcp(ExternalMcp{ID: "pgw-ungated-mcp", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
+			func(t *testing.T, store config.SettingsStore) {
+				assertNoErr(t, store.With(func(s *config.Settings) {
+					s.UpsertExternalMcp(config.ExternalMcp{ID: "pgw-ungated-mcp", DisplayName: "pgw", Transport: "http", URL: "https://mcp.example.test/"})
 				}), "seed mcp")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance}
 				return ops.Remove(context.Background(), "pgw-ungated-mcp", auditViaCLI, "")
 			}},
 		{"ServiceOps.Remove",
-			func(t *testing.T, store SettingsStore) {
-				assertNoErr(t, store.With(func(s *Settings) {
-					s.UpsertService(ServiceConfig{ID: "pgw-ungated-svc", DisplayName: "pgw", Command: "/bin/true"})
+			func(t *testing.T, store config.SettingsStore) {
+				assertNoErr(t, store.With(func(s *config.Settings) {
+					s.UpsertService(config.ServiceConfig{ID: "pgw-ungated-svc", DisplayName: "pgw", Command: "/bin/true"})
 				}), "seed service")
 			},
-			func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance}
 				return ops.Remove(context.Background(), "pgw-ungated-svc", auditViaCLI, "")
 			}},
@@ -297,8 +298,8 @@ func TestGate_EveryImplementedOpSucceedsWithAnAllowingGate(t *testing.T) {
 // than pgwCases alone.
 type pgwAuditingCase struct {
 	label string
-	seed  func(t *testing.T, store SettingsStore)
-	run   func(t *testing.T, store SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
+	seed  func(t *testing.T, store config.SettingsStore)
+	run   func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error
 }
 
 func pgwAllAuditingCases(t *testing.T) []pgwAuditingCase {
@@ -554,7 +555,7 @@ func TestGate_TableCoversGatedOps(t *testing.T) {
 // are AC-16c: the configure subset is exactly right.
 func TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt(t *testing.T) {
 	_, store := pgwSandbox(t)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "renameable", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "renameable", t.TempDir())
 
 	// Deny() proves the point harder than Allow(): if this update reached
 	// the gate at all, it would refuse, not merely "also succeed."
@@ -574,7 +575,7 @@ func TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt(t *testing.T) {
 
 func TestProjectOps_AllowCwdAuthTurningOnIsGated(t *testing.T) {
 	_, store := pgwSandbox(t)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "cwd-project", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "cwd-project", t.TempDir())
 
 	gate, err := presence.NewGate(presencetest.Deny())
 	assertNoErr(t, err, "NewGate")
@@ -592,7 +593,7 @@ func TestProjectOps_AllowCwdAuthTurningOnIsGated(t *testing.T) {
 
 func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 	_, store := pgwSandbox(t)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "tools-project", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "tools-project", t.TempDir())
 
 	gate, err := presence.NewGate(presencetest.Deny())
 	assertNoErr(t, err, "NewGate")
@@ -613,7 +614,7 @@ func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 // so it must be refused the same way.
 func TestProjectOps_AllowExternalTurningOnIsGated(t *testing.T) {
 	_, store := pgwSandbox(t)
-	proj := mkStoreProject(t, store, ProjectKindLocal, "external-project", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "external-project", t.TempDir())
 
 	gate, err := presence.NewGate(presencetest.Deny())
 	assertNoErr(t, err, "NewGate")
@@ -669,7 +670,7 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		Context:       ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":1}`)}),
 		AllowExternal: ptr(map[string]bool{"macmcp": false}),
 		AllowCwdAuth:  ptr(false),
-		Kind:          ptr(ProjectKindLocal),
+		Kind:          ptr(config.ProjectKindLocal),
 		Path:          ptr("/tmp/base"),
 	}
 	baseDigest := base.presenceDigest("proj-x")
@@ -686,7 +687,7 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		}},
 		{"allow_external", func(f *projectUpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
 		{"allow_cwd_auth", func(f *projectUpdateFields) { f.AllowCwdAuth = ptr(true) }},
-		{"kind", func(f *projectUpdateFields) { f.Kind = ptr(ProjectKindRemote) }},
+		{"kind", func(f *projectUpdateFields) { f.Kind = ptr(config.ProjectKindRemote) }},
 		{"path", func(f *projectUpdateFields) { f.Path = ptr("/tmp/other") }},
 	}
 	for _, v := range variants {

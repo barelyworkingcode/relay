@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -50,7 +51,7 @@ func (a *lrAuditor) forPath(path string) []control.ControlDecision {
 
 type lrServer struct {
 	t       *testing.T
-	store   SettingsStore
+	store   config.SettingsStore
 	dir     string
 	base    string
 	origin  string
@@ -248,7 +249,7 @@ func (s *lrServer) enrolled() (*softAuthenticator, string) {
 	return a, s.signIn(a, 2)
 }
 
-func (s *lrServer) loginCredential() APICredential {
+func (s *lrServer) loginCredential() config.APICredential {
 	s.t.Helper()
 	for _, c := range s.store.Get().APICredentials {
 		if strings.HasPrefix(c.Name, "login ") {
@@ -256,7 +257,7 @@ func (s *lrServer) loginCredential() APICredential {
 		}
 	}
 	s.t.Fatalf("no login credential in %+v", s.store.Get().APICredentials)
-	return APICredential{}
+	return config.APICredential{}
 }
 
 // socketDo reaches the 0600 socket door, which is where the execute- and
@@ -344,8 +345,8 @@ func TestLoginRoutes_RegistrationWithoutAValidCodeIsRefusedIdentically(t *testin
 
 	s.mintCode()
 	expired := s.store.Get().LoginBootstrap
-	if err := s.store.With(func(st *Settings) {
-		st.LoginBootstrap = &LoginBootstrap{
+	if err := s.store.With(func(st *config.Settings) {
+		st.LoginBootstrap = &config.LoginBootstrap{
 			Hash:    expired.Hash,
 			Expires: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
 		}
@@ -455,8 +456,8 @@ func TestLoginRoutes_MintedCredentialExpiresAndIsRefusedLikeAnUnknownOne(t *test
 	if cred.Expires == "" {
 		t.Fatal("the login credential was minted with no expiry")
 	}
-	if err := s.store.With(func(st *Settings) {
-		st.FindAPICredential(cred.ID).Expires = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if err := s.store.With(func(st *config.Settings) {
+		findAPICredential(st, cred.ID).Expires = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
 	}); err != nil {
 		t.Fatalf("age the credential: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -64,7 +65,7 @@ func isRelayManagedSkillDir(name string) bool {
 // (typically <project>/.claude/skills) to match the project's current tool
 // surface. The project's plaintext token is used to query the live tool
 // list and is NEVER written into a file.
-func EmitSkills(ctx context.Context, lister SkillLister, proj Project, skillsRoot string, mode RegenMode) ([]string, error) {
+func EmitSkills(ctx context.Context, lister SkillLister, proj config.Project, skillsRoot string, mode RegenMode) ([]string, error) {
 	token, ok := proj.Token.Reveal()
 	if !ok || token == "" {
 		return nil, fmt.Errorf("project %q has no token", proj.Name)
@@ -200,7 +201,7 @@ func RemoveSkill(skillsRoot string) error {
 
 // renderBucketSkillMd produces a SKILL.md body for one bucket. The token is
 // never included.
-func renderBucketSkillMd(proj Project, bucket SkillBucket) string {
+func renderBucketSkillMd(proj config.Project, bucket SkillBucket) string {
 	sorted := make([]mcp.Tool, len(bucket.Tools))
 	copy(sorted, bucket.Tools)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -32,13 +33,13 @@ var errBootstrapCodeInvalid = errors.New("invalid or expired login code")
 // its SHA-256 plus a two-minute expiry, replacing any existing record: the
 // anchor is one at a time, matching the one ceremony it authorises. Does not
 // save; use within store.With, matching Mint.
-func mintBootstrapCode(s *Settings) (string, error) {
+func mintBootstrapCode(s *config.Settings) (string, error) {
 	plaintext, err := generateRandomHex(16)
 	if err != nil {
 		return "", err
 	}
-	s.LoginBootstrap = &LoginBootstrap{
-		Hash:    hashToken(plaintext),
+	s.LoginBootstrap = &config.LoginBootstrap{
+		Hash:    config.HashToken(plaintext),
 		Expires: time.Now().UTC().Add(bootstrapCodeTTL).Format(time.RFC3339),
 	}
 	return plaintext, nil
@@ -50,7 +51,7 @@ func mintBootstrapCode(s *Settings) (string, error) {
 // the same TOCTOU reasoning docs/tokens.md gives throughout: reading the
 // record in one call and deleting it in another would race a second
 // process minting or consuming between the two.
-func consumeBootstrapCode(s *Settings, plaintext string) error {
+func consumeBootstrapCode(s *config.Settings, plaintext string) error {
 	b := s.LoginBootstrap
 	if b == nil {
 		return errBootstrapCodeInvalid
@@ -62,7 +63,7 @@ func consumeBootstrapCode(s *Settings, plaintext string) error {
 	if at, err := time.Parse(time.RFC3339, b.Expires); err == nil {
 		expired = !time.Now().Before(at)
 	}
-	match := subtle.ConstantTimeCompare([]byte(b.Hash), []byte(hashToken(plaintext))) == 1
+	match := subtle.ConstantTimeCompare([]byte(b.Hash), []byte(config.HashToken(plaintext))) == 1
 	if expired || !match {
 		return errBootstrapCodeInvalid
 	}
@@ -72,10 +73,10 @@ func consumeBootstrapCode(s *Settings, plaintext string) error {
 
 // mintLoginBootstrap wraps mintBootstrapCode in the store.With every mint
 // here goes through, matching mintAPICredential.
-func mintLoginBootstrap(store SettingsStore) (string, string, error) {
+func mintLoginBootstrap(store config.SettingsStore) (string, string, error) {
 	var plaintext, expires string
 	var mintErr error
-	if err := store.With(func(s *Settings) {
+	if err := store.With(func(s *config.Settings) {
 		plaintext, mintErr = mintBootstrapCode(s)
 		if mintErr == nil {
 			expires = s.LoginBootstrap.Expires
@@ -98,15 +99,15 @@ var errPasskeyNotFound = errors.New("no passkey found")
 // revokePasskey resolves and removes inside one store.With, matching
 // revokeAPICredential: a separate Get() then With() is a TOCTOU window on a
 // file two processes write.
-func revokePasskey(store SettingsStore, id string) (Passkey, error) {
+func revokePasskey(store config.SettingsStore, id string) (config.Passkey, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return Passkey{}, errors.New("a passkey id is required")
+		return config.Passkey{}, errors.New("a passkey id is required")
 	}
 
-	var removed Passkey
+	var removed config.Passkey
 	notFound := fmt.Errorf("%w with id %q", errPasskeyNotFound, id)
-	if err := withDeclinable(store, func(s *Settings) error {
+	if err := config.WithDeclinable(store, func(s *config.Settings) error {
 		for i := range s.Passkeys {
 			if s.Passkeys[i].ID == id {
 				removed = s.Passkeys[i]
@@ -117,9 +118,9 @@ func revokePasskey(store SettingsStore, id string) (Passkey, error) {
 		return notFound
 	}); err != nil {
 		if errors.Is(err, errPasskeyNotFound) {
-			return Passkey{}, err
+			return config.Passkey{}, err
 		}
-		return Passkey{}, fmt.Errorf("save settings: %w", err)
+		return config.Passkey{}, fmt.Errorf("save settings: %w", err)
 	}
 	return removed, nil
 }
@@ -157,7 +158,7 @@ func loginPageURL() string {
 // records it governs.
 const loginCredentialPrefix = "login "
 
-func isLoginCredential(c APICredential) bool {
+func isLoginCredential(c config.APICredential) bool {
 	return strings.HasPrefix(c.Name, loginCredentialPrefix)
 }
 
@@ -213,7 +214,7 @@ type loginCodeView struct {
 // right failure for that: the WebView's messages all arrive on one thread, so
 // a panic in any handler takes every other tab down with it.
 type LoginOps struct {
-	Store SettingsStore
+	Store config.SettingsStore
 	// Audit records the issuance and revocation this core performs. Nil-safe
 	// like every AuditRecorder method; nil reads as "auditing is off", which
 	// records nothing and refuses nothing.
@@ -279,7 +280,7 @@ func (o *LoginOps) MintBootstrap(ctx context.Context, via string) (loginCodeView
 // passkeyViews and loginSessionViews are free functions over *Settings so the
 // first paint (renderSettingsDocument) and the IPC door share one definition
 // of what leaves relay, rather than each projecting the records themselves.
-func passkeyViews(s *Settings) []passkeyView {
+func passkeyViews(s *config.Settings) []passkeyView {
 	out := make([]passkeyView, 0, len(s.Passkeys))
 	for _, p := range s.Passkeys {
 		out = append(out, passkeyView{
@@ -300,7 +301,7 @@ func passkeyViews(s *Settings) []passkeyView {
 // yet), so a sign-out button beside it would offer to undo something already
 // undone. `relay credential list --include-expired` is where records awaiting
 // the next reap are visible.
-func loginSessionViews(s *Settings, now time.Time) []loginSessionView {
+func loginSessionViews(s *config.Settings, now time.Time) []loginSessionView {
 	out := make([]loginSessionView, 0, len(s.APICredentials))
 	for _, c := range s.APICredentials {
 		if !isLoginCredential(c) || c.Expired(now) {
@@ -330,21 +331,21 @@ func (o *LoginOps) Sessions() []loginSessionView {
 	return loginSessionViews(o.Store.Get(), time.Now())
 }
 
-func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (Passkey, error) {
+func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey, error) {
 	if o == nil {
-		return Passkey{}, errLoginOpsUnavailable
+		return config.Passkey{}, errLoginOpsUnavailable
 	}
 	if err := requireIssuanceAuditor(o.auditor()); err != nil {
-		return Passkey{}, err
+		return config.Passkey{}, err
 	}
 	grant, err := requireGate(o.Gate, ctx, "login.passkey.revoke",
 		singleStringDigest("login.passkey.revoke", "id", id), fmt.Sprintf("revoke the passkey %q", id))
 	if err != nil {
-		return Passkey{}, err
+		return config.Passkey{}, err
 	}
 	removed, err := revokePasskey(o.Store, id)
 	if err != nil {
-		return Passkey{}, err
+		return config.Passkey{}, err
 	}
 	// Reported and not refused: the passkey is already gone, and a revocation
 	// narrows — see warnUnrecordedRevocation for why that direction is
@@ -363,18 +364,18 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (Passkey, error
 // become a general "revoke any control-plane credential" button, which is
 // what `relay credential revoke` is for and what the operator's own
 // long-lived credentials would be destroyed by.
-func (o *LoginOps) SignOut(id string) (APICredential, error) {
+func (o *LoginOps) SignOut(id string) (config.APICredential, error) {
 	if o == nil {
-		return APICredential{}, errLoginOpsUnavailable
+		return config.APICredential{}, errLoginOpsUnavailable
 	}
-	removed, err := revokeAPICredentialIf(o.Store, id, func(c APICredential) error {
+	removed, err := revokeAPICredentialIf(o.Store, id, func(c config.APICredential) error {
 		if !isLoginCredential(c) {
 			return fmt.Errorf("credential %q is not a browser login session; revoke it with `relay credential revoke --id %s`", c.Name, c.ID)
 		}
 		return nil
 	})
 	if err != nil {
-		return APICredential{}, err
+		return config.APICredential{}, err
 	}
 	if err := recordIssuance(o.auditor(), CredentialIssuance{
 		Revoked:    true,

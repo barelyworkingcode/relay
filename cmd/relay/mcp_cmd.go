@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 )
 
@@ -14,7 +15,7 @@ import (
 // is unaffected: it reads settings.json directly and keeps working with
 // the tray stopped.
 func runMcpCommand(args []string) {
-	store := NewSettingsStore()
+	store := config.NewSettingsStore()
 	runSubcommands("mcp", []cliSubcommand{
 		{"register", func(a []string) { mcpRegister(store, a) }},
 		{"unregister", func(a []string) { mcpUnregister(store, a) }},
@@ -28,7 +29,7 @@ func runMcpCommand(args []string) {
 // act with no CLI door (ADR-014 section 4 — StartOAuth needs a local
 // callback listener and a real browser, and only the Settings window and
 // the tray's own IPC ever reach it).
-func mcpRegister(store SettingsStore, args []string) {
+func mcpRegister(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
 	var opts registerOpts
 	addRegisterFlags(fs, &opts)
@@ -80,7 +81,7 @@ func mcpRegister(store SettingsStore, args []string) {
 	}
 }
 
-func mcpUnregister(store SettingsStore, args []string) {
+func mcpUnregister(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("mcp unregister", flag.ExitOnError)
 	id := fs.String("id", "", "MCP ID")
 	name := fs.String("name", "", "MCP display name")
@@ -108,7 +109,7 @@ func mcpUnregister(store SettingsStore, args []string) {
 	fmt.Printf("unregistered mcp %q\n", resolvedID)
 }
 
-func mcpList(store SettingsStore) {
+func mcpList(store config.SettingsStore) {
 	s := store.Get()
 
 	if len(s.ExternalMcps) == 0 {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,12 +22,12 @@ func TestReloadIfChanged_DetectsExternalWrite(t *testing.T) {
 
 	path := filepath.Join(dir, "settings.json")
 	cur := store.Get()
-	cur.AdminSecret = NewSecret("externally-rotated-secret")
+	cur.AdminSecret = config.NewSecret("externally-rotated-secret")
 	// sealAllSecrets before marshalling, exactly as save() does: a
 	// Secret with no envelope refuses to serialise at all (§4.4), so this
 	// simulates a real external writer rather than a fixture that bypasses
 	// sealing.
-	if err := sealAllSecrets(cur, testSealer()); err != nil {
+	if err := config.SealAllSecrets(cur, testSealer()); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	data, err := json.MarshalIndent(cur, "", "  ")
@@ -65,7 +66,7 @@ func TestReloadIfChanged_NilAfterInternalWrite(t *testing.T) {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 
-	if err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("internally-set") }); err != nil {
+	if err := store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("internally-set") }); err != nil {
 		t.Fatalf("With: %v", err)
 	}
 	if got := store.ReloadIfChanged(); got != nil {

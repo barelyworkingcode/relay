@@ -7,46 +7,54 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
 const testToken = "aaaaaabbbbbbccccccddddddeeeeee0011223344556677889900aabbccddeeff"
 
-func makeSettings(perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage) *Settings {
-	hash := hashToken(testToken)
+// storeWithCache serves cache from memory with dir's settings.json
+// untouched — the shape a process is in before its first write reaches disk.
+func storeWithCache(dir string, sealer sealed.Sealer, cache *config.Settings) *config.FileSettingsStore {
+	return config.NewSettingsStoreWithCache(dir, sealer, cache)
+}
+
+func makeSettings(perms map[string]config.Permission, disabled map[string][]string, ctx map[string]json.RawMessage) *config.Settings {
+	hash := config.HashToken(testToken)
 	var allowed []string
 	for id, p := range perms {
-		if p == PermOn {
+		if p == config.PermOn {
 			allowed = append(allowed, id)
 		}
 	}
 	// ExternalMcps must include every permission key so AuthenticateProject
 	// can mark absentees PermOff.
-	var mcps []ExternalMcp
+	var mcps []config.ExternalMcp
 	for id := range perms {
-		mcps = append(mcps, ExternalMcp{ID: id, DisplayName: id})
+		mcps = append(mcps, config.ExternalMcp{ID: id, DisplayName: id})
 	}
-	return &Settings{
+	return &config.Settings{
 		Version:      1,
 		ExternalMcps: mcps,
-		Services:     []ServiceConfig{},
-		Projects: []Project{{
+		Services:     []config.ServiceConfig{},
+		Projects: []config.Project{{
 			ID:            "test-project",
 			Name:          "test",
 			Path:          "/tmp/test",
 			AllowedMcpIDs: allowed,
-			Token:         NewSecret(testToken),
+			Token:         config.NewSecret(testToken),
 			TokenHash:     hash,
 			DisabledTools: disabled,
 			Context:       ctx,
 		}},
-		AdminSecret: NewSecret("supersecretadmin"),
+		AdminSecret: config.NewSecret("supersecretadmin"),
 	}
 }
 
-func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRouter {
+func newTestRouter(t *testing.T, s *config.Settings, mgr *ExternalMcpManager) *appRouter {
 	t.Helper()
-	store := &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()}
+	store := storeWithCache(t.TempDir(), testSealer(), s)
 	return &appRouter{
 		store:    store,
 		tools:    mgr,
@@ -55,7 +63,7 @@ func newTestRouter(t *testing.T, s *Settings, mgr *ExternalMcpManager) *appRoute
 	}
 }
 
-func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string][]string, ctx map[string]json.RawMessage, mocks map[string]*mockMcpConn) *appRouter {
+func setupRouter(t *testing.T, perms map[string]config.Permission, disabled map[string][]string, ctx map[string]json.RawMessage, mocks map[string]*mockMcpConn) *appRouter {
 	t.Helper()
 	s := makeSettings(perms, disabled, ctx)
 	existing := make(map[string]bool)
@@ -64,7 +72,7 @@ func setupRouter(t *testing.T, perms map[string]Permission, disabled map[string]
 	}
 	for id := range mocks {
 		if !existing[id] {
-			s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
+			s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{ID: id, DisplayName: strings.ToUpper(id)})
 		}
 	}
 	mgr := NewExternalMcpManager(nil)
@@ -130,7 +138,7 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 
 func TestListTools_ReturnsPermittedTools(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
 				{Name: "tool_one", Description: "First tool"},
@@ -158,7 +166,7 @@ func TestListTools_ReturnsPermittedTools(t *testing.T) {
 
 func TestListTools_ExcludesPermOffMcp(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOff}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn, "mcp-b": config.PermOff}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("alpha_tool"), nil),
 			"mcp-b": newMockConn("mcp-b", simpleTools("beta_tool"), nil),
@@ -181,7 +189,7 @@ func TestListTools_ExcludesPermOffMcp(t *testing.T) {
 
 func TestListTools_ExcludesDisabledTools(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn},
+		map[string]config.Permission{"mcp-a": config.PermOn},
 		map[string][]string{"mcp-a": {"tool_two"}}, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", []mcp.Tool{
@@ -210,7 +218,7 @@ func TestListTools_ExcludesDisabledTools(t *testing.T) {
 
 func TestListTools_EmptyForTokenWithNoPermittedMcps(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOff}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOff}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("blocked_tool"), nil),
 		},
@@ -242,7 +250,7 @@ func TestListTools_InvalidToken(t *testing.T) {
 
 func TestCallTool_Success(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("do_thing"),
 				func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
@@ -274,7 +282,7 @@ func TestCallTool_Success(t *testing.T) {
 
 func TestCallTool_UnknownTool(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("real_tool"), nil),
 		},
@@ -291,7 +299,7 @@ func TestCallTool_UnknownTool(t *testing.T) {
 
 func TestCallTool_DisabledMcp(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOff}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOff}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("blocked_tool"), nil),
 		},
@@ -308,7 +316,7 @@ func TestCallTool_DisabledMcp(t *testing.T) {
 
 func TestCallTool_DisabledTool(t *testing.T) {
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn},
+		map[string]config.Permission{"mcp-a": config.PermOn},
 		map[string][]string{"mcp-a": {"forbidden_tool"}}, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("forbidden_tool"), nil),
@@ -327,7 +335,7 @@ func TestCallTool_DisabledTool(t *testing.T) {
 func TestCallTool_InjectsMetaContext(t *testing.T) {
 	var capturedParams map[string]interface{}
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn}, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn}, nil,
 		map[string]json.RawMessage{
 			"mcp-a": json.RawMessage(`{"allowed_dirs":["/tmp","/home"]}`),
 		},
@@ -367,7 +375,7 @@ func TestCallTool_InjectsMetaContext(t *testing.T) {
 func TestCallTool_InjectsProjectIDWhenContextNotSet(t *testing.T) {
 	var capturedParams map[string]interface{}
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("fs_read"),
 				func(_ context.Context, _ string, params interface{}) (json.RawMessage, error) {
@@ -409,7 +417,7 @@ func TestCallTool_InvalidToken(t *testing.T) {
 func TestCallTool_RoutesToCorrectMcp(t *testing.T) {
 	var calledMcp string
 	r := setupRouter(t,
-		map[string]Permission{"mcp-a": PermOn, "mcp-b": PermOn}, nil, nil,
+		map[string]config.Permission{"mcp-a": config.PermOn, "mcp-b": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{
 			"mcp-a": newMockConn("mcp-a", simpleTools("alpha_do"),
 				func(_ context.Context, _ string, _ interface{}) (json.RawMessage, error) {
@@ -468,7 +476,7 @@ func TestResolveAuth_ServiceToken(t *testing.T) {
 	r := newTestRouter(t, s, NewExternalMcpManager(nil))
 
 	svcToken := "servicetokenservicetokenservicetokenservicetokenservicetokenservic"
-	svcHash := hashToken(svcToken)
+	svcHash := config.HashToken(svcToken)
 	r.serviceTokens.Register(svcHash)
 
 	stored, _, err := r.resolveAuth(context.Background(), svcToken)

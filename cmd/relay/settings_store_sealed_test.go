@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
 
@@ -19,7 +20,7 @@ func TestResolveSealedStore_FirstRunCreatesKey(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	keyring := sealed.NewMemoryKeyring("", nil)
 
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore: %v", err)
 	}
@@ -51,7 +52,7 @@ func TestResolveSealedStore_MissingKeyDegrades(t *testing.T) {
 	seedSealedInstall(t, dir, "aaaaaaaaaaaaaaaa")
 
 	keyring := sealed.NewMemoryKeyring("", nil) // the item is gone
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore returned a fatal error for a degraded case: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestResolveSealedStore_KeyMismatchDegrades(t *testing.T) {
 	seedSealedInstall(t, dir, "aaaaaaaaaaaaaaaa")
 
 	keyring := sealed.NewMemoryKeyring("bbbbbbbbbbbbbbbb", make([]byte, 32))
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestResolveSealedStore_ForeignKeyNeverAdopted(t *testing.T) {
 		foreignKey[i] = byte(i + 1)
 	}
 	keyring := sealed.NewMemoryKeyring("cccccccccccccccc", foreignKey)
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestResolveSealedStore_UnreadableKeyDegrades_DistinctFromMissing(t *testing
 	before := sdRead(t, dir)
 
 	keyring := &fakeUnreadableKeyring{loadErr: unreadableErr()}
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore returned a fatal error for a degraded case: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestResolveSealedStore_FirstRunUnreadableItemDegrades_NeverCreates(t *testi
 	dir := mkEmptySandboxRelayHome(t)
 
 	keyring := &fakeUnreadableKeyring{loadErr: unreadableErr()}
-	store, err := ResolveSealedStore(dir, keyring)
+	store, err := config.ResolveSealedStore(dir, keyring)
 	if err != nil {
 		t.Fatalf("ResolveSealedStore returned a fatal error instead of degrading: %v", err)
 	}
@@ -249,7 +250,7 @@ func seedSealedInstall(t *testing.T, dir, keyID string) {
 	if err != nil {
 		t.Fatalf("NewAESSealer: %v", err)
 	}
-	store := NewSettingsStoreSealed(dir, sealer)
+	store := config.NewSettingsStoreSealed(dir, sealer)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("seedSealedInstall: EnsureInitialized: %v", err)
 	}
@@ -259,7 +260,7 @@ func seedSealedInstall(t *testing.T, dir, keyID string) {
 // every degraded-state test: relay started (the caller already has a
 // store), the read half works, and every write refuses leaving the file
 // untouched.
-func assertDegradedStoreBehaviour(t *testing.T, store *FileSettingsStore, dir string) {
+func assertDegradedStoreBehaviour(t *testing.T, store *config.FileSettingsStore, dir string) {
 	t.Helper()
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized must not fail on a degraded store: %v", err)
@@ -270,7 +271,7 @@ func assertDegradedStoreBehaviour(t *testing.T, store *FileSettingsStore, dir st
 
 	before := sdRead(t, dir)
 	beforeInfo := sdStat(t, dir)
-	err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("attempted-write") })
+	err := store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("attempted-write") })
 	if err == nil {
 		t.Fatal("a degraded store accepted a write")
 	}
@@ -297,7 +298,7 @@ func TestFileSettingsStore_CLIShapeRefusesEveryWrite(t *testing.T) {
 	seedSealedInstall(t, dir, "aaaaaaaaaaaaaaaa")
 	before := sdRead(t, dir)
 
-	store := NewSettingsStoreAt(dir)
+	store := config.NewSettingsStoreAt(dir)
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("a CLI-shaped store must still initialise for reads: %v", err)
 	}
@@ -305,11 +306,11 @@ func TestFileSettingsStore_CLIShapeRefusesEveryWrite(t *testing.T) {
 		t.Fatal("a CLI-shaped store must still serve reads")
 	}
 
-	err := store.With(func(s *Settings) { s.AdminSecret = NewSecret("x") })
+	err := store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("x") })
 	if err == nil {
 		t.Fatal("a CLI-shaped store accepted a write")
 	}
-	if err != errSealerRequired {
+	if err != config.ErrSealerRequired {
 		t.Errorf("error = %v, want errSealerRequired exactly", err)
 	}
 	after := sdRead(t, dir)
@@ -352,12 +353,12 @@ func TestNoPlaintextReachesDiskIncludingStagingFile(t *testing.T) {
 	const sentinelToken = "sentinel-project-token-do-not-leak"
 	const sentinelAdmin = "sentinel-admin-secret-do-not-leak"
 	const sentinelEnv = "sentinel-env-value-do-not-leak"
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.AdminSecret = NewSecret(sentinelAdmin)
-		hash := hashToken(sentinelToken)
-		s.Projects = append(s.Projects, Project{ID: "p1", Token: NewSecret(sentinelToken), TokenHash: hash})
-		s.ExternalMcps = append(s.ExternalMcps, ExternalMcp{
-			ID: "mcp1", Env: map[string]Secret{"KEY": NewSecret(sentinelEnv)},
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.AdminSecret = config.NewSecret(sentinelAdmin)
+		hash := config.HashToken(sentinelToken)
+		s.Projects = append(s.Projects, config.Project{ID: "p1", Token: config.NewSecret(sentinelToken), TokenHash: hash})
+		s.ExternalMcps = append(s.ExternalMcps, config.ExternalMcp{
+			ID: "mcp1", Env: map[string]config.Secret{"KEY": config.NewSecret(sentinelEnv)},
 		})
 	}), "seed sentinels")
 
@@ -365,7 +366,7 @@ func TestNoPlaintextReachesDiskIncludingStagingFile(t *testing.T) {
 	assertNoErr(t, exec.Command("chflags", "uchg", path).Run(), "chflags uchg")
 	t.Cleanup(func() { _ = exec.Command("chflags", "nouchg", path).Run() })
 
-	writeErr := store.With(func(s *Settings) { s.AdminSecret = NewSecret("second-write") })
+	writeErr := store.With(func(s *config.Settings) { s.AdminSecret = config.NewSecret("second-write") })
 	if writeErr == nil {
 		t.Fatal("With succeeded despite settings.json being immutable — the fixture proves nothing")
 	}
@@ -411,11 +412,11 @@ func TestNoPlaintextReachesDiskIncludingStagingFile(t *testing.T) {
 func TestDegradedStore_CorruptFieldUnderTheCorrectKey(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	sealer := testSealer()
-	store := NewSettingsStoreSealed(dir, sealer)
+	store := config.NewSettingsStoreSealed(dir, sealer)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
-	assertNoErr(t, store.With(func(s *Settings) {
-		hash := hashToken("real-token")
-		s.Projects = append(s.Projects, Project{ID: "p1", Name: "P1", Token: NewSecret("real-token"), TokenHash: hash})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		hash := config.HashToken("real-token")
+		s.Projects = append(s.Projects, config.Project{ID: "p1", Name: "P1", Token: config.NewSecret("real-token"), TokenHash: hash})
 	}), "seed a project")
 
 	// Flip a byte in the project's sealed token ciphertext, on disk,
@@ -439,7 +440,7 @@ func TestDegradedStore_CorruptFieldUnderTheCorrectKey(t *testing.T) {
 	assertNoErr(t, err, "remarshal settings.json")
 	assertNoErr(t, os.WriteFile(filepath.Join(dir, "settings.json"), newDoc, 0600), "write corrupted settings.json")
 
-	reloaded := NewSettingsStoreSealed(dir, sealer)
+	reloaded := config.NewSettingsStoreSealed(dir, sealer)
 	got := reloaded.Get()
 	if pt, ok := got.AdminSecret.Reveal(); !ok || pt == "" {
 		t.Error("an unrelated sealed field (admin_secret) must still open under the correct key")
@@ -455,7 +456,7 @@ func TestDegradedStore_CorruptFieldUnderTheCorrectKey(t *testing.T) {
 	}
 
 	before := sdRead(t, dir)
-	writeErr := reloaded.With(func(s *Settings) {
+	writeErr := reloaded.With(func(s *config.Settings) {
 		s.Projects[0].Name = "renamed"
 	})
 	if writeErr == nil {

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -38,7 +39,7 @@ type teCounters struct {
 
 type teServer struct {
 	srv      *FrontendServer
-	store    SettingsStore
+	store    config.SettingsStore
 	counters *teCounters
 	token    string
 	tcpBase  string
@@ -55,7 +56,7 @@ type teServer struct {
 // store is a parameter rather than built internally so a caller can mint a
 // credential against it (via NewCredentialAuthorizer) before or after the
 // server exists.
-func teNewServer(t *testing.T, store SettingsStore, authz control.Authorizer) *teServer {
+func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authorizer) *teServer {
 	t.Helper()
 	counters := &teCounters{}
 
@@ -105,17 +106,17 @@ type teFixtureIDs struct {
 	newProjDir string
 }
 
-func teSeed(t *testing.T, store SettingsStore) teFixtureIDs {
+func teSeed(t *testing.T, store config.SettingsStore) teFixtureIDs {
 	t.Helper()
-	proj := mkStoreProject(t, store, ProjectKindLocal, "te-proj1", t.TempDir())
-	projDel := mkStoreProject(t, store, ProjectKindLocal, "te-proj-del", t.TempDir())
+	proj := mkStoreProject(t, store, config.ProjectKindLocal, "te-proj1", t.TempDir())
+	projDel := mkStoreProject(t, store, config.ProjectKindLocal, "te-proj-del", t.TempDir())
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.UpsertService(ServiceConfig{ID: "svc1", DisplayName: "svc1", Command: "/bin/true"})
-		s.UpsertService(ServiceConfig{ID: "svc-del", DisplayName: "svc-del", Command: "/bin/true"})
-		s.AddExternalMcp(ExternalMcp{ID: "mcp1", DisplayName: "mcp1", Command: "/bin/true"})
-		s.AddEnrolment(Enrolment{ClientID: "enr1", Fingerprint: "fp-enr1"})
-		s.AddEnrolment(Enrolment{ClientID: "enr-del", Fingerprint: "fp-enr-del"})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{ID: "svc1", DisplayName: "svc1", Command: "/bin/true"})
+		s.UpsertService(config.ServiceConfig{ID: "svc-del", DisplayName: "svc-del", Command: "/bin/true"})
+		s.AddExternalMcp(config.ExternalMcp{ID: "mcp1", DisplayName: "mcp1", Command: "/bin/true"})
+		addEnrolment(s, config.Enrolment{ClientID: "enr1", Fingerprint: "fp-enr1"})
+		addEnrolment(s, config.Enrolment{ClientID: "enr-del", Fingerprint: "fp-enr-del"})
 	}), "seed fixtures")
 
 	return teFixtureIDs{projID: proj.ID, projDelID: projDel.ID, newProjDir: t.TempDir()}
@@ -350,7 +351,7 @@ func TestTCPServiceUpdate_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 	if ts.counters.serviceChanges != 0 {
 		t.Fatalf("ServiceOps.OnChange fired %d times; the handler must never have run", ts.counters.serviceChanges)
 	}
-	svc, _ := store.Get().findServiceByID("svc1")
+	svc, _ := config.FindServiceByID(store.Get(), "svc1")
 	if svc == nil || svc.Command != "/bin/true" {
 		t.Fatalf("svc1.Command = %+v; PUT must never have reached ServiceOps.Update", svc)
 	}
@@ -407,11 +408,11 @@ func TestTCPExecuteRoutes_StayAbsentEvenForACredentialGrantedExecute(t *testing.
 	ts := teNewServer(t, store, NewCredentialAuthorizer(store))
 	ids := teSeed(t, store)
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.AddAPICredential(APICredential{
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		addAPICredential(s, config.APICredential{
 			ID:      "te-all-classes-cred",
 			Name:    "te-all-classes-cred",
-			Hash:    hashToken(ts.token),
+			Hash:    config.HashToken(ts.token),
 			Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute},
 			Created: time.Now().UTC().Format(time.RFC3339),
 		})

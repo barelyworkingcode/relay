@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +68,7 @@ type trayRegistry struct {
 	closeFrontendCount int
 }
 
-func (r *trayRegistry) Start(c *ServiceConfig) error {
+func (r *trayRegistry) Start(c *config.ServiceConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started = append(r.started, c.ID)
@@ -130,7 +131,7 @@ func TestUpdateMenuWithSettings_BuildsServiceItemsAndMapping(t *testing.T) {
 	reg := &trayRegistry{running: map[string]bool{"svc-b": true}} // only B running
 	app := &App{platform: rp, registry: reg}
 
-	s := &Settings{Services: []ServiceConfig{
+	s := &config.Settings{Services: []config.ServiceConfig{
 		{ID: "svc-a", DisplayName: "Service A", URL: "http://a.local"},
 		{ID: "svc-b", DisplayName: "Service B"},
 	}}
@@ -172,7 +173,7 @@ func TestUpdateMenuWithSettings_BuildsServiceItemsAndMapping(t *testing.T) {
 func TestUpdateMenuWithSettings_SuppressesNoOpUpdate(t *testing.T) {
 	rp := &recordingPlatform{}
 	app := &App{platform: rp, registry: &trayRegistry{}}
-	s := &Settings{Services: []ServiceConfig{{ID: "x", DisplayName: "X"}}}
+	s := &config.Settings{Services: []config.ServiceConfig{{ID: "x", DisplayName: "X"}}}
 
 	app.updateMenuWithSettings(s)
 	app.updateMenuWithSettings(s) // identical → must not re-push to the platform
@@ -185,7 +186,7 @@ func TestUpdateMenuWithSettings_SuppressesNoOpUpdate(t *testing.T) {
 func TestOnMenuClick_StartsStoppedService(t *testing.T) {
 	rp := &recordingPlatform{}
 	reg := &trayRegistry{}
-	s := &Settings{Services: []ServiceConfig{{ID: "svc-x", DisplayName: "X", Command: "/bin/true"}}}
+	s := &config.Settings{Services: []config.ServiceConfig{{ID: "svc-x", DisplayName: "X", Command: "/bin/true"}}}
 	app := &App{platform: rp, registry: reg, store: fixedStore{s: s}}
 	app.updateMenuWithSettings(s) // populate svcMenuMap
 
@@ -202,7 +203,7 @@ func TestOnMenuClick_StartsStoppedService(t *testing.T) {
 func TestOnMenuClick_StopsRunningService(t *testing.T) {
 	rp := &recordingPlatform{}
 	reg := &trayRegistry{running: map[string]bool{"svc-x": true}}
-	s := &Settings{Services: []ServiceConfig{{ID: "svc-x", DisplayName: "X"}}}
+	s := &config.Settings{Services: []config.ServiceConfig{{ID: "svc-x", DisplayName: "X"}}}
 	app := &App{platform: rp, registry: reg, store: fixedStore{s: s}}
 	app.updateMenuWithSettings(s)
 
@@ -222,7 +223,7 @@ func TestOnMenuClick_NonServiceIDDoesNotToggle(t *testing.T) {
 	// unknown ID) must not start or stop anything. menuIDExit is deliberately
 	// not exercised here because its handler calls os.Exit.
 	reg := &trayRegistry{}
-	s := &Settings{Services: []ServiceConfig{{ID: "svc-x", DisplayName: "X"}}}
+	s := &config.Settings{Services: []config.ServiceConfig{{ID: "svc-x", DisplayName: "X"}}}
 	app := &App{platform: &recordingPlatform{}, registry: reg, store: fixedStore{s: s}}
 	app.updateMenuWithSettings(s)
 
@@ -270,7 +271,7 @@ func TestUpdateMenuWithSettings_ReflectsPendingEnrolmentRequestCount(t *testing.
 	mkEmptySandboxRelayHome(t)
 	rp := &recordingPlatform{}
 	table := newEnrolmentRequestTable()
-	s := &Settings{}
+	s := &config.Settings{}
 	app := &App{
 		platform: rp,
 		registry: &trayRegistry{},

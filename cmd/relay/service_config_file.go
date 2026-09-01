@@ -11,6 +11,7 @@ import (
 	"github.com/tidwall/jsonc"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // maxConfigFileBytes caps both reads and writes of a service config file.
@@ -114,5 +115,5 @@ func writeConfigFile(realPath string, text []byte, perm os.FileMode) error {
 	if int64(len(text)) > maxConfigFileBytes {
 		return fmt.Errorf("refusing to write %d bytes (cap %d)", len(text), maxConfigFileBytes)
 	}
-	return atomicWriteFile(realPath, text, perm)
+	return config.AtomicWriteFile(realPath, text, perm)
 }

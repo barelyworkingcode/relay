@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -120,7 +121,7 @@ func TestCallTool_StillRefusesArgumentsThatAreNotJSON(t *testing.T) {
 }
 
 func TestAudit_RecordsTheBytesTheMcpActuallyReceived(t *testing.T) {
-	s := makeSettings(map[string]Permission{"fsmcp": PermOn}, nil, nil)
+	s := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
 	mgr := NewExternalMcpManager(nil)
 	conn := newTestMcpConn(t)
 	conn.SetTools(simpleTools("fs_write"))

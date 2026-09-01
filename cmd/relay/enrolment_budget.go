@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 type enrolmentBudgets struct {
@@ -33,16 +34,16 @@ type volumeSample struct {
 	bytes int64
 }
 
-func (s *Settings) enrolmentBudget(rc bridge.RemoteCaller) EnrolmentBudget {
+func enrolmentBudget(s *config.Settings, rc bridge.RemoteCaller) config.EnrolmentBudget {
 	if s != nil {
-		if e := s.FindEnrolmentByFingerprint(rc.Fingerprint); e != nil {
+		if e := findEnrolmentByFingerprint(s, rc.Fingerprint); e != nil {
 			return normalizeEnrolmentBudget(e.Budget)
 		}
 	}
-	return normalizeEnrolmentBudget(EnrolmentBudget{})
+	return normalizeEnrolmentBudget(config.EnrolmentBudget{})
 }
 
-func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget EnrolmentBudget) error {
+func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget config.EnrolmentBudget) error {
 	budget = normalizeEnrolmentBudget(budget)
 	span := time.Duration(budget.WindowSeconds) * time.Second
 	w, now := b.windowFor(rc.Fingerprint)
@@ -78,7 +79,7 @@ func (b *enrolmentBudgets) admit(rc bridge.RemoteCaller, budget EnrolmentBudget)
 // n is the same quantity the audit layer records as ResultBytes,
 // deliberately reused rather than a second measurement that could
 // disagree with the log.
-func (b *enrolmentBudgets) charge(rc bridge.RemoteCaller, budget EnrolmentBudget, n int) {
+func (b *enrolmentBudgets) charge(rc bridge.RemoteCaller, budget config.EnrolmentBudget, n int) {
 	if n <= 0 {
 		return
 	}

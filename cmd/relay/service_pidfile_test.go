@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"os/exec"
 	"strconv"
@@ -78,7 +79,7 @@ func TestReclaimOrphans_KillsMatchingOrphan(t *testing.T) {
 	}
 
 	r := NewServiceRegistry()
-	r.ReclaimOrphans([]ServiceConfig{{ID: "sleeper", Command: "sleep"}})
+	r.ReclaimOrphans([]config.ServiceConfig{{ID: "sleeper", Command: "sleep"}})
 
 	// Reap the now-terminated child so kill(pid, 0) below sees ESRCH.
 	state, err := cmd.Process.Wait()
@@ -112,7 +113,7 @@ func TestReclaimOrphans_SkipsPidRecyclingMismatch(t *testing.T) {
 	}
 
 	r := NewServiceRegistry()
-	r.ReclaimOrphans([]ServiceConfig{{ID: "ghost", Command: "/opt/totally-different-binary"}})
+	r.ReclaimOrphans([]config.ServiceConfig{{ID: "ghost", Command: "/opt/totally-different-binary"}})
 
 	time.Sleep(200 * time.Millisecond)
 	if syscall.Kill(pid, 0) != nil {
@@ -140,7 +141,7 @@ func TestReclaimOrphans_StalePidfile(t *testing.T) {
 	}
 
 	r := NewServiceRegistry()
-	r.ReclaimOrphans([]ServiceConfig{{ID: "dead", Command: "true"}})
+	r.ReclaimOrphans([]config.ServiceConfig{{ID: "dead", Command: "true"}})
 
 	if leftover, _ := readPidFile("dead"); leftover != 0 {
 		t.Fatalf("expected stale pidfile removed, got pid %d", leftover)

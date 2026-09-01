@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -18,7 +19,7 @@ import (
 // core the gate lives in — do the work. `list` is unaffected: it reads
 // settings.json directly and keeps working with the tray stopped.
 func runCredentialCommand(args []string) {
-	store := NewSettingsStore()
+	store := config.NewSettingsStore()
 	runSubcommands("credential", []cliSubcommand{
 		{"mint", func(a []string) { credentialMint(store, a) }},
 		{"list", func(a []string) { credentialList(store, a) }},
@@ -66,7 +67,7 @@ type credentialMintRequest struct {
 	Name    string   `json:"name"`
 	Classes []string `json:"classes"`
 	// TTL zero means the credential never expires, matching
-	// Settings.MintFor. A negative value is an operator mistake and is
+	// mintAPICredentialFor. A negative value is an operator mistake and is
 	// refused rather than silently read as "never".
 	TTL time.Duration `json:"ttl"`
 }
@@ -76,7 +77,7 @@ type credentialMintRequest struct {
 // non-negative TTL) lives in the core now, not here: the request travels to
 // the tray unchecked and Mint is what refuses it, the same as every other
 // brokered command.
-func credentialMint(store SettingsStore, args []string) {
+func credentialMint(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("credential mint", flag.ExitOnError)
 	name := fs.String("name", "", "human-readable name for this credential (required)")
 	ttl := fs.Duration("ttl", 0, "how long this credential lives (e.g. 12h); omit for one that never expires")
@@ -113,7 +114,7 @@ func credentialMint(store SettingsStore, args []string) {
 // is a decision. An expired record is marked, which is the only reason
 // --include-expired is worth having — an operator wants to see what the next
 // mint is about to sweep.
-func formatCredentialExpiry(c APICredential, now time.Time) string {
+func formatCredentialExpiry(c config.APICredential, now time.Time) string {
 	if c.Expires == "" {
 		return "never"
 	}
@@ -123,7 +124,7 @@ func formatCredentialExpiry(c APICredential, now time.Time) string {
 	return c.Expires
 }
 
-func credentialList(store SettingsStore, args []string) {
+func credentialList(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("credential list", flag.ExitOnError)
 	includeExpired := fs.Bool("include-expired", false, "also list credentials that have expired and are awaiting the next mint's reap")
 	fs.Parse(args)
@@ -131,7 +132,7 @@ func credentialList(store SettingsStore, args []string) {
 	s := store.Get()
 	now := time.Now()
 
-	shown := make([]APICredential, 0, len(s.APICredentials))
+	shown := make([]config.APICredential, 0, len(s.APICredentials))
 	for _, c := range s.APICredentials {
 		if *includeExpired || !c.Expired(now) {
 			shown = append(shown, c)
@@ -159,7 +160,7 @@ func credentialList(store SettingsStore, args []string) {
 	w.Flush()
 }
 
-func credentialRevoke(store SettingsStore, args []string) {
+func credentialRevoke(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("credential revoke", flag.ExitOnError)
 	id := fs.String("id", "", "id of the credential to revoke (required)")
 	fs.Parse(args)
@@ -173,7 +174,7 @@ func credentialRevoke(store SettingsStore, args []string) {
 	if err != nil {
 		exitError("%s", adminOpErrorText(err))
 	}
-	var removed APICredential
+	var removed config.APICredential
 	if err := json.Unmarshal(raw, &removed); err != nil {
 		exitError("parse response: %v", err)
 	}

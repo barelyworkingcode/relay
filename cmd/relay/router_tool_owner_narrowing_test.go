@@ -11,32 +11,40 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
-func narrowingRouter(t *testing.T, order []string, proj Project, tools map[string][]mcp.Tool) (*appRouter, *collidingProvider) {
+// seededStore hands back a store serving exactly s from memory, with no
+// settings.json written: the shape these narrowing cases assume.
+func seededStore(t *testing.T, s *config.Settings) config.SettingsStore {
+	t.Helper()
+	return config.NewSettingsStoreWithCache(t.TempDir(), testSealer(), s)
+}
+
+func narrowingRouter(t *testing.T, order []string, proj config.Project, tools map[string][]mcp.Tool) (*appRouter, *collidingProvider) {
 	t.Helper()
 	if tools == nil {
 		tools = collisionTools()
 	}
 	tp := newCollidingProvider(order, tools)
-	proj.Token = NewSecret(testToken)
-	proj.TokenHash = hashToken(testToken)
+	proj.Token = config.NewSecret(testToken)
+	proj.TokenHash = config.HashToken(testToken)
 	if proj.Context == nil {
 		proj.Context = collisionScopes()
 	}
-	s := &Settings{
+	s := &config.Settings{
 		Version: 1,
-		ExternalMcps: []ExternalMcp{
+		ExternalMcps: []config.ExternalMcp{
 			{ID: collisionMcpA, DisplayName: collisionMcpA},
 			{ID: collisionMcpB, DisplayName: collisionMcpB},
 			{ID: collisionMcpC, DisplayName: collisionMcpC},
 		},
-		Projects:    []Project{proj},
-		AdminSecret: NewSecret("supersecretadmin"),
+		Projects:    []config.Project{proj},
+		AdminSecret: config.NewSecret("supersecretadmin"),
 	}
 	return &appRouter{
-		store:    &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
+		store:    seededStore(t, s),
 		tools:    tp,
 		services: NewServiceRegistry(),
 		onChange: func() {},
@@ -46,7 +54,7 @@ func narrowingRouter(t *testing.T, order []string, proj Project, tools map[strin
 func TestCallTool_DisabledToolOnOneColliderIsNotAmbiguous(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
-			r, tp := narrowingRouter(t, order, Project{
+			r, tp := narrowingRouter(t, order, config.Project{
 				ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 				DisabledTools: map[string][]string{collisionMcpA: {collidingTool}},
@@ -66,11 +74,11 @@ func TestCallTool_DisabledToolOnOneColliderIsNotAmbiguous(t *testing.T) {
 func TestCallTool_AllowedToolsOnOneColliderIsNotAmbiguous(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
-			r, tp := narrowingRouter(t, order, Project{
-				ID: "p", Name: "p", Kind: ProjectKindRemote,
+			r, tp := narrowingRouter(t, order, config.Project{
+				ID: "p", Name: "p", Kind: config.ProjectKindRemote,
 				AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 				AllowedTools:  map[string][]string{collisionMcpB: {collidingTool}},
-				Access:        map[string]string{collisionMcpB: AccessWrite},
+				Access:        map[string]string{collisionMcpB: config.AccessWrite},
 				AllowExternal: map[string]bool{collisionMcpB: true},
 			}, nil)
 			if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err != nil {
@@ -94,11 +102,11 @@ func TestCallTool_AnnotationDerivedLayersDoNotNarrowTheRoute(t *testing.T) {
 	}
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
-			r, tp := narrowingRouter(t, order, Project{
-				ID: "p", Name: "p", Kind: ProjectKindRemote,
+			r, tp := narrowingRouter(t, order, config.Project{
+				ID: "p", Name: "p", Kind: config.ProjectKindRemote,
 				AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 				AllowedTools:  map[string][]string{collisionMcpA: {collidingTool}, collisionMcpB: {collidingTool}},
-				Access:        map[string]string{collisionMcpA: AccessRead, collisionMcpB: AccessRead},
+				Access:        map[string]string{collisionMcpA: config.AccessRead, collisionMcpB: config.AccessRead},
 				AllowExternal: map[string]bool{collisionMcpA: true, collisionMcpB: true},
 			}, tools)
 			_, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken)
@@ -115,7 +123,7 @@ func TestCallTool_AnnotationDerivedLayersDoNotNarrowTheRoute(t *testing.T) {
 func TestCallTool_TwoCollidersBothAllowedIsStillRefused(t *testing.T) {
 	for name, order := range bothOrders() {
 		t.Run(name, func(t *testing.T) {
-			r, tp := narrowingRouter(t, order, Project{
+			r, tp := narrowingRouter(t, order, config.Project{
 				ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 			}, nil)
@@ -145,15 +153,15 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 	}
 	t.Run("ghost alone cannot serve", func(t *testing.T) {
 		tp := newCollidingProvider([]string{ghost}, tools)
-		s := &Settings{
+		s := &config.Settings{
 			Version:      1,
-			ExternalMcps: []ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
-			Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
+			ExternalMcps: []config.ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
+			Projects: []config.Project{{ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpB},
-				Token:         NewSecret(testToken), TokenHash: hashToken(testToken)}},
-			AdminSecret: NewSecret("supersecretadmin"),
+				Token:         config.NewSecret(testToken), TokenHash: config.HashToken(testToken)}},
+			AdminSecret: config.NewSecret("supersecretadmin"),
 		}
-		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
+		r := &appRouter{store: seededStore(t, s),
 			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {
 			t.Fatalf("an unregistered MCP served a call; dispatched=%v", tp.dispatchedIDs())
@@ -164,15 +172,15 @@ func TestCallTool_ConnectedButUnregisteredMcpIsNotACandidate(t *testing.T) {
 	})
 	t.Run("ghost does not make a granted MCP ambiguous", func(t *testing.T) {
 		tp := newCollidingProvider([]string{ghost, collisionMcpB}, tools)
-		s := &Settings{
+		s := &config.Settings{
 			Version:      1,
-			ExternalMcps: []ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
-			Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
+			ExternalMcps: []config.ExternalMcp{{ID: collisionMcpB, DisplayName: collisionMcpB}},
+			Projects: []config.Project{{ID: "p", Name: "p", Path: "/tmp/p",
 				AllowedMcpIDs: []string{collisionMcpB},
-				Token:         NewSecret(testToken), TokenHash: hashToken(testToken)}},
-			AdminSecret: NewSecret("supersecretadmin"),
+				Token:         config.NewSecret(testToken), TokenHash: config.HashToken(testToken)}},
+			AdminSecret: config.NewSecret("supersecretadmin"),
 		}
-		r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
+		r := &appRouter{store: seededStore(t, s),
 			tools: tp, services: NewServiceRegistry(), onChange: func() {}}
 		if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err != nil {
 			t.Fatalf("a granted MCP was refused because an unregistered one also exposes the name: %v", err)
@@ -216,7 +224,7 @@ func TestListing_AgreesWithCallToolOnCollidingNames(t *testing.T) {
 	}
 
 	t.Run("an ambiguous name is advertised nowhere", func(t *testing.T) {
-		r, _ := narrowingRouter(t, []string{collisionMcpA, collisionMcpB}, Project{
+		r, _ := narrowingRouter(t, []string{collisionMcpA, collisionMcpB}, config.Project{
 			ID: "p", Name: "p", Path: "/tmp/p",
 			AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 		}, nil)
@@ -234,7 +242,7 @@ func TestListing_AgreesWithCallToolOnCollidingNames(t *testing.T) {
 	})
 
 	t.Run("a name narrowed to one MCP is advertised once", func(t *testing.T) {
-		r, _ := narrowingRouter(t, []string{collisionMcpA, collisionMcpB}, Project{
+		r, _ := narrowingRouter(t, []string{collisionMcpA, collisionMcpB}, config.Project{
 			ID: "p", Name: "p", Path: "/tmp/p",
 			AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
 			DisabledTools: map[string][]string{collisionMcpA: {collidingTool}},
@@ -254,20 +262,20 @@ func TestAudit_AmbiguityRefusalNamesNoMcpAndKeepsTheCollidersInTheError(t *testi
 		t.Run(name, func(t *testing.T) {
 			rec := newTestAudit(t, nil)
 			tp := newCollidingProvider(order, collisionTools())
-			s := &Settings{
+			s := &config.Settings{
 				Version: 1,
-				ExternalMcps: []ExternalMcp{
+				ExternalMcps: []config.ExternalMcp{
 					{ID: collisionMcpA, DisplayName: collisionMcpA},
 					{ID: collisionMcpB, DisplayName: collisionMcpB},
 					{ID: collisionMcpC, DisplayName: collisionMcpC},
 				},
-				Projects: []Project{{ID: "p", Name: "p", Path: "/tmp/p",
+				Projects: []config.Project{{ID: "p", Name: "p", Path: "/tmp/p",
 					AllowedMcpIDs: []string{collisionMcpA, collisionMcpB},
-					Token:         NewSecret(testToken), TokenHash: hashToken(testToken),
+					Token:         config.NewSecret(testToken), TokenHash: config.HashToken(testToken),
 					Context: collisionScopes()}},
-				AdminSecret: NewSecret("supersecretadmin"),
+				AdminSecret: config.NewSecret("supersecretadmin"),
 			}
-			r := &appRouter{store: &FileSettingsStore{cache: s, dir: t.TempDir(), sealer: testSealer()},
+			r := &appRouter{store: seededStore(t, s),
 				tools: tp, services: NewServiceRegistry(), onChange: func() {}, audit: rec}
 
 			if _, err := r.CallTool(context.Background(), collidingTool, json.RawMessage(`{}`), testToken); err == nil {

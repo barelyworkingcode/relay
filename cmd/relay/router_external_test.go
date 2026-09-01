@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
@@ -68,11 +69,11 @@ func TestHints_SilenceDeniesOnBothAxesInOppositeSpellings(t *testing.T) {
 }
 
 func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
-	var nilTok *StoredToken
+	var nilTok *config.StoredToken
 	if nilTok.ExternalAllowed("macmcp") {
 		t.Error("a nil token allowed external access")
 	}
-	tok := &StoredToken{AllowExternal: map[string]bool{"macmcp": false, "other": true}}
+	tok := &config.StoredToken{AllowExternal: map[string]bool{"macmcp": false, "other": true}}
 	if tok.ExternalAllowed("macmcp") {
 		t.Error("an explicit false did not refuse")
 	}
@@ -81,7 +82,7 @@ func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
 	}
 	// AllowExternal is a map[string]bool rather than a set of allowed ids so a
 	// LOCAL record — allowed by default — can still store an explicit false.
-	local := &StoredToken{AllowExternal: map[string]bool{"macmcp": false}}
+	local := &config.StoredToken{AllowExternal: map[string]bool{"macmcp": false}}
 	if local.ExternalAllowed("macmcp") {
 		t.Error("a local project could not refuse its own outbound channel")
 	}
@@ -90,11 +91,11 @@ func TestExternalAllowed_ExplicitValueWinsInBothDirections(t *testing.T) {
 // The name states "no asymmetry" so the claim cannot quietly disappear if
 // this test is ever renamed or merged away.
 func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecision(t *testing.T) {
-	if (&StoredToken{ProjectKind: ProjectKindRemote}).ExternalAllowed("macmcp") {
+	if (&config.StoredToken{ProjectKind: config.ProjectKindRemote}).ExternalAllowed("macmcp") {
 		t.Error("an access profile defaulted to allowing external access")
 	}
-	for _, kind := range []ProjectKind{ProjectKindLocal, ""} {
-		local := &StoredToken{ProjectKind: kind}
+	for _, kind := range []config.ProjectKind{config.ProjectKindLocal, ""} {
+		local := &config.StoredToken{ProjectKind: kind}
 		if !local.ExternalAllowed("macmcp") {
 			t.Errorf("kind %q defaulted to refusing external access", kind)
 		}
@@ -121,9 +122,9 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 	}
 
 	r = newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 	})
 	got = listedToolNames(t, r)
 	for _, outbound := range []string{"web_fetch", "mail_send"} {
@@ -138,7 +139,7 @@ func TestAllowExternal_HasNoLocalRemoteAsymmetry_InvertedTheAsymmetryIsTheDecisi
 
 func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"web_*", "contacts_*"}},
 	})
 	if got := listedToolNames(t, r); slices.Contains(got, "web_fetch") {
@@ -154,7 +155,7 @@ func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.
 		t.Errorf("the refusal did not name the layer that made it: %v", err)
 	}
 	r = newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"web_*"}},
 		allowExternal: map[string]bool{"macmcp": true},
 	})
@@ -165,9 +166,9 @@ func TestReadOnlyAndOpenWorld_IsRefusedToAReadProfileWithoutTheGrant(t *testing.
 
 func TestMutatingAndLocal_IsAdmittedToAWriteProfileWithoutTheGrant(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 	})
 	if got := listedToolNames(t, r); !slices.Contains(got, "mail_create_draft") {
 		t.Fatalf("draft-but-not-send did not list mail_create_draft: %v", got)
@@ -187,7 +188,7 @@ func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 		{Name: "weather_now", Category: "Weather", Annotations: json.RawMessage(`{"readOnlyHint":true}`)},
 	}
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*", "weather_*"}},
 		tools:        tools,
 	})
@@ -218,7 +219,7 @@ func TestListPaths_HideWhatTheOutboundGrantRefuses(t *testing.T) {
 // key.
 func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:         ProjectKindRemote,
+		kind:         config.ProjectKindRemote,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_*"}},
 	})
 	rec := newTestAudit(t, nil)
@@ -254,7 +255,7 @@ func TestAudit_RecordsTheOutboundGrantOnBothAPermittedCallAndARefusal(t *testing
 	}
 
 	r = newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"web_*"}},
 		allowExternal: map[string]bool{"macmcp": true},
 	})

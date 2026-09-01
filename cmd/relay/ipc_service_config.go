@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // The manifest is the authority: relay refuses get/save for any service that
@@ -54,7 +55,7 @@ func ipcServiceConfig(ipc *IPCContext, raw json.RawMessage) {
 	}
 
 	allowedRoot := ""
-	if svc, _ := ipc.Store.Get().findServiceByID(msg.ServiceID); svc != nil {
+	if svc, _ := config.FindServiceByID(ipc.Store.Get(), msg.ServiceID); svc != nil {
 		allowedRoot = svc.WorkingDir
 	}
 
@@ -120,7 +121,7 @@ func restartServiceForConfig(ipc *IPCContext, id string) {
 		})
 		return
 	}
-	svc, _ := ipc.Store.Get().findServiceByID(id)
+	svc, _ := config.FindServiceByID(ipc.Store.Get(), id)
 	if svc == nil {
 		dispatchEmit(ipc, "onServiceConfigApplied", map[string]interface{}{
 			"serviceId": id, "mode": "saved",

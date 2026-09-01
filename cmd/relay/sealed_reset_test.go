@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/sealed"
@@ -15,7 +16,7 @@ import (
 // srSetup seeds a sandbox with a fully sealed install (a project, a
 // credential-worthy admin secret, and a real CA) under keyID/key, and
 // returns the store plus the memory keyring standing in for the keychain.
-func srSetup(t *testing.T, keyID string) (dir string, store *FileSettingsStore, keyring sealed.Keyring) {
+func srSetup(t *testing.T, keyID string) (dir string, store *config.FileSettingsStore, keyring sealed.Keyring) {
 	t.Helper()
 	dir = mkEmptySandboxRelayHome(t)
 	key := make([]byte, 32)
@@ -24,7 +25,7 @@ func srSetup(t *testing.T, keyID string) (dir string, store *FileSettingsStore, 
 	}
 	keyring = sealed.NewMemoryKeyring(keyID, key)
 	var err error
-	store, err = ResolveSealedStore(dir, keyring)
+	store, err = config.ResolveSealedStore(dir, keyring)
 	assertNoErr(t, err, "ResolveSealedStore")
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
 
@@ -32,9 +33,9 @@ func srSetup(t *testing.T, keyID string) (dir string, store *FileSettingsStore, 
 	_, err = LoadOrCreateCA(store.Sealer())
 	assertNoErr(t, err, "LoadOrCreateCA")
 
-	assertNoErr(t, store.With(func(s *Settings) {
-		hash := hashToken("seed-token")
-		s.Projects = append(s.Projects, Project{ID: "p1", Name: "P1", Token: NewSecret("seed-token"), TokenHash: hash})
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		hash := config.HashToken("seed-token")
+		s.Projects = append(s.Projects, config.Project{ID: "p1", Name: "P1", Token: config.NewSecret("seed-token"), TokenHash: hash})
 	}), "seed a project")
 
 	for _, name := range []string{"settings.json", caKeySealedFile, caCertFile} {

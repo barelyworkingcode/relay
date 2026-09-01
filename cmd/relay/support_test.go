@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/sealed"
@@ -84,8 +85,8 @@ func testSealer() sealed.Sealer {
 // SettingsStore at all want this one — plain NewSettingsStoreAt is for
 // tests specifically exercising the CLI's read-only shape (errSealerRequired)
 // or the degraded states in settings_store_sealed_test.go.
-func sealedSettingsStoreAt(dir string) *FileSettingsStore {
-	return NewSettingsStoreSealed(dir, testSealer())
+func sealedSettingsStoreAt(dir string) *config.FileSettingsStore {
+	return config.NewSettingsStoreSealed(dir, testSealer())
 }
 
 func repoRoot(t *testing.T) string {
@@ -167,7 +168,7 @@ func mkShortTempDir(t *testing.T, prefix string) string {
 	return dir
 }
 
-func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
+func newSandboxRouter(t *testing.T) (*appRouter, config.SettingsStore) {
 	t.Helper()
 	dir := mkSandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -188,7 +189,7 @@ func newSandboxRouter(t *testing.T) (*appRouter, SettingsStore) {
 // use the cmd/testservice binary via service_registry_test.go.
 type fakeServiceReloader struct{}
 
-func (f *fakeServiceReloader) Reload(id string, cfg *ServiceConfig) error { return nil }
+func (f *fakeServiceReloader) Reload(id string, cfg *config.ServiceConfig) error { return nil }
 
 // newBrokerRouter wires the six S5 op cores onto an appRouter the way
 // trayapp.go does, backed by an allowing gate and a live issuance auditor —
@@ -197,7 +198,7 @@ func (f *fakeServiceReloader) Reload(id string, cfg *ServiceConfig) error { retu
 // merely reaching the transport. mutate lets a caller narrow one core's
 // behaviour (a denying gate, a no-session context) without repeating the
 // rest of the wiring.
-func newBrokerRouter(t *testing.T, store SettingsStore, mutate func(*appRouter)) *appRouter {
+func newBrokerRouter(t *testing.T, store config.SettingsStore, mutate func(*appRouter)) *appRouter {
 	t.Helper()
 	gate := allowGate(t)
 	// startAuditRecorder, not enabledIssuanceRecorder: this router stands in

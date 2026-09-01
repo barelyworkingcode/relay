@@ -23,6 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -30,7 +31,7 @@ import (
 // aiHome sandboxes the config dir and returns an initialised store rooted in
 // it, so auditLogPath() and NewSettingsStore() both resolve inside the sandbox
 // the way they do for a real CLI process.
-func aiHome(t *testing.T) (string, SettingsStore) {
+func aiHome(t *testing.T) (string, config.SettingsStore) {
 	t.Helper()
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)
@@ -218,7 +219,7 @@ func aiPrintedToken(t *testing.T, printed string) string {
 // prints what comes back over the bridge. Revoke is the same shape.
 func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	dir, store := aiHome(t)
-	profile := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	aiQuiet(t, func() {
@@ -259,13 +260,13 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 // writes a plaintext ca.key (§5.7), so this is what a test now has to do to
 // get the CA's own private key material to check it never appears in the
 // audit log.
-func aiUnsealCAKeyPEM(t *testing.T, dir string, store SettingsStore) []byte {
+func aiUnsealCAKeyPEM(t *testing.T, dir string, store config.SettingsStore) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, caKeySealedFile))
 	assertNoErr(t, err, "read ca.key.sealed")
 	var env sealed.Envelope
 	assertNoErr(t, json.Unmarshal(data, &env), "parse ca.key.sealed")
-	keyPEM, err := store.Sealer().Unseal(env, []byte(caAADPrefix+"ca.key"))
+	keyPEM, err := store.Sealer().Unseal(env, []byte(config.CAAADPrefix+"ca.key"))
 	assertNoErr(t, err, "unseal ca.key.sealed")
 	return keyPEM
 }
@@ -321,9 +322,9 @@ func aiPrintedCode(t *testing.T, printed string) string {
 // aiStorePasskey writes a passkey whose public key coordinates are a
 // recognisable byte string, so a leak check has something unambiguous to look
 // for.
-func aiStorePasskey(t *testing.T, store SettingsStore, id string) Passkey {
+func aiStorePasskey(t *testing.T, store config.SettingsStore, id string) config.Passkey {
 	t.Helper()
-	p := Passkey{
+	p := config.Passkey{
 		ID:         id,
 		Name:       "browser passkey " + id,
 		X:          []byte("AI-PUBLIC-KEY-X-COORDINATE"),
@@ -331,7 +332,7 @@ func aiStorePasskey(t *testing.T, store SettingsStore, id string) Passkey {
 		UserHandle: "handle",
 		Created:    time.Now().UTC().Format(time.RFC3339),
 	}
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		s.Passkeys = append(s.Passkeys, p)
 	}), "store passkey")
 	return p
@@ -402,22 +403,22 @@ func TestIssuance_TrayAndSettingsWindowActsAreRecorded(t *testing.T) {
 	})
 }
 
-func aiMintLoginSession(store SettingsStore) (APICredential, string, error) {
-	var cred APICredential
+func aiMintLoginSession(store config.SettingsStore) (config.APICredential, string, error) {
+	var cred config.APICredential
 	var plaintext string
 	var mintErr error
-	err := store.With(func(s *Settings) {
-		cred, plaintext, mintErr = s.MintFor(loginCredentialPrefix+"aitest", loginCredentialClasses, loginCredentialTTL)
+	err := store.With(func(s *config.Settings) {
+		cred, plaintext, mintErr = mintAPICredentialFor(s, loginCredentialPrefix+"aitest", loginCredentialClasses, loginCredentialTTL)
 	})
 	if err != nil {
-		return APICredential{}, "", err
+		return config.APICredential{}, "", err
 	}
 	return cred, plaintext, mintErr
 }
 
 // aiRecorderAt builds a real rotating recorder at path, the way the tray's
 // does.
-func aiRecorderAt(t *testing.T, path string, cfg *AuditConfig) *AuditRecorder {
+func aiRecorderAt(t *testing.T, path string, cfg *config.AuditConfig) *AuditRecorder {
 	t.Helper()
 	rec, err := NewAuditRecorder(cfg, path)
 	assertNoErr(t, err, "NewAuditRecorder")
@@ -437,7 +438,7 @@ func aiRecorderAt(t *testing.T, path string, cfg *AuditConfig) *AuditRecorder {
 // request resolves to is the one attributed in the record.
 type aiHTTPFixture struct {
 	srv    *httptest.Server
-	store  SettingsStore
+	store  config.SettingsStore
 	rec    *AuditRecorder
 	bearer string
 	credID string
@@ -455,10 +456,10 @@ func aiNewHTTP(t *testing.T, issuance IssuanceAuditor, rec *AuditRecorder) *aiHT
 	}
 
 	var bearer string
-	var cred APICredential
-	assertNoErr(t, store.With(func(s *Settings) {
+	var cred config.APICredential
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		var err error
-		cred, bearer, err = s.Mint("ai-operator", []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant})
+		cred, bearer, err = mintAPICredentialForever(s, "ai-operator", []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant})
 		assertNoErr(t, err, "Mint")
 	}), "store.With mint")
 
@@ -486,8 +487,8 @@ func (f *aiHTTPFixture) do(t *testing.T, method, path string, body any) (*http.R
 
 func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	f := aiNewHTTP(t, nil, nil)
-	profile := mkStoreProject(t, f.store, ProjectKindRemote, "Mail", "")
-	local := mkStoreProject(t, f.store, ProjectKindLocal, "Local", t.TempDir())
+	profile := mkStoreProject(t, f.store, config.ProjectKindRemote, "Mail", "")
+	local := mkStoreProject(t, f.store, config.ProjectKindLocal, "Local", t.TempDir())
 
 	resp, body := f.do(t, "POST", "/api/enrolments", map[string]any{
 		"client_id":   "hermes-http",
@@ -542,7 +543,7 @@ func TestIssuance_HTTPEnrolmentAndRotateTokenAreRecorded(t *testing.T) {
 	f.rec.Flush()
 	logged, err := os.ReadFile(f.rec.Path())
 	assertNoErr(t, err, "read recorder log")
-	stored, _ := f.store.Reload().findProjectByID(local.ID)
+	stored, _ := config.FindProjectByID(f.store.Reload(), local.ID)
 	storedToken, _ := stored.Token.Reveal()
 	aiRefuseSecrets(t, string(logged), map[string]string{
 		"rotated project token":  rotated.Token,
@@ -671,13 +672,13 @@ func (a *aiBrokenAuditor) RecordIssuance(CredentialIssuance) error {
 func TestIssuance_HTTPRotateWithholdsTheTokenWhenTheRecordFails(t *testing.T) {
 	broken := &aiBrokenAuditor{}
 	f := aiNewHTTP(t, broken, nil)
-	local := mkStoreProject(t, f.store, ProjectKindLocal, "Local", t.TempDir())
+	local := mkStoreProject(t, f.store, config.ProjectKindLocal, "Local", t.TempDir())
 
 	resp, body := f.do(t, "POST", "/api/projects/"+local.ID+"/rotate_token", nil)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("rotate_token: status %d, want 500 when the act cannot be recorded; body %s", resp.StatusCode, body)
 	}
-	stored, _ := f.store.Reload().findProjectByID(local.ID)
+	stored, _ := config.FindProjectByID(f.store.Reload(), local.ID)
 	storedToken, _ := stored.Token.Reveal()
 	if strings.Contains(string(body), storedToken) {
 		t.Fatalf("the response carried the new project token even though the act was not recorded: %s", body)
@@ -690,7 +691,7 @@ func TestIssuance_HTTPRotateWithholdsTheTokenWhenTheRecordFails(t *testing.T) {
 func TestIssuance_HTTPEnrolmentIsRevokedWhenTheRecordFails(t *testing.T) {
 	broken := &aiBrokenAuditor{}
 	f := aiNewHTTP(t, broken, nil)
-	profile := mkStoreProject(t, f.store, ProjectKindRemote, "Mail", "")
+	profile := mkStoreProject(t, f.store, config.ProjectKindRemote, "Mail", "")
 
 	resp, body := f.do(t, "POST", "/api/enrolments", map[string]any{
 		"client_id":   "hermes-unrecorded",
@@ -699,7 +700,7 @@ func TestIssuance_HTTPEnrolmentIsRevokedWhenTheRecordFails(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("POST /api/enrolments: status %d, want 500 when the act cannot be recorded; body %s", resp.StatusCode, body)
 	}
-	if e := f.store.Reload().FindEnrolment("hermes-unrecorded"); e != nil {
+	if e := findEnrolment(f.store.Reload(), "hermes-unrecorded"); e != nil {
 		t.Fatal("an enrolment that could not be recorded survived; the client certificate is live with nothing in the log")
 	}
 	if strings.Contains(string(body), "dir") {
@@ -712,7 +713,7 @@ func TestIssuance_TrayWithholdsTheLoginCodeWhenTheRecordFails(t *testing.T) {
 	// A recorder over a writer that refuses every write is the "sink exists
 	// and fails" state; a nil recorder would be "auditing is off", which is
 	// deliberately not a refusal.
-	rec := newAuditRecorderWith((&AuditConfig{}).resolve(), "ai-broken", failingWriteCloser{})
+	rec := newAuditRecorderWith(resolveAuditConfig(&config.AuditConfig{}), "ai-broken", failingWriteCloser{})
 	t.Cleanup(rec.Close)
 	ops := &LoginOps{Store: store, Audit: rec, Gate: allowGate(t)}
 
@@ -749,7 +750,7 @@ func (failingWriteCloser) Close() error              { return nil }
 func TestIssuance_RecordIssuanceIsANoOpForUngatedCallersWhenAuditingIsOff(t *testing.T) {
 	_, store := aiHome(t)
 	off := false
-	assertNoErr(t, store.With(func(s *Settings) { s.Audit = &AuditConfig{Enabled: &off} }), "disable auditing")
+	assertNoErr(t, store.With(func(s *config.Settings) { s.Audit = &config.AuditConfig{Enabled: &off} }), "disable auditing")
 
 	rec, err := openCLIIssuanceRecorder(store)
 	assertNoErr(t, err, "openCLIIssuanceRecorder with auditing off")
@@ -797,8 +798,8 @@ func TestIssuance_CLIAppendsBesideTheTrayAndNeverRotatesItsLog(t *testing.T) {
 	assertNoErr(t, err, "auditLogPath")
 
 	const maxFileBytes = 2048
-	cfg := &AuditConfig{MaxFileBytes: maxFileBytes, Generations: 3}
-	assertNoErr(t, store.With(func(s *Settings) { s.Audit = cfg }), "set audit config")
+	cfg := &config.AuditConfig{MaxFileBytes: maxFileBytes, Generations: 3}
+	assertNoErr(t, store.With(func(s *config.Settings) { s.Audit = cfg }), "set audit config")
 
 	tray := aiRecorderAt(t, path, cfg)
 	const canary = "ai-tray-canary"

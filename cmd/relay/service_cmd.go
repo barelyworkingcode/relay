@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"path/filepath"
 	"strings"
 )
@@ -14,7 +15,7 @@ import (
 // RegisterServiceRoutes share — do the work. `list` is unaffected: it reads
 // settings.json directly and keeps working with the tray stopped.
 func runServiceCommand(args []string) {
-	store := NewSettingsStore()
+	store := config.NewSettingsStore()
 	runSubcommands("service", []cliSubcommand{
 		{"register", func(a []string) { serviceRegister(store, a) }},
 		{"unregister", func(a []string) { serviceUnregister(store, a) }},
@@ -23,7 +24,7 @@ func runServiceCommand(args []string) {
 	}, args)
 }
 
-func serviceRegister(store SettingsStore, args []string) {
+func serviceRegister(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service register", flag.ExitOnError)
 	var opts registerOpts
 	addRegisterFlags(fs, &opts)
@@ -123,7 +124,7 @@ func serviceRegister(store SettingsStore, args []string) {
 	}
 }
 
-func serviceUnregister(store SettingsStore, args []string) {
+func serviceUnregister(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service unregister", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
@@ -156,7 +157,7 @@ func serviceUnregister(store SettingsStore, args []string) {
 // already. It is still brokered — this process cannot reach the registry
 // that owns the running process, only the tray can — but no presence
 // prompt is expected here.
-func serviceRestart(store SettingsStore, args []string) {
+func serviceRestart(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("service restart", flag.ExitOnError)
 	id := fs.String("id", "", "service ID")
 	name := fs.String("name", "", "service display name")
@@ -184,7 +185,7 @@ func serviceRestart(store SettingsStore, args []string) {
 	}
 }
 
-func serviceList(store SettingsStore) {
+func serviceList(store config.SettingsStore) {
 	s := store.Get()
 
 	if len(s.Services) == 0 {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -28,7 +29,7 @@ type App struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
-	store        SettingsStore
+	store        config.SettingsStore
 	platform     Platform
 	extMgr       *ExternalMcpManager
 	registry     ServiceManager
@@ -147,7 +148,7 @@ func runTrayApp() {
 	// is what keeps that true.
 	configDir := bridge.ConfigDir()
 	keyring := sealed.NewKeychainKeyring(resolveRelayBin())
-	store, err := ResolveSealedStore(configDir, keyring)
+	store, err := config.ResolveSealedStore(configDir, keyring)
 	if err != nil {
 		slog.Error("failed to resolve the sealed store", "error", err)
 		os.Exit(1)
@@ -185,8 +186,8 @@ func runTrayApp() {
 
 	// External MCP manager with injected callback for OAuth token refresh persistence.
 	extMgr := NewExternalMcpManager(
-		func(mcpID string, oauth *OAuthState) {
-			store.With(func(s *Settings) { s.UpdateOAuthState(mcpID, oauth) })
+		func(mcpID string, oauth *config.OAuthState) {
+			store.With(func(s *config.Settings) { s.UpdateOAuthState(mcpID, oauth) })
 		},
 	)
 
@@ -400,7 +401,7 @@ func runTrayApp() {
 	// authenticating unchanged (ADR-015 decision 3). Not fatal: a relay that
 	// fails this still starts, it just leaves those consumers to 401 until the
 	// next restart retries the migration.
-	if err := store.With(func(s *Settings) {
+	if err := store.With(func(s *config.Settings) {
 		migrateFrontendTokenToCredential(s, frontendEndpoint.Token)
 	}); err != nil {
 		slog.Error("failed to migrate legacy frontend token to a credential", "error", err)
@@ -661,7 +662,7 @@ func (a *App) pushEnrolmentRequests() {
 		marshalForUI(pendingEnrolmentRequestViewsOf(a.ipcCtx.EnrolmentOps.PendingRequests(), a.store.Get())))
 }
 
-func (a *App) updateMenuWithSettings(s *Settings) {
+func (a *App) updateMenuWithSettings(s *config.Settings) {
 	type menuItem struct {
 		Title   string `json:"title"`
 		ID      int    `json:"id"`
@@ -712,7 +713,7 @@ func (a *App) updateMenuWithSettings(s *Settings) {
 	// exactly why sealed operations are refusing, so the operator sees this
 	// in the menu bar without first opening Settings. ID 0 is already used
 	// above for separators, which the click handler ignores the same way.
-	if ss, ok := a.store.(*FileSettingsStore); ok {
+	if ss, ok := a.store.(*config.FileSettingsStore); ok {
 		if reason := ss.SealStatus(); reason != nil {
 			items = append(items, menuItem{Title: "⚠ Sealed store: " + reason.Error(), ID: 0})
 		}
@@ -887,7 +888,7 @@ func (a *App) showLoginCode() {
 // invoked from the Cocoa main thread onMenuClick runs on (§6.5).
 func (a *App) confirmAndResetSealedStore() {
 	a.goFunc(func() {
-		ss, ok := a.store.(*FileSettingsStore)
+		ss, ok := a.store.(*config.FileSettingsStore)
 		if !ok {
 			slog.Error("sealed store reset: store is not file-backed")
 			return
@@ -912,13 +913,13 @@ func (a *App) toggleService(menuItemID int) {
 		return
 	}
 	s := a.store.Get()
-	config, _ := s.findServiceByID(svcID)
-	if config == nil {
+	cfg, _ := config.FindServiceByID(s, svcID)
+	if cfg == nil {
 		return
 	}
 
-	if a.registry.IsRunning(config.ID) {
-		id := config.ID
+	if a.registry.IsRunning(cfg.ID) {
+		id := cfg.ID
 		a.goFunc(func() {
 			a.registry.Stop(id)
 			a.platform.DispatchToMain(func() {
@@ -927,7 +928,7 @@ func (a *App) toggleService(menuItemID int) {
 			})
 		})
 	} else {
-		if err := a.registry.Start(config); err != nil {
+		if err := a.registry.Start(cfg); err != nil {
 			slog.Error("service toggle failed", "error", err)
 		}
 		a.updateMenu()

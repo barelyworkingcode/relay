@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // A full, untruncated fingerprint. Recorded whole so a revoked device's history
@@ -76,7 +77,7 @@ func TestAuditRemote_IntentIsOnDiskBeforeTheMcpRuns(t *testing.T) {
 			return json.RawMessage(`{"content":[{"type":"text","text":"3 messages"}]}`), nil
 		})
 
-	r := setupRouter(t, map[string]Permission{"macmcp": PermOn}, nil, nil,
+	r := setupRouter(t, map[string]config.Permission{"macmcp": config.PermOn}, nil, nil,
 		map[string]*mockMcpConn{"macmcp": mock})
 	rec = newTestAudit(t, nil)
 	r.audit = rec
@@ -119,7 +120,7 @@ func TestAuditRemote_FailedIntentRefusesTheCallAndTheMcpNeverRuns(t *testing.T) 
 			return json.RawMessage(`{"content":[]}`), nil
 		})
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn}, nil,
+		map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	// Break the sink the way a full or unwritable disk would: the file handle
@@ -153,7 +154,7 @@ func TestAuditLocal_UnwritableSinkStillCompletesTheCall(t *testing.T) {
 			return json.RawMessage(`{"content":[]}`), nil
 		})
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	if err := rec.w.Close(); err != nil {
@@ -178,7 +179,7 @@ func TestAuditRemote_IntentAndCompletionShareOneEventID(t *testing.T) {
 	mock := newMockConn("macmcp", localTools("mail_search"),
 		okHandler(`{"content":[{"type":"text","text":"3 messages"}]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn}, nil,
+		map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	if _, err := r.CallTool(remoteCtx("hermes-mail"), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
@@ -215,7 +216,7 @@ func TestAuditRemote_DeniedCallIsOneRecordWithNoIntent(t *testing.T) {
 
 	mock := newMockConn("macmcp", localTools("mail_search", "send_mail"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn},
+		map[string]config.Permission{"macmcp": config.PermOn},
 		map[string][]string{"macmcp": {"send_mail"}},
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
@@ -245,7 +246,7 @@ func TestAuditRemote_ActorIsAttestedAndProcessFieldsAreAbsent(t *testing.T) {
 
 	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn}, nil,
+		map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	// A peer pid in the context as well: even if one somehow rides along, a
@@ -312,7 +313,7 @@ func TestAuditRemote_UnauthorizedKeepsTheAttestedIdentity(t *testing.T) {
 
 	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn}, nil,
+		map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	if _, err := r.CallTool(remoteCtx("hermes-mail"), "mail_search", nil, "not-a-real-token"); err == nil {
@@ -337,7 +338,7 @@ func TestAuditLocal_StillWritesExactlyOneRecordWithNoPhase(t *testing.T) {
 
 	mock := newMockConn("fsmcp", localTools("read_file"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	ctx := bridge.WithCallerPID(context.Background(), os.Getpid())
@@ -368,7 +369,7 @@ func TestAuditLocal_DropsRatherThanBlockingWhenTheQueueIsFull(t *testing.T) {
 
 	mock := newMockConn("fsmcp", localTools("read_file"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"fsmcp": PermOn}, nil,
+		map[string]config.Permission{"fsmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"fsmcp": mock}, nil)
 
 	// Wedge the writer goroutine, then fill the queue behind it.
@@ -452,7 +453,7 @@ func TestAuditCmd_KindFilterMatchesLoggedRecords(t *testing.T) {
 
 	mock := newMockConn("macmcp", localTools("mail_search"), okHandler(`{"content":[]}`))
 	r, rec := auditedRouter(t,
-		map[string]Permission{"macmcp": PermOn}, nil,
+		map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	if _, err := r.CallTool(context.Background(), "mail_search", nil, testToken); err != nil {

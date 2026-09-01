@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,7 @@ import (
 func TestUpdateMenuWithSettings_SurfacesDegradedSealedStore(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	reason := errors.New("the sealed store is bound to key aaaaaaaaaaaaaaaa, settings.json expects key bbbbbbbbbbbbbbbb")
-	store := NewSettingsStoreDegraded(dir, reason)
+	store := config.NewSettingsStoreDegraded(dir, reason)
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized on a degraded store")
 
 	rp := &recordingPlatform{}

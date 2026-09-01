@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"testing"
 )
 
@@ -24,14 +25,14 @@ func TestRemoteProjectPayloadFromSettingsUI(t *testing.T) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatalf("settings-UI payload did not decode: %v", err)
 	}
-	if f.Kind != ProjectKindRemote {
+	if f.Kind != config.ProjectKindRemote {
 		t.Fatalf(`"kind":"remote" did not reach projectCreateFields.Kind (got %q) — check the json tag`, f.Kind)
 	}
 	if f.Path != "" {
 		t.Errorf("payload with no path key produced Path=%q", f.Path)
 	}
 
-	s := &Settings{}
+	s := &config.Settings{}
 	created, err := applyProjectCreate(s, f, nil)
 	if err != nil {
 		t.Fatalf("creating a zero-grant remote project from the UI payload failed: %v", err)

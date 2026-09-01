@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 const scopedSchema = `{
@@ -18,12 +19,12 @@ const scopedSchema = `{
   }
 }`
 
-func scopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMessage) *appRouter {
+func scopedProfile(t *testing.T, kind config.ProjectKind, values map[string]json.RawMessage) *appRouter {
 	t.Helper()
 	return newProfileRouter(t, profileOpts{
 		kind:         kind,
 		allowedTools: map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
-		access:       map[string]string{"macmcp": AccessWrite},
+		access:       map[string]string{"macmcp": config.AccessWrite},
 		// web_fetch is the scope layer's ungoverned control tool, so it needs
 		// the outbound grant too or the access-mode check would refuse it
 		// before the scope check is ever reached.
@@ -35,7 +36,7 @@ func scopedProfile(t *testing.T, kind ProjectKind, values map[string]json.RawMes
 }
 
 func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *testing.T) {
-	r := scopedProfile(t, ProjectKindRemote, nil)
+	r := scopedProfile(t, config.ProjectKindRemote, nil)
 	rec := newTestAudit(t, nil)
 	r.audit = rec
 
@@ -57,7 +58,7 @@ func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *
 
 func TestCallTool_DeniesAnEmptyScopeValueTheSameAsAnAbsentOne(t *testing.T) {
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
-		r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+		r := scopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 			"mail_accounts": json.RawMessage(empty),
 		})
 		if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
@@ -67,7 +68,7 @@ func TestCallTool_DeniesAnEmptyScopeValueTheSameAsAnAbsentOne(t *testing.T) {
 }
 
 func TestCallTool_AllowsWhenTheScopeIsSupplied(t *testing.T) {
-	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := scopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
 	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
@@ -76,11 +77,11 @@ func TestCallTool_AllowsWhenTheScopeIsSupplied(t *testing.T) {
 }
 
 func TestCallTool_ThePresenceCheckIsNotRemoteOnly(t *testing.T) {
-	local := scopedProfile(t, ProjectKindLocal, nil)
+	local := scopedProfile(t, config.ProjectKindLocal, nil)
 	if _, err := local.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
 		t.Fatal("a local project reached a scope-declaring tool with no scope set")
 	}
-	local = scopedProfile(t, ProjectKindLocal, map[string]json.RawMessage{
+	local = scopedProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
 	if _, err := local.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
@@ -99,20 +100,20 @@ func TestCallTool_AStaleContextKeyIsNeverInjectedIntoMeta(t *testing.T) {
 		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 	}
 
-	proj := Project{
-		ID: "test-project", Name: "test", Kind: ProjectKindRemote,
-		AllowedMcpIDs: []string{"macmcp"}, Token: NewSecret(testToken), TokenHash: hashToken(testToken),
+	proj := config.Project{
+		ID: "test-project", Name: "test", Kind: config.ProjectKindRemote,
+		AllowedMcpIDs: []string{"macmcp"}, Token: config.NewSecret(testToken), TokenHash: config.HashToken(testToken),
 		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		Access:       map[string]string{"macmcp": AccessWrite},
+		Access:       map[string]string{"macmcp": config.AccessWrite},
 		// write_dirs is left over from a schema rename; the live schema below
 		// no longer declares it.
 		Context: map[string]json.RawMessage{
 			"macmcp": json.RawMessage(`{"mail_accounts":["Bob"],"write_dirs":["/etc"]}`),
 		},
 	}
-	s := &Settings{
-		Version: 1, ExternalMcps: []ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
-		Projects: []Project{proj}, AdminSecret: NewSecret("supersecretadmin"),
+	s := &config.Settings{
+		Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "macmcp", DisplayName: "macMCP"}},
+		Projects: []config.Project{proj}, AdminSecret: config.NewSecret("supersecretadmin"),
 	}
 	mgr := NewExternalMcpManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", macmcpToolSurface(), capture))
@@ -152,9 +153,9 @@ const scopedSchemaWithSecret = `{
 
 func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{
-		kind:          ProjectKindRemote,
+		kind:          config.ProjectKindRemote,
 		allowedTools:  map[string][]string{"macmcp": {"mail_*", "web_fetch"}},
-		access:        map[string]string{"macmcp": AccessWrite},
+		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		schema:        scopedSchemaWithSecret,
 		schemaVersion: 2,
@@ -174,8 +175,8 @@ func TestAudit_RecordsTheModeAndOnlyTheDeclaredRestrictFields(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", len(events))
 	}
 	ev := events[0]
-	if ev.Access != AccessWrite {
-		t.Errorf("access recorded as %q, want %q", ev.Access, AccessWrite)
+	if ev.Access != config.AccessWrite {
+		t.Errorf("access recorded as %q, want %q", ev.Access, config.AccessWrite)
 	}
 	if string(ev.Scope["mail_accounts"]) != `["Bob"]` {
 		t.Errorf("scope did not record the injected value: %v", ev.Scope)
@@ -206,14 +207,14 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 	}{
 		{
 			name: "a tool the allowlist does not name", tool: "web_fetch",
-			opts: profileOpts{kind: ProjectKindRemote,
+			opts: profileOpts{kind: config.ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
 			outcome: AuditOutcomeDenied,
 		},
 		{
 			name: "a mutating tool under a read grant", tool: "mail_send",
-			opts: profileOpts{kind: ProjectKindRemote,
+			opts: profileOpts{kind: config.ProjectKindRemote,
 				allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 				contextValues: scoped, schema: scopedSchema, schemaVersion: 2},
 			outcome: AuditOutcomeDenied,
@@ -232,8 +233,8 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 			if ev.Outcome != tc.outcome {
 				t.Fatalf("outcome = %q, want %q", ev.Outcome, tc.outcome)
 			}
-			if ev.Access != AccessRead {
-				t.Errorf("access = %q, want %q — a refusal must say what mode was in force", ev.Access, AccessRead)
+			if ev.Access != config.AccessRead {
+				t.Errorf("access = %q, want %q — a refusal must say what mode was in force", ev.Access, config.AccessRead)
 			}
 			if string(ev.Scope["mail_accounts"]) != `["Bob"]` {
 				t.Errorf("scope = %v, want the value the grant carried", ev.Scope)
@@ -242,9 +243,9 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 	}
 
 	t.Run("a grant missing its scope value", func(t *testing.T) {
-		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
+		r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote,
 			allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-			access:       map[string]string{"macmcp": AccessWrite},
+			access:       map[string]string{"macmcp": config.AccessWrite},
 			schema:       scopedSchema, schemaVersion: 2})
 		rec := newTestAudit(t, nil)
 		r.audit = rec
@@ -256,8 +257,8 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 		if ev.Outcome != AuditOutcomeDenied {
 			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeDenied)
 		}
-		if ev.Access != AccessWrite {
-			t.Errorf("access = %q, want %q", ev.Access, AccessWrite)
+		if ev.Access != config.AccessWrite {
+			t.Errorf("access = %q, want %q", ev.Access, config.AccessWrite)
 		}
 		if len(ev.Scope) != 0 {
 			t.Errorf("scope = %v, want nothing recorded for a grant that carried none", ev.Scope)
@@ -265,14 +266,14 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 	})
 
 	t.Run("a call over its enrolment budget", func(t *testing.T) {
-		r := newProfileRouter(t, profileOpts{kind: ProjectKindRemote,
+		r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote,
 			allowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 			contextValues: scoped, schema: scopedSchema, schemaVersion: 2,
-			enrolments: []Enrolment{{
+			enrolments: []config.Enrolment{{
 				ClientID:    "hermes-mail",
 				Fingerprint: budgetFingerprint("hermes-mail"),
 				ProjectIDs:  []string{"test-project"},
-				Budget:      EnrolmentBudget{WindowSeconds: 60, MaxCalls: 1, MaxResultBytes: 1 << 20},
+				Budget:      config.EnrolmentBudget{WindowSeconds: 60, MaxCalls: 1, MaxResultBytes: 1 << 20},
 			}}})
 		rec := newTestAudit(t, nil)
 		r.audit = rec
@@ -288,7 +289,7 @@ func TestAudit_ARefusalCarriesTheAuthorityItWasRefusedUnder(t *testing.T) {
 		if ev.Outcome != AuditOutcomeThrottled {
 			t.Fatalf("outcome = %q, want %q", ev.Outcome, AuditOutcomeThrottled)
 		}
-		if ev.Access != AccessRead || string(ev.Scope["mail_accounts"]) != `["Bob"]` {
+		if ev.Access != config.AccessRead || string(ev.Scope["mail_accounts"]) != `["Bob"]` {
 			t.Errorf("throttled record carried access=%q scope=%v, want the authority in force", ev.Access, ev.Scope)
 		}
 	})
@@ -338,8 +339,8 @@ func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
 	// only on the completion would be missing from the record that survives a
 	// crash mid-call.
 	f := newRemoteFixture(t, remoteFixtureOpts{})
-	assertNoErr(t, f.store.With(func(s *Settings) {
-		proj, _ := s.findProjectByID(f.project.ID)
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
+		proj, _ := config.FindProjectByID(s, f.project.ID)
 		proj.Context = map[string]json.RawMessage{
 			"macmcp": json.RawMessage(`{"mail_accounts":["Bob"]}`),
 		}
@@ -360,8 +361,8 @@ func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
 	if intent == nil {
 		t.Fatal("no intent record")
 	}
-	if intent.Access != AccessRead {
-		t.Errorf("intent access = %q, want %q (a profile defaults to read)", intent.Access, AccessRead)
+	if intent.Access != config.AccessRead {
+		t.Errorf("intent access = %q, want %q (a profile defaults to read)", intent.Access, config.AccessRead)
 	}
 	if string(intent.Scope["mail_accounts"]) != `["Bob"]` {
 		t.Errorf("intent scope = %v", intent.Scope)
@@ -369,7 +370,7 @@ func TestAudit_RemoteIntentCarriesTheAuthorityBeforeTheMcpRuns(t *testing.T) {
 }
 
 func TestListTools_AppendsTheScopeNoteToGovernedToolsOnly(t *testing.T) {
-	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := scopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
 	raw, err := r.ListTools(context.Background(), testToken)
@@ -398,7 +399,7 @@ func TestListTools_AppendsTheScopeNoteToGovernedToolsOnly(t *testing.T) {
 }
 
 func TestListSkillBuckets_CarriesTheSameNoteWithoutDoubling(t *testing.T) {
-	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+	r := scopedProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
 		"mail_accounts": json.RawMessage(`["Bob"]`),
 	})
 	// Both list paths read the same live tool objects; calling one after the
@@ -461,7 +462,7 @@ func TestScopeFromMeta_RestrictFieldDeclaredButNothingInjectedIsEmptyNotNil(t *t
 	// omitempty on a map is defined by length, so it treats a nil and an
 	// empty map identically — the distinction has to survive encoding/json,
 	// not just live as a Go nil check.
-	blob, err := json.Marshal(AuditEvent{Access: AccessRead, Scope: got})
+	blob, err := json.Marshal(AuditEvent{Access: config.AccessRead, Scope: got})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

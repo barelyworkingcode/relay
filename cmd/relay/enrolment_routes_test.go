@@ -19,10 +19,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
-func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, SettingsStore) {
+func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
 	store := newCLISandboxStore(t)
 	ops := &EnrolmentOps{Store: store, OnChange: onChange, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
@@ -34,7 +35,7 @@ func newEnrolmentRoutesServer(t *testing.T, onChange func()) (*httptest.Server, 
 func TestEnrolmentRoutes_CreateListGet(t *testing.T) {
 	srv, store := newEnrolmentRoutesServer(t, nil)
 	defer srv.Close()
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/enrolments", map[string]interface{}{
 		"client_id":   "hermes-mail",
@@ -109,7 +110,7 @@ func TestEnrolmentRoutes_UnknownID404(t *testing.T) {
 func TestEnrolmentRoutes_CreateRefusesLocalProjectGrant(t *testing.T) {
 	srv, store := newEnrolmentRoutesServer(t, nil)
 	defer srv.Close()
-	local := mkStoreProject(t, store, ProjectKindLocal, "Workspace", t.TempDir())
+	local := mkStoreProject(t, store, config.ProjectKindLocal, "Workspace", t.TempDir())
 
 	resp, body := doJSON(t, "POST", srv.URL+"/api/enrolments", map[string]interface{}{
 		"client_id":   "hermes-mail",
@@ -223,7 +224,7 @@ func TestEnrolmentRoutes_RevokeFiresHookAnd204(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status %d, body %s", resp.StatusCode, body)
 	}
-	fingerprint := store.Get().FindEnrolment("hermes-mail").Fingerprint
+	fingerprint := findEnrolment(store.Get(), "hermes-mail").Fingerprint
 
 	var hookClient, hookFingerprint string
 	SetEnrolmentRevocationHook(func(clientID, fp string) {
@@ -235,7 +236,7 @@ func TestEnrolmentRoutes_RevokeFiresHookAnd204(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: status %d, body %s", resp.StatusCode, body)
 	}
-	if store.Get().FindEnrolment("hermes-mail") != nil {
+	if findEnrolment(store.Get(), "hermes-mail") != nil {
 		t.Error("the enrolment record survived revocation")
 	}
 	if hookClient != "hermes-mail" || hookFingerprint != fingerprint {

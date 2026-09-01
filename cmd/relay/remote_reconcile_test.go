@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ func (f *remoteFixture) supervise() *RemoteSupervisor {
 // cache, writing the same settings.json — and it is the condition issue #21
 // occurs under. Nothing in these tests may reach the running listener's store,
 // or the test proves only that a process can read its own writes.
-func (f *remoteFixture) cliWriter() SettingsStore {
+func (f *remoteFixture) cliWriter() config.SettingsStore {
 	return sealedSettingsStoreAt(f.dir)
 }
 
@@ -163,7 +164,7 @@ func TestRemoteServer_AcceptsAnEnrolmentCreatedByAnotherProcess(t *testing.T) {
 	// listener's own cached view still lags the file. If this ever fails, the
 	// cache stopped lagging and the test no longer exercises issue #21 — read
 	// the fix before deleting the assertion.
-	if f.store.Get().FindEnrolmentByFingerprint(bundle.Enrolment.Fingerprint) != nil {
+	if findEnrolmentByFingerprint(f.store.Get(), bundle.Enrolment.Fingerprint) != nil {
 		t.Fatal("the listener's cached settings already hold the new enrolment; " +
 			"this test no longer reproduces the cross-process condition it was written for")
 	}
@@ -196,8 +197,8 @@ func TestRemoteServer_RevocationByAnotherProcessTakesEffectMidSession(t *testing
 
 	// Delete the record through a second store and do NOT fire the hook: this
 	// is the cross-process shape, where the listener is never told.
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		if _, ok := s.RemoveEnrolment("hermes-mail"); !ok {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		if _, ok := removeEnrolment(s, "hermes-mail"); !ok {
 			t.Error("the enrolment was not there to remove")
 		}
 	}), "revoke through a separate settings writer")
@@ -248,8 +249,8 @@ func TestRemoteSupervisor_EnablingStartsAListenerAndDisablingStopsIt(t *testing.
 	}
 
 	// Enable it from another process.
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: "127.0.0.1:0"}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: "127.0.0.1:0"}
 	}), "enable the remote block")
 
 	assertNoErr(t, sup.Reconcile(), "reconcile after enabling")
@@ -266,8 +267,8 @@ func TestRemoteSupervisor_EnablingStartsAListenerAndDisablingStopsIt(t *testing.
 	}
 
 	// Disable it again.
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(false), Listen: "127.0.0.1:0"}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(false), Listen: "127.0.0.1:0"}
 	}), "disable the remote block")
 
 	assertNoErr(t, sup.Reconcile(), "reconcile after disabling")
@@ -337,8 +338,8 @@ func TestRemoteSupervisor_ChangingTheListenAddressMovesTheListener(t *testing.T)
 	}
 
 	moved := freeLoopbackAddr(t)
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: moved}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: moved}
 	}), "move the listen address")
 
 	assertNoErr(t, sup.Reconcile(), "reconcile after moving the listen address")
@@ -400,8 +401,8 @@ func TestRemoteSupervisor_FailedRebindKeepsTheOldListenerAndReportsTheError(t *t
 	}
 
 	taken := occupiedLoopbackAddr(t)
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: taken}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: taken}
 	}), "point listen at an occupied port")
 
 	err := sup.Reconcile()
@@ -447,8 +448,8 @@ func TestRemoteSupervisor_FailedFirstBindOpensNothingAndReportsTheError(t *testi
 
 	// It retries: freeing the address is enough, with no operator action.
 	free := freeLoopbackAddr(t)
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: free}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: free}
 	}), "point listen at a free port")
 	assertNoErr(t, sup.Reconcile(), "reconcile after the address became bindable")
 	if got := sup.Addr(); got != free {
@@ -482,8 +483,8 @@ func TestRemoteSupervisor_DisablingAuditingAtRuntimeStopsTheListener(t *testing.
 		t.Fatalf("baseline ListTools failed: %s", resp.Message)
 	}
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Audit = &AuditConfig{Enabled: ptr(false)}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Audit = &config.AuditConfig{Enabled: ptr(false)}
 	}), "disable auditing")
 
 	err := sup.Reconcile()
@@ -515,8 +516,8 @@ func TestRemoteServer_RefusesCallsAsSoonAsAuditingIsDisabled(t *testing.T) {
 		t.Fatalf("baseline ListTools failed: %s", resp.Message)
 	}
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Audit = &AuditConfig{Enabled: ptr(false)}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Audit = &config.AuditConfig{Enabled: ptr(false)}
 	}), "disable auditing")
 
 	resp := c.roundTrip(`{"type":"CallTool","name":"mail_search"}`)
@@ -555,8 +556,8 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	}
 
 	moved := freeLoopbackAddr(t)
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(true), Listen: moved}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(true), Listen: moved}
 	}), "move the listen address")
 	assertNoErr(t, sup.Reconcile(), "reconcile after moving the listen address")
 
@@ -587,8 +588,8 @@ func TestRemoteSupervisor_RevocationHookIsInstalledOnceAndFollowsTheLiveListener
 	assertConnectionStopsAnswering(t, c, "a revoked enrolment's connection on the rebound listener")
 
 	// And stopping altogether leaves no hook behind pointing at a dead server.
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Remote = &RemoteConfig{Enabled: ptr(false)}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Enabled: ptr(false)}
 	}), "disable the remote block")
 	assertNoErr(t, sup.Reconcile(), "reconcile after disabling")
 	if owner := enrolmentRevocationHookOwner(); owner != nil {
@@ -619,7 +620,7 @@ func TestRemoteSupervisor_EnrolmentListenerFollowsItsOwnEnableBit(t *testing.T) 
 		t.Fatal("the tool-plane listener did not open")
 	}
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(true)
 		s.Remote.EnrolmentListen = "127.0.0.1:0"
 	}), "enable enrolment_requests")
@@ -638,7 +639,7 @@ func TestRemoteSupervisor_EnrolmentListenerFollowsItsOwnEnableBit(t *testing.T) 
 		t.Fatalf("the newly opened enrolment listener refused a lodge: %s %s", resp.Type, resp.Message)
 	}
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(false)
 	}), "disable enrolment_requests")
 	assertNoErr(t, sup.Reconcile(), "reconcile after disabling enrolment_requests")
@@ -667,7 +668,7 @@ func TestRemoteSupervisor_EnrolTableIsTheSameInstanceTheListenerWrites(t *testin
 	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
 	sup := f.supervise()
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(true)
 		s.Remote.EnrolmentListen = "127.0.0.1:0"
 	}), "enable enrolment_requests")
@@ -709,7 +710,7 @@ func TestRemoteSupervisor_ChangingOnlyTheEnrolmentAddressMovesOnlyThatListener(t
 	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
 	sup := f.supervise()
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(true)
 		s.Remote.EnrolmentListen = "127.0.0.1:0"
 	}), "enable enrolment_requests")
@@ -729,7 +730,7 @@ func TestRemoteSupervisor_ChangingOnlyTheEnrolmentAddressMovesOnlyThatListener(t
 	}
 
 	movedEnrol := freeLoopbackAddr(t)
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentListen = movedEnrol
 	}), "move only the enrolment address")
 
@@ -756,7 +757,7 @@ func TestRemoteSupervisor_ChangingOnlyTheEnrolmentAddressMovesOnlyThatListener(t
 func TestRemoteSupervisor_DisablingAuditingStopsBothListeners(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
 	sup := f.supervise()
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(true)
 		s.Remote.EnrolmentListen = "127.0.0.1:0"
 	}), "enable enrolment_requests")
@@ -768,8 +769,8 @@ func TestRemoteSupervisor_DisablingAuditingStopsBothListeners(t *testing.T) {
 		t.Fatal("both listeners did not open")
 	}
 
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
-		s.Audit = &AuditConfig{Enabled: ptr(false)}
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
+		s.Audit = &config.AuditConfig{Enabled: ptr(false)}
 	}), "disable auditing")
 	err := sup.Reconcile()
 	if err == nil {
@@ -792,7 +793,7 @@ func TestRemoteSupervisor_DisablingAuditingStopsBothListeners(t *testing.T) {
 func TestRemoteSupervisor_EnrolmentRequestsTrueWithDisabledRemoteRefusesAtReconcile(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{enabled: ptr(false), skipServe: true})
 	sup := f.supervise()
-	assertNoErr(t, f.cliWriter().With(func(s *Settings) {
+	assertNoErr(t, f.cliWriter().With(func(s *config.Settings) {
 		s.Remote.EnrolmentRequests = ptr(true)
 	}), "enable enrolment_requests with remote.enabled false")
 

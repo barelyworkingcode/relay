@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,7 +102,7 @@ type ResetMcpPermissionsResult struct {
 // The MCP must support --check-permissions; MCPs without protected APIs
 // (e.g. fsMCP) should register without --tcc-services so this isn't offered
 // for them.
-func ResetMcpPermissions(mcp ExternalMcp) (*ResetMcpPermissionsResult, error) {
+func ResetMcpPermissions(mcp config.ExternalMcp) (*ResetMcpPermissionsResult, error) {
 	if len(mcp.TccServices) == 0 {
 		return nil, fmt.Errorf("MCP %q declares no TCC services (--tcc-services not set at registration)", mcp.ID)
 	}

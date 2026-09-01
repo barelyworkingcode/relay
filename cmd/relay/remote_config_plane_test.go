@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcp"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -24,7 +25,7 @@ import (
 // setCLIAdmin flips an enrolment's bit directly through updateEnrolment
 // (bypassing EnrolmentOps' own gate — the toggle itself is covered
 // elsewhere), so these tests can drive the bit deterministically.
-func setCLIAdmin(t *testing.T, store SettingsStore, clientID string, on bool) {
+func setCLIAdmin(t *testing.T, store config.SettingsStore, clientID string, on bool) {
 	t.Helper()
 	v := on
 	if _, _, err := updateEnrolment(store, enrolmentUpdateRequest{ClientID: clientID, CLIAdmin: &v}); err != nil {
@@ -95,7 +96,7 @@ func TestCliAdmin_NarrowsOwnGrantedTools(t *testing.T) {
 		t.Fatalf("NarrowGrant refused: %s %s", resp.Type, resp.Message)
 	}
 
-	proj, _ := f.store.Get().findProjectByID(f.project.ID)
+	proj, _ := config.FindProjectByID(f.store.Get(), f.project.ID)
 	if proj == nil {
 		t.Fatal("the profile vanished")
 	}
@@ -239,7 +240,7 @@ func TestCliAdmin_EscapedGlobCannotWidenGrant(t *testing.T) {
 	// Stored grant: "mail_?x" matches any 7-character name of that shape
 	// (e.g. "mail_ax") but NOT "mail_x" (6 characters — "?" requires
 	// exactly one character in that position).
-	assertNoErr(t, f.store.With(func(s *Settings) {
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
 		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_?x"}})
 	}), "seed stored pattern")
 	setCLIAdmin(t, f.store, "hermes-mail", true)
@@ -309,10 +310,10 @@ func TestCliAdmin_CannotTouchAnotherEnrolmentsProfile(t *testing.T) {
 	f := newRemoteFixture(t, remoteFixtureOpts{})
 	setCLIAdmin(t, f.store, "hermes-mail", true)
 
-	var calProj Project
+	var calProj config.Project
 	var createErr error
-	assertNoErr(t, f.store.With(func(s *Settings) {
-		calProj, createErr = s.CreateProjectWithTokenKind(ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
+	assertNoErr(t, f.store.With(func(s *config.Settings) {
+		calProj, createErr = createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
 	}), "create B's profile")
 	assertNoErr(t, createErr, "create B's profile")
 	_, err := createEnrolment(f.store, enrolmentRequest{ClientID: "hermes-cal", ProjectIDs: []string{calProj.ID}})
@@ -461,7 +462,7 @@ func TestRemoteNarrowFields_HasNoAllowCwdAuthField(t *testing.T) {
 }
 
 func TestValidateProjectShape_StillRefusesAllowCwdAuthOnRemote(t *testing.T) {
-	proj := &Project{Kind: ProjectKindRemote, AllowCwdAuth: true}
+	proj := &config.Project{Kind: config.ProjectKindRemote, AllowCwdAuth: true}
 	err := validateProjectShape(proj)
 	if err == nil || !strings.Contains(err.Error(), "allow_cwd_auth") {
 		t.Fatalf("validateProjectShape(remote, allow_cwd_auth=true) = %v, want a refusal naming allow_cwd_auth", err)
@@ -495,7 +496,7 @@ func TestCliAdmin_FlippingBitOffDeniesTheNextRequestNotTheConnection(t *testing.
 	// Precondition: the listener's own cached settings must still show the
 	// bit on, or this test is back to exercising the in-process case and
 	// proves nothing about freshSettings.
-	if e := f.store.Get().FindEnrolment("hermes-mail"); e == nil || !e.CLIAdmin {
+	if e := findEnrolment(f.store.Get(), "hermes-mail"); e == nil || !e.CLIAdmin {
 		t.Fatal("the listener's cached settings already show cli_admin off; " +
 			"this test no longer reproduces the cross-process condition it was written for")
 	}
@@ -524,11 +525,11 @@ type blockingConfigurer struct {
 	proceed chan struct{}
 }
 
-func (b *blockingConfigurer) DescribeGrant(s *Settings, p *Project) grantView {
+func (b *blockingConfigurer) DescribeGrant(s *config.Settings, p *config.Project) grantView {
 	return b.real.DescribeGrant(s, p)
 }
 
-func (b *blockingConfigurer) NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (Project, []string, error) {
+func (b *blockingConfigurer) NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (config.Project, []string, error) {
 	close(b.started)
 	<-b.proceed
 	return b.real.NarrowForEnrolment(ctx, projectID, f, caller, surfaces)
@@ -580,7 +581,7 @@ func TestCliAdmin_InFlightRequestCompletesAfterBitFlips(t *testing.T) {
 	if res.resp.Type != bridge.RespResult {
 		t.Fatalf("the in-flight NarrowGrant did not complete: %s %s", res.resp.Type, res.resp.Message)
 	}
-	proj, _ := f.store.Get().findProjectByID(f.project.ID)
+	proj, _ := config.FindProjectByID(f.store.Get(), f.project.ID)
 	if proj == nil || len(proj.AllowedTools["macmcp"]) != 1 || proj.AllowedTools["macmcp"][0] != "mail_search" {
 		t.Fatalf("the in-flight narrowing did not land: %+v", proj)
 	}
@@ -800,21 +801,21 @@ func TestCliAdmin_NoPresencePromptReachableFromRemoteListener(t *testing.T) {
 
 func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
 
 	// Widened behind the guards, the same way TestRemoteServer_
 	// RefusesAProjectThatIsNoLongerRemote seeds a stale record: standing in
 	// for a grant an operator already validated through PUT
 	// /api/projects/{id}, which is the only door that can ever put a
 	// project in this shape.
-	assertNoErr(t, store.With(func(s *Settings) {
-		p, _ := s.findProjectByID(mail.ID)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, mail.ID)
 		if p == nil {
 			t.Fatal("seeded project vanished")
 		}
 		p.AllowedMcpIDs = []string{"macmcp", "other"}
 		p.AllowedTools = map[string][]string{"macmcp": {"mail_search"}, "other": {"other_tool"}}
-		p.Access = map[string]string{"macmcp": AccessRead, "other": AccessRead}
+		p.Access = map[string]string{"macmcp": config.AccessRead, "other": config.AccessRead}
 	}), "widen behind the guards")
 
 	ops := &ProjectOps{Store: store, Issuance: pgwWithIssuance(t), OnChange: func() {}}
@@ -826,7 +827,7 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 		remoteNarrowFields{AllowedMcpIDs: &narrowedIDs}, caller, surfaces)
 	assertNoErr(t, err, "NarrowForEnrolment dropping an MCP")
 
-	proj, _ := store.Get().findProjectByID(mail.ID)
+	proj, _ := config.FindProjectByID(store.Get(), mail.ID)
 	if proj == nil {
 		t.Fatal("the project vanished")
 	}
@@ -852,9 +853,9 @@ func TestNarrowForEnrolment_DroppingAnMcpPrunesItsStaleGrantEntries(t *testing.T
 
 func TestNarrowForEnrolment_IssuanceAuditingOffRefusesBeforeTouchingStore(t *testing.T) {
 	dir, store := newEnrolmentSandbox(t)
-	mail := mkStoreProject(t, store, ProjectKindRemote, "Mail", "")
-	assertNoErr(t, store.With(func(s *Settings) {
-		p, _ := s.findProjectByID(mail.ID)
+	mail := mkStoreProject(t, store, config.ProjectKindRemote, "Mail", "")
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, mail.ID)
 		if p == nil {
 			t.Fatal("seeded project vanished")
 		}

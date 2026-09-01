@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 )
@@ -241,7 +242,7 @@ func TestEnrolment_AC4_ServerHoldsNoDangerousFields(t *testing.T) {
 	forbidden := []reflect.Type{
 		reflect.TypeOf((*RemoteToolRouter)(nil)).Elem(),
 		reflect.TypeOf((*RemoteConfigurer)(nil)).Elem(),
-		reflect.TypeOf((*SettingsStore)(nil)).Elem(),
+		reflect.TypeOf((*config.SettingsStore)(nil)).Elem(),
 		reflect.TypeOf((*sealed.Sealer)(nil)).Elem(),
 		reflect.TypeOf((*RelayCA)(nil)), // *RelayCA
 	}
@@ -352,40 +353,40 @@ func TestEnrolment_AC6_WithRemoteCallerNeverCalledOnThisPath(t *testing.T) {
 func TestEnrolment_AC7_ConfigResolution(t *testing.T) {
 	cases := []struct {
 		name       string
-		cfg        *RemoteConfig
+		cfg        *config.RemoteConfig
 		wantErr    bool
 		wantErrSub string
 		wantOpen   bool
 	}{
 		{name: "nil block", cfg: nil, wantOpen: false},
-		{name: "enabled true, enrolment_requests absent", cfg: &RemoteConfig{Enabled: ptr(true)}, wantOpen: false},
-		{name: "enabled false, enrolment_requests absent", cfg: &RemoteConfig{Enabled: ptr(false)}, wantOpen: false},
+		{name: "enabled true, enrolment_requests absent", cfg: &config.RemoteConfig{Enabled: ptr(true)}, wantOpen: false},
+		{name: "enabled false, enrolment_requests absent", cfg: &config.RemoteConfig{Enabled: ptr(false)}, wantOpen: false},
 		{
 			name:       "enrolment_requests true, enabled false",
-			cfg:        &RemoteConfig{Enabled: ptr(false), EnrolmentRequests: ptr(true)},
+			cfg:        &config.RemoteConfig{Enabled: ptr(false), EnrolmentRequests: ptr(true)},
 			wantErr:    true,
 			wantErrSub: "enrolment_requests is true but remote.enabled is false",
 		},
 		{
 			name:       "enrolment_requests true, enabled absent",
-			cfg:        &RemoteConfig{EnrolmentRequests: ptr(true)},
+			cfg:        &config.RemoteConfig{EnrolmentRequests: ptr(true)},
 			wantErr:    true,
 			wantErrSub: "enrolment_requests is true but remote.enabled is false",
 		},
 		{
 			name:     "enrolment_requests true, enabled true",
-			cfg:      &RemoteConfig{Enabled: ptr(true), EnrolmentRequests: ptr(true)},
+			cfg:      &config.RemoteConfig{Enabled: ptr(true), EnrolmentRequests: ptr(true)},
 			wantOpen: true,
 		},
 		{
 			name:     "enrolment_requests true, enabled true, explicit listen",
-			cfg:      &RemoteConfig{Enabled: ptr(true), EnrolmentRequests: ptr(true), EnrolmentListen: "127.0.0.1:19911"},
+			cfg:      &config.RemoteConfig{Enabled: ptr(true), EnrolmentRequests: ptr(true), EnrolmentListen: "127.0.0.1:19911"},
 			wantOpen: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resolved, err := tc.cfg.resolveEnrolment()
+			resolved, err := resolveRemoteEnrolment(tc.cfg)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("resolveEnrolment: got no error, want one")
@@ -410,7 +411,7 @@ func TestEnrolment_AC7_ConfigResolution(t *testing.T) {
 	// returns a nil listener, no error).
 	table := newEnrolmentRequestTable()
 	audit := newTestAudit(t, nil)
-	disabled, err := (&RemoteConfig{}).resolveEnrolment()
+	disabled, err := resolveRemoteEnrolment(&config.RemoteConfig{})
 	assertNoErr(t, err, "resolveEnrolment (disabled)")
 	s, err := NewEnrolmentRequestServer(context.Background(), table, audit, disabled)
 	assertNoErr(t, err, "NewEnrolmentRequestServer (disabled)")

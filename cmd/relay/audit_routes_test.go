@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -252,7 +253,7 @@ func TestAuditRoutes_DisabledRecorderDoesNotPanic(t *testing.T) {
 func TestAuditRoutes_RedactionNeverLeaksCredentialArgs(t *testing.T) {
 	mock := newMockConn("macmcp", localTools("send_mail"),
 		okHandler(`{"content":[{"type":"text","text":"sent"}]}`))
-	r, rec := auditedRouter(t, map[string]Permission{"macmcp": PermOn}, nil,
+	r, rec := auditedRouter(t, map[string]config.Permission{"macmcp": config.PermOn}, nil,
 		map[string]*mockMcpConn{"macmcp": mock}, nil)
 
 	const secret = "sk-live-hunter2-do-not-leak"

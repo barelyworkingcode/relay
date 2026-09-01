@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -129,7 +130,7 @@ func TestScopeBreadth_AListIsAUnion(t *testing.T) {
 func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 	allowExternal := false
 	line, ok := auditAuthorityLine(AuditEvent{
-		Access:        AccessWrite,
+		Access:        config.AccessWrite,
 		AllowExternal: &allowExternal,
 		Scope:         map[string]json.RawMessage{"allowed_dirs": json.RawMessage(`["/"]`)},
 	})
@@ -144,7 +145,7 @@ func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 	}
 
 	bounded, _ := auditAuthorityLine(AuditEvent{
-		Access:        AccessWrite,
+		Access:        config.AccessWrite,
 		AllowExternal: &allowExternal,
 		Scope:         map[string]json.RawMessage{"allowed_dirs": json.RawMessage(`["/Users/me/project"]`)},
 	})
@@ -154,12 +155,12 @@ func TestAuditAuthorityLine_NamesAnUnrestrictedScope(t *testing.T) {
 }
 
 func TestGrantView_ShowsTheRealValueAndFlagsTheRoot(t *testing.T) {
-	s := &Settings{
+	s := &config.Settings{
 		Version:      1,
-		ExternalMcps: []ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}},
+		ExternalMcps: []config.ExternalMcp{{ID: "fsmcp", DisplayName: "fsMCP"}},
 	}
-	profile := Project{
-		ID: "probe", Name: "Probe", Kind: ProjectKindRemote,
+	profile := config.Project{
+		ID: "probe", Name: "Probe", Kind: config.ProjectKindRemote,
 		AllowedMcpIDs: []string{"fsmcp"},
 		AllowedTools:  map[string][]string{"fsmcp": {"fs_*"}},
 		Context: map[string]json.RawMessage{
@@ -186,8 +187,8 @@ func TestGrantView_ShowsTheRealValueAndFlagsTheRoot(t *testing.T) {
 }
 
 func TestGrantView_ABoundedGrantCarriesNoWarning(t *testing.T) {
-	s := &Settings{Version: 1, ExternalMcps: []ExternalMcp{{ID: "fsmcp"}}}
-	local := Project{
+	s := &config.Settings{Version: 1, ExternalMcps: []config.ExternalMcp{{ID: "fsmcp"}}}
+	local := config.Project{
 		ID: "proj", Name: "Proj", Path: "/Users/me/project",
 		AllowedMcpIDs: []string{"fsmcp"},
 		Context: map[string]json.RawMessage{
@@ -209,7 +210,7 @@ func TestGrantView_ABoundedGrantCarriesNoWarning(t *testing.T) {
 }
 
 func TestSelectGrantRecords_ResolvesByIdAndByName(t *testing.T) {
-	projects := []Project{
+	projects := []config.Project{
 		{ID: "b-id", Name: "A name"},
 		{ID: "a-id", Name: "B name"},
 	}

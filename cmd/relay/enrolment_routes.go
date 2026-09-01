@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 )
 
@@ -16,11 +17,11 @@ func credIDOf(r *http.Request) string {
 }
 
 type enrolmentView struct {
-	ClientID    string          `json:"client_id"`
-	Fingerprint string          `json:"fingerprint"`
-	ProjectIDs  []string        `json:"project_ids"`
-	Budget      EnrolmentBudget `json:"budget"`
-	CreatedAt   string          `json:"created_at"`
+	ClientID    string                 `json:"client_id"`
+	Fingerprint string                 `json:"fingerprint"`
+	ProjectIDs  []string               `json:"project_ids"`
+	Budget      config.EnrolmentBudget `json:"budget"`
+	CreatedAt   string                 `json:"created_at"`
 	// Dir is populated only on create: the bundle directory the client key
 	// was written to. Never the key itself, and never any other file's
 	// contents — see EnrolmentCreated.
@@ -34,7 +35,7 @@ type enrolmentView struct {
 	CLIAdmin bool `json:"cli_admin,omitempty"`
 }
 
-func enrolmentViewOf(e Enrolment) enrolmentView {
+func enrolmentViewOf(e config.Enrolment) enrolmentView {
 	return enrolmentView{
 		ClientID:    e.ClientID,
 		Fingerprint: e.Fingerprint,

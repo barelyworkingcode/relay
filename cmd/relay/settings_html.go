@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/webassets"
 )
 
@@ -43,7 +44,7 @@ func mustMarshalJSON(label string, v interface{}) string {
 // because the PROJECT LIST needs it too — a row has to say "needs a scope
 // value" without anyone opening the editor first, and a list that had to
 // round-trip for that would render the reassuring answer first.
-func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView) string {
+func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]ScopeFieldView) string {
 	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil, "")
 }
 
@@ -58,19 +59,19 @@ func renderSettingsHTML(settings *Settings, runningIDs []string, toolCache map[s
 // initialPage is one of web/src/app.js's showPage ids and is set only from a
 // constant in this repository; it never carries anything a network peer
 // supplied.
-func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache map[string][]ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
+func renderSettingsDocument(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
 	if toolCache == nil {
-		toolCache = map[string][]ToolInfo{}
+		toolCache = map[string][]config.ToolInfo{}
 	}
 	if scopeFields == nil {
 		scopeFields = map[string][]ScopeFieldView{}
 	}
 	projects := settings.Projects
 	if projects == nil {
-		projects = []Project{}
+		projects = []config.Project{}
 	}
 	// Enrolments are seeded like projects rather than fetched on tab switch:
 	// the list is small (one row per enrolled certificate), and a credential
@@ -78,14 +79,14 @@ func renderSettingsDocument(settings *Settings, runningIDs []string, toolCache m
 	// moment the tab is, with no loading state to fail into.
 	enrolments := settings.Enrolments
 	if enrolments == nil {
-		enrolments = []Enrolment{}
+		enrolments = []config.Enrolment{}
 	}
 	// The first paint has no *AuditRecorder to consult, so the remote view's
 	// audit state comes from the configuration. That is what the operator
 	// edits and what NewRemoteServer's refusal is phrased in terms of; the IPC
 	// handlers, which do hold the recorder, pass its live answer instead (see
 	// remoteConfigViewOf).
-	remote := remoteConfigViewOf(settings, settings.Audit.resolve().Enabled)
+	remote := remoteConfigViewOf(settings, resolveAuditConfig(settings.Audit).Enabled)
 	return strings.NewReplacer(
 		"__EXTERNAL_MCPS_JSON__", mustMarshalJSON("external_mcps", externalMcpsToNativeView(settings.ExternalMcps)),
 		"__SERVICES_JSON__", mustMarshalJSON("services", serviceConfigsToNativeView(settings.Services)),

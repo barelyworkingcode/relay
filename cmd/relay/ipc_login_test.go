@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/dop251/goja"
 )
 
@@ -72,7 +73,7 @@ func (p *ilPlatform) allJS() string {
 
 // ilIPC stands up an IPCContext over a sandboxed store, matching
 // newEnrolmentIPC. Nothing here can touch the real config dir.
-func ilIPC(t *testing.T) (*IPCContext, SettingsStore, *recordingUI) {
+func ilIPC(t *testing.T) (*IPCContext, config.SettingsStore, *recordingUI) {
 	t.Helper()
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
@@ -100,10 +101,10 @@ const (
 	ilYMarker = "BBBBPASSKEYYCOORDBBBB"
 )
 
-func ilSeedPasskey(t *testing.T, store SettingsStore, id, name string, signCount uint32, counters bool) {
+func ilSeedPasskey(t *testing.T, store config.SettingsStore, id, name string, signCount uint32, counters bool) {
 	t.Helper()
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.Passkeys = append(s.Passkeys, Passkey{
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.Passkeys = append(s.Passkeys, config.Passkey{
 			ID:               id,
 			Name:             name,
 			X:                []byte(ilXMarker),
@@ -118,12 +119,12 @@ func ilSeedPasskey(t *testing.T, store SettingsStore, id, name string, signCount
 
 // ilSeedSession mints a credential named the way the ceremony names one, so
 // the sign-out gate sees exactly what it would see in production.
-func ilSeedSession(t *testing.T, store SettingsStore, credentialID string, ttl time.Duration) APICredential {
+func ilSeedSession(t *testing.T, store config.SettingsStore, credentialID string, ttl time.Duration) config.APICredential {
 	t.Helper()
-	var cred APICredential
+	var cred config.APICredential
 	var mintErr error
-	assertNoErr(t, store.With(func(s *Settings) {
-		cred, _, mintErr = s.MintFor(loginCredentialName(credentialID), loginCredentialClasses, ttl)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		cred, _, mintErr = mintAPICredentialFor(s, loginCredentialName(credentialID), loginCredentialClasses, ttl)
 	}), "seed login session")
 	assertNoErr(t, mintErr, "seed login session")
 	return cred
@@ -218,8 +219,8 @@ func TestILListPasskeys_OmitsExpiredSessions(t *testing.T) {
 	ipc, store, ui := ilIPC(t)
 	live := ilSeedSession(t, store, "cred-live", loginCredentialTTL)
 	dead := ilSeedSession(t, store, "cred-dead", time.Hour)
-	assertNoErr(t, store.With(func(s *Settings) {
-		s.FindAPICredential(dead.ID).Expires = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		findAPICredential(s, dead.ID).Expires = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
 	}), "age the second session out")
 
 	ipcListPasskeys(ipc, mustRaw(t, map[string]interface{}{"type": MsgListPasskeys}))
@@ -297,10 +298,10 @@ func TestILRevokePasskey_DoesNotEndTheSessionsItSignedIn(t *testing.T) {
 	if _, ok := findEvent(ui, "onPasskeyRevoked"); !ok {
 		t.Fatalf("setup: the revoke did not land; got %+v", ui.events)
 	}
-	if store.Get().FindAPICredential(session.ID) == nil {
+	if findAPICredential(store.Get(), session.ID) == nil {
 		t.Fatal("revoking a passkey deleted a credential it had already minted")
 	}
-	if store.Get().AuthenticateAPICredential("") != nil {
+	if authenticateAPICredential(store.Get(), "") != nil {
 		t.Fatal("setup: the empty token authenticated")
 	}
 	// Still listed, so the operator can see the session that survived and end
@@ -331,10 +332,10 @@ func TestILSignOutLogin_RevokesOneSessionAndLeavesTheRest(t *testing.T) {
 	if got, _ := args[0].(string); got != drop.ID {
 		t.Errorf("signed-out event named %q, want %q", got, drop.ID)
 	}
-	if store.Get().FindAPICredential(drop.ID) != nil {
+	if findAPICredential(store.Get(), drop.ID) != nil {
 		t.Error("the signed-out credential survived")
 	}
-	if store.Get().FindAPICredential(keep.ID) == nil {
+	if findAPICredential(store.Get(), keep.ID) == nil {
 		t.Error("signing one browser out took another with it")
 	}
 }
@@ -360,7 +361,7 @@ func TestILSignOutLogin_RefusesACredentialThatIsNotALoginSession(t *testing.T) {
 			t.Errorf("refusal must contain %q; got: %s", want, msg)
 		}
 	}
-	if store.Get().FindAPICredential(script.ID) == nil {
+	if findAPICredential(store.Get(), script.ID) == nil {
 		t.Fatal("a credential that is not a login session was revoked from the settings WebView")
 	}
 	if _, revoked := findEvent(ui, "onLoginSessionRevoked"); revoked {
@@ -379,7 +380,7 @@ func TestILSignOutLogin_RefusesACredentialThatIsNotALoginSession(t *testing.T) {
 // TestILSignOutLogin_RefusesACredentialThatIsNotALoginSession.
 func TestILSignOutLogin_RefusesTheLegacyFrontendCredential(t *testing.T) {
 	ipc, store, ui := ilIPC(t)
-	assertNoErr(t, store.With(func(s *Settings) {
+	assertNoErr(t, store.With(func(s *config.Settings) {
 		migrateFrontendTokenToCredential(s, "il-legacy-token")
 	}), "seed the legacy credential")
 	legacyID := store.Get().APICredentials[0].ID
@@ -389,7 +390,7 @@ func TestILSignOutLogin_RefusesTheLegacyFrontendCredential(t *testing.T) {
 	if _, ok := findEvent(ui, "onPasskeyError"); !ok {
 		t.Fatalf("expected onPasskeyError; got %+v", ui.events)
 	}
-	if store.Get().FindAPICredential(legacyID) == nil {
+	if findAPICredential(store.Get(), legacyID) == nil {
 		t.Fatal("the legacy frontend credential was revoked from the settings WebView")
 	}
 }
@@ -466,7 +467,7 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 // The tray item
 // ---------------------------------------------------------------------------
 
-func ilTrayApp(t *testing.T) (*App, *ilPlatform, SettingsStore) {
+func ilTrayApp(t *testing.T) (*App, *ilPlatform, config.SettingsStore) {
 	t.Helper()
 	store := sealedSettingsStoreAt(mkEmptySandboxRelayHome(t))
 	assertNoErr(t, store.EnsureInitialized(), "EnsureInitialized")
@@ -485,7 +486,7 @@ func ilTrayApp(t *testing.T) (*App, *ilPlatform, SettingsStore) {
 func TestILTrayMenu_OffersTheLoginCodeItem(t *testing.T) {
 	app, _, _ := ilTrayApp(t)
 
-	app.updateMenuWithSettings(&Settings{})
+	app.updateMenuWithSettings(&config.Settings{})
 
 	menu := app.lastMenuJSON
 	if !strings.Contains(menu, "Show Login Code...") {
@@ -530,7 +531,7 @@ func TestILTrayLoginCode_ClosedWindowGetsTheCodeInItsFirstPaint(t *testing.T) {
 	}
 	// Only the SHA-256 is stored — the document holds the one copy of the
 	// plaintext that will ever exist.
-	if hashToken(code) != anchor.Hash {
+	if config.HashToken(code) != anchor.Hash {
 		t.Fatal("the code shown is not the code the anchor will accept")
 	}
 	if strings.Contains(mustMarshalJSON("anchor", anchor), code) {

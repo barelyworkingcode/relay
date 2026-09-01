@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
@@ -37,29 +38,12 @@ var (
 	remoteIdleTimeout = 5 * time.Minute
 )
 
-// Enabled is a *bool so absent, false and true stay distinguishable: unlike
-// AuditConfig, a network listener defaults OFF, so a block that names a
-// listen address but omits `enabled` opens nothing.
-//
-// EnrolmentRequests and EnrolmentListen follow the identical discipline for
-// the enrolment-request channel (spec §1): a THIRD listener this same block
-// configures, never a mode of the first. EnrolmentRequests absent or false
-// means no enrolment listener at all — opening that network door is a thing
-// the operator says, not a thing relay infers, exactly like Enabled itself.
-type RemoteConfig struct {
-	Enabled *bool  `json:"enabled,omitempty"`
-	Listen  string `json:"listen,omitempty"`
-
-	EnrolmentRequests *bool  `json:"enrolment_requests,omitempty"`
-	EnrolmentListen   string `json:"enrolment_listen,omitempty"`
-}
-
 type resolvedRemoteConfig struct {
 	Enabled bool
 	Listen  string
 }
 
-func (c *RemoteConfig) resolve() resolvedRemoteConfig {
+func resolveRemoteConfig(c *config.RemoteConfig) resolvedRemoteConfig {
 	if c == nil {
 		return resolvedRemoteConfig{Enabled: false, Listen: defaultRemoteListen}
 	}
@@ -73,20 +57,20 @@ func (c *RemoteConfig) resolve() resolvedRemoteConfig {
 	return out
 }
 
-// resolveEnrolment derives the enrolment-request listener's config from the
-// same block resolve() reads for the tool-plane listener. Unlike resolve(),
-// this can fail: enrolment_requests:true with enabled:false names a
-// configuration mistake rather than something to silently take at face
-// value — the enrolment channel is a companion to the tool-plane listener,
-// not a substitute for enabling it, and letting it start on its own would
-// mean "no remote access" in settings.json no longer implied "no network
-// door open."
-func (c *RemoteConfig) resolveEnrolment() (resolvedRemoteConfig, error) {
+// resolveRemoteEnrolment derives the enrolment-request listener's config from
+// the same block resolveRemoteConfig reads for the tool-plane listener.
+// Unlike resolveRemoteConfig, this can fail: enrolment_requests:true with
+// enabled:false names a configuration mistake rather than something to
+// silently take at face value — the enrolment channel is a companion to the
+// tool-plane listener, not a substitute for enabling it, and letting it
+// start on its own would mean "no remote access" in settings.json no longer
+// implied "no network door open."
+func resolveRemoteEnrolment(c *config.RemoteConfig) (resolvedRemoteConfig, error) {
 	wantEnrolment := c != nil && boolOr(c.EnrolmentRequests, false)
 	if !wantEnrolment {
 		return resolvedRemoteConfig{Enabled: false, Listen: defaultEnrolmentListen}, nil
 	}
-	if !c.resolve().Enabled {
+	if !resolveRemoteConfig(c).Enabled {
 		return resolvedRemoteConfig{}, fmt.Errorf(
 			"remote.enrolment_requests is true but remote.enabled is false: the enrolment-request channel " +
 				"is a companion to the remote tool-plane listener, not a replacement for it — set remote.enabled " +
@@ -140,8 +124,8 @@ func handleRemoteCallTool(ctx context.Context, req *bridge.RemoteRequest, router
 // cannot call ProjectOps.Update even by accident, because it holds nothing
 // with that method.
 type RemoteConfigurer interface {
-	DescribeGrant(s *Settings, proj *Project) grantView
-	NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (Project, []string, error)
+	DescribeGrant(s *config.Settings, proj *config.Project) grantView
+	NarrowForEnrolment(ctx context.Context, projectID string, f remoteNarrowFields, caller bridge.RemoteCaller, surfaces func() McpSurfaces) (config.Project, []string, error)
 }
 
 var _ RemoteConfigurer = (*ProjectOps)(nil)
@@ -149,7 +133,7 @@ var _ RemoteConfigurer = (*ProjectOps)(nil)
 // remoteConfigHandler mirrors remoteHandler's shape: everything a config
 // handler needs, resolved once by handleRequest and handed down rather than
 // re-resolved.
-type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *Settings, proj *Project, caller bridge.RemoteCaller) bridge.BridgeResponse
+type remoteConfigHandler func(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse
 
 // remoteConfigEntry pairs a handler with the capability class its operation
 // carries. buildRemoteConfigHandlers refuses to install an entry whose
@@ -186,7 +170,7 @@ var remoteConfigHandlers = buildRemoteConfigHandlers(map[string]remoteConfigEntr
 	bridge.ReqNarrowGrant:   {control.ClassConfigure, handleRemoteNarrowGrant},
 })
 
-func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() McpSurfaces, settings *Settings, proj *Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
+func handleRemoteDescribeGrant(_ context.Context, _ *bridge.RemoteRequest, configurer RemoteConfigurer, _ func() McpSurfaces, settings *config.Settings, proj *config.Project, _ bridge.RemoteCaller) bridge.BridgeResponse {
 	data, err := json.Marshal(configurer.DescribeGrant(settings, proj))
 	if err != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "describe grant: "+err.Error())
@@ -202,7 +186,7 @@ type remoteNarrowGrantResult struct {
 	Grant   grantView `json:"grant"`
 }
 
-func handleRemoteNarrowGrant(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *Settings, proj *Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
+func handleRemoteNarrowGrant(ctx context.Context, req *bridge.RemoteRequest, configurer RemoteConfigurer, surfaces func() McpSurfaces, settings *config.Settings, proj *config.Project, caller bridge.RemoteCaller) bridge.BridgeResponse {
 	f, err := decodeRemoteNarrowFields(req.Arguments)
 	if err != nil {
 		// Strict decoding: a client sending allow_cwd_auth or any other
@@ -233,7 +217,7 @@ func cliAdminRequiredMessage(clientID string) string {
 // method tolerates it, so callers need no branch for the disabled case.
 type RemoteServer struct {
 	router RemoteToolRouter
-	store  SettingsStore
+	store  config.SettingsStore
 	cfg    resolvedRemoteConfig
 	audit  *AuditRecorder
 	// configurer is nil in every deployment that never wires one, and a nil
@@ -257,15 +241,15 @@ type RemoteServer struct {
 	conns map[string]map[*remoteConn]struct{}
 }
 
-func (s *RemoteServer) currentSettings() *Settings {
-	return freshSettings(s.store)
+func (s *RemoteServer) currentSettings() *config.Settings {
+	return config.FreshSettings(s.store)
 }
 
 // remoteAuditingLive requires both halves; neither implies the other. The
 // recorder can die under a listener that started cleanly, independently of
 // settings flipping audit.enabled off in another process.
-func remoteAuditingLive(s *Settings, audit *AuditRecorder) bool {
-	return audit.Enabled() && s.Audit.resolve().Enabled
+func remoteAuditingLive(s *config.Settings, audit *AuditRecorder) bool {
+	return audit.Enabled() && resolveAuditConfig(s.Audit).Enabled
 }
 
 type remoteConn struct {
@@ -274,11 +258,11 @@ type remoteConn struct {
 	fingerprint string
 }
 
-func NewRemoteServer(ctx context.Context, store SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces) (*RemoteServer, error) {
+func NewRemoteServer(ctx context.Context, store config.SettingsStore, router RemoteToolRouter, audit *AuditRecorder, configurer RemoteConfigurer, surfaces func() McpSurfaces) (*RemoteServer, error) {
 	// freshSettings, not Get(): the operator who just edited settings.json is
 	// the same operator watching the listener come up.
-	settings := freshSettings(store)
-	cfg := settings.Remote.resolve()
+	settings := config.FreshSettings(store)
+	cfg := resolveRemoteConfig(settings.Remote)
 	if !cfg.Enabled {
 		slog.Debug("remote listener not enabled; no socket opened")
 		return nil, nil
@@ -434,7 +418,7 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	// currentSettings, not Get(): a cached view here would refuse a
 	// brand-new enrolment until the tray's next settings poll.
 	settings := s.currentSettings()
-	enrolment := settings.FindEnrolmentByFingerprint(fingerprint)
+	enrolment := findEnrolmentByFingerprint(settings, fingerprint)
 	if enrolment == nil {
 		slog.Warn("remote: closing connection, certificate is not enrolled",
 			"fingerprint", fingerprint, "remote_addr", conn.RemoteAddr().String())
@@ -552,7 +536,7 @@ func (s *RemoteServer) recordConfigRefusal(class control.CapabilityClass, reqTyp
 // the TLS handshake, but only to decide whether to accept the connection at
 // all — never consult that copy for an authorization decision made later in
 // the connection's life).
-func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*Settings, *Enrolment, *Project, error) {
+func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*config.Settings, *config.Enrolment, *config.Project, error) {
 	settings := s.currentSettings()
 
 	if !remoteAuditingLive(settings, s.audit) {
@@ -560,7 +544,7 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*Settings, 
 			fmt.Errorf("remote calls are refused while the tool-call audit log is disabled"))
 	}
 
-	enrolment := settings.FindEnrolmentByFingerprint(fingerprint)
+	enrolment := findEnrolmentByFingerprint(settings, fingerprint)
 	if enrolment == nil {
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("this certificate is no longer enrolled"))
@@ -584,7 +568,7 @@ func (s *RemoteServer) resolveCaller(fingerprint, projectID string) (*Settings, 
 			fmt.Errorf("enrolment %q does not grant project %q", enrolment.ClientID, projectID))
 	}
 
-	proj, _ := settings.findProjectByID(projectID)
+	proj, _ := config.FindProjectByID(settings, projectID)
 	if proj == nil {
 		return nil, nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
 			fmt.Errorf("project %q no longer exists", projectID))
@@ -614,7 +598,7 @@ func (s *RemoteServer) resolveGrant(fingerprint, projectID string) (string, erro
 // step for the tool plane: turning an already-resolved, already-authorized
 // project into the plaintext token CallTool/ListTools need. Never put on
 // the wire — resolved server-side only.
-func revealProjectToken(proj *Project) (string, error) {
+func revealProjectToken(proj *config.Project) (string, error) {
 	token, ok := proj.Token.Reveal()
 	if !ok || token == "" {
 		return "", jsonrpc.NewCodedError(jsonrpc.CodeInternalError,

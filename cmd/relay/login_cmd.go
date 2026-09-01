@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // Login registration is anchored on the host, by the user who owns the
@@ -19,7 +20,7 @@ import (
 // purpose — a session that cannot show a presence prompt refuses here
 // exactly as it does for every other gated operation, with no exemption.
 func runLoginCommand(args []string) {
-	store := NewSettingsStore()
+	store := config.NewSettingsStore()
 	runSubcommands("login", []cliSubcommand{
 		{"enrol", func(_ []string) { loginEnrol(store) }},
 		{"list", func(_ []string) { loginList(store) }},
@@ -27,7 +28,7 @@ func runLoginCommand(args []string) {
 	}, args)
 }
 
-func loginEnrol(store SettingsStore) {
+func loginEnrol(store config.SettingsStore) {
 	client := requireService("relay login enrol")
 	raw, err := client.AdminOp("login.bootstrap.mint", nil)
 	if err != nil {
@@ -49,7 +50,7 @@ func loginEnrol(store SettingsStore) {
 	fmt.Println("  this code is shown ONCE and is not recoverable")
 }
 
-func loginList(store SettingsStore) {
+func loginList(store config.SettingsStore) {
 	s := store.Get()
 
 	if len(s.Passkeys) == 0 {
@@ -69,7 +70,7 @@ func loginList(store SettingsStore) {
 	w.Flush()
 }
 
-func loginRevoke(store SettingsStore, args []string) {
+func loginRevoke(store config.SettingsStore, args []string) {
 	fs := flag.NewFlagSet("login revoke", flag.ExitOnError)
 	id := fs.String("id", "", "credential id of the passkey to revoke (required)")
 	fs.Parse(args)
@@ -83,7 +84,7 @@ func loginRevoke(store SettingsStore, args []string) {
 	if err != nil {
 		exitError("%s", adminOpErrorText(err))
 	}
-	var removed Passkey
+	var removed config.Passkey
 	if err := json.Unmarshal(raw, &removed); err != nil {
 		exitError("parse response: %v", err)
 	}

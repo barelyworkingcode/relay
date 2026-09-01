@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"strings"
 	"testing"
 )
@@ -13,9 +14,9 @@ func v2Surfaces() McpSurfaces {
 	}
 }
 
-func profileWithContext(mcpID, blob string) *Project {
-	return &Project{
-		ID: "p1", Name: "Profile", Kind: ProjectKindRemote,
+func profileWithContext(mcpID, blob string) *config.Project {
+	return &config.Project{
+		ID: "p1", Name: "Profile", Kind: config.ProjectKindRemote,
 		AllowedMcpIDs: []string{mcpID},
 		Context:       map[string]json.RawMessage{mcpID: json.RawMessage(blob)},
 	}
@@ -63,7 +64,7 @@ func TestValidatePermissions_RefusesEmptyRestrictValue(t *testing.T) {
 // save, so accepting an operator's value here would look like acceptance and
 // then silently discard it; refusing is louder than that.
 func TestValidatePermissions_RefusesOperatorSuppliedProjectPathField(t *testing.T) {
-	proj := &Project{
+	proj := &config.Project{
 		ID: "p1", Name: "Local", Path: "/tmp/x",
 		AllowedMcpIDs: []string{"macmcp"},
 		Context:       map[string]json.RawMessage{"macmcp": json.RawMessage(`{"file_dirs":["/etc"]}`)},
@@ -75,11 +76,11 @@ func TestValidatePermissions_RefusesOperatorSuppliedProjectPathField(t *testing.
 // typo is fail-closed at call time — but reading silently as read is not what
 // the operator chose, and this validation is the only place that says so.
 func TestValidatePermissions_RefusesUnknownAccessMode(t *testing.T) {
-	proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+	proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		Access: map[string]string{"macmcp": "readwrite"}}
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "macmcp", "readwrite", "read", "write")
 
-	for _, ok := range []string{AccessRead, AccessWrite} {
+	for _, ok := range []string{config.AccessRead, config.AccessWrite} {
 		proj.Access["macmcp"] = ok
 		if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
 			t.Errorf("mode %q should be accepted: %v", ok, err)
@@ -91,7 +92,7 @@ func TestValidatePermissions_RefusesUnknownAccessMode(t *testing.T) {
 // this refusal exists for usability, not safety: a broken pattern should say
 // so at save time rather than silently stop an agent later.
 func TestValidatePermissions_RefusesUncompilablePattern(t *testing.T) {
-	proj := &Project{ID: "p1", Kind: ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
+	proj := &config.Project{ID: "p1", Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools: map[string][]string{"macmcp": {"mail_[", "mail_*"}}}
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_[", "macmcp")
 
@@ -105,7 +106,7 @@ func TestValidatePermissions_RefusesUncompilablePattern(t *testing.T) {
 // derived allowed_dirs, so a value stored here would vanish at the next edit
 // rather than take effect.
 func TestValidatePermissions_RefusesContextForV1Schema(t *testing.T) {
-	proj := &Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"},
+	proj := &config.Project{ID: "p1", Path: "/tmp/x", AllowedMcpIDs: []string{"fsmcp"},
 		Context: map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":["/etc"]}`)}}
 	wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "fsmcp", "v1")
 }
@@ -132,11 +133,11 @@ func TestValidatePermissions_RefusesNonObjectContext(t *testing.T) {
 }
 
 func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
-	proj := &Project{
-		ID: "prof_hermes_bob_inbox", Name: "Hermes — Bob INBOX (read-only)", Kind: ProjectKindRemote,
+	proj := &config.Project{
+		ID: "prof_hermes_bob_inbox", Name: "Hermes — Bob INBOX (read-only)", Kind: config.ProjectKindRemote,
 		AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
-		Access:        map[string]string{"macmcp": AccessRead},
+		Access:        map[string]string{"macmcp": config.AccessRead},
 		Context: map[string]json.RawMessage{
 			"macmcp": json.RawMessage(`{"mail_accounts":["Bob"],"mail_mailboxes":["INBOX"]}`),
 		},
@@ -150,9 +151,9 @@ func TestValidatePermissions_AcceptsTheWorkedExample(t *testing.T) {
 }
 
 func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
-	s := &Settings{Version: 1}
+	s := &config.Settings{Version: 1}
 	surfaces := v2Surfaces()
-	proj, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, surfaces)
+	proj, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, surfaces)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 		t.Fatalf("precondition: file_dirs should have been derived, got %s", s.Projects[0].Context["macmcp"])
 	}
 
-	s.UpdateProjectContext(proj.ID, map[string]json.RawMessage{
+	updateProjectContext(s, proj.ID, map[string]json.RawMessage{
 		"macmcp": json.RawMessage(`{"mail_accounts":["Alice"]}`),
 	}, surfaces)
 
@@ -175,13 +176,13 @@ func TestUpdateProjectContext_ReDerivesTheProjectPathField(t *testing.T) {
 }
 
 func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	s.UpdateProjectAccess(proj.ID, map[string]string{"macmcp": AccessWrite, "other": AccessWrite})
-	s.UpdateProjectContext(proj.ID, map[string]json.RawMessage{
+	s.UpdateProjectAccess(proj.ID, map[string]string{"macmcp": config.AccessWrite, "other": config.AccessWrite})
+	updateProjectContext(s, proj.ID, map[string]json.RawMessage{
 		"macmcp": json.RawMessage(`{"mail_accounts":["Bob"]}`),
 		"other":  json.RawMessage(`{"whatever":["x"]}`),
 	}, v2Surfaces())
@@ -193,7 +194,7 @@ func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 	if _, ok := got.Context["other"]; ok {
 		t.Error("a scope was stored for an MCP the profile does not grant")
 	}
-	if got.Access["macmcp"] != AccessWrite {
+	if got.Access["macmcp"] != config.AccessWrite {
 		t.Errorf("granted MCP lost its mode: %#v", got.Access)
 	}
 }
@@ -202,8 +203,8 @@ func TestUpdateProjectAccessAndContext_DropUngrantedMcps(t *testing.T) {
 // local project is write — silently widening a grant on the strength of a
 // typo — so it is kept as-is instead.
 func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, nil)
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -211,9 +212,9 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 	if got := s.Projects[0].Access["macmcp"]; got != "wrIte" {
 		t.Fatalf("mode was rewritten or dropped: %q", got)
 	}
-	tok := s.storedTokenForProject(&s.Projects[0], "hash")
-	if mode := tok.AccessMode("macmcp"); mode != AccessRead {
-		t.Errorf("an unrecognised mode must read as %q, got %q", AccessRead, mode)
+	tok := config.StoredTokenForProject(s, &s.Projects[0], "hash")
+	if mode := tok.AccessMode("macmcp"); mode != config.AccessRead {
+		t.Errorf("an unrecognised mode must read as %q, got %q", config.AccessRead, mode)
 	}
 }
 
@@ -221,8 +222,8 @@ func TestUpdateProjectAccess_KeepsAnUnknownModeRatherThanWidening(t *testing.T) 
 // defaults to allowed, it is the only way to say the opposite, and discarding
 // it would make a confined local agent unexpressible.
 func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *testing.T) {
-	s := &Settings{Version: 1}
-	proj, err := s.CreateProjectWithTokenKind(ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
+	s := &config.Settings{Version: 1}
+	proj, err := createProjectWithTokenKind(s, config.ProjectKindRemote, "Profile", "", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 	if _, ok := got.AllowExternal["other"]; ok {
 		t.Error("an outbound grant was stored for an MCP the profile does not grant")
 	}
-	tok := s.storedTokenForProject(&s.Projects[0], "hash")
+	tok := config.StoredTokenForProject(s, &s.Projects[0], "hash")
 	if !tok.ExternalAllowed("macmcp") {
 		t.Error("the grant did not reach the token every auth path builds")
 	}
@@ -245,21 +246,21 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 		t.Error("a dropped entry still reached the token")
 	}
 
-	local, err := s.CreateProjectWithToken("Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
+	local, err := createProjectWithToken(s, "Local", "/tmp/proj", []string{"macmcp"}, nil, nil, v2Surfaces())
 	if err != nil {
 		t.Fatalf("create local: %v", err)
 	}
 	s.UpdateProjectAllowExternal(local.ID, map[string]bool{"macmcp": false})
-	stored, _ := s.findProjectByID(local.ID)
+	stored, _ := config.FindProjectByID(s, local.ID)
 	if allowed, ok := stored.AllowExternal["macmcp"]; !ok || allowed {
 		t.Fatalf("a local project's explicit refusal was discarded: %#v", stored.AllowExternal)
 	}
-	if s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+	if config.StoredTokenForProject(s, stored, "hash").ExternalAllowed("macmcp") {
 		t.Error("a stored refusal did not reach the token")
 	}
 
 	s.UpdateProjectAllowExternal(local.ID, nil)
-	stored, _ = s.findProjectByID(local.ID)
+	stored, _ = config.FindProjectByID(s, local.ID)
 	if stored.AllowExternal != nil {
 		t.Errorf("a cleared field left a map behind: %#v", stored.AllowExternal)
 	}
@@ -267,8 +268,8 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 	// first (§4.4) — wrap it in a throwaway Settings just to reach
 	// sealAllSecrets, since that is the only place the sealed set is
 	// enumerated.
-	sealMe := &Settings{Projects: []Project{*stored}}
-	if err := sealAllSecrets(sealMe, testSealer()); err != nil {
+	sealMe := &config.Settings{Projects: []config.Project{*stored}}
+	if err := config.SealAllSecrets(sealMe, testSealer()); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	blob, err := json.Marshal(sealMe.Projects[0])
@@ -278,12 +279,12 @@ func TestUpdateProjectAllowExternal_KeepsBothValuesAndDropsUngrantedMcps(t *test
 	if strings.Contains(string(blob), "allow_external") {
 		t.Errorf("a record saying nothing serialized the key anyway: %s", blob)
 	}
-	if !s.storedTokenForProject(stored, "hash").ExternalAllowed("macmcp") {
+	if !config.StoredTokenForProject(s, stored, "hash").ExternalAllowed("macmcp") {
 		t.Error("clearing the field did not return the local project to its default")
 	}
 
 	s.UpdateProjectAllowExternal(proj.ID, map[string]bool{"macmcp": true})
-	s.UpdateProjectMcps(proj.ID, []string{}, v2Surfaces())
+	updateProjectMcps(s, proj.ID, []string{}, v2Surfaces())
 	if _, ok := s.Projects[0].AllowExternal["macmcp"]; ok {
 		t.Errorf("an outbound grant outlived the MCP grant it belonged to: %#v", s.Projects[0].AllowExternal)
 	}
