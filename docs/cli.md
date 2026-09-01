@@ -260,7 +260,7 @@ A scope value that reaches an entire filesystem root (an `allowed_dirs` of
 `"/"`) or a whole home directory is called out in the table with a line in
 `** LOUD CAPS **`, because those are exactly the two shapes `disclose` would
 otherwise let a client under-report (see `docs/tokens.md` and
-`scope_breadth.go`). Nothing on this machine currently triggers that warning
+`internal/project/scope_breadth.go`). Nothing on this machine currently triggers that warning
 — every registered scope names a bounded subfolder.
 
 `relay grant` **never prints a secret**. It builds a `StoredToken` from the

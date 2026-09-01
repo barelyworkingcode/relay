@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"relaygo/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
 
 // Larger than bridge.MaxMessageSize (10 MiB) so the frame is over relay's cap
