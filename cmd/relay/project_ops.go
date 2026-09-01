@@ -10,9 +10,10 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-// ProjectOps wraps applyProjectCreate, applyProjectUpdate and
+// ProjectOps wraps project.ApplyCreate, project.ApplyUpdate and
 // RotateProjectToken with the presence gate ADR-017 decision 3's
 // `configure` subset names: creating a project or widening its grant shape
 // needs the same presence check minting a credential does, because a
@@ -25,8 +26,8 @@ import (
 // argument), so it is gated on exactly the same footing as allowed_tools.
 //
 // The one door each for HTTP (project_routes.go) and the WebView IPC
-// (ipc_projects.go) go through this rather than calling applyProjectCreate /
-// applyProjectUpdate / RotateProjectToken directly, so neither can drift
+// (ipc_projects.go) go through this rather than calling project.ApplyCreate /
+// project.ApplyUpdate / RotateProjectToken directly, so neither can drift
 // from the other's gate.
 type ProjectOps struct {
 	Store config.SettingsStore
@@ -42,7 +43,7 @@ type ProjectOps struct {
 }
 
 // errProjectSaveFailed distinguishes an internal settings-write failure
-// from a validation refusal (applyProjectCreate/applyProjectUpdate's own
+// from a validation refusal (project.ApplyCreate/project.ApplyUpdate's own
 // error) and from a presence/audit refusal, so a door can map each to its
 // own status code without inspecting error text.
 var errProjectSaveFailed = errors.New("failed to save settings")
@@ -59,9 +60,9 @@ func (o *ProjectOps) notify() {
 	}
 }
 
-// presenceDigest binds a project.grant grant to exactly the shape being
+// projectCreateDigest binds a project.grant grant to exactly the shape being
 // created (§6.4). project_id is absent on create — there is none yet.
-func (f projectCreateFields) presenceDigest() presence.Digest {
+func projectCreateDigest(f project.CreateFields) presence.Digest {
 	return presence.NewDigestBuilder("project.grant").
 		StringField("project_id", false, "").
 		StringSetField("allowed_mcp_ids", true, f.AllowedMcpIDs).
@@ -75,7 +76,7 @@ func (f projectCreateFields) presenceDigest() presence.Digest {
 		Build()
 }
 
-// presenceDigest binds a project.grant grant to exactly the fields id's
+// projectUpdateDigest binds a project.grant grant to exactly the fields id's
 // update touches, absent-aware (§6.4): a grant answered for one field must
 // not be spendable on a request that also, or instead, touches another.
 //
@@ -89,7 +90,7 @@ func (f projectCreateFields) presenceDigest() presence.Digest {
 // "turn on directory auth AND set allowed_tools to * AND repoint path at
 // /". Narrowing what gates and narrowing what the digest binds are two
 // different questions; only the first one changes.
-func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
+func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 	b := presence.NewDigestBuilder("project.grant").StringField("project_id", true, id)
 	if f.AllowedMcpIDs != nil {
 		b.StringSetField("allowed_mcp_ids", true, *f.AllowedMcpIDs)
@@ -140,12 +141,12 @@ func (f projectUpdateFields) presenceDigest(id string) presence.Digest {
 // generate_skill, permission_policy, allowed_models or shell_templates must
 // NOT prompt — none of those widen what a token reaches. disabled_tools is
 // deliberately absent too: it is a denylist and can only narrow (§6.4).
-func projectUpdateTouchesGrant(f projectUpdateFields) bool {
+func projectUpdateTouchesGrant(f project.UpdateFields) bool {
 	return f.AllowedMcpIDs != nil || f.AllowedTools != nil || f.Access != nil ||
 		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil || f.Path != nil
 }
 
-func projectUpdateGrantFieldNames(f projectUpdateFields) []string {
+func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
 	var names []string
 	if f.AllowedMcpIDs != nil {
 		names = append(names, "allowed_mcp_ids")
@@ -174,7 +175,7 @@ func projectUpdateGrantFieldNames(f projectUpdateFields) []string {
 	return names
 }
 
-func projectCreateGrantFieldNames(f projectCreateFields) []string {
+func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	names := []string{"kind", "path"}
 	if len(f.AllowedMcpIDs) > 0 {
 		names = append(names, "allowed_mcp_ids")
@@ -201,7 +202,7 @@ func projectCreateGrantFieldNames(f projectCreateFields) []string {
 // gets its own sentence when it is the field being turned on: the ADR
 // singles it out because turning it on hands the project's whole tool set
 // to any process standing in the directory, with no token at all.
-func projectGrantUpdateReason(id string, f projectUpdateFields, cwdAuthTurningOn bool) string {
+func projectGrantUpdateReason(id string, f project.UpdateFields, cwdAuthTurningOn bool) string {
 	if cwdAuthTurningOn {
 		return fmt.Sprintf("turn on directory authentication for the project %q", id)
 	}
@@ -213,7 +214,7 @@ func projectGrantUpdateReason(id string, f projectUpdateFields, cwdAuthTurningOn
 // widening act project.grant exists to prompt for (§6.4's note that the op
 // "fires on any project create or update whose request sets any of the
 // listed fields").
-func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces McpSurfaces, via, credID string) (config.Project, error) {
+func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surfaces project.McpSurfaces, via, credID string) (config.Project, error) {
 	if strings.TrimSpace(f.Name) == "" {
 		return config.Project{}, fmt.Errorf("project name is required")
 	}
@@ -221,7 +222,7 @@ func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.Project{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "project.grant", f.presenceDigest(),
+	grant, err := requireGate(o.Gate, ctx, "project.grant", projectCreateDigest(f),
 		fmt.Sprintf("create the project %q and grant it its initial scope", f.Name))
 	if err != nil {
 		return config.Project{}, err
@@ -230,7 +231,7 @@ func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces
 	var created config.Project
 	var createErr error
 	if err := o.Store.With(func(s *config.Settings) {
-		created, createErr = applyProjectCreate(s, f, surfaces)
+		created, createErr = project.ApplyCreate(s, f, surfaces)
 	}); err != nil {
 		return config.Project{}, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
 	}
@@ -248,7 +249,7 @@ func (o *ProjectOps) Create(ctx context.Context, f projectCreateFields, surfaces
 // Update gates only when the request touches the configure subset
 // (projectUpdateTouchesGrant) — AC-16c requires that a rename or a
 // chat-template edit not prompt.
-func (o *ProjectOps) Update(ctx context.Context, id string, f projectUpdateFields, surfaces func() McpSurfaces, via, credID string) (config.Project, bool, error) {
+func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
 	touchesGrant := projectUpdateTouchesGrant(f)
 	var presenceID string
 	if touchesGrant {
@@ -256,7 +257,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f projectUpdateField
 			return config.Project{}, false, err
 		}
 		cwdAuthTurningOn := f.AllowCwdAuth != nil && *f.AllowCwdAuth
-		grant, err := requireGate(o.Gate, ctx, "project.grant", f.presenceDigest(id),
+		grant, err := requireGate(o.Gate, ctx, "project.grant", projectUpdateDigest(id, f),
 			projectGrantUpdateReason(id, f, cwdAuthTurningOn))
 		if err != nil {
 			return config.Project{}, false, err
@@ -268,7 +269,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f projectUpdateField
 	var found bool
 	var updateErr error
 	if err := o.Store.With(func(s *config.Settings) {
-		updated, found, updateErr = applyProjectUpdate(s, id, f, surfaces)
+		updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
 	}); err != nil {
 		return config.Project{}, false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
 	}
@@ -344,94 +345,18 @@ func (o *ProjectOps) DescribeGrant(s *config.Settings, proj *config.Project) gra
 	return v
 }
 
-// narrowUpdateFields carries a NarrowGrant request's already-validated
-// fields into applyProjectUpdate's patch shape. AllowedMcpIDs is a
-// relabelling — narrowsOnly already proved the requested list widens
-// nothing. AllowedTools/Access/AllowExternal are NOT: the wire semantics
-// for a set pointer is whole-map replace (applyProjectUpdate's
-// candidate.AllowedTools = *f.AllowedTools and siblings), but a remote
-// only ever names the MCP ids it means to touch, so a map built from the
-// request alone would drop every id it didn't mention — narrowing an MCP
-// the caller never named, down to nothing, as a side effect of narrowing
-// one it did. mergeNarrowedMap folds the request's per-key overrides onto
-// what's already stored so an untouched id keeps its stored value; keys
-// for an MCP falling out of the resulting allowed_mcp_ids are left for
-// SyncProjectToken's existing pruning rather than carried forward stale.
-func narrowUpdateFields(stored config.Project, f remoteNarrowFields) projectUpdateFields {
-	resultMcpIDs := stored.AllowedMcpIDs
-	if f.AllowedMcpIDs != nil {
-		resultMcpIDs = *f.AllowedMcpIDs
-	}
-	return projectUpdateFields{
-		AllowedMcpIDs: f.AllowedMcpIDs,
-		AllowedTools:  mergeNarrowedMap(stored.AllowedTools, f.AllowedTools, resultMcpIDs),
-		Access:        mergeNarrowedMap(stored.Access, f.Access, resultMcpIDs),
-		AllowExternal: mergeNarrowedMap(stored.AllowExternal, f.AllowExternal, resultMcpIDs),
-	}
-}
-
-// mergeNarrowedMap merges a NarrowGrant request's per-MCP overrides onto
-// what's stored: an id in keep but not in req keeps its stored value, an
-// id in req is set to req's value, and an id outside keep is dropped
-// (falling out of allowed_mcp_ids, handled here rather than left for
-// applyProjectUpdate to reconcile against a stale carried-forward entry).
-// req == nil means the request doesn't touch this field at all, which
-// must stay nil so applyProjectUpdate's own nil-check leaves it alone —
-// merging would turn "not in the request" into "set to a copy of
-// stored," a write with nothing behind it.
-func mergeNarrowedMap[V any](stored map[string]V, req *map[string]V, keep []string) *map[string]V {
-	if req == nil {
-		return nil
-	}
-	keepSet := make(map[string]bool, len(keep))
-	for _, id := range keep {
-		keepSet[id] = true
-	}
-	merged := make(map[string]V, len(stored))
-	for id, v := range stored {
-		if keepSet[id] {
-			merged[id] = v
-		}
-	}
-	for id, v := range *req {
-		merged[id] = v
-	}
-	return &merged
-}
-
-// remoteNarrowFieldNames lists the fields a NarrowGrant request touches,
-// for the audit record and the caller's Changed list — presence, not
-// content, so it reads the request directly rather than narrowUpdateFields'
-// merged (and therefore always-non-nil-when-touched, identically) result.
-func remoteNarrowFieldNames(f remoteNarrowFields) []string {
-	var names []string
-	if f.AllowedMcpIDs != nil {
-		names = append(names, "allowed_mcp_ids")
-	}
-	if f.AllowedTools != nil {
-		names = append(names, "allowed_tools")
-	}
-	if f.Access != nil {
-		names = append(names, "access")
-	}
-	if f.AllowExternal != nil {
-		names = append(names, "allow_external")
-	}
-	return names
-}
-
 // NarrowForEnrolment is the one core behind the remote listener's
-// configuration plane. It is deliberately NOT gated: narrowsOnly makes a
+// configuration plane. It is deliberately NOT gated: project.NarrowsOnly makes a
 // widening unrepresentable, so this is not one of the acts ADR-017
 // decision 3 names, and a presence prompt reachable from a VM would be a
 // prompt the caller cannot see and the host did not ask for (§9.2) — a
 // certificate resolved by TLS is the authorization, the same way a project
 // token already is for CallTool.
 //
-// It reuses applyProjectUpdate rather than writing a second merge path, so
-// every existing validation rule — validateProjectShape,
-// validateProjectPermissions, validateToolPattern, ValidateProjectGrants —
-// applies identically to a remote's own edit and to an operator's.
+// It reuses project.ApplyUpdate rather than writing a second merge path, so
+// every existing validation rule — project.ValidateShape, the package's own
+// permission and tool-pattern validation, project.ValidateGrants — applies
+// identically to a remote's own edit and to an operator's.
 //
 // This is deliberate: the mutation goes through withDeclinable, not the
 // plain Store.With every other ops core here uses. Store.With resaves
@@ -442,20 +367,20 @@ func remoteNarrowFieldNames(f remoteNarrowFields) []string {
 // or a script hammering a refused NarrowGrant would spend the settings
 // file's one-writer-at-a-time window for nothing every time it tried.
 //
-// The same is true one step short of a refusal: narrowsOnly accepts a
+// The same is true one step short of a refusal: project.NarrowsOnly accepts a
 // request that asks for exactly what is already stored (that is not a
-// widening either), and applyProjectUpdate's mutators write unconditionally
+// widening either), and project.ApplyUpdate's mutators write unconditionally
 // once a non-nil field pointer reaches them. Left unchecked, a certificate
 // resending an already-applied NarrowGrant — deliberately, or simply
 // because it does not track what it already asked for — would reseal every
 // sealed token in the file and append a fresh config_change on every
 // resend, an unbounded write and an unbounded audit-log entry from a path
-// with no presence prompt to slow it down. narrowingIsNoop is the second
+// with no presence prompt to slow it down. project.NarrowingIsNoop is the second
 // half of "leave settings.json exactly as it was": it stands between
-// narrowsOnly's yes and applyProjectUpdate's unconditional write.
+// project.NarrowsOnly's yes and project.ApplyUpdate's unconditional write.
 func (o *ProjectOps) NarrowForEnrolment(
-	ctx context.Context, projectID string, f remoteNarrowFields,
-	caller bridge.RemoteCaller, surfaces func() McpSurfaces,
+	ctx context.Context, projectID string, f project.NarrowFields,
+	caller bridge.RemoteCaller, surfaces func() project.McpSurfaces,
 ) (config.Project, []string, error) {
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.Project{}, nil, err
@@ -473,16 +398,16 @@ func (o *ProjectOps) NarrowForEnrolment(
 		if proj == nil {
 			return fmt.Errorf("project %q no longer exists", projectID)
 		}
-		if err := narrowsOnly(*proj, f); err != nil {
+		if err := project.NarrowsOnly(*proj, f); err != nil {
 			return err
 		}
-		if narrowingIsNoop(*proj, f) {
+		if project.NarrowingIsNoop(*proj, f) {
 			found, noop = true, true
 			updated = *proj
 			return errNarrowingIsNoop
 		}
 		var applyErr error
-		updated, found, applyErr = applyProjectUpdate(s, projectID, narrowUpdateFields(*proj, f), surfaces)
+		updated, found, applyErr = project.ApplyUpdate(s, projectID, project.NarrowUpdateFields(*proj, f), surfaces)
 		return applyErr
 	})
 	if err != nil && !noop {
@@ -501,7 +426,7 @@ func (o *ProjectOps) NarrowForEnrolment(
 		return updated, nil, nil
 	}
 
-	changed := remoteNarrowFieldNames(f)
+	changed := project.NarrowFieldNames(f)
 	// Reported and not undone, the same balance EnrolmentOps.Update and
 	// Revoke strike: a narrowing act has no side artifact to roll back, and
 	// refusing to narrow because the log is broken would make a failing
@@ -517,5 +442,5 @@ func (o *ProjectOps) NarrowForEnrolment(
 // errNarrowingIsNoop is withDeclinable's only lever for skipping a write
 // that is not a refusal: a callback error is the sole signal it honours.
 // NarrowForEnrolment unwraps this one immediately and never returns it —
-// see narrowingIsNoop's doc comment for why the caller sees success.
+// see project.NarrowingIsNoop's doc comment for why the caller sees success.
 var errNarrowingIsNoop = errors.New("narrowing request matches the stored grant")

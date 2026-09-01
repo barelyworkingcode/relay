@@ -1,4 +1,4 @@
-package main
+package project
 
 // Subtle: path.Match has no "/" to anchor on in a tool name, so "**", "?*",
 // "*_*", "[a-z]*", and "*e*" each match every tool despite not being the
@@ -10,10 +10,7 @@ package main
 // either.
 
 import (
-	"context"
-	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -53,10 +50,10 @@ func TestAllowedTools_ValidationRefusesEveryOverBroadSpelling(t *testing.T) {
 					t.Errorf("refusal should say %q; got: %v", want, err)
 				}
 			}
-			// Second route to the same record: CreateProjectWithTokenKind runs
+			// Second route to the same record: CreateWithTokenKind runs
 			// shape validation only.
-			if err := validateProjectShape(proj); err == nil {
-				t.Fatalf("validateProjectShape accepted %q", pattern)
+			if err := ValidateShape(proj); err == nil {
+				t.Fatalf("ValidateShape accepted %q", pattern)
 			}
 		})
 	}
@@ -78,83 +75,13 @@ func TestAllowedTools_ValidationKeepsNamePatterns(t *testing.T) {
 			if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
 				t.Fatalf("pattern %q was refused: %v", pattern, err)
 			}
-			if err := validateProjectShape(proj); err != nil {
-				t.Fatalf("validateProjectShape refused %q: %v", pattern, err)
+			if err := ValidateShape(proj); err != nil {
+				t.Fatalf("ValidateShape refused %q: %v", pattern, err)
 			}
 		})
 	}
 }
 
-func TestAllowedTools_MatcherRefusesEveryOverBroadSpelling(t *testing.T) {
-	surface := macmcpToolSurface()
-	for _, pattern := range everyToolPatternTheReviewFound {
-		if pattern == `\**` {
-			continue
-		}
-		t.Run(pattern, func(t *testing.T) {
-			tok := &config.StoredToken{ProjectKind: config.ProjectKindRemote,
-				AllowedTools: map[string][]string{"macmcp": {pattern}},
-				Access:       map[string]string{"macmcp": config.AccessWrite}}
-			for _, tool := range surface {
-				if tok.ToolAllowed("macmcp", tool.Name) {
-					t.Errorf("pattern %q admitted %q", pattern, tool.Name)
-				}
-			}
-			// A naive "refuse the whole list" fix would wrongly block mail_*
-			// too — the real pattern must still decide beside the bad one.
-			tok.AllowedTools["macmcp"] = []string{"mail_*", pattern}
-			if !tok.ToolAllowed("macmcp", "mail_search") {
-				t.Errorf(`"mail_*" stopped admitting mail_search beside %q`, pattern)
-			}
-			for _, forbidden := range []string{"web_fetch", "capture_screenshot", "shortcuts_run", "xmail_send"} {
-				if tok.ToolAllowed("macmcp", forbidden) {
-					t.Errorf("pattern %q admitted %q beside \"mail_*\"", pattern, forbidden)
-				}
-			}
-		})
-	}
-}
-
-func TestListTools_AnOverBroadAllowlistIsNotTheWholeMcp(t *testing.T) {
-	for _, pattern := range []string{"**", "*_*", "[a-z]*", "*e*"} {
-		t.Run(pattern, func(t *testing.T) {
-			r := newProfileRouter(t, profileOpts{
-				kind:         config.ProjectKindRemote,
-				allowedTools: map[string][]string{"macmcp": {pattern}},
-			})
-			if got := listedToolNames(t, r); len(got) != 0 {
-				t.Fatalf("allowed_tools [%q] listed %v", pattern, got)
-			}
-			for _, tool := range []string{"web_fetch", "capture_screenshot", "mail_search"} {
-				if _, err := r.CallTool(context.Background(), tool, json.RawMessage(`{}`), testToken); err == nil {
-					t.Errorf("allowed_tools [%q] called %q", pattern, tool)
-				}
-			}
-		})
-	}
-
-	r := newProfileRouter(t, profileOpts{
-		kind:         config.ProjectKindRemote,
-		allowedTools: map[string][]string{"macmcp": {"mail_*"}},
-		access:       map[string]string{"macmcp": config.AccessWrite},
-		// mail_send needs the outbound grant too (decision 2c) — given here
-		// so the test isolates the pattern, not the grant.
-		allowExternal: map[string]bool{"macmcp": true},
-	})
-	got := listedToolNames(t, r)
-	if !slices.Contains(got, "mail_search") || !slices.Contains(got, "mail_send") {
-		t.Fatalf(`"mail_*" listed %v, want the mail tools`, got)
-	}
-	if slices.Contains(got, "web_fetch") {
-		t.Error(`"mail_*" listed web_fetch`)
-	}
-	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
-		t.Fatalf(`"mail_*" could not call mail_search: %v`, err)
-	}
-}
-
-// Defines what "too broad" means — a future edit to the probe list or literal
-// scanner has this to be wrong against.
 func TestOverBroadToolPattern_TheRule(t *testing.T) {
 	cases := []struct {
 		pattern string
@@ -234,7 +161,7 @@ func TestAllowedMcpIDs_AreMatchedLiterallyAndNotAsGlobs(t *testing.T) {
 	if tok := config.StoredTokenForProject(&config.Settings{ExternalMcps: mcps}, local, "hash"); len(tok.Permissions) != 0 {
 		t.Errorf(`a local project's ["*"] stopped meaning every MCP: %v`, tok.Permissions)
 	}
-	if err := validateProjectShape(&config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"*"}}); err == nil {
+	if err := ValidateShape(&config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"*"}}); err == nil {
 		t.Error(`a profile was allowed allowed_mcp_ids: ["*"]`)
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -7,10 +7,10 @@ import (
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 )
 
-// projectCreateFields is the transport-agnostic body for creating a project.
+// CreateFields is the transport-agnostic body for creating a project.
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
-// create orchestration lives in exactly one place (applyProjectCreate).
-type projectCreateFields struct {
+// create orchestration lives in exactly one place (ApplyCreate).
+type CreateFields struct {
 	Name             string                   `json:"name"`
 	Path             string                   `json:"path"`
 	Kind             config.ProjectKind       `json:"kind,omitempty"`
@@ -35,10 +35,10 @@ type projectCreateFields struct {
 	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 }
 
-// projectUpdateFields is the transport-agnostic patch body. Nil pointers mean
+// UpdateFields is the transport-agnostic patch body. Nil pointers mean
 // "not in the request" (no change); set pointers fully replace the prior value.
 // Shared by the HTTP PUT route and the IPC update handler.
-type projectUpdateFields struct {
+type UpdateFields struct {
 	Name             *string                  `json:"name,omitempty"`
 	Path             *string                  `json:"path,omitempty"`
 	Kind             *config.ProjectKind      `json:"kind,omitempty"`
@@ -61,16 +61,16 @@ type projectUpdateFields struct {
 	AllowExternal *map[string]bool            `json:"allow_external,omitempty"`
 }
 
-// applyProjectCreate creates a project and applies its optional policy, skill
+// ApplyCreate creates a project and applies its optional policy, skill
 // flag, and disabled-tools map inside a single settings mutation. Call within
 // store.With / withSettings. The caller validates the permission policy
 // *before* invoking, so a bad policy never creates a project that has to be
 // rolled back. Returns the fully-resolved project (re-read after the
 // sub-mutations).
-func applyProjectCreate(s *config.Settings, f projectCreateFields, surfaces McpSurfaces) (config.Project, error) {
+func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (config.Project, error) {
 	// GenerateSkill, AllowCwdAuth, ShellTemplates, PermissionPolicy,
 	// ChatTemplates and the permission-set fields are not parameters of
-	// CreateProjectWithTokenKind — they are applied by sub-mutations below,
+	// CreateWithTokenKind — they are applied by sub-mutations below,
 	// after the project already exists. They still have to be on this
 	// candidate so their remote refusals (and every check in
 	// validateProjectPermissions) are reachable from a create, not just an
@@ -93,17 +93,17 @@ func applyProjectCreate(s *config.Settings, f projectCreateFields, surfaces McpS
 		PermissionPolicy: f.PermissionPolicy,
 		ChatTemplates:    f.ChatTemplates,
 	}
-	if err := validateProjectShape(&candidate); err != nil {
+	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}
 	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
 		return config.Project{}, err
 	}
-	if err := validateProjectGrants(&candidate, surfaces); err != nil {
+	if err := ValidateGrants(&candidate, surfaces); err != nil {
 		return config.Project{}, err
 	}
 
-	created, err := createProjectWithTokenKind(
+	created, err := CreateWithTokenKind(
 		s, f.Kind, f.Name, f.Path,
 		f.AllowedMcpIDs, f.AllowedModels,
 		f.ChatTemplates,
@@ -150,14 +150,14 @@ func applyProjectCreate(s *config.Settings, f projectCreateFields, surfaces McpS
 	return created, nil
 }
 
-// applyProjectUpdate patches the project with id from the set fields of f
+// ApplyUpdate patches the project with id from the set fields of f
 // inside a single settings mutation. Call within store.With / withSettings.
 // Returns (_, false, nil) if no project has that id, and (_, true, err) if
 // the patch would produce an invalid shape or grant list — in that case
 // NOTHING is mutated. surfaces is a lazy fetch invoked only when a path/MCP
 // change or a remote-shaped result actually needs it, so the common rename
 // stays allocation-free.
-func applyProjectUpdate(s *config.Settings, id string, f projectUpdateFields, surfaces func() McpSurfaces) (config.Project, bool, error) {
+func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() McpSurfaces) (config.Project, bool, error) {
 	proj, _ := config.FindProjectByID(s, id)
 	if proj == nil {
 		return config.Project{}, false, nil
@@ -217,7 +217,7 @@ func applyProjectUpdate(s *config.Settings, id string, f projectUpdateFields, su
 	if f.Context != nil {
 		candidate.Context = *f.Context
 	}
-	if err := validateProjectShape(&candidate); err != nil {
+	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, true, err
 	}
 	// A project that stops being remote strands every enrolment granting it,
@@ -253,7 +253,7 @@ func applyProjectUpdate(s *config.Settings, id string, f projectUpdateFields, su
 		}
 	}
 	if needGrantsCheck {
-		if err := validateProjectGrants(&candidate, sc); err != nil {
+		if err := ValidateGrants(&candidate, sc); err != nil {
 			return config.Project{}, true, err
 		}
 	}

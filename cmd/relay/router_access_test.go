@@ -9,6 +9,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func macmcpToolSurface() []mcp.Tool {
@@ -366,7 +367,7 @@ func TestListSkillBuckets_MirrorsListToolsFiltering(t *testing.T) {
 func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) {
 	remote := &config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools: map[string][]string{"macmcp": {"*"}}}
-	err := validateProjectShape(remote)
+	err := project.ValidateShape(remote)
 	if err == nil {
 		t.Fatal(`a profile was allowed allowed_tools: ["*"]`)
 	}
@@ -374,11 +375,11 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 		t.Errorf("refusal should name the field and the MCP, got: %v", err)
 	}
 	remote.AllowedTools = map[string][]string{"macmcp": {"mail_*", "*"}}
-	if validateProjectShape(remote) == nil {
+	if project.ValidateShape(remote) == nil {
 		t.Fatal(`a profile was allowed a "*" beside real patterns`)
 	}
 	remote.AllowedTools = map[string][]string{"macmcp": {"mail_*"}}
-	if err := validateProjectShape(remote); err != nil {
+	if err := project.ValidateShape(remote); err != nil {
 		t.Fatalf("a pattern allowlist was refused: %v", err)
 	}
 	// A LOCAL project is refused too, but for a different reason than the
@@ -387,11 +388,11 @@ func TestValidateProjectShape_RefusesAWildcardAllowlistOnAProfile(t *testing.T) 
 	// accepting it on save would silently grant nothing. The way a local
 	// project says "everything" is with no allowlist at all.
 	local := &config.Project{Path: "/tmp/x", AllowedTools: map[string][]string{"macmcp": {"*"}}}
-	if err := validateProjectShape(local); err == nil {
+	if err := project.ValidateShape(local); err == nil {
 		t.Fatal(`a local project was allowed allowed_tools: ["*"], which grants it nothing`)
 	}
 	local.AllowedTools = nil
-	if err := validateProjectShape(local); err != nil {
+	if err := project.ValidateShape(local); err != nil {
 		t.Fatalf("a local project with no allowlist was refused: %v", err)
 	}
 }
@@ -400,7 +401,7 @@ func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
 	remote := &config.Project{Kind: config.ProjectKindRemote, AllowedMcpIDs: []string{"macmcp"},
 		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 		DisabledTools: map[string][]string{"macmcp": {"messages_send"}}}
-	err := validateProjectShape(remote)
+	err := project.ValidateShape(remote)
 	if err == nil {
 		t.Fatal("a profile was allowed disabled_tools")
 	}
@@ -408,19 +409,19 @@ func TestValidateProjectShape_RefusesADenylistOnAProfile(t *testing.T) {
 		t.Errorf("refusal should name the mechanism that does bound a profile, got: %v", err)
 	}
 	remote.DisabledTools = map[string][]string{"macmcp": {}}
-	if err := validateProjectShape(remote); err != nil {
+	if err := project.ValidateShape(remote); err != nil {
 		t.Fatalf("an empty disabled_tools entry was refused: %v", err)
 	}
 	// A leftover denylist entry for an MCP the record no longer grants (e.g.
 	// after converting a local project to remote) must not be refused either.
-	remote.DisabledTools = map[string][]string{"fsmcp": {v1FsBashTool}}
-	if err := validateProjectShape(remote); err != nil {
+	remote.DisabledTools = map[string][]string{"fsmcp": {project.V1FsBashTool}}
+	if err := project.ValidateShape(remote); err != nil {
 		t.Fatalf("a leftover denylist for an ungranted MCP was refused: %v", err)
 	}
 }
 
 func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
-	// validateProjectShape refuses disabled_tools on a profile, but a record
+	// project.ValidateShape refuses disabled_tools on a profile, but a record
 	// that acquired one via a route validation didn't cover must still have it
 	// honoured — ignoring a denylist is the one direction that would widen
 	// access.

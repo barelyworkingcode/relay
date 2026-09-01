@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func fullScopedProfile(t *testing.T, kind config.ProjectKind, values map[string]
 		access:        map[string]string{"macmcp": config.AccessWrite},
 		allowExternal: map[string]bool{"macmcp": true},
 		contextValues: values,
-		schema:        macmcpSchema,
+		schema:        macmcpFixtureSchema,
 		schemaVersion: 2,
 	})
 }
@@ -128,7 +129,7 @@ func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *tes
 	proj := remoteProjectGranting("macmcp")
 	proj.AllowedTools = map[string][]string{"macmcp": {"mail_save_attachment"}}
 
-	err := validateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()})
+	err := project.ValidateGrants(proj, project.McpSurfaces{"macmcp": macmcpSurface()})
 	if err == nil {
 		t.Fatal("a profile whose every granted tool needs a project path saved cleanly and can call nothing")
 	}
@@ -139,7 +140,7 @@ func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *tes
 	}
 
 	proj.AllowedTools = map[string][]string{"macmcp": {"mail_*"}}
-	if err := validateProjectGrants(proj, McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
+	if err := project.ValidateGrants(proj, project.McpSurfaces{"macmcp": macmcpSurface()}); err != nil {
 		t.Fatalf("a grant retaining usable tools was refused: %v", err)
 	}
 }
@@ -149,11 +150,11 @@ func TestValidateProjectGrants_AsksAboutTheGrantedToolsNotTheWholeSurface(t *tes
 // wrongly permit the grant decision 5 is built on refusing.
 func TestValidateProjectGrants_AnIncompleteGrantIsJudgedAgainstTheWholeSurface(t *testing.T) {
 	proj := remoteProjectGranting("fsmcp")
-	if err := validateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
+	if err := project.ValidateGrants(proj, project.McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
 		t.Fatal("a profile with no allowed_tools yet was granted an MCP no tool of which can work")
 	}
 	proj.AllowedTools = map[string][]string{"fsmcp": {"nosuch_tool"}}
-	if err := validateProjectGrants(proj, McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
+	if err := project.ValidateGrants(proj, project.McpSurfaces{"fsmcp": fsmcpSurface()}); err == nil {
 		t.Fatal("an allowlist matching no tool was read as a grant of no governed tools")
 	}
 }

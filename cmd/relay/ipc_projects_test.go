@@ -11,6 +11,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 type fakeTools struct {
@@ -18,7 +19,7 @@ type fakeTools struct {
 	// surfaces is what mcpSurfacesFrom hands to the apply layer. Nil (the
 	// default) means SyncProjectToken skips scope derivation; a test that
 	// exercises a v2 contextSchema sets it.
-	surfaces McpSurfaces
+	surfaces project.McpSurfaces
 }
 
 func (f *fakeTools) ToolInfos(id string) []config.ToolInfo {
@@ -28,7 +29,7 @@ func (f *fakeTools) ToolInfos(id string) []config.ToolInfo {
 	return f.infos[id]
 }
 
-func (f *fakeTools) AllMcpSurfaces() McpSurfaces {
+func (f *fakeTools) AllMcpSurfaces() project.McpSurfaces {
 	if f == nil {
 		return nil
 	}
@@ -201,8 +202,8 @@ func TestIPCUpdateProject_PatchesNamedFieldsOnly(t *testing.T) {
 
 	newName := "Bravo"
 	raw := mustRaw(t, ipcUpdateProjectMsg{
-		ID:                  proj.ID,
-		projectUpdateFields: projectUpdateFields{Name: &newName},
+		ID:           proj.ID,
+		UpdateFields: project.UpdateFields{Name: &newName},
 	})
 	ipcUpdateProject(ipc, raw)
 
@@ -428,8 +429,8 @@ func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
 
 	off := false
 	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
-		ID:                  added.ID,
-		projectUpdateFields: projectUpdateFields{AllowCwdAuth: &off},
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{AllowCwdAuth: &off},
 	}))
 	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); persisted.AllowCwdAuth {
 		t.Errorf("allow_cwd_auth still set after patching it off")
@@ -438,13 +439,13 @@ func TestIPCProject_AllowCwdAuthRoundTrips(t *testing.T) {
 	// An unrelated patch leaves the flag alone (pointer semantics).
 	on := true
 	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
-		ID:                  added.ID,
-		projectUpdateFields: projectUpdateFields{AllowCwdAuth: &on},
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{AllowCwdAuth: &on},
 	}))
 	newName := "Bravo"
 	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
-		ID:                  added.ID,
-		projectUpdateFields: projectUpdateFields{Name: &newName},
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{Name: &newName},
 	}))
 	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); !persisted.AllowCwdAuth {
 		t.Errorf("allow_cwd_auth cleared by an unrelated patch")

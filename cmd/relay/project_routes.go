@@ -12,12 +12,13 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // projectOpsHTTPStatus maps a ProjectOps refusal onto the status a caller
 // should see: a presence or audit-dependency refusal is 403, an internal
 // settings-write failure is 500, and everything else (a validation error
-// from applyProjectCreate/applyProjectUpdate) is 400 — the status this
+// from project.ApplyCreate/project.ApplyUpdate) is 400 — the status this
 // route always gave a createErr/updateErr before ProjectOps existed.
 func projectOpsHTTPStatus(err error) int {
 	switch {
@@ -41,7 +42,7 @@ func writeProjectGateError(w http.ResponseWriter, err error) {
 // (re)scoping a project's token and when validating its grants.
 // Implemented by *ExternalMcpManager.
 type McpSurfaceProvider interface {
-	AllMcpSurfaces() McpSurfaces
+	AllMcpSurfaces() project.McpSurfaces
 }
 
 // MCPToolsProvider supplies the live tool list for a registered MCP. The
@@ -62,20 +63,20 @@ type MCPToolsProvider interface {
 // a 200.
 func enumHTTPStatus(status string) int {
 	switch status {
-	case EnumStatusOK, EnumStatusUnsupported:
+	case project.EnumStatusOK, project.EnumStatusUnsupported:
 		// Unsupported is a 200 because it is a true, final answer ABOUT the
 		// MCP — "this one does not enumerate" — not a failure to obtain one.
 		// The caller's correct response is to render a text box, permanently.
 		return http.StatusOK
-	case EnumStatusUnknownMcp:
+	case project.EnumStatusUnknownMcp:
 		return http.StatusNotFound
-	case EnumStatusNotEnumerable:
+	case project.EnumStatusNotEnumerable:
 		return http.StatusBadRequest
-	case EnumStatusInvalidField:
+	case project.EnumStatusInvalidField:
 		// The MCP refused the request relay built. Relay is the one at fault,
 		// and a 502 says the failure is on this side of the operator.
 		return http.StatusBadGateway
-	default: // EnumStatusUnavailable
+	default: // project.EnumStatusUnavailable
 		return http.StatusServiceUnavailable
 	}
 }
@@ -148,7 +149,7 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
+func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
 	notify := func() {
 		if onChange != nil {
 			onChange()
@@ -173,7 +174,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 	})
 
 	rr.Handle(control.ClassConfigure, "POST /api/projects", func(w http.ResponseWriter, r *http.Request) {
-		var body projectCreateFields
+		var body project.CreateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
@@ -199,7 +200,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 		id := r.PathValue("id")
 		// Pointer fields distinguish "not in body" from "zero value" so callers
 		// can patch a single field without clearing the others.
-		var body projectUpdateFields
+		var body project.UpdateFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
@@ -211,7 +212,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			}
 		}
 		// Shape/grant validation (including path) now happens inside
-		// applyProjectUpdate against the fully-merged candidate. Whether an
+		// project.ApplyUpdate against the fully-merged candidate. Whether an
 		// empty path is valid depends on Kind (required for local, mandatory
 		// for remote), so a standalone path-only pre-check can no longer judge
 		// it correctly — the merged candidate is the only place that knows.
@@ -367,7 +368,7 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		res := enumerateScopeField(r.Context(), mcps.AllMcpSurfaces(), enum, r.PathValue("id"), body.Field, body.Values)
+		res := project.EnumerateScopeField(r.Context(), mcps.AllMcpSurfaces(), enum, r.PathValue("id"), body.Field, body.Values)
 		writeJSON(w, enumHTTPStatus(res.Status), res)
 	})
 

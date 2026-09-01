@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"io"
 	"os"
 	"sort"
@@ -128,13 +129,13 @@ func newGrantView(s *config.Settings, p config.Project) grantView {
 		if tok.ExternalAllowed(mcpID) {
 			row.Outbound = "allowed"
 		}
-		values := contextValues(p.Context[mcpID])
+		values := project.ContextValues(p.Context[mcpID])
 		if len(values) > 0 {
 			row.Scope = make(map[string]string, len(values))
 			for name, raw := range values {
 				row.Scope[name] = strings.TrimSpace(string(raw))
 			}
-			row.Warnings = scopeBreadthWarnings(values)
+			row.Warnings = project.ScopeBreadthWarnings(values)
 		}
 		out.Mcps = append(out.Mcps, row)
 	}

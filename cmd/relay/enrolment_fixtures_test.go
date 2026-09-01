@@ -18,6 +18,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // genCSRPEMFromKey builds a PKCS#10 request PEM over key, letting the
@@ -59,13 +60,13 @@ func newEnrolmentSandbox(t *testing.T) (string, config.SettingsStore) {
 }
 
 // mkStoreProject creates a project of the given kind in the store and returns
-// it. path must be empty for a remote project (validateProjectShape).
+// it. path must be empty for a remote project (project.ValidateShape).
 func mkStoreProject(t *testing.T, store config.SettingsStore, kind config.ProjectKind, name, path string) config.Project {
 	t.Helper()
 	var proj config.Project
 	var createErr error
 	assertNoErr(t, store.With(func(s *config.Settings) {
-		proj, createErr = createProjectWithTokenKind(s, kind, name, path, []string{}, []string{}, nil, nil)
+		proj, createErr = project.CreateWithTokenKind(s, kind, name, path, []string{}, []string{}, nil, nil)
 	}), "create %s project", kind)
 	assertNoErr(t, createErr, "create %s project", kind)
 	return proj

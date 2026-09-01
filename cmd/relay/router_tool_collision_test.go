@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 type dispatchedCall struct {
@@ -68,7 +69,7 @@ func (p *collidingProvider) CallTool(_ context.Context, id, name string, _ json.
 // v1 MCP, which leaves the per-MCP context blob passed through to _meta
 // verbatim — so what CallTool records as `meta` is exactly the resource scope
 // that was in force.
-func (p *collidingProvider) McpSurfaceFor(string) McpSurface { return McpSurface{} }
+func (p *collidingProvider) McpSurfaceFor(string) project.McpSurface { return project.McpSurface{} }
 
 func (p *collidingProvider) Reconcile(context.Context, []config.ExternalMcp)           {}
 func (p *collidingProvider) Reload(context.Context, string, *config.ExternalMcp) error { return nil }

@@ -15,11 +15,12 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-type schemaProviderFunc func() McpSurfaces
+type schemaProviderFunc func() project.McpSurfaces
 
-func (f schemaProviderFunc) AllMcpSurfaces() McpSurfaces { return f() }
+func (f schemaProviderFunc) AllMcpSurfaces() project.McpSurfaces { return f() }
 
 func newProjectRoutesServer(t *testing.T) (*httptest.Server, config.SettingsStore) {
 	t.Helper()
@@ -207,7 +208,7 @@ func TestProjectRoutes_ShellTemplates(t *testing.T) {
 		t.Errorf("shell template args not round-tripped: %+v", created.ShellTemplates[0])
 	}
 
-	// projectUpdateFields uses a nil pointer for "no change": omitting
+	// project.UpdateFields uses a nil pointer for "no change": omitting
 	// shell_templates from the patch must leave the list untouched.
 	resp, body = doJSON(t, "PUT", srv.URL+"/api/projects/"+created.ID, map[string]interface{}{
 		"name": "Shells-Renamed",

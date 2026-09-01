@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // fsmcpV1Schema is fsMCP as shipped: the flat declaration, no
@@ -35,14 +36,14 @@ func fsProfile(t *testing.T, kind config.ProjectKind, values map[string]json.Raw
 
 func TestCallTool_AProfileCannotForgeAV1FilesystemScope(t *testing.T) {
 	r := fsProfile(t, config.ProjectKindRemote, map[string]json.RawMessage{
-		v1AllowedDirsField: json.RawMessage(`["/Users/admin/.ssh"]`),
+		project.V1AllowedDirsField: json.RawMessage(`["/Users/admin/.ssh"]`),
 	})
 	for _, tool := range []string{"fs_read", "fs_write", "fs_list"} {
 		_, err := r.CallTool(context.Background(), tool, json.RawMessage(`{}`), testToken)
 		if err == nil {
 			t.Fatalf("%s ran under a hand-written filesystem scope on an access profile", tool)
 		}
-		if !strings.Contains(err.Error(), v1AllowedDirsField) {
+		if !strings.Contains(err.Error(), project.V1AllowedDirsField) {
 			t.Errorf("%s: refusal does not name the field: %v", tool, err)
 		}
 	}
@@ -74,7 +75,7 @@ func TestCallTool_AProfileCannotForgeAV2ProjectPathScope(t *testing.T) {
 			"mail_mailboxes": json.RawMessage(`["INBOX"]`),
 			"file_dirs":      json.RawMessage(`["/Users/admin/.ssh"]`),
 		},
-		schema:        macmcpSchema,
+		schema:        macmcpFixtureSchema,
 		schemaVersion: 2,
 	})
 	if _, err := r.CallTool(context.Background(), "mail_save_attachment", json.RawMessage(`{}`), testToken); err == nil {
@@ -91,7 +92,7 @@ func TestCallTool_AProfileCannotForgeAV2ProjectPathScope(t *testing.T) {
 
 func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
 	r := fsProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
-		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
+		project.V1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
 	})
 	if _, err := r.CallTool(context.Background(), "fs_read", json.RawMessage(`{}`), testToken); err != nil {
 		t.Fatalf("a local project was refused its own derived filesystem scope: %v", err)
@@ -100,7 +101,7 @@ func TestCallTool_ALocalProjectStillUsesItsV1Scope(t *testing.T) {
 
 func TestAudit_AV1CallRecordsTheScopeItWasConfinedBy(t *testing.T) {
 	r := fsProfile(t, config.ProjectKindLocal, map[string]json.RawMessage{
-		v1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
+		project.V1AllowedDirsField: json.RawMessage(`["/tmp/test"]`),
 	})
 	rec := newTestAudit(t, nil)
 	r.audit = rec
@@ -112,7 +113,7 @@ func TestAudit_AV1CallRecordsTheScopeItWasConfinedBy(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
-	got, ok := events[0].Scope[v1AllowedDirsField]
+	got, ok := events[0].Scope[project.V1AllowedDirsField]
 	if !ok {
 		t.Fatalf("a v1 call recorded scope %v; the value relay injected is missing", events[0].Scope)
 	}

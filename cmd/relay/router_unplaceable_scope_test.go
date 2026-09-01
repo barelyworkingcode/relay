@@ -85,7 +85,7 @@ func TestCallTool_APlaceableScopeIsUnaffected(t *testing.T) {
 }
 
 // Subtle: an empty value is absent everywhere else in this model
-// (hasScopeValue, checkScopePresence, the UI) — denying here would turn a
+// (project.HasScopeValue, checkScopePresence, the UI) — denying here would turn a
 // harmless remnant into an outage.
 func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
@@ -115,7 +115,7 @@ func TestCallTool_AnEmptyStoredKeyIsNotAnUnplaceableScope(t *testing.T) {
 	}
 }
 
-// Deliberate: only the v2 branch drops (filterKnownContextFields returns a v1
+// Deliberate: only the v2 branch drops (project.FilterKnownContextFields returns a v1
 // blob verbatim) — widening the refusal to v1 would break the "handled
 // exactly as before ADR-011" promise for MCPs with no contextSchema.
 func TestCallTool_AV1SchemaIsUnaffectedByThePlacementCheck(t *testing.T) {

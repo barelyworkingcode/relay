@@ -20,6 +20,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // Only the stdio connection implements this; HTTP/mock connections don't,
@@ -311,9 +312,9 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 // connection the router will dispatch to, and the router decides what a call
 // is confined to from the schema this function stores — so publishing first
 // would open a window in which an MCP was callable and relay believed it
-// declared nothing. ParseContextSchema(nil, 0) is not a narrow schema, it is
+// declared nothing. project.ParseContextSchema(nil, 0) is not a narrow schema, it is
 // NO schema: checkScopePresence finds no field to require and passes every
-// tool, and filterKnownContextFields strips every stored context key off the
+// tool, and project.FilterKnownContextFields strips every stored context key off the
 // wire. Tools and schema are installed first, and the publication happens in
 // the SAME critical section as the schema write, so no reader holding m.mu
 // can observe one without the other.
@@ -359,19 +360,19 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 
 	if len(result.ContextSchema) > 0 {
 		// One line per connection, at the moment the declaration arrives,
-		// rather than per call: ParseContextSchema runs on every tools/call
+		// rather than per call: project.ParseContextSchema runs on every tools/call
 		// and logging there would bury the signal in its own repetition.
-		if cs := ParseContextSchema(result.ContextSchema, result.ContextSchemaVersion); !cs.Usable() {
+		if cs := project.ParseContextSchema(result.ContextSchema, result.ContextSchemaVersion); !cs.Usable() {
 			slog.Error("MCP publishes a context schema relay cannot read; every call to it is refused",
 				"id", id,
 				"detail", cs.MalformedReason(),
 				"fix", "see docs/context-schema.md — keywords and their values are read under their exact spelling")
 		}
-		if result.ContextSchemaVersion < contextSchemaV2 {
+		if result.ContextSchemaVersion < project.ContextSchemaV2 {
 			// One line per connection, not per derivation.
 			slog.Warn("MCP declares a v1 context schema (deprecated)",
 				"id", id,
-				"want_version", contextSchemaV2,
+				"want_version", project.ContextSchemaV2,
 				"detail", "relay falls back to the literal allowed_dirs rule; declare contextSchemaVersion 2 with scope/source/applies_to keywords (docs/context-schema.md)")
 		}
 	}
@@ -886,7 +887,7 @@ func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
 // question — would this grant leave the MCP with no usable tools — cannot be
 // answered from a schema alone: a field's applies_to has to be measured
 // against the tools that exist.
-func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
+func (m *ExternalMcpManager) AllMcpSurfaces() project.McpSurfaces {
 	m.mu.RLock()
 	ids := make([]string, 0, len(m.conns)+len(m.schemas))
 	seen := make(map[string]bool, len(m.conns)+len(m.schemas))
@@ -902,7 +903,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 			ids = append(ids, id)
 		}
 	}
-	out := make(McpSurfaces, len(ids))
+	out := make(project.McpSurfaces, len(ids))
 	for _, id := range ids {
 		out[id] = m.storedSurfaceLocked(id)
 	}
@@ -932,15 +933,15 @@ func (m *ExternalMcpManager) AllMcpSurfaces() McpSurfaces {
 // that lies — `{Schema: nil, SchemaVersion: 2}` parses as a v2 schema with no
 // fields, under which every scope-presence check passes and every stored
 // context key is stripped from _meta.
-func (m *ExternalMcpManager) storedSurfaceLocked(id string) McpSurface {
+func (m *ExternalMcpManager) storedSurfaceLocked(id string) project.McpSurface {
 	schema, ok := m.schemas[id]
 	if !ok || len(schema) == 0 {
-		return McpSurface{}
+		return project.McpSurface{}
 	}
-	return McpSurface{Schema: schema, SchemaVersion: m.schemaVersions[id]}
+	return project.McpSurface{Schema: schema, SchemaVersion: m.schemaVersions[id]}
 }
 
-func (m *ExternalMcpManager) McpSurfaceFor(id string) McpSurface {
+func (m *ExternalMcpManager) McpSurfaceFor(id string) project.McpSurface {
 	m.mu.RLock()
 	surface := m.storedSurfaceLocked(id)
 	conn := m.conns[id]
@@ -1109,10 +1110,10 @@ func (m *ExternalMcpManager) Stop(id string) {
 	// The version is deleted WITH the schema, always: Reload is Stop +
 	// startOne, so an MCP reloaded onto a handshake that carried no
 	// contextSchema would otherwise leave relay holding version 2 with no
-	// schema at all. ParseContextSchema(nil, 2) is V2() == true with zero
+	// schema at all. project.ParseContextSchema(nil, 2) is V2() == true with zero
 	// fields — the most dangerous state this type can be in, since
 	// checkScopePresence finds nothing to require and passes every tool,
-	// filterKnownContextFields strips EVERY stored context key off the wire,
+	// project.FilterKnownContextFields strips EVERY stored context key off the wire,
 	// and the audit records no scope. Relay would remove the confinement
 	// while reporting that none was needed.
 	delete(m.schemaVersions, id)

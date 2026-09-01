@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -20,8 +20,8 @@ func updateProjectMcps(s *config.Settings, id string, mcpIDs []string, surfaces 
 
 func updateProjectPath(s *config.Settings, id string, path string, surfaces McpSurfaces) {
 	proj, _ := config.FindProjectByID(s, id)
-	// Belt-and-braces: the real refusal is validateProjectShape at the call
-	// site, but this function is reachable from anywhere in package main
+	// Belt-and-braces: the real refusal is ValidateShape at the call
+	// site, but this function is reachable from anywhere in this package
 	// without passing through that guard. A remote project has no
 	// filesystem scope, so silently refuse rather than let one acquire a
 	// path no validation pass approved. Clearing an already-remote
@@ -43,7 +43,7 @@ func updateProjectKind(s *config.Settings, id string, kind config.ProjectKind) {
 	kind = config.NormalizeProjectKind(kind)
 	// Belt-and-braces, exactly as updateProjectPath does it: the real
 	// refusal is enrolment.ValidateProjectConversion at the call site, but this
-	// function is reachable from anywhere in package main without passing
+	// function is reachable from anywhere in this package without passing
 	// through that guard. A remote→local conversion under a live enrolment
 	// strands that enrolment on a project whose shape it was never
 	// validated against — a silent widening of what a remote client
@@ -74,7 +74,7 @@ func updateProjectContext(s *config.Settings, id string, values map[string]json.
 		if !config.IsWildcard(proj.AllowedMcpIDs) && !slices.Contains(proj.AllowedMcpIDs, mcpID) {
 			continue
 		}
-		if len(contextValues(blob)) == 0 {
+		if len(ContextValues(blob)) == 0 {
 			continue
 		}
 		cleaned[mcpID] = blob
@@ -95,7 +95,7 @@ func updateProjectContext(s *config.Settings, id string, values map[string]json.
 // indistinguishable from "this schema now declares zero fields", so
 // pruning on that signal would delete an operator's values because a
 // process happened to be down at sync time — and it isn't needed for
-// safety anyway, since a stale key is inert (filterKnownContextFields
+// safety anyway, since a stale key is inert (FilterKnownContextFields
 // drops it at call time) and cannot be operator-set in the first place
 // (validateProjectContextForMcp refuses unknown names at write time).
 func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurfaces) {
@@ -142,7 +142,7 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 	// handle that are unsafe (an empty-string root, or omitting the field
 	// and letting the MCP fall back to its own possibly-unrestricted
 	// default), so remote projects skip derivation entirely, unconditionally,
-	// rather than only when validateProjectGrants happens to catch it —
+	// rather than only when ValidateGrants happens to catch it —
 	// this guard is what keeps a bypass of that check from silently
 	// widening scope instead of failing loudly (ADR-011 decision 5).
 	if proj.IsRemote() {
@@ -166,16 +166,16 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 			// path" rather than off a field name — the most domain-blind
 			// form available without a schema change to carry it.
 			if derived > 0 {
-				disableToolByDefault(proj, mcpID, v1FsBashTool)
+				disableToolByDefault(proj, mcpID, V1FsBashTool)
 			}
 			continue
 		}
 		// v1 compatibility: the last place in relay that knows a field name
-		// directly; see v1AllowedDirsField.
-		if schemaHasField(surface.Schema, v1AllowedDirsField) {
-			ctx, _ := json.Marshal(map[string]interface{}{v1AllowedDirsField: []string{proj.Path}})
+		// directly; see V1AllowedDirsField.
+		if schemaHasField(surface.Schema, V1AllowedDirsField) {
+			ctx, _ := json.Marshal(map[string]interface{}{V1AllowedDirsField: []string{proj.Path}})
 			proj.Context[mcpID] = ctx
-			disableToolByDefault(proj, mcpID, v1FsBashTool)
+			disableToolByDefault(proj, mcpID, V1FsBashTool)
 		}
 	}
 }
@@ -194,7 +194,7 @@ func projectPathValue(f ContextField, path string) interface{} {
 // every other field alone — replacing the whole blob would destroy any
 // field an operator can set beside a derived one (ADR-011 decision 6).
 func mergeContextField(base json.RawMessage, name string, value json.RawMessage) json.RawMessage {
-	m := contextValues(base)
+	m := ContextValues(base)
 	if m == nil {
 		m = map[string]json.RawMessage{}
 	}
@@ -212,7 +212,7 @@ func disableToolByDefault(proj *config.Project, mcpID, tool string) {
 	}
 }
 
-// validateProjectGrants refuses a grant that would leave an MCP with no
+// ValidateGrants refuses a grant that would leave an MCP with no
 // usable tools (ADR-011 decision 5): a remote-kind record has no Path, so
 // a source: "project_path" field cannot be supplied, and by ADR-011
 // decision 4 every tool that field governs then refuses. If the field's
@@ -226,7 +226,7 @@ func disableToolByDefault(proj *config.Project, mcpID, tool string) {
 // never connected to it), this permits, and the call-time check still
 // denies. Local projects are exempt: a path-scoped MCP granted to a local
 // project is the expected case.
-func validateProjectGrants(proj *config.Project, surfaces McpSurfaces) error {
+func ValidateGrants(proj *config.Project, surfaces McpSurfaces) error {
 	if !proj.IsRemote() {
 		return nil
 	}
@@ -246,8 +246,8 @@ func validateProjectGrants(proj *config.Project, surfaces McpSurfaces) error {
 		// v1 compatibility: an MCP that declares allowed_dirs and no
 		// version is refused outright, without consulting a tool list it
 		// has no way to qualify.
-		if schemaHasField(surface.Schema, v1AllowedDirsField) {
-			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares %s) and a remote project has no path to scope it to", mcpID, v1AllowedDirsField)
+		if schemaHasField(surface.Schema, V1AllowedDirsField) {
+			return fmt.Errorf("remote project cannot be granted %q: it is a filesystem-scoped MCP (declares %s) and a remote project has no path to scope it to", mcpID, V1AllowedDirsField)
 		}
 	}
 	return nil
@@ -255,7 +255,7 @@ func validateProjectGrants(proj *config.Project, surfaces McpSurfaces) error {
 
 // grantedToolNames narrows an MCP's live tool list to the ones this record
 // may actually call (the same allowlist StoredToken.ToolAllowed applies at
-// the chokepoint), because asking validateProjectGrants's question against
+// the chokepoint), because asking ValidateGrants's question against
 // the MCP's WHOLE surface is the wrong set: macMCP declares file_dirs
 // governing mail_save_attachment alone, so the answer over 47 tools is
 // always no, even for a grant of exactly that one tool that can call

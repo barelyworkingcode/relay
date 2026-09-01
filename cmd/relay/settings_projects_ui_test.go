@@ -299,7 +299,7 @@ func TestRemoteProjectZeroMcpHarvest(t *testing.T) {
 	}
 }
 
-// Switching to remote must clear the "*" wildcard — validateProjectShape
+// Switching to remote must clear the "*" wildcard — project.ValidateShape
 // refuses "*" on a remote project.
 func TestSwitchLocalToRemoteClearsWildcard(t *testing.T) {
 	vm := newAppVM(t)

@@ -1,4 +1,4 @@
-package main
+package project
 
 import (
 	"encoding/json"
@@ -33,7 +33,7 @@ func scopeBreadthPhrase(kind string) string {
 	return ""
 }
 
-// scopeEntryBreadth classifies one entry of a scope value.
+// ScopeEntryBreadth classifies one entry of a scope value.
 //
 // The test is structural, never a lookup of the running user's own home: a
 // grant of ANOTHER user's home directory is exactly as broad as a grant of
@@ -44,7 +44,7 @@ func scopeBreadthPhrase(kind string) string {
 // "/Users/admin/../.." are one value spelled four ways, and a check that
 // only knew the first spelling would be a check an operator could walk past
 // by accident.
-func scopeEntryBreadth(entry string) string {
+func ScopeEntryBreadth(entry string) string {
 	v := strings.TrimSpace(entry)
 	if v == "" {
 		return scopeBreadthBounded
@@ -90,7 +90,7 @@ func scopeValueEntries(raw json.RawMessage) []string {
 func scopeValueBreadth(raw json.RawMessage) string {
 	widest := scopeBreadthBounded
 	for _, e := range scopeValueEntries(raw) {
-		switch scopeEntryBreadth(e) {
+		switch ScopeEntryBreadth(e) {
 		case scopeBreadthRoot:
 			return scopeBreadthRoot
 		case scopeBreadthHome:
@@ -100,10 +100,10 @@ func scopeValueBreadth(raw json.RawMessage) string {
 	return widest
 }
 
-// scopeBreadthWarnings appends to a rendering of the scope values, never
+// ScopeBreadthWarnings appends to a rendering of the scope values, never
 // replaces one -- the coordinates are what the operator is entitled to, and
 // a breadth warning is the second sentence, not a substitute for the first.
-func scopeBreadthWarnings(scope map[string]json.RawMessage) []string {
+func ScopeBreadthWarnings(scope map[string]json.RawMessage) []string {
 	names := make([]string, 0, len(scope))
 	for name := range scope {
 		names = append(names, name)

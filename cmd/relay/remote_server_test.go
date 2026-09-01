@@ -31,6 +31,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // ---------------------------------------------------------------------------
@@ -113,7 +114,7 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 		if !opts.noRemoteBlock {
 			s.Remote = &config.RemoteConfig{Enabled: enabled, Listen: listen}
 		}
-		f.project, createErr = createProjectWithTokenKind(s,
+		f.project, createErr = project.CreateWithTokenKind(s,
 			config.ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
 		// A profile names the tools it may call (ADR-011 decision 2b); with no
 		// allowed_tools it holds none of them, which is the fail-closed default
@@ -125,7 +126,7 @@ func newRemoteFixture(t *testing.T, opts remoteFixtureOpts) *remoteFixture {
 			f.project = *p
 		}
 		for i := 0; i < opts.extraProjects; i++ {
-			if _, err := createProjectWithTokenKind(s,
+			if _, err := project.CreateWithTokenKind(s,
 				config.ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
 				createErr = err
 			}
@@ -205,14 +206,14 @@ func newRemoteFixtureCSRSigned(t *testing.T, opts remoteFixtureOpts) (*remoteFix
 		if !opts.noRemoteBlock {
 			s.Remote = &config.RemoteConfig{Enabled: enabled, Listen: listen}
 		}
-		f.project, createErr = createProjectWithTokenKind(s,
+		f.project, createErr = project.CreateWithTokenKind(s,
 			config.ProjectKindRemote, "Mail", "", []string{"macmcp"}, []string{}, nil, nil)
 		s.UpdateProjectAllowedTools(f.project.ID, map[string][]string{"macmcp": {"mail_*"}})
 		if p, _ := config.FindProjectByID(s, f.project.ID); p != nil {
 			f.project = *p
 		}
 		for i := 0; i < opts.extraProjects; i++ {
-			if _, err := createProjectWithTokenKind(s,
+			if _, err := project.CreateWithTokenKind(s,
 				config.ProjectKindRemote, fmt.Sprintf("Extra %d", i), "", []string{"macmcp"}, []string{}, nil, nil); err != nil {
 				createErr = err
 			}
@@ -754,7 +755,7 @@ func TestRemoteServer_RefusesAProjectTheEnrolmentDoesNotGrant(t *testing.T) {
 	var ungranted config.Project
 	var err error
 	assertNoErr(t, f.store.With(func(s *config.Settings) {
-		ungranted, err = createProjectWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
+		ungranted, err = project.CreateWithTokenKind(s, config.ProjectKindRemote, "Calendar", "", []string{"macmcp"}, []string{}, nil, nil)
 	}), "create ungranted project")
 	assertNoErr(t, err, "create ungranted project")
 

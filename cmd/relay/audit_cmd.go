@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 // Reads the log file directly rather than going over the bridge: appending
@@ -19,7 +21,7 @@ func runAuditCommand(args []string) {
 	tail := fs.Int("tail", 50, "show the most recent N events")
 	// A remote actor's project_id names an ACCESS PROFILE (ADR-011 decision 1);
 	// it is the same field and the same ids, so one flag serves both.
-	project := fs.String("project", "", "filter by project / access profile id")
+	projectID := fs.String("project", "", "filter by project / access profile id")
 	mcpID := fs.String("mcp", "", "filter by MCP id")
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
@@ -48,7 +50,7 @@ func runAuditCommand(args []string) {
 	}
 
 	q := AuditQuery{
-		ProjectID: *project,
+		ProjectID: *projectID,
 		McpID:     *mcpID,
 		Outcome:   *outcome,
 		Kind:      *kind,
@@ -252,9 +254,9 @@ func auditAuthorityLine(ev AuditEvent) (string, bool) {
 	// not a replacement for the first.
 	if len(ev.ScopeUnplaced) > 0 {
 		parts = append(parts, "SCOPE NOT APPLIED: this grant sets "+
-			quoteNames(ev.ScopeUnplaced)+", which this MCP does not declare — call denied")
+			project.QuoteNames(ev.ScopeUnplaced)+", which this MCP does not declare — call denied")
 	}
-	if warnings := scopeBreadthWarnings(ev.Scope); len(warnings) > 0 {
+	if warnings := project.ScopeBreadthWarnings(ev.Scope); len(warnings) > 0 {
 		parts = append(parts, "SCOPE BREADTH: "+strings.Join(warnings, "; "))
 	}
 	return strings.Join(parts, "  "), true

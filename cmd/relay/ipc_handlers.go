@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/project"
 	"log/slog"
 	"strings"
 )
@@ -128,7 +129,7 @@ func (a *App) buildToolCache(s *config.Settings) map[string][]config.ToolInfo {
 // fields gets an empty slice, and one relay has never connected to gets no key
 // at all — which is what lets the editor say "relay cannot see what this MCP
 // scopes" instead of "this MCP scopes nothing".
-func (a *App) buildScopeFields() map[string][]ScopeFieldView {
+func (a *App) buildScopeFields() map[string][]project.ScopeFieldView {
 	return a.extMgr.AllMcpSurfaces().ScopeFields()
 }
 
@@ -176,7 +177,7 @@ type IPCContext struct {
 	// a box. nil means every enumeration answers "unavailable", which is the
 	// state the editor already has to render correctly — the text box is the
 	// fallback, so a missing provider costs nothing but the picker.
-	Enumerate ContextEnumerator
+	Enumerate project.ContextEnumerator
 	// SkillLister is the same interface skills.go uses; threaded here so the
 	// Regen Now button can run without re-importing *appRouter.
 	SkillLister SkillLister

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/dop251/goja"
+
+	"github.com/barelyworkingcode/relay/internal/project"
 )
 
 func mustRun(t *testing.T, vm *goja.Runtime, src string) {
@@ -148,7 +150,7 @@ func TestScopeBreadthJs_MirrorsGo(t *testing.T) {
 		"/Users", "/Users/admin", "/Users/admin/", "/home/someone",
 		"/Users/admin/source/project", "/etc", "/tmp/work", "relative/path", "Bob", "",
 	} {
-		want := scopeEntryBreadth(entry)
+		want := project.ScopeEntryBreadth(entry)
 		got := evalString(t, vm, `window.scopeEntryBreadth(`+jsQuote(entry)+`)`)
 		if got != want {
 			t.Errorf("scopeEntryBreadth(%q): js=%q go=%q", entry, got, want)
