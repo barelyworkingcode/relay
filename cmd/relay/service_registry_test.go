@@ -20,6 +20,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -95,7 +96,7 @@ func startSandboxBridge(t *testing.T, enhanced *EnhancedServiceRegistry) (*appRo
 
 	router := &appRouter{
 		store:    store,
-		tools:    NewExternalMcpManager(nil),
+		tools:    mcpbroker.NewManager(nil),
 		services: &fakeServiceReloader{},
 		enhanced: enhanced,
 	}

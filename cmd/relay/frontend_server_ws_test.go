@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // startFrontendServerWith brings up a real FrontendServer over a Unix socket
@@ -30,7 +32,7 @@ func startFrontendServerWith(t *testing.T, token string, enhanced *EnhancedServi
 	if err := store.EnsureInitialized(); err != nil {
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

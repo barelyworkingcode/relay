@@ -8,6 +8,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -39,7 +40,7 @@ func TestProjectTokenScoping(t *testing.T) {
 		t.Fatalf("CreateProjectWithToken failed: %v", err)
 	}
 
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", []mcp.Tool{
 		{Name: "fs_read", Description: "Read file"},
 		{Name: "fs_write", Description: "Write file"},

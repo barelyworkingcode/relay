@@ -1,4 +1,17 @@
-package main
+// Package mcpbroker is relay's client for the MCP servers it proxies to: one
+// supervised connection per registered MCP id, over stdio or HTTP, plus the
+// runtime tool and context-schema tables those connections publish.
+//
+// oauth.go here is the OAuth 2.1 client relay uses to authenticate ITSELF to
+// an upstream HTTP MCP. It has nothing to do with how a human signs in to
+// relay — that is internal/login and cmd/relay's login_* files. The two get
+// confused by name often enough to be worth saying.
+//
+// The package holds no authorization decision and no door. Which caller may
+// reach which tool is cmd/relay's router; who may register an MCP is McpOps.
+// Liveness is reported outward through SetHealthObserver rather than written
+// here, so the broker needs no audit dependency of its own (ADR-012).
+package mcpbroker
 
 import (
 	"bufio"
@@ -48,7 +61,7 @@ func progressTokenString(v interface{}) string {
 	return fmt.Sprintf("%v", v)
 }
 
-type McpConnection interface {
+type Connection interface {
 	SendRequest(ctx context.Context, method string, params interface{}) (json.RawMessage, error)
 	SendNotification(method string)
 	Close()
@@ -57,13 +70,13 @@ type McpConnection interface {
 	GetConfig() config.ExternalMcp
 }
 
-// Injected at ExternalMcpManager construction to decouple from Settings
+// Injected at Manager construction to decouple from Settings
 // persistence.
 type OnTokenRefreshFunc func(mcpID string, oauth *config.OAuthState)
 
-type ExternalMcpManager struct {
+type Manager struct {
 	mu             sync.RWMutex
-	conns          map[string]McpConnection
+	conns          map[string]Connection
 	schemas        map[string]json.RawMessage // id → context schema (runtime-only)
 	schemaVersions map[string]int             // id → contextSchemaVersion (runtime-only)
 	// Latches the MCPs that answered -32601 to context/enumerate, so the
@@ -84,7 +97,7 @@ type ExternalMcpManager struct {
 	// The operator-facing side of supervision: an observer relay installs at
 	// startup to turn a child's death, restart, or abandonment into an audit
 	// record. Nil until SetHealthObserver is called.
-	onHealth func(McpHealthEvent)
+	onHealth func(HealthEvent)
 }
 
 type pendingResponse struct {
@@ -221,7 +234,7 @@ type handshakeResult struct {
 	ContextSchemaVersion int
 }
 
-func mcpHandshake(ctx context.Context, conn McpConnection) (*handshakeResult, error) {
+func mcpHandshake(ctx context.Context, conn Connection) (*handshakeResult, error) {
 	initParams := map[string]interface{}{
 		"protocolVersion": mcp.ProtocolVersion,
 		"capabilities":    map[string]interface{}{},
@@ -286,9 +299,9 @@ func extractContextSchema(initResp json.RawMessage) (json.RawMessage, int) {
 	return nil, 0
 }
 
-func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManager {
-	return &ExternalMcpManager{
-		conns:           make(map[string]McpConnection),
+func NewManager(onTokenRefresh OnTokenRefreshFunc) *Manager {
+	return &Manager{
+		conns:           make(map[string]Connection),
 		schemas:         make(map[string]json.RawMessage),
 		schemaVersions:  make(map[string]int),
 		enumUnsupported: make(map[string]bool),
@@ -298,7 +311,7 @@ func NewExternalMcpManager(onTokenRefresh OnTokenRefreshFunc) *ExternalMcpManage
 }
 
 // Closes any existing connection for the same ID to prevent resource leaks.
-func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
+func (m *Manager) setConnection(id string, conn Connection) {
 	m.mu.Lock()
 	old := m.conns[id]
 	m.conns[id] = conn
@@ -331,7 +344,7 @@ func (m *ExternalMcpManager) setConnection(id string, conn McpConnection) {
 // is NOT published and false is returned: a Stop or a Reload landed while
 // this handshake was in flight, and the caller closes the child rather than
 // installing one nothing owns.
-func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, result *handshakeResult, sup *mcpSupervisor) bool {
+func (m *Manager) finalizeConnection(id string, conn Connection, result *handshakeResult, sup *mcpSupervisor) bool {
 	// Safe without a lock: conn is not reachable by anyone else yet.
 	conn.SetTools(result.Tools)
 
@@ -383,7 +396,7 @@ func (m *ExternalMcpManager) finalizeConnection(id string, conn McpConnection, r
 
 // Each MCP handshake involves network I/O, so parallel startup avoids linear
 // growth in startup time as MCPs are added.
-func (m *ExternalMcpManager) StartAll(ctx context.Context, mcps []config.ExternalMcp) {
+func (m *Manager) StartAll(ctx context.Context, mcps []config.ExternalMcp) {
 	var wg sync.WaitGroup
 	for i := range mcps {
 		wg.Add(1)
@@ -407,7 +420,7 @@ func logMcpStartError(id string, err error) {
 	}
 }
 
-func (m *ExternalMcpManager) startOne(ctx context.Context, mcpCfg *config.ExternalMcp) error {
+func (m *Manager) startOne(ctx context.Context, mcpCfg *config.ExternalMcp) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -475,7 +488,7 @@ const maxInflightProgress = 64
 // finalizeConnection), and retired again if that first connect fails — an MCP
 // that never came up is not a child to supervise, it is a configuration
 // error, and it is already logged as one.
-func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *config.ExternalMcp) error {
+func (m *Manager) startStdio(startCtx context.Context, mcpCfg *config.ExternalMcp) error {
 	sup := m.installSupervisor(mcpCfg)
 	conn, err := m.connectStdio(startCtx, sup)
 	if err != nil {
@@ -491,14 +504,14 @@ func (m *ExternalMcpManager) startStdio(startCtx context.Context, mcpCfg *config
 // for every respawn alike. There is deliberately no second entrypoint that
 // skips a step: a respawned MCP that served calls before its schema was
 // known would be a worse bug than the outage this exists to fix.
-func (m *ExternalMcpManager) connectStdio(ctx context.Context, sup *mcpSupervisor) (*externalMcpConn, error) {
+func (m *Manager) connectStdio(ctx context.Context, sup *mcpSupervisor) (*externalMcpConn, error) {
 	// prepareStdioLaunch is the one place that decides whether this child
 	// runs under seatbelt (R5); it fails closed on its own.
 	command, args, err := prepareStdioLaunch(&sup.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
-	env, err := revealEnvOrErr(sup.cfg.Env)
+	env, err := service.RevealEnv(sup.cfg.Env)
 	if err != nil {
 		return nil, fmt.Errorf("env: %w", err)
 	}
@@ -533,17 +546,17 @@ var errMcpSuperseded = errors.New("external MCP supervision superseded")
 // supervision: the restart budget is spent and relay has stopped trying,
 // which is the state that needs a human and must never be silent.
 const (
-	McpHealthDown          = "down"
-	McpHealthRestartFailed = "restart_failed"
-	McpHealthRestarted     = "restarted"
-	McpHealthAbandoned     = "abandoned"
+	HealthDown          = "down"
+	HealthRestartFailed = "restart_failed"
+	HealthRestarted     = "restarted"
+	HealthAbandoned     = "abandoned"
 )
 
 // Reports a change in an external MCP child's liveness to whoever is
 // watching (SetHealthObserver). Exists because a dead MCP was invisible:
 // every client saw `read response: EOF` and nothing else in relay said the
 // server behind them was gone.
-type McpHealthEvent struct {
+type HealthEvent struct {
 	ID          string
 	DisplayName string
 	State       string
@@ -569,7 +582,7 @@ type McpHealthEvent struct {
 // chose. Reload is how a new command reaches a running MCP, installing a new
 // supervisor.
 type mcpSupervisor struct {
-	mgr    *ExternalMcpManager
+	mgr    *Manager
 	id     string
 	cfg    config.ExternalMcp
 	ctx    context.Context
@@ -593,7 +606,7 @@ type mcpSupervisor struct {
 // The manager's own lifecycle is the right owner and already exists: Stop,
 // Reload and StopAll each end supervision explicitly, and the tray calls
 // StopAll during cleanup.
-func (m *ExternalMcpManager) installSupervisor(cfg *config.ExternalMcp) *mcpSupervisor {
+func (m *Manager) installSupervisor(cfg *config.ExternalMcp) *mcpSupervisor {
 	ctx, cancel := context.WithCancel(context.Background())
 	sup := &mcpSupervisor{mgr: m, id: cfg.ID, cfg: *cfg, ctx: ctx, cancel: cancel}
 
@@ -610,7 +623,7 @@ func (m *ExternalMcpManager) installSupervisor(cfg *config.ExternalMcp) *mcpSupe
 
 // Only if sup is still the supervisor of record — a newer one must not be
 // uninstalled by an older one's cleanup.
-func (m *ExternalMcpManager) retireSupervisor(sup *mcpSupervisor) {
+func (m *Manager) retireSupervisor(sup *mcpSupervisor) {
 	m.mu.Lock()
 	if m.supervisors[sup.id] == sup {
 		delete(m.supervisors, sup.id)
@@ -622,7 +635,7 @@ func (m *ExternalMcpManager) retireSupervisor(sup *mcpSupervisor) {
 // Caller holds m.mu; the returned supervisors are cancelled by the caller
 // once it has released the lock, because cancelling under m.mu would run a
 // supervisor's teardown inside the manager's own critical section.
-func (m *ExternalMcpManager) takeSupervisorsLocked(id string, all bool) []*mcpSupervisor {
+func (m *Manager) takeSupervisorsLocked(id string, all bool) []*mcpSupervisor {
 	var out []*mcpSupervisor
 	if all {
 		for _, sup := range m.supervisors {
@@ -641,7 +654,7 @@ func (m *ExternalMcpManager) takeSupervisorsLocked(id string, all bool) []*mcpSu
 // Called once at startup, after the audit recorder exists — the manager is
 // constructed before it, and this is the seam that keeps the manager from
 // having to know what an audit log is.
-func (m *ExternalMcpManager) SetHealthObserver(fn func(McpHealthEvent)) {
+func (m *Manager) SetHealthObserver(fn func(HealthEvent)) {
 	m.mu.Lock()
 	m.onHealth = fn
 	m.mu.Unlock()
@@ -650,15 +663,15 @@ func (m *ExternalMcpManager) SetHealthObserver(fn func(McpHealthEvent)) {
 // The observer is called WITHOUT m.mu held: it writes an audit record, and
 // an audit sink that took the manager's lock back would deadlock the
 // supervisor.
-func (m *ExternalMcpManager) reportHealth(ev McpHealthEvent) {
+func (m *Manager) reportHealth(ev HealthEvent) {
 	switch ev.State {
-	case McpHealthDown:
+	case HealthDown:
 		slog.Error("external MCP died; restarting", "id", ev.ID, "error", ev.Err)
-	case McpHealthRestartFailed:
+	case HealthRestartFailed:
 		slog.Error("external MCP restart failed", "id", ev.ID, "attempt", ev.Attempt, "error", ev.Err)
-	case McpHealthRestarted:
+	case HealthRestarted:
 		slog.Info("external MCP restarted", "id", ev.ID, "attempt", ev.Attempt, "downtime", ev.Downtime)
-	case McpHealthAbandoned:
+	case HealthAbandoned:
 		slog.Error("external MCP abandoned after repeated restart failures; every grant that names it is down until relay is told to reload it",
 			"id", ev.ID, "attempts", ev.Attempt, "error", ev.Err)
 	}
@@ -697,9 +710,9 @@ func (s *mcpSupervisor) run(conn *externalMcpConn) {
 			attempt = 0
 		}
 		downAt := time.Now()
-		s.mgr.reportHealth(McpHealthEvent{
+		s.mgr.reportHealth(HealthEvent{
 			ID: s.id, DisplayName: s.cfg.DisplayName,
-			State: McpHealthDown, Err: conn.readerFailure(),
+			State: HealthDown, Err: conn.readerFailure(),
 		})
 
 		next := s.restart(&attempt, downAt)
@@ -727,9 +740,9 @@ func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn
 			// that reacts by reconciling would find a supervisor of record
 			// still in place and conclude the MCP was being looked after.
 			s.mgr.retireSupervisor(s)
-			s.mgr.reportHealth(McpHealthEvent{
+			s.mgr.reportHealth(HealthEvent{
 				ID: s.id, DisplayName: s.cfg.DisplayName,
-				State: McpHealthAbandoned, Attempt: *attempt - 1,
+				State: HealthAbandoned, Attempt: *attempt - 1,
 				Downtime: time.Since(downAt), Err: lastErr,
 			})
 			return nil
@@ -742,9 +755,9 @@ func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn
 		conn, err := s.mgr.connectStdio(startCtx, s)
 		cancel()
 		if err == nil {
-			s.mgr.reportHealth(McpHealthEvent{
+			s.mgr.reportHealth(HealthEvent{
 				ID: s.id, DisplayName: s.cfg.DisplayName,
-				State: McpHealthRestarted, Attempt: *attempt,
+				State: HealthRestarted, Attempt: *attempt,
 				Downtime: time.Since(downAt),
 			})
 			return conn
@@ -753,9 +766,9 @@ func (s *mcpSupervisor) restart(attempt *int, downAt time.Time) *externalMcpConn
 			return nil
 		}
 		lastErr = err
-		s.mgr.reportHealth(McpHealthEvent{
+		s.mgr.reportHealth(HealthEvent{
 			ID: s.id, DisplayName: s.cfg.DisplayName,
-			State: McpHealthRestartFailed, Attempt: *attempt, Err: err,
+			State: HealthRestartFailed, Attempt: *attempt, Err: err,
 		})
 	}
 }
@@ -792,7 +805,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []config.ExternalMcp) {
+func (m *Manager) Reconcile(ctx context.Context, mcps []config.ExternalMcp) {
 	desired := make(map[string]*config.ExternalMcp, len(mcps))
 	for i := range mcps {
 		desired[mcps[i].ID] = &mcps[i]
@@ -842,7 +855,7 @@ func (m *ExternalMcpManager) Reconcile(ctx context.Context, mcps []config.Extern
 // validation, but it answers nothing, so without this check a reconcile
 // would see a healthy entry. This is what makes an abandoned MCP recoverable
 // by a settings change instead of only by relaunching the tray.
-func (m *ExternalMcpManager) needsStartLocked(id string) bool {
+func (m *Manager) needsStartLocked(id string) bool {
 	conn, ok := m.conns[id]
 	if !ok {
 		return true
@@ -864,12 +877,12 @@ func (m *ExternalMcpManager) needsStartLocked(id string) bool {
 	}
 }
 
-func (m *ExternalMcpManager) Reload(ctx context.Context, id string, cfg *config.ExternalMcp) error {
+func (m *Manager) Reload(ctx context.Context, id string, cfg *config.ExternalMcp) error {
 	m.Stop(id)
 	return m.startOne(ctx, cfg)
 }
 
-func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
+func (m *Manager) Tools(id string) []mcp.Tool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if conn, ok := m.conns[id]; ok {
@@ -878,7 +891,7 @@ func (m *ExternalMcpManager) Tools(id string) []mcp.Tool {
 	return nil
 }
 
-func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
+func (m *Manager) GetContextSchema(id string) json.RawMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.schemas[id]
@@ -888,7 +901,7 @@ func (m *ExternalMcpManager) GetContextSchema(id string) json.RawMessage {
 // question — would this grant leave the MCP with no usable tools — cannot be
 // answered from a schema alone: a field's applies_to has to be measured
 // against the tools that exist.
-func (m *ExternalMcpManager) AllMcpSurfaces() project.McpSurfaces {
+func (m *Manager) AllMcpSurfaces() project.McpSurfaces {
 	m.mu.RLock()
 	ids := make([]string, 0, len(m.conns)+len(m.schemas))
 	seen := make(map[string]bool, len(m.conns)+len(m.schemas))
@@ -908,7 +921,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() project.McpSurfaces {
 	for _, id := range ids {
 		out[id] = m.storedSurfaceLocked(id)
 	}
-	conns := make(map[string]McpConnection, len(m.conns))
+	conns := make(map[string]Connection, len(m.conns))
 	for id, c := range m.conns {
 		conns[id] = c
 	}
@@ -934,7 +947,7 @@ func (m *ExternalMcpManager) AllMcpSurfaces() project.McpSurfaces {
 // that lies — `{Schema: nil, SchemaVersion: 2}` parses as a v2 schema with no
 // fields, under which every scope-presence check passes and every stored
 // context key is stripped from _meta.
-func (m *ExternalMcpManager) storedSurfaceLocked(id string) project.McpSurface {
+func (m *Manager) storedSurfaceLocked(id string) project.McpSurface {
 	schema, ok := m.schemas[id]
 	if !ok || len(schema) == 0 {
 		return project.McpSurface{}
@@ -942,7 +955,7 @@ func (m *ExternalMcpManager) storedSurfaceLocked(id string) project.McpSurface {
 	return project.McpSurface{Schema: schema, SchemaVersion: m.schemaVersions[id]}
 }
 
-func (m *ExternalMcpManager) McpSurfaceFor(id string) project.McpSurface {
+func (m *Manager) McpSurfaceFor(id string) project.McpSurface {
 	m.mu.RLock()
 	surface := m.storedSurfaceLocked(id)
 	conn := m.conns[id]
@@ -965,7 +978,7 @@ func toolNames(tools []mcp.Tool) []string {
 	return out
 }
 
-func (m *ExternalMcpManager) ToolInfos(id string) []config.ToolInfo {
+func (m *Manager) ToolInfos(id string) []config.ToolInfo {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -980,7 +993,7 @@ func (m *ExternalMcpManager) ToolInfos(id string) []config.ToolInfo {
 	return infos
 }
 
-func (m *ExternalMcpManager) IsConnected(id string) bool {
+func (m *Manager) IsConnected(id string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.conns[id]
@@ -994,7 +1007,7 @@ func (m *ExternalMcpManager) IsConnected(id string) bool {
 // different id per call, and that id is not merely a dispatch target: it
 // selects the `_meta` resource scope, the disabled-tools list, and the
 // mcp_id the audit records.
-func (m *ExternalMcpManager) ToolOwners(toolName string) []string {
+func (m *Manager) ToolOwners(toolName string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var owners []string
@@ -1012,7 +1025,7 @@ func (m *ExternalMcpManager) ToolOwners(toolName string) []string {
 
 // If meta is non-nil, it is injected as _meta in the tool call params,
 // enabling per-token context like allowed_dirs.
-func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args json.RawMessage, meta json.RawMessage) (json.RawMessage, error) {
+func (m *Manager) CallTool(ctx context.Context, id, name string, args json.RawMessage, meta json.RawMessage) (json.RawMessage, error) {
 	m.mu.RLock()
 	conn, ok := m.conns[id]
 	m.mu.RUnlock()
@@ -1100,7 +1113,7 @@ func (m *ExternalMcpManager) CallTool(ctx context.Context, id, name string, args
 // The supervisor is cancelled BEFORE the child is killed, so the death it
 // is about to observe reads as "an operator stopped this" rather than as an
 // incident to restart from.
-func (m *ExternalMcpManager) Stop(id string) {
+func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	conn, ok := m.conns[id]
 	if ok {
@@ -1131,10 +1144,10 @@ func (m *ExternalMcpManager) Stop(id string) {
 
 // Kills connections concurrently to avoid one slow connection (e.g., HTTP
 // session DELETE) blocking the shutdown of others.
-func (m *ExternalMcpManager) StopAll() {
+func (m *Manager) StopAll() {
 	m.mu.Lock()
 	conns := m.conns
-	m.conns = make(map[string]McpConnection)
+	m.conns = make(map[string]Connection)
 	m.schemas = make(map[string]json.RawMessage)
 	m.schemaVersions = make(map[string]int)
 	m.enumUnsupported = make(map[string]bool)
@@ -1149,7 +1162,7 @@ func (m *ExternalMcpManager) StopAll() {
 	var wg sync.WaitGroup
 	for _, conn := range conns {
 		wg.Add(1)
-		go func(c McpConnection) {
+		go func(c Connection) {
 			defer wg.Done()
 			c.Close()
 		}(conn)
@@ -1158,7 +1171,7 @@ func (m *ExternalMcpManager) StopAll() {
 }
 
 // Shared by both stdio and HTTP discovery paths.
-func discoverMcp(ctx context.Context, conn McpConnection, base config.ExternalMcp) (*config.ExternalMcp, error) {
+func discoverMcp(ctx context.Context, conn Connection, base config.ExternalMcp) (*config.ExternalMcp, error) {
 	result, err := mcpHandshake(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -1186,7 +1199,7 @@ func DiscoverExternalMcp(ctx context.Context, displayName, id, command string, a
 		DisplayName: displayName,
 		Command:     command,
 		Args:        args,
-		Env:         secretMapFromPlain(env),
+		Env:         config.SecretMapFromPlain(env),
 	})
 }
 

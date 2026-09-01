@@ -17,6 +17,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 func TestIntegration_FakeRelayLLM_DispatchesEveryDeclaredRoute(t *testing.T) {
@@ -142,7 +143,7 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 	}
 	router := &appRouter{
 		store:    store,
-		tools:    NewExternalMcpManager(nil),
+		tools:    mcpbroker.NewManager(nil),
 		services: &fakeServiceReloader{},
 		enhanced: enhanced,
 	}

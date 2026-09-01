@@ -11,6 +11,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // closed-world (openWorldHint:false) so the outbound-grant check (decision
@@ -38,7 +39,7 @@ func rootedProfile(t *testing.T, root string) *appRouter {
 		Projects:     []config.Project{proj},
 		AdminSecret:  config.NewSecret("supersecretadmin"),
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	conn := newMockConn("fsmcp3", fsmcpV3ToolSurface(),
 		okHandler(`{"content":[{"type":"text","text":"ok"}]}`))
 	conn.config.ResolvedRoot = root

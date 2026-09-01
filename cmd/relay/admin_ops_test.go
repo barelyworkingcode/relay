@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"sort"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // TestAdminOps_TableHasExactlyTheS6Operations pins §7.2's operation table:
@@ -57,7 +59,7 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 // operation name the table doesn't hold must come back as an error, never a
 // panic from an unchecked map lookup or a nil handler invocation.
 func TestAppRouter_AdminOpRefusesUnknownOperation(t *testing.T) {
-	r := newTestRouter(t, makeSettings(nil, nil, nil), NewExternalMcpManager(nil))
+	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
 
 	result, err := r.AdminOp(context.Background(), "no.such.operation", json.RawMessage(`{}`))
 	if err == nil {
@@ -73,7 +75,7 @@ func TestAppRouter_AdminOpRefusesUnknownOperation(t *testing.T) {
 // appRouter that forgot to, or a shipped build with a wiring bug) refuses
 // by name rather than panicking three calls deep inside a nil core.
 func TestAppRouter_AdminOpRefusesWhenCoreNotWired(t *testing.T) {
-	r := newTestRouter(t, makeSettings(nil, nil, nil), NewExternalMcpManager(nil))
+	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
 
 	_, err := r.AdminOp(context.Background(), "credential.mint", json.RawMessage(`{"name":"x","classes":["read"]}`))
 	if err == nil {

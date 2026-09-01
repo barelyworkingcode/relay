@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/dop251/goja"
 )
 
@@ -477,7 +478,7 @@ func ilTrayApp(t *testing.T) (*App, *ilPlatform, config.SettingsStore) {
 		store:    store,
 		platform: p,
 		registry: &trayRegistry{},
-		extMgr:   NewExternalMcpManager(nil),
+		extMgr:   mcpbroker.NewManager(nil),
 	}
 	app.loginOps = &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)}
 	return app, p, store

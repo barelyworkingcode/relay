@@ -40,14 +40,14 @@ func writeProjectGateError(w http.ResponseWriter, err error) {
 // McpSurfaceProvider supplies what relay knows at runtime about each MCP —
 // context schema, its version, and the tool surface — required when
 // (re)scoping a project's token and when validating its grants.
-// Implemented by *ExternalMcpManager.
+// Implemented by *mcpbroker.Manager.
 type McpSurfaceProvider interface {
 	AllMcpSurfaces() project.McpSurfaces
 }
 
 // MCPToolsProvider supplies the live tool list for a registered MCP. The
 // project picker UI needs this to render the per-tool selector. Implemented
-// by *ExternalMcpManager; nil-safe in route handlers.
+// by *mcpbroker.Manager; nil-safe in route handlers.
 type MCPToolsProvider interface {
 	ToolInfos(id string) []config.ToolInfo
 }

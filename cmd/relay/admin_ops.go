@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"os"
 	"path/filepath"
 	"time"
@@ -417,10 +418,10 @@ func adminLoginPasskeyRevoke(ctx context.Context, r *appRouter, args json.RawMes
 
 // adminMcpRegister responds with mcpView, the same JSON-safe projection the
 // HTTP and IPC doors already use (Env revealed for display, OAuthState
-// withheld entirely). ErrAuthRequired is folded into AuthRequired rather
-// than treated as a failure: the record landed even though McpOps.Add
-// returned a non-nil error, so this is a success from admin_op's point of
-// view and the CLI reports it as one.
+// withheld entirely). mcpbroker.ErrAuthRequired is folded into AuthRequired
+// rather than treated as a failure: the record landed even though
+// McpOps.Add returned a non-nil error, so this is a success from admin_op's
+// point of view and the CLI reports it as one.
 func adminMcpRegister(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
 	ops, err := requireMcpOps(r)
 	if err != nil {
@@ -431,11 +432,11 @@ func adminMcpRegister(ctx context.Context, r *appRouter, args json.RawMessage) (
 		return nil, err
 	}
 	result, err := ops.Add(ctx, req, auditViaCLI, "")
-	if err != nil && !errors.Is(err, ErrAuthRequired) {
+	if err != nil && !errors.Is(err, mcpbroker.ErrAuthRequired) {
 		return nil, err
 	}
 	view := mcpViewOf(result)
-	if errors.Is(err, ErrAuthRequired) {
+	if errors.Is(err, mcpbroker.ErrAuthRequired) {
 		view.AuthRequired = true
 	}
 	return marshalAdminResult(view)

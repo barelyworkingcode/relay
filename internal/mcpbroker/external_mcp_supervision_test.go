@@ -1,25 +1,23 @@
 //go:build !windows
 
-package main
+package mcpbroker
 
 import (
 	"context"
-	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func connOf(m *ExternalMcpManager, id string) McpConnection {
+func connOf(m *Manager, id string) Connection {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.conns[id]
 }
 
-func waitForNewConn(t *testing.T, m *ExternalMcpManager, id string, prev McpConnection) *externalMcpConn {
+func waitForNewConn(t *testing.T, m *Manager, id string, prev Connection) *externalMcpConn {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -41,14 +39,14 @@ func waitForNewConn(t *testing.T, m *ExternalMcpManager, id string, prev McpConn
 // would be a worse bug than the outage it recovers from.
 func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
 	cfg := stdioMcp("mcp-dies", bin)
 	// v2 context schema, so the assertion below is about the schema being
 	// rediscovered, not about it never having existed.
-	cfg.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
+	cfg.Env = config.SecretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 	if err := m.startOne(ctx, &cfg); err != nil {
 		t.Fatalf("startOne: %v", err)
 	}
@@ -88,7 +86,7 @@ func TestSupervisor_RespawnsAChildThatDies(t *testing.T) {
 
 func TestSupervisor_CallToolWorksAgainAfterACrash(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
@@ -111,7 +109,7 @@ func TestSupervisor_CallToolWorksAgainAfterACrash(t *testing.T) {
 func TestSupervisor_StopDoesNotRespawn(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 8)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
@@ -138,7 +136,7 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 3)
 
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 
 	var (
@@ -147,11 +145,11 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 	)
 	done := make(chan struct{})
 	var once sync.Once
-	m.SetHealthObserver(func(ev McpHealthEvent) {
+	m.SetHealthObserver(func(ev HealthEvent) {
 		mu.Lock()
 		states = append(states, ev.State)
 		mu.Unlock()
-		if ev.State == McpHealthAbandoned {
+		if ev.State == HealthAbandoned {
 			once.Do(func() { close(done) })
 		}
 	})
@@ -186,99 +184,17 @@ func TestSupervisor_AbandonsACrashLoopAndSaysSo(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(states) == 0 || states[0] != McpHealthDown {
-		t.Errorf("first reported state = %v, want %q first", states, McpHealthDown)
+	if len(states) == 0 || states[0] != HealthDown {
+		t.Errorf("first reported state = %v, want %q first", states, HealthDown)
 	}
 	failed := 0
 	for _, st := range states {
-		if st == McpHealthRestartFailed {
+		if st == HealthRestartFailed {
 			failed++
 		}
 	}
 	if failed != MCPRestartMaxAttempts {
 		t.Errorf("%d failed attempts reported, want %d (the budget)", failed, MCPRestartMaxAttempts)
-	}
-}
-
-func TestSupervisor_DeathAndRecoveryAreAudited(t *testing.T) {
-	bin := buildTestMcpBinary(t)
-	dir := t.TempDir()
-	rec, err := audit.NewAuditRecorder(&config.AuditConfig{}, dir+"/audit.jsonl", openAuditWriter)
-	if err != nil {
-		t.Fatalf("NewAuditRecorder: %v", err)
-	}
-	t.Cleanup(rec.Close)
-
-	m := NewExternalMcpManager(nil)
-	t.Cleanup(m.StopAll)
-
-	// Wait on the observer, not on the connection: the restart is published
-	// before its health event is reported, so watching m.conns would race the
-	// record this test is about.
-	restarted := make(chan struct{})
-	var once sync.Once
-	m.SetHealthObserver(func(ev McpHealthEvent) {
-		recordMcpSupervision(rec, ev)
-		if ev.State == McpHealthRestarted {
-			once.Do(func() { close(restarted) })
-		}
-	})
-
-	cfg := stdioMcp("mcp-audited", bin)
-	if err := m.startOne(context.Background(), &cfg); err != nil {
-		t.Fatalf("startOne: %v", err)
-	}
-	first := connOf(m, "mcp-audited")
-	if _, err := first.SendRequest(context.Background(), "exit", nil); err == nil {
-		t.Fatal("expected the in-flight call to fail when the child exits")
-	}
-	select {
-	case <-restarted:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the child was never restarted")
-	}
-	rec.Flush()
-
-	events := rec.Query(audit.AuditQuery{McpID: "mcp-audited"})
-	var down, up *audit.AuditEvent
-	for i := range events {
-		switch events[i].Event {
-		case audit.AuditEventMcpDown:
-			down = &events[i]
-		case audit.AuditEventMcpUp:
-			up = &events[i]
-		}
-	}
-	if down == nil {
-		t.Fatalf("no mcp_down record for a child that died; got %d events", len(events))
-	}
-	if up == nil {
-		t.Fatalf("no mcp_up record for a child that came back; got %d events", len(events))
-	}
-	if down.Outcome != audit.AuditOutcomeError || down.Supervision != McpHealthDown {
-		t.Errorf("mcp_down record = outcome %q supervision %q", down.Outcome, down.Supervision)
-	}
-	if down.Error == "" {
-		t.Error("mcp_down record names no cause")
-	}
-	if up.Outcome != audit.AuditOutcomeOK || up.Supervision != McpHealthRestarted {
-		t.Errorf("mcp_up record = outcome %q supervision %q", up.Outcome, up.Supervision)
-	}
-	for _, ev := range []*audit.AuditEvent{down, up} {
-		if ev.Actor.Kind != audit.AuditActorRelay {
-			t.Errorf("%s actor kind = %q, want %q", ev.Event, ev.Actor.Kind, audit.AuditActorRelay)
-		}
-		if ev.Actor.ProjectID != "" {
-			t.Errorf("%s attributes a project (%q) to a record about relay itself", ev.Event, ev.Actor.ProjectID)
-		}
-	}
-	// The operator's table has no EVENT column, so the transition must survive
-	// into the DETAIL cell or the row says nothing at all.
-	if got := auditDetail(*down); !strings.HasPrefix(got, McpHealthDown+": ") {
-		t.Errorf("mcp_down detail = %q, want it to lead with the transition", got)
-	}
-	if got := auditDetail(*up); got != McpHealthRestarted {
-		t.Errorf("mcp_up detail = %q, want %q", got, McpHealthRestarted)
 	}
 }
 
@@ -320,14 +236,14 @@ func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 	bin := buildTestMcpBinary(t)
 	shortenRestartPolicy(t, 2)
 
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
 	abandoned := make(chan struct{})
 	var once sync.Once
-	m.SetHealthObserver(func(ev McpHealthEvent) {
-		if ev.State == McpHealthAbandoned {
+	m.SetHealthObserver(func(ev HealthEvent) {
+		if ev.State == HealthAbandoned {
 			once.Do(func() { close(abandoned) })
 		}
 	})
@@ -372,7 +288,7 @@ func TestSupervisor_ReconcileRecoversAnAbandonedMcp(t *testing.T) {
 // some MCPs and not others depending on which command last touched them.
 func TestSupervisor_OutlivesTheReloadCallersContext(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 
 	cfg := stdioMcp("mcp-reloaded", bin)

@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // Must run from background goroutines only: WKWebView's evaluateJavaScript
@@ -45,16 +47,16 @@ func ipcAddExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 
 	// Off the main thread: Add spawns a stdio child or does an HTTP
 	// handshake, either of which can block for the length of
-	// MCPDiscoveryTimeout.
+	// mcpbroker.MCPDiscoveryTimeout.
 	ctx.GoFunc(func() {
 		result, err := ctx.McpOps.Add(ctx.Ctx, fields, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
-			if err != nil && !errors.Is(err, ErrAuthRequired) {
+			if err != nil && !errors.Is(err, mcpbroker.ErrAuthRequired) {
 				ctx.UI.EmitEvent("onExternalMcpError", err.Error())
 				return
 			}
 			ctx.UI.EmitEvent("onExternalMcpAdded", marshalForUI(externalMcpToNativeView(result)))
-			if errors.Is(err, ErrAuthRequired) {
+			if errors.Is(err, mcpbroker.ErrAuthRequired) {
 				ctx.UI.EmitEvent("onOAuthRequired", result.ID)
 			}
 		})

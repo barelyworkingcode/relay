@@ -7,6 +7,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // mcpView is an explicit allow-list, not ExternalMcp marshaled directly:
@@ -81,12 +82,12 @@ func RegisterMcpRoutes(rr *control.RouteRegistrar, ops *McpOps) {
 			return
 		}
 		created, err := ops.Add(r.Context(), body, auditViaHTTP, credIDOf(r))
-		if err != nil && !errors.Is(err, ErrAuthRequired) {
+		if err != nil && !errors.Is(err, mcpbroker.ErrAuthRequired) {
 			writeMcpError(w, err)
 			return
 		}
 		view := mcpViewOf(created)
-		view.AuthRequired = errors.Is(err, ErrAuthRequired)
+		view.AuthRequired = errors.Is(err, mcpbroker.ErrAuthRequired)
 		writeJSON(w, http.StatusCreated, view)
 	})
 

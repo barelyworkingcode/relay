@@ -9,6 +9,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // Every method on auditCall tolerates a nil receiver, so the router
@@ -342,7 +343,7 @@ func projectNameFor(stored *config.StoredToken, settings *config.Settings) strin
 // A failed individual restart attempt produces NO record: it is a step inside
 // an outage the mcp_down row already opened, and one line per retry would
 // bury the two lines that bound it.
-func mcpSupervisionEvent(ev McpHealthEvent) (audit.AuditEvent, bool) {
+func mcpSupervisionEvent(ev mcpbroker.HealthEvent) (audit.AuditEvent, bool) {
 	out := audit.AuditEvent{
 		ID:          audit.NewAuditID(),
 		TS:          time.Now(),
@@ -363,11 +364,11 @@ func mcpSupervisionEvent(ev McpHealthEvent) (audit.AuditEvent, bool) {
 	out.DurMs = ev.Downtime.Milliseconds()
 
 	switch ev.State {
-	case McpHealthDown:
+	case mcpbroker.HealthDown:
 		out.Event, out.Outcome = audit.AuditEventMcpDown, audit.AuditOutcomeError
-	case McpHealthRestarted:
+	case mcpbroker.HealthRestarted:
 		out.Event, out.Outcome = audit.AuditEventMcpUp, audit.AuditOutcomeOK
-	case McpHealthAbandoned:
+	case mcpbroker.HealthAbandoned:
 		out.Event, out.Outcome = audit.AuditEventMcpDown, audit.AuditOutcomeError
 	default:
 		return audit.AuditEvent{}, false
@@ -377,10 +378,13 @@ func mcpSupervisionEvent(ev McpHealthEvent) (audit.AuditEvent, bool) {
 
 // recordMcpSupervision is RecordDecision's counterpart for ADR-012 liveness
 // events. A free function rather than a method on *audit.AuditRecorder:
-// McpHealthEvent is a main-only type (external_mcp.go), and methods cannot
-// follow a type across a package boundary — the receiver would have to live
-// in whichever package McpHealthEvent does, which is this one.
-func recordMcpSupervision(r *audit.AuditRecorder, ev McpHealthEvent) {
+// methods cannot follow a type across a package boundary, and neither of the
+// two packages this joins — internal/mcpbroker, which reports the
+// transition, and internal/audit, which stores it — knows the other. The
+// vocabulary that maps one onto the other (which transition is an mcp_down,
+// who the actor is) is this file's, the same instrumentation layer
+// RecordDecision lives in.
+func recordMcpSupervision(r *audit.AuditRecorder, ev mcpbroker.HealthEvent) {
 	if !r.Enabled() {
 		return
 	}

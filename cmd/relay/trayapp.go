@@ -17,6 +17,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -35,7 +36,7 @@ type App struct {
 	wg           sync.WaitGroup
 	store        config.SettingsStore
 	platform     Platform
-	extMgr       *ExternalMcpManager
+	extMgr       *mcpbroker.Manager
 	registry     service.Manager
 	bridgeServer *bridge.BridgeServer
 	// frontendChannel provisions and, on shutdown, closes the frontend
@@ -193,7 +194,7 @@ func runTrayApp() {
 	}
 
 	// External MCP manager with injected callback for OAuth token refresh persistence.
-	extMgr := NewExternalMcpManager(
+	extMgr := mcpbroker.NewManager(
 		func(mcpID string, oauth *config.OAuthState) {
 			store.With(func(s *config.Settings) { s.UpdateOAuthState(mcpID, oauth) })
 		},
@@ -291,7 +292,7 @@ func runTrayApp() {
 	// abandonment, and this is where those reports become rows in the log an
 	// operator is told to treat as ground truth. Installed here rather than at
 	// construction because the manager is built before the recorder exists.
-	extMgr.SetHealthObserver(func(ev McpHealthEvent) { recordMcpSupervision(rec, ev) })
+	extMgr.SetHealthObserver(func(ev mcpbroker.HealthEvent) { recordMcpSupervision(rec, ev) })
 
 	// Create and start bridge server.
 	router := &appRouter{

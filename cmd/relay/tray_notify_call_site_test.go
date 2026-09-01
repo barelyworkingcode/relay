@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/dop251/goja"
 )
 
@@ -45,7 +46,7 @@ func notifierTrayApp(t *testing.T) (*App, *recordingPlatform, *enrolmentRequestT
 		platform: rp,
 		registry: &trayRegistry{},
 		store:    fixedStore{s: s},
-		extMgr:   NewExternalMcpManager(nil),
+		extMgr:   mcpbroker.NewManager(nil),
 		ipcCtx:   &IPCContext{EnrolmentOps: &EnrolmentOps{Requests: table}},
 	}
 	app.enrolNotifier = newPendingEnrolmentNotifier(clk.now, rp.Notify)
@@ -154,7 +155,7 @@ func TestUpdateMenuWithSettings_BuildsTheNotifierWhenNoneWasInstalled(t *testing
 		platform: rp,
 		registry: &trayRegistry{},
 		store:    fixedStore{s: s},
-		extMgr:   NewExternalMcpManager(nil),
+		extMgr:   mcpbroker.NewManager(nil),
 		ipcCtx:   &IPCContext{EnrolmentOps: &EnrolmentOps{Requests: table}},
 	}
 
@@ -386,7 +387,7 @@ func TestNotificationClickAndTrayLineClick_AreTheSameAct(t *testing.T) {
 		platform: rp,
 		registry: &trayRegistry{},
 		store:    fixedStore{s: &config.Settings{}},
-		extMgr:   NewExternalMcpManager(nil),
+		extMgr:   mcpbroker.NewManager(nil),
 	}
 
 	app.onMenuClick(menuIDPendingEnrolments)

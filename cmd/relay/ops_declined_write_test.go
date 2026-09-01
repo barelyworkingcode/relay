@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"os"
 	"strings"
 	"testing"
@@ -267,12 +268,12 @@ func TestStartOAuthDoesNotResurrectAnMcpRemovedMidCeremony(t *testing.T) {
 
 	var before odwSnapshot
 	ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-	ops.StartFlow = func(mcpURL string, _ func(string)) (*oauthResult, error) {
+	ops.StartFlow = func(mcpURL string, _ func(string)) (*mcpbroker.OAuthResult, error) {
 		if err := (&McpOps{Store: sealedSettingsStoreAt(dir), Gate: ops.Gate, Issuance: ops.Issuance}).Remove(context.Background(), "authy", auditViaIPC, ""); err != nil {
 			t.Errorf("concurrent remove: %v", err)
 		}
 		before = odwSnap(t, dir)
-		return &oauthResult{AccessToken: "granted"}, nil
+		return &mcpbroker.OAuthResult{AccessToken: "granted"}, nil
 	}
 
 	state, err := ops.StartOAuth(context.Background(), "authy", func(string) {}, auditViaIPC, "")

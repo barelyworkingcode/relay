@@ -26,6 +26,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // teCounters are flipped only by an ops method's success path (each Create /
@@ -66,7 +67,7 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 	auditOps := &audit.AuditOps{}
 	mcpOps := &McpOps{Store: store, Ctx: context.Background(), OnChange: func() { counters.mcpChanges++ }}
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
 
 	const token = "te-frontend-token"

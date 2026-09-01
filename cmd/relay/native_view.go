@@ -2,8 +2,6 @@ package main
 
 import "github.com/barelyworkingcode/relay/internal/config"
 
-import "fmt"
-
 // The tray's own Settings window is not the eve/HTTP boundary projectView
 // exists for (project_dto.go) — it IS relay, the token authority, and
 // legitimately shows and rotates a project's plaintext token, and lets an
@@ -115,44 +113,6 @@ func serviceConfigsToNativeView(cs []config.ServiceConfig) []nativeServiceConfig
 	out := make([]nativeServiceConfig, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, serviceConfigToNativeView(c))
-	}
-	return out
-}
-
-// revealEnvOrErr reveals every value of m, refusing if any could not be
-// opened. A spawned child must never receive fewer or different variables
-// than its record configures, so a value the sealed store cannot currently
-// open is refused outright rather than passed through empty or silently
-// dropped — the same "everything that needs a sealed value refuses"
-// principle §5.6 clause 4 names for ResolvePtyEnv and the admin ops,
-// extended to every other consumer of a sealed env value.
-func revealEnvOrErr(m map[string]config.Secret) (map[string]string, error) {
-	if m == nil {
-		return nil, nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		pt, ok := v.Reveal()
-		if !ok {
-			return nil, fmt.Errorf("env value %q could not be opened: the sealed store is unavailable", k)
-		}
-		out[k] = pt
-	}
-	return out, nil
-}
-
-// secretMapFromPlain converts an operator-typed (or freshly discovered)
-// plaintext env map into the sealed-in-memory representation used on
-// ExternalMcp.Env / ServiceConfig.Env. The values are plaintext relay
-// itself just received, not something read back off disk, so NewSecret —
-// not UnmarshalJSON's legacy path — is the right constructor (§4.3).
-func secretMapFromPlain(m map[string]string) map[string]config.Secret {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]config.Secret, len(m))
-	for k, v := range m {
-		out[k] = config.NewSecret(v)
 	}
 	return out
 }

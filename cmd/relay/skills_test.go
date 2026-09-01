@@ -472,7 +472,7 @@ func TestAppRouter_ListSkillBuckets(t *testing.T) {
 		t.Errorf("Mail slug = %q, want mail", mail.Slug)
 	}
 	if len(mail.Tools) != 1 || mail.Tools[0].Name != "mail_send" {
-		t.Errorf("disabled mail_archive should be excluded; got %v", toolNames(mail.Tools))
+		t.Errorf("disabled mail_archive should be excluded; got %v", toolNamesOf(mail.Tools))
 	}
 
 	if _, ok := byKey["mcp-b"]; !ok {

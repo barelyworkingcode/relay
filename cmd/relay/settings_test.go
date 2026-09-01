@@ -423,11 +423,11 @@ func TestSettingsClone_MapIsolation(t *testing.T) {
 		ExternalMcps: []config.ExternalMcp{{
 			ID:          "mcp-a",
 			DisplayName: "A",
-			Env:         secretMapFromPlain(map[string]string{"FOO": "bar"}),
+			Env:         config.SecretMapFromPlain(map[string]string{"FOO": "bar"}),
 		}},
 		Services: []config.ServiceConfig{{
 			ID:  "svc-a",
-			Env: secretMapFromPlain(map[string]string{"BAZ": "qux"}),
+			Env: config.SecretMapFromPlain(map[string]string{"BAZ": "qux"}),
 		}},
 	}
 
@@ -453,11 +453,11 @@ func TestSettingsClone_AllFieldsCovered(t *testing.T) {
 		Version: 1,
 		ExternalMcps: []config.ExternalMcp{{
 			ID:  "mcp1",
-			Env: secretMapFromPlain(map[string]string{"K": "V"}),
+			Env: config.SecretMapFromPlain(map[string]string{"K": "V"}),
 		}},
 		Services: []config.ServiceConfig{{
 			ID:  "svc1",
-			Env: secretMapFromPlain(map[string]string{"A": "B"}),
+			Env: config.SecretMapFromPlain(map[string]string{"A": "B"}),
 		}},
 	}
 
@@ -568,7 +568,7 @@ func TestMergeServiceDefaults(t *testing.T) {
 			ID:         "svc1",
 			Command:    "cmd",
 			Args:       []string{"--flag"},
-			Env:        secretMapFromPlain(map[string]string{"K": "V"}),
+			Env:        config.SecretMapFromPlain(map[string]string{"K": "V"}),
 			WorkingDir: "/old/dir",
 			URL:        "http://old",
 		}}
@@ -596,14 +596,14 @@ func TestMergeServiceDefaults(t *testing.T) {
 		s.Services = []config.ServiceConfig{{
 			ID:         "svc1",
 			Args:       []string{"--old"},
-			Env:        secretMapFromPlain(map[string]string{"OLD": "1"}),
+			Env:        config.SecretMapFromPlain(map[string]string{"OLD": "1"}),
 			WorkingDir: "/old",
 			URL:        "http://old",
 		}}
 		cfg := config.ServiceConfig{
 			ID:         "svc1",
 			Args:       []string{"--new"},
-			Env:        secretMapFromPlain(map[string]string{"NEW": "2"}),
+			Env:        config.SecretMapFromPlain(map[string]string{"NEW": "2"}),
 			WorkingDir: "/new",
 			URL:        "http://new",
 		}

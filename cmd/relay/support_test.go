@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 	"github.com/barelyworkingcode/relay/internal/sealed"
@@ -156,6 +158,40 @@ func applyOverride(t *testing.T, dir string) {
 	t.Cleanup(func() { bridge.SetConfigDirForTest("") })
 }
 
+var (
+	testmcpBinOnce sync.Once
+	testmcpBinPath string
+	testmcpBinErr  error
+)
+
+// buildTestMcpBinary builds the in-tree cmd/testmcp stdio peer once per run.
+// internal/mcpbroker's own tests carry an identical copy: a _test.go file's
+// symbols do not cross a package boundary, and both suites spawn the same
+// peer.
+func buildTestMcpBinary(t *testing.T) string {
+	t.Helper()
+	testmcpBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("/tmp", "testmcp-bin-")
+		if err != nil {
+			testmcpBinErr = err
+			return
+		}
+		path := filepath.Join(dir, "testmcp")
+		cmd := exec.Command("go", "build", "-o", path, "./cmd/testmcp")
+		cmd.Dir = repoRoot(t)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			testmcpBinErr = err
+			return
+		}
+		testmcpBinPath = path
+	})
+	if testmcpBinErr != nil {
+		t.Fatalf("build cmd/testmcp: %v", testmcpBinErr)
+	}
+	return testmcpBinPath
+}
+
 // mkShortTempDir creates a tempdir under /tmp (short paths) and registers
 // cleanup. Use instead of t.TempDir() whenever the dir holds a Unix
 // socket — macOS caps sun_path at 104 chars.
@@ -178,7 +214,7 @@ func newSandboxRouter(t *testing.T) (*appRouter, config.SettingsStore) {
 	}
 	router := &appRouter{
 		store:    store,
-		tools:    NewExternalMcpManager(nil),
+		tools:    mcpbroker.NewManager(nil),
 		services: &fakeServiceReloader{},
 		enhanced: NewEnhancedServiceRegistry(nil),
 	}
@@ -215,7 +251,7 @@ func newBrokerRouter(t *testing.T, store config.SettingsStore, mutate func(*appR
 	issuance := issuanceAuditorOrNil(audit)
 	r := &appRouter{
 		store:         store,
-		tools:         NewExternalMcpManager(nil),
+		tools:         mcpbroker.NewManager(nil),
 		services:      noopServiceManager{},
 		enhanced:      NewEnhancedServiceRegistry(nil),
 		onChange:      func() {},
@@ -599,3 +635,5 @@ func (f *fakeServiceServer) handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.status)
 	_, _ = w.Write(resp.body)
 }
+
+func ptr[T any](v T) *T { return &v }

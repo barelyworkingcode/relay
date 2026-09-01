@@ -69,7 +69,7 @@ type ContextEnumResult struct {
 
 func (r ContextEnumResult) OK() bool { return r.Status == EnumStatusOK }
 
-// ContextEnumerator is implemented by *ExternalMcpManager; taken as an
+// ContextEnumerator is implemented by *mcpbroker.Manager; taken as an
 // interface so a test can supply an MCP that answers -32601, one that
 // answers -32602, and one whose transport is dead, without spawning three
 // processes.

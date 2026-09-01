@@ -12,6 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -138,7 +139,7 @@ func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
 
 func TestResolveAuth_CwdFallback(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), NewExternalMcpManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), filepath.Join(dir, "nested"))
 	stored, settings, err := r.resolveAuth(ctx, "")
@@ -155,7 +156,7 @@ func TestResolveAuth_CwdFallback(t *testing.T) {
 
 func TestResolveAuth_CwdFallbackDeniedWithoutOptIn(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, false), NewExternalMcpManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir, false), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	_, _, err := r.resolveAuth(ctx, "")
@@ -170,7 +171,7 @@ func TestResolveAuth_CwdFallbackDeniedWithoutOptIn(t *testing.T) {
 
 func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), NewExternalMcpManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	if _, _, err := r.resolveAuth(ctx, "not-the-right-token"); err == nil {
@@ -180,7 +181,7 @@ func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 
 func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), NewExternalMcpManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	if _, err := r.ResolvePtyEnv(ctx, bridge.PtyEnvRequest{ProjectID: "test-project"}, ""); err == nil {

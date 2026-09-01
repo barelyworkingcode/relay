@@ -62,7 +62,7 @@ func TestSettingsNormalizeIsIdempotentAndDestroysNothing(t *testing.T) {
 		return &Settings{
 			ExternalMcps: []ExternalMcp{
 				{ID: "empty", Args: []string{}, Env: map[string]Secret{}},
-				{ID: "full", Args: []string{"--root", "/tmp"}, Env: secretMapFromPlain(map[string]string{"K": "V"})},
+				{ID: "full", Args: []string{"--root", "/tmp"}, Env: SecretMapFromPlain(map[string]string{"K": "V"})},
 			},
 			Services: []ServiceConfig{{ID: "svc", Args: []string{"serve"}}},
 			Projects: []Project{{ID: "p", AllowedMcpIDs: []string{"empty"}, AllowedModels: []string{}}},

@@ -13,6 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -123,7 +124,7 @@ func collisionScopes() map[string]json.RawMessage {
 // audit log; pass nil for no auditing.
 //
 // It does not go through newTestRouter because that helper takes a concrete
-// *ExternalMcpManager and this needs an injected ToolManager.
+// *mcpbroker.Manager and this needs an injected ToolManager.
 func newCollisionRouter(t *testing.T, rec *audit.AuditRecorder, dir string, order, allowedMcpIDs []string, disabled map[string][]string) (*appRouter, *collidingProvider) {
 	t.Helper()
 	tp := newCollidingProvider(order, collisionTools())
@@ -550,7 +551,7 @@ func (c *collisionCounter) count() int {
 func newRealManagerCollisionRouter(t *testing.T, allowedMcpIDs []string) (*appRouter, *collisionCounter, *collisionCounter) {
 	t.Helper()
 	a, b := &collisionCounter{}, &collisionCounter{}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, collisionMcpA, newMockConn(collisionMcpA, simpleTools(collidingTool), a.handler(collisionMcpA)))
 	addMockConn(mgr, collisionMcpB, newMockConn(collisionMcpB, simpleTools(collidingTool), b.handler(collisionMcpB)))
 

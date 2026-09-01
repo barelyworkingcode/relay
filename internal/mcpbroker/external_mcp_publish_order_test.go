@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package mcpbroker
 
 // Subtle: project.ParseContextSchema(nil, 0) is not a narrow schema, it is no
 // schema — checkScopePresence finds no field to require and passes every
@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // Deliberate: a respawn onto a known id replaces the schema, not merges with
@@ -20,12 +22,12 @@ import (
 // declaring a schema must not leave relay enforcing its predecessor's.
 func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
 	declaring := stdioMcp("mcp-schema", bin)
-	declaring.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
+	declaring.Env = config.SecretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 	if err := m.startOne(ctx, &declaring); err != nil {
 		t.Fatalf("startOne (declaring): %v", err)
 	}
@@ -49,7 +51,7 @@ func TestPublishOrder_SchemaTracksTheLiveConnection(t *testing.T) {
 // declaration that governs it.
 func TestPublishOrder_NoConnectionIsReachableBeforeItsSchema(t *testing.T) {
 	bin := buildTestMcpBinary(t)
-	m := NewExternalMcpManager(nil)
+	m := NewManager(nil)
 	t.Cleanup(m.StopAll)
 	ctx := context.Background()
 
@@ -57,7 +59,7 @@ func TestPublishOrder_NoConnectionIsReachableBeforeItsSchema(t *testing.T) {
 	for i := 0; i < starts; i++ {
 		id := fmt.Sprintf("mcp-order-%d", i)
 		cfg := stdioMcp(id, bin)
-		cfg.Env = secretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
+		cfg.Env = config.SecretMapFromPlain(map[string]string{"RELAY_TESTMCP_CONTEXT": "v2"})
 
 		stop := make(chan struct{})
 		bad := make(chan string, 1)

@@ -28,6 +28,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 type ceFakeAuthorizer struct {
@@ -344,7 +345,7 @@ func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
 	assertNoErr(t, registry.RegisterManifest(fake.ServiceID(), fake.Socket(), fake.Token(), fake.Manifest()), "register manifest")
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
-	extMgr := NewExternalMcpManager(nil)
+	extMgr := mcpbroker.NewManager(nil)
 	dir := mkShortTempDir(t, "ce-eve-")
 	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	srv, err := NewFrontendServer(

@@ -10,6 +10,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
@@ -81,7 +82,7 @@ func newProfileRouter(t *testing.T, o profileOpts) *appRouter {
 		Enrolments:   o.enrolments,
 		AdminSecret:  config.NewSecret("supersecretadmin"),
 	}
-	mgr := NewExternalMcpManager(nil)
+	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "macmcp", newMockConn("macmcp", tools,
 		okHandler(`{"content":[{"type":"text","text":"ok"}]}`)))
 	if o.schema != "" {
