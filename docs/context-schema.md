@@ -133,18 +133,47 @@ injected verbatim, so nothing is dropped there and nothing is refused.
 
 ### `scope: "restrict"` means fail closed
 
-A restrict field that is missing from `_meta`, or present and empty, means the
-server **refuses every call it governs**. Not "falls back to a default", not
-"no restriction". `[]`, `null`, `""` and `{}` are all absent.
+A restrict field that is **missing** from `_meta` means the server **refuses
+every call it governs**. Not "falls back to a default", not "no restriction".
+`null` and `""` are absent too — there is no way to distinguish them from a
+genuinely missing key, and both refuse exactly as missing does.
 
 There is deliberately no keyword letting an MCP declare otherwise. A field that
 says it restricts and then defaults open is not a restriction, and relay could
 never verify the claim either way.
 
-There is also no wildcard. "No restriction" is not expressible as emptiness and
-is not expressible at all — it is spelled by enumerating, or by not granting
-the MCP. An operator who wants every account lists every account, and an
-account added later does not silently join the grant.
+An array-typed field's value can be exactly one of two special shapes instead
+of an ordinary list of names, each meaning something and neither expressible
+by omitting the field (ADR-011 addendum, "A star and an empty array" —
+resource-scope fields only; `allowed_tools`, `allowed_mcp_ids` and
+`allowed_models` have their own, separate wildcard rules):
+
+- **`[]`, present and explicit** — the confirmed-empty grant. Distinct from
+  the field being absent: an operator (or a client editor acting on their
+  behalf) looked at the field's real values — possibly zero of them — and
+  said so. A well-behaved MCP resolves this to "the confined set is empty",
+  which for a read is an ordinary, successful empty result and for a write is
+  an ordinary "nothing in scope to act on", never a refusal. Relay's own
+  call-time gate (`checkScopePresence`) treats it as present, not missing —
+  denying it there would mean the MCP's own correct handling of it is never
+  reached.
+- **`["*"]`, and only as the array's sole element** — the wildcard: every
+  value this field could ever name, resolved fresh by the enforcing MCP on
+  every call, never a value relay resolves or snapshots itself. Mixed with a
+  named value (`["*", "Bob"]`) it is not recognised as the wildcard at all and
+  is refused at save time, because a mixed array cannot be reviewed as
+  "everything". A stored `"*"` is disclosed to the client exactly as an
+  unrestricted `file_dirs` entry (`/`) already is — loudly, on every surface,
+  regardless of `disclose` — because it is not really a confinement and
+  hiding that would defeat the one thing `disclose` is supposed to protect
+  against.
+
+Anything else empty-shaped — `{}`, an array containing only empty strings —
+is still refused exactly as before. And the underlying caution stands: an
+operator who wants every account named individually still lists every
+account individually: `"*"` and enumerating are two different, deliberate
+choices with two different disclosure profiles, not two spellings of one
+thing.
 
 ### `source` decides who fills it in
 

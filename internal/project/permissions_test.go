@@ -50,13 +50,30 @@ func TestValidatePermissions_RefusesWrongType(t *testing.T) {
 
 func TestValidatePermissions_RefusesEmptyRestrictValue(t *testing.T) {
 	for _, blob := range []string{
-		`{"mail_accounts":[]}`,
 		`{"mail_accounts":null}`,
 		`{"mail_accounts":[""]}`,
 		`{"mail_accounts":["  "]}`,
+		`{"mail_accounts":["*","Bob"]}`,
 	} {
 		proj := profileWithContext("macmcp", blob)
 		wantRefusal(t, validateProjectPermissions(proj, v2Surfaces()), "mail_accounts")
+	}
+}
+
+// TestValidatePermissions_AcceptsAConfirmedEmptyOrWildcardValue pins the
+// ADR-011 addendum ("A star and an empty array"): an explicit `[]` is no
+// longer refused at save time -- it is the confirmed-empty grant, distinct
+// from the field being absent entirely -- and `["*"]` is an ordinary
+// non-empty string as far as relay's own validation is concerned.
+func TestValidatePermissions_AcceptsAConfirmedEmptyOrWildcardValue(t *testing.T) {
+	for _, blob := range []string{
+		`{"mail_accounts":[]}`,
+		`{"mail_accounts":["*"]}`,
+	} {
+		proj := profileWithContext("macmcp", blob)
+		if err := validateProjectPermissions(proj, v2Surfaces()); err != nil {
+			t.Errorf("%s: expected no refusal, got: %v", blob, err)
+		}
 	}
 }
 

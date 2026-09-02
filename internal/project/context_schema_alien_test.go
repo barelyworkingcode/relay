@@ -68,8 +68,18 @@ func TestParseContextSchema_AnAlienMcpNeedsNoMailKnowledge(t *testing.T) {
 	if err := f.ValidateValue(json.RawMessage(`["prod-logs"]`)); err != nil {
 		t.Errorf("a conformant value was refused: %v", err)
 	}
-	if err := f.ValidateValue(json.RawMessage(`[]`)); err == nil {
-		t.Error("an empty value must be refused: emptiness is never how to say \"no restriction\"")
+	// An explicit empty array is the confirmed-empty grant, not refused
+	// (ADR-011 addendum, "A star and an empty array") -- relay validates
+	// this identically for every MCP's schema, mail-specific or not, which
+	// is the whole point of this fixture.
+	if err := f.ValidateValue(json.RawMessage(`[]`)); err != nil {
+		t.Errorf("an explicit empty array should be accepted as confirmed-empty: %v", err)
+	}
+	if err := f.ValidateValue(json.RawMessage(`["*"]`)); err != nil {
+		t.Errorf("the wildcard should be accepted like any other non-empty string: %v", err)
+	}
+	if err := f.ValidateValue(json.RawMessage(`["*","prod-logs"]`)); err == nil {
+		t.Error("\"*\" mixed with a named value must be refused")
 	}
 	if err := f.ValidateValue(json.RawMessage(`42`)); err == nil {
 		t.Error("a value of the wrong type must be refused")
