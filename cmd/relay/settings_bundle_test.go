@@ -305,6 +305,156 @@ func TestProjectFormDirectoryAuth(t *testing.T) {
 	}
 }
 
+// TestProjectFormMounts_RenderAddEditRemove covers the mounts editor for a
+// new access-profile form: absent for a local project (the section is gated
+// the opposite way path is — remote-only, not local-only), addProjMount
+// seeds a blank read-access row, the id/path fields and the access buttons
+// wire back into state.projectForm.mounts the same way MCP toggles wire into
+// allowed_mcp_ids, and removeProjMount drops a row by index.
+func TestProjectFormMounts_RenderAddEditRemove(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.newProject();
+		window.setProjKind('local');
+		var localHtml = window.renderProjectForm();
+
+		window.newProject();
+		window.setProjKind('remote');
+		var emptyHtml = window.renderProjectForm();
+
+		window.addProjMount();
+		window.state.projectForm.mounts[0].id = 'src';
+		window.state.projectForm.mounts[0].path = '/tmp/fixture/root';
+		window.setProjMountAccess(0, 'write');
+		var oneHtml = window.renderProjectForm();
+		var onePayload = window.harvestProjectForm();
+
+		window.addProjMount();
+		window.removeProjMount(1);
+
+		return JSON.stringify({
+			localHasNoSection: localHtml.indexOf('proj-section-title">Mounts') < 0,
+			emptyShowsNoMountsYet: emptyHtml.indexOf('No mounts yet') >= 0,
+			oneShowsId: oneHtml.indexOf('value="src"') >= 0,
+			oneShowsPath: oneHtml.indexOf('value="/tmp/fixture/root"') >= 0,
+			payloadHasOne: onePayload.mounts.length === 1,
+			payloadId: onePayload.mounts[0].id === 'src',
+			payloadPath: onePayload.mounts[0].path === '/tmp/fixture/root',
+			payloadAccess: onePayload.mounts[0].access === 'write',
+			afterRemove: window.state.projectForm.mounts.length === 1
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"localHasNoSection":true`, `"emptyShowsNoMountsYet":true`,
+		`"oneShowsId":true`, `"oneShowsPath":true`,
+		`"payloadHasOne":true`, `"payloadId":true`, `"payloadPath":true`, `"payloadAccess":true`,
+		`"afterRemove":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mounts editor: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestProjectFormMounts_HarvestDropsBlankRowsAndForcesEmptyOnLocal is the
+// regression pair for two ways this could leak or annoy: an Add-mount click
+// nobody filled in must not reach the server as an id-less/path-less row
+// (the same drop-incomplete-input convenience harvestProjectPermissions
+// already applies), and a stray mounts row surviving onto a local-kind
+// payload must never be sent — ValidateMounts refuses it server-side, but
+// the client should not round-trip an error a local project can never fix
+// through this form (it has no Mounts section to clear it from).
+func TestProjectFormMounts_HarvestDropsBlankRowsAndForcesEmptyOnLocal(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.newProject();
+		window.setProjKind('remote');
+		window.addProjMount();               // never filled in
+		window.addProjMount();
+		window.state.projectForm.mounts[1].id = 'src';
+		window.state.projectForm.mounts[1].path = '/tmp/fixture/root';
+		var remotePayload = window.harvestProjectForm();
+
+		window.newProject();                 // stays local (the default)
+		window.state.projectForm.mounts.push({id: 'leaked', path: '/tmp/x', access: 'write'});
+		var localPayload = window.harvestProjectForm();
+
+		return JSON.stringify({
+			blankDropped: remotePayload.mounts.length === 1 && remotePayload.mounts[0].id === 'src',
+			localForcedEmpty: Array.isArray(localPayload.mounts) && localPayload.mounts.length === 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"blankDropped":true`, `"localForcedEmpty":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mounts harvest: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestProjectFormMounts_ExistingProjectRoundTrips confirms editProject seeds
+// the form from a stored project's mounts (projectFormFromExisting) and the
+// unmodified form harvests back to the same shape — the read half of the
+// same door the create/add tests exercise the write half of.
+func TestProjectFormMounts_ExistingProjectRoundTrips(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.projects = [{id:'p1', name:'Files', kind:'remote', path:'',
+			allowed_mcp_ids:[], allowed_models:[], disabled_tools:{},
+			mounts:[{id:'src', path:'/tmp/fixture/root', access:'write'}]}];
+		window.editProject('p1');
+		var html = window.renderProjectForm();
+		var payload = window.harvestProjectForm();
+		return JSON.stringify({
+			formSeeded: window.state.projectForm.mounts.length === 1 && window.state.projectForm.mounts[0].id === 'src',
+			shown: html.indexOf('value="src"') >= 0 && html.indexOf('value="/tmp/fixture/root"') >= 0,
+			roundTrips: payload.mounts.length === 1 && payload.mounts[0].id === 'src' &&
+				payload.mounts[0].path === '/tmp/fixture/root' && payload.mounts[0].access === 'write'
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"formSeeded":true`, `"shown":true`, `"roundTrips":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mounts round trip: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestConfirmBroadScope_WarnsOnAWholeHomeDirectoryMount extends AC-... (the
+// broad-scope confirmation) to mount paths: a mount reaching a whole home
+// directory must surface the same "broader than a folder" prompt a context
+// value does, naming the mount by id, not silently save.
+func TestConfirmBroadScope_WarnsOnAWholeHomeDirectoryMount(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		var seen = null;
+		window.confirm = function(msg) { seen = msg; return true; };
+		var narrow = window.confirmBroadScope({mounts: [{id: 'src', path: '/tmp/fixture/root'}]});
+		var broadMsg = null;
+		window.confirm = function(msg) { broadMsg = msg; return true; };
+		var broad = window.confirmBroadScope({mounts: [{id: 'home', path: '/Users/admin'}]});
+		return JSON.stringify({
+			narrowSkipsPrompt: narrow === true && seen === null,
+			broadPrompts: broad === true && broadMsg !== null && broadMsg.indexOf('mount home') >= 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"narrowSkipsPrompt":true`, `"broadPrompts":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("confirmBroadScope mounts: missing %s in %s", want, got)
+		}
+	}
+}
+
 // TestStatusPollPreservesConfigRegion is the regression test for the focus-clobber
 // bug: a steady-state status poll (same set of services) must update ONLY a
 // service's #svc-status-<id> region and leave #svc-config-<id> — where an open

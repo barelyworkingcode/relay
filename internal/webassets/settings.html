@@ -1793,6 +1793,13 @@ window.__RELAY_INIT__ = {
       // and a local agent already has one.
       allow_external: {},
       // mcpID -> true | false
+      // The mount-plane grant (remote/access-profile only): each row is
+      // { id, path, access }. Unlike allowed_tools/context, id and path are
+      // live-bound straight into this array on blur (onchange), not
+      // deferred through a _xxxText sibling — a mount row's own two fields
+      // have no picker and no per-key structure to reconcile, so there is
+      // nothing captureProjectFormInputs needs to do for them.
+      mounts: [],
       // Raw text as typed, so a half-finished value survives a re-render and
       // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
       _scopeText: {},
@@ -1823,6 +1830,7 @@ window.__RELAY_INIT__ = {
       allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
       context: JSON.parse(JSON.stringify(p.context || {})),
       allow_external: JSON.parse(JSON.stringify(p.allow_external || {})),
+      mounts: JSON.parse(JSON.stringify(p.mounts || [])),
       _scopeText: {},
       _toolsText: {},
       token: p.token || ""
@@ -1991,6 +1999,24 @@ window.__RELAY_INIT__ = {
       delete (f._scopeText || {})[mcpID];
       delete (f._toolsText || {})[mcpID];
     }
+    render();
+  }
+  function addProjMount() {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mounts.push({ id: "", path: "", access: "read" });
+    render();
+  }
+  function removeProjMount(index) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts.splice(index, 1);
+    render();
+  }
+  function setProjMountAccess(index, access) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts[index].access = access;
     render();
   }
   function scopeTextFromValue(field, v) {
@@ -2434,6 +2460,32 @@ window.__RELAY_INIT__ = {
       }
     }
     html += "</div>";
+    if (isRemote) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Mounts</div>';
+      html += `<p class="proj-section-help">Exposes a host directory to this client as a real POSIX filesystem mount (relayfs), instead of through an MCP's curated tool surface. Each mount needs an id unique on this profile (what the client names in its attach request), an absolute host path, and read or write.</p>`;
+      if (f.mounts.length === 0) {
+        html += '<div class="proj-tool-empty">No mounts yet.</div>';
+      }
+      for (let i = 0; i < f.mounts.length; i++) {
+        const m = f.mounts[i];
+        const breadth = scopeBreadthPhrase(scopeEntryBreadth(m.path || ""));
+        html += '<div class="proj-mcp-row" style="align-items:flex-start;flex-wrap:wrap;gap:8px">';
+        html += '<div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:220px">';
+        html += '<input type="text" id="projMountId_' + i + '" value="' + esc(m.id || "") + '" placeholder="mount id, e.g. src" onchange="state.projectForm.mounts[' + i + '].id = this.value" />';
+        html += '<input type="text" id="projMountPath_' + i + '" value="' + esc(m.path || "") + '" placeholder="/absolute/host/path" onchange="state.projectForm.mounts[' + i + '].path = this.value" />';
+        if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + "</span>";
+        html += "</div>";
+        html += '<div class="perm-btns">';
+        html += '<button class="perm-btn ' + (m.access !== "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'read')">Read</button>`;
+        html += '<button class="perm-btn ' + (m.access === "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'write')">Write</button>`;
+        html += "</div>";
+        html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+        html += "</div>";
+      }
+      html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
+      html += "</div>";
+    }
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
     if (isRemote) {
@@ -2623,7 +2675,15 @@ window.__RELAY_INIT__ = {
       // force them off for remote regardless of stale form state.
       generate_skill: isRemote ? false : f.generate_skill,
       allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
-      disabled_tools: f.disabled_tools
+      disabled_tools: f.disabled_tools,
+      // Local-project mounts must not be sent even if a stray row survived
+      // a kind switch on a still-open new-project form — ValidateMounts
+      // refuses non-empty mounts on kind:local, and this is the harvest
+      // that has to make that unreachable rather than an error to hit.
+      // Blank rows (Add clicked, never filled in) are dropped rather than
+      // sent — a convenience, same as everywhere else in this function;
+      // the server is still what actually validates a filled-in row.
+      mounts: isRemote ? f.mounts.filter((m) => (m.id || "").trim() && (m.path || "").trim()).map((m) => ({ id: m.id.trim(), path: m.path.trim(), access: m.access === "write" ? "write" : "read" })) : []
     };
     if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     const perms = harvestProjectPermissions(f);
@@ -2720,6 +2780,11 @@ window.__RELAY_INIT__ = {
         const phrase = scopeBreadthPhrase(scopeValueBreadth(values[field]));
         if (phrase) findings.push(mcpID + " \xB7 " + field + " is " + phrase);
       }
+    }
+    const mounts = payload && payload.mounts || [];
+    for (const m of mounts) {
+      const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ""));
+      if (phrase) findings.push("mount " + m.id + " is " + phrase);
     }
     if (!findings.length) return true;
     return confirm(
@@ -4639,6 +4704,9 @@ That browser's credential stops authenticating on its next request and it has to
     toggleProjScopeValueAt,
     toggleScopeFieldPicker,
     unrecognisedScopeValues,
+    addProjMount,
+    removeProjMount,
+    setProjMountAccess,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,
