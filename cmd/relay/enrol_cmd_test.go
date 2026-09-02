@@ -52,6 +52,25 @@ func TestParseEnrolUpdateFlags_OnlyTheNamedBudgetFlagIsSet(t *testing.T) {
 	}
 }
 
+// The mount-plane counterpart of TestParseEnrolUpdateFlags_OnlyTheNamedBudgetFlagIsSet:
+// passing only --mount-max-ops sets that one pointer and leaves every other
+// budget pointer (including the other two mount ones) nil, and — critically
+// — does not trip the "nothing to update" refusal, which only fires when
+// fs.Visit sees no flag named at all.
+func TestParseEnrolUpdateFlags_OnlyTheNamedMountBudgetFlagIsSet(t *testing.T) {
+	req := parseEnrolUpdateFlags([]string{"--client-id", "hermes-mail", "--mount-max-ops", "42"})
+
+	if req.Budget.MountMaxOps == nil || *req.Budget.MountMaxOps != 42 {
+		t.Fatalf("Budget.MountMaxOps = %v, want a pointer to 42", req.Budget.MountMaxOps)
+	}
+	if req.Budget.WindowSeconds != nil || req.Budget.MaxCalls != nil || req.Budget.MaxResultBytes != nil {
+		t.Fatalf("a tool-plane budget field was set: %+v", req.Budget)
+	}
+	if req.Budget.MountMaxReadBytes != nil || req.Budget.MountMaxWriteBytes != nil {
+		t.Fatalf("an unnamed mount budget field was set: %+v", req.Budget)
+	}
+}
+
 func TestParseEnrolUpdateFlags_GrantAndClearGrants(t *testing.T) {
 	req := parseEnrolUpdateFlags([]string{"--client-id", "hermes-mail", "--grant", "cal-project"})
 	if req.ProjectIDs == nil || !slices.Equal(*req.ProjectIDs, []string{"cal-project"}) {

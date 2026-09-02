@@ -437,6 +437,40 @@ func TestUpdateEnrolment_ExplicitZeroResetsToDefault(t *testing.T) {
 	}
 }
 
+// The mount-plane counterpart of TestUpdateEnrolment_ChangesOnlyNamedField:
+// a BudgetUpdate naming only MountMaxOps must leave the five other budget
+// fields — the three tool-plane ones and the two remaining mount ones —
+// untouched, exactly as an update naming only one tool-plane field does.
+func TestUpdateEnrolment_MountMaxOpsOnlyUpdateLeavesOtherFieldsAlone(t *testing.T) {
+	_, store := newEnrolmentSandbox(t)
+	_, err := Create(store, Request{
+		ClientID: "hermes-mail",
+		Budget: config.EnrolmentBudget{
+			WindowSeconds: 7200, MaxCalls: 999, MaxResultBytes: 999 << 20,
+			MountMaxOps: 111, MountMaxReadBytes: 222, MountMaxWriteBytes: 333,
+		},
+	})
+	assertNoErr(t, err, "Create")
+
+	newMountMaxOps := 55555
+	before, after, err := Update(store, UpdateRequest{
+		ClientID: "hermes-mail",
+		Budget:   BudgetUpdate{MountMaxOps: &newMountMaxOps},
+	})
+	assertNoErr(t, err, "Update")
+
+	if after.Budget.MountMaxOps != newMountMaxOps {
+		t.Fatalf("the named field did not change: got %d, want %d", after.Budget.MountMaxOps, newMountMaxOps)
+	}
+	if after.Budget.WindowSeconds != before.Budget.WindowSeconds ||
+		after.Budget.MaxCalls != before.Budget.MaxCalls ||
+		after.Budget.MaxResultBytes != before.Budget.MaxResultBytes ||
+		after.Budget.MountMaxReadBytes != before.Budget.MountMaxReadBytes ||
+		after.Budget.MountMaxWriteBytes != before.Budget.MountMaxWriteBytes {
+		t.Fatalf("a field that was not named changed anyway: before=%+v after=%+v", before.Budget, after.Budget)
+	}
+}
+
 // An unknown client id is refused, not silently ignored.
 func TestUpdateEnrolment_RefusesUnknownClientID(t *testing.T) {
 	_, store := newEnrolmentSandbox(t)
