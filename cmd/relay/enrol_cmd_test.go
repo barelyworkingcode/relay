@@ -114,7 +114,7 @@ func TestParseEnrolSignFlags_MapsFlagsAndDefaultsBudget(t *testing.T) {
 	if !slices.Equal(got.ProjectIDs, []string{"proj-a", "proj-b"}) {
 		t.Fatalf("ProjectIDs = %v, want [proj-a proj-b] in the order given", got.ProjectIDs)
 	}
-	want := config.EnrolmentBudget{WindowSeconds: enrolment.DefaultWindowSeconds, MaxCalls: enrolment.DefaultMaxCalls, MaxResultBytes: enrolment.DefaultMaxResultBytes}
+	want := config.EnrolmentBudget{WindowSeconds: enrolment.DefaultWindowSeconds, MaxCalls: enrolment.DefaultMaxCalls, MaxResultBytes: enrolment.DefaultMaxResultBytes, MountMaxOps: enrolment.DefaultMountMaxOps, MountMaxReadBytes: enrolment.DefaultMountMaxReadBytes, MountMaxWriteBytes: enrolment.DefaultMountMaxWriteBytes}
 	if got.Budget != want {
 		t.Fatalf("Budget = %+v, want the defaults %+v", got.Budget, want)
 	}
@@ -137,7 +137,7 @@ func TestParseEnrolSignFlags_BudgetFlagsAndOutDir(t *testing.T) {
 		"--out", "/tmp/somewhere",
 	})
 	assertNoErr(t, err, "parseEnrolSignFlags")
-	want := config.EnrolmentBudget{WindowSeconds: 1800, MaxCalls: 5, MaxResultBytes: 1024}
+	want := config.EnrolmentBudget{WindowSeconds: 1800, MaxCalls: 5, MaxResultBytes: 1024, MountMaxOps: enrolment.DefaultMountMaxOps, MountMaxReadBytes: enrolment.DefaultMountMaxReadBytes, MountMaxWriteBytes: enrolment.DefaultMountMaxWriteBytes}
 	if got.Budget != want {
 		t.Fatalf("Budget = %+v, want %+v", got.Budget, want)
 	}

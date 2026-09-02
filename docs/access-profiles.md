@@ -89,6 +89,41 @@ between two servers, not between a server and an absence.
 
 ---
 
+## Mount grants: a host directory as a real mount
+
+Besides the MCP allowlists, a `kind: remote` profile can carry a `mounts`
+array: host directories exposed to the remote client as a real filesystem
+mount, not as fsMCP tool calls. Each entry has three fields:
+
+- **`id`** — a short name the client selects when attaching; unique within the
+  profile.
+- **`path`** — absolute, must exist, must not be a symlink, and must not be a
+  filesystem root. A whole home directory is allowed, but it is called out
+  loudly everywhere a scope is shown — the same treatment an over-broad
+  `context` value already gets.
+- **`access`** — `"read"` or `"write"`; absent means read.
+
+There is no command to add or edit a mount yet: write the `mounts` array into
+the profile's `settings.json` by hand. What is in place already is the
+display and the budget.
+
+**`relay grant` shows every mount beneath the profile's MCP rows** —
+`mount <id> access=<mode> path=<path>` — with the same breadth-warning
+footnote a wide `context` value gets, so a mount of `/` or a home directory is
+visible the same second it would be through the MCP path. A profile with
+mounts and no MCPs at all is a real shape, and `relay grant` prints its mount
+rows instead of "reaches nothing".
+
+**The enrolment's budget now caps the mount plane separately from tool
+calls.** `relay enrol create|sign|approve|update` takes
+`--mount-max-ops`, `--mount-max-read-bytes` and `--mount-max-write-bytes`
+alongside the tool-call budget, and `relay enrol list` shows all three
+numbers per enrolment. Keeping the two budgets apart is the point: a chatty
+mount cannot starve the profile's tool calls, and a busy agent cannot starve
+its own files.
+
+---
+
 ## Creating a confined client
 
 ### 1. Create the profile

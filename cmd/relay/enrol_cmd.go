@@ -38,13 +38,17 @@ func runEnrolCommand(args []string) {
 }
 
 // enrolGrantBudgetFlags is the --grant/--window-seconds/--max-calls/
-// --max-result-bytes flag set `enrol create` and `enrol sign` share:
+// --max-result-bytes/--mount-max-ops/--mount-max-read-bytes/--mount-max-write-bytes
+// flag set `enrol create` and `enrol sign` share:
 // identical flags, identical defaults, identical help text.
 type enrolGrantBudgetFlags struct {
-	grants         stringSlice
-	windowSeconds  *int
-	maxCalls       *int
-	maxResultBytes *int64
+	grants             stringSlice
+	windowSeconds      *int
+	maxCalls           *int
+	maxResultBytes     *int64
+	mountMaxOps        *int
+	mountMaxReadBytes  *int64
+	mountMaxWriteBytes *int64
 }
 
 func addEnrolGrantBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
@@ -53,14 +57,20 @@ func addEnrolGrantBudgetFlags(fs *flag.FlagSet) *enrolGrantBudgetFlags {
 	f.windowSeconds = fs.Int("window-seconds", enrolment.DefaultWindowSeconds, "budget window in seconds")
 	f.maxCalls = fs.Int("max-calls", enrolment.DefaultMaxCalls, "max tool calls per window")
 	f.maxResultBytes = fs.Int64("max-result-bytes", enrolment.DefaultMaxResultBytes, "max cumulative result bytes per window")
+	f.mountMaxOps = fs.Int("mount-max-ops", enrolment.DefaultMountMaxOps, "max mount-plane 9P operations per window")
+	f.mountMaxReadBytes = fs.Int64("mount-max-read-bytes", enrolment.DefaultMountMaxReadBytes, "max mount-plane bytes read per window")
+	f.mountMaxWriteBytes = fs.Int64("mount-max-write-bytes", enrolment.DefaultMountMaxWriteBytes, "max mount-plane bytes written per window")
 	return f
 }
 
 func (f *enrolGrantBudgetFlags) budget() config.EnrolmentBudget {
 	return config.EnrolmentBudget{
-		WindowSeconds:  *f.windowSeconds,
-		MaxCalls:       *f.maxCalls,
-		MaxResultBytes: *f.maxResultBytes,
+		WindowSeconds:      *f.windowSeconds,
+		MaxCalls:           *f.maxCalls,
+		MaxResultBytes:     *f.maxResultBytes,
+		MountMaxOps:        *f.mountMaxOps,
+		MountMaxReadBytes:  *f.mountMaxReadBytes,
+		MountMaxWriteBytes: *f.mountMaxWriteBytes,
 	}
 }
 
@@ -266,16 +276,17 @@ func enrolList(store config.SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tCREATED\tFINGERPRINT")
+	fmt.Fprintln(w, "CLIENT ID\tPROFILES\tCLI-ADMIN\tCALLS/WINDOW\tBYTES/WINDOW\tMOUNT-OPS/WINDOW\tMOUNT-READ/WINDOW\tMOUNT-WRITE/WINDOW\tCREATED\tFINGERPRINT")
 	for _, e := range s.Enrolments {
 		// Printed in full, and last, so all 64 hex characters cost nothing
 		// in readability: a revoked client's audit history stays legible
 		// after its enrolment is gone, and a listing that shortened it
 		// would be the obvious place for someone to copy the short form
 		// from.
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%ds\t%d\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%ds\t%d\t%d\t%d\t%d\t%s\t%s\n",
 			e.ClientID, formatGrants(e.ProjectIDs), formatCLIAdmin(e.CLIAdmin),
 			e.Budget.MaxCalls, e.Budget.WindowSeconds, e.Budget.MaxResultBytes,
+			e.Budget.MountMaxOps, e.Budget.MountMaxReadBytes, e.Budget.MountMaxWriteBytes,
 			e.CreatedAt, e.Fingerprint)
 	}
 	w.Flush()
@@ -308,6 +319,9 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 	windowSeconds := fs.Int("window-seconds", 0, "new budget window in seconds (0 resets to the default; omit to leave unchanged)")
 	maxCalls := fs.Int("max-calls", 0, "new max tool calls per window (0 resets to the default; omit to leave unchanged)")
 	maxResultBytes := fs.Int64("max-result-bytes", 0, "new max cumulative result bytes per window (0 resets to the default; omit to leave unchanged)")
+	mountMaxOps := fs.Int("mount-max-ops", 0, "new max mount-plane operations per window (0 resets to the default; omit to leave unchanged)")
+	mountMaxReadBytes := fs.Int64("mount-max-read-bytes", 0, "new max mount-plane bytes read per window (0 resets to the default; omit to leave unchanged)")
+	mountMaxWriteBytes := fs.Int64("mount-max-write-bytes", 0, "new max mount-plane bytes written per window (0 resets to the default; omit to leave unchanged)")
 	var grants stringSlice
 	fs.Var(&grants, "grant", "access profile id this certificate may use (repeatable); passing --grant at all REPLACES the whole grant list, same as create")
 	clearGrants := fs.Bool("clear-grants", false, "remove every access profile grant, leaving the certificate enrolled but able to reach nothing; mutually exclusive with --grant")
@@ -328,6 +342,15 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 		case "max-result-bytes":
 			v := *maxResultBytes
 			req.Budget.MaxResultBytes = &v
+		case "mount-max-ops":
+			v := *mountMaxOps
+			req.Budget.MountMaxOps = &v
+		case "mount-max-read-bytes":
+			v := *mountMaxReadBytes
+			req.Budget.MountMaxReadBytes = &v
+		case "mount-max-write-bytes":
+			v := *mountMaxWriteBytes
+			req.Budget.MountMaxWriteBytes = &v
 		case "grant":
 			grantFlagSet = true
 		case "cli-admin":
@@ -347,7 +370,7 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 		req.ProjectIDs = &ids
 	}
 	if !anyFlagSet {
-		exitError("nothing to update: pass at least one of --window-seconds, --max-calls, --max-result-bytes, --grant, --clear-grants, --cli-admin")
+		exitError("nothing to update: pass at least one of --window-seconds, --max-calls, --max-result-bytes, --mount-max-ops, --mount-max-read-bytes, --mount-max-write-bytes, --grant, --clear-grants, --cli-admin")
 	}
 	return req
 }
@@ -378,6 +401,13 @@ func enrolUpdate(store config.SettingsStore, args []string) {
 		fmt.Printf("  budget:      %d calls / %d bytes per %ds -> %d calls / %d bytes per %ds\n",
 			before.Budget.MaxCalls, before.Budget.MaxResultBytes, before.Budget.WindowSeconds,
 			after.Budget.MaxCalls, after.Budget.MaxResultBytes, after.Budget.WindowSeconds)
+		if before.Budget.MountMaxOps != after.Budget.MountMaxOps ||
+			before.Budget.MountMaxReadBytes != after.Budget.MountMaxReadBytes ||
+			before.Budget.MountMaxWriteBytes != after.Budget.MountMaxWriteBytes {
+			fmt.Printf("  mount budget: %d ops / %d read / %d write per window -> %d ops / %d read / %d write per window\n",
+				before.Budget.MountMaxOps, before.Budget.MountMaxReadBytes, before.Budget.MountMaxWriteBytes,
+				after.Budget.MountMaxOps, after.Budget.MountMaxReadBytes, after.Budget.MountMaxWriteBytes)
+		}
 	}
 	if !slices.Equal(before.ProjectIDs, after.ProjectIDs) {
 		fmt.Printf("  profiles:    %s -> %s\n", formatGrants(before.ProjectIDs), formatGrants(after.ProjectIDs))
