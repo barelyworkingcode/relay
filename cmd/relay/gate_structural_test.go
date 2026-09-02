@@ -66,6 +66,7 @@ var gatedMutatorNames = map[string]bool{
 	"UpdateProjectAllowExternal": true,
 	"updateProjectKind":          true,
 	"updateProjectPath":          true,
+	"UpdateProjectMounts":        true,
 }
 
 // gateAllowlistedFiles is the exact, reviewed set of files permitted to call
@@ -313,7 +314,7 @@ var wantGatedMutatorNames = []string{
 	"ApplyCreate", "ApplyUpdate",
 	"UpdateProjectAllowedTools", "UpdateProjectAccess", "updateProjectContext",
 	"updateProjectMcps", "SetProjectAllowCwdAuth", "UpdateProjectAllowExternal",
-	"updateProjectKind", "updateProjectPath",
+	"updateProjectKind", "updateProjectPath", "UpdateProjectMounts",
 }
 
 // wantGateAllowlistedFiles pins gateAllowlistedFiles' key set the same way.

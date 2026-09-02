@@ -132,3 +132,65 @@ func TestApplyProjectUpdate_RemoteRejectsWildcardMcps(t *testing.T) {
 		t.Errorf("rejected update must not mutate the project, got AllowedMcpIDs=%v", after.AllowedMcpIDs)
 	}
 }
+
+// TestApplyProjectCreate_MountsIsPersisted pins CreateFields.Mounts actually
+// reaching storage: it is applied as a follow-on mutator (like AllowExternal
+// and the rest), not a candidate-only field that validates but never lands.
+func TestApplyProjectCreate_MountsIsPersisted(t *testing.T) {
+	s := &config.Settings{Version: 1}
+	mounts := []config.MountGrant{{ID: "src", Path: t.TempDir(), Access: "write"}}
+	created, err := ApplyCreate(s, CreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote, Mounts: mounts}, nil)
+	if err != nil {
+		t.Fatalf("ApplyCreate: %v", err)
+	}
+	if len(created.Mounts) != 1 || created.Mounts[0].ID != "src" {
+		t.Fatalf("expected mounts to be persisted, got %+v", created.Mounts)
+	}
+	after, _ := config.FindProjectByID(s, created.ID)
+	if len(after.Mounts) != 1 {
+		t.Fatalf("mounts not found on re-read: %+v", after.Mounts)
+	}
+}
+
+func TestApplyProjectCreate_LocalRejectsMounts(t *testing.T) {
+	s := &config.Settings{Version: 1}
+	mounts := []config.MountGrant{{ID: "src", Path: t.TempDir(), Access: "write"}}
+	if _, err := ApplyCreate(s, CreateFields{Name: "Local", Path: t.TempDir(), Mounts: mounts}, nil); err == nil {
+		t.Fatal("expected rejection of mounts on a kind:local project")
+	}
+	if len(s.Projects) != 0 {
+		t.Fatalf("rejected create must not persist a project; got %d", len(s.Projects))
+	}
+}
+
+// TestApplyProjectUpdate_MountsIsPersisted is the same pin as the create
+// test, for the patch path: UpdateFields.Mounts existed as a decodable
+// field before this fix with nothing in ApplyUpdate ever reading it — a
+// request setting it silently no-opped. This is the regression test for
+// that.
+func TestApplyProjectUpdate_MountsIsPersisted(t *testing.T) {
+	s := &config.Settings{Version: 1}
+	created, err := ApplyCreate(s, CreateFields{Name: "Agent VM", Kind: config.ProjectKindRemote}, nil)
+	if err != nil {
+		t.Fatalf("setup create: %v", err)
+	}
+	if len(created.Mounts) != 0 {
+		t.Fatalf("expected no mounts at create, got %+v", created.Mounts)
+	}
+
+	mounts := []config.MountGrant{{ID: "src", Path: t.TempDir(), Access: "read"}}
+	updated, found, err := ApplyUpdate(s, created.ID, UpdateFields{Mounts: &mounts}, func() McpSurfaces { return nil })
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+	if len(updated.Mounts) != 1 || updated.Mounts[0].ID != "src" {
+		t.Fatalf("expected mounts to be persisted by the update, got %+v", updated.Mounts)
+	}
+	after, _ := config.FindProjectByID(s, created.ID)
+	if len(after.Mounts) != 1 {
+		t.Fatalf("mounts not found on re-read: %+v", after.Mounts)
+	}
+}

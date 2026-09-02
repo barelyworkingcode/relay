@@ -33,6 +33,10 @@ type CreateFields struct {
 	// decision 2c). Not a pointer here for the same reason none of the three
 	// above is — a create carries the whole shape or none of it.
 	AllowExternal map[string]bool `json:"allow_external,omitempty"`
+	// Mounts is the mount-plane grant (see config.Project.Mounts):
+	// ValidateShape refuses it on a kind:local project the same way it
+	// refuses AllowCwdAuth's remote-only cousins the other way around.
+	Mounts []config.MountGrant `json:"mounts,omitempty"`
 }
 
 // UpdateFields is the transport-agnostic patch body. Nil pointers mean
@@ -93,6 +97,7 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		AllowExternal:    f.AllowExternal,
 		PermissionPolicy: f.PermissionPolicy,
 		ChatTemplates:    f.ChatTemplates,
+		Mounts:           f.Mounts,
 	}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
@@ -133,6 +138,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	}
 	if len(f.AllowExternal) > 0 {
 		s.UpdateProjectAllowExternal(created.ID, f.AllowExternal)
+	}
+	if len(f.Mounts) > 0 {
+		s.UpdateProjectMounts(created.ID, f.Mounts)
 	}
 	// Last, because it re-runs SyncProjectToken, which prunes by the MCP set
 	// the record ends up with.
@@ -217,6 +225,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.Context != nil {
 		candidate.Context = *f.Context
+	}
+	if f.Mounts != nil {
+		candidate.Mounts = *f.Mounts
 	}
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, true, err
@@ -306,6 +317,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.AllowExternal != nil {
 		s.UpdateProjectAllowExternal(id, *f.AllowExternal)
+	}
+	if f.Mounts != nil {
+		s.UpdateProjectMounts(id, *f.Mounts)
 	}
 	if f.Context != nil {
 		updateProjectContext(s, id, *f.Context, sc)
