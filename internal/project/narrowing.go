@@ -26,6 +26,7 @@ type NarrowFields struct {
 	AllowedTools  *map[string][]string `json:"allowed_tools,omitempty"`
 	Access        *map[string]string   `json:"access,omitempty"`
 	AllowExternal *map[string]bool     `json:"allow_external,omitempty"`
+	Mounts        *[]config.MountGrant `json:"mounts,omitempty"`
 }
 
 // DecodeNarrowFields decodes a NarrowGrant request's Arguments
@@ -121,6 +122,28 @@ func NarrowsOnly(stored config.Project, f NarrowFields) error {
 		}
 	}
 
+	if f.Mounts != nil {
+		for _, m := range *f.Mounts {
+			existing, ok := FindMount(&stored, m.ID)
+			if !ok {
+				return fmt.Errorf("mounts: %q is not an existing mount; narrowing cannot add one", m.ID)
+			}
+			if m.Path != existing.Path {
+				return fmt.Errorf("mounts: %q may not change path (stored %q, requested %q)", m.ID, existing.Path, m.Path)
+			}
+			if m.AccessMode() == config.AccessWrite && existing.AccessMode() == config.AccessRead {
+				return fmt.Errorf("mounts: %q may not widen access from read to write by narrowing", m.ID)
+			}
+			// m.AccessMode() == read is always accepted, whether or not it
+			// changes anything: narrowing to what is already read is a no-op,
+			// not a widening.
+		}
+		// Any stored mount whose id is absent from *f.Mounts is being dropped —
+		// that's narrowing (removing a mount), always allowed. Nothing to check
+		// for that case here; NarrowUpdateFields (below) is what actually drops
+		// it from the result.
+	}
+
 	return nil
 }
 
@@ -154,6 +177,38 @@ func NarrowingIsNoop(stored config.Project, f NarrowFields) bool {
 	if merged.AllowExternal != nil && !maps.Equal(*merged.AllowExternal, stored.AllowExternal) {
 		return false
 	}
+	if merged.Mounts != nil && !mountSlicesEqual(*merged.Mounts, stored.Mounts) {
+		return false
+	}
+	return true
+}
+
+// mountSlicesEqual compares two mount sets the way a human reads them: same
+// ids, same paths, same resolved access — order inside the slice is not
+// meaning, and "read" spelled three ways (absent, "", "read") is the same
+// access, so the comparison goes through AccessMode(), never the raw string
+// (a no-op-in-effect request that respells an absent access as "read" must
+// read as no-op, not as a change). A map per side keeps it order-independent
+// without reflect.DeepEqual, which would compare the raw Access and the
+// order.
+func mountSlicesEqual(a, b []config.MountGrant) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	byID := func(mounts []config.MountGrant) map[string]config.MountGrant {
+		m := make(map[string]config.MountGrant, len(mounts))
+		for _, mg := range mounts {
+			m[mg.ID] = mg
+		}
+		return m
+	}
+	am, bm := byID(a), byID(b)
+	for id, m := range am {
+		n, ok := bm[id]
+		if !ok || n.Path != m.Path || n.AccessMode() != m.AccessMode() {
+			return false
+		}
+	}
 	return true
 }
 
@@ -170,6 +225,11 @@ func NarrowingIsNoop(stored config.Project, f NarrowFields) bool {
 // what's already stored so an untouched id keeps its stored value; keys
 // for an MCP falling out of the resulting allowed_mcp_ids are left for
 // syncProjectToken's existing pruning rather than carried forward stale.
+// Mounts is the reverse: a full replace, not a per-key merge — once
+// NarrowsOnly has validated it, *f.Mounts already IS the complete resulting
+// set for every mount it names, and an id it doesn't name is dropped (that's
+// the "omitted mount is dropped" rule). f.Mounts is passed through nil as
+// "not in the request" under the same convention as every sibling field.
 func NarrowUpdateFields(stored config.Project, f NarrowFields) UpdateFields {
 	resultMcpIDs := stored.AllowedMcpIDs
 	if f.AllowedMcpIDs != nil {
@@ -180,6 +240,7 @@ func NarrowUpdateFields(stored config.Project, f NarrowFields) UpdateFields {
 		AllowedTools:  mergeNarrowedMap(stored.AllowedTools, f.AllowedTools, resultMcpIDs),
 		Access:        mergeNarrowedMap(stored.Access, f.Access, resultMcpIDs),
 		AllowExternal: mergeNarrowedMap(stored.AllowExternal, f.AllowExternal, resultMcpIDs),
+		Mounts:        f.Mounts,
 	}
 }
 
@@ -229,6 +290,9 @@ func NarrowFieldNames(f NarrowFields) []string {
 	}
 	if f.AllowExternal != nil {
 		names = append(names, "allow_external")
+	}
+	if f.Mounts != nil {
+		names = append(names, "mounts")
 	}
 	return names
 }

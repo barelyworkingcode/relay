@@ -255,6 +255,40 @@ const (
 	ProjectKindRemote ProjectKind = "remote"
 )
 
+// MountGrant is one relay-granted host directory exposed to a remote client
+// as a real filesystem mount, over the mount plane (relay-9p/1), never
+// through fsMCP. It exists only on a kind: remote project.
+type MountGrant struct {
+	// ID is a surface name the client names in its MountAttach preamble,
+	// unique within the project. Must satisfy enrolment.SafeID (it is not
+	// joined into a filesystem path the way an enrolment's client id is, but
+	// the charset restriction is reused so a mount id is always safe to log,
+	// to put in an audit mcp_id field, and to put in a CLI flag value with
+	// no quoting question).
+	ID string `json:"id"`
+	// Path is an absolute host directory. It is an operator value, not
+	// caller input: checked once at validation (must exist, must not be a
+	// symlink), and re-opened with os.OpenRoot at attach time by a later
+	// piece — a path that changed shape between validation and attach fails
+	// then, not here.
+	Path string `json:"path"`
+	// Access is "read" or "write"; absent means read. Mirrors
+	// StoredToken.AccessMode's asymmetric-default pattern: an unset or
+	// misspelled value must never be readable as write.
+	Access string `json:"access,omitempty"`
+}
+
+// AccessMode reads Access the same way StoredToken.AccessMode reads a
+// project's per-MCP access map: "write" only on the exact string "write",
+// anything else (absent, a typo, "Write", "rw") reads as read. A typo must
+// narrow, never widen.
+func (m MountGrant) AccessMode() string {
+	if m.Access == AccessWrite {
+		return AccessWrite
+	}
+	return AccessRead
+}
+
 type Project struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -325,6 +359,13 @@ type Project struct {
 	// (settings.json is 0600 and already holds every token in plaintext),
 	// but it does erase the deliberate hand-off, so it stays opt-in.
 	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
+
+	// Mounts is the mount-plane grant: each entry exposes one host directory to
+	// a remote client as a real POSIX filesystem mount, kernel-contained,
+	// instead of through fsMCP's curated tool surface. Refused on a
+	// kind: local project (project.ValidateMounts) — a local project already
+	// reaches its directory through shells and fsMCP.
+	Mounts []MountGrant `json:"mounts,omitempty"`
 }
 
 // EnrolmentBudget bounds what one enrolled client may draw per rolling
@@ -336,6 +377,13 @@ type EnrolmentBudget struct {
 	WindowSeconds  int   `json:"window_seconds"`
 	MaxCalls       int   `json:"max_calls"`
 	MaxResultBytes int64 `json:"max_result_bytes"`
+	// MountMaxOps, MountMaxReadBytes and MountMaxWriteBytes bound the mount
+	// plane on the same rolling window as the tool-plane fields above,
+	// counted separately: a mount cannot starve tool calls and the reverse.
+	// Zero never means unlimited — see enrolment.NormalizeBudget.
+	MountMaxOps        int   `json:"mount_max_ops,omitempty"`
+	MountMaxReadBytes  int64 `json:"mount_max_read_bytes,omitempty"`
+	MountMaxWriteBytes int64 `json:"mount_max_write_bytes,omitempty"`
 }
 
 // Enrolment binds one client certificate to the grants it may use. It is

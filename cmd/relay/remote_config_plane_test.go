@@ -418,6 +418,7 @@ func TestRemoteNarrowFields_NamesNoOtherIdentity(t *testing.T) {
 		"allowed_tools":   true,
 		"access":          true,
 		"allow_external":  true,
+		"mounts":          true,
 	}
 	typ := reflect.TypeOf(project.NarrowFields{})
 	got := map[string]bool{}
