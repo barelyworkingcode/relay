@@ -1274,3 +1274,184 @@ supported shape rather than a theoretical one — `derivedScopeFields` returns n
 for such an MCP, its tools stay listed and callable for a remote profile, and
 decision 7's requirement that the log answer "what was attempted with what
 authority" is met by the `mcp_root` field rather than by `scope`.
+
+---
+
+## Amended — 2026-09-01: A star and an empty array
+
+Decision 3 dropped a stored `wildcard` keyword outright, and decision 4 made
+absent and *empty* the same refusal on all three sides. Both were reopened for
+the resource-scope fields specifically — `mail_accounts`, `calendars`, and the
+rest of the `source: "operator"` array fields this ADR's mechanism governs,
+not `allowed_tools`, `allowed_mcp_ids` or `allowed_models`, which already had
+their own wildcards and are unaffected. Two independent usability problems
+drove it, both real rather than theoretical:
+
+1. **Naming every account and every mailbox by hand does not scale**, and gets
+   worse with every mailbox macMCP's own scope work has since made
+   addressable (CLAUDE.md's mailbox-path and calendar-path sections). An
+   operator who means "this trusted client reads all my mail" has to
+   enumerate every account and, per account, every mailbox — and re-does it
+   by hand whenever the host's mail structure changes, or the grant silently
+   narrows.
+2. **A field can be empty for a true, boring reason** — a contacts account
+   that genuinely has zero groups — and decision 4 made that indistinguishable
+   from an operator having forgotten to configure it. `contacts_list_groups`
+   refused rather than answering `[]`, for every client scoped to that
+   account, permanently, with nothing an operator could do about it: there was
+   no way to say "I looked, there is nothing here" that was not also the
+   spelling for "nobody has looked yet".
+
+### Why decision 3's reasoning does not carry over unchanged
+
+Decision 3 rejected `wildcard` for two reasons: "on an access profile the
+wildcard was already going to be refused (ADR-009 decision 4's reasoning — a
+grant must be an enumeration someone typed, not a value that widens when the
+host's configuration changes)", and "on the `project_path` side there is
+nothing for it to mean". Neither is a blanket argument against a stored
+wildcard anywhere in this model; both are arguments about *who is granting to
+whom*.
+
+ADR-009 decision 4's concern is a confused deputy: an operator managing
+access for *someone else's* agent, where an account added to the host later
+escapes the review that granted the profile in the first place. That is a
+real threat model, and it is not the only one this mechanism serves. The
+common case for a resource-scope field — an operator granting their own
+trusted client access to their own data on their own Mac — has no second
+party whose review is being bypassed; the operator IS the one who would add
+the account, and the one who re-opens the grant. Applying the confused-deputy
+threat model uniformly to that case is not caution, it is friction with
+nothing behind it.
+
+The evidence that this codebase already agrees, on the other two axes of the
+same permission system: `allowed_mcp_ids: ["*"]` already allows every MCP
+relay knows about, dynamically, and grows the moment a new one is registered
+(`docs/access-profiles.md`). `allowed_models` carries a literal stored
+wildcard too (`PROJ_MCP_WILDCARD` in the Settings UI). Decision 3's "no
+wildcard, anywhere" was never quite true; it was "no wildcard for *resources
+within* a granted MCP", the one axis that had not been asked yet.
+
+The second piece of prior art this addendum leans on is `file_dirs` resolving
+to `/`: the codebase's answer to "an operator grants something huge" was
+never prohibition, it was **loud, unavoidable disclosure** — `scope_breadth.go`
+names a filesystem root on the client's own tools/list note, the profile
+card, `relay grant`, and `relay audit --authority`, regardless of `disclose`.
+That mechanism generalises directly: `scopeBreadthWildcard` is a value of
+exactly `["*"]`, classified and disclosed exactly like a filesystem root
+(`renderScopeDisclosure` groups the two together, and says why — a wildcard
+discloses nothing about the host a client could not already learn by calling
+the field's own enumerator).
+
+### What "*" actually costs, and why it is cheap rather than expensive
+
+The obvious implementation mistake is assuming a stored `["*"]` needs relay,
+or the MCP, to *resolve* it — go look at the host and materialise a concrete
+list. It needs the opposite: every consumer of `Access.unrestricted`
+(macMCP's `ResourceScope`) simply skips its filtering step, since there is
+nothing to compare against. `ScopedRows.allowed` returns every row already
+produced by the live EventKit read, unfiltered; `MailScope.accountTargets`
+reuses the existing `.unscoped` decision, which already means "read
+everything, live" for exactly this reason. No extra host round trip, no
+caching, no staleness to design around — the underlying reads were already
+live for every scoped call, wildcard or not. This makes `["*"]` cheaper to
+enforce than an explicit list, not more expensive: nothing to fold, match, or
+check for ambiguity.
+
+**Silent widening is still real and still the reason to be loud about it.**
+Cheap and safe are different axes. A live, per-call resolution that costs
+nothing is exactly as reviewable as one that costs a host round trip — an
+account added to the Mac next week joins either way. That is not a
+performance question, which is why the disclosure requirement (above) is not
+optional and does not get relaxed because the check turned out to be cheap.
+
+`"*"` is recognised only as the **sole** element of the array. `["*", "Bob"]`
+is refused at save time (`ContextField.ValidateValue`) rather than accepted
+as an inert literal: a mixed array cannot be reviewed as "everything", and
+guessing which of the two an operator meant is exactly the guessing this
+mechanism exists to refuse elsewhere. Relay does not resolve the wildcard —
+it validates the shape and disclosure of the value; what `"*"` *means* is the
+enforcing MCP's business, as ADR-011 decision 3 already established for every
+other keyword here.
+
+### The empty array, and why it needed its own function
+
+`hasScopeValue` collapsed absent and present-empty on purpose, and that half
+of decision 4 is **unchanged**: an operator who never configured a field and
+one who explicitly emptied it must keep looking identical to anything that
+cannot tell a forgotten grant from a reviewed one. What changed is narrower —
+whether an **explicit, present** empty array is itself indistinguishable from
+absence, or is a third, storable state: the confirmed-empty grant, reachable
+only by an operator (or a client-editor acting on their behalf) looking at a
+real, possibly-empty enumeration and saying so.
+
+That needed a second function, `hasScopeAssertion`, rather than a changed
+`hasScopeValue`, because `hasScopeValue`'s callers split cleanly into two
+questions that happen to share code by coincidence: "is this field's own
+value a live authorisation" (`checkScopePresence`, the call-time gate; and
+`scopeNoteFor`, the client's own "Scope: ..." text — both had to change, or a
+confirmed-empty grant would be denied or misdescribed before the MCP's own,
+correct `.confirmedEmpty` handling was ever reached) versus "is this key
+present at all, for a reason that has nothing to do with authorisation"
+(`dependencyValues`'s enumerate-filter semantics, which are deliberately the
+*opposite* rule — absent-or-empty means "across everything" for a picker
+query — and `unplaceableContextFields`, where an empty key asserting no
+confinement is a claim that stays true whether or not the field is still
+declared). Reusing one function for both would have meant either breaking the
+picker's own documented contract or under-protecting the call-time gate; they
+needed to keep disagreeing.
+
+The Settings UI met the same split turned inside out: `scopeValueFromText`
+always returns `[]` for blank array-field text, never `undefined` — there is
+no way to spell "nothing typed" that survives a round trip through a text
+box, which is what makes the picker and the free-text fallback interchangeable
+in the first place. Before this addendum that was harmless, because `[]` and
+"never touched" meant the same thing at harvest either way. Once `[]` became
+a storable assertion, harvesting *every* field's blank text as `[]` the
+moment a project was saved for any reason would have converted every
+untouched governed field into a confirmed-empty grant — the opposite of
+decision 4's default. `scopeFieldWasEverAsserted` is the fix: a field
+neither touched this session nor previously stored stays omitted, full stop,
+independent of what its (necessarily blank) text says. Within a session that
+*did* touch the field, blank text is still ambiguous on its own — "typed then
+deleted" and "clicked Confirm: nothing to grant here" both end up blank — so
+the two buttons write different in-session text (`''` for Clear, a one-space
+sentinel for Confirm) that resolves the ambiguity before harvest ever asks
+"what is this field's value", and never reaches the wire either way.
+
+### What this does not change
+
+- The `wildcard` keyword itself stays dropped. There is no new schema
+  keyword; `"*"` is a plain string value of an existing `type: "array"`
+  field, exactly as ADR-011 decision 3's five keywords already permit relay
+  to validate without understanding.
+- `source: "project_path"` fields (`file_dirs`) get neither: no operator ever
+  picks a value for one, so neither `["*"]` nor an explicit `[]` reads as a
+  reviewed decision the way it does for an operator-set field. Both resolve
+  to the same refusal `.refuse` already gave, on both sides — macMCP's
+  `MailScope.confine` / `HostFileScope.resolve`, and relay's own validation,
+  which still refuses an operator-supplied value for a `project_path` field
+  outright before either spelling is even reached.
+- Nothing about decision 4's *absent* case moved. A mediated call carrying no
+  value for a field at all still refuses, unconditionally, on all three sides
+  — relay's presence check, macMCP's own, and the operator-facing "needs a
+  scope value" banner all read "the key is missing" exactly as before.
+
+### See also
+
+- ADR-011 decision 3 — the wildcard keyword dropped, and the two reasons this
+  amendment answers to individually rather than overturning wholesale.
+- ADR-011 decision 4 — "absent and empty are refusals, on all three sides";
+  amended for the *present-and-empty* case on an operator-set field only.
+- ADR-009 decision 4 — the confused-deputy reasoning decision 3 borrowed,
+  and the reason this amendment is scoped to resource-scope fields rather
+  than argued as a general principle.
+- `relay/scope_breadth.go`, `relay/web/src/app.js` (`scopeValueBreadth` and
+  its JS mirror) — the disclosure mechanism reused rather than reinvented.
+- `relay/context_schema.go` — `hasScopeValue`, `hasScopeAssertion`,
+  `ContextField.ValidateValue`.
+- `relay/router.go` — `checkScopePresence`.
+- `relay/web/src/app.js` — `scopeFieldWasEverAsserted`,
+  `SCOPE_CONFIRMED_EMPTY_TEXT`, `selectAllScopeValuesAt`,
+  `confirmScopeFieldEmpty`.
+- `macMCP/Sources/macMCP/ResourceScope.swift` — `Access.unrestricted`,
+  `Access.confirmedEmpty`, `ResourceScope.wildcard`.
