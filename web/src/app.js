@@ -1267,6 +1267,13 @@ function blankProjectForm() {
         // reason: a remote client has no way off this Mac except through relay,
         // and a local agent already has one.
         allow_external: {},                      // mcpID -> true | false
+        // The mount-plane grant (remote/access-profile only): each row is
+        // { id, path, access }. Unlike allowed_tools/context, id and path are
+        // live-bound straight into this array on blur (onchange), not
+        // deferred through a _xxxText sibling — a mount row's own two fields
+        // have no picker and no per-key structure to reconcile, so there is
+        // nothing captureProjectFormInputs needs to do for them.
+        mounts: [],
         // Raw text as typed, so a half-finished value survives a re-render and
         // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
         _scopeText: {},                          // mcpID -> { field: text }
@@ -1297,6 +1304,7 @@ function projectFormFromExisting(p) {
         allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
         context: JSON.parse(JSON.stringify(p.context || {})),
         allow_external: JSON.parse(JSON.stringify(p.allow_external || {})),
+        mounts: JSON.parse(JSON.stringify(p.mounts || [])),
         _scopeText: {},
         _toolsText: {},
         token: p.token || '',
@@ -1560,6 +1568,29 @@ function setProjMcpGranted(mcpID, granted) {
         delete (f._scopeText || {})[mcpID];
         delete (f._toolsText || {})[mcpID];
     }
+    render();
+}
+
+// ---- Mounts (mount-plane grant) --------------------------------------------
+
+function addProjMount() {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mounts.push({ id: '', path: '', access: 'read' });
+    render();
+}
+
+function removeProjMount(index) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts.splice(index, 1);
+    render();
+}
+
+function setProjMountAccess(index, access) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts[index].access = access;
     render();
 }
 
@@ -2246,6 +2277,40 @@ function renderProjectForm() {
     }
     html += '</div>';
 
+    // ---- Mounts (mount-plane grant) ----
+    // Remote-only, the same way path is local-only: a mount exposes a host
+    // directory to a client on another machine as a real filesystem, over
+    // relayfs — the counterpart to a local project already having shell +
+    // fsMCP access to its own path. ValidateMounts refuses a non-empty list
+    // on a kind:local project, so the section is absent here rather than
+    // shown-then-refused-on-save.
+    if (isRemote) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Mounts</div>';
+        html += '<p class="proj-section-help">Exposes a host directory to this client as a real POSIX filesystem mount (relayfs), instead of through an MCP\'s curated tool surface. Each mount needs an id unique on this profile (what the client names in its attach request), an absolute host path, and read or write.</p>';
+        if (f.mounts.length === 0) {
+            html += '<div class="proj-tool-empty">No mounts yet.</div>';
+        }
+        for (let i = 0; i < f.mounts.length; i++) {
+            const m = f.mounts[i];
+            const breadth = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+            html += '<div class="proj-mcp-row" style="align-items:flex-start;flex-wrap:wrap;gap:8px">';
+            html += '<div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:220px">';
+            html += '<input type="text" id="projMountId_' + i + '" value="' + esc(m.id || '') + '" placeholder="mount id, e.g. src" onchange="state.projectForm.mounts[' + i + '].id = this.value" />';
+            html += '<input type="text" id="projMountPath_' + i + '" value="' + esc(m.path || '') + '" placeholder="/absolute/host/path" onchange="state.projectForm.mounts[' + i + '].path = this.value" />';
+            if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + '</span>';
+            html += '</div>';
+            html += '<div class="perm-btns">';
+            html += '<button class="perm-btn ' + (m.access !== 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'read\')">Read</button>';
+            html += '<button class="perm-btn ' + (m.access === 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'write\')">Write</button>';
+            html += '</div>';
+            html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+            html += '</div>';
+        }
+        html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
+        html += '</div>';
+    }
+
     // ---- Allowed models ----
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
@@ -2487,6 +2552,18 @@ function harvestProjectForm() {
         generate_skill: isRemote ? false : f.generate_skill,
         allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
+        // Local-project mounts must not be sent even if a stray row survived
+        // a kind switch on a still-open new-project form — ValidateMounts
+        // refuses non-empty mounts on kind:local, and this is the harvest
+        // that has to make that unreachable rather than an error to hit.
+        // Blank rows (Add clicked, never filled in) are dropped rather than
+        // sent — a convenience, same as everywhere else in this function;
+        // the server is still what actually validates a filled-in row.
+        mounts: isRemote
+            ? f.mounts
+                .filter(m => (m.id || '').trim() && (m.path || '').trim())
+                .map(m => ({ id: m.id.trim(), path: m.path.trim(), access: m.access === 'write' ? 'write' : 'read' }))
+            : [],
     };
     if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     // The ADR-011 permission set. Sent on every save, including when it is
@@ -2654,6 +2731,11 @@ function confirmBroadScope(payload) {
             const phrase = scopeBreadthPhrase(scopeValueBreadth(values[field]));
             if (phrase) findings.push(mcpID + ' · ' + field + ' is ' + phrase);
         }
+    }
+    const mounts = (payload && payload.mounts) || [];
+    for (const m of mounts) {
+        const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+        if (phrase) findings.push('mount ' + m.id + ' is ' + phrase);
     }
     if (!findings.length) return true;
     return confirm(
@@ -5151,5 +5233,6 @@ Object.assign(window, {
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
+    addProjMount, removeProjMount, setProjMountAccess,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;
