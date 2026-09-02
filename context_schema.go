@@ -37,6 +37,19 @@ const (
 	ContextDiscloseCount = "count"
 
 	ContextDiscloseNone = "none"
+
+	// ContextWildcardValue is the literal, single-element value an
+	// operator-set restrict field can hold to mean "every value this field
+	// could name, resolved fresh by the MCP on every call" -- never a
+	// snapshot relay takes. ADR-011 decision 3 originally rejected a stored
+	// wildcard outright; the addendum ("A star and an empty array") revisits
+	// that for resource-scope fields specifically. Relay does not resolve
+	// it, does not know what it means, and validates it exactly like any
+	// other non-empty string -- the one exception is that it may not be
+	// combined with a named value in the same array (see ValidateValue),
+	// because a mixed array cannot be reviewed as "everything" and is not
+	// treated as the wildcard by any MCP that implements this.
+	ContextWildcardValue = "*"
 )
 
 // v1AllowedDirsField is the ONE domain-specific name left in relay
@@ -318,8 +331,21 @@ func (f ContextField) itemType() string {
 	return items.Type
 }
 
-// ValidateValue never accepts an EMPTY value for a restrict-field
-// (ADR-011 decision 4): a stored [] cannot read as "no restriction".
+// ValidateValue requires the KEY to be present with a well-formed value
+// (ADR-011 decision 4: an absent key means every call it governs is
+// refused) but, since the addendum "A star and an empty array", no longer
+// refuses an explicit empty array outright for one that is `type: "array"`.
+//
+// An empty array used to be indistinguishable from "an operator forgot this
+// field" and was refused for exactly that reason. It is not indistinguishable
+// any more: relay's own editor only ever writes one through an explicit
+// "confirm nothing to grant" action (never as a default, never silently), and
+// a well-behaved MCP resolves it to "the confined set is empty" rather than
+// treating it as absent. A hand-written `[]` from any other source reads the
+// same way -- there is no way to tell them apart on the wire, and there does
+// not need to be: both are "an operator (or a caller acting as one) looked
+// and confirmed there is nothing here", which is the fact this validator's
+// job is to let through, not to interrogate the origin of.
 func (f ContextField) ValidateValue(raw json.RawMessage) error {
 	trimmed := strings.TrimSpace(string(raw))
 	if len(trimmed) == 0 || trimmed == "null" {
@@ -332,12 +358,10 @@ func (f ContextField) ValidateValue(raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &arr); err != nil {
 			return fmt.Errorf("%s: expected an array of values", f.Name)
 		}
-		if len(arr) == 0 {
-			return fmt.Errorf("%s: expected at least one value (an empty list means every call it governs is refused, which is not how to say \"no restriction\")", f.Name)
-		}
 		if f.itemType() != "string" {
 			return nil
 		}
+		strs := make([]string, 0, len(arr))
 		for i, el := range arr {
 			var s string
 			if err := json.Unmarshal(el, &s); err != nil {
@@ -345,6 +369,21 @@ func (f ContextField) ValidateValue(raw json.RawMessage) error {
 			}
 			if strings.TrimSpace(s) == "" {
 				return fmt.Errorf("%s[%d]: expected a non-empty string", f.Name, i)
+			}
+			strs = append(strs, s)
+		}
+		// "*" is recognised only as the array's sole element (ADR-011
+		// addendum). Mixed with a named value it cannot be reviewed as
+		// "everything", so it is refused here rather than silently stored
+		// as an inert literal that folds and matches nothing real.
+		if len(strs) > 1 {
+			for _, s := range strs {
+				if s == ContextWildcardValue {
+					return fmt.Errorf(
+						"%s: \"*\" cannot be combined with a named value -- \"*\" means every value, on its "+
+							"own; remove the named entries, or remove \"*\" and list the values instead", f.Name,
+					)
+				}
 			}
 		}
 		return nil
@@ -640,6 +679,17 @@ func quoteNames(names []string) string {
 
 // hasScopeValue does NOT re-run ValidateValue -- emptiness must be caught
 // here since a schema can grow a field after a grant was written.
+//
+// `[]` reads as absent here on purpose, and still does after the ADR-011
+// addendum ("A star and an empty array"): this function backs two things
+// that are correctly conservative about it --
+// `unplaceableContextFields` ("an empty key asserts no confinement anybody
+// could fail to deliver", which stays true: there is nothing left to
+// enforce once the field is gone from the schema, `[]` or not) and
+// `dependencyValues`'s enumerate-filter semantics, which are a DIFFERENT
+// axis (a picker query, not an authorisation) and were never about decision
+// 4 to begin with. Neither is where "is this field's own value a live
+// authorisation" is decided -- see `hasScopeAssertion` for that question.
 func hasScopeValue(values map[string]json.RawMessage, name string) bool {
 	raw, ok := values[name]
 	if !ok {
@@ -648,6 +698,29 @@ func hasScopeValue(values map[string]json.RawMessage, name string) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	switch trimmed {
 	case "", "null", "[]", "{}", `""`:
+		return false
+	}
+	return true
+}
+
+// hasScopeAssertion is hasScopeValue's sibling for the one question ADR-011's
+// addendum ("A star and an empty array") actually changes: whether a
+// restrict field's own value is a live authorisation an operator (or a
+// client acting on their behalf) is answerable for -- present-and-empty
+// counts now, distinct from the key being absent altogether, which still
+// does not. Two callers need exactly this: `checkScopePresence` (relay's own
+// call-time gate -- a confirmed-empty field must not be denied the way an
+// unset one is) and `scopeNoteFor` (the client's "Scope: ..." note must not
+// claim a tool is refused when a confirmed-empty grant lets it succeed
+// emptily).
+func hasScopeAssertion(values map[string]json.RawMessage, name string) bool {
+	raw, ok := values[name]
+	if !ok {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	switch trimmed {
+	case "", "null", "{}", `""`:
 		return false
 	}
 	return true
@@ -697,7 +770,7 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 		if label == "" {
 			label = f.Name
 		}
-		if !hasScopeValue(values, f.Name) {
+		if !hasScopeAssertion(values, f.Name) {
 			parts = append(parts, fmt.Sprintf("%s — no value is set for %q, so every call to this tool is refused", label, f.Name))
 			continue
 		}
@@ -709,25 +782,31 @@ func scopeNoteFor(cs ContextSchema, values map[string]json.RawMessage, toolName 
 	return scopeNotePrefix + strings.Join(parts, "; ") + "."
 }
 
-// renderScopeDisclosure: a value reaching a filesystem ROOT is named
-// regardless of disclose. A HOME directory gets the opposite treatment
-// deliberately -- naming it discloses host topology.
+// renderScopeDisclosure: a value reaching a filesystem ROOT, or a
+// resource-scope field's wildcard, is named regardless of disclose. A HOME
+// directory gets the opposite treatment deliberately -- naming it discloses
+// host topology the client does not otherwise learn. The wildcard is grouped
+// with root rather than with home: it discloses nothing about this host a
+// client could not already learn by calling the field's own enumerator, and
+// withholding "this reaches everything, including what is added later" would
+// hide the one fact a client confined by disclose is most entitled to.
 func renderScopeDisclosure(f ContextField, raw json.RawMessage) string {
-	unrestricted := scopeValueBreadth(raw) == scopeBreadthRoot
+	breadth := scopeValueBreadth(raw)
+	alwaysNamed := breadth == scopeBreadthRoot || breadth == scopeBreadthWildcard
 	switch f.Disclosure() {
 	case ContextDiscloseCount:
-		if unrestricted {
-			return scopeBreadthPhrase(scopeBreadthRoot)
+		if alwaysNamed {
+			return scopeBreadthPhrase(breadth)
 		}
 		return renderScopeCount(raw)
 	case ContextDiscloseNone:
-		if unrestricted {
-			return scopeBreadthPhrase(scopeBreadthRoot)
+		if alwaysNamed {
+			return scopeBreadthPhrase(breadth)
 		}
 		return scopeValueWithheld
 	default:
-		if unrestricted {
-			return scopeBreadthPhrase(scopeBreadthRoot) + ": " + renderScopeValue(raw)
+		if alwaysNamed {
+			return scopeBreadthPhrase(breadth) + ": " + renderScopeValue(raw)
 		}
 		return renderScopeValue(raw)
 	}
@@ -749,9 +828,18 @@ func renderScopeCount(raw json.RawMessage) string {
 
 // renderScopeValue prints arrays of strings as "a, b"; anything else falls
 // back to its compact JSON, honest about a shape relay does not model.
+//
+// A present, empty array is the confirmed-empty grant (ADR-011 addendum, "A
+// star and an empty array") and gets its own phrase rather than falling
+// through to the literal characters "[]" -- which is what an operator would
+// otherwise read on the client's own tools/list, indistinguishable from a
+// rendering bug.
 func renderScopeValue(raw json.RawMessage) string {
 	var list []string
-	if err := json.Unmarshal(raw, &list); err == nil && len(list) > 0 {
+	if err := json.Unmarshal(raw, &list); err == nil {
+		if len(list) == 0 {
+			return "confirmed empty -- confined to nothing"
+		}
 		return strings.Join(list, ", ")
 	}
 	var s string

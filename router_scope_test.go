@@ -55,14 +55,28 @@ func TestCallTool_DeniesWhenTheLiveSchemaDeclaresAScopeTheGrantDoesNotSupply(t *
 	}
 }
 
-func TestCallTool_DeniesAnEmptyScopeValueTheSameAsAnAbsentOne(t *testing.T) {
-	for _, empty := range []string{`[]`, `null`, `""`, `{}`} {
+func TestCallTool_DeniesAnAbsentOrMalformedScopeValue(t *testing.T) {
+	for _, absent := range []string{`null`, `""`, `{}`} {
 		r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
-			"mail_accounts": json.RawMessage(empty),
+			"mail_accounts": json.RawMessage(absent),
 		})
 		if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err == nil {
-			t.Errorf("scope value %s was accepted as a restriction", empty)
+			t.Errorf("scope value %s was accepted as a restriction", absent)
 		}
+	}
+}
+
+// TestCallTool_AllowsAnExplicitEmptyScopeValue pins the ADR-011 addendum ("A
+// star and an empty array"): an explicit `[]` is no longer denied at relay's
+// own gate the way an absent field is. Denying it here would mean the MCP's
+// own correct handling of a confirmed-empty grant -- an ordinary, successful
+// empty result -- is never reached at all.
+func TestCallTool_AllowsAnExplicitEmptyScopeValue(t *testing.T) {
+	r := scopedProfile(t, ProjectKindRemote, map[string]json.RawMessage{
+		"mail_accounts": json.RawMessage(`[]`),
+	})
+	if _, err := r.CallTool(context.Background(), "mail_search", json.RawMessage(`{}`), testToken); err != nil {
+		t.Fatalf("a confirmed-empty scope value was denied at relay's gate: %v", err)
 	}
 }
 
