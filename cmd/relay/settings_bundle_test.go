@@ -305,6 +305,45 @@ func TestProjectFormDirectoryAuth(t *testing.T) {
 	}
 }
 
+// TestProjectListRow_MountsWithZeroMcpsShowsMountRowsNotReachesNothing is the
+// Settings-UI-list counterpart of grant_cmd.go's
+// TestPrintGrantViews_MountsWithZeroMcpsPrintsMountRowsNotReachesNothing: the
+// project list card must not tell an operator a profile "reaches nothing"
+// when it holds a live mount grant, and a profile with neither an MCP nor a
+// mount must still say so.
+func TestProjectListRow_MountsWithZeroMcpsShowsMountRowsNotReachesNothing(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.projects = [
+			{id:'p1', name:'MountOnly', kind:'remote', path:'', allowed_mcp_ids:[],
+			 allowed_models:[], disabled_tools:{},
+			 mounts:[{id:'src', path:'/tmp/fixture/root', access:'write'}]},
+			{id:'p2', name:'Empty', kind:'remote', path:'', allowed_mcp_ids:[],
+			 allowed_models:[], disabled_tools:{}, mounts:[]}
+		];
+		var html = window.renderProjects();
+		return JSON.stringify({
+			mountOnlyShowsRow: html.indexOf('mount src') >= 0,
+			mountOnlyShowsPath: html.indexOf('/tmp/fixture/root') >= 0,
+			mountOnlyNotReachesNothing: html.indexOf('MountOnly') < html.indexOf('Empty')
+				? html.slice(html.indexOf('MountOnly'), html.indexOf('Empty')).indexOf('reaches nothing') < 0
+				: false,
+			emptyStillReachesNothing: html.indexOf('Empty') >= 0 && html.slice(html.indexOf('Empty')).indexOf('reaches nothing') >= 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{
+		`"mountOnlyShowsRow":true`, `"mountOnlyShowsPath":true`,
+		`"mountOnlyNotReachesNothing":true`, `"emptyStillReachesNothing":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("project list mount row: missing %s in %s", want, got)
+		}
+	}
+}
+
 // TestProjectFormMounts_RenderAddEditRemove covers the mounts editor for a
 // new access-profile form: absent for a local project (the section is gated
 // the opposite way path is — remote-only, not local-only), addProjMount
