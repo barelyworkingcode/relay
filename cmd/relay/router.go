@@ -771,17 +771,26 @@ func mergeProjectID(base json.RawMessage, projectID string) json.RawMessage {
 	return out
 }
 
-// checkScopePresence requires a non-empty value in the grant's context for
-// every scope: "restrict" field the live schema declares for this tool.
-// Absent and empty are both refusals -- "no restriction" is deliberately not
-// expressible as emptiness. A v1 schema is exempt: it declares no scope
-// keywords.
+// checkScopePresence requires a value in the grant's context for every
+// scope: "restrict" field the live schema declares for this tool. Absent is
+// a refusal -- "no restriction" is deliberately not expressible by omitting
+// the field. A v1 schema is exempt: it declares no scope keywords.
+//
+// A present, explicit EMPTY value is not a refusal here, since the ADR-011
+// addendum ("A star and an empty array"): it is the confirmed-empty grant,
+// distinct from the field being unset, and denying it at this gate would
+// mean a well-behaved MCP's own correct handling of `.confirmedEmpty` (an
+// ordinary, successful empty result) is never reached at all -- the call
+// dies here first, under a DIFFERENT refusal (`access denied`, not the
+// MCP's own answer). project.HasScopeAssertion is the shared question; see
+// it for why this is not the same function `dependencyValues` uses for the
+// picker.
 func checkScopePresence(cs project.ContextSchema, values map[string]json.RawMessage, mcpID, toolName string) error {
 	if !cs.V2() {
 		return nil
 	}
 	for _, f := range cs.GoverningFields(toolName) {
-		if project.HasScopeValue(values, f.Name) {
+		if project.HasScopeAssertion(values, f.Name) {
 			continue
 		}
 		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
