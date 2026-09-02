@@ -59,6 +59,7 @@ type UpdateFields struct {
 	Access        *map[string]string          `json:"access,omitempty"`
 	Context       *map[string]json.RawMessage `json:"context,omitempty"`
 	AllowExternal *map[string]bool            `json:"allow_external,omitempty"`
+	Mounts        *[]config.MountGrant        `json:"mounts,omitempty"`
 }
 
 // ApplyCreate creates a project and applies its optional policy, skill

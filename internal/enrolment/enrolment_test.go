@@ -319,7 +319,8 @@ func TestRevokeEnrolment_WorksWithNoHookInstalled(t *testing.T) {
 // it.
 func TestNormalizeEnrolmentBudget_ZeroFieldsTakeTheRetunedDefaults(t *testing.T) {
 	got := NormalizeBudget(config.EnrolmentBudget{})
-	want := config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20}
+	want := config.EnrolmentBudget{WindowSeconds: 3600, MaxCalls: 120, MaxResultBytes: 64 << 20,
+		MountMaxOps: 500_000, MountMaxReadBytes: 512 << 20, MountMaxWriteBytes: 512 << 20}
 	if got != want {
 		t.Fatalf("NormalizeBudget(zero) = %+v, want %+v", got, want)
 	}

@@ -23,6 +23,14 @@ const (
 	DefaultWindowSeconds  = 3600
 	DefaultMaxCalls       = 120
 	DefaultMaxResultBytes = 64 << 20 // 64 MiB per window
+
+	// Mount-plane defaults, on the same rolling window as the tool-plane
+	// series above but counted separately (EnrolmentBudget's own doc
+	// comment). Tuned as a starting point, not derived; see the design doc's
+	// "Budget magnitudes" decision.
+	DefaultMountMaxOps        = 500_000
+	DefaultMountMaxReadBytes  = 512 << 20 // 512 MiB per window
+	DefaultMountMaxWriteBytes = 512 << 20 // 512 MiB per window
 )
 
 const BundleDir = "enrolments"
@@ -37,6 +45,15 @@ func NormalizeBudget(b config.EnrolmentBudget) config.EnrolmentBudget {
 	}
 	if b.MaxResultBytes <= 0 {
 		b.MaxResultBytes = DefaultMaxResultBytes
+	}
+	if b.MountMaxOps <= 0 {
+		b.MountMaxOps = DefaultMountMaxOps
+	}
+	if b.MountMaxReadBytes <= 0 {
+		b.MountMaxReadBytes = DefaultMountMaxReadBytes
+	}
+	if b.MountMaxWriteBytes <= 0 {
+		b.MountMaxWriteBytes = DefaultMountMaxWriteBytes
 	}
 	return b
 }
@@ -384,9 +401,12 @@ func Sign(store config.SettingsStore, req Request, csr *x509.CertificateRequest)
 // could not distinguish "left alone" from "reset to default". nil means the
 // former; a pointer to 0 means the latter.
 type BudgetUpdate struct {
-	WindowSeconds  *int   `json:"window_seconds,omitempty"`
-	MaxCalls       *int   `json:"max_calls,omitempty"`
-	MaxResultBytes *int64 `json:"max_result_bytes,omitempty"`
+	WindowSeconds      *int   `json:"window_seconds,omitempty"`
+	MaxCalls           *int   `json:"max_calls,omitempty"`
+	MaxResultBytes     *int64 `json:"max_result_bytes,omitempty"`
+	MountMaxOps        *int   `json:"mount_max_ops,omitempty"`
+	MountMaxReadBytes  *int64 `json:"mount_max_read_bytes,omitempty"`
+	MountMaxWriteBytes *int64 `json:"mount_max_write_bytes,omitempty"`
 }
 
 // UpdateRequest: ProjectIDs is a pointer to a slice for the same
@@ -435,6 +455,15 @@ func Update(store config.SettingsStore, req UpdateRequest) (before, after config
 		}
 		if req.Budget.MaxResultBytes != nil {
 			candidate.Budget.MaxResultBytes = *req.Budget.MaxResultBytes
+		}
+		if req.Budget.MountMaxOps != nil {
+			candidate.Budget.MountMaxOps = *req.Budget.MountMaxOps
+		}
+		if req.Budget.MountMaxReadBytes != nil {
+			candidate.Budget.MountMaxReadBytes = *req.Budget.MountMaxReadBytes
+		}
+		if req.Budget.MountMaxWriteBytes != nil {
+			candidate.Budget.MountMaxWriteBytes = *req.Budget.MountMaxWriteBytes
 		}
 		candidate.Budget = NormalizeBudget(candidate.Budget)
 

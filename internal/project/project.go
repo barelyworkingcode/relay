@@ -121,6 +121,12 @@ func ValidateShape(proj *config.Project) error {
 	if err := validateAllowedToolPatterns(proj); err != nil {
 		return err
 	}
+	// Kind-independent like validateAllowedToolPatterns: a local project with
+	// non-empty Mounts must be refused, and that refusal lives inside
+	// ValidateMounts, not here.
+	if err := ValidateMounts(proj); err != nil {
+		return err
+	}
 	if !proj.IsRemote() {
 		return validateProjectPath(proj.Path)
 	}

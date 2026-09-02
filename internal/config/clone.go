@@ -162,6 +162,7 @@ func cloneProject(p Project) Project {
 	p.AllowedTools = cloneStringSliceMap(p.AllowedTools)
 	p.Access = cloneMap(p.Access)
 	p.AllowExternal = cloneMap(p.AllowExternal)
+	p.Mounts = cloneSlice(p.Mounts)
 	p.PermissionPolicy = clonePermissionPolicy(p.PermissionPolicy)
 	p.SessionFolders = cloneSlice(p.SessionFolders)
 	return p
