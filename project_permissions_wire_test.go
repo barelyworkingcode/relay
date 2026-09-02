@@ -128,7 +128,7 @@ func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) 
 		says  string
 	}{
 		{"undeclared field", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_folders": []string{"INBOX"}}}}, "mail_folders"},
-		{"empty scope", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": []string{}}}}, "mail_accounts"},
+		{"wildcard mixed with a named value", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": []string{"*", "Bob"}}}}, "mail_accounts"},
 		{"derived field", map[string]interface{}{"context": map[string]interface{}{"macmcp": map[string]interface{}{"file_dirs": []string{"/etc"}}}}, "file_dirs"},
 		{"bad mode", map[string]interface{}{"access": map[string]string{"macmcp": "admin"}}, "admin"},
 		{"bad pattern", map[string]interface{}{"allowed_tools": map[string][]string{"macmcp": {"mail_["}}}, "mail_["},
@@ -144,6 +144,44 @@ func TestProjectRoutes_RefusesInvalidPermissionsAndMutatesNothing(t *testing.T) 
 		stored, _ := store.Get().findProjectByID(created.ID)
 		if stored == nil || !strings.Contains(string(stored.Context["macmcp"]), "Bob") || stored.Access["macmcp"] != AccessRead {
 			t.Fatalf("%s: a refused patch mutated the stored record: %#v", bad.label, stored)
+		}
+	}
+}
+
+// TestProjectRoutes_AcceptsAConfirmedEmptyOrWildcardScopeValue is the wire
+// counterpart of TestValidatePermissions_AcceptsAConfirmedEmptyOrWildcardValue:
+// the ADR-011 addendum ("A star and an empty array") has to hold at the
+// actual HTTP boundary an operator's editor calls, not only in the validator
+// unit tests.
+func TestProjectRoutes_AcceptsAConfirmedEmptyOrWildcardScopeValue(t *testing.T) {
+	base, _ := newV2ProjectRoutesServer(t)
+
+	resp, body := doJSON(t, "POST", base+"/api/projects", map[string]interface{}{
+		"name": "Profile", "kind": "remote",
+		"allowed_mcp_ids": []string{"macmcp"},
+		"access":          map[string]string{"macmcp": "read"},
+		"context":         map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": []string{"Bob"}}},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("seed: status %d: %s", resp.StatusCode, body)
+	}
+	var created projectView
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, patch := range []struct {
+		label string
+		value interface{}
+	}{
+		{"confirmed empty", []string{}},
+		{"wildcard", []string{"*"}},
+	} {
+		resp, body := doJSON(t, "PUT", base+"/api/projects/"+created.ID, map[string]interface{}{
+			"context": map[string]interface{}{"macmcp": map[string]interface{}{"mail_accounts": patch.value}},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: status %d, want 200: %s", patch.label, resp.StatusCode, body)
 		}
 	}
 }

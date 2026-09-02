@@ -211,11 +211,15 @@ func TestContextField_ValidateValueRefusesEmptyInEveryShape(t *testing.T) {
 	}{
 		{arr, ``},
 		{arr, `null`},
-		{arr, `[]`},
 		{arr, `["ok",""]`},
 		{arr, `["ok","  "]`},
 		{arr, `[3]`},
 		{arr, `"not an array"`},
+		// "*" combined with a named value cannot be reviewed as "everything"
+		// and is refused outright (ADR-011 addendum, "A star and an empty
+		// array") rather than silently stored as an inert literal.
+		{arr, `["*","Bob"]`},
+		{arr, `["Bob","*"]`},
 		{str, `""`},
 		{str, `null`},
 		{str, `["a"]`},
@@ -236,6 +240,13 @@ func TestContextField_ValidateValueRefusesEmptyInEveryShape(t *testing.T) {
 	}{
 		{arr, `["Bob"]`},
 		{arr, `["Alice","Bob"]`},
+		// An explicit empty array is no longer refused (ADR-011 addendum):
+		// it is the confirmed-empty grant, distinct from an absent field.
+		{arr, `[]`},
+		// The wildcard, alone, is an ordinary non-empty string as far as
+		// this validator is concerned -- what it MEANS is the enforcing
+		// MCP's business, never relay's (ADR-011 decision 3).
+		{arr, `["*"]`},
 		{str, `"/tmp/project"`},
 		{free, `{"a":1}`},
 		{free, `3`},

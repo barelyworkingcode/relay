@@ -14,9 +14,16 @@ import (
 // wrong rather than quiet and wrong, and no value is refused on the
 // strength of it.
 const (
-	scopeBreadthBounded = ""
-	scopeBreadthHome    = "home"
-	scopeBreadthRoot    = "root"
+	scopeBreadthBounded  = ""
+	scopeBreadthHome     = "home"
+	scopeBreadthRoot     = "root"
+	// scopeBreadthWildcard is a resource-scope field's value of exactly
+	// ["*"] (ADR-011 addendum, "A star and an empty array") -- a live,
+	// per-call "every value this field could name", not a path, but the
+	// same class of fact as scopeBreadthRoot: a value that is not really a
+	// confinement and must never be classified as one merely because
+	// `disclose` was set to hide it.
+	scopeBreadthWildcard = "wildcard"
 )
 
 // scopeBreadthPhrase is the one phrasing of each finding, shared by the
@@ -29,6 +36,8 @@ func scopeBreadthPhrase(kind string) string {
 		return "unrestricted (the whole filesystem)"
 	case scopeBreadthHome:
 		return "a whole home directory"
+	case scopeBreadthWildcard:
+		return "unrestricted (every value, resolved fresh on every call -- including one added after this grant was made)"
 	}
 	return ""
 }
@@ -87,9 +96,20 @@ func scopeValueEntries(raw json.RawMessage) []string {
 // narrowest: a list is a union, so ["/Users/me/proj", "/"] reaches
 // everything, and reporting only the first entry would describe the
 // confinement the operator meant instead of the one in force.
+//
+// The wildcard is checked against the WHOLE value first, not per entry: it is
+// recognised only as the array's sole element (ADR-011 addendum, "A star and
+// an empty array" -- the same rule `ContextField.ValidateValue` enforces at
+// save time, so a mixed array can never reach here already stored). A
+// resource-scope field is never path-shaped, so there is no risk of this
+// racing the root/home classification below for the same value.
 func scopeValueBreadth(raw json.RawMessage) string {
+	entries := scopeValueEntries(raw)
+	if len(entries) == 1 && entries[0] == ContextWildcardValue {
+		return scopeBreadthWildcard
+	}
 	widest := scopeBreadthBounded
-	for _, e := range scopeValueEntries(raw) {
+	for _, e := range entries {
 		switch scopeEntryBreadth(e) {
 		case scopeBreadthRoot:
 			return scopeBreadthRoot
