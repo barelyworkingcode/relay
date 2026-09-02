@@ -196,6 +196,21 @@ func (b *DigestBuilder) RawJSONMapField(name string, present bool, values map[st
 	return b.appendField(name, present, buf.Bytes())
 }
 
+// RawJSONSeqField records an ordered sequence of raw JSON values (mounts:
+// the grant list, in the order relay stores and would serve it). Order is
+// significant, unlike RawJSONMapField's map — the same seq-vs-set
+// distinction StringSeqField draws against StringSetField. Values are
+// hashed exactly as given, never re-encoded, for the same reason
+// RawJSONMapField's own doc comment gives.
+func (b *DigestBuilder) RawJSONSeqField(name string, present bool, values [][]byte) *DigestBuilder {
+	var buf bytes.Buffer
+	putUvarint(&buf, uint64(len(values)))
+	for _, v := range values {
+		putBytes(&buf, v)
+	}
+	return b.appendField(name, present, buf.Bytes())
+}
+
 // Build hashes the domain tag, the operation name, and every recorded field
 // in the order they were added.
 func (b *DigestBuilder) Build() Digest {

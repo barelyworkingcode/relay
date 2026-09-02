@@ -434,6 +434,19 @@ func (s *Settings) UpdateProjectAllowExternal(id string, allow map[string]bool) 
 	proj.AllowExternal = cleaned
 }
 
+// UpdateProjectMounts replaces id's mount-plane grant list wholesale — the
+// same plain-replace shape as UpdateProjectShellTemplates, since a mount
+// carries no per-MCP cross-check the way AllowExternal's does; ValidateMounts
+// (called from ValidateShape, before this mutator ever runs) is what refuses
+// a bad id, an overlapping path, or a kind:local project's non-empty list.
+func (s *Settings) UpdateProjectMounts(id string, mounts []MountGrant) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.Mounts = mounts
+}
+
 func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
