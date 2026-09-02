@@ -37,6 +37,17 @@ const (
 	// the resolved enrolment already holds that grant.
 	ReqDescribeGrant = "DescribeGrant"
 	ReqNarrowGrant   = "NarrowGrant"
+
+	// ReqMountAttach is the mount plane's one request type: the single
+	// preamble line a relay-9p/1 connection sends before the 9P stream
+	// begins. It is deliberately absent from BOTH of remote_server.go's
+	// dispatch tables — a client that sends it over the ordinary JSON plane
+	// (no ALPN offered) must fall through handleRequest's existing final
+	// case and get the existing "not available to remote clients" refusal
+	// with zero new code. The two planes can only be crossed by ALPN, which
+	// the TLS handshake fixes for the life of the connection; the request
+	// type itself is not the discriminator.
+	ReqMountAttach = "MountAttach"
 )
 
 const (
@@ -139,6 +150,20 @@ type BridgeResponse struct {
 	Progress *ProgressUpdate `json:"progress,omitempty"`
 	Code     int             `json:"code,omitempty"`
 	Message  string          `json:"message,omitempty"`
+}
+
+// MountAttachResult is the mount plane's one reply payload, carried in a
+// BridgeResponse's Result field as marshaled JSON — the mount-attach
+// preamble's second and last JSON line before the connection becomes raw
+// 9P. Mount and Access echo what the grant actually resolved to (Access
+// always exactly "read" or "write", never the raw stored string), and
+// MsgSize is the negotiated 9P msize the client should expect (relayFS
+// requests 1 MiB via p9.WithMessageSize; the server accepts up to that —
+// this field lets the client confirm rather than assume).
+type MountAttachResult struct {
+	Mount   string `json:"mount"`
+	Access  string `json:"access"`
+	MsgSize uint32 `json:"msize"`
 }
 
 type ProgressUpdate struct {

@@ -328,6 +328,44 @@ invoked an MCP and never learned the outcome — a crash, a kill, or a hang. It 
 worth alerting on rather than reconciling away. Since ADR-012 the usual cause
 has a record of its own beside it: see `mcp_down` below.
 
+## The mount plane
+
+The 9P mount plane (a `relay-9p/1` ALPN connection to the remote listener)
+records under three event kinds of its own. None of the rows it writes is a
+tool call: `mcp_id` carries `mount:<id>` for a project's mount grant, and
+`mcp_root` the host path the mount exposes — an operator-visible fact, audit-
+only, never sent to the client.
+
+| `event` | When | How |
+|---|---|---|
+| `mount_attach` | once, when a mount session attaches | written **durably before any 9P byte is served**; a session whose attach cannot be recorded is refused, not started |
+| `mount_op` | for mutations and refusals while the session is live | see below — reads never appear here |
+| `mount_detach` | once, when the session closes | best effort, plus the session's running totals in `bytes_read`, `bytes_written` and `ops` and the reason in `error` |
+
+**Reads are never audited.** A `mount_op` row exists only for a mutation
+or a refusal of one: the read plane's confinement is the mount boundary
+itself, and a row per read would be volume the log cannot justify. What a
+session's reads did is answered by the `bytes_read` total on its
+`mount_detach` row.
+
+**A write session is one intent + one completion, not one row per syscall.**
+A 9P write opens a handle, writes to it, and closes it — the pair is around
+the whole session, with `phase: "intent"` written durably (refusing a
+mutation that cannot be recorded, the same rule as ADR-010 decision 5 for
+tool calls) and `phase: "completion"` when it ends, sharing the event `id`.
+A refused mutation that never opens — no grant, a write on a read mount —
+is a single `denied` row: nothing was attempted, so there is no pair.
+
+**`throttled` rows are coalesced.** The first budget refusal in a session
+writes a row immediately; further refusals within a minute of the last
+written one write nothing. Every refusal is counted whether or not it
+produced a row; the rows are the signal, and one per minute is enough
+of it.
+
+No new CLI flags: the existing filters select the new kinds, so
+`relay audit --kind remote --event mount_op` and
+`relay audit --mcp mount:<id>` already find these rows.
+
 ## Records relay writes about itself
 
 Two event kinds are not calls. `mcp_down` and `mcp_up` record that an external
