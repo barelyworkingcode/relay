@@ -117,7 +117,7 @@ func (s *RemoteServer) serveMount(conn net.Conn, rc bridge.RemoteCaller, fingerp
 
 	result := bridge.MountAttachResult{Mount: mount.ID, Access: mount.AccessMode(), MsgSize: 1 << 20}
 	resultJSON, _ := json.Marshal(result)
-	writeMountReply(conn, bridge.BridgeResponse{Type: "MountAttachResult", Result: resultJSON})
+	writeMountReply(conn, bridge.BridgeResponse{Type: bridge.RespResult, Result: resultJSON})
 
 	sessionStart := time.Now()
 	sess := s.trackMountSession(fingerprint, req.ProjectID, req.Name, conn)
