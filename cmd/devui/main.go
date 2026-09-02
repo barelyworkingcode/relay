@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	htmlPath := flag.String("html", "web/dist/settings.html", "path to the settings HTML file to serve")
+	htmlPath := flag.String("html", "internal/webassets/settings.html", "path to the settings HTML file to serve")
 	addr := flag.String("addr", "127.0.0.1:8765", "loopback address to listen on")
 	flag.Parse()
 

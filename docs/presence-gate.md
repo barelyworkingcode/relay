@@ -115,7 +115,7 @@ The rule stated above is deliberately narrower than "every mutation":
 including narrowing or destroying it, is not (ADR-018 decision 1). That is
 already relay's practice — a project's `NarrowForEnrolment` path is ungated
 because a widening is unrepresentable before it is ever reached
-(`grant_narrowing.go`) — and ADR-018 step 3 applies the same rule to two
+(`internal/project/narrowing.go`) — and ADR-018 step 3 applies the same rule to two
 operations that used to be gated by an earlier, more conservative reading:
 **`mcp.unregister`** (`McpOps.Remove`) and **`service.unregister`**
 (`ServiceOps.Remove`).
