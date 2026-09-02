@@ -58,6 +58,14 @@ const (
 	// would break the ADR's detection argument, which depends on every
 	// gated act leaving a record (ADR-017 implementation spec §7.5).
 	AuditEventConfigChange = "config_change"
+
+	// MountAttach, MountOp and MountDetach are the 9P mount plane's three
+	// event kinds: the one attach record written durably before any 9P byte
+	// is served, the mutation and refusal rows a live session writes, and
+	// the one close record with the session's running totals.
+	AuditEventMountAttach = "mount_attach"
+	AuditEventMountOp     = "mount_op"
+	AuditEventMountDetach = "mount_detach"
 )
 
 // Denied means a known credential was refused a tool it may not use;
@@ -302,6 +310,13 @@ type AuditEvent struct {
 	// question an operator has of a cut record is whether it was cut, not
 	// which part of one sentence lost bytes.
 	IssuanceTruncated bool `json:"issuance_truncated,omitempty"`
+
+	// BytesRead, BytesWritten and Ops appear only on a mount_detach row — the
+	// session's running totals at close. omitempty so every event kind that
+	// isn't a mount_detach round-trips exactly as it does today.
+	BytesRead    int64 `json:"bytes_read,omitempty"`
+	BytesWritten int64 `json:"bytes_written,omitempty"`
+	Ops          int64 `json:"ops,omitempty"`
 
 	// PresenceID is the nonce id (presence.Grant.ID()) that authorised a
 	// gated act, on credential_issued, credential_revoked and config_change
