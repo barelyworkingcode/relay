@@ -150,6 +150,12 @@ func gsScannedDirs(t *testing.T, root string) []string {
 		if !d.IsDir() {
 			return nil
 		}
+		if d.Name() == "testdata" {
+			// Fixture trees (build scripts, planted files) are not package
+			// directories and carry no .go sources at all; including one
+			// would trip the sanity check below, not extend the scan.
+			return fs.SkipDir
+		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
