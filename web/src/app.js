@@ -1115,10 +1115,31 @@ function projAuthorityRows(p) {
     });
 }
 
+// renderProjMountRows is renderAuthorityRows' counterpart for the
+// mount-plane grant — the list-card summary of what `relay grant`'s own
+// printGrantViews shows on the CLI, so the two surfaces never disagree
+// about whether a profile with zero MCPs still reaches something.
+function renderProjMountRows(p) {
+    const mounts = p.mounts || [];
+    let html = '';
+    for (const m of mounts) {
+        html += '<div class="proj-auth-row">';
+        html += '<span class="proj-auth-mcp">mount ' + esc(m.id) + '</span>';
+        const access = m.access === 'write' ? 'write' : 'read';
+        html += '<span class="proj-auth-mode ' + esc(access) + '">' + esc(access) + '</span>';
+        html += '<span class="proj-auth-scope">' + esc(m.path || '') + '</span>';
+        const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+        if (phrase) html += '<span class="proj-auth-unrestricted">' + esc(phrase) + '</span>';
+        html += '</div>';
+    }
+    return html;
+}
+
 function renderAuthorityRows(p) {
     const rows = projAuthorityRows(p);
-    if (!rows.length) {
-        return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
+    const mounts = p.mounts || [];
+    if (!rows.length && !mounts.length) {
+        return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs or mounts granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
     }
     let html = '';
     for (const r of rows) {
@@ -1144,6 +1165,7 @@ function renderAuthorityRows(p) {
         if (r.schemaUnknown) html += '<span class="proj-auth-scope none">not connected — scope unknown</span>';
         html += '</div>';
     }
+    html += renderProjMountRows(p);
     return html;
 }
 
