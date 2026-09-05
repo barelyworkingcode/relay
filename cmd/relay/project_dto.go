@@ -26,6 +26,7 @@ type projectView struct {
 	Name             string                     `json:"name"`
 	Path             string                     `json:"path"`
 	Kind             config.ProjectKind         `json:"kind,omitempty"`
+	HostID           string                     `json:"host_id,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate      `json:"chat_templates,omitempty"`
@@ -40,6 +41,7 @@ type projectView struct {
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
 	AllowCwdAuth     bool                       `json:"allow_cwd_auth,omitempty"`
 	SessionFolders   []string                   `json:"session_folders,omitempty"`
+	Mounts           []config.MountGrant        `json:"mounts,omitempty"`
 }
 
 func projectToView(p config.Project) projectView {
@@ -48,6 +50,7 @@ func projectToView(p config.Project) projectView {
 		Name:             p.Name,
 		Path:             p.Path,
 		Kind:             p.Kind,
+		HostID:           p.HostID,
 		AllowedMcpIDs:    p.AllowedMcpIDs,
 		AllowedModels:    p.AllowedModels,
 		ChatTemplates:    p.ChatTemplates,
@@ -62,6 +65,7 @@ func projectToView(p config.Project) projectView {
 		GenerateSkill:    p.GenerateSkill,
 		AllowCwdAuth:     p.AllowCwdAuth,
 		SessionFolders:   p.SessionFolders,
+		Mounts:           p.Mounts,
 	}
 }
 

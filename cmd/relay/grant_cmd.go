@@ -86,12 +86,26 @@ type grantEnrolmentView struct {
 	CLIAdmin bool   `json:"cli_admin"`
 }
 
+// grantMountView is one mount grant, rendered the way grantMcpView renders
+// one MCP grant — access resolved through AccessMode(), never the raw
+// stored string, so a typo like "Write" reads on this screen exactly as it
+// behaves at attach time.
+type grantMountView struct {
+	ID       string   `json:"id"`
+	Access   string   `json:"access"`
+	Path     string   `json:"path"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 type grantView struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
 	Kind string         `json:"kind"`
 	Path string         `json:"path,omitempty"`
 	Mcps []grantMcpView `json:"mcps"`
+	// Mounts is omitempty: a profile with no mount grants must not gain a
+	// "mounts" key in --json output that it did not have before.
+	Mounts []grantMountView `json:"mounts,omitempty"`
 	// Enrolments lists every enrolment whose ProjectIDs names this record,
 	// so `relay grant` answers "who can reach this and can any of them
 	// reconfigure it" in the same place it answers "what does this reach"
@@ -138,6 +152,14 @@ func newGrantView(s *config.Settings, p config.Project) grantView {
 			row.Warnings = project.ScopeBreadthWarnings(values)
 		}
 		out.Mcps = append(out.Mcps, row)
+	}
+	for _, m := range p.Mounts {
+		out.Mounts = append(out.Mounts, grantMountView{
+			ID:       m.ID,
+			Access:   m.AccessMode(),
+			Path:     m.Path,
+			Warnings: project.MountBreadthWarnings(m),
+		})
 	}
 	for _, e := range s.Enrolments {
 		if e.GrantsProject(p.ID) {
@@ -200,6 +222,7 @@ func printGrantEnrolments(w io.Writer, enrolments []grantEnrolmentView) {
 
 func printGrantViews(w io.Writer, views []grantView) {
 	warned := false
+	mountWarned := false
 	for i, v := range views {
 		if i > 0 {
 			fmt.Fprintln(w)
@@ -209,9 +232,12 @@ func printGrantViews(w io.Writer, views []grantView) {
 			header += ", path: " + v.Path
 		}
 		fmt.Fprintln(w, header+")")
-		if len(v.Mcps) == 0 {
-			fmt.Fprintf(w, "  no MCPs granted — this %s reaches nothing\n", v.Kind)
+		if len(v.Mcps) == 0 && len(v.Mounts) == 0 {
+			fmt.Fprintf(w, "  no MCPs or mounts granted — this %s reaches nothing\n", v.Kind)
 		} else {
+			if len(v.Mcps) == 0 {
+				fmt.Fprintln(w, "  no MCPs granted")
+			}
 			for _, m := range v.Mcps {
 				fmt.Fprintf(w, "  %-14s access=%-5s  outbound=%-7s  tools=%s\n", m.Mcp, m.Access, m.Outbound, m.Tools)
 				for _, name := range sortedKeys(m.Scope) {
@@ -227,6 +253,14 @@ func printGrantViews(w io.Writer, views []grantView) {
 					warned = true
 				}
 			}
+			for _, mnt := range v.Mounts {
+				line := fmt.Sprintf("  mount %-12s access=%-5s  path=%s", mnt.ID, mnt.Access, mnt.Path)
+				if len(mnt.Warnings) > 0 {
+					line += "  !! " + strings.Join(mnt.Warnings, "; ")
+					mountWarned = true
+				}
+				fmt.Fprintln(w, line)
+			}
 		}
 		if v.Kind == "access profile" {
 			printGrantEnrolments(w, v.Enrolments)
@@ -240,5 +274,8 @@ func printGrantViews(w io.Writer, views []grantView) {
 		fmt.Fprintln(w, "A line in ** ** marks a scope that reaches further than a folder. fsMCP")
 		fmt.Fprintln(w, "documents an allowed-dir of \"/\" as a deliberate opt-out that must be spelled")
 		fmt.Fprintln(w, "out; if you did not mean to spell it out, narrow it before the next call.")
+	}
+	if mountWarned {
+		fmt.Fprintln(w, "A '!!' after a mount marks a path reaching a filesystem root or a whole home directory.")
 	}
 }

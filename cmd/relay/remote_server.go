@@ -41,6 +41,11 @@ const defaultRemoteListen = "127.0.0.1:9910"
 // (ADR-010 decision 9).
 const defaultEnrolmentListen = "127.0.0.1:9911"
 
+// mountALPN selects the 9P mount plane at TLS handshake time — the only
+// way the two planes can be told apart, since ReqMountAttach is
+// deliberately absent from every request-type dispatch table.
+const mountALPN = "relay-9p/1"
+
 var (
 	// remoteHandshakeTimeout is the slowloris bound: a peer that connects
 	// and never speaks holds a goroutine and an fd until it expires.
@@ -254,6 +259,19 @@ type RemoteServer struct {
 	// the revocation hook fires, the record naming a client id is gone.
 	mu    sync.Mutex
 	conns map[string]map[*remoteConn]struct{}
+
+	// mountBudgets is the mount plane's shared budget ledger — one for the
+	// whole server, not one per session: Budgets is keyed by fingerprint and
+	// is shared across every connection from that enrolment, which is the
+	// point of putting the bound on the enrolment rather than the session.
+	mountBudgets *enrolment.Budgets
+
+	// mountConns is the live mount sessions, a flat set (not
+	// fingerprint-keyed like conns): revocation already closes the
+	// underlying conn via the conns table — a mount connection is tracked
+	// there too — this table exists only so revalidateMounts can find live
+	// sessions to freshness-check, a different question from revocation.
+	mountConns map[*mountConn]struct{}
 }
 
 func (s *RemoteServer) currentSettings() *config.Settings {
@@ -305,6 +323,7 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    ca.Pool(),
 		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{mountALPN},
 	}
 
 	ln, err := tls.Listen("tcp", cfg.Listen, tlsCfg)
@@ -314,16 +333,18 @@ func NewRemoteServer(ctx context.Context, store config.SettingsStore, router Rem
 
 	sctx, cancel := context.WithCancel(ctx)
 	s := &RemoteServer{
-		router:     router,
-		store:      store,
-		cfg:        cfg,
-		audit:      audit,
-		configurer: configurer,
-		surfaces:   surfaces,
-		listener:   ln,
-		ctx:        sctx,
-		cancel:     cancel,
-		conns:      map[string]map[*remoteConn]struct{}{},
+		router:       router,
+		store:        store,
+		cfg:          cfg,
+		audit:        audit,
+		configurer:   configurer,
+		surfaces:     surfaces,
+		listener:     ln,
+		ctx:          sctx,
+		cancel:       cancel,
+		conns:        map[string]map[*remoteConn]struct{}{},
+		mountBudgets: &enrolment.Budgets{},
+		mountConns:   map[*mountConn]struct{}{},
 	}
 
 	// Installed with an owner because a rebind (RemoteSupervisor) binds the
@@ -457,6 +478,16 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	rc := &remoteConn{conn: conn, clientID: enr.ClientID, fingerprint: fingerprint}
 	s.track(rc)
 	defer s.untrack(rc)
+
+	if state.NegotiatedProtocol == mountALPN {
+		remoteCaller := bridge.RemoteCaller{
+			ClientID:    enr.ClientID,
+			Fingerprint: fingerprint,
+			RemoteAddr:  conn.RemoteAddr().String(),
+		}
+		s.serveMount(conn, remoteCaller, fingerprint)
+		return
+	}
 
 	slog.Info("remote client connected", "client_id", enr.ClientID, "remote_addr", conn.RemoteAddr().String())
 
@@ -628,6 +659,67 @@ func (s *RemoteServer) untrack(rc *remoteConn) {
 	delete(byFP, rc)
 	if len(byFP) == 0 {
 		delete(s.conns, rc.fingerprint)
+	}
+}
+
+// mountConn is one live mount (9P) session. Deliberately a flat set, not
+// fingerprint-keyed like conns: revocation already closes the underlying
+// net.Conn via the EXISTING conns table (a mount connection is tracked
+// there too — handleConn tracks it on both planes), so revocation needs no
+// new code at all; this table exists purely so revalidateMounts can find
+// live mount sessions to freshness-check, which is a different question
+// from revocation.
+type mountConn struct {
+	conn        net.Conn
+	fingerprint string
+	projectID   string
+	mountID     string
+}
+
+func (s *RemoteServer) trackMountSession(fingerprint, projectID, mountID string, conn net.Conn) *mountConn {
+	mc := &mountConn{conn: conn, fingerprint: fingerprint, projectID: projectID, mountID: mountID}
+	s.mu.Lock()
+	s.mountConns[mc] = struct{}{}
+	s.mu.Unlock()
+	return mc
+}
+
+func (s *RemoteServer) untrackMountSession(mc *mountConn) {
+	if mc == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.mountConns, mc)
+	s.mu.Unlock()
+}
+
+// revalidateMounts closes any live mount session whose grant no longer
+// resolves at all — called from RemoteSupervisor's settings tick
+// (remote_reconcile.go), the same cadence that already reconciles the
+// listener itself. A session merely narrowed from write to read is NOT
+// closed here: reads still work, and the next write attempt is refused by
+// BeginMutation's own freshness check (EROFS) — this function exists for
+// the case a write check would never fire: an idle read-only session
+// whose mount (or project, or grant) was removed outright.
+//
+// A nil *RemoteServer is a valid "no listener configured" value and is
+// tolerated, matching every other method on this type: the settings tick
+// reaches this from the supervisor, which may hold no live server.
+func (s *RemoteServer) revalidateMounts() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	victims := make([]*mountConn, 0)
+	for mc := range s.mountConns {
+		if _, err := s.resolveMount(mc.fingerprint, mc.projectID, mc.mountID); err != nil {
+			victims = append(victims, mc)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, mc := range victims {
+		_ = mc.conn.Close()
 	}
 }
 

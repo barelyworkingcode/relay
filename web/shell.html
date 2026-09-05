@@ -338,6 +338,19 @@ textarea:focus {
 .proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .proj-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
 .proj-badge-remote { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; border-radius: 4px; color: var(--accent); border: 1px solid var(--accent); }
+/* Host chip on a project card (docs/ssh-hosts.md) — monospace-flavoured, like
+   a host's own target string, so it reads as "this is infrastructure" next
+   to the project's plain-text name. */
+.proj-host-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; font-size: 10px; font-family: var(--mono); border-radius: 4px; color: var(--text-2); border: 1px solid var(--border); }
+/* Host status dot + word, reused on the Hosts tab list and (in a later pass)
+   eve's own host chip -- connected green, idle grey-filled, unreachable red,
+   unknown a grey OUTLINE so "never probed" doesn't read as "probed and grey". */
+.host-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-2); text-transform: capitalize; }
+.host-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-3); }
+.host-status-dot.connected { background: var(--ok); }
+.host-status-dot.idle { background: var(--text-3); }
+.host-status-dot.unreachable { background: var(--danger); }
+.host-status-dot.unknown { background: transparent; border: 1px solid var(--text-3); }
 .proj-kind-label { font-size: 13px; color: var(--text); padding: 4px 0; }
 .proj-card-path { color: var(--text-2); font-size: 11px; font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card-meta { color: var(--text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -558,6 +571,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
     <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
     <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
+    <div class="sidebar-item" onclick="showPage('hosts')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="4" width="20" height="8" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>Hosts</div>
     <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
     <div class="sidebar-item" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
@@ -571,6 +585,7 @@ window.__RELAY_INIT__ = {
   services: __SERVICES_JSON__,
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
+  hosts: __HOSTS_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
   mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,

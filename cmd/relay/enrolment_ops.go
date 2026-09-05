@@ -32,6 +32,9 @@ func (f enrolmentFields) presenceDigest() presence.Digest {
 		DurationField("budget.window_seconds", true, time.Duration(f.Budget.WindowSeconds)).
 		DurationField("budget.max_calls", true, time.Duration(f.Budget.MaxCalls)).
 		DurationField("budget.max_result_bytes", true, time.Duration(f.Budget.MaxResultBytes)).
+		DurationField("budget.mount_max_ops", true, time.Duration(f.Budget.MountMaxOps)).
+		DurationField("budget.mount_max_read_bytes", true, time.Duration(f.Budget.MountMaxReadBytes)).
+		DurationField("budget.mount_max_write_bytes", true, time.Duration(f.Budget.MountMaxWriteBytes)).
 		Build()
 }
 
@@ -62,6 +65,21 @@ func enrolmentUpdateDigest(r enrolment.UpdateRequest) presence.Digest {
 		b.DurationField("budget.max_result_bytes", true, time.Duration(*r.Budget.MaxResultBytes))
 	} else {
 		b.DurationField("budget.max_result_bytes", false, 0)
+	}
+	if r.Budget.MountMaxOps != nil {
+		b.DurationField("budget.mount_max_ops", true, time.Duration(*r.Budget.MountMaxOps))
+	} else {
+		b.DurationField("budget.mount_max_ops", false, 0)
+	}
+	if r.Budget.MountMaxReadBytes != nil {
+		b.DurationField("budget.mount_max_read_bytes", true, time.Duration(*r.Budget.MountMaxReadBytes))
+	} else {
+		b.DurationField("budget.mount_max_read_bytes", false, 0)
+	}
+	if r.Budget.MountMaxWriteBytes != nil {
+		b.DurationField("budget.mount_max_write_bytes", true, time.Duration(*r.Budget.MountMaxWriteBytes))
+	} else {
+		b.DurationField("budget.mount_max_write_bytes", false, 0)
 	}
 	if r.CLIAdmin != nil {
 		b.BoolField("cli_admin", true, *r.CLIAdmin)
@@ -101,6 +119,9 @@ func (f enrolmentSignFields) presenceDigest(csr *x509.CertificateRequest) presen
 		DurationField("budget.window_seconds", true, time.Duration(f.Budget.WindowSeconds)).
 		DurationField("budget.max_calls", true, time.Duration(f.Budget.MaxCalls)).
 		DurationField("budget.max_result_bytes", true, time.Duration(f.Budget.MaxResultBytes)).
+		DurationField("budget.mount_max_ops", true, time.Duration(f.Budget.MountMaxOps)).
+		DurationField("budget.mount_max_read_bytes", true, time.Duration(f.Budget.MountMaxReadBytes)).
+		DurationField("budget.mount_max_write_bytes", true, time.Duration(f.Budget.MountMaxWriteBytes)).
 		StringField("csr_spki_sha256", true, enrolment.SPKISHA256Hex(csr.RawSubjectPublicKeyInfo)).
 		Build()
 }

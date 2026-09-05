@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 type ToolProvider interface {
@@ -1007,6 +1009,9 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		if err := refuseRemotePty(proj); err != nil {
 			return bridge.PtyEnvResponse{}, err
 		}
+		if proj.IsHosted() {
+			return resolveHostedPtyEnv(s, proj, req.Directory)
+		}
 		if !project.DirWithin(req.Directory, proj.Path) {
 			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
 		}
@@ -1017,6 +1022,9 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 		}
 		if err := refuseRemotePty(proj); err != nil {
 			return bridge.PtyEnvResponse{}, err
+		}
+		if proj.IsHosted() {
+			return resolveHostedPtyEnv(s, proj, req.Directory)
 		}
 	}
 
@@ -1069,6 +1077,59 @@ func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.Shell
 		}
 	}
 	return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("shell template not found: project_id=%q template_id=%q", req.ProjectID, req.TemplateID))
+}
+
+// resolveHostedPtyEnv is ResolvePtyEnv's host-project branch (docs/ssh-hosts.md):
+// no project token at all (decision 6 — a host session gets no relay-brokered
+// tools to hold one for), the project's path as WorkingDir (it is real, it
+// just isn't on this machine), and a HostSpec carrying the ssh argv prefix
+// and the absolute tool paths the last probe discovered.
+func resolveHostedPtyEnv(s *config.Settings, proj *config.Project, directory string) (bridge.PtyEnvResponse, error) {
+	if !hostDirWithin(directory, proj.Path) {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", directory, proj.ID))
+	}
+	host, _ := config.FindHostByID(s, proj.HostID)
+	if host == nil {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("project %q names host %q, which no longer exists", proj.ID, proj.HostID))
+	}
+	if host.Probe == nil || host.Probe.ClaudePath == "" {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("host %q has no claude: run a probe", host.Name))
+	}
+	controlDir, err := sshhost.ControlDir()
+	if err != nil {
+		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("ssh control dir: %w", err))
+	}
+	return bridge.PtyEnvResponse{
+		RelayToken: "",
+		WorkingDir: proj.Path,
+		Host: &bridge.HostSpec{
+			ID:         host.ID,
+			Name:       host.Name,
+			SSHArgv:    sshhost.SSHArgv(*host, controlDir),
+			NodePath:   host.Probe.NodePath,
+			ClaudePath: host.Probe.ClaudePath,
+			Shell:      host.Probe.Shell,
+			OS:         host.Probe.OS,
+		},
+	}, nil
+}
+
+// hostDirWithin is project.DirWithin's lexical-only cousin for a host
+// project (docs/ssh-hosts.md): the directory names a path on the HOST, so
+// relay cannot os.Stat, EvalSymlinks or os.SameFile it the way DirWithin
+// does for a console path — path.Clean and a prefix compare is the only
+// check that makes sense for a filesystem this process cannot see. An empty
+// dir means "no directory to validate", matching DirWithin.
+func hostDirWithin(dir, projectPath string) bool {
+	if dir == "" {
+		return true
+	}
+	if projectPath == "" {
+		return false
+	}
+	clean := path.Clean(dir)
+	cleanProj := path.Clean(projectPath)
+	return clean == cleanProj || strings.HasPrefix(clean, cleanProj+"/")
 }
 
 // refuseRemotePty rejects a PTY launch bound to a remote project. Without

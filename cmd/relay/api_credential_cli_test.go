@@ -60,7 +60,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: frontendToken},
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps,
+		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil,
 		NewCredentialAuthorizer(store), nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

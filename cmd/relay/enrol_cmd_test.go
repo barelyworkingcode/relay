@@ -52,6 +52,25 @@ func TestParseEnrolUpdateFlags_OnlyTheNamedBudgetFlagIsSet(t *testing.T) {
 	}
 }
 
+// The mount-plane counterpart of TestParseEnrolUpdateFlags_OnlyTheNamedBudgetFlagIsSet:
+// passing only --mount-max-ops sets that one pointer and leaves every other
+// budget pointer (including the other two mount ones) nil, and — critically
+// — does not trip the "nothing to update" refusal, which only fires when
+// fs.Visit sees no flag named at all.
+func TestParseEnrolUpdateFlags_OnlyTheNamedMountBudgetFlagIsSet(t *testing.T) {
+	req := parseEnrolUpdateFlags([]string{"--client-id", "hermes-mail", "--mount-max-ops", "42"})
+
+	if req.Budget.MountMaxOps == nil || *req.Budget.MountMaxOps != 42 {
+		t.Fatalf("Budget.MountMaxOps = %v, want a pointer to 42", req.Budget.MountMaxOps)
+	}
+	if req.Budget.WindowSeconds != nil || req.Budget.MaxCalls != nil || req.Budget.MaxResultBytes != nil {
+		t.Fatalf("a tool-plane budget field was set: %+v", req.Budget)
+	}
+	if req.Budget.MountMaxReadBytes != nil || req.Budget.MountMaxWriteBytes != nil {
+		t.Fatalf("an unnamed mount budget field was set: %+v", req.Budget)
+	}
+}
+
 func TestParseEnrolUpdateFlags_GrantAndClearGrants(t *testing.T) {
 	req := parseEnrolUpdateFlags([]string{"--client-id", "hermes-mail", "--grant", "cal-project"})
 	if req.ProjectIDs == nil || !slices.Equal(*req.ProjectIDs, []string{"cal-project"}) {
@@ -114,7 +133,7 @@ func TestParseEnrolSignFlags_MapsFlagsAndDefaultsBudget(t *testing.T) {
 	if !slices.Equal(got.ProjectIDs, []string{"proj-a", "proj-b"}) {
 		t.Fatalf("ProjectIDs = %v, want [proj-a proj-b] in the order given", got.ProjectIDs)
 	}
-	want := config.EnrolmentBudget{WindowSeconds: enrolment.DefaultWindowSeconds, MaxCalls: enrolment.DefaultMaxCalls, MaxResultBytes: enrolment.DefaultMaxResultBytes}
+	want := config.EnrolmentBudget{WindowSeconds: enrolment.DefaultWindowSeconds, MaxCalls: enrolment.DefaultMaxCalls, MaxResultBytes: enrolment.DefaultMaxResultBytes, MountMaxOps: enrolment.DefaultMountMaxOps, MountMaxReadBytes: enrolment.DefaultMountMaxReadBytes, MountMaxWriteBytes: enrolment.DefaultMountMaxWriteBytes}
 	if got.Budget != want {
 		t.Fatalf("Budget = %+v, want the defaults %+v", got.Budget, want)
 	}
@@ -137,7 +156,7 @@ func TestParseEnrolSignFlags_BudgetFlagsAndOutDir(t *testing.T) {
 		"--out", "/tmp/somewhere",
 	})
 	assertNoErr(t, err, "parseEnrolSignFlags")
-	want := config.EnrolmentBudget{WindowSeconds: 1800, MaxCalls: 5, MaxResultBytes: 1024}
+	want := config.EnrolmentBudget{WindowSeconds: 1800, MaxCalls: 5, MaxResultBytes: 1024, MountMaxOps: enrolment.DefaultMountMaxOps, MountMaxReadBytes: enrolment.DefaultMountMaxReadBytes, MountMaxWriteBytes: enrolment.DefaultMountMaxWriteBytes}
 	if got.Budget != want {
 		t.Fatalf("Budget = %+v, want %+v", got.Budget, want)
 	}

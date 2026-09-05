@@ -72,7 +72,9 @@ func projectCreateDigest(f project.CreateFields) presence.Digest {
 		BoolMapField("allow_external", true, f.AllowExternal).
 		BoolField("allow_cwd_auth", true, f.AllowCwdAuth).
 		StringField("kind", true, string(f.Kind)).
+		StringField("host_id", true, f.HostID).
 		StringField("path", true, f.Path).
+		RawJSONSeqField("mounts", true, mountsDigestJSON(f.Mounts)).
 		Build()
 }
 
@@ -127,23 +129,38 @@ func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 	} else {
 		b.StringField("kind", false, "")
 	}
+	if f.HostID != nil {
+		b.StringField("host_id", true, *f.HostID)
+	} else {
+		b.StringField("host_id", false, "")
+	}
 	if f.Path != nil {
 		b.StringField("path", true, *f.Path)
 	} else {
 		b.StringField("path", false, "")
 	}
+	if f.Mounts != nil {
+		b.RawJSONSeqField("mounts", true, mountsDigestJSON(*f.Mounts))
+	} else {
+		b.RawJSONSeqField("mounts", false, nil)
+	}
 	return b.Build()
 }
 
 // projectUpdateTouchesGrant is AC-16c's "does" list: allowed_mcp_ids,
-// allowed_tools, access, context, allow_external, allow_cwd_auth, kind or
-// path. A request touching only name, chat_templates, session_folders,
-// generate_skill, permission_policy, allowed_models or shell_templates must
-// NOT prompt — none of those widen what a token reaches. disabled_tools is
-// deliberately absent too: it is a denylist and can only narrow (§6.4).
+// allowed_tools, access, context, allow_external, allow_cwd_auth, kind,
+// path or mounts. A request touching only name, chat_templates,
+// session_folders, generate_skill, permission_policy, allowed_models or
+// shell_templates must NOT prompt — none of those widen what a token
+// reaches. disabled_tools is deliberately absent too: it is a denylist and
+// can only narrow (§6.4). mounts is exactly as grant-widening as
+// allowed_tools — a mount is a filesystem reach the token gains — so it is
+// gated on the same footing, not treated as a lesser field because it
+// shipped later.
 func projectUpdateTouchesGrant(f project.UpdateFields) bool {
 	return f.AllowedMcpIDs != nil || f.AllowedTools != nil || f.Access != nil ||
-		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil || f.Path != nil
+		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil ||
+		f.Path != nil || f.Mounts != nil || f.HostID != nil
 }
 
 func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
@@ -169,14 +186,23 @@ func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
 	if f.Kind != nil {
 		names = append(names, "kind")
 	}
+	if f.HostID != nil {
+		names = append(names, "host_id")
+	}
 	if f.Path != nil {
 		names = append(names, "path")
+	}
+	if f.Mounts != nil {
+		names = append(names, "mounts")
 	}
 	return names
 }
 
 func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	names := []string{"kind", "path"}
+	if f.HostID != "" {
+		names = append(names, "host_id")
+	}
 	if len(f.AllowedMcpIDs) > 0 {
 		names = append(names, "allowed_mcp_ids")
 	}
@@ -194,6 +220,9 @@ func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	}
 	if f.AllowCwdAuth {
 		names = append(names, "allow_cwd_auth")
+	}
+	if len(f.Mounts) > 0 {
+		names = append(names, "mounts")
 	}
 	return names
 }

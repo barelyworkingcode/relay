@@ -10,6 +10,10 @@ const EXTERNAL_MCPS_INIT = window.__RELAY_INIT__.externalMcps;
 const SERVICES_INIT = window.__RELAY_INIT__.services;
 const RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
 const PROJECTS_INIT = window.__RELAY_INIT__.projects;
+// Hosts — machines reached over ssh a project's directory can live on
+// (docs/ssh-hosts.md). Seeded like projects: the list is small, and both the
+// Hosts tab and the project form's Where control need it on the first paint.
+const HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
 // What each MCP declares as narrowable: its scope: "restrict" fields, already
 // projected by Go (ScopeFieldView) so the rule that an absent `source` means
@@ -99,6 +103,14 @@ let state = {
     projectError: null,
     rotatingProjectId: null,
 
+    // Hosts tab (docs/ssh-hosts.md).
+    hosts: HOSTS_INIT,
+    editingHostId: null,      // null = list, 'new' = add form, '<id>' = edit form
+    hostForm: null,
+    hostFormError: null,
+    hostProbePending: {},     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
+    hostError: null,
+
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
     // fetched when an operator opens the control and cached for the life of
@@ -166,7 +178,7 @@ function showPage(page) {
     state.page = page;
     // Positional against the sidebar items in web/shell.html — adding one
     // there without adding it here highlights the wrong row.
-    const pages = ['services', 'mcps', 'projects', 'remote', 'passkeys', 'inspector', 'audit'];
+    const pages = ['services', 'mcps', 'projects', 'hosts', 'remote', 'passkeys', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         el.classList.toggle('active', pages[i] === page);
     });
@@ -201,6 +213,7 @@ const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args":
 function render(source) {
     if (state.projectForm) captureProjectFormInputs();
     if (state.enrolForm) captureEnrolFormInputs();
+    if (state.hostForm) captureHostFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
     if (state.page === 'services') {
@@ -217,6 +230,9 @@ function render(source) {
     } else if (state.page === 'projects') {
         if (fromPush && state.editingProjectId) return;
         el.innerHTML = renderProjects();
+    } else if (state.page === 'hosts') {
+        if (fromPush && state.editingHostId) return;
+        el.innerHTML = renderHosts();
     } else if (state.page === 'remote') {
         // Skip a push-sourced repaint while the create form is open or the
         // listener block has uncommitted edits, for the same reason the
@@ -1153,10 +1169,34 @@ function projAuthorityRows(p) {
     });
 }
 
+// renderProjMountRows is renderAuthorityRows' counterpart for the
+// mount-plane grant — the list-card summary of what `relay grant`'s own
+// printGrantViews shows on the CLI, so the two surfaces never disagree
+// about whether a profile with zero MCPs still reaches something.
+function renderProjMountRows(p) {
+    const mounts = p.mounts || [];
+    let html = '';
+    for (const m of mounts) {
+        html += '<div class="proj-auth-row">';
+        html += '<span class="proj-auth-mcp">mount ' + esc(m.id) + '</span>';
+        const access = m.access === 'write' ? 'write' : 'read';
+        html += '<span class="proj-auth-mode ' + esc(access) + '">' + esc(access) + '</span>';
+        html += '<span class="proj-auth-scope">' + esc(m.path || '') + '</span>';
+        const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+        if (phrase) html += '<span class="proj-auth-unrestricted">' + esc(phrase) + '</span>';
+        html += '</div>';
+    }
+    return html;
+}
+
 function renderAuthorityRows(p) {
     const rows = projAuthorityRows(p);
-    if (!rows.length) {
-        return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
+    const mounts = p.mounts || [];
+    if (!rows.length && !mounts.length) {
+        if (p.host_id) {
+            return '<div class="proj-auth-row"><span class="proj-auth-none">on ' + esc(hostNameFor(p.host_id)) + ' — the agent uses its built-in tools there; relay tools aren\'t available on a host yet</span></div>';
+        }
+        return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs or mounts granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
     }
     let html = '';
     for (const r of rows) {
@@ -1182,6 +1222,7 @@ function renderAuthorityRows(p) {
         if (r.schemaUnknown) html += '<span class="proj-auth-scope none">not connected — scope unknown</span>';
         html += '</div>';
     }
+    html += renderProjMountRows(p);
     return html;
 }
 
@@ -1215,6 +1256,9 @@ function renderProjects() {
             html += '<div style="display:flex;align-items:center;gap:6px">';
             html += '<span class="proj-card-name">' + esc(p.name) + '</span>';
             if (remote) html += '<span class="proj-badge-remote">Access profile</span>';
+            // The host chip's absence IS the design (docs/ssh-hosts.md): a
+            // console project shows nothing here at all.
+            if (p.host_id) html += '<span class="proj-host-chip">⌁ ' + esc(hostNameFor(p.host_id)) + '</span>';
             html += '</div>';
             html += '<div style="display:flex;gap:4px">';
             html += '<button class="btn btn-sm" onclick="editProject(\'' + esc(p.id) + '\')">Edit</button>';
@@ -1223,8 +1267,10 @@ function renderProjects() {
             // and the regen handler refuses a record with no path, so the
             // button could never do anything. ADR-009 decision 2's argument
             // applies to the control as much as to the flag — refusing at the
-            // door is more honest than something that quietly no-ops.
-            if (!remote) {
+            // door is more honest than something that quietly no-ops. A host
+            // project is refused for the same reason: the generator writes into
+            // a directory that is not on this Mac.
+            if (!remote && !p.host_id) {
                 html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
             }
             html += '<button class="btn btn-sm btn-danger" onclick="removeProject(\'' + esc(p.id) + '\', \'' + esc(p.name) + '\')">Delete</button>';
@@ -1284,6 +1330,9 @@ function blankProjectForm() {
         kind: 'local',                            // 'local' | 'remote' — see setProjKind
         name: '',
         path: '',
+        // host_id names a Host this project's Path lives on instead of this
+        // Mac (docs/ssh-hosts.md). '' is the console — see setProjWhere.
+        host_id: '',
         allowed_mcp_ids: [PROJ_MCP_WILDCARD],   // wildcard by default
         allowed_models: [PROJ_MCP_WILDCARD],
         chat_templates: [],
@@ -1305,6 +1354,13 @@ function blankProjectForm() {
         // reason: a remote client has no way off this Mac except through relay,
         // and a local agent already has one.
         allow_external: {},                      // mcpID -> true | false
+        // The mount-plane grant (remote/access-profile only): each row is
+        // { id, path, access }. Unlike allowed_tools/context, id and path are
+        // live-bound straight into this array on blur (onchange), not
+        // deferred through a _xxxText sibling — a mount row's own two fields
+        // have no picker and no per-key structure to reconcile, so there is
+        // nothing captureProjectFormInputs needs to do for them.
+        mounts: [],
         // Raw text as typed, so a half-finished value survives a re-render and
         // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
         _scopeText: {},                          // mcpID -> { field: text }
@@ -1320,6 +1376,7 @@ function projectFormFromExisting(p) {
         kind: isRemoteProject(p) ? 'remote' : 'local',
         name: p.name || '',
         path: p.path || '',
+        host_id: p.host_id || '',
         allowed_mcp_ids: (p.allowed_mcp_ids || []).slice(),
         allowed_models: (p.allowed_models || []).slice(),
         chat_templates: JSON.parse(JSON.stringify(p.chat_templates || [])),
@@ -1335,6 +1392,7 @@ function projectFormFromExisting(p) {
         allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
         context: JSON.parse(JSON.stringify(p.context || {})),
         allow_external: JSON.parse(JSON.stringify(p.allow_external || {})),
+        mounts: JSON.parse(JSON.stringify(p.mounts || [])),
         _scopeText: {},
         _toolsText: {},
         token: p.token || '',
@@ -1421,11 +1479,38 @@ function isRemoteForm(f) {
     return !!f && f.kind === 'remote';
 }
 
+// isHostedForm mirrors config.Project.IsHosted (docs/ssh-hosts.md): a local
+// project whose directory lives on another machine. A remote (access
+// profile) form is never hosted — the Where control only appears for a
+// local-kind form (see renderProjectForm).
+function isHostedForm(f) {
+    return !!f && !isRemoteForm(f) && !!f.host_id;
+}
+
+// setProjWhere is the project form's Where segmented control: '' selects
+// This Mac, anything else names a Host. Switching TO a host clears the
+// fields a host project may not carry (docs/ssh-hosts.md) so a stale value
+// from a This-Mac edit can't ride along into harvestProjectForm.
+function setProjWhere(hostId) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.host_id = hostId || '';
+    if (f.host_id) {
+        f.allowed_mcp_ids = [];
+        f.generate_skill = false;
+        f.allow_cwd_auth = false;
+    }
+    render();
+}
+
 function setProjKind(kind) {
     const f = state.projectForm;
     if (!f) return;
     f.kind = kind;
     if (kind === 'remote') {
+        // host_id and kind:remote are mutually exclusive (docs/ssh-hosts.md)
+        // — an access profile has no directory, hosted or otherwise.
+        f.host_id = '';
         // The wildcard means "every MCP relay currently knows about" — on a
         // remote grant that would let a future MCP registration silently
         // widen what the remote client can reach, so it's not offered (see
@@ -1598,6 +1683,29 @@ function setProjMcpGranted(mcpID, granted) {
         delete (f._scopeText || {})[mcpID];
         delete (f._toolsText || {})[mcpID];
     }
+    render();
+}
+
+// ---- Mounts (mount-plane grant) --------------------------------------------
+
+function addProjMount() {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mounts.push({ id: '', path: '', access: 'read' });
+    render();
+}
+
+function removeProjMount(index) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts.splice(index, 1);
+    render();
+}
+
+function setProjMountAccess(index, access) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts[index].access = access;
     render();
 }
 
@@ -2331,18 +2439,43 @@ function renderProjectForm() {
         html += '<div class="proj-field-error">' + esc(state.projectFormError) + '</div>';
     }
     if (!isRemote) {
-        html += '<label>Project path</label>';
-        html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === 'projPath' ? 'proj-field-invalid' : '') + '" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+        const hosted = isHostedForm(f);
+        // ---- Where (docs/ssh-hosts.md) ----
+        // Chosen at any time, unlike Kind: moving a project's directory
+        // between the console and a host is an ordinary edit, not a
+        // conversion with the consequences Kind's read-only-after-create
+        // rule exists for.
+        html += '<label>Where</label>';
+        html += '<div class="perm-btns">';
+        html += '<button class="perm-btn ' + (!f.host_id ? 'active' : '') + '" onclick="setProjWhere(\'\')">This Mac</button>';
+        for (const h of (state.hosts || [])) {
+            html += '<button class="perm-btn ' + (f.host_id === h.id ? 'active' : '') + '" onclick="setProjWhere(\'' + esc(h.id) + '\')">' + esc(h.name) + '</button>';
+        }
+        html += '</div>';
+        html += '<label>' + (hosted ? 'Path on ' + esc(hostNameFor(f.host_id)) : 'Project path') + '</label>';
+        html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === 'projPath' ? 'proj-field-invalid' : '') + '" value="' + esc(f.path) + '" placeholder="' + (hosted ? '/home/you/projects/acme' : '/Users/you/projects/acme') + '" />';
         if (state.projectFormErrorField === 'projPath') {
             html += '<div class="proj-field-error">' + esc(state.projectFormError) + '</div>';
         }
-        html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
+        html += '<p class="proj-section-help">' + (hosted
+            ? 'Absolute path on ' + esc(hostNameFor(f.host_id)) + '. Relay never checks whether it exists — the host does that when a session or terminal opens it.'
+            : 'Absolute path. Filesystem MCPs are auto-scoped to this directory.') + '</p>';
     } else {
         html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += '</div>';
 
     // ---- Allowed MCPs + tri-state picker ----
+    // Absent (not disabled) for a hosted project, matching how this whole
+    // section is already absent for an access profile below: relay-brokered
+    // tools live on the console only in v1 (docs/ssh-hosts.md decision 6),
+    // so the picker would offer a grant that could never do anything.
+    if (isHostedForm(f)) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
+        html += '<p class="proj-section-help">Relay tools aren\'t available on a host yet — the agent uses its built-in tools there.</p>';
+        html += '</div>';
+    } else {
     const wild = !isRemote && isProjMcpWildcard(f);
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
@@ -2415,6 +2548,41 @@ function renderProjectForm() {
         }
     }
     html += '</div>';
+    }
+
+    // ---- Mounts (mount-plane grant) ----
+    // Remote-only, the same way path is local-only: a mount exposes a host
+    // directory to a client on another machine as a real filesystem, over
+    // relayfs — the counterpart to a local project already having shell +
+    // fsMCP access to its own path. ValidateMounts refuses a non-empty list
+    // on a kind:local project, so the section is absent here rather than
+    // shown-then-refused-on-save.
+    if (isRemote) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Mounts</div>';
+        html += '<p class="proj-section-help">Exposes a host directory to this client as a real POSIX filesystem mount (relayfs), instead of through an MCP\'s curated tool surface. Each mount needs an id unique on this profile (what the client names in its attach request), an absolute host path, and read or write.</p>';
+        if (f.mounts.length === 0) {
+            html += '<div class="proj-tool-empty">No mounts yet.</div>';
+        }
+        for (let i = 0; i < f.mounts.length; i++) {
+            const m = f.mounts[i];
+            const breadth = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+            html += '<div class="proj-mcp-row" style="align-items:flex-start;flex-wrap:wrap;gap:8px">';
+            html += '<div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:220px">';
+            html += '<input type="text" id="projMountId_' + i + '" value="' + esc(m.id || '') + '" placeholder="mount id, e.g. src" onchange="state.projectForm.mounts[' + i + '].id = this.value" />';
+            html += '<input type="text" id="projMountPath_' + i + '" value="' + esc(m.path || '') + '" placeholder="/absolute/host/path" onchange="state.projectForm.mounts[' + i + '].path = this.value" />';
+            if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + '</span>';
+            html += '</div>';
+            html += '<div class="perm-btns">';
+            html += '<button class="perm-btn ' + (m.access !== 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'read\')">Read</button>';
+            html += '<button class="perm-btn ' + (m.access === 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'write\')">Write</button>';
+            html += '</div>';
+            html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+            html += '</div>';
+        }
+        html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
+        html += '</div>';
+    }
 
     // ---- Allowed models ----
     html += '<div class="proj-section">';
@@ -2496,7 +2664,7 @@ function renderProjectForm() {
     // Skills are written under <path>/.claude/skills — no path, no skill, so
     // the whole section is absent (not disabled) for a remote project rather
     // than showing a toggle that would lie about what it does.
-    if (!isRemote) {
+    if (!isRemote && !isHostedForm(f)) {
         html += '<div class="proj-section">';
         html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
         html += '<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project\'s tools.</p>';
@@ -2518,7 +2686,7 @@ function renderProjectForm() {
     // ---- Directory auth ----
     // Compares a caller's cwd against Path; a remote project has no Path, so
     // the toggle is absent rather than disabled (see validateProjectShape).
-    if (!isRemote) {
+    if (!isRemote && !isHostedForm(f)) {
         html += '<div class="proj-section">';
         html += '<div class="proj-section-title">Directory Auth</div>';
         html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
@@ -2616,6 +2784,7 @@ function harvestProjectForm() {
     const f = state.projectForm;
     if (!f) return null;
     const isRemote = isRemoteForm(f);
+    const hosted = isHostedForm(f);
     const name = (document.getElementById('projName') || {}).value || f.name;
     // A remote project has no path control in the form (see renderProjectForm)
     // and must not send one — validateProjectShape rejects any non-empty path
@@ -2649,14 +2818,33 @@ function harvestProjectForm() {
     const payload = {
         name: name.trim(),
         kind: isRemote ? 'remote' : 'local',
-        allowed_mcp_ids: f.allowed_mcp_ids,
+        // host_id: '' moves (or keeps) the project on the console —
+        // validateHostShape refuses allowed_mcp_ids and the two flags below
+        // on a host project, so this harvest forces all three to the value
+        // that will pass regardless of stale form state, the same discipline
+        // the remote branch already applies to itself.
+        host_id: isRemote ? '' : f.host_id,
+        allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
         allowed_models: allowedModels,
         permission_policy: policy,
-        // Both are directory-flavored and meaningless without a path;
-        // force them off for remote regardless of stale form state.
-        generate_skill: isRemote ? false : f.generate_skill,
-        allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
+        // Both are directory-flavored and meaningless without a console
+        // path; force them off for remote AND for a hosted project
+        // regardless of stale form state.
+        generate_skill: (isRemote || hosted) ? false : f.generate_skill,
+        allow_cwd_auth: (isRemote || hosted) ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
+        // Local-project mounts must not be sent even if a stray row survived
+        // a kind switch on a still-open new-project form — ValidateMounts
+        // refuses non-empty mounts on kind:local, and this is the harvest
+        // that has to make that unreachable rather than an error to hit.
+        // Blank rows (Add clicked, never filled in) are dropped rather than
+        // sent — a convenience, same as everywhere else in this function;
+        // the server is still what actually validates a filled-in row.
+        mounts: isRemote
+            ? f.mounts
+                .filter(m => (m.id || '').trim() && (m.path || '').trim())
+                .map(m => ({ id: m.id.trim(), path: m.path.trim(), access: m.access === 'write' ? 'write' : 'read' }))
+            : [],
     };
     if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     // The ADR-011 permission set. Sent on every save, including when it is
@@ -2833,6 +3021,11 @@ function confirmBroadScope(payload) {
             if (phrase) findings.push(mcpID + ' · ' + field + ' is ' + phrase);
         }
     }
+    const mounts = (payload && payload.mounts) || [];
+    for (const m of mounts) {
+        const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ''));
+        if (phrase) findings.push('mount ' + m.id + ' is ' + phrase);
+    }
     if (!findings.length) return true;
     return confirm(
         'This grant is broader than a folder:\n\n  ' + findings.join('\n  ') + '\n\n'
@@ -2957,6 +3150,316 @@ window.onProjectError = function(msg) {
     // repaint, so a plain render() here costs nothing a push would have saved.
     render();
     focusProjectFormIssue();
+};
+
+// ---------------------------------------------------------------------------
+// Hosts tab (docs/ssh-hosts.md) — a host is a machine reached over ssh that a
+// project's directory can live on instead of the console. Rows are seeded by
+// the initial payload like projects and enrolments are: the list is small,
+// and there is no loading state worth showing for it.
+// ---------------------------------------------------------------------------
+
+function hostNameFor(hostId) {
+    if (!hostId) return '';
+    const h = (state.hosts || []).find(x => x.id === hostId);
+    return h ? h.name : hostId;
+}
+
+function renderHosts() {
+    if (state.editingHostId) return renderHostForm();
+
+    let html = '<div class="page-header">';
+    html += '<h2>Hosts</h2>';
+    html += '<button class="btn btn-primary" onclick="newHost()">+ Add host</button>';
+    html += '</div>';
+    html += '<p class="page-intro">A host is a machine you reach over ssh; projects can live on one.</p>';
+
+    if (state.hostError) html += '<div class="proj-error">' + esc(state.hostError) + '</div>';
+
+    if ((state.hosts || []).length === 0) {
+        html += '<div class="empty-state">No hosts yet. A host is a machine you reach over ssh; projects can live on one. <button class="btn btn-sm btn-primary" onclick="newHost()">Add host</button></div>';
+        return html;
+    }
+
+    for (const h of state.hosts) {
+        const pending = !!state.hostProbePending[h.id];
+        html += '<div class="proj-card">';
+        html += '<div class="proj-card-header">';
+        html += '<div style="display:flex;align-items:center;gap:8px">';
+        html += '<span class="proj-card-name">' + esc(h.name) + '</span>';
+        html += renderHostStatus(h.status);
+        html += '</div>';
+        html += '<div style="display:flex;gap:4px">';
+        html += '<button class="btn btn-sm" onclick="probeHost(\'' + esc(h.id) + '\')" ' + (pending ? 'disabled' : '') + '>' + (pending ? 'Probing…' : 'Probe') + '</button>';
+        if (h.status === 'connected') {
+            html += '<button class="btn btn-sm" onclick="disconnectHost(\'' + esc(h.id) + '\')">Disconnect</button>';
+        }
+        html += '<button class="btn btn-sm" onclick="editHost(\'' + esc(h.id) + '\')">Edit</button>';
+        html += '<button class="btn btn-sm btn-danger" onclick="removeHost(\'' + esc(h.id) + '\', \'' + esc(h.name) + '\')">Remove</button>';
+        html += '</div></div>';
+        html += '<div class="proj-card-path">' + esc(h.target) + (h.port ? ':' + h.port : '') + '</div>';
+        html += '<div class="proj-card-meta"><span>' + renderHostProbeSummary(h) + '</span></div>';
+        html += '</div>';
+    }
+    return html;
+}
+
+function renderHostStatus(status) {
+    const label = status || 'unknown';
+    return '<span class="host-status"><span class="host-status-dot ' + esc(label) + '"></span>' + esc(label) + '</span>';
+}
+
+// renderHostProbeSummary is the list row's one-line answer to "does this
+// still work" — the probe's own error when the last one failed, or
+// "OS arch · node vX · claude vY" (docs/ssh-hosts.md) when it didn't.
+function renderHostProbeSummary(h) {
+    const p = h.probe;
+    if (!p) return 'Never probed.';
+    if (!p.ok) return '<span class="proj-error" style="margin:0">' + esc(p.error || 'unreachable') + '</span>';
+    const parts = [];
+    if (p.os) parts.push(esc(p.os) + (p.arch ? ' ' + esc(p.arch) : ''));
+    parts.push(p.node_path ? ('node ' + esc(p.node_version || '')) : 'node not found');
+    parts.push(p.claude_path ? ('claude ' + esc(p.claude_version || '')) : 'claude not found');
+    return parts.join(' · ');
+}
+
+function blankHostForm() {
+    return { id: null, name: '', target: '', port: '', identity_file: '' };
+}
+
+function hostFormFromExisting(h) {
+    return {
+        id: h.id,
+        name: h.name || '',
+        target: h.target || '',
+        port: h.port ? String(h.port) : '',
+        identity_file: h.identity_file || '',
+    };
+}
+
+function newHost() {
+    state.editingHostId = 'new';
+    state.hostForm = blankHostForm();
+    state.hostFormError = null;
+    render();
+}
+
+function editHost(id) {
+    const h = (state.hosts || []).find(x => x.id === id);
+    if (!h) return;
+    state.editingHostId = id;
+    state.hostForm = hostFormFromExisting(h);
+    state.hostFormError = null;
+    render();
+}
+
+function cancelHostEdit() {
+    state.editingHostId = null;
+    state.hostForm = null;
+    state.hostFormError = null;
+    render();
+}
+
+// captureHostFormInputs mirrors captureProjectFormInputs: the form's inputs
+// live only in the DOM between renders, so any repaint that rebuilds them
+// from state.hostForm without reading the DOM first would erase whatever was
+// typed (relay#25's argument, applied here too).
+function captureHostFormInputs() {
+    const f = state.hostForm;
+    if (!f) return;
+    const val = id => {
+        const el = document.getElementById(id);
+        return el && typeof el.value === 'string' ? el.value : '';
+    };
+    f.name = val('hostName') || f.name;
+    f.target = val('hostTarget') || f.target;
+    f.port = val('hostPort');
+    f.identity_file = val('hostIdentityFile');
+}
+
+function harvestHostForm() {
+    const name = (document.getElementById('hostName') || {}).value || '';
+    const target = (document.getElementById('hostTarget') || {}).value || '';
+    const portStr = (document.getElementById('hostPort') || {}).value || '';
+    const identityFile = (document.getElementById('hostIdentityFile') || {}).value || '';
+    const payload = { name: name.trim(), target: target.trim() };
+    const port = parseInt(portStr, 10);
+    if (portStr.trim() && !isNaN(port)) payload.port = port;
+    if (identityFile.trim()) payload.identity_file = identityFile.trim();
+    return payload;
+}
+
+// saveHostForm creates or updates the host. Create always probes
+// synchronously server-side; update re-probes only when target/port/
+// identity_file changed (docs/ssh-hosts.md) — either way the result rides
+// back on onHostAdded/onHostUpdated, so there is nothing more to do here but
+// wait.
+function saveHostForm() {
+    const f = state.hostForm;
+    if (!f) return;
+    const payload = harvestHostForm();
+    if (!payload.name) {
+        state.hostFormError = 'Host name is required';
+        render();
+        return;
+    }
+    if (!payload.target) {
+        state.hostFormError = 'SSH target is required';
+        render();
+        return;
+    }
+    const isNew = !f.id;
+    state.hostProbePending[isNew ? 'new' : f.id] = true;
+    if (isNew) {
+        ipc(JSON.stringify(Object.assign({ type: 'create_host' }, payload)));
+    } else {
+        ipc(JSON.stringify(Object.assign({ type: 'update_host', id: f.id }, payload)));
+    }
+    render();
+}
+
+// testHostConnection is docs/ssh-hosts.md's "Test connection" button: for an
+// existing host it just re-probes (probe_host); for one still being created
+// there is no host to probe yet, so it saves — Create already probes
+// synchronously and the result lands in the same probe-result card either
+// way.
+function testHostConnection() {
+    const f = state.hostForm;
+    if (!f) return;
+    if (f.id) {
+        probeHost(f.id);
+        return;
+    }
+    saveHostForm();
+}
+
+function removeHost(id, name) {
+    if (!confirm('Remove host "' + name + '"?\n\nAny project on it must be moved back to this Mac or another host first.')) return;
+    ipc(JSON.stringify({ type: 'remove_host', id }));
+}
+
+function probeHost(id) {
+    state.hostProbePending[id] = true;
+    render();
+    ipc(JSON.stringify({ type: 'probe_host', id }));
+}
+
+function disconnectHost(id) {
+    ipc(JSON.stringify({ type: 'disconnect_host', id }));
+}
+
+function renderHostForm() {
+    const f = state.hostForm;
+    if (!f) return '<div class="empty-state">No form state.</div>';
+    const isNew = !f.id;
+    const pendingKey = isNew ? 'new' : f.id;
+    const pending = !!state.hostProbePending[pendingKey];
+
+    let html = '<h2>' + (isNew ? 'Add host' : 'Edit host') + '</h2>';
+    if (state.hostFormError) html += '<div class="proj-error" id="hostFormBanner" tabindex="-1">' + esc(state.hostFormError) + '</div>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += '<label>Name</label>';
+    html += '<input type="text" id="hostName" value="' + esc(f.name) + '" placeholder="devbox" />';
+    html += '<label>SSH target</label>';
+    html += '<input type="text" id="hostTarget" value="' + esc(f.target) + '" placeholder="user@host or ssh-config alias" />';
+    html += '<label>Port</label>';
+    html += '<input type="text" id="hostPort" value="' + esc(f.port) + '" placeholder="22" />';
+    html += '<label>Identity file</label>';
+    html += '<input type="text" id="hostIdentityFile" value="' + esc(f.identity_file) + '" placeholder="optional, absolute path" />';
+    html += '</div>';
+
+    // The freshest record lives in state.hosts — onHostAdded/onHostUpdated
+    // already replaced it there by the time this re-renders, so the form
+    // reads the probe result from the list rather than keeping a second copy.
+    const existing = !isNew ? (state.hosts || []).find(x => x.id === f.id) : null;
+    if (existing && existing.probe) {
+        html += renderHostProbeCard(existing.probe, existing.target);
+    }
+
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveHostForm()" ' + (pending ? 'disabled' : '') + '>Save</button>';
+    html += '<button class="btn btn-sm" onclick="testHostConnection()" ' + (pending ? 'disabled' : '') + '>' + (pending ? 'Testing…' : 'Test connection') + '</button>';
+    html += '<button class="btn btn-danger" onclick="cancelHostEdit()">Cancel</button>';
+    html += '</div>';
+    return html;
+}
+
+// renderHostProbeCard is docs/ssh-hosts.md's three-line result: reachability
+// (named by the ssh target, not the discovered $HOME — the target is what
+// the operator typed and can check against), then node, then claude, each
+// ✓ or ✗. A missing claude gets the doc's own remedy sentence rather than a
+// bare "not found", since it is the one gap the operator can't fix by
+// editing this form.
+function renderHostProbeCard(p, target) {
+    let html = '<div class="proj-section">';
+    html += '<div class="proj-section-title">Probe result</div>';
+    if (!p.ok) {
+        html += '<div class="proj-error">✗ ' + esc(p.error || 'unreachable') + '</div>';
+        html += '</div>';
+        return html;
+    }
+    html += '<div class="proj-ok">✓ Reachable as ' + esc(target || '') + '</div>';
+    if (p.node_path) {
+        html += '<div class="proj-ok">✓ node ' + esc(p.node_version || '') + ' at ' + esc(p.node_path) + '</div>';
+    } else {
+        html += '<div class="proj-error">✗ node not found</div>';
+    }
+    if (p.claude_path) {
+        html += '<div class="proj-ok">✓ claude ' + esc(p.claude_version || '') + ' at ' + esc(p.claude_path) + '</div>';
+    } else {
+        html += '<div class="proj-error">✗ claude not found — install Claude Code on this host and run Probe again</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// ---- Host IPC event handlers ----
+
+window.onHostsListed = function(hosts) {
+    state.hosts = hosts || [];
+    if (state.page === 'hosts') render('push');
+};
+
+window.onHostAdded = function(h) {
+    if (!h || !h.id) return;
+    state.hosts = state.hosts.filter(x => x.id !== h.id).concat(h);
+    delete state.hostProbePending['new'];
+    state.editingHostId = null;
+    state.hostForm = null;
+    state.hostError = null;
+    if (state.page === 'hosts') render('push');
+};
+
+window.onHostUpdated = function(h) {
+    if (!h || !h.id) return;
+    state.hosts = state.hosts.map(x => x.id === h.id ? h : x);
+    delete state.hostProbePending[h.id];
+    state.hostError = null;
+    // Stay on the form after a probe/re-probe (the result card is what the
+    // operator is looking at); a plain Save closes it, same as projects.
+    if (state.page === 'hosts') render('push');
+};
+
+window.onHostRemoved = function(id) {
+    state.hosts = state.hosts.filter(x => x.id !== id);
+    if (state.editingHostId === id) {
+        state.editingHostId = null;
+        state.hostForm = null;
+    }
+    if (state.page === 'hosts') render('push');
+};
+
+window.onHostError = function(msg) {
+    state.hostError = msg;
+    state.hostFormError = msg;
+    // Every host mutation this UI can trigger sets hostProbePending['new'] or
+    // hostProbePending[id]; a refusal clears whichever key was in flight so
+    // the button doesn't stay stuck reading "Probing…"/"Testing…".
+    state.hostProbePending = {};
+    if (state.page !== 'hosts') return;
+    render();
 };
 
 // ---------------------------------------------------------------------------
@@ -5329,5 +5832,7 @@ Object.assign(window, {
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
+    addProjMount, removeProjMount, setProjMountAccess,
+    blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

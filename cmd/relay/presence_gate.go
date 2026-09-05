@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -50,6 +51,23 @@ func rawJSONMapOf(m map[string]json.RawMessage) map[string][]byte {
 	out := make(map[string][]byte, len(m))
 	for k, v := range m {
 		out[k] = []byte(v)
+	}
+	return out
+}
+
+// mountsDigestJSON marshals each mount grant independently, in the order
+// given, for RawJSONSeqField. Unlike rawJSONMapOf, re-encoding here is safe:
+// config.MountGrant is a fixed three-string-field struct, not arbitrary
+// nested JSON, so json.Marshal on an already-decoded value is deterministic
+// and there is no wire-bytes-vs-decoded-value gap for a collision to hide in.
+func mountsDigestJSON(mounts []config.MountGrant) [][]byte {
+	if mounts == nil {
+		return nil
+	}
+	out := make([][]byte, len(mounts))
+	for i, m := range mounts {
+		b, _ := json.Marshal(m)
+		out[i] = b
 	}
 	return out
 }

@@ -11,9 +11,12 @@ import (
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
 // create orchestration lives in exactly one place (ApplyCreate).
 type CreateFields struct {
-	Name             string                   `json:"name"`
-	Path             string                   `json:"path"`
-	Kind             config.ProjectKind       `json:"kind,omitempty"`
+	Name string             `json:"name"`
+	Path string             `json:"path"`
+	Kind config.ProjectKind `json:"kind,omitempty"`
+	// HostID names a Host this project's Path lives on instead of the
+	// console (docs/ssh-hosts.md). Empty means the console.
+	HostID           string                   `json:"host_id,omitempty"`
 	AllowedMcpIDs    []string                 `json:"allowed_mcp_ids"`
 	AllowedModels    []string                 `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate    `json:"chat_templates"`
@@ -33,15 +36,22 @@ type CreateFields struct {
 	// decision 2c). Not a pointer here for the same reason none of the three
 	// above is — a create carries the whole shape or none of it.
 	AllowExternal map[string]bool `json:"allow_external,omitempty"`
+	// Mounts is the mount-plane grant (see config.Project.Mounts):
+	// ValidateShape refuses it on a kind:local project the same way it
+	// refuses AllowCwdAuth's remote-only cousins the other way around.
+	Mounts []config.MountGrant `json:"mounts,omitempty"`
 }
 
 // UpdateFields is the transport-agnostic patch body. Nil pointers mean
 // "not in the request" (no change); set pointers fully replace the prior value.
 // Shared by the HTTP PUT route and the IPC update handler.
 type UpdateFields struct {
-	Name             *string                  `json:"name,omitempty"`
-	Path             *string                  `json:"path,omitempty"`
-	Kind             *config.ProjectKind      `json:"kind,omitempty"`
+	Name *string             `json:"name,omitempty"`
+	Path *string             `json:"path,omitempty"`
+	Kind *config.ProjectKind `json:"kind,omitempty"`
+	// HostID follows Path's nil-means-no-change discipline; a pointer to ""
+	// moves the project back to the console.
+	HostID           *string                  `json:"host_id,omitempty"`
 	AllowedMcpIDs    *[]string                `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string                `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]config.ChatTemplate   `json:"chat_templates,omitempty"`
@@ -59,6 +69,7 @@ type UpdateFields struct {
 	Access        *map[string]string          `json:"access,omitempty"`
 	Context       *map[string]json.RawMessage `json:"context,omitempty"`
 	AllowExternal *map[string]bool            `json:"allow_external,omitempty"`
+	Mounts        *[]config.MountGrant        `json:"mounts,omitempty"`
 }
 
 // ApplyCreate creates a project and applies its optional policy, skill
@@ -79,6 +90,7 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	// never leaves a half-built project to roll back.
 	candidate := config.Project{
 		Kind:             f.Kind,
+		HostID:           f.HostID,
 		Path:             f.Path,
 		AllowedMcpIDs:    f.AllowedMcpIDs,
 		AllowedModels:    f.AllowedModels,
@@ -92,8 +104,12 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		AllowExternal:    f.AllowExternal,
 		PermissionPolicy: f.PermissionPolicy,
 		ChatTemplates:    f.ChatTemplates,
+		Mounts:           f.Mounts,
 	}
 	if err := ValidateShape(&candidate); err != nil {
+		return config.Project{}, err
+	}
+	if err := ValidateHostRef(s, &candidate); err != nil {
 		return config.Project{}, err
 	}
 	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
@@ -111,6 +127,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	)
 	if err != nil {
 		return config.Project{}, err
+	}
+	if f.HostID != "" {
+		s.SetProjectHostID(created.ID, f.HostID)
 	}
 	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
@@ -132,6 +151,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	}
 	if len(f.AllowExternal) > 0 {
 		s.UpdateProjectAllowExternal(created.ID, f.AllowExternal)
+	}
+	if len(f.Mounts) > 0 {
+		s.UpdateProjectMounts(created.ID, f.Mounts)
 	}
 	// Last, because it re-runs SyncProjectToken, which prunes by the MCP set
 	// the record ends up with.
@@ -170,6 +192,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	candidate := *proj
 	if f.Kind != nil {
 		candidate.Kind = *f.Kind
+	}
+	if f.HostID != nil {
+		candidate.HostID = *f.HostID
 	}
 	if f.Path != nil {
 		candidate.Path = *f.Path
@@ -217,7 +242,13 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.Context != nil {
 		candidate.Context = *f.Context
 	}
+	if f.Mounts != nil {
+		candidate.Mounts = *f.Mounts
+	}
 	if err := ValidateShape(&candidate); err != nil {
+		return config.Project{}, true, err
+	}
+	if err := ValidateHostRef(s, &candidate); err != nil {
 		return config.Project{}, true, err
 	}
 	// A project that stops being remote strands every enrolment granting it,
@@ -264,6 +295,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.Kind != nil {
 		updateProjectKind(s, id, *f.Kind)
 	}
+	if f.HostID != nil {
+		s.SetProjectHostID(id, *f.HostID)
+	}
 	if f.Path != nil {
 		updateProjectPath(s, id, *f.Path, sc)
 	}
@@ -305,6 +339,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.AllowExternal != nil {
 		s.UpdateProjectAllowExternal(id, *f.AllowExternal)
+	}
+	if f.Mounts != nil {
+		s.UpdateProjectMounts(id, *f.Mounts)
 	}
 	if f.Context != nil {
 		updateProjectContext(s, id, *f.Context, sc)
