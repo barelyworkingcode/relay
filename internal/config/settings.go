@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 )
 
 var (
@@ -19,6 +20,11 @@ type Settings struct {
 	ExternalMcps []ExternalMcp   `json:"external_mcps"`
 	Services     []ServiceConfig `json:"services"`
 	Projects     []Project       `json:"projects"`
+	// Hosts is every machine reached over ssh a project may live on
+	// (docs/ssh-hosts.md). Not omitempty, like Projects: normalize() ensures
+	// this is always a non-nil slice, so an install with no hosts still
+	// serializes "hosts": [].
+	Hosts []Host `json:"hosts"`
 	// AdminSecret is sealed (§4.1): it is a plaintext bearer the bridge
 	// accepts for a handful of admin ops, not a value relay only checks.
 	AdminSecret Secret `json:"admin_secret,omitempty"`
@@ -455,12 +461,140 @@ func (s *Settings) SetProjectGenerateSkill(id string, gen bool) {
 	proj.GenerateSkill = gen
 }
 
+// SetProjectHostID moves a project between the console and a host. "" moves
+// it back to the console — validated by project.ValidateHostRef/ValidateShape
+// at the call site, not here, matching every other field this package trusts
+// its caller to have already checked (SetProjectGenerateSkill, UpdateProjectMounts).
+func (s *Settings) SetProjectHostID(id string, hostID string) {
+	proj, _ := s.findProjectByID(id)
+	if proj == nil {
+		return
+	}
+	proj.HostID = hostID
+}
+
 func (s *Settings) SetProjectAllowCwdAuth(id string, allow bool) {
 	proj, _ := s.findProjectByID(id)
 	if proj == nil {
 		return
 	}
 	proj.AllowCwdAuth = allow
+}
+
+func (s *Settings) findHostByID(id string) (*Host, int) {
+	for i := range s.Hosts {
+		if s.Hosts[i].ID == id {
+			return &s.Hosts[i], i
+		}
+	}
+	return nil, -1
+}
+
+func (s *Settings) findHostByName(name string) (*Host, int) {
+	for i := range s.Hosts {
+		if strings.EqualFold(s.Hosts[i].Name, name) {
+			return &s.Hosts[i], i
+		}
+	}
+	return nil, -1
+}
+
+// FindHostByID returns the mutable persisted host record and its index.
+func FindHostByID(s *Settings, id string) (*Host, int) {
+	return s.findHostByID(id)
+}
+
+// FindHostByName looks up a host case-insensitively, matching how
+// ValidateHost enforces uniqueness.
+func FindHostByName(s *Settings, name string) (*Host, int) {
+	return s.findHostByName(name)
+}
+
+// AddHost validates and appends a new host, assigning its ID and CreatedAt
+// if the caller left them empty. Call within store.With.
+func (s *Settings) AddHost(h Host) (Host, error) {
+	if h.ID == "" {
+		h.ID = "h_" + newHostSuffix()
+	}
+	if h.CreatedAt == "" {
+		h.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := ValidateHost(&h, s.Hosts, ""); err != nil {
+		return Host{}, err
+	}
+	s.Hosts = append(s.Hosts, h)
+	return h, nil
+}
+
+// HostPatch is the set-fields patch for UpdateHost; a nil pointer means "not
+// in the request", matching UpdateFields' discipline for projects.
+type HostPatch struct {
+	Name         *string
+	Target       *string
+	Port         *int
+	IdentityFile *string
+}
+
+// UpdateHost patches name/target/port/identity_file, validated against the
+// FINAL shape the patch would produce (candidate), never against the touched
+// fields alone — matching ApplyUpdate's rule for projects. A target, port or
+// identity_file change is the caller's cue to re-probe; UpdateHost itself
+// never runs one.
+func (s *Settings) UpdateHost(id string, patch HostPatch) (Host, bool, error) {
+	h, idx := s.findHostByID(id)
+	if h == nil {
+		return Host{}, false, nil
+	}
+	candidate := *h
+	if patch.Name != nil {
+		candidate.Name = *patch.Name
+	}
+	if patch.Target != nil {
+		candidate.Target = *patch.Target
+	}
+	if patch.Port != nil {
+		candidate.Port = *patch.Port
+	}
+	if patch.IdentityFile != nil {
+		candidate.IdentityFile = *patch.IdentityFile
+	}
+	if err := ValidateHost(&candidate, s.Hosts, id); err != nil {
+		return Host{}, true, err
+	}
+	s.Hosts[idx] = candidate
+	return candidate, true, nil
+}
+
+// RemoveHost refuses to remove a host any project still references, naming
+// every referencing project so the operator knows what to repoint first.
+// found is false when no host has this id at all; refs is non-empty exactly
+// when found is true but the removal was refused.
+func (s *Settings) RemoveHost(id string) (found bool, refs []string) {
+	h, _ := s.findHostByID(id)
+	if h == nil {
+		return false, nil
+	}
+	for _, p := range s.Projects {
+		if p.HostID == id {
+			refs = append(refs, p.Name)
+		}
+	}
+	if len(refs) > 0 {
+		return true, refs
+	}
+	s.Hosts = slices.DeleteFunc(s.Hosts, func(x Host) bool { return x.ID == id })
+	return true, nil
+}
+
+// SetHostProbe replaces id's last probe result wholesale — a probe result is
+// a point-in-time snapshot, never merged with the last one.
+func (s *Settings) SetHostProbe(id string, probe HostProbe) bool {
+	h, _ := s.findHostByID(id)
+	if h == nil {
+		return false
+	}
+	h.Probe = &probe
+	return true
 }
 
 func (s *Settings) findMcpByID(id string) (*ExternalMcp, int) {
@@ -594,6 +728,18 @@ func (s *Settings) storedTokenForProject(proj *Project, hash string) *StoredToke
 		AllowedTools:  proj.AllowedTools,
 		AllowExternal: proj.AllowExternal,
 	}
+}
+
+// newHostSuffix is a short random identifier, not a secret — a host id is
+// logged and shown in the UI freely, so 4 bytes (enough to avoid an
+// accidental collision, not to resist a guess) is the right size. Ignoring
+// crypto/rand.Read's error leaves b as its zero value in the practically
+// unreachable case it fails, which only risks a duplicate id -- ValidateHost
+// does not key uniqueness on it, only on Name.
+func newHostSuffix() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func generateProjectToken() (string, string, error) {

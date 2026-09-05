@@ -145,7 +145,14 @@ func syncProjectToken(s *config.Settings, proj *config.Project, surfaces McpSurf
 	// rather than only when ValidateGrants happens to catch it —
 	// this guard is what keeps a bypass of that check from silently
 	// widening scope instead of failing loudly (ADR-011 decision 5).
-	if proj.IsRemote() {
+	//
+	// A host project's Path is real, but it names a directory on the HOST,
+	// not the console — deriving it into a console fsMCP's allowed_dirs
+	// would hand that MCP a path that does not exist on the machine relay
+	// runs on (docs/ssh-hosts.md). validateHostShape already refuses a host
+	// project any allowed_mcp_ids at all, so this is defence in depth, the
+	// same balance the remote guard above strikes.
+	if proj.IsRemote() || proj.IsHosted() {
 		return
 	}
 	for _, mcpID := range mcpIDs {

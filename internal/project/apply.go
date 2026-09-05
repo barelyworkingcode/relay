@@ -11,9 +11,12 @@ import (
 // Both the HTTP POST route and the IPC create handler unmarshal into it so the
 // create orchestration lives in exactly one place (ApplyCreate).
 type CreateFields struct {
-	Name             string                   `json:"name"`
-	Path             string                   `json:"path"`
-	Kind             config.ProjectKind       `json:"kind,omitempty"`
+	Name string             `json:"name"`
+	Path string             `json:"path"`
+	Kind config.ProjectKind `json:"kind,omitempty"`
+	// HostID names a Host this project's Path lives on instead of the
+	// console (docs/ssh-hosts.md). Empty means the console.
+	HostID           string                   `json:"host_id,omitempty"`
 	AllowedMcpIDs    []string                 `json:"allowed_mcp_ids"`
 	AllowedModels    []string                 `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate    `json:"chat_templates"`
@@ -43,9 +46,12 @@ type CreateFields struct {
 // "not in the request" (no change); set pointers fully replace the prior value.
 // Shared by the HTTP PUT route and the IPC update handler.
 type UpdateFields struct {
-	Name             *string                  `json:"name,omitempty"`
-	Path             *string                  `json:"path,omitempty"`
-	Kind             *config.ProjectKind      `json:"kind,omitempty"`
+	Name *string             `json:"name,omitempty"`
+	Path *string             `json:"path,omitempty"`
+	Kind *config.ProjectKind `json:"kind,omitempty"`
+	// HostID follows Path's nil-means-no-change discipline; a pointer to ""
+	// moves the project back to the console.
+	HostID           *string                  `json:"host_id,omitempty"`
 	AllowedMcpIDs    *[]string                `json:"allowed_mcp_ids,omitempty"`
 	AllowedModels    *[]string                `json:"allowed_models,omitempty"`
 	ChatTemplates    *[]config.ChatTemplate   `json:"chat_templates,omitempty"`
@@ -84,6 +90,7 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	// never leaves a half-built project to roll back.
 	candidate := config.Project{
 		Kind:             f.Kind,
+		HostID:           f.HostID,
 		Path:             f.Path,
 		AllowedMcpIDs:    f.AllowedMcpIDs,
 		AllowedModels:    f.AllowedModels,
@@ -102,6 +109,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, err
 	}
+	if err := ValidateHostRef(s, &candidate); err != nil {
+		return config.Project{}, err
+	}
 	if err := validateProjectPermissions(&candidate, surfaces); err != nil {
 		return config.Project{}, err
 	}
@@ -117,6 +127,9 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	)
 	if err != nil {
 		return config.Project{}, err
+	}
+	if f.HostID != "" {
+		s.SetProjectHostID(created.ID, f.HostID)
 	}
 	if !permissionPolicyIsEmpty(f.PermissionPolicy) {
 		s.UpdateProjectPermissionPolicy(created.ID, f.PermissionPolicy)
@@ -180,6 +193,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if f.Kind != nil {
 		candidate.Kind = *f.Kind
 	}
+	if f.HostID != nil {
+		candidate.HostID = *f.HostID
+	}
 	if f.Path != nil {
 		candidate.Path = *f.Path
 	}
@@ -232,6 +248,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	if err := ValidateShape(&candidate); err != nil {
 		return config.Project{}, true, err
 	}
+	if err := ValidateHostRef(s, &candidate); err != nil {
+		return config.Project{}, true, err
+	}
 	// A project that stops being remote strands every enrolment granting it,
 	// so the conversion is refused while any exists (ADR-010 decision 3).
 	// Checked only when the result is local AND the project either was
@@ -275,6 +294,9 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.Kind != nil {
 		updateProjectKind(s, id, *f.Kind)
+	}
+	if f.HostID != nil {
+		s.SetProjectHostID(id, *f.HostID)
 	}
 	if f.Path != nil {
 		updateProjectPath(s, id, *f.Path, sc)

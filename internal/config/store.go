@@ -309,6 +309,7 @@ func (s *Settings) normalize() {
 		ensureSlice(&s.Projects[i].AllowedMcpIDs)
 		ensureSlice(&s.Projects[i].AllowedModels)
 	}
+	ensureSlice(&s.Hosts)
 }
 
 // atomicWriteFile writes + fsyncs a temp file, renames it over the target,
