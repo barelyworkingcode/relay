@@ -41,6 +41,8 @@ types.go                 Project, StoredToken, ExternalMcp, ServiceConfig (Setti
 tokens.go                hashToken, auth sentinel errors
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
+host_routes.go           HTTP host routes (docs/ssh-hosts.md) — GET/POST/PUT/DELETE /api/hosts[/{id}], probe, disconnect
+host_ops.go              HostOps: the ungated core host_routes.go and ipc_hosts.go share; runs sshhost.Probe and writes the host.probe audit event
 router.go                Bridge auth (service vs project tokens), tool filtering, access mode, scope presence, _meta injection
 audit_call.go            Nil-safe per-call event builder used by the router instrumentation; reads AuditRecorder
                          via RedactCallArgs/PreviewResult rather than its unexported config
@@ -103,6 +105,15 @@ service/                 Background service supervision: process lifecycle and e
                          spawning. Depends on bridge/config; the frontend channel's lifecycle and log
                          rotation are main's, wired into Registry.FrontendEnv/OpenLog as callbacks so
                          the package never depends on either concrete type.
+sshhost/                 SSH hosts (docs/ssh-hosts.md) — the one derivation of a Host into ssh
+                         arguments: SSHArgv (the fixed-option argv prefix, ControlMaster shared
+                         across relay/relayLLM/eve), RemoteCommand (decision 8's shell-agnostic
+                         base64+eval remote command line, pinned byte-for-byte against the doc's
+                         Fixtures by TestRemoteCommand_Fixtures), and Probe/Check/Disconnect, which
+                         run over a `runner` exec seam (SetRunnerForTest) so no hermetic test in this
+                         repo or a caller's ever shells out to a real ssh. ControlDir picks
+                         `<relay data dir>/run/ssh` or a short `/tmp` fallback so ControlPath+%C never
+                         overflows sun_path. Depends only on config/bridge.
 audit/                   The tool-call audit log engine: the event/actor/config model, the async
                          writer, the in-memory ring, byte-level JSON redaction (ADR-012), AuditQuery,
                          and AuditOps (the read-only core behind both the HTTP and IPC audit doors).
@@ -252,6 +263,17 @@ at validation — see ADR-009 for why each of these is defended twice rather
 than once.
 
 See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
+
+A project's directory can also live on another machine entirely, reached over
+`ssh` rather than a VM reaching *in* — the mirror image of the remote-project
+model above. That project is still `kind: local` in shape; it carries a
+`HostID` naming a `Settings.Hosts` entry instead. `Kind == remote` and a
+non-empty `HostID` are mutually exclusive — a host project has a real
+directory, an access profile has none at all. See
+[docs/ssh-hosts.md](docs/ssh-hosts.md) for the full design, the wire
+contract with relayLLM and eve, and why relay-brokered tools, mounts, cwd
+auth and skill generation are all refused on a host project the same way
+they are on a remote one, for related but distinct reasons.
 
 ### Remote client enrolment
 
