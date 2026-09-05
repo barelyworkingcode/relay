@@ -137,6 +137,18 @@ var runner = func(ctx context.Context, name string, args []string) (stdout, stde
 	return outBuf.Bytes(), errBuf.Bytes(), err
 }
 
+// SetRunnerForTest overrides the exec seam every Probe/Check/Disconnect call
+// goes through, and returns a func that restores the previous one (call it
+// via t.Cleanup). Exported, not just package-internal, so a caller of this
+// package — cmd/relay's route/IPC tests included — can keep its own suite
+// hermetic (docs/ssh-hosts.md: "Do not shell out to ssh in hermetic
+// tests") without duplicating a second exec seam of its own.
+func SetRunnerForTest(fn func(ctx context.Context, name string, args []string) (stdout, stderr []byte, err error)) (restore func()) {
+	prev := runner
+	runner = fn
+	return func() { runner = prev }
+}
+
 // probeTimeout bounds Probe's whole round trip (docs/ssh-hosts.md decision
 // 10): a host that would prompt for a password must fail loudly rather than
 // hang a headless caller forever.
