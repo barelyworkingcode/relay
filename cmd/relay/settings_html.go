@@ -75,6 +75,15 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 	if projects == nil {
 		projects = []config.Project{}
 	}
+	// Hosts are seeded like projects: the list is small, and the Hosts tab
+	// and the project form's Where control both need it on the first paint,
+	// with no loading state to fail into (docs/ssh-hosts.md). hostToView is
+	// reused verbatim -- a Host carries no secret a native-only view would
+	// need to reveal, unlike nativeProject/nativeExternalMcp above.
+	hosts := settings.Hosts
+	if hosts == nil {
+		hosts = []config.Host{}
+	}
 	// Enrolments are seeded like projects rather than fetched on tab switch:
 	// the list is small (one row per enrolled certificate), and a credential
 	// you cannot see is one you will not revoke — it should be on screen the
@@ -94,6 +103,7 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		"__SERVICES_JSON__", mustMarshalJSON("services", serviceConfigsToNativeView(settings.Services)),
 		"__RUNNING_IDS_JSON__", mustMarshalJSON("running_ids", runningIDs),
 		"__PROJECTS_JSON__", mustMarshalJSON("projects", projectsToNativeView(projects)),
+		"__HOSTS_JSON__", mustMarshalJSON("hosts", hostsToView(hosts)),
 		"__MCP_TOOL_CACHE_JSON__", mustMarshalJSON("mcp_tool_cache", toolCache),
 		"__MCP_SCOPE_FIELDS_JSON__", mustMarshalJSON("mcp_scope_fields", scopeFields),
 		"__ENROLMENTS_JSON__", mustMarshalJSON("enrolments", enrolments),
