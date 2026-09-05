@@ -101,7 +101,7 @@ func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 
 	// execute: a probe and a disconnect each run a real ssh process, the
 	// same class every other "relay runs something now" route uses.
-	rr.Handle(control.ClassExecute, "POST /api/hosts/{id}/probe", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/hosts/{id}/probe", func(w http.ResponseWriter, r *http.Request) {
 		updated, found, err := ops.Probe(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeHostError(w, err)
@@ -114,7 +114,7 @@ func RegisterHostRoutes(rr *control.RouteRegistrar, ops *HostOps) {
 		writeJSON(w, http.StatusOK, hostToView(updated))
 	})
 
-	rr.Handle(control.ClassExecute, "POST /api/hosts/{id}/disconnect", func(w http.ResponseWriter, r *http.Request) {
+	rr.Handle(control.ClassConfigure, "POST /api/hosts/{id}/disconnect", func(w http.ResponseWriter, r *http.Request) {
 		updated, found, err := ops.Disconnect(r.PathValue("id"))
 		if err != nil {
 			writeHostError(w, err)
