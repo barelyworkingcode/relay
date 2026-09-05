@@ -242,7 +242,7 @@ func TestValidateMountPath_AcceptsHomeDirectoryPathButItIsFlaggedAsBreadth(t *te
 	if err != nil {
 		t.Skipf("no home directory available in this environment: %v", err)
 	}
-	if got := ScopeEntryBreadth(home); got != scopeBreadthHome {
+	if got := ScopeEntryBreadth(home); got != ScopeBreadthHome {
 		t.Skipf("this environment's home directory %q is not two-segment /Users or /home shaped (breadth=%q); skipping", home, got)
 	}
 

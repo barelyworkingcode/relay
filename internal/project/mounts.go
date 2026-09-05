@@ -70,7 +70,7 @@ func validateMountPath(path string) error {
 	if clean := filepath.Clean(path); clean != path {
 		return fmt.Errorf("path must be its own clean form (got %q, want %q) — a trailing slash or a %q/%q segment is refused rather than silently cleaned", path, clean, ".", "..")
 	}
-	if ScopeEntryBreadth(path) == scopeBreadthRoot {
+	if ScopeEntryBreadth(path) == ScopeBreadthRoot {
 		return fmt.Errorf("path %q resolves to a filesystem root, which a mount grant may not reach outright — the widest a mount may grant is a whole home directory", path)
 	}
 	info, err := os.Lstat(path)
