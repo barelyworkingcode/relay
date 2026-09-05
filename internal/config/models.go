@@ -248,6 +248,45 @@ type PermissionPolicy struct {
 	DeniedTools  []string `json:"denied_tools,omitempty"`
 }
 
+// HostProbe is the last probe result for a Host: absent until the first
+// probe runs, then replaced wholesale by every later one. OK false means
+// Error names why; OK true means every other field was discovered live.
+type HostProbe struct {
+	At            string `json:"at"`
+	OK            bool   `json:"ok"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	Home          string `json:"home,omitempty"`
+	Shell         string `json:"shell,omitempty"`
+	NodePath      string `json:"node_path,omitempty"`
+	NodeVersion   string `json:"node_version,omitempty"`
+	ClaudePath    string `json:"claude_path,omitempty"`
+	ClaudeVersion string `json:"claude_version,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// Host is a machine reached over ssh that a project's directory can live on
+// (docs/ssh-hosts.md). Relay execs /usr/bin/ssh with this record turned into
+// an argv prefix (internal/sshhost.SSHArgv) — it never opens a raw TCP
+// connection or handles a private key itself.
+type Host struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Target is user@host, host, or an ssh_config alias — whatever
+	// /usr/bin/ssh's destination argument accepts.
+	Target string `json:"target"`
+	// Port is 0 to mean "ssh default / ssh_config", never literally 22 by
+	// default: a 0 asks ssh to decide, an explicit 22 would override an
+	// ssh_config Port an operator already set for this alias.
+	Port int `json:"port,omitempty"`
+	// IdentityFile is passed as -i when set; empty defers to the operator's
+	// own ssh-agent/config, which is the ordinary case.
+	IdentityFile string `json:"identity_file,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	// Probe is the last probe result; nil until the first one runs.
+	Probe *HostProbe `json:"probe,omitempty"`
+}
+
 type ProjectKind string
 
 const (
@@ -305,7 +344,15 @@ type Project struct {
 	// equality check invites someone to later write `Kind != ProjectKindRemote`
 	// wrongly, or to compare against the wrong constant. IsRemote() is the one
 	// place that decision is made.
-	Kind           ProjectKind     `json:"kind,omitempty"`
+	Kind ProjectKind `json:"kind,omitempty"`
+	// HostID names a Host this project's Path lives on instead of the
+	// console (docs/ssh-hosts.md). Empty means the console, same
+	// zero-value-is-safe discipline as Kind: every project written before
+	// this field existed round-trips as a console project. Mutually
+	// exclusive with Kind == ProjectKindRemote — the two solve different
+	// problems (a host project still IS kind: local in shape) and must never
+	// be read together.
+	HostID         string          `json:"host_id,omitempty"`
 	AllowedMcpIDs  []string        `json:"allowed_mcp_ids"`
 	AllowedModels  []string        `json:"allowed_models"`
 	ChatTemplates  []ChatTemplate  `json:"chat_templates,omitempty"`
@@ -511,6 +558,13 @@ func (k ProjectKind) IsRemote() bool {
 
 func (p *Project) IsRemote() bool {
 	return p.Kind.IsRemote()
+}
+
+// IsHosted reports whether this project's directory lives on a Host rather
+// than the console. Test this, never `HostID != ""` inline, for the same
+// reason IsRemote exists as a method: one place decides what the field means.
+func (p *Project) IsHosted() bool {
+	return p.HostID != ""
 }
 
 // normalizeProjectKind collapses anything that isn't ProjectKindRemote to
