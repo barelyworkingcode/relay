@@ -175,6 +175,7 @@ type frontendRouteDeps struct {
 	auditOps          *audit.AuditOps
 	mcpOps            *McpOps
 	projectOps        *ProjectOps
+	hostOps           *HostOps
 	enhanced          *EnhancedServiceRegistry
 	// issuance is derived once here from auditOps' recorder so the socket mux,
 	// the TCP mux and the login routes cannot disagree about whether an
@@ -206,6 +207,9 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	}
 	if deps.mcpOps != nil {
 		RegisterMcpRoutes(rr, deps.mcpOps)
+	}
+	if deps.hostOps != nil {
+		RegisterHostRoutes(rr, deps.hostOps)
 	}
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
@@ -283,7 +287,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -292,6 +296,9 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	}
 	if projectOps == nil {
 		projectOps = &ProjectOps{Store: store}
+	}
+	if hostOps == nil {
+		hostOps = &HostOps{Store: store}
 	}
 
 	deps := frontendRouteDeps{
@@ -306,6 +313,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		auditOps:          auditOps,
 		mcpOps:            mcpOps,
 		projectOps:        projectOps,
+		hostOps:           hostOps,
 		enhanced:          enhanced,
 		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
 	}

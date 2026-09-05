@@ -457,7 +457,20 @@ func runTrayApp() {
 		},
 	}
 	app.ipcCtx.ProjectOps = projectOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
+	// hostOps is the one core behind both the Hosts tab (via
+	// app.ipcCtx.HostOps) and RegisterHostRoutes on the frontend server
+	// (docs/ssh-hosts.md) — a host created from curl and one created from
+	// the tray share the same probe and the same audit record. Its
+	// OnChange fires the same tray refresh a project mutation does: a host
+	// rename or a fresh probe result changes what the Projects tab's host
+	// chip and the project form's Where control show.
+	hostOps := &HostOps{
+		Store:    store,
+		Auditor:  rec,
+		OnChange: onProjectsChanged,
+	}
+	app.ipcCtx.HostOps = hostOps
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

@@ -72,6 +72,7 @@ func projectCreateDigest(f project.CreateFields) presence.Digest {
 		BoolMapField("allow_external", true, f.AllowExternal).
 		BoolField("allow_cwd_auth", true, f.AllowCwdAuth).
 		StringField("kind", true, string(f.Kind)).
+		StringField("host_id", true, f.HostID).
 		StringField("path", true, f.Path).
 		RawJSONSeqField("mounts", true, mountsDigestJSON(f.Mounts)).
 		Build()
@@ -128,6 +129,11 @@ func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 	} else {
 		b.StringField("kind", false, "")
 	}
+	if f.HostID != nil {
+		b.StringField("host_id", true, *f.HostID)
+	} else {
+		b.StringField("host_id", false, "")
+	}
 	if f.Path != nil {
 		b.StringField("path", true, *f.Path)
 	} else {
@@ -154,7 +160,7 @@ func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 func projectUpdateTouchesGrant(f project.UpdateFields) bool {
 	return f.AllowedMcpIDs != nil || f.AllowedTools != nil || f.Access != nil ||
 		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil ||
-		f.Path != nil || f.Mounts != nil
+		f.Path != nil || f.Mounts != nil || f.HostID != nil
 }
 
 func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
@@ -180,6 +186,9 @@ func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
 	if f.Kind != nil {
 		names = append(names, "kind")
 	}
+	if f.HostID != nil {
+		names = append(names, "host_id")
+	}
 	if f.Path != nil {
 		names = append(names, "path")
 	}
@@ -191,6 +200,9 @@ func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
 
 func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	names := []string{"kind", "path"}
+	if f.HostID != "" {
+		names = append(names, "host_id")
+	}
 	if len(f.AllowedMcpIDs) > 0 {
 		names = append(names, "allowed_mcp_ids")
 	}

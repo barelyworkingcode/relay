@@ -106,6 +106,26 @@ type PtyEnvRequest struct {
 type PtyEnvResponse struct {
 	RelayToken string `json:"relay_token"`
 	WorkingDir string `json:"working_dir"`
+	// Host is set only for a project whose directory lives on another
+	// machine (docs/ssh-hosts.md): RelayToken is then always "" (decision 6
+	// — no relay-brokered tools on a host in v1) and WorkingDir names the
+	// directory on the HOST, not the console.
+	Host *HostSpec `json:"host,omitempty"`
+}
+
+// HostSpec is what a caller needs to launch a process on a host: the ssh
+// argv prefix (internal/sshhost.SSHArgv) plus the absolute tool paths and
+// shell a probe already discovered. It never carries a credential — ssh
+// authenticates with the operator's own identity (key/agent), not a bearer
+// relay hands out.
+type HostSpec struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	SSHArgv    []string `json:"ssh_argv"`
+	NodePath   string   `json:"node_path"`
+	ClaudePath string   `json:"claude_path"`
+	Shell      string   `json:"shell"`
+	OS         string   `json:"os"`
 }
 
 // ShellTemplateRequest resolves a project-scoped shell launch template by

@@ -111,6 +111,9 @@ var gateAllowlistedFiles = map[string]string{
 	"cmd/relay/trayapp.go":         "the frontend-token migration's one-time store.With call; not a gated op",
 	"cmd/relay/frontend_server.go": "ensureFrontendTokenIsCredential's config.WithDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
 	"cmd/relay/login_routes.go":    "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
+	"cmd/relay/host_ops.go": "the HostOps core: deliberately UNGATED (docs/ssh-hosts.md) -- a host record names an ssh destination, not a tool-permission grant, " +
+		"and is not one of the acts in presence.GatedOps; the control-plane `configure`/`execute` capability classes checked by the route " +
+		"registrar before either door's handler runs are the boundary this record's mutations sit behind",
 
 	// S6 brokered every mutating CLI command over admin_op (ADR-017
 	// implementation spec §7): credential_cmd.go, mcp_cmd.go, service_cmd.go
@@ -323,6 +326,7 @@ var wantGateAllowlistedFiles = []string{
 	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
 	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
 	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/frontend_server.go", "cmd/relay/login_routes.go",
+	"cmd/relay/host_ops.go",
 }
 
 // TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a

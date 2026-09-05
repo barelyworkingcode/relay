@@ -209,6 +209,11 @@ type IPCContext struct {
 	// project created from curl and one created from the tray share the
 	// presence gate and the audit record (ADR-017 decisions 2 and 3).
 	ProjectOps *ProjectOps
+	// HostOps is Ops's counterpart for the Hosts tab and RegisterHostRoutes
+	// (docs/ssh-hosts.md) — ipc_hosts.go's handlers are thin adapters over
+	// it too, so a host created from curl and one created from the tray
+	// share the same probe and the same audit record.
+	HostOps *HostOps
 }
 
 // withSettings atomically mutates settings and emits an error event on failure.
@@ -319,6 +324,14 @@ const (
 	MsgQueryAudit     = "query_audit"
 	MsgExportAudit    = "export_audit"
 	MsgRevealAuditLog = "reveal_audit_log"
+
+	// Hosts (ipc_hosts.go)
+	MsgListHosts      = "list_hosts"
+	MsgCreateHost     = "create_host"
+	MsgUpdateHost     = "update_host"
+	MsgRemoveHost     = "remove_host"
+	MsgProbeHost      = "probe_host"
+	MsgDisconnectHost = "disconnect_host"
 )
 
 // ---------------------------------------------------------------------------
@@ -372,6 +385,14 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgListPasskeys:  ipcListPasskeys,
 	MsgRevokePasskey: ipcRevokePasskey,
 	MsgSignOutLogin:  ipcSignOutLogin,
+
+	// Hosts (ipc_hosts.go)
+	MsgListHosts:      ipcListHosts,
+	MsgCreateHost:     ipcCreateHost,
+	MsgUpdateHost:     ipcUpdateHost,
+	MsgRemoveHost:     ipcRemoveHost,
+	MsgProbeHost:      ipcProbeHost,
+	MsgDisconnectHost: ipcDisconnectHost,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.
