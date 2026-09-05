@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -17,14 +18,14 @@ import (
 func runServiceCommand(args []string) {
 	store := config.NewSettingsStore()
 	runSubcommands("service", []cliSubcommand{
-		{"register", func(a []string) { serviceRegister(store, a) }},
+		{"register", serviceRegister},
 		{"unregister", func(a []string) { serviceUnregister(store, a) }},
 		{"restart", func(a []string) { serviceRestart(store, a) }},
 		{"list", func(_ []string) { serviceList(store) }},
 	}, args)
 }
 
-func serviceRegister(store config.SettingsStore, args []string) {
+func serviceRegister(args []string) {
 	fs := flag.NewFlagSet("service register", flag.ExitOnError)
 	var opts registerOpts
 	addRegisterFlags(fs, &opts)
@@ -32,6 +33,7 @@ func serviceRegister(store config.SettingsStore, args []string) {
 	workdir := fs.String("workdir", "", "working directory")
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
+	frontendCreds := fs.Bool("frontend-creds", false, "explicitly inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); this is the default when neither flag is given, but naming it records that the choice was deliberate")
 	noFrontendCreds := fs.Bool("no-frontend-creds", false, "do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells")
 	fs.Parse(args)
 
@@ -52,16 +54,28 @@ func serviceRegister(store config.SettingsStore, args []string) {
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 
-	// nil (flag absent) leaves the setting untouched on re-register (see
-	// ServiceOps.Update's own merge for FrontendConsumer); an explicit
-	// false opts the service out. There is deliberately no way to turn it
-	// back on from the CLI (no --frontend-creds counterpart): the opt-out
-	// is the only control on the frontend socket credential and re-arming
-	// it is not a `register` concern.
+	// nil (neither flag given) leaves the setting untouched on re-register
+	// (see ServiceOps.Update's own merge for FrontendConsumer) and, on a
+	// fresh register, resolves to the implicit default (inject) —
+	// service.frontendCredsEnabled reads FrontendConsumer == nil that way.
+	// --frontend-creds and --no-frontend-creds set it explicitly in either
+	// direction; a caller who names neither is warned, since that silence is
+	// indistinguishable on disk from having chosen the default on purpose.
+	if visited["frontend-creds"] && visited["no-frontend-creds"] {
+		exitError("--frontend-creds and --no-frontend-creds are mutually exclusive")
+	}
 	var frontendConsumer *bool
-	if *noFrontendCreds {
+	switch {
+	case *noFrontendCreds:
 		f := false
 		frontendConsumer = &f
+	case *frontendCreds:
+		t := true
+		frontendConsumer = &t
+	default:
+		fmt.Fprintln(os.Stderr, "relay: neither --frontend-creds nor --no-frontend-creds given — "+
+			"the front-door bearer (RELAY_FRONTEND_SOCKET/TOKEN) will be injected into this service. "+
+			"A backend that never dials the front door should pass --no-frontend-creds.")
 	}
 
 	env, err := parseEnvPairs(opts.EnvPairs)
@@ -185,6 +199,20 @@ func serviceRestart(store config.SettingsStore, args []string) {
 	}
 }
 
+// frontDoorColumn spells FrontendCredsState for `relay service list`: "yes
+// (implicit)" is called out separately from a plain "yes" because only the
+// latter is a choice the operator is on record as having made.
+func frontDoorColumn(svc *config.ServiceConfig) string {
+	switch svc.FrontendCredsState() {
+	case "explicit":
+		return "yes"
+	case "implicit":
+		return "yes (implicit)"
+	default:
+		return "no"
+	}
+}
+
 func serviceList(store config.SettingsStore) {
 	s := store.Get()
 
@@ -194,7 +222,7 @@ func serviceList(store config.SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART")
+	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tFRONT-DOOR")
 	for _, svc := range s.Services {
 		cmd := svc.Command
 		if len(svc.Args) > 0 {
@@ -208,7 +236,7 @@ func serviceList(store config.SettingsStore) {
 		if urlStr == "" {
 			urlStr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, frontDoorColumn(&svc))
 	}
 	w.Flush()
 }

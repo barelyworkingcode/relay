@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -136,7 +137,7 @@ func TestIPCServiceAction_HappyPathDispatchesAndReports(t *testing.T) {
 		t.Errorf("happy path should succeed: %+v", got)
 	}
 	reqs := srv.recorded()
-	if len(reqs) != 1 || reqs[0].Method != "DELETE" || reqs[0].Path != "/api/x/abc" {
+	if len(reqs) != 1 || reqs[0].Method != http.MethodDelete || reqs[0].Path != "/api/x/abc" {
 		t.Errorf("upstream call mismatch: %+v", reqs)
 	}
 }

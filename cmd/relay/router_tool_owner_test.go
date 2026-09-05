@@ -22,7 +22,6 @@ func collidingRouter(t *testing.T, perms map[string]config.Permission, order []s
 	t.Helper()
 	mocks := map[string]*mockMcpConn{}
 	for _, id := range order {
-		id := id
 		mocks[id] = newMockConn(id, simpleTools("fs_read", "only_"+id),
 			func(_ context.Context, method string, _ interface{}) (json.RawMessage, error) {
 				if method != mcp.MethodToolsCall {

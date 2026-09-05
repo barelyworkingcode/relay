@@ -25,11 +25,11 @@ import (
 func runEnrolCommand(args []string) {
 	store := config.NewSettingsStore()
 	runSubcommands("enrol", []cliSubcommand{
-		{"create", func(a []string) { enrolCreate(store, a) }},
-		{"sign", func(a []string) { enrolSign(store, a) }},
+		{"create", enrolCreate},
+		{"sign", enrolSign},
 		{"list", func(_ []string) { enrolList(store) }},
-		{"update", func(a []string) { enrolUpdate(store, a) }},
-		{"revoke", func(a []string) { enrolRevoke(store, a) }},
+		{"update", enrolUpdate},
+		{"revoke", enrolRevoke},
 		{"requests", func(a []string) { enrolRequests(a) }},
 		{"approve", func(a []string) { enrolApprove(a) }},
 		{"refuse", func(a []string) { enrolRefuse(a) }},
@@ -95,7 +95,7 @@ func parseEnrolCreateFlags(args []string) enrolmentFields {
 // restores this command: the CLI only ever builds the request and prints
 // what comes back; EnrolmentOps.Create, running inside the tray, is the one
 // place that ever touches the CA key.
-func enrolCreate(store config.SettingsStore, args []string) {
+func enrolCreate(args []string) {
 	fields := parseEnrolCreateFlags(args)
 	if fields.ClientID == "" {
 		exitError("--client-id is required")
@@ -186,7 +186,7 @@ func readCSRFile(path string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open %s: %w", path, err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 	data, err := io.ReadAll(io.LimitReader(r, enrolment.MaxCSRBytes+1))
@@ -204,7 +204,7 @@ func readCSRFile(path string) ([]byte, error) {
 // on any branch: it only builds the request and prints what the broker
 // hands back — EnrolmentOps.Sign, running inside the tray, is the one
 // place that ever touches the CA key or the CSR's validation.
-func enrolSign(store config.SettingsStore, args []string) {
+func enrolSign(args []string) {
 	fields, err := parseEnrolSignFlags(args)
 	if err != nil {
 		exitError("%v", err)
@@ -375,7 +375,7 @@ func parseEnrolUpdateFlags(args []string) enrolment.UpdateRequest {
 	return req
 }
 
-func enrolUpdate(store config.SettingsStore, args []string) {
+func enrolUpdate(args []string) {
 	req := parseEnrolUpdateFlags(args)
 	if req.ClientID == "" {
 		exitError("--client-id is required")
@@ -427,7 +427,7 @@ func enrolUpdate(store config.SettingsStore, args []string) {
 	fmt.Printf("  fingerprint (unchanged): %s\n", after.Fingerprint)
 }
 
-func enrolRevoke(store config.SettingsStore, args []string) {
+func enrolRevoke(args []string) {
 	fs := flag.NewFlagSet("enrol revoke", flag.ExitOnError)
 	clientID := fs.String("client-id", "", "client id to revoke")
 	fs.Parse(args)

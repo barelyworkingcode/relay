@@ -105,14 +105,24 @@ func TestProjectList_NamesAMissingScopeValue(t *testing.T) {
 	}
 }
 
+// regenProjectSkill's list-row button goes through bind()/data-act (an id
+// argument, but bind() throughout is simpler than two conventions — see
+// bind()'s own comment), so its markup carries no function-call text to grep
+// for; this reads state._actBind instead, the same table the delegated click
+// listener dispatches from.
 func TestProjectList_NoRegenSkillButtonForAProfile(t *testing.T) {
 	vm := seedScopeVM(t, scopeProjectsFixture, "")
-	html := evalString(t, vm, `window.renderProjects()`)
-	if n := strings.Count(html, "regenProjectSkill("); n != 1 {
-		t.Errorf("want exactly one Regen Skill button (the local project), got %d\n%s", n, html)
+	got := evalString(t, vm, `(function(){
+		window.renderProjects();
+		var ids = window.state._actBind.filter(function(e){ return e[0] === window.regenProjectSkill; }).map(function(e){ return e[1][0]; });
+		return JSON.stringify(ids);
+	})()`)
+	var ids []string
+	if err := json.Unmarshal([]byte(got), &ids); err != nil {
+		t.Fatalf("bad JSON %q: %v", got, err)
 	}
-	if strings.Contains(html, `regenProjectSkill('p_bob')`) || strings.Contains(html, `regenProjectSkill('p_bare')`) {
-		t.Error("a profile was offered a control that cannot do anything")
+	if len(ids) != 1 || ids[0] != "p_local" {
+		t.Errorf("want exactly one Regen Skill button (the local project), got %v", ids)
 	}
 }
 
@@ -133,19 +143,29 @@ func TestProjectForm_PermissionPanel(t *testing.T) {
 
 	for _, want := range []string{
 		"Operations",
-		`setProjAccess('macmcp', 'read')`,
-		`setProjAccess('macmcp', 'write')`,
 		"Tools",
 		`setProjAllowedToolsText('macmcp', this.value)`,
 		"Resource scope",
 		"mail_accounts",
 		"Mail accounts this client may read from or send as",
 		"list of strings, one per line",
-		`toggleScopeFieldPicker('macmcp', 'mail_accounts')`,
 		"Values here are read within mail_accounts",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("permission panel is missing %q\n%s", want, html)
+		}
+	}
+	// setProjAccess and toggleScopeFieldPicker go through bind()/data-act, so
+	// their markup carries no function-call text to grep for — read the
+	// bind table the delegated click listener dispatches from instead.
+	binds := evalString(t, vm, `JSON.stringify(window.state._actBind.map(function(e){ return [e[0].name].concat(e[1]); }))`)
+	for _, want := range []string{
+		`["setProjAccess","macmcp","read"]`,
+		`["setProjAccess","macmcp","write"]`,
+		`["toggleScopeFieldPicker","macmcp","mail_accounts"]`,
+	} {
+		if !strings.Contains(binds, want) {
+			t.Errorf("permission panel is missing the bound control %s\n%s", want, binds)
 		}
 	}
 	if !strings.Contains(html, `<div class="proj-scope-summary">Bob</div>`) ||
@@ -321,8 +341,6 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 
 	for _, want := range []string{
 		"Outside this Mac",
-		`setProjAllowExternal('macmcp', false)`,
-		`setProjAllowExternal('macmcp', true)`,
 		"mail_send",
 		"web_fetch",
 		"Drafting still works",
@@ -334,6 +352,17 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the outbound control is missing %q\n%s", want, html)
+		}
+	}
+	// setProjAllowExternal goes through bind()/data-act — see
+	// TestProjectForm_PermissionPanel's comment on setProjAccess.
+	binds := evalString(t, vm, `JSON.stringify(window.state._actBind.map(function(e){ return [e[0].name].concat(e[1]); }))`)
+	for _, want := range []string{
+		`["setProjAllowExternal","macmcp",false]`,
+		`["setProjAllowExternal","macmcp",true]`,
+	} {
+		if !strings.Contains(binds, want) {
+			t.Errorf("the outbound control is missing the bound control %s\n%s", want, binds)
 		}
 	}
 	if !strings.Contains(html, "Unset defaults to <strong>refused</strong> for an access profile") {
@@ -350,7 +379,8 @@ func TestProjectForm_OutboundGrantIsItsOwnControlAndSaysWhatItDoes(t *testing.T)
 	if !strings.Contains(local, "already has this Mac") {
 		t.Error("the local default is asserted without the reason for it")
 	}
-	if !strings.Contains(local, `setProjAllowExternal('macmcp', false)`) {
+	localBinds := evalString(t, vm, `JSON.stringify(window.state._actBind.map(function(e){ return [e[0].name].concat(e[1]); }))`)
+	if !strings.Contains(localBinds, `["setProjAllowExternal","macmcp",false]`) {
 		t.Error("a local project cannot refuse its own outbound channel from the editor")
 	}
 }

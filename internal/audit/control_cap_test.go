@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -154,7 +155,7 @@ func TestControlAudit_MethodCapBoundsSerializedRecordAndIsVisible(t *testing.T) 
 		Transport: control.TransportSocket, CredID: "cred-attacker", Allowed: false, Reason: "class not granted",
 	})
 	rec.RecordDecision(control.ControlDecision{
-		Method: "DELETE", Path: "/api/enrolments/enr_1", Class: control.ClassGrant,
+		Method: http.MethodDelete, Path: "/api/enrolments/enr_1", Class: control.ClassGrant,
 		Transport: control.TransportSocket, CredID: "cred-op", Allowed: true,
 	})
 
@@ -165,7 +166,7 @@ func TestControlAudit_MethodCapBoundsSerializedRecordAndIsVisible(t *testing.T) 
 
 	var truncated, genuine AuditEvent
 	for _, ev := range events {
-		if ev.Method == "DELETE" {
+		if ev.Method == http.MethodDelete {
 			genuine = ev
 		} else {
 			truncated = ev
@@ -181,7 +182,7 @@ func TestControlAudit_MethodCapBoundsSerializedRecordAndIsVisible(t *testing.T) 
 	if genuine.MethodTruncated {
 		t.Error("method_truncated = true for an ordinary HTTP method")
 	}
-	if genuine.Method != "DELETE" {
+	if genuine.Method != http.MethodDelete {
 		t.Errorf("method = %q, want DELETE (unmodified)", genuine.Method)
 	}
 

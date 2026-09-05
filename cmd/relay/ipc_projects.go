@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/project"
-	"log/slog"
 )
 
 // Project IPC handlers for relay's native Projects tab. These mirror
@@ -124,29 +123,14 @@ func ipcRemoveProject(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 
-	var removed config.Project
-	var existed bool
-	okSettings := ctx.withSettings(func(s *config.Settings) {
-		proj, _ := config.FindProjectByID(s, msg.ID)
-		if proj == nil {
-			return
-		}
-		existed = true
-		removed = *proj
-		s.RemoveProject(msg.ID)
-	})
-	if !okSettings {
+	_, found, err := ctx.ProjectOps.Remove(msg.ID)
+	if err != nil {
+		ctx.UI.EmitEvent("onProjectError", err.Error())
 		return
 	}
-	if !existed {
+	if !found {
 		ctx.UI.EmitEvent("onProjectError", "project not found")
 		return
-	}
-
-	if dir := projectSkillDir(removed); dir != "" {
-		if err := RemoveSkill(dir); err != nil {
-			slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
-		}
 	}
 
 	ctx.UI.EmitEvent("onProjectRemoved", msg.ID)
@@ -195,19 +179,13 @@ func ipcRegenProjectSkill(ctx *IPCContext, raw json.RawMessage) {
 		ctx.UI.EmitEvent("onProjectSkillRegen", msg.ID, false, "skill regeneration not available")
 		return
 	}
-	proj, _ := config.FindProjectByID(ctx.Store.Get(), msg.ID)
-	if proj == nil {
-		ctx.UI.EmitEvent("onProjectSkillRegen", msg.ID, false, "project not found")
-		return
-	}
-	dir := projectSkillDir(*proj)
-	if dir == "" {
-		ctx.UI.EmitEvent("onProjectSkillRegen", msg.ID, false, "project has no path")
-		return
-	}
-	projCopy := *proj
 	ctx.GoFunc(func() {
-		if _, err := EmitSkills(ctx.Ctx, ctx.SkillLister, projCopy, dir, RegenAlways); err != nil {
+		dir, found, err := ctx.ProjectOps.RegenSkill(ctx.Ctx, ctx.SkillLister, msg.ID)
+		if !found {
+			dispatchEmit(ctx, "onProjectSkillRegen", msg.ID, false, "project not found")
+			return
+		}
+		if err != nil {
 			dispatchEmit(ctx, "onProjectSkillRegen", msg.ID, false, err.Error())
 			return
 		}

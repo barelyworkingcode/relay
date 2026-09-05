@@ -8,6 +8,7 @@ version: "2"
 # Noisy-but-occasionally-useful
 # linters (gosec, gocognit, prealloc) are deliberately absent — run them
 # on demand via `golangci-lint run --default=none -E <linter>`, not in the gate.
+# Not wired into either git hook: run it by hand with `golangci-lint run ./...`.
 
 linters:
   enable:

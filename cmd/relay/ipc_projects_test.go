@@ -307,6 +307,40 @@ func TestIPCRegenProjectSkill_NoLister_EmitsServiceUnavailableMessage(t *testing
 	}
 }
 
+// TestIPCRegenProjectSkill_RefusesHostedProject is item 1's IPC-side
+// regression test: the "regen now" button must refuse a hosted project the
+// same way the HTTP route does, instead of writing .claude/skills at a path
+// that only describes the remote machine.
+func TestIPCRegenProjectSkill_RefusesHostedProject(t *testing.T) {
+	ipc, store, ui, lister := newProjectsIPC(t)
+	consolePath := filepath.Join(t.TempDir(), "hosted-project-path")
+	store.With(func(s *config.Settings) {
+		s.AddProject(config.Project{
+			ID:     "p_hosted",
+			Name:   "hosted",
+			Path:   consolePath,
+			HostID: "h_devbox",
+		})
+	})
+
+	raw := mustRaw(t, ipcIDMsg{ID: "p_hosted"})
+	ipcRegenProjectSkill(ipc, raw)
+
+	args, ok := findEvent(ui, "onProjectSkillRegen")
+	if !ok {
+		t.Fatalf("expected onProjectSkillRegen")
+	}
+	if args[1].(bool) != false {
+		t.Fatalf("expected regen to report failure for a hosted project, got: %+v", args)
+	}
+	if lister.calls != 0 {
+		t.Fatalf("expected ListTools/ListSkillBuckets never to be called for a hosted project")
+	}
+	if _, statErr := os.Stat(filepath.Join(consolePath, ".claude", "skills")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no skills dir written on the console for a hosted project, stat err = %v", statErr)
+	}
+}
+
 func TestIPCUpdateProjectDisabledTools_PersistsAndEmits(t *testing.T) {
 	ipc, store, ui, _ := newProjectsIPC(t)
 	proj := createTestProject(t, store, "Alpha", t.TempDir(), []string{"fsmcp", "macmcp"})

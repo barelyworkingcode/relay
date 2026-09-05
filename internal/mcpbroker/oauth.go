@@ -110,7 +110,7 @@ func isLoopbackHost(host string) bool {
 
 func probeForResourceMetadata(mcpURL string) string {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
-	req, err := http.NewRequest("POST", mcpURL, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, mcpURL, strings.NewReader(body))
 	if err != nil {
 		slog.Debug("oauth: probe request creation failed", "url", mcpURL, "error", err)
 		return ""
@@ -123,7 +123,7 @@ func probeForResourceMetadata(mcpURL string) string {
 		slog.Debug("oauth: probe request failed", "url", mcpURL, "error", err)
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		slog.Debug("oauth: probe returned non-401", "url", mcpURL, "status", resp.StatusCode)
@@ -159,7 +159,7 @@ func fetchProtectedResourceMetadata(prmURL string) (*protectedResourceMetadata, 
 	if err != nil {
 		return nil, fmt.Errorf("fetch PRM: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("PRM fetch returned HTTP %d", resp.StatusCode)
@@ -181,7 +181,7 @@ func tryFetchOAuthMetadata(metadataURL string) *oauthMetadata {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -296,7 +296,7 @@ func dynamicClientRegister(meta *oauthMetadata, redirectURI, scope string) (*oau
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -434,7 +434,7 @@ func (s *oauthCallbackServer) WaitForCode(timeout time.Duration) (string, error)
 
 // Safe to call multiple times.
 func (s *oauthCallbackServer) Close() {
-	s.server.Close()
+	_ = s.server.Close()
 	<-s.done // wait for Serve goroutine to exit
 }
 
@@ -543,7 +543,7 @@ func postTokenEndpoint(meta *oauthMetadata, data url.Values, action string) (*oa
 	if err != nil {
 		return nil, fmt.Errorf("%s request failed: %w", action, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

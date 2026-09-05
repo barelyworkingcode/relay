@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestControlAudit_RecordCarriesClassTransportAndCredential(t *testing.T) {
 	})
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Method != "PUT" {
+	if ev.Method != http.MethodPut {
 		t.Errorf("method = %q, want PUT", ev.Method)
 	}
 	if ev.Path != "/api/remote" {

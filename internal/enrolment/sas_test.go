@@ -121,7 +121,7 @@ func TestSASAlphabetHasNoConfusablePair(t *testing.T) {
 			t.Errorf("duplicate symbol %q", c)
 		case c == '0' || c == '1' || c == 'I' || c == 'O':
 			t.Errorf("confusable symbol %q is present", c)
-		case !(c >= '2' && c <= '9') && !(c >= 'A' && c <= 'Z'):
+		case (c < '2' || c > '9') && (c < 'A' || c > 'Z'):
 			t.Errorf("symbol %q is neither an uppercase letter nor a digit 2-9", c)
 		}
 		seen[c] = true

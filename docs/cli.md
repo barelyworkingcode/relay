@@ -69,6 +69,10 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay enrol sign` | yes | **yes** | no |
 | `relay enrol update` | yes | **yes** | no |
 | `relay enrol revoke` | yes | **yes** | no |
+| `relay enrol requests` | yes | no | yes |
+| `relay enrol approve` | yes | **yes** | no |
+| `relay enrol refuse` | yes | no | yes |
+| `relay enrol ca-fingerprint` | no | no | yes |
 | `relay login list` | no | no | yes |
 | `relay login enrol` | yes | **yes** | no |
 | `relay login revoke` | yes | **yes** | no |
@@ -85,6 +89,16 @@ Two consequences follow immediately, and both are covered in full below:
 "Works over SSH" here means "does not refuse *because it is gated*." A
 mutating command still needs the service reachable either way; only the
 presence-gated ones add the console-session check.
+
+### Machine-readable output
+
+Today, `relay audit`, `relay grant` and `relay enrol requests` accept
+`--json` and emit the same data as structured JSON instead of a table.
+`relay mcpExec --list` (and its `relay mcp call --list` spelling) spells its
+machine-readable form `--schema` instead: plain `--list` prints a table,
+and `--schema` switches it to JSON that also includes each tool's input
+schema — what a SKILL.md generator consumes. No other subcommand has a
+machine-readable form yet.
 
 ## The global `--config-dir` flag
 
@@ -444,17 +458,22 @@ revoked credential "5d6dad87-4a31-40f6-88f8-9193adcba554"
 
 Remote-client enrolment: signs a client certificate off relay's own CA and
 hands back a certificate the client can use (see
-[`docs/decisions/009-remote-projects.md`](decisions/009-remote-projects.md)
-and [`docs/decisions/011-resource-scope.md`](decisions/011-resource-scope.md)
+ADR-009 (a remote project is a capability grant to a client on another machine, not a directory)
+and ADR-011 (resource scope: relay tracks values, never their meaning)
 for the remote model this feeds). There is no self-service path and no
 bootstrap token by design — every enrolment is a host-side operator act.
 
-Two ways to get there. `enrol create` generates the client's private key on
+Three ways to get there. `enrol create` generates the client's private key on
 this host and emits a bundle containing it — the legacy path, kept working
 but deprecated in its own output. `enrol sign` takes a certificate signing
 request the client generated on its own machine (`relayremote enrol`) and
 returns only certificates: the private key never leaves the client, and
-never exists in this process at all. Prefer `sign`.
+never exists in this process at all. Prefer `sign`. `enrol requests` /
+`enrol approve` / `enrol refuse` are the network CSR path's operator
+surface (ADR-018 decision 8, narrowed by ADR-019): an unenrolled remote
+lodges a CSR over the enrolment-request listener, a six-character SAS
+comparison code identifies it, and the operator approves (signing it, same
+gate and digest as `sign`) or refuses it from here — never self-service.
 
 ```
 relay enrol create --client-id ID --grant PROFILE-ID [--grant PROFILE-ID...]
@@ -467,6 +486,11 @@ relay enrol update --client-id ID [--window-seconds N] [--max-calls N]
                     [--max-result-bytes N] [--grant PROFILE-ID...] | [--clear-grants]
                     [--cli-admin[=true|false]]
 relay enrol revoke --client-id ID
+relay enrol requests [--json]
+relay enrol approve --id REQUEST_ID --client-id ID (--grant PROFILE-ID [--grant PROFILE-ID...] | --no-grant)
+                     [--window-seconds N] [--max-calls N] [--max-result-bytes N]
+relay enrol refuse --id REQUEST_ID
+relay enrol ca-fingerprint
 ```
 
 ### `enrol create`
@@ -643,6 +667,106 @@ Usage of enrol revoke:
 Needs service: yes. Prompts: yes. Works over SSH: no. Revoking removes the
 grant record; the signed certificate itself is unaffected (it just stops
 being able to reach anything, since nothing recognizes it any more).
+
+### `enrol requests`
+
+Lists live pending CSR requests lodged over the enrolment-request listener.
+Brokered like every other mutation here: the pending table lives only in
+the running tray's memory, so this needs the service up even though it is
+read-only.
+
+| Flag | Meaning |
+|---|---|
+| `--json` | Print machine-readable JSON instead of a table. |
+
+```
+$ relay enrol requests -h
+Usage of enrol requests:
+  -json
+    	print machine-readable JSON
+```
+
+The table form's `SAS` column carries the six-character comparison code: a
+value once both sides have completed it, `(waiting)` before the client
+opens its commitment, `FAILED` if it opened it wrongly, and `-` for a
+legacy carried-pin `relayremote request` row that has no comparison at all.
+
+Needs service: yes. Prompts: no. Works over SSH: yes.
+
+### `enrol approve`
+
+Signs a pending request exactly as `enrol sign` does — same op, same gate,
+same digest — over the request's own stored CSR bytes, so there is no
+`--csr` flag here: the CSR is whatever the client already lodged. Requires
+a grant: with no `--grant` it refuses with a message naming `--no-grant` as
+the explicit way to enrol a machine with no access (ADR-019 decision 7 — an
+enrolment that reaches nothing reads on the client as a broken install, so
+the operator says which they meant). Also refuses, before the gate, a
+request whose comparison was never completed or failed.
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Pending request id to approve (required). |
+| `--client-id` | Human-readable, unique id for this enrolment (required); names the enrolment, not the request's label. |
+| `--grant` | Repeatable. Id of an **access profile** this certificate may use — never a local project. Mutually exclusive with `--no-grant`. |
+| `--no-grant` | Enrol this machine with no access at all; nothing works until a later `relay enrol update --grant`. |
+| `--window-seconds` | Budget window, seconds (default 3600). |
+| `--max-calls` | Max tool calls per window (default 120). |
+| `--max-result-bytes` | Max cumulative result bytes per window (default 67108864, 64 MiB). |
+
+```
+$ relay enrol approve -h
+Usage of enrol approve:
+  -client-id string
+    	human-readable id for this enrolment (required, unique); this, not the request's label, names the enrolment
+  -grant value
+    	access profile id this certificate may use (repeatable); a grant must name an access profile (a remote-kind record), never a local project
+  -id string
+    	pending request id to approve (required)
+  -max-calls int
+    	max tool calls per window (default 120)
+  -max-result-bytes int
+    	max cumulative result bytes per window (default 67108864)
+  -no-grant
+    	enrol this machine with no access at all (nothing will work until `relay enrol update --grant` adds one); mutually exclusive with --grant
+  -window-seconds int
+    	budget window in seconds (default 3600)
+```
+
+Needs service: yes. Prompts: yes — and unlike every other gated mutation in
+this doc, refusing over SSH names the working door instead of the generic
+advice, because a request genuinely sits in a queue: approve it from the
+Mac's own screen (Settings → Remote Clients → Pending requests) instead.
+Works over SSH: no.
+
+### `enrol refuse`
+
+Declines a pending request without ever reaching the presence gate —
+declining a stranger is not the act the gate protects. The request keeps
+its own expiry; refusing it does not shorten that.
+
+| Flag | Meaning |
+|---|---|
+| `--id` | Pending request id to refuse (required). |
+
+```
+$ relay enrol refuse -h
+Usage of enrol refuse:
+  -id string
+    	pending request id to refuse (required)
+```
+
+Needs service: yes. Prompts: no. Works over SSH: yes.
+
+### `enrol ca-fingerprint`
+
+Prints relay's CA certificate hash — the value a client pins with
+`relayremote enrol --ca-fingerprint` so it can tell the real relay from an
+impostor on the network. Reads `ca.crt` straight off disk, like `enrol
+list`, so it works with the tray stopped; the certificate is public and the
+key it corresponds to is not needed to fingerprint it.
+
+Needs service: no. Prompts: no. Works over SSH: yes.
 
 ## `relay login`
 
@@ -830,7 +954,8 @@ and how to reach it.
 ```
 relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
-                        [--autostart[=true|false]] [--no-frontend-creds]
+                        [--autostart[=true|false]]
+                        [--frontend-creds | --no-frontend-creds]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service list
@@ -849,6 +974,8 @@ Usage of service register:
     	command to run (required)
   -env value
     	environment KEY=VALUE (repeatable)
+  -frontend-creds
+    	explicitly inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); this is the default when neither flag is given, but naming it records that the choice was deliberate
   -id string
     	record id (default: slugified --name)
   -name string
@@ -882,14 +1009,23 @@ encodes the presence bit, so "leave autostart alone" and "set autostart to
 false" are bound to different digests and a prompt answered for one can
 never be redeemed for the other.
 
-**`--no-frontend-creds` is the one control on the frontend socket
-credential, and it survives a re-register.** It is one-directional: there is
-no `--frontend-creds` flag to turn injection back on from the CLI. Passing
+**`--no-frontend-creds` / `--frontend-creds` control the frontend socket
+credential, and whichever was last given survives a re-register.** Passing
 `--no-frontend-creds` once on a service that never dials relay's front door
 opts it out of `RELAY_FRONTEND_SOCKET`/`RELAY_FRONTEND_TOKEN` injection, and
-every later `service register` call that doesn't repeat the flag leaves that
-opt-out in place — it is not something a later register accidentally
-resets.
+every later `service register` call that doesn't repeat either flag leaves
+that opt-out in place — it is not something a later register accidentally
+resets. `--frontend-creds` is the explicit opt-in counterpart, for a
+frontend consumer that wants its choice on record rather than resting on the
+implicit default; the two are mutually exclusive on one invocation.
+**Passing neither is still accepted** — `FrontendConsumer` stays `nil`,
+which resolves to "inject" (the implicit default, for backward
+compatibility) on a fresh register, or leaves whatever is already stored on
+a re-register — but `service register` prints a one-line warning to stderr
+naming the default and pointing at `--no-frontend-creds`, since a backend
+that never intended to reach the front door but never said so is the exact
+shape of the mistake this default makes easy. `service list`'s `FRONT-DOOR`
+column shows `yes` (explicit), `yes (implicit)`, or `no` for the three cases.
 
 ### `service unregister`
 
@@ -937,8 +1073,11 @@ no services registered
 ```
 
 (This machine's stack — macMCP, fsMCP — is registered as MCPs, not
-services; nothing is currently registered as a background service.) Needs
-service: no. Prompts: no. Works over SSH: yes.
+services; nothing is currently registered as a background service.) When a
+service is registered, the table carries a `FRONT-DOOR` column spelling
+`ServiceConfig.FrontendCredsState()`: `yes` for an explicit
+`--frontend-creds`, `yes (implicit)` for the nil default, `no` for
+`--no-frontend-creds`. Needs service: no. Prompts: no. Works over SSH: yes.
 
 ## `relay mcpExec` (also `relay mcp call`)
 
@@ -1208,6 +1347,5 @@ whole design spends its effort closing on the first one; see
   for remote access profiles and enrolments, including the "the agent's own
   account of what it could reach is not evidence" lesson `relay audit`
   exists to settle.
-- [`docs/decisions/017-implementation-spec.md`](decisions/017-implementation-spec.md)
-  §6.4 — the normative table of every gated operation and the exact
-  argument set its presence digest covers.
+- The ADR-017 implementation spec §6.4 — the normative table of every gated
+  operation and the exact argument set its presence digest covers.

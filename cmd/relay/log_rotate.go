@@ -66,7 +66,7 @@ func (w *rotatingWriter) reopen() error {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	w.f, w.size = f, info.Size()
@@ -79,7 +79,7 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	// Rotate before a write that would exceed the cap — unless the file is
 	// empty, so a single oversized record is written rather than looping.
 	if w.size > 0 && w.size+int64(len(p)) > w.maxBytes {
-		w.f.Close()
+		_ = w.f.Close()
 		w.shiftGenerations()
 		if err := w.reopen(); err != nil {
 			return 0, err

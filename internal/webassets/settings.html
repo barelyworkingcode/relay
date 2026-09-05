@@ -71,7 +71,22 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
     border-right: 1px solid var(--border);
     padding: 12px 0;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
 }
+.sidebar-items { flex: 1; overflow-y: auto; }
+.sidebar-footer {
+    flex-shrink: 0;
+    padding: 10px 16px 4px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+.sidebar-version { font-size: 11px; color: var(--text-3); }
 .sidebar-item {
     display: flex;
     align-items: center;
@@ -81,9 +96,18 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
     cursor: pointer;
     font-size: 13px;
     color: var(--text);
+    /* Reset <button> chrome: this is a <button role="tab"> now (keyboard
+       access needs a real focusable/activatable element), not a <div>, and
+       it must look exactly like the div it replaced. */
+    background: none;
+    border: none;
+    font-family: inherit;
+    text-align: left;
+    box-sizing: border-box;
 }
 .sidebar-item:hover { background: var(--bg-hover); }
 .sidebar-item.active { background: var(--accent); color: var(--on-accent); }
+.sidebar-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .content {
     flex: 1;
     padding: 24px 32px;
@@ -198,6 +222,54 @@ textarea:focus {
 .mcp-card-name { font-weight: 600; font-size: 13px; }
 .mcp-card-cmd { color: var(--text-2); font-size: 11px; font-family: var(--mono); }
 .mcp-card-tools { color: var(--text-3); font-size: 11px; margin-top: 2px; }
+.mcp-tools-toggle { display: block; background: none; border: none; padding: 0; margin-top: 2px; cursor: pointer; font: inherit; color: var(--text-3); font-size: 11px; text-align: left; }
+.mcp-tools-list { margin: 4px 0 4px 16px; padding: 0; font-size: 11px; color: var(--text-2); }
+.mono-inline { font-family: var(--mono); font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Generic status pill — Overview tiles, MCP health, host probe facts. Same
+   ok/warn/danger/muted vocabulary as .svc-badge and .host-status-dot, kept
+   separate because those two are shaped for their own one-off contexts. */
+.pill { display: inline-block; padding: 1px 7px; font-size: 10px; font-weight: 600; border-radius: 4px; letter-spacing: 0.2px; white-space: nowrap; }
+.pill.ok { color: var(--ok); border: 1px solid var(--ok); }
+.pill.warn { color: var(--warn); border: 1px solid var(--warn); }
+.pill.danger { color: var(--danger); border: 1px solid var(--danger); }
+.pill.muted { color: var(--text-2); border: 1px solid var(--border); }
+
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; background: var(--text-3); }
+.status-dot.ok { background: var(--ok); }
+.status-dot.danger { background: var(--danger); }
+.status-dot.muted { background: var(--text-3); }
+
+.btn-link { background: none; border: none; padding: 0; color: var(--accent); font-size: 11px; cursor: pointer; font-family: inherit; }
+.btn-link:hover { text-decoration: underline; }
+
+.learn-more { margin: 8px 0 16px; font-size: 12px; color: var(--text-2); }
+.learn-more summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.learn-more p { margin: 8px 0 0; }
+
+.ca-fingerprint-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; flex-wrap: wrap; }
+.ca-fingerprint-label { font-size: 12px; color: var(--text-2); }
+.ca-fingerprint-value { font-family: var(--mono); font-size: 11px; background: var(--bg-control); padding: 3px 8px; border-radius: 4px; word-break: break-all; }
+
+/* Overview tab */
+.ov-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+/* min-width tuned so 7 tiles wrap 4-then-3 in the content column's width at
+   the window's 900px baseline (900 - 200px sidebar - 2*32px content padding). */
+.ov-tile { flex: 1 1 145px; min-width: 145px; text-align: left; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; font-family: inherit; color: var(--text); }
+.ov-tile:hover { background: var(--bg-hover); }
+.ov-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ov-tile-label { font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
+.ov-tile-value { font-size: 14px; font-weight: 600; }
+.ov-tile.warn .ov-tile-value { color: var(--warn); }
+.ov-tile.danger .ov-tile-value { color: var(--danger); }
+.ov-section { margin-bottom: 24px; }
+.ov-section h3 { margin-bottom: 8px; }
+.ov-attention-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.ov-attention-row:last-child { border-bottom: none; }
+.ov-attention-link { margin-left: auto; flex-shrink: 0; }
+.ov-recent-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+.ov-recent-row:last-child { border-bottom: none; }
+.ov-footer { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-3); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -385,11 +457,18 @@ textarea:focus {
    in for the border-top now that there's real content stacked behind it. */
 .proj-form-actions {
     margin-top: 18px;
-    padding: 14px 0;
+    /* .content has padding-bottom:24px, so a plain bottom:0 sticks the bar
+       24px above the real window edge -- form content keeps scrolling
+       visibly underneath it. Pulling the sticky point down by that same
+       24px (into .content's own bottom padding) and adding it back as
+       padding-bottom here keeps the bar's own box, not a gap, occupying
+       that space, so it lands flush with the edge and nothing shows
+       beneath it. */
+    padding: 14px 0 calc(14px + 24px);
     display: flex;
     gap: 8px;
     position: sticky;
-    bottom: 0;
+    bottom: -24px;
     background: var(--bg);
     box-shadow: 0 -1px 0 var(--border);
 }
@@ -567,16 +646,24 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .pk-session-meta { color: var(--text-3); font-size: 11px; margin-top: 3px; }
 </style></head>
 <body>
-<div class="sidebar">
-    <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
-    <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
-    <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
-    <div class="sidebar-item" onclick="showPage('hosts')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="4" width="20" height="8" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>Hosts</div>
-    <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
-    <div class="sidebar-item" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</div>
-    <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
-    <div class="sidebar-item" onclick="showPage('audit')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tool Calls</div>
+<nav class="sidebar">
+<div class="sidebar-items" role="tablist" aria-label="Settings sections">
+    <button type="button" class="sidebar-item active" role="tab" aria-selected="true" onclick="showPage('overview')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Overview</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('hosts')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="4" width="20" height="8" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>Hosts</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('audit')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tool Calls</button>
 </div>
+<div class="sidebar-footer">
+    <span class="sidebar-version" id="sidebarVersion"></span>
+    <button type="button" class="btn-link" onclick="revealConfigDir()">Config folder</button>
+    <button type="button" class="btn-link" onclick="revealLogsDir()">Logs</button>
+</div>
+</nav>
 <div class="content" id="content"></div>
 
 <script>
@@ -594,7 +681,12 @@ window.__RELAY_INIT__ = {
   passkeys: __PASSKEYS_JSON__,
   loginSessions: __LOGIN_SESSIONS_JSON__,
   loginCode: __LOGIN_CODE_JSON__,
-  initialPage: __INITIAL_PAGE_JSON__
+  initialPage: __INITIAL_PAGE_JSON__,
+  mcpHealth: __MCP_HEALTH_JSON__,
+  serviceRuntime: __SERVICE_RUNTIME_JSON__,
+  sealStatus: __SEAL_STATUS_JSON__,
+  version: __VERSION_JSON__,
+  paths: __PATHS_JSON__
 };
 </script>
 <script>
@@ -814,14 +906,24 @@ window.__RELAY_INIT__ = {
   var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
   var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
   var INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
+  var MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
+  var SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
+  var SEAL_STATUS_INIT = window.__RELAY_INIT__.sealStatus || "";
+  var VERSION_INIT = window.__RELAY_INIT__.version || "dev";
+  var PATHS_INIT = window.__RELAY_INIT__.paths || { config: "", logs: "" };
   function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
       window.webkit.messageHandlers.ipc.postMessage(msg);
     else if (window.chrome && window.chrome.webview)
       window.chrome.webview.postMessage(msg);
   }
+  function bind(fn, ...args) {
+    const idx = state._actBind.length;
+    state._actBind.push([fn, args]);
+    return 'data-act="' + idx + '"';
+  }
   var state = {
-    page: "services",
+    page: "overview",
     externalMcps: EXTERNAL_MCPS_INIT,
     discovering: false,
     discoveryError: null,
@@ -837,6 +939,8 @@ window.__RELAY_INIT__ = {
     }, {}),
     editingServiceId: null,
     // null = list, 'new' = add form, '<id>' = edit form
+    serviceSavePending: false,
+    // true from Add Service click until onServiceAdded/onSettingsError
     // Service Inspector state. Each snapshot in serviceStatuses carries
     // its own manifest, so we derive button layouts from the snapshot —
     // no separate manifest map to keep in sync.
@@ -889,6 +993,8 @@ window.__RELAY_INIT__ = {
     // refusal) -- that one still shows in the banner, which is why the two
     // fields travel separately rather than as one.
     projectFormErrorField: null,
+    projectSavePending: false,
+    // true from Create/Save click until onProjectAdded/Updated/onSettingsError
     projectTokenVisible: {},
     // id -> bool (eye toggle)
     projectFreshToken: {},
@@ -921,6 +1027,8 @@ window.__RELAY_INIT__ = {
     // mcpId -> true once it answered -32601, permanently
     _scopeBind: [],
     // per-render bindings from a checkbox to its value
+    _actBind: [],
+    // per-render bindings for bind()/data-act controls (see bind())
     // Remote Clients tab. Enrolments and the remote block are seeded by the
     // initial payload like projects are — the list is one row per enrolled
     // certificate, and a credential you cannot see is one you will not revoke,
@@ -939,6 +1047,8 @@ window.__RELAY_INIT__ = {
     remoteDraft: null,
     // uncommitted edit of the remote block
     remoteDirty: false,
+    remoteConfigSavePending: false,
+    // true from Save click until onRemoteConfigUpdated/onSettingsError
     remoteError: null,
     // Pending enrolment requests (spec §3). NOT seeded by the initial
     // payload the way enrolments are — this table lives only in the running
@@ -973,17 +1083,33 @@ window.__RELAY_INIT__ = {
     // append live events as they arrive
     auditLoaded: false,
     auditError: null,
-    auditExportPath: null
+    auditExportPath: null,
+    // Overview tab. mcpHealth and serviceRuntime are live snapshots kept
+    // current by onMcpHealth / onServiceStatus / onSettingsReloaded; version,
+    // sealStatus and paths change only if the window is reopened.
+    mcpHealth: MCP_HEALTH_INIT,
+    // mcpId -> {connected, state, attempt, downtime_ms, error}
+    serviceRuntime: SERVICE_RUNTIME_INIT,
+    // serviceId -> {pid, started_at}
+    sealStatus: SEAL_STATUS_INIT,
+    // '' when healthy, else store.SealStatus()'s reason
+    version: VERSION_INIT,
+    paths: PATHS_INIT,
+    // {config, logs}
+    mcpToolsOpen: {}
+    // mcpId -> bool (the "N tools" disclosure)
   };
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
     state.page = page;
-    const pages = ["services", "mcps", "projects", "hosts", "remote", "passkeys", "inspector", "audit"];
+    const pages = ["overview", "services", "mcps", "projects", "hosts", "remote", "passkeys", "inspector", "audit"];
     document.querySelectorAll(".sidebar-item").forEach((el, i) => {
-      el.classList.toggle("active", pages[i] === page);
+      const selected = pages[i] === page;
+      el.classList.toggle("active", selected);
+      el.setAttribute("aria-selected", selected ? "true" : "false");
     });
-    if (page === "audit" && !state.auditLoaded) queryAudit();
-    if (page === "remote") listEnrolmentRequests();
+    if ((page === "audit" || page === "overview") && !state.auditLoaded) queryAudit();
+    if (page === "remote" || page === "overview") listEnrolmentRequests();
     render();
   }
   var JSON_PLACEHOLDER = JSON.stringify({ "my-server": { "command": "npx", "args": ["-y", "@example/server"], "env": { "API_KEY": "..." } } }, null, 2);
@@ -993,32 +1119,286 @@ window.__RELAY_INIT__ = {
     if (state.hostForm) captureHostFormInputs();
     const el = document.getElementById("content");
     const fromPush = source === "push";
-    if (state.page === "services") {
+    if (state.page === "overview") {
+      state._actBind = [];
+      el.innerHTML = renderOverview();
+    } else if (state.page === "services") {
       if (fromPush && state.editingServiceId) return;
+      state._actBind = [];
       el.innerHTML = renderServices();
     } else if (state.page === "inspector") {
       if (fromPush && anyConfigEditorOpen()) return;
+      state._actBind = [];
       el.innerHTML = renderServiceInspector();
     } else if (state.page === "projects") {
       if (fromPush && state.editingProjectId) return;
+      state._actBind = [];
       el.innerHTML = renderProjects();
     } else if (state.page === "hosts") {
       if (fromPush && state.editingHostId) return;
+      state._actBind = [];
       el.innerHTML = renderHosts();
     } else if (state.page === "remote") {
       if (fromPush && (state.enrolForm || state.remoteDirty)) return;
+      state._actBind = [];
       el.innerHTML = renderEnrolments();
     } else if (state.page === "passkeys") {
+      state._actBind = [];
       el.innerHTML = renderPasskeys();
     } else if (state.page === "audit") {
+      state._actBind = [];
       el.innerHTML = renderAudit();
       restoreAuditFocus();
     } else {
       if (fromPush && state.editingMcpId) return;
+      state._actBind = [];
       el.innerHTML = renderMcpServers();
       const ta = document.getElementById("mcpJson");
       if (ta) ta.placeholder = JSON_PLACEHOLDER;
     }
+  }
+  function serviceCounts() {
+    let running = 0, stopped = 0, autostartStopped = 0;
+    for (const svc of state.services || []) {
+      const isRunning = !!state.runningServices[svc.id];
+      if (isRunning) running++;
+      else stopped++;
+      if (svc.autostart && !isRunning) autostartStopped++;
+    }
+    return { running, stopped, autostartStopped, autostartDown: autostartStopped > 0 };
+  }
+  function mcpHealthCounts() {
+    const list = state.externalMcps || [];
+    let connected = 0, down = 0, restarting = 0, abandoned = 0, unauthenticated = 0;
+    for (const mcp of list) {
+      const pill = mcpHealthPillFor(mcp);
+      if (pill.cls === "ok") {
+        connected++;
+        continue;
+      }
+      if (pill.cls === "danger") {
+        abandoned++;
+        continue;
+      }
+      if (pill.cls === "warn") {
+        if (mcp.transport === "http") {
+          unauthenticated++;
+          continue;
+        }
+        const h = (state.mcpHealth || {})[mcp.id];
+        if (h && h.state === "restart_failed") restarting++;
+        else down++;
+      }
+    }
+    return {
+      total: list.length,
+      connected,
+      down,
+      restarting,
+      abandoned,
+      unauthenticated,
+      danger: abandoned > 0,
+      warn: down + restarting + unauthenticated > 0
+    };
+  }
+  function mcpTileValue(mcp) {
+    let value = mcp.connected + " connected";
+    if (mcp.down) value += " \xB7 " + mcp.down + " down";
+    if (mcp.restarting) value += " \xB7 " + mcp.restarting + " restarting";
+    if (mcp.unauthenticated) value += " \xB7 " + mcp.unauthenticated + " not authenticated";
+    if (mcp.abandoned) value += " \xB7 " + mcp.abandoned + " abandoned";
+    return value;
+  }
+  function serviceTileValue(svc) {
+    let value = svc.running + " running \xB7 " + svc.stopped + " stopped";
+    if (svc.autostartStopped > 0) {
+      value += svc.autostartStopped === svc.stopped ? " (autostart)" : " (" + svc.autostartStopped + " autostart)";
+    }
+    return value;
+  }
+  function projectCounts() {
+    let projects = 0, profiles = 0;
+    for (const p of state.projects || []) {
+      if (isRemoteProject(p)) profiles++;
+      else projects++;
+    }
+    return { projects, profiles };
+  }
+  function hostCounts() {
+    let connected = 0, unreachable = 0;
+    for (const h of state.hosts || []) {
+      if (h.status === "connected") connected++;
+      else if (h.status === "unreachable") unreachable++;
+    }
+    return { connected, unreachable, total: (state.hosts || []).length };
+  }
+  function pendingEnrolmentCount() {
+    return (state.pendingEnrolmentRequests || []).filter((r) => !r.approved).length;
+  }
+  function remoteTileValue() {
+    const r = state.remote;
+    if (!r || !r.configured || !r.enabled || !r.audit_enabled) return "Off";
+    const n = pendingEnrolmentCount();
+    return "On " + (r.effective || "127.0.0.1:9910") + (n ? " \xB7 " + n + " pending" : "");
+  }
+  function auditTile() {
+    const st = state.auditStatus;
+    if (!st) return { text: "\u2014", cls: "" };
+    if (!st.enabled) return { text: "Off", cls: "danger" };
+    if (st.dropped > 0) return { text: "Dropped " + st.dropped, cls: "warn" };
+    return { text: "Recording", cls: "" };
+  }
+  function pluralize(n, noun) {
+    return n + " " + noun + (n === 1 ? "" : "s");
+  }
+  function renderOverviewTiles() {
+    const svc = serviceCounts();
+    const mcp = mcpHealthCounts();
+    const proj = projectCounts();
+    const hosts = hostCounts();
+    const passkeysCount = (state.passkeys || []).length;
+    const sessionsCount = (state.loginSessions || []).length;
+    const audit = auditTile();
+    const tiles = [
+      { label: "Services", value: serviceTileValue(svc), cls: svc.autostartDown ? "danger" : "", tab: "services" },
+      { label: "MCP Servers", value: mcpTileValue(mcp), cls: mcp.danger ? "danger" : mcp.warn ? "warn" : "", tab: "mcps" },
+      { label: "Projects", value: pluralize(proj.projects, "project") + " \xB7 " + pluralize(proj.profiles, "access profile"), cls: "", tab: "projects" },
+      { label: "Hosts", value: hosts.connected + " connected \xB7 " + hosts.unreachable + " unreachable", cls: "", tab: "hosts" },
+      { label: "Remote listener", value: remoteTileValue(), cls: "", tab: "remote" },
+      { label: "Audit", value: audit.text, cls: audit.cls, tab: "audit" },
+      { label: "Passkeys", value: pluralize(passkeysCount, "passkey") + " \xB7 " + sessionsCount + " browser" + (sessionsCount === 1 ? "" : "s") + " signed in", cls: "", tab: "passkeys" }
+    ];
+    let html = '<div class="ov-grid">';
+    for (const t of tiles) {
+      html += '<button type="button" class="ov-tile' + (t.cls ? " " + t.cls : "") + '" ' + bind(showPage, t.tab) + ">";
+      html += '<div class="ov-tile-label">' + esc(t.label) + "</div>";
+      html += '<div class="ov-tile-value">' + esc(t.value) + "</div>";
+      html += "</button>";
+    }
+    html += "</div>";
+    return html;
+  }
+  function overviewAttentionRows() {
+    const rows = [];
+    for (const p of state.projects || []) {
+      for (const gap of projScopeGaps(p)) {
+        rows.push({ text: esc(p.name) + " (" + esc(projNoun(p)) + ") needs a scope value for " + esc(gap.mcp) + ".", tab: "projects" });
+      }
+    }
+    for (const mcp of state.externalMcps || []) {
+      const h = (state.mcpHealth || {})[mcp.id];
+      if (!h || mcp.transport === "http") continue;
+      if (h.state === "abandoned") {
+        rows.push({ text: esc(mcp.display_name) + " was abandoned after " + h.attempt + " restart attempts.", tab: "mcps" });
+      } else if (h.state === "down" || h.state === "restart_failed") {
+        rows.push({ text: esc(mcp.display_name) + " is down and restarting (attempt " + h.attempt + ").", tab: "mcps" });
+      }
+    }
+    for (const h of state.hosts || []) {
+      if (h.status === "unreachable") {
+        rows.push({ text: esc(h.name) + " is unreachable.", tab: "hosts" });
+      } else if (h.probe && h.probe.ok && !h.probe.node_path) {
+        rows.push({ text: esc(h.name) + " has no node on the path relay probed.", tab: "hosts" });
+      }
+    }
+    for (const svc of state.services || []) {
+      if (svc.autostart && !state.runningServices[svc.id]) {
+        rows.push({ text: esc(svc.display_name) + " is set to start with Relay but is not running.", tab: "services" });
+      }
+      if (svc.frontend_creds === "implicit") {
+        rows.push({ text: esc(svc.display_name) + " receives front-door credentials implicitly.", tab: "services" });
+      }
+    }
+    const st = state.auditStatus;
+    if (st && !st.enabled) {
+      rows.push({ text: "Tool-call auditing is off.", tab: "audit" });
+    } else if (st && st.dropped > 0) {
+      rows.push({ text: "The audit log has dropped " + pluralize(st.dropped, "event") + ".", tab: "audit" });
+    }
+    if (state.sealStatus) {
+      rows.push({ text: "Sealed store: " + esc(state.sealStatus), tab: null });
+    }
+    const pending = pendingEnrolmentCount();
+    if (pending > 0) {
+      rows.push({ text: pluralize(pending, "pending enrolment request") + ".", tab: "remote" });
+    }
+    return rows;
+  }
+  function renderOverviewAttention() {
+    const rows = overviewAttentionRows();
+    if (!rows.length) return "";
+    let html = '<div class="ov-section"><h3>Needs attention</h3>';
+    for (const row of rows) {
+      html += '<div class="ov-attention-row"><span aria-hidden="true">\u26A0</span><span>' + row.text + "</span>";
+      if (row.tab) html += '<button type="button" class="btn btn-sm ov-attention-link" ' + bind(showPage, row.tab) + ">Open</button>";
+      html += "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+  function renderOverviewRecentToolCalls() {
+    const rows = (state.auditEvents || []).slice(0, 6);
+    let html = '<div class="ov-section"><div class="page-header" style="margin-bottom:8px"><h3 style="margin:0">Recent tool calls</h3>';
+    html += '<button type="button" class="btn btn-sm" ' + bind(showPage, "audit") + ">See all</button></div>";
+    if (!rows.length) {
+      html += '<div class="empty-state">No tool calls recorded yet.</div>';
+    } else {
+      for (const ev of rows) {
+        const a = ev.actor || {};
+        html += '<div class="ov-recent-row">';
+        html += '<span class="audit-time">' + esc(auditFmtTime(ev.ts)) + "</span>";
+        html += '<span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span>";
+        html += "<span>" + esc(ev.tool || ev.event) + "</span>";
+        html += '<span style="color:var(--text-2)">' + esc(a.project_name || "\u2014") + "</span>";
+        html += "</div>";
+      }
+    }
+    html += "</div>";
+    return html;
+  }
+  function renderOverviewFooter() {
+    let html = '<div class="ov-footer">';
+    html += "<span>relay " + esc(state.version) + "</span>";
+    html += "<span>" + esc(state.paths.config || "\u2014") + ' <button type="button" class="btn-link" onclick="revealConfigDir()">Reveal</button></span>';
+    html += '<button type="button" class="btn-link" onclick="revealLogsDir()">Reveal logs</button>';
+    html += "</div>";
+    return html;
+  }
+  function renderOverview() {
+    let html = '<div class="page-header"><h2>Overview</h2></div>';
+    html += renderOverviewTiles();
+    html += renderOverviewAttention();
+    html += renderOverviewRecentToolCalls();
+    html += renderOverviewFooter();
+    return html;
+  }
+  function mcpHealthPillFor(mcp) {
+    if (mcp.transport === "http") {
+      const authed = !!(mcp.oauth_state && mcp.oauth_state.access_token);
+      return { label: authed ? "http \xB7 authenticated" : "http \xB7 not authenticated", cls: authed ? "ok" : "warn" };
+    }
+    const h = (state.mcpHealth || {})[mcp.id];
+    if (h) {
+      if (h.state === "abandoned") return { label: "abandoned after " + h.attempt + " attempts", cls: "danger" };
+      if (h.state === "down" || h.state === "restart_failed") return { label: "down \xB7 restarting (attempt " + h.attempt + ")", cls: "warn" };
+      if (h.connected) return { label: "connected", cls: "ok" };
+    }
+    return { label: "stopped", cls: "muted" };
+  }
+  function toggleMcpToolsDisclosure(mcpId) {
+    state.mcpToolsOpen[mcpId] = !state.mcpToolsOpen[mcpId];
+    render();
+  }
+  function renderMcpToolsDisclosure(mcp, toolCount) {
+    const open = !!state.mcpToolsOpen[mcp.id];
+    const label = toolCount + " tool" + (toolCount !== 1 ? "s" : "") + (toolCount ? open ? " \u25BE" : " \u25B8" : "");
+    let html = `<button type="button" class="mcp-card-tools mcp-tools-toggle" aria-expanded="${open}" ${bind(toggleMcpToolsDisclosure, mcp.id)}>${esc(label)}</button>`;
+    if (open && toolCount) {
+      html += '<ul class="mcp-tools-list">';
+      for (const t of state.mcpToolCache[mcp.id] || []) html += "<li>" + esc(t.name) + "</li>";
+      html += "</ul>";
+    }
+    return html;
   }
   function renderMcpServers() {
     if (state.editingMcpId) return renderMcpForm();
@@ -1035,32 +1415,29 @@ window.__RELAY_INIT__ = {
       const toolCount = (state.mcpToolCache[mcp.id] || []).length;
       const isHTTP = mcp.transport === "http";
       const authenticating = state.authenticatingMcp === mcp.id;
+      const pill = mcpHealthPillFor(mcp);
       html += '<div class="mcp-card">';
       html += '<div class="mcp-card-header">';
+      html += '<div style="display:flex;gap:8px;align-items:center;min-width:0">';
       html += `<span class="mcp-card-name">${esc(mcp.display_name)}</span>`;
-      html += '<div style="display:flex;gap:4px;align-items:center">';
-      if (isHTTP) {
-        if (mcp.oauth_state && mcp.oauth_state.access_token) {
-          html += '<span style="font-size:11px;color:#22c55e;border:1px solid #22c55e;border-radius:3px;padding:2px 6px">Authenticated</span>';
-        } else {
-          html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
-        }
-      }
+      html += `<span class="pill ${pill.cls}">${esc(pill.label)}</span>`;
+      html += "</div>";
+      html += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
       if (mcp.tcc_services && mcp.tcc_services.length > 0) {
         const busy = state.resettingMcpPermissions === mcp.id;
         const label = busy ? "Resetting\u2026" : "Reset Permissions";
-        html += `<button class="btn btn-sm" onclick="resetMcpPermissions('${esc(mcp.id)}')" ${busy ? "disabled" : ""}>${label}</button>`;
+        html += `<button class="btn btn-sm" ${bind(resetMcpPermissions, mcp.id)} ${busy ? "disabled" : ""}>${label}</button>`;
       }
-      html += `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>`;
+      html += `<button class="btn btn-sm btn-danger" ${bind(removeExternalMcp, mcp.id, mcp.display_name)}>Remove</button>`;
       html += "</div></div>";
       if (isHTTP) {
         html += `<div class="mcp-card-cmd">${esc(mcp.url || "")}</div>`;
         html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
-        html += `<div class="mcp-card-tools" style="margin:0">${toolCount} tool${toolCount !== 1 ? "s" : ""}</div>`;
+        html += renderMcpToolsDisclosure(mcp, toolCount);
         if (authenticating) {
           html += '<button class="btn btn-sm" disabled><span class="spinner"></span>Authenticating...</button>';
         } else {
-          html += `<button class="btn btn-sm" onclick="authenticateMcp('${esc(mcp.id)}')">Authenticate</button>`;
+          html += `<button class="btn btn-sm" ${bind(authenticateMcp, mcp.id)}>Authenticate</button>`;
         }
         html += "</div>";
       } else {
@@ -1068,56 +1445,73 @@ window.__RELAY_INIT__ = {
         const cmdDisplay = cmd.length > 40 ? "..." + cmd.slice(-37) : cmd;
         const argsDisplay = mcp.args && mcp.args.length > 0 ? " " + mcp.args.join(" ") : "";
         html += `<div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>`;
-        html += `<div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? "s" : ""}</div>`;
+        html += renderMcpToolsDisclosure(mcp, toolCount);
       }
       html += "</div>";
     }
     return html;
   }
   function renderMcpForm() {
-    let html = '<div class="page-header">';
-    html += "<h2>New MCP Server</h2>";
-    html += '<button class="btn btn-danger btn-sm" onclick="cancelMcpEdit()">Cancel</button>';
-    html += "</div>";
+    let html = "<h2>New MCP Server</h2>";
     const isStdio = state.mcpTransport === "stdio";
-    html += `<div style="display:flex;gap:4px;margin-bottom:12px">
+    const formActive = state.mcpAddMode === "form";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Transport</div>';
+    html += `<div style="display:flex;gap:4px;margin-bottom:${isStdio ? "8px" : "0"}">
         <button class="perm-btn ${isStdio ? "active" : ""}" onclick="setMcpTransport('stdio')">Stdio</button>
         <button class="perm-btn ${!isStdio ? "active" : ""}" onclick="setMcpTransport('http')">HTTP</button>
     </div>`;
-    if (!isStdio) {
-      html += "<label>Display name</label>";
-      html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Krisp" />';
-      html += "<label>URL</label>";
-      html += '<input type="text" id="mcpUrl" placeholder="e.g. https://mcp.krisp.ai/mcp" />';
-    } else {
-      const formActive = state.mcpAddMode === "form";
-      html += `<div style="display:flex;gap:4px;margin-bottom:12px">
+    if (isStdio) {
+      html += `<div style="display:flex;gap:4px">
             <button class="perm-btn ${formActive ? "active" : ""}" onclick="setMcpAddMode('form')">Form</button>
             <button class="perm-btn ${!formActive ? "active" : ""}" onclick="setMcpAddMode('json')">Paste JSON</button>
         </div>`;
-      if (formActive) {
-        html += "<label>Display name</label>";
-        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
-        html += "<label>Command</label>";
-        html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
-        html += "<label>Arguments (space-separated)</label>";
-        html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
-        html += "<label>Environment variables (KEY=VALUE per line)</label>";
-        html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
-      } else {
-        html += "<label>Paste a Claude Desktop-style JSON config snippet</label>";
-        html += '<textarea id="mcpJson" rows="8"></textarea>';
-        html += '<p style="color:var(--text-3);font-size:11px;margin-top:4px">Accepts <code style="color:var(--text-2)">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
-      }
     }
-    html += '<div style="margin-top:16px;display:flex;gap:8px">';
+    html += "</div>";
+    if (!isStdio) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Identity</div>';
+      html += '<label for="mcpDisplayName">Display name</label>';
+      html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Krisp" />';
+      html += "</div>";
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Endpoint</div>';
+      html += '<label for="mcpUrl">URL</label>';
+      html += '<input type="text" id="mcpUrl" placeholder="e.g. https://mcp.krisp.ai/mcp" />';
+      html += "</div>";
+    } else if (formActive) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Identity</div>';
+      html += '<label for="mcpDisplayName">Display name</label>';
+      html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
+      html += "</div>";
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Command</div>';
+      html += '<label for="mcpCommand">Command</label>';
+      html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
+      html += '<label for="mcpArgs">Arguments (space-separated)</label>';
+      html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
+      html += "</div>";
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Environment</div>';
+      html += '<label for="mcpEnv">Environment variables (KEY=VALUE per line)</label>';
+      html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
+      html += "</div>";
+    } else {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Configuration JSON</div>';
+      html += '<label for="mcpJson">Paste a Claude Desktop-style JSON config snippet</label>';
+      html += '<textarea id="mcpJson" rows="8"></textarea>';
+      html += '<p style="color:var(--text-3);font-size:11px;margin-top:4px">Accepts <code style="color:var(--text-2)">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
+      html += "</div>";
+    }
+    html += '<div class="proj-form-actions">';
     if (state.discovering) {
       html += '<button class="btn" disabled><span class="spinner"></span>Discovering...</button>';
     } else {
       if (!isStdio) {
         html += '<button class="btn btn-primary" onclick="addExternalMcpHttp()">Add MCP Server</button>';
       } else {
-        const formActive = state.mcpAddMode === "form";
         html += `<button class="btn btn-primary" onclick="${formActive ? "addExternalMcp()" : "addExternalMcpFromJson()"}">Add MCP Server</button>`;
       }
       html += '<button class="btn btn-danger" onclick="cancelMcpEdit()">Cancel</button>';
@@ -1225,7 +1619,8 @@ window.__RELAY_INIT__ = {
   function authenticateMcp(id) {
     ipc(JSON.stringify({ type: "authenticate_mcp", id }));
   }
-  function removeExternalMcp(id) {
+  function removeExternalMcp(id, name) {
+    if (!confirm('Remove MCP server "' + name + '"?\n\nEvery project granting it loses its tools immediately, and any tool authority recorded for it becomes unreachable.')) return;
     ipc(JSON.stringify({ type: "remove_external_mcp", id }));
   }
   window.onOAuthRequired = function(id) {
@@ -1301,6 +1696,31 @@ window.__RELAY_INIT__ = {
     }
     alert(summary);
   };
+  function frontDoorPillHTML(svc) {
+    switch (svc.frontend_creds) {
+      case "explicit":
+        return '<div class="mcp-card-tools">front door: injected</div>';
+      case "implicit":
+        return '<div class="mcp-card-tools">front door: injected (implicit) \u2014 pass --no-frontend-creds for backends</div>';
+      default:
+        return "";
+    }
+  }
+  function formatUptime(startedAt) {
+    const start = Date.parse(startedAt);
+    if (isNaN(start)) return "";
+    let secs = Math.max(0, Math.floor((Date.now() - start) / 1e3));
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor(secs % 3600 / 60);
+    return h > 0 ? h + "h " + m + "m" : m + "m";
+  }
+  function serviceStatusLineHTML(svc, running) {
+    if (!running) return "stopped";
+    const rt = (state.serviceRuntime || {})[svc.id];
+    if (!rt) return "running";
+    const up = formatUptime(rt.started_at);
+    return "pid " + rt.pid + (up ? " \xB7 up " + up : "");
+  }
   function renderServices() {
     if (state.editingServiceId) return renderServiceForm();
     let html = '<div class="page-header">';
@@ -1313,33 +1733,34 @@ window.__RELAY_INIT__ = {
       return html;
     }
     for (const svc of state.services) {
-      const cmdDisplay = svc.command.length > 40 ? "..." + svc.command.slice(-37) : svc.command;
-      const argsDisplay = svc.args && svc.args.length > 0 ? " " + svc.args.join(" ") : "";
+      const running = !!state.runningServices[svc.id];
+      const cmdBase = (svc.command || "").split("/").pop();
+      const fullCmd = (svc.command || "") + (svc.args && svc.args.length > 0 ? " " + svc.args.join(" ") : "");
       html += `<div class="mcp-card">
             <div class="mcp-card-header">
-                <span class="mcp-card-name">${esc(svc.display_name)}</span>
-                <div style="display:flex;gap:4px">
-                    <button class="btn btn-sm" onclick="editService('${esc(svc.id)}')">Edit</button>
-                    <button class="btn btn-sm btn-danger" onclick="removeService('${esc(svc.id)}')">Remove</button>
+                <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                    <span class="status-dot ${running ? "ok" : "muted"}" data-svc-dot="${esc(svc.id)}" aria-hidden="true"></span>
+                    <span class="mcp-card-name">${esc(svc.display_name)}</span>
+                    <span class="mono-inline" title="${esc(fullCmd)}">${esc(cmdBase)}</span>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0">
+                    <button class="btn btn-sm" data-svc-startstop="${esc(svc.id)}" ${bind(toggleServiceRunning, svc.id)}>${running ? "Stop" : "Start"}</button>
+                    <button class="btn btn-sm" ${bind(editService, svc.id)}>Edit</button>
+                    <button class="btn btn-sm btn-danger" ${bind(removeService, svc.id, svc.display_name)}>Remove</button>
                 </div>
             </div>
-            <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
+            <div class="mcp-card-tools" data-svc-runtime="${esc(svc.id)}">${esc(serviceStatusLineHTML(svc, running))}</div>
+            ${frontDoorPillHTML(svc)}
+            <div class="mcp-card-tools"><button type="button" class="btn-link" ${bind(revealServiceLog, svc.id)}>Logs</button></div>
             ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ""}
             ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ""}
-            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:var(--text-2)">Running</span>
-                <label class="switch switch-running">
-                    <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? "checked" : ""} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
+            <label class="toggle-row" style="margin-bottom:0;padding:6px 0 0;cursor:pointer">
+                <span style="font-size:12px;color:var(--text-2)">Start with Relay</span>
+                <span class="switch">
+                    <input type="checkbox" aria-label="Start with Relay" ${svc.autostart ? "checked" : ""} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
                     <span class="slider"></span>
-                </label>
-            </div>
-            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:var(--text-2)">Autostart on launch</span>
-                <label class="switch">
-                    <input type="checkbox" ${svc.autostart ? "checked" : ""} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
-                    <span class="slider"></span>
-                </label>
-            </div>
+                </span>
+            </label>
         </div>`;
     }
     return html;
@@ -1359,40 +1780,46 @@ window.__RELAY_INIT__ = {
     const ev = editing ? esc(Object.entries(editing.env || {}).map(([k, v]) => k + "=" + v).join("\n")) : "";
     const as_ = editing ? editing.autostart : false;
     const ur = editing ? esc(editing.url || "") : "";
-    let html = '<div class="page-header">';
-    html += `<h2>${title}${editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ")</span>" : ""}</h2>`;
-    html += '<button class="btn btn-danger btn-sm" onclick="cancelServiceEdit()">Cancel</button>';
-    html += "</div>";
-    html += "<label>Display name</label>";
+    let html = "<h2>" + esc(title) + (editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ")</span>" : "") + "</h2>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += '<label for="svcDisplayName">Display name</label>';
     html += `<input type="text" id="svcDisplayName" value="${dn}" placeholder="e.g. My API Server" />`;
-    html += "<label>Command</label>";
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Command</div>';
+    html += '<label for="svcCommand">Command</label>';
     html += `<input type="text" id="svcCommand" value="${cm}" placeholder="e.g. node or /usr/local/bin/my-server" />`;
-    html += "<label>Arguments (space-separated)</label>";
+    html += '<label for="svcArgs">Arguments (space-separated)</label>';
     html += `<input type="text" id="svcArgs" value="${ar}" placeholder="e.g. server.js --port 8080" />`;
-    html += "<label>Working directory (optional)</label>";
+    html += '<label for="svcWorkingDir">Working directory (optional)</label>';
     html += `<input type="text" id="svcWorkingDir" value="${wd}" placeholder="e.g. /Users/you/project" />`;
-    html += "<label>URL (optional, opens in browser on tray click)</label>";
+    html += '<label for="svcUrl">URL (optional, opens in browser on tray click)</label>';
     html += `<input type="text" id="svcUrl" value="${ur}" placeholder="e.g. http://localhost:3000" />`;
-    html += "<label>Environment variables (KEY=VALUE per line)</label>";
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Environment</div>';
+    html += '<label for="svcEnv">Environment variables (KEY=VALUE per line)</label>';
     html += `<textarea id="svcEnv" rows="3" placeholder="API_KEY=abc123&#10;PORT=8080">${ev}</textarea>`;
-    html += `<div class="toggle-row" style="margin-top:8px;margin-bottom:4px">
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Options</div>';
+    html += `<div class="toggle-row" style="padding:4px 0;margin:0">
         <span>Autostart on launch</span>
         <label class="switch">
-            <input type="checkbox" id="svcAutostart" ${as_ ? "checked" : ""} />
+            <input type="checkbox" id="svcAutostart" aria-label="Autostart on launch" ${as_ ? "checked" : ""} />
             <span class="slider"></span>
         </label>
     </div>`;
+    html += "</div>";
+    html += '<div class="proj-form-actions">';
     if (editing) {
-      html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn btn-primary" onclick="saveServiceEdit()">Save</button>
-            <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
-        </div>`;
+      html += '<button class="btn btn-primary" onclick="saveServiceEdit()">Save</button>';
     } else {
-      html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn btn-primary" onclick="addService()">Add Service</button>
-            <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
-        </div>`;
+      html += '<button class="btn btn-primary" onclick="addService()" ' + (state.serviceSavePending ? "disabled" : "") + ">" + (state.serviceSavePending ? "Adding\u2026" : "Add Service") + "</button>";
     }
+    html += '<button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>';
+    html += "</div>";
     return html;
   }
   function svcFormValues() {
@@ -1422,6 +1849,7 @@ window.__RELAY_INIT__ = {
   function addService() {
     const v = svcFormValues();
     if (!v.displayName || !v.command) return;
+    state.serviceSavePending = true;
     ipc(JSON.stringify({
       type: "add_service",
       display_name: v.displayName,
@@ -1432,6 +1860,7 @@ window.__RELAY_INIT__ = {
       autostart: v.autostart,
       url: v.url || null
     }));
+    render();
   }
   function editService(id) {
     state.editingServiceId = id;
@@ -1468,7 +1897,8 @@ window.__RELAY_INIT__ = {
     state.editingServiceId = null;
     render();
   }
-  function removeService(id) {
+  function removeService(id, name) {
+    if (!confirm('Remove service "' + name + '"?\n\nIf it is running, it is stopped immediately, and it disappears from the tray menu.')) return;
     ipc(JSON.stringify({ type: "remove_service", id }));
   }
   function updateServiceAutostart(id, checked) {
@@ -1478,6 +1908,7 @@ window.__RELAY_INIT__ = {
   }
   window.onServiceAdded = function(config) {
     state.services.push(config);
+    state.serviceSavePending = false;
     if (state.editingServiceId === "new") state.editingServiceId = null;
     if (state.page === "services") render("push");
   };
@@ -1486,24 +1917,37 @@ window.__RELAY_INIT__ = {
     if (state.editingServiceId === id) state.editingServiceId = null;
     if (state.page === "services") render("push");
   };
-  function toggleServiceRunning(id, checked) {
-    state.runningServices[id] = checked;
-    ipc(JSON.stringify({ type: checked ? "start_service" : "stop_service", id }));
+  function toggleServiceRunning(id) {
+    const next = !state.runningServices[id];
+    state.runningServices[id] = next;
+    ipc(JSON.stringify({ type: next ? "start_service" : "stop_service", id }));
     render();
   }
-  window.onServiceStatus = function(runningIds) {
+  window.onServiceStatus = function(data) {
+    var runningIds = data.running_ids || [];
     var m = {};
     for (var i = 0; i < runningIds.length; i++) m[runningIds[i]] = true;
     state.runningServices = m;
+    state.serviceRuntime = data.runtime || {};
+    if (state.page === "overview") render("push");
     if (state.page !== "services") return;
     for (var i = 0; i < state.services.length; i++) {
       var svc = state.services[i];
-      var cb = document.querySelector('[data-svc-running="' + svc.id + '"]');
-      if (cb) cb.checked = !!m[svc.id];
+      var running = !!m[svc.id];
+      var dot = document.querySelector('[data-svc-dot="' + svc.id + '"]');
+      if (dot) dot.className = "status-dot " + (running ? "ok" : "muted");
+      var btn = document.querySelector('[data-svc-startstop="' + svc.id + '"]');
+      if (btn) btn.textContent = running ? "Stop" : "Start";
+      var meta = document.querySelector('[data-svc-runtime="' + svc.id + '"]');
+      if (meta) meta.textContent = serviceStatusLineHTML(svc, running);
     }
   };
   window.onSettingsError = function(msg) {
     console.error("Settings save error:", msg);
+    state.projectSavePending = false;
+    state.serviceSavePending = false;
+    state.remoteConfigSavePending = false;
+    render();
     var banner = document.createElement("div");
     banner.textContent = "Failed to save settings: " + msg;
     banner.style.cssText = "position:fixed;top:0;left:0;right:0;padding:10px;background:#c0392b;color:#fff;text-align:center;z-index:9999;font-size:13px";
@@ -1529,7 +1973,16 @@ window.__RELAY_INIT__ = {
       state.remote = data.remote;
       if (!state.remoteDirty) state.remoteDraft = null;
     }
+    if (data.mcp_health) state.mcpHealth = data.mcp_health;
+    if (data.service_runtime) state.serviceRuntime = data.service_runtime;
+    if ("seal_status" in data) state.sealStatus = data.seal_status || "";
+    if (data.version) state.version = data.version;
+    if (data.paths) state.paths = data.paths;
     render("push");
+  };
+  window.onMcpHealth = function(mcpHealth) {
+    state.mcpHealth = mcpHealth || {};
+    if (state.page === "mcps" || state.page === "overview") render("push");
   };
   window.onProjectsReloaded = function(projects) {
     state.projects = projects || [];
@@ -1775,11 +2228,11 @@ window.__RELAY_INIT__ = {
         if (p.host_id) html += '<span class="proj-host-chip">\u2301 ' + esc(hostNameFor(p.host_id)) + "</span>";
         html += "</div>";
         html += '<div style="display:flex;gap:4px">';
-        html += `<button class="btn btn-sm" onclick="editProject('` + esc(p.id) + `')">Edit</button>`;
+        html += '<button class="btn btn-sm" ' + bind(editProject, p.id) + ">Edit</button>";
         if (!remote && !p.host_id) {
-          html += `<button class="btn btn-sm" onclick="regenProjectSkill('` + esc(p.id) + `')" title="Regenerate SKILL.md now">Regen Skill</button>`;
+          html += '<button class="btn btn-sm" ' + bind(regenProjectSkill, p.id) + ' title="Regenerate SKILL.md now">Regen Skill</button>';
         }
-        html += `<button class="btn btn-sm btn-danger" onclick="removeProject('` + esc(p.id) + "', '" + esc(p.name) + `')">Delete</button>`;
+        html += '<button class="btn btn-sm btn-danger" ' + bind(removeProject, p.id, p.name) + ">Delete</button>";
         html += "</div></div>";
         html += '<div class="proj-card-path">' + esc(remote ? "no host directory \u2014 an access profile grants capability, not a filesystem" : p.path || "(no path)") + "</div>";
         html += '<div class="proj-authority">' + renderAuthorityRows(p) + "</div>";
@@ -1943,10 +2396,23 @@ window.__RELAY_INIT__ = {
     state.projectTokenVisible[id] = !state.projectTokenVisible[id];
     render();
   }
-  function copyProjectToken(text) {
+  function copyToClipboard(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text);
+      return;
     }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch (e) {
+    }
+    document.body.removeChild(ta);
   }
   function isRemoteProject(p) {
     return !!p && p.kind === "remote";
@@ -2156,8 +2622,8 @@ window.__RELAY_INIT__ = {
     html += '<div class="proj-perm-block">';
     html += '<div class="proj-perm-label">Operations</div>';
     html += '<div class="perm-btns">';
-    html += '<button class="perm-btn ' + (mode === "read" ? "active" : "") + `" onclick="setProjAccess('` + esc(mcpID) + `', 'read')">Read</button>`;
-    html += '<button class="perm-btn ' + (mode === "write" ? "active" : "") + `" onclick="setProjAccess('` + esc(mcpID) + `', 'write')">Write</button>`;
+    html += '<button class="perm-btn ' + (mode === "read" ? "active" : "") + '" ' + bind(setProjAccess, mcpID, "read") + ">Read</button>";
+    html += '<button class="perm-btn ' + (mode === "write" ? "active" : "") + '" ' + bind(setProjAccess, mcpID, "write") + ">Write</button>";
     html += "</div>";
     html += '<p class="proj-section-help">' + (mode === "read" ? "Only tools this MCP annotates <code>readOnlyHint: true</code>. A tool that is unannotated, malformed, or added later is refused \u2014 that is what keeps a new mutating tool out of an old grant." : "Every tool this grant admits, mutating included. Write implies read.") + " Unset defaults to <strong>" + (remote ? "read" : "write") + "</strong> for " + (remote ? "an access profile" : "a local project") + ".</p>";
     html += "</div>";
@@ -2165,8 +2631,8 @@ window.__RELAY_INIT__ = {
     html += '<div class="proj-perm-block">';
     html += '<div class="proj-perm-label">Outside this Mac</div>';
     html += '<div class="perm-btns">';
-    html += '<button class="perm-btn ' + (external ? "" : "active") + `" onclick="setProjAllowExternal('` + esc(mcpID) + `', false)">Refuse</button>`;
-    html += '<button class="perm-btn ' + (external ? "active" : "") + `" onclick="setProjAllowExternal('` + esc(mcpID) + `', true)">Allow</button>`;
+    html += '<button class="perm-btn ' + (external ? "" : "active") + '" ' + bind(setProjAllowExternal, mcpID, false) + ">Refuse</button>";
+    html += '<button class="perm-btn ' + (external ? "active" : "") + '" ' + bind(setProjAllowExternal, mcpID, true) + ">Allow</button>";
     html += "</div>";
     html += '<p class="proj-section-help">' + (external ? "Tools that reach outside this Mac are allowed, <code>mail_send</code> and <code>web_fetch</code> among them. Anything this grant can read, it can send somewhere you cannot see." : "Tools that reach outside this Mac are refused \u2014 <code>mail_send</code>, <code>web_fetch</code>, anything that talks to a network or a mail server. <strong>Drafting still works, and what it buys is that nothing is delivered:</strong> <code>mail_create_draft</code> cannot reach a recipient, where <code>mail_send</code> reaches any address \u2014 a person has to open the draft and send it. It does <em>not</em> stay on this Mac: Mail uploads a draft to the account's own mail server, so anyone who can read that account reads it. A write profile with this refused still has an outbound write to its own account; if that matters, use a read-only profile, which has no compose tool at all.") + " This is a <em>separate</em> question from Read/Write above and neither answers the other: <code>web_fetch</code> is read-only and reaches outside, <code>mail_create_draft</code> changes something and is annotated as not reaching outside. Unset defaults to <strong>" + (remote ? "refused" : "allowed") + "</strong> for " + (remote ? "an access profile" : "a local project") + ". " + (remote ? "A client on another machine has no way off this Mac except through relay, so these tools are capability it does not otherwise have. Note a tool whose MCP declares no <code>openWorldHint</code> counts as reaching outside \u2014 that is the MCP specification's own default \u2014 so while an MCP is unannotated, refusing this costs a profile <em>every</em> tool of it, not only the networked ones." : "An agent running here already has this Mac's network \u2014 it runs as you, usually with a shell, so <code>web_fetch</code> gives it nothing <code>curl</code> would not. Refuse it anyway if this project's agent genuinely has no other way out; that is what the explicit setting is for.") + "</p>";
     html += "</div>";
@@ -2199,7 +2665,8 @@ window.__RELAY_INIT__ = {
     const remote = isRemoteForm(f);
     const typeLabel = field.type === "array" ? "list of " + (field.item_type || "value") + "s, one per line" : field.type || "value";
     let html = '<div class="proj-scope-field">';
-    html += "<label>" + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + "</span></label>";
+    const scopeInputId = "scopeField-" + scopeEnumValueKey([mcpID, field.name]);
+    html += '<label for="' + esc(scopeInputId) + '">' + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + "</span></label>";
     if (field.description) html += '<div class="proj-scope-desc">' + esc(field.description) + "</div>";
     if (field.source === "project_path") {
       const derived = ((f.context || {})[mcpID] || {})[field.name];
@@ -2214,7 +2681,7 @@ window.__RELAY_INIT__ = {
         shown = f.path || "";
         note = "Derived by relay from this project's path on save.";
       }
-      html += '<input type="text" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
+      html += '<input type="text" id="' + esc(scopeInputId) + '" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
       html += '<div class="proj-scope-desc">' + esc(note) + "</div>";
       html += "</div>";
       return html;
@@ -2223,7 +2690,7 @@ window.__RELAY_INIT__ = {
     if (field.enumerable && !state.scopeEnumUnsupported[mcpID]) {
       html += renderScopeFieldPicker(mcpID, field, f, text);
     } else {
-      html += renderScopeFieldTextInput(mcpID, field, text);
+      html += renderScopeFieldTextInput(mcpID, field, text, scopeInputId);
       if (field.enumerable) {
         html += '<div class="proj-scope-desc">' + esc(mcpID) + " cannot list this field's values, so it is typed by hand. Spelling counts: a value that matches nothing refuses every tool the field governs, silently.</div>";
       }
@@ -2241,11 +2708,12 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     return html;
   }
-  function renderScopeFieldTextInput(mcpID, field, text) {
+  function renderScopeFieldTextInput(mcpID, field, text, inputId) {
+    const idAttr = inputId ? ' id="' + esc(inputId) + '"' : "";
     if (field.type === "array") {
-      return `<textarea rows="3" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)">` + esc(text) + "</textarea>";
+      return "<textarea" + idAttr + ` rows="3" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)">` + esc(text) + "</textarea>";
     }
-    return '<input type="text" value="' + esc(text) + `" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)" />`;
+    return '<input type="text"' + idAttr + ' value="' + esc(text) + `" oninput="setProjScopeText('` + esc(mcpID) + "', '" + esc(field.name) + `', this.value)" />`;
   }
   function scopeEnumValueKey(v) {
     return typeof v === "string" ? v : JSON.stringify(v);
@@ -2326,7 +2794,6 @@ window.__RELAY_INIT__ = {
     const key = scopeEnumKey(mcpID, field.name, deps);
     const res = state.scopeEnum[key];
     const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
-    const args = "'" + esc(mcpID) + "', '" + esc(field.name) + "'";
     let noneMessage = "nothing selected \u2014 every tool this field governs is refused";
     if (selected.length === 0 && scopeFieldWasEverAsserted(f, mcpID, field)) {
       noneMessage = "confirmed empty \u2014 every tool this field governs succeeds, reaching nothing";
@@ -2336,11 +2803,11 @@ window.__RELAY_INIT__ = {
     if (unknown.length) {
       html += '<div class="proj-scope-unrecognised">' + esc(mcpID) + " does not offer " + esc(unknown.map(scopeEnumValueKey).join(", ")) + ". Kept and still in force \u2014 it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>";
     }
-    html += '<button class="btn btn-sm" onclick="toggleScopeFieldPicker(' + args + ')">' + (open ? "Done" : "Choose values\u2026") + "</button>";
+    html += '<button class="btn btn-sm" ' + bind(toggleScopeFieldPicker, mcpID, field.name) + ">" + (open ? "Done" : "Choose values\u2026") + "</button>";
     if (!open) return html;
     if (pending) return html + '<div class="proj-scope-pending">Listing values from ' + esc(mcpID) + "\u2026</div>";
     if (!res) {
-      return html + '<div class="proj-scope-pending">The values this list is read within have changed.</div><button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">List values</button>';
+      return html + '<div class="proj-scope-pending">The values this list is read within have changed.</div><button class="btn btn-sm" ' + bind(retryScopeEnum, mcpID, field.name) + ">List values</button>";
     }
     if (res.status === "ok") {
       return html + renderScopeChoices(mcpID, field, selected, res.values, unknown, deps);
@@ -2351,7 +2818,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="proj-scope-desc">' + esc(mcpID) + " cannot list this field's values.</div>";
     } else {
       html += '<div class="proj-scope-failed">Could not list values from ' + esc(mcpID) + " just now" + (res.error ? ": " + esc(res.error) : ".") + " This is not an empty list \u2014 nothing was read. Retry, or type the values.</div>";
-      html += '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">Try again</button>';
+      html += '<button class="btn btn-sm" ' + bind(retryScopeEnum, mcpID, field.name) + ">Try again</button>";
     }
     return html + renderScopeFieldTextInput(mcpID, field, text);
   }
@@ -2374,7 +2841,7 @@ window.__RELAY_INIT__ = {
     if (!rows.length) {
       let html2 = '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
       if (multi) {
-        html2 += `<button type="button" class="btn btn-sm" onclick="confirmScopeFieldEmpty('` + esc(mcpID) + "', '" + esc(field.name) + `')">Confirm: nothing to grant here</button>`;
+        html2 += '<button type="button" class="btn btn-sm" ' + bind(confirmScopeFieldEmpty, mcpID, field.name) + ">Confirm: nothing to grant here</button>";
       }
       return html2;
     }
@@ -2385,8 +2852,8 @@ window.__RELAY_INIT__ = {
       state._scopeBind.push({ mcpID, field: field.name, value: row.value });
       const checked = selectedKeys.has(scopeEnumValueKey(row.value)) ? " checked" : "";
       html += '<div class="proj-scope-choice' + (row.unknown ? " unrecognised" : "") + '">';
-      html += '<input type="' + (multi ? "checkbox" : "radio") + '" name="scope-' + esc(mcpID) + "-" + esc(field.name) + '"' + checked + ' onchange="toggleProjScopeValueAt(' + idx + ', this.checked)" />';
-      html += "<label>" + esc(row.label) + "</label>";
+      html += '<input type="' + (multi ? "checkbox" : "radio") + '" id="scopeChoice' + idx + '" name="scope-' + esc(mcpID) + "-" + esc(field.name) + '"' + checked + ' onchange="toggleProjScopeValueAt(' + idx + ', this.checked)" />';
+      html += '<label for="scopeChoice' + idx + '">' + esc(row.label) + "</label>";
       if (row.unknown) html += '<span class="desc">not offered by this MCP</span>';
       html += "</div>";
     }
@@ -2394,39 +2861,39 @@ window.__RELAY_INIT__ = {
     if (multi) {
       const allIdx = state._scopeBind.length;
       state._scopeBind.push({ mcpID, field: field.name, value: rows.map((r) => r.value) });
-      html += '<div class="proj-scope-bulk"><button type="button" class="btn btn-sm" onclick="selectAllScopeValuesAt(' + allIdx + ')">Select all (' + rows.length + `)</button> <button type="button" class="btn btn-sm" onclick="clearScopeValues('` + esc(mcpID) + "', '" + esc(field.name) + `')">Clear all</button></div>`;
+      html += '<div class="proj-scope-bulk"><button type="button" class="btn btn-sm" ' + bind(selectAllScopeValuesAt, allIdx) + ">Select all (" + rows.length + ')</button> <button type="button" class="btn btn-sm" ' + bind(clearScopeValues, mcpID, field.name) + ">Clear all</button></div>";
     }
     return html;
   }
   function toggleProjScopeValueAt(index, checked) {
-    const bind = state._scopeBind[index];
-    if (!bind) return;
+    const bind2 = state._scopeBind[index];
+    if (!bind2) return;
     const f = state.projectForm;
     if (!f) return;
-    const field = scopeFieldByName(bind.mcpID, bind.field);
+    const field = scopeFieldByName(bind2.mcpID, bind2.field);
     if (!field) return;
-    const current = scopeSelectedValues(field, projScopeText(f, bind.mcpID, field));
-    const key = scopeEnumValueKey(bind.value);
+    const current = scopeSelectedValues(field, projScopeText(f, bind2.mcpID, field));
+    const key = scopeEnumValueKey(bind2.value);
     let next;
     if (field.type === "array") {
       next = current.filter((v) => scopeEnumValueKey(v) !== key);
-      if (checked) next.push(bind.value);
+      if (checked) next.push(bind2.value);
     } else {
-      next = checked ? [bind.value] : [];
+      next = checked ? [bind2.value] : [];
     }
-    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === "array" ? next : next[0] !== void 0 ? next[0] : ""));
-    refreshDependentScopeFields(bind.mcpID, bind.field);
+    setProjScopeText(bind2.mcpID, bind2.field, scopeTextFromValue(field, field.type === "array" ? next : next[0] !== void 0 ? next[0] : ""));
+    refreshDependentScopeFields(bind2.mcpID, bind2.field);
     render();
   }
   function selectAllScopeValuesAt(index) {
-    const bind = state._scopeBind[index];
-    if (!bind) return;
+    const bind2 = state._scopeBind[index];
+    if (!bind2) return;
     const f = state.projectForm;
     if (!f) return;
-    const field = scopeFieldByName(bind.mcpID, bind.field);
+    const field = scopeFieldByName(bind2.mcpID, bind2.field);
     if (!field) return;
-    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, bind.value));
-    refreshDependentScopeFields(bind.mcpID, bind.field);
+    setProjScopeText(bind2.mcpID, bind2.field, scopeTextFromValue(field, bind2.value));
+    refreshDependentScopeFields(bind2.mcpID, bind2.field);
     render();
   }
   function clearScopeValues(mcpID, fieldName) {
@@ -2512,7 +2979,7 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += "<label>" + (isRemote ? "Profile name" : "Project name") + "</label>";
+    html += '<label for="projName">' + (isRemote ? "Profile name" : "Project name") + "</label>";
     html += '<input type="text" id="projName" class="' + (state.projectFormErrorField === "projName" ? "proj-field-invalid" : "") + '" value="' + esc(f.name) + '" placeholder="' + (isRemote ? "e.g. Hermes \u2014 Bob INBOX (read-only)" : "e.g. Acme Website") + '" />';
     if (state.projectFormErrorField === "projName") {
       html += '<div class="proj-field-error">' + esc(state.projectFormError) + "</div>";
@@ -2521,9 +2988,9 @@ window.__RELAY_INIT__ = {
       const hosted = isHostedForm(f);
       html += "<label>Where</label>";
       html += '<div class="perm-btns">';
-      html += '<button class="perm-btn ' + (!f.host_id ? "active" : "") + `" onclick="setProjWhere('')">This Mac</button>`;
+      html += '<button class="perm-btn ' + (!f.host_id ? "active" : "") + '" ' + bind(setProjWhere, "") + ">This Mac</button>";
       for (const h of state.hosts || []) {
-        html += '<button class="perm-btn ' + (f.host_id === h.id ? "active" : "") + `" onclick="setProjWhere('` + esc(h.id) + `')">` + esc(h.name) + "</button>";
+        html += '<button class="perm-btn ' + (f.host_id === h.id ? "active" : "") + '" ' + bind(setProjWhere, h.id) + ">" + esc(h.name) + "</button>";
       }
       html += "</div>";
       html += "<label>" + (hosted ? "Path on " + esc(hostNameFor(f.host_id)) : "Project path") + "</label>";
@@ -2548,7 +3015,7 @@ window.__RELAY_INIT__ = {
       if (!isRemote) {
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += "<span>Allow all registered MCPs (wildcard <code>*</code>)</span>";
-        html += '<label class="switch"><input type="checkbox" ' + (wild ? "checked" : "") + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Allow all registered MCPs (wildcard *)" ' + (wild ? "checked" : "") + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
         html += "</div>";
       } else {
         html += `<p class="proj-section-help">An access profile can't use the wildcard \u2014 list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>`;
@@ -2567,12 +3034,12 @@ window.__RELAY_INIT__ = {
           html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
           html += '<div class="perm-btns">';
           if (isRemote) {
-            html += '<button class="perm-btn ' + (granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', true)">Granted</button>`;
-            html += '<button class="perm-btn ' + (!granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', false)">Not granted</button>`;
+            html += '<button class="perm-btn ' + (granted ? "active" : "") + '" ' + bind(setProjMcpGranted, mcp.id, true) + ">Granted</button>";
+            html += '<button class="perm-btn ' + (!granted ? "active" : "") + '" ' + bind(setProjMcpGranted, mcp.id, false) + ">Not granted</button>";
           } else {
-            html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'all')">All tools</button>`;
-            html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'selected')">Selected</button>`;
-            html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'none')">No tools</button>`;
+            html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + '" ' + bind(setProjMcpState, mcp.id, "all") + ">All tools</button>";
+            html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + '" ' + bind(setProjMcpState, mcp.id, "selected") + ">Selected</button>";
+            html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + '" ' + bind(setProjMcpState, mcp.id, "none") + ">No tools</button>";
           }
           html += "</div>";
           html += "</div>";
@@ -2586,7 +3053,7 @@ window.__RELAY_INIT__ = {
         for (const id of dangling) {
           html += '<div class="proj-mcp-row">';
           html += '<span class="proj-mcp-name dangling">' + esc(id) + " (no longer registered)</span>";
-          html += `<button class="perm-btn" onclick="setProjMcpState('` + esc(id) + `', 'none')">Remove</button>`;
+          html += '<button class="perm-btn" ' + bind(setProjMcpState, id, "none") + ">Remove</button>";
           html += "</div>";
         }
       } else {
@@ -2617,10 +3084,10 @@ window.__RELAY_INIT__ = {
         if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + "</span>";
         html += "</div>";
         html += '<div class="perm-btns">';
-        html += '<button class="perm-btn ' + (m.access !== "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'read')">Read</button>`;
-        html += '<button class="perm-btn ' + (m.access === "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'write')">Write</button>`;
+        html += '<button class="perm-btn ' + (m.access !== "write" ? "active" : "") + '" ' + bind(setProjMountAccess, i, "read") + ">Read</button>";
+        html += '<button class="perm-btn ' + (m.access === "write" ? "active" : "") + '" ' + bind(setProjMountAccess, i, "write") + ">Write</button>";
         html += "</div>";
-        html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(removeProjMount, i) + ">Remove</button>";
         html += "</div>";
       }
       html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
@@ -2634,11 +3101,11 @@ window.__RELAY_INIT__ = {
       const modelsWild = isProjModelsWildcard(f);
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
       html += "<span>Allow all models (wildcard <code>*</code>)</span>";
-      html += '<label class="switch"><input type="checkbox" ' + (modelsWild ? "checked" : "") + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
+      html += '<label class="switch"><input type="checkbox" aria-label="Allow all models (wildcard *)" ' + (modelsWild ? "checked" : "") + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
       html += "</div>";
       if (!modelsWild) {
         const csv = f.allowed_models.filter((m) => m !== PROJ_MCP_WILDCARD).join(", ");
-        html += "<label>Model IDs (comma-separated)</label>";
+        html += '<label for="projModels">Model IDs (comma-separated)</label>';
         html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
       }
     }
@@ -2672,16 +3139,16 @@ window.__RELAY_INIT__ = {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Permission Policy</div>';
       html += `<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude's default. Patterns follow Claude's tool grammar (e.g. <code>Bash(ls *)</code>).</p>`;
-      html += "<label>Default mode</label>";
+      html += '<label for="projPolicyMode">Default mode</label>';
       html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
       for (const m of ["", "default", "acceptEdits", "plan", "bypassPermissions"]) {
         const sel = pol.default_mode === m ? "selected" : "";
         html += '<option value="' + esc(m) + '" ' + sel + ">" + (m || "(inherit)") + "</option>";
       }
       html += "</select>";
-      html += "<label>Allowed tools (one per line)</label>";
+      html += '<label for="projAllowedTools">Allowed tools (one per line)</label>';
       html += '<textarea id="projAllowedTools" rows="3" placeholder="Read&#10;Grep&#10;Bash(ls *)">' + esc(pol.allowed_tools.join("\n")) + "</textarea>";
-      html += "<label>Denied tools (one per line)</label>";
+      html += '<label for="projDeniedTools">Denied tools (one per line)</label>';
       html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join("\n")) + "</textarea>";
       html += "</div>";
     }
@@ -2691,10 +3158,10 @@ window.__RELAY_INIT__ = {
       html += `<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project's tools.</p>`;
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
       html += "<span>Auto-generate SKILL.md</span>";
-      html += '<label class="switch"><input type="checkbox" ' + (f.generate_skill ? "checked" : "") + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
+      html += '<label class="switch"><input type="checkbox" aria-label="Auto-generate SKILL.md" ' + (f.generate_skill ? "checked" : "") + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
       html += "</div>";
       if (!isNew) {
-        html += `<div style="margin-top:8px"><button class="btn btn-sm" onclick="regenProjectSkill('` + esc(f.id) + `')">Regenerate now</button></div>`;
+        html += '<div style="margin-top:8px"><button class="btn btn-sm" ' + bind(regenProjectSkill, f.id) + ">Regenerate now</button></div>";
         const regen = state.projectSkillRegen[f.id];
         if (regen) {
           const cls = regen.ok ? "proj-ok" : "proj-error";
@@ -2709,7 +3176,7 @@ window.__RELAY_INIT__ = {
       html += `<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project's path, granting exactly this project's tools. <strong>Any process running as you</strong> gets them by being in the directory \u2014 including agents you started for something else. Leave off unless you want that trade.</p>`;
       html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
       html += "<span>Allow token-less access from this project's directory</span>";
-      html += '<label class="switch"><input type="checkbox" ' + (f.allow_cwd_auth ? "checked" : "") + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
+      html += `<label class="switch"><input type="checkbox" aria-label="Allow token-less access from this project's directory" ` + (f.allow_cwd_auth ? "checked" : "") + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
       html += "</div>";
       html += "</div>";
     }
@@ -2722,9 +3189,9 @@ window.__RELAY_INIT__ = {
       html += '<p class="proj-section-help">Project-scoped token presented by Eve, relayLLM, and <code>relay mcp --token</code>. Tokens are inline; rotating invalidates the prior token immediately.</p>';
       html += '<div class="proj-token-field">';
       html += '<input type="text" readonly value="' + esc(display) + '" />';
-      html += `<button class="btn btn-sm" onclick="toggleProjectTokenVisible('` + esc(f.id) + `')">` + (visible ? "Hide" : "Show") + "</button>";
-      html += `<button class="btn btn-sm" onclick="copyProjectToken('` + esc(f.token) + `')">Copy</button>`;
-      html += `<button class="btn btn-sm btn-danger" onclick="rotateProjectToken('` + esc(f.id) + "', '" + esc(f.name) + `')">Rotate</button>`;
+      html += '<button class="btn btn-sm" ' + bind(toggleProjectTokenVisible, f.id) + ">" + (visible ? "Hide" : "Show") + "</button>";
+      html += '<button class="btn btn-sm" ' + bind(copyToClipboard, f.token) + ">Copy</button>";
+      html += '<button class="btn btn-sm btn-danger" ' + bind(rotateProjectToken, f.id, f.name) + ">Rotate</button>";
       html += "</div>";
       if (fresh) {
         html += '<div class="proj-token-banner">';
@@ -2734,7 +3201,7 @@ window.__RELAY_INIT__ = {
       html += "</div>";
     }
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveProjectForm()">' + (isNew ? "Create" : "Save") + "</button>";
+    html += '<button class="btn btn-primary" onclick="saveProjectForm()" ' + (state.projectSavePending ? "disabled" : "") + ">" + (state.projectSavePending ? "Saving\u2026" : isNew ? "Create" : "Save") + "</button>";
     html += '<button class="btn btn-danger" onclick="cancelProjectEdit()">Cancel</button>';
     html += "</div>";
     return html;
@@ -2917,11 +3384,13 @@ window.__RELAY_INIT__ = {
     state.projectFormError = null;
     state.projectFormErrorField = null;
     if (!confirmBroadScope(payload)) return;
+    state.projectSavePending = true;
     if (!f.id) {
       ipc(JSON.stringify(Object.assign({ type: "create_project" }, payload)));
     } else {
       ipc(JSON.stringify(Object.assign({ type: "update_project", id: f.id }, payload)));
     }
+    render();
   }
   function confirmBroadScope(payload) {
     const findings = [];
@@ -2946,6 +3415,7 @@ window.__RELAY_INIT__ = {
   window.onProjectAdded = function(p) {
     if (!p || !p.id) return;
     state.projects = state.projects.filter((x) => x.id !== p.id).concat(p);
+    state.projectSavePending = false;
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectError = null;
@@ -2954,6 +3424,7 @@ window.__RELAY_INIT__ = {
   window.onProjectUpdated = function(p) {
     if (!p || !p.id) return;
     state.projects = state.projects.map((x) => x.id === p.id ? p : x);
+    state.projectSavePending = false;
     if (state.editingProjectId === p.id) {
       state.editingProjectId = null;
       state.projectForm = null;
@@ -3038,12 +3509,12 @@ window.__RELAY_INIT__ = {
       html += renderHostStatus(h.status);
       html += "</div>";
       html += '<div style="display:flex;gap:4px">';
-      html += `<button class="btn btn-sm" onclick="probeHost('` + esc(h.id) + `')" ` + (pending ? "disabled" : "") + ">" + (pending ? "Probing\u2026" : "Probe") + "</button>";
+      html += '<button class="btn btn-sm" ' + bind(probeHost, h.id) + " " + (pending ? "disabled" : "") + ">" + (pending ? "Probing\u2026" : "Probe") + "</button>";
       if (h.status === "connected") {
-        html += `<button class="btn btn-sm" onclick="disconnectHost('` + esc(h.id) + `')">Disconnect</button>`;
+        html += '<button class="btn btn-sm" ' + bind(disconnectHost, h.id) + ">Disconnect</button>";
       }
-      html += `<button class="btn btn-sm" onclick="editHost('` + esc(h.id) + `')">Edit</button>`;
-      html += `<button class="btn btn-sm btn-danger" onclick="removeHost('` + esc(h.id) + "', '" + esc(h.name) + `')">Remove</button>`;
+      html += '<button class="btn btn-sm" ' + bind(editHost, h.id) + ">Edit</button>";
+      html += '<button class="btn btn-sm btn-danger" ' + bind(removeHost, h.id, h.name) + ">Remove</button>";
       html += "</div></div>";
       html += '<div class="proj-card-path">' + esc(h.target) + (h.port ? ":" + h.port : "") + "</div>";
       html += '<div class="proj-card-meta"><span>' + renderHostProbeSummary(h) + "</span></div>";
@@ -3059,11 +3530,11 @@ window.__RELAY_INIT__ = {
     const p = h.probe;
     if (!p) return "Never probed.";
     if (!p.ok) return '<span class="proj-error" style="margin:0">' + esc(p.error || "unreachable") + "</span>";
-    const parts = [];
-    if (p.os) parts.push(esc(p.os) + (p.arch ? " " + esc(p.arch) : ""));
-    parts.push(p.node_path ? "node " + esc(p.node_version || "") : "node not found");
-    parts.push(p.claude_path ? "claude " + esc(p.claude_version || "") : "claude not found");
-    return parts.join(" \xB7 ");
+    let html = "";
+    if (p.os) html += '<span class="pill muted">' + esc(p.os) + (p.arch ? "/" + esc(p.arch) : "") + "</span> ";
+    html += p.node_path ? '<span class="pill ok">node ' + esc(p.node_version || "") + "</span> " : '<span class="pill warn">node missing</span> ';
+    html += p.claude_path ? '<span class="pill ok">claude ' + esc(p.claude_version || "") + "</span>" : '<span class="pill muted">claude missing</span>';
+    return html;
   }
   function blankHostForm() {
     return { id: null, name: "", target: "", port: "", identity_file: "" };
@@ -3174,13 +3645,13 @@ window.__RELAY_INIT__ = {
     if (state.hostFormError) html += '<div class="proj-error" id="hostFormBanner" tabindex="-1">' + esc(state.hostFormError) + "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += "<label>Name</label>";
+    html += '<label for="hostName">Name</label>';
     html += '<input type="text" id="hostName" value="' + esc(f.name) + '" placeholder="devbox" />';
-    html += "<label>SSH target</label>";
+    html += '<label for="hostTarget">SSH target</label>';
     html += '<input type="text" id="hostTarget" value="' + esc(f.target) + '" placeholder="user@host or ssh-config alias" />';
-    html += "<label>Port</label>";
+    html += '<label for="hostPort">Port</label>';
     html += '<input type="text" id="hostPort" value="' + esc(f.port) + '" placeholder="22" />';
-    html += "<label>Identity file</label>";
+    html += '<label for="hostIdentityFile">Identity file</label>';
     html += '<input type="text" id="hostIdentityFile" value="' + esc(f.identity_file) + '" placeholder="optional, absolute path" />';
     html += "</div>";
     const existing = !isNew ? (state.hosts || []).find((x) => x.id === f.id) : null;
@@ -3281,13 +3752,13 @@ window.__RELAY_INIT__ = {
     if (!fp) {
       return `<p class="proj-section-help">Relay's CA fingerprint is not available yet \u2014 create or sign one enrolment to generate the CA, then it will show here.</p>`;
     }
-    return `<p class="proj-section-help">Relay's CA fingerprint (clients pin this \u2014 <code>relayremote request --ca-fingerprint ` + esc(fp) + "</code>): <code>" + esc(fp) + "</code></p>";
+    return '<div class="ca-fingerprint-row"><span class="ca-fingerprint-label">CA fingerprint</span><code class="ca-fingerprint-value">' + esc(fp) + '</code><button type="button" class="btn btn-sm" ' + bind(copyToClipboard, fp) + ">Copy</button></div>";
   }
   function renderPendingEnrolmentRequests() {
     const list = state.pendingEnrolmentRequests || [];
     let html = '<div class="proj-section" style="margin-top:0">';
     html += '<div class="proj-section-title">Pending requests' + (list.length ? ' <span class="remote-state on">' + list.length + "</span>" : "") + "</div>";
-    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else \u2014 see ADR-018. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen below, by you, at approval.</p>';
+    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else \u2014 see "How enrolment works" above.</p>';
     if (!list.length) {
       html += '<div class="empty-state">No pending enrolment requests.</div>';
     }
@@ -3301,11 +3772,11 @@ window.__RELAY_INIT__ = {
       } else {
         html += "<span>";
         if (enrolRequestApprovable(r)) {
-          html += `<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm('` + esc(r.request_id) + `')">Approve\u2026</button> `;
+          html += '<button class="btn btn-sm btn-primary" ' + bind(approveEnrolmentRequestForm, r.request_id) + ">Approve\u2026</button> ";
         } else {
           html += '<button class="btn btn-sm btn-primary" disabled title="This request has no completed comparison code, so it cannot be approved.">Approve\u2026</button> ';
         }
-        html += `<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest('` + esc(r.request_id) + `')">Refuse</button>`;
+        html += '<button class="btn btn-sm btn-danger" ' + bind(refuseEnrolmentRequest, r.request_id) + ">Refuse</button>";
         html += "</span>";
       }
       html += "</div>";
@@ -3352,7 +3823,12 @@ window.__RELAY_INIT__ = {
     if (state.enrolForm) return renderEnrolmentForm();
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
-    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use.</p>';
+    html += '<details class="learn-more"><summary>How enrolment works</summary>';
+    html += "<p>The certificate <em>is</em> the identity \u2014 there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>";
+    html += "<p>Relay's CA fingerprint is what a client pins (<code>relayremote request --ca-fingerprint ...</code>) \u2014 see the value below.</p>";
+    html += "<p>A machine that can reach the enrolment-request listener can add a row to Pending requests below and nothing else. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen at approval.</p>";
+    html += "</details>";
     html += renderCAFingerprintLine();
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
     if (state.enrolRevoked) {
@@ -3368,7 +3844,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="enrol-card">';
       html += '<div class="enrol-card-header">';
       html += '<span class="enrol-card-name">' + esc(e.client_id) + "</span>";
-      html += `<button class="btn btn-sm btn-danger" onclick="revokeEnrolment('` + esc(e.client_id) + `')">Revoke</button>`;
+      html += '<button class="btn btn-sm btn-danger" ' + bind(revokeEnrolment, e.client_id) + ">Revoke</button>";
       html += "</div>";
       const grants = enrolGrantNames(e);
       if (!grants.length) {
@@ -3425,7 +3901,7 @@ window.__RELAY_INIT__ = {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += `<p class="proj-section-help">The client id is the certificate's Common Name and the bundle's directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>`;
-    html += "<label>Client id</label>";
+    html += '<label for="enrolClientId">Client id</label>';
     const idPlaceholder = approving && f.pendingRequest && f.pendingRequest.label || "hermes-mail";
     html += '<input type="text" id="enrolClientId" value="' + esc(f.client_id) + '" placeholder="' + esc(idPlaceholder) + '" />';
     if (approving && f.client_id) {
@@ -3460,11 +3936,11 @@ window.__RELAY_INIT__ = {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Budget</div>';
     html += '<p class="proj-section-help">The enrolment is the unit of compromise, so it is the unit that carries the cap. Rate and volume are capped together because they fail differently \u2014 a call limit alone does not stop a slow drain. Leave a field blank for the conservative default; <strong>zero is never unlimited</strong>, there is no way to switch a budget off.</p>';
-    html += "<label>Window (seconds)</label>";
+    html += '<label for="enrolWindow">Window (seconds)</label>';
     html += '<input type="number" id="enrolWindow" value="' + esc(f.window_seconds) + '" placeholder="' + esc(d.window_seconds || "") + '" />';
-    html += "<label>Max tool calls per window</label>";
+    html += '<label for="enrolMaxCalls">Max tool calls per window</label>';
     html += '<input type="number" id="enrolMaxCalls" value="' + esc(f.max_calls) + '" placeholder="' + esc(d.max_calls || "") + '" />';
-    html += "<label>Max cumulative result bytes per window</label>";
+    html += '<label for="enrolMaxBytes">Max cumulative result bytes per window</label>';
     html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || "") + '" />';
     html += "</div>";
     html += '<div class="proj-form-actions">';
@@ -3653,22 +4129,22 @@ window.__RELAY_INIT__ = {
     }
     html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
     html += "<span>Accept remote clients on an mTLS listener</span>";
-    html += '<label class="switch"><input type="checkbox" ' + (d.enabled ? "checked" : "") + ` onchange="remoteDraftSet('enabled', this.checked)" /><span class="slider"></span></label>`;
+    html += '<label class="switch"><input type="checkbox" aria-label="Accept remote clients on an mTLS listener" ' + (d.enabled ? "checked" : "") + ` onchange="remoteDraftSet('enabled', this.checked)" /><span class="slider"></span></label>`;
     html += "</div>";
-    html += "<label>Listen address</label>";
+    html += '<label for="remoteListen">Listen address</label>';
     html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || "") + `" oninput="remoteDraftSet('listen', this.value)" />`;
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || "") + "</code>. " + esc(REMOTE_NOTE) + "</p>";
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || "127.0.0.1:9910") + "</code>. " + esc(REMOTE_NOTE) + "</p>";
     const effective = (d.listen || "").trim() || r.effective || "";
     if (effective && !remoteListenIsLoopback(effective)) {
       html += '<div class="remote-note warn">' + esc(effective) + " binds beyond loopback: every machine that can reach that address can attempt a TLS handshake. Only a certificate relay signed gets past it, and an unenrolled one is closed before a single request is read \u2014 but the default binds loopback precisely so that reaching relay from another machine is a deliberate act. A tunnel is a network path, never an identity: never forward the bridge socket in its place.</div>";
     }
     html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
     html += "<span>Accept enrolment requests on a separate listener</span>";
-    html += '<label class="switch"><input type="checkbox" ' + (d.enrolmentRequests ? "checked" : "") + ` onchange="remoteDraftSet('enrolmentRequests', this.checked)" /><span class="slider"></span></label>`;
+    html += '<label class="switch"><input type="checkbox" aria-label="Accept enrolment requests on a separate listener" ' + (d.enrolmentRequests ? "checked" : "") + ` onchange="remoteDraftSet('enrolmentRequests', this.checked)" /><span class="slider"></span></label>`;
     html += "</div>";
-    html += "<label>Enrolment listen address</label>";
+    html += '<label for="remoteEnrolmentListen">Enrolment listen address</label>';
     html += '<input type="text" id="remoteEnrolmentListen" value="' + esc(d.enrolmentListen) + '" placeholder="' + esc(r.enrolment_effective || "") + `" oninput="remoteDraftSet('enrolmentListen', this.value)" />`;
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || "") + "</code>. This listener takes no client certificate \u2014 see the Pending requests panel above for what it can reach.</p>";
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || "127.0.0.1:9911") + "</code>. This listener takes no client certificate \u2014 see the Pending requests panel above for what it can reach.</p>";
     if (d.enrolmentRequests && !d.enabled) {
       html += '<div class="remote-note warn">Enrolment requests will not be served until the mTLS listener above is also on: the enrolment-request channel is a companion to it, never a replacement \u2014 see the panel above for the exact refusal.</div>';
     }
@@ -3677,7 +4153,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="remote-note warn">' + esc(enrolEffective) + " binds beyond loopback: any machine that can reach it can lodge an enrolment request. Lodging alone never raises a prompt and reaches nothing but a bounded table \u2014 but the default binds loopback so that widening it is a deliberate act.</div>";
     }
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
+    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()" ' + (state.remoteConfigSavePending ? "disabled" : "") + ">" + (state.remoteConfigSavePending ? "Saving\u2026" : "Save") + "</button>";
     if (r.configured) {
       html += '<button class="btn btn-danger" onclick="removeRemoteConfig()">Remove block</button>';
     }
@@ -3688,6 +4164,7 @@ window.__RELAY_INIT__ = {
   function saveRemoteConfig() {
     const d = remoteDraft();
     state.remoteError = null;
+    state.remoteConfigSavePending = true;
     ipc(JSON.stringify({
       type: "update_remote_config",
       enabled: !!d.enabled,
@@ -3695,6 +4172,7 @@ window.__RELAY_INIT__ = {
       enrolment_requests: !!d.enrolmentRequests,
       enrolment_listen: String(d.enrolmentListen || "").trim()
     }));
+    render();
   }
   function removeRemoteConfig() {
     const msg = "Remove the remote block from settings.json?\n\nNo listener will be opened at all. Enrolments are not touched \u2014 they stay listed here and can still be revoked, but nothing can connect until a listener is configured again.";
@@ -3727,10 +4205,12 @@ window.__RELAY_INIT__ = {
     state.remoteDraft = null;
     state.remoteDirty = false;
     state.remoteError = null;
+    state.remoteConfigSavePending = false;
     if (state.page === "remote") render("push");
   };
   window.onRemoteConfigError = function(msg) {
     state.remoteError = msg || "could not save the remote block";
+    state.remoteConfigSavePending = false;
     if (state.page === "remote") render("push");
   };
   window.onEnrolmentRequestsChanged = function(list) {
@@ -3787,7 +4267,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="pk-card">';
       html += '<div class="pk-card-header">';
       html += '<span class="pk-card-name">' + esc(p.name || "(unnamed passkey)") + "</span>";
-      html += `<button class="btn btn-sm btn-danger" onclick="revokePasskey('` + esc(p.id) + `')">Revoke</button>`;
+      html += '<button class="btn btn-sm btn-danger" ' + bind(revokePasskey, p.id) + ">Revoke</button>";
       html += "</div>";
       html += '<div class="pk-id">Credential: ' + esc(p.short || "") + "</div>";
       html += '<div class="pk-counter">' + esc(pkSignCountText(p)) + "</div>";
@@ -3813,7 +4293,7 @@ window.__RELAY_INIT__ = {
       html += '<div class="pk-session-name">' + esc(c.name || c.id) + "</div>";
       html += '<div class="pk-session-meta">Signed in ' + esc(c.created || "\u2014") + " \xB7 expires " + esc(c.expires || "never") + "</div>";
       html += "</div>";
-      html += `<button class="btn btn-sm btn-danger" onclick="signOutLogin('` + esc(c.id) + `')">Sign out</button>`;
+      html += '<button class="btn btn-sm btn-danger" ' + bind(signOutLogin, c.id) + ">Sign out</button>";
       html += "</div>";
     }
     html += '<p class="proj-section-help">These are ordinary control-plane credentials, so <code>relay credential list</code> shows them too and <code>relay credential revoke --id ID</code> ends one from a terminal. This button refuses anything that is not a login session \u2014 a credential you minted for a script is not sign-out-able from a browser view.</p>';
@@ -3825,7 +4305,7 @@ window.__RELAY_INIT__ = {
     ipc(JSON.stringify({ type: "list_passkeys" }));
   }
   function copyLoginCode() {
-    if (state.loginCode && state.loginCode.code) copyProjectToken(state.loginCode.code);
+    if (state.loginCode && state.loginCode.code) copyToClipboard(state.loginCode.code);
   }
   function dismissLoginCode() {
     state.loginCode = null;
@@ -3997,7 +4477,7 @@ That browser's credential stops authenticating on its next request and it has to
       dispatchConfigOp(serviceId, "get", null);
     }
     let html = '<div class="svc-resource">';
-    html += `<div class="svc-resource-header ${open ? "open" : "closed"}" onclick="toggleConfigSection('${esc(serviceId)}')">`;
+    html += `<div class="svc-resource-header ${open ? "open" : "closed"}" tabindex="0" role="button" aria-expanded="${open}" ${bind(toggleConfigSection, serviceId)}>`;
     html += `<span class="svc-resource-title"><span class="chevron">\u25BC</span>${esc(config.label || "Configuration")}</span>`;
     html += "</div>";
     if (open) {
@@ -4023,8 +4503,8 @@ That browser's credential stops authenticating on its next request and it has to
         const note = config.applyMode === "live" ? "Saved changes apply live." : "Saving restarts the service to apply.";
         html += `<div class="cfg-apply-note" id="cfg-note-${esc(serviceId)}">${esc(note)}</div>`;
         html += '<div class="cfg-actions">';
-        html += `<button class="btn btn-primary" id="cfg-save-${esc(serviceId)}" ${dirty ? "" : "disabled"} onclick="saveConfig('${esc(serviceId)}')">Save</button>`;
-        html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? "" : "disabled"} onclick="revertConfig('${esc(serviceId)}')">Revert</button>`;
+        html += `<button class="btn btn-primary" id="cfg-save-${esc(serviceId)}" ${dirty ? "" : "disabled"} ${bind(saveConfig, serviceId)}>Save</button>`;
+        html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? "" : "disabled"} ${bind(revertConfig, serviceId)}>Revert</button>`;
         html += "</div>";
       }
       html += "</div>";
@@ -4067,7 +4547,7 @@ That browser's credential stops authenticating on its next request and it has to
     const expanded = cfgIsExpanded(svcId, path);
     const obj = value && typeof value === "object" ? value : {};
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     if (!expanded && field.help) html += `<span class="cfg-node-sub">${esc(field.help)}</span>`;
@@ -4086,7 +4566,7 @@ That browser's credential stops authenticating on its next request and it has to
     const bindIdx = cfgBind(svcId, path, "array");
     const expanded = cfgIsExpanded(svcId, path);
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     html += `<span class="cfg-badge">${arr.length}</span>`;
@@ -4111,7 +4591,7 @@ That browser's credential stops authenticating on its next request and it has to
     const keys = Object.keys(obj);
     const keyLabel = field.keyLabel || "key";
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     html += `<span class="cfg-badge">${keys.length}</span>`;
@@ -4136,7 +4616,7 @@ That browser's credential stops authenticating on its next request and it has to
     const removeCall = isMap ? `cfgMapRemove(${containerBindIdx}, ${indexOrKey})` : `cfgArrayRemove(${containerBindIdx}, ${indexOrKey})`;
     let html = '<div class="cfg-item">';
     html += '<div class="cfg-item-head">';
-    html += `<span class="cfg-item-toggle" onclick="cfgToggleExpand(${bindIdx})">${cfgChevron(expanded)}<span class="cfg-item-title">${esc(title || "item")}</span></span>`;
+    html += `<span class="cfg-item-toggle" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">${cfgChevron(expanded)}<span class="cfg-item-title">${esc(title || "item")}</span></span>`;
     html += `<button class="btn btn-sm btn-danger cfg-item-remove" onclick="${removeCall}">Remove</button>`;
     html += "</div>";
     if (expanded) {
@@ -4144,8 +4624,8 @@ That browser's credential stops authenticating on its next request and it has to
       if (isMap) {
         const curKey = path[path.length - 1];
         html += '<div class="cfg-leaf">';
-        html += `<label>${esc(keyLabel)}</label>`;
-        html += `<input type="text" value="${esc(String(curKey))}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgMapRename(${containerBindIdx}, ${indexOrKey}, this)"/>`;
+        html += `<label for="cfgMapKey${bindIdx}">${esc(keyLabel)}</label>`;
+        html += `<input type="text" id="cfgMapKey${bindIdx}" value="${esc(String(curKey))}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgMapRename(${containerBindIdx}, ${indexOrKey}, this)"/>`;
         html += "</div>";
       }
       if (itemField && itemField.type === "object") {
@@ -4236,10 +4716,10 @@ That browser's credential stops authenticating on its next request and it has to
     const noFix = ' autocorrect="off" autocapitalize="off" spellcheck="false"';
     const ph = field.placeholder ? ` placeholder="${esc(field.placeholder)}"` : "";
     let html = '<div class="cfg-leaf">';
-    html += `<label>${cfgNodeLabel(field)}${field.required ? " *" : ""}</label>`;
+    html += `<label for="${inputId}">${cfgNodeLabel(field)}${field.required ? " *" : ""}</label>`;
     switch (field.type) {
       case "bool":
-        html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:var(--text-2)">${esc(field.help || "")}</span><label class="switch"><input type="checkbox" id="${inputId}" ${value ? "checked" : ""} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
+        html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:var(--text-2)">${esc(field.help || "")}</span><label class="switch"><input type="checkbox" id="${inputId}" aria-label="${cfgNodeLabel(field)}" ${value ? "checked" : ""} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
         html += "</div>";
         return html;
       case "number":
@@ -4585,6 +5065,12 @@ That browser's credential stops authenticating on its next request and it has to
   }
   document.addEventListener("click", function(e) {
     try {
+      const actEl = e.target.closest && e.target.closest("[data-act]");
+      if (actEl) {
+        const entry = state._actBind[Number(actEl.dataset.act)];
+        if (entry) entry[0].apply(null, entry[1]);
+        return;
+      }
       const btn = e.target.closest && e.target.closest(".svc-action-btn");
       if (!btn || btn.disabled) return;
       let row = null;
@@ -4599,6 +5085,53 @@ That browser's credential stops authenticating on its next request and it has to
       dispatchServiceAction(btn.dataset.svc, btn.dataset.action, row);
     } catch (err) {
       console.error("svc-action-btn click handler failed", err);
+    }
+  });
+  document.addEventListener("keydown", function(e) {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    const el = e.target.closest && e.target.closest(
+      '.svc-resource-header, .cfg-node-head, .cfg-item-toggle, tr[data-act], [role="button"][tabindex]'
+    );
+    if (!el) return;
+    e.preventDefault();
+    el.click();
+  });
+  document.addEventListener("keydown", function(e) {
+    if (!e.target.classList || !e.target.classList.contains("sidebar-item")) return;
+    const items = Array.from(document.querySelectorAll(".sidebar-item"));
+    const i = items.indexOf(e.target);
+    if (i < 0) return;
+    let next = -1;
+    if (e.key === "ArrowDown") next = (i + 1) % items.length;
+    else if (e.key === "ArrowUp") next = (i - 1 + items.length) % items.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else return;
+    e.preventDefault();
+    items[next].focus();
+    items[next].click();
+  });
+  document.addEventListener("keydown", function(e) {
+    if (e.key !== "Escape") return;
+    if (state.editingProjectId) {
+      cancelProjectEdit();
+      return;
+    }
+    if (state.editingHostId) {
+      cancelHostEdit();
+      return;
+    }
+    if (state.editingServiceId) {
+      cancelServiceEdit();
+      return;
+    }
+    if (state.editingMcpId) {
+      cancelMcpEdit();
+      return;
+    }
+    if (state.enrolForm) {
+      cancelEnrolment();
+      return;
     }
   });
   function isAnyActionPending(serviceId, actions, rowKey) {
@@ -4662,8 +5195,24 @@ That browser's credential stops authenticating on its next request and it has to
   function revealAuditLog() {
     ipc(JSON.stringify({ type: "reveal_audit_log" }));
   }
+  function revealConfigDir() {
+    ipc(JSON.stringify({ type: "reveal_config_dir" }));
+  }
+  function revealLogsDir() {
+    ipc(JSON.stringify({ type: "reveal_logs_dir" }));
+  }
+  function revealServiceLog(id) {
+    ipc(JSON.stringify({ type: "reveal_service_log", id }));
+  }
   function setAuditFilter(key, value) {
     state.auditFilter[key] = value;
+    if (key === "text") {
+      const el = document.getElementById("auditText");
+      if (el) {
+        state._auditTextSelStart = el.selectionStart;
+        state._auditTextSelEnd = el.selectionEnd;
+      }
+    }
     if (key !== "text") queryAudit(state.auditFilter.deep);
     render();
   }
@@ -4758,7 +5307,7 @@ That browser's credential stops authenticating on its next request and it has to
     }
   }
   function auditSelect(key, label, options, current) {
-    let html = `<select onchange="setAuditFilter('` + key + `', this.value)">`;
+    let html = '<select id="auditFilter-' + esc(key) + '" aria-label="' + esc(label) + `" onchange="setAuditFilter('` + key + `', this.value)">`;
     html += '<option value="">' + esc(label) + "</option>";
     for (const [val, text] of options) {
       html += '<option value="' + esc(val) + '"' + (current === val ? " selected" : "") + ">" + esc(text) + "</option>";
@@ -4818,7 +5367,7 @@ That browser's credential stops authenticating on its next request and it has to
   function renderAuditRow(ev) {
     const a = ev.actor || {};
     const expanded = !!state.auditExpanded[ev.id];
-    let html = `<tr class="row" onclick="toggleAuditRow('` + esc(ev.id) + `')">`;
+    let html = '<tr class="row" tabindex="0" role="button" aria-expanded="' + expanded + '" ' + bind(toggleAuditRow, ev.id) + ">";
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + "</td>";
     html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + "</span>";
     if (ev.scope_violation) {
@@ -4896,8 +5445,11 @@ That browser's credential stops authenticating on its next request and it has to
     if (!el || !state._auditTextFocused) return;
     el.focus();
     const n = el.value.length;
+    const hasCaptured = state._auditTextSelStart !== void 0 && state._auditTextSelEnd !== void 0;
+    const start = hasCaptured ? Math.min(state._auditTextSelStart, n) : n;
+    const end = hasCaptured ? Math.min(state._auditTextSelEnd, n) : n;
     try {
-      el.setSelectionRange(n, n);
+      el.setSelectionRange(start, end);
     } catch (e) {
     }
   }
@@ -4905,7 +5457,7 @@ That browser's credential stops authenticating on its next request and it has to
     state.auditEvents = events || [];
     state.auditStatus = status || null;
     state.auditLoaded = true;
-    if (state.page === "audit") render();
+    if (state.page === "audit" || state.page === "overview") render();
   };
   window.onAuditEvent = function(ev) {
     if (!ev) return;
@@ -4915,6 +5467,7 @@ That browser's credential stops authenticating on its next request and it has to
     if (!state.auditFollow) return;
     state.auditEvents.unshift(ev);
     if (state.auditEvents.length > AUDIT_MAX_ROWS) state.auditEvents.length = AUDIT_MAX_ROWS;
+    if (state.page === "overview") render("push");
     if (state.page !== "audit") return;
     const tbody = document.getElementById("auditRows");
     if (!tbody || !auditMatches(ev)) {
@@ -4979,9 +5532,26 @@ That browser's credential stops authenticating on its next request and it has to
     if (state.page === "inspector") updateServiceStatusDOM(result.serviceId, state.serviceStatuses[result.serviceId]);
   };
   if (LOGIN_CODE_INIT) showPage("passkeys");
-  else if (INITIAL_PAGE) showPage(INITIAL_PAGE);
-  else render();
+  else showPage(INITIAL_PAGE || "overview");
+  var sidebarVersionEl = document.getElementById("sidebarVersion");
+  if (sidebarVersionEl) sidebarVersionEl.textContent = "relay " + VERSION_INIT;
   Object.assign(window, {
+    renderOverview,
+    renderOverviewTiles,
+    renderOverviewAttention,
+    renderOverviewRecentToolCalls,
+    renderOverviewFooter,
+    overviewAttentionRows,
+    serviceCounts,
+    mcpHealthCounts,
+    projectCounts,
+    hostCounts,
+    remoteTileValue,
+    auditTile,
+    pendingEnrolmentCount,
+    revealConfigDir,
+    revealLogsDir,
+    revealServiceLog,
     auditBaseDetail,
     auditCaller,
     auditDetail,
@@ -5123,6 +5693,11 @@ That browser's credential stops authenticating on its next request and it has to
     saveHostForm,
     setProjWhere,
     testHostConnection,
+    mcpHealthPillFor,
+    toggleMcpToolsDisclosure,
+    renderMcpToolsDisclosure,
+    formatUptime,
+    serviceStatusLineHTML,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,
@@ -5159,7 +5734,7 @@ That browser's credential stops authenticating on its next request and it has to
     cfgRerender,
     cfgSetExpanded,
     cfgToggleExpand,
-    copyProjectToken,
+    copyToClipboard,
     dispatchConfigOp,
     dispatchServiceAction,
     editProject,

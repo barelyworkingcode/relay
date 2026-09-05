@@ -25,7 +25,7 @@ func TestMcpRegister_IDOverride(t *testing.T) {
 	// "fsMCP v3 (testfolder)" is the exact name from the regression report:
 	// slugify would derive "fsmcp-v3-testfolder", not the "fsmcp3" a
 	// project's allowed_mcp_ids might already name.
-	mcpRegister(store, []string{
+	mcpRegister([]string{
 		"--name", "fsMCP v3 (testfolder)",
 		"--id", "fsmcp3",
 		"--command", buildTestMcpBinary(t),
@@ -44,7 +44,7 @@ func TestMcpRegister_IDOmittedDerivesFromName(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	mcpRegister(store, []string{
+	mcpRegister([]string{
 		"--name", "Probe MCP",
 		"--command", buildTestMcpBinary(t),
 	})
@@ -67,7 +67,7 @@ func TestMcpRegister_ReregisterWithSameIDUpdatesRecordInPlace(t *testing.T) {
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	bin := buildTestMcpBinary(t)
-	mcpRegister(store, []string{
+	mcpRegister([]string{
 		"--name", "fsMCP v3 (testfolder)",
 		"--id", "fsmcp3",
 		"--command", bin,
@@ -76,7 +76,7 @@ func TestMcpRegister_ReregisterWithSameIDUpdatesRecordInPlace(t *testing.T) {
 		t.Fatalf("after first register: want 1 mcp, got %d", got)
 	}
 
-	mcpRegister(store, []string{
+	mcpRegister([]string{
 		"--name", "fsMCP v3 (testfolder)",
 		"--id", "fsmcp3",
 		"--command", bin,
@@ -99,7 +99,7 @@ func TestServiceRegister_IDOverride(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "fsMCP v3 (testfolder, read-only)",
 		"--id", "fsmcp3ro",
 		"--command", "/bin/true",
@@ -118,7 +118,7 @@ func TestServiceRegister_IDOmittedDerivesFromName(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Probe Svc",
 		"--command", "/bin/true",
 	})
@@ -140,12 +140,12 @@ func TestServiceRegister_ReregisterWithSameIDUpdatesRecordInPlace(t *testing.T) 
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "fsMCP v3 (testfolder, read-only)",
 		"--id", "fsmcp3ro",
 		"--command", "/bin/old",
 	})
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "fsMCP v3 (testfolder, read-only)",
 		"--id", "fsmcp3ro",
 		"--command", "/bin/new",
@@ -170,7 +170,7 @@ func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Backend Svc",
 		"--command", "/bin/old",
 		"--workdir", "/tmp",
@@ -180,7 +180,7 @@ func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.
 		"--no-frontend-creds",
 	})
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Backend Svc",
 		"--command", "/bin/new",
 	})
@@ -218,12 +218,12 @@ func TestServiceRegister_ExplicitAutostartFalseTurnsItOff(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Backend Svc",
 		"--command", "/bin/old",
 		"--autostart",
 	})
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Backend Svc",
 		"--command", "/bin/old",
 		"--autostart=false",

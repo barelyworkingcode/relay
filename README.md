@@ -65,7 +65,7 @@ Two allowlists enforced at two points: the **MCP allowlist** is enforced at the
 **bridge** — the project token derives exactly which tools are visible and
 callable. The **model allowlist** is enforced at the **frontend** before a
 request reaches relayLLM (which has no project knowledge). Internals live in
-[`docs/decisions/007-project-token-brokering.md`](./docs/decisions/007-project-token-brokering.md).
+ADR-007 (relay is the sole broker of project tokens).
 
 ## Prerequisites
 
@@ -131,7 +131,7 @@ Relay is the sole broker of credentials in the ecosystem. The model, in brief:
   responsible-parent attribution.
 
 Full credential inventory: [`docs/tokens.md`](./docs/tokens.md). Token-brokering
-rationale: [`docs/decisions/007-project-token-brokering.md`](./docs/decisions/007-project-token-brokering.md).
+rationale: ADR-007 (relay is the sole broker of project tokens).
 
 ## External MCP servers
 

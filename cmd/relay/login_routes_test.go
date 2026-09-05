@@ -7,12 +7,15 @@ package main
 // deliberately not repeated.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -751,5 +754,55 @@ func TestEnhancedServices_ManifestCannotClaimTheRelayPrefix(t *testing.T) {
 
 	if err := reg.RegisterManifest("neighbour", "/tmp/neighbour.sock", "tok", newManifest("/relayllm/", "/api/tasks/")); err != nil {
 		t.Fatalf("a route merely starting with the same letters was refused: %v", err)
+	}
+}
+
+// TestLoginRoutes_SlowBodyIsCutOff drives a raw connection that sends
+// headers declaring a body, then a few bytes of it, and then nothing else —
+// the shape of a caller trickling a request to hold a handler goroutine
+// open. decodeLoginBody's read deadline must cut the read off and produce a
+// refusal well before the connection would otherwise idle out.
+func TestLoginRoutes_SlowBodyIsCutOff(t *testing.T) {
+	old := loginBodyReadDeadline
+	loginBodyReadDeadline = 300 * time.Millisecond
+	t.Cleanup(func() { loginBodyReadDeadline = old })
+
+	s := lrNewServer(t)
+	addr := strings.TrimPrefix(s.base, "http://")
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	full := `{"ceremony":"register"}`
+	partial := full[:5] // well short of Content-Length, and never completed
+
+	req := fmt.Sprintf(
+		"POST /relay/login/challenge HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		addr, len(full), partial,
+	)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+
+	// Generous relative to the shortened deadline, tight relative to the
+	// server's real ReadHeaderTimeout/IdleTimeout (30s/5m) — if those fired
+	// instead of the read deadline this reads as a hang, not a fast 400.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	start := time.Now()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("read response: %v (after %s)", err, elapsed)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (malformed body from the cut-off read)", resp.StatusCode)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("response took %s, want well under 2s given a %s read deadline", elapsed, loginBodyReadDeadline)
 	}
 }

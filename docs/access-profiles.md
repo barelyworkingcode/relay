@@ -4,7 +4,7 @@ How to give an agent on another machine access to some of your mail and nothing
 else, how to check that it worked, and how to take it away.
 
 The design and its reasoning are in
-[ADR-011](decisions/011-resource-scope.md). This is the procedure.
+ADR-011 (resource scope: relay tracks values, never their meaning). This is the procedure.
 
 ---
 
@@ -913,7 +913,7 @@ separate as the client machine makes them*, below).
   grants nothing. Its job is the opposite of secrecy: it is the value the
   client pins so it can tell the real relay from an impostor on the network
   (see *Approving a request from the machine itself*, above, and
-  [ADR-010](decisions/010-remote-client-transport-and-identity.md)).
+  ADR-010, the remote listener's mTLS transport and certificate-based client identity model).
 
 **A `cli-admin` enrolment reaches one thing more, and only to narrow it.**
 With the bit on, the certificate may call `DescribeGrant` and `NarrowGrant`
@@ -1014,8 +1014,8 @@ you lack.
   each one prints
 - [install-single-machine.md](install-single-machine.md) — getting relay
   doing something useful on one Mac first
-- [ADR-011](decisions/011-resource-scope.md) — the design and its reasoning
-- [ADR-010](decisions/010-remote-client-transport-and-identity.md) — the
+- ADR-011 (resource scope) — the design and its reasoning
+- ADR-010 (remote client transport and identity) — the
   certificate, the listener, the budget
 - [context-schema.md](context-schema.md) — for MCP authors: how to declare a
   scope relay can carry

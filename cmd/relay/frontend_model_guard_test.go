@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"io"
 	"net/http"
@@ -300,5 +301,195 @@ func TestSessionModelGuard_LocalProjectStillCreatesSessions(t *testing.T) {
 
 	if !spy.called {
 		t.Fatalf("local project session was blocked, status = %d", rec.Code)
+	}
+}
+
+// --- PUT /api/sessions/{id}/model ---
+//
+// relayLLM's PUT /api/sessions/{id}/model (SetPiModel) is the other route
+// that can change a live session's model. relay keeps no session table, so
+// the guard resolves projectId by calling GET /api/sessions through next —
+// sessionLookupStub plays that role here, standing in for the real
+// dispatcher's proxy to relayLLM.
+
+// sessionLookupStub answers the guard's internal GET /api/sessions lookup
+// and records whatever else is forwarded to it (the PUT itself, once the
+// guard is satisfied), so a test can assert both the lookup shape and
+// whether the original request ever reached "relayLLM".
+type sessionLookupStub struct {
+	sessions   []map[string]string
+	lookupCode int // 0 defaults to 200
+
+	forwardedCalled bool
+	forwardedMethod string
+	forwardedPath   string
+	forwardedBody   string
+}
+
+func (s *sessionLookupStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/sessions" {
+		code := s.lookupCode
+		if code == 0 {
+			code = http.StatusOK
+		}
+		w.WriteHeader(code)
+		if code == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(s.sessions)
+		}
+		return
+	}
+	s.forwardedCalled = true
+	s.forwardedMethod = r.Method
+	s.forwardedPath = r.URL.Path
+	b, _ := io.ReadAll(r.Body)
+	s.forwardedBody = string(b)
+	w.WriteHeader(http.StatusOK)
+}
+
+func putSessionModel(id, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+id+"/model", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestSessionModelGuard_PUT_AllowedModelForwards(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-sonnet-4"})
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-sonnet-4"}`))
+
+	if !next.forwardedCalled {
+		t.Fatalf("allowed model update was not forwarded, status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if next.forwardedMethod != http.MethodPut || next.forwardedPath != "/api/sessions/sess1/model" {
+		t.Errorf("forwarded request = %s %s, want PUT /api/sessions/sess1/model", next.forwardedMethod, next.forwardedPath)
+	}
+}
+
+func TestSessionModelGuard_PUT_DisallowedModelRefused(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-opus"}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+	if next.forwardedCalled {
+		t.Error("disallowed model update must not reach relayLLM")
+	}
+}
+
+func TestSessionModelGuard_PUT_UnrestrictedProjectPasses(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := createTestProject(t, store, "Wild", t.TempDir(), []string{"fsmcp"}) // allowed_models defaults to ["*"]
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-opus"}`))
+
+	if !next.forwardedCalled {
+		t.Fatalf("unrestricted project's model update was blocked, status = %d", rec.Code)
+	}
+}
+
+func TestSessionModelGuard_PUT_LookupFailureRefused(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
+	_ = proj
+	next := &sessionLookupStub{lookupCode: http.StatusInternalServerError}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-opus"}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 when the session lookup fails", rec.Code)
+	}
+	if next.forwardedCalled {
+		t.Error("a model update must not be forwarded when the session lookup fails")
+	}
+}
+
+func TestSessionModelGuard_PUT_SessionNotFoundRefused(t *testing.T) {
+	store := newProjectsTestStore(t)
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "some-other-session", "projectId": "whatever"}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic","modelId":"claude-opus"}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 when the session isn't in the lookup response", rec.Code)
+	}
+	if next.forwardedCalled {
+		t.Error("a model update for an unknown session must not be forwarded")
+	}
+}
+
+func TestSessionModelGuard_PUT_IncompleteBodyForwardsUnchecked(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	// Missing modelId: SetModel itself refuses this shape, so the guard has
+	// no candidate model to check and forwards it for relayLLM to reject.
+	guard(rec, putSessionModel("sess1", `{"provider":"anthropic"}`))
+
+	if !next.forwardedCalled {
+		t.Errorf("incomplete model-update body should be forwarded so relayLLM produces the error, status = %d", rec.Code)
+	}
+}
+
+func TestSessionModelGuard_PUT_TrailingSlash(t *testing.T) {
+	store := newProjectsTestStore(t)
+	proj := restrictedProject(t, store, []string{"pi/anthropic/claude-haiku"})
+	next := &sessionLookupStub{sessions: []map[string]string{{"id": "sess1", "projectId": proj.ID}}}
+
+	guard := newSessionModelGuard(store, next)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/sess1/model/", strings.NewReader(`{"provider":"anthropic","modelId":"claude-opus"}`))
+	req.Header.Set("Content-Type", "application/json")
+	guard(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 on trailing-slash model-update path", rec.Code)
+	}
+	if next.forwardedCalled {
+		t.Error("disallowed model update on the trailing-slash path must not reach relayLLM")
+	}
+}
+
+func TestIsSessionModelUpdatePath(t *testing.T) {
+	cases := []struct {
+		path   string
+		wantID string
+		wantOK bool
+	}{
+		{"/api/sessions/abc123/model", "abc123", true},
+		{"/api/sessions/abc123/model/", "abc123", true},
+		{"/api/sessions/abc123/models", "", false},
+		{"/api/sessions//model", "", false},
+		{"/api/sessions/abc123/message", "", false},
+		{"/api/sessions/abc/def/model", "", false},
+		{"/api/sessions", "", false},
+		{"/api/sessions/", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			id, ok := isSessionModelUpdatePath(tc.path)
+			if id != tc.wantID || ok != tc.wantOK {
+				t.Errorf("isSessionModelUpdatePath(%q) = (%q, %v), want (%q, %v)", tc.path, id, ok, tc.wantID, tc.wantOK)
+			}
+		})
 	}
 }

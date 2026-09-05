@@ -82,18 +82,23 @@ func TestRemoteTab_ApproveIsDisabledWithoutACompletedComparison(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			vm := seedRemoteVMWithPending(t, enrolProjectsFixture, `[]`, remoteEnabled, c.fixture)
 			html := evalString(t, vm, `window.renderEnrolments()`)
+			// approveEnrolmentRequestForm/refuseEnrolmentRequest go through
+			// bind()/data-act, so their markup carries no function-call text
+			// to grep for — read the bind table the delegated click listener
+			// dispatches from instead.
+			binds := evalString(t, vm, `JSON.stringify(window.state._actBind.map(function(e){ return [e[0].name].concat(e[1]); }))`)
 
-			live := strings.Contains(html, `onclick="approveEnrolmentRequestForm('`+c.requestID+`')"`)
+			live := strings.Contains(binds, `["approveEnrolmentRequestForm","`+c.requestID+`"]`)
 			if live != c.wantEnabled {
-				t.Fatalf("enabled Approve = %v, want %v\n%s", live, c.wantEnabled, html)
+				t.Fatalf("enabled Approve = %v, want %v\n%s", live, c.wantEnabled, binds)
 			}
 			if !c.wantEnabled && !strings.Contains(html, "disabled") {
 				t.Fatalf("Approve is neither wired nor rendered disabled — it must be visibly refused, not merely absent\n%s", html)
 			}
 			// Refuse stays available in every state: a row nobody can
 			// approve is exactly the one an operator wants to clear.
-			if !strings.Contains(html, `onclick="refuseEnrolmentRequest('`+c.requestID+`')"`) {
-				t.Fatalf("Refuse is not offered\n%s", html)
+			if !strings.Contains(binds, `["refuseEnrolmentRequest","`+c.requestID+`"]`) {
+				t.Fatalf("Refuse is not offered\n%s", binds)
 			}
 		})
 	}

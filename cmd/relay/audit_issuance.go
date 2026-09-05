@@ -72,7 +72,7 @@ func issuanceAuditorOrNil(rec *audit.AuditRecorder) IssuanceAuditor {
 
 // errIssuanceAuditingRequired is what every gated core returns when there is
 // no sink an act could be recorded in.
-var errIssuanceAuditingRequired = errors.New(`refusing to issue — the tool-call audit log is disabled ("audit": {"enabled": false} in settings.json), and with sealed config active issuance auditing is a hard dependency, not a courtesy (ADR-017 Consequences; the same rule ADR-010 applies to the remote listener). Set "audit": {"enabled": true} and restart relay. ` + "`relay audit --path`" + ` names the file relay would write to.`)
+var errIssuanceAuditingRequired = errors.New(`refusing to issue — the tool-call audit log is disabled ("audit": {"enabled": false} in settings.json), and with sealed config active issuance auditing is a hard dependency, not a courtesy (ADR-017 Consequences; the same rule ADR-010 applies to the remote listener). Set "audit": {"enabled": true} and restart relay. ` + "`relay audit --path`" + ` names the file relay would write to`)
 
 // issuanceAuditorReadiness is implemented by *audit.AuditRecorder. A test
 // fake that implements only IssuanceAuditor and not this is treated as ready
@@ -178,7 +178,7 @@ func recordEnrolmentIssued(a IssuanceAuditor, store config.SettingsStore, e conf
 		return nil
 	}
 	if _, undoErr := enrolment.Revoke(store, e.ClientID); undoErr != nil {
-		return fmt.Errorf("%w (and revoking the unrecorded enrolment %q also failed: %v)", err, e.ClientID, undoErr)
+		return fmt.Errorf("%w (and revoking the unrecorded enrolment %q also failed: %w)", err, e.ClientID, undoErr)
 	}
 	return err
 }
@@ -238,50 +238,4 @@ func openCLIIssuanceRecorder(store config.SettingsStore) (*audit.AuditRecorder, 
 		return nil, fmt.Errorf("resolve audit log dir: %w", err)
 	}
 	return audit.OpenCLIIssuanceRecorder(store, dir)
-}
-
-// cliIssuanceAuditor is what every issuing subcommand opens first. It exits
-// rather than returning an error: a CLI process that cannot open the sink has
-// nothing else to do, and proceeding would be the unrecorded issuance this
-// whole path exists to prevent.
-//
-// This is dead code today (no caller outside its own test) and already
-// flagged by the unused linter; it is not exported to make it reachable, and
-// stays that way on purpose.
-func cliIssuanceAuditor(store config.SettingsStore) (*audit.AuditRecorder, func()) {
-	rec, err := openCLIIssuanceRecorder(store)
-	if err != nil {
-		exitError("cannot open the audit log to record this (%v); nothing was issued or revoked. "+
-			"`relay audit --path` names the file relay could not write", err)
-	}
-	return rec, rec.Close
-}
-
-// refuseUnrecordedIssuance is the CLI's half of the fail-closed rule. It is
-// reached only after the act has committed, because a mint has no identifier
-// to record before it runs — but before the PLAINTEXT has been printed, which
-// is the point of no return: a credential whose secret was never disclosed
-// grants nothing to anybody, so a refusal here is a real refusal and not the
-// theatre ADR-010 decision 5 warns about.
-//
-// The inert record is deliberately left in settings.json rather than swept:
-// the machine has just demonstrated it cannot be written to reliably, and a
-// second write on that evidence is a worse answer than naming the one command
-// that cleans up.
-func refuseUnrecordedIssuance(err error, what, remedy string) {
-	exitError("%s, but the audit log could not record it (%v). Its secret was NOT printed and cannot be recovered.\n"+
-		"  nothing holds this credential; remove the inert record with: %s", what, err, remedy)
-}
-
-// warnUnrecordedRevocation is the other half, and it deliberately does NOT
-// refuse.
-//
-// Revocation NARROWS a grant. Refusing to narrow one because the log is broken
-// would make a failing disk the reason a compromised credential stays live,
-// which is a worse failure than a gap in the record — the opposite balance to
-// issuance, where the gap is the whole attack. So the act stands, and the
-// non-zero exit plus this line are what keep it from being silent.
-func warnUnrecordedRevocation(err error, what string) {
-	exitError("%s, and that stands — but the audit log could not record it (%v). "+
-		"Note it by hand: `relay audit` is no longer a complete record of this revocation", what, err)
 }

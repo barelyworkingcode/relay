@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -310,7 +311,7 @@ func TestFileSettingsStore_CLIShapeRefusesEveryWrite(t *testing.T) {
 	if err == nil {
 		t.Fatal("a CLI-shaped store accepted a write")
 	}
-	if err != config.ErrSealerRequired {
+	if !errors.Is(err, config.ErrSealerRequired) {
 		t.Errorf("error = %v, want errSealerRequired exactly", err)
 	}
 	after := sdRead(t, dir)

@@ -25,17 +25,14 @@ type auditStatus struct {
 }
 
 func auditStatusOf(rec *audit.AuditRecorder) auditStatus {
-	st := auditStatus{
+	return auditStatus{
 		Enabled:  rec.Enabled(),
 		Path:     rec.Path(),
 		Dropped:  rec.Dropped(),
 		Recorded: rec.Wrote(),
+		LogArgs:  rec.LogArgs(),
+		LogLists: rec.LogLists(),
 	}
-	if rec != nil {
-		st.LogArgs = rec.LogArgs()
-		st.LogLists = rec.LogLists()
-	}
-	return st
 }
 
 // A deep query touches the log file, so it runs off the UI thread; a ring

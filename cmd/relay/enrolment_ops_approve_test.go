@@ -393,7 +393,7 @@ type sweptDuringApprovalSink struct {
 func (s *sweptDuringApprovalSink) Get(requestID string) (pendingRecordView, bool) {
 	rec, ok := s.enrolmentRequestTable.Get(requestID)
 	*s.now = s.now.Add(2 * time.Minute)
-	s.enrolmentRequestTable.List() // sweepLocked with the advanced clock
+	s.List() // sweepLocked with the advanced clock
 	return rec, ok
 }
 
@@ -457,7 +457,7 @@ type refusedDuringApprovalSink struct {
 
 func (s *refusedDuringApprovalSink) Get(requestID string) (pendingRecordView, bool) {
 	rec, ok := s.enrolmentRequestTable.Get(requestID)
-	if !s.enrolmentRequestTable.Refuse(nil, s.requestID) {
+	if !s.Refuse(nil, s.requestID) {
 		panic("refusedDuringApprovalSink: Refuse did not take -- test setup is broken")
 	}
 	return rec, ok

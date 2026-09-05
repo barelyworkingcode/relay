@@ -47,12 +47,36 @@ func (s *RemoteServer) resolveMount(fingerprint, projectID, mountID string) (con
 // continues reading from conn once that's drained) while still closing the
 // real connection. See internal/relayfs's own design note: "any bytes
 // buffered past the newline belong to the 9P stream by construction."
+//
+// touch re-arms the connection's idle deadline before every Read, mirroring
+// bridge.FrameConn.touch(): p9.Server.Handle never sets a deadline itself,
+// and serveMount clears the one it set for the preamble before entering
+// Handle, so without this a mount session gone silent — not closed, not
+// erroring, just quiet — would hang open forever.
 type preambleThenConn struct {
 	*bufio.Reader
 	net.Conn
+	touch func()
 }
 
-func (c *preambleThenConn) Read(p []byte) (int, error) { return c.Reader.Read(p) }
+func (c *preambleThenConn) Read(p []byte) (int, error) {
+	c.touch()
+	return c.Reader.Read(p)
+}
+
+// mountIdleWriter is preambleThenConn's write-side counterpart: p9's
+// Server.Handle takes the read and write halves of the session as two
+// separate parameters (they are the same net.Conn but not the same Go
+// value), so the write side needs its own deadline touch.
+type mountIdleWriter struct {
+	net.Conn
+	touch func()
+}
+
+func (w *mountIdleWriter) Write(p []byte) (int, error) {
+	w.touch()
+	return w.Conn.Write(p)
+}
 
 // serveMount is handleConn's mount-plane branch: read the one-line
 // MountAttach preamble, resolve the grant, open the scoped 9P server, reply
@@ -123,7 +147,11 @@ func (s *RemoteServer) serveMount(conn net.Conn, rc bridge.RemoteCaller, fingerp
 	sess := s.trackMountSession(fingerprint, req.ProjectID, req.Name, conn)
 	defer s.untrackMountSession(sess)
 
-	err = p9.NewServer(root).Handle(&preambleThenConn{Reader: br, Conn: conn}, conn)
+	touchIdle := func() { _ = conn.SetDeadline(time.Now().Add(remoteIdleTimeout)) }
+	err = p9.NewServer(root).Handle(
+		&preambleThenConn{Reader: br, Conn: conn, touch: touchIdle},
+		&mountIdleWriter{Conn: conn, touch: touchIdle},
+	)
 	reason := "closed"
 	if err != nil && !errors.Is(err, io.EOF) {
 		reason = err.Error()

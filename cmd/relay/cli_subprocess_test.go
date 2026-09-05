@@ -9,6 +9,7 @@ package main
 // re-exec helper and uses it for every brokered command.
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,8 +50,8 @@ func runCLISubprocess(t *testing.T, dir string, args ...string) (output string, 
 	if err == nil {
 		return string(out), 0
 	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
 		t.Fatalf("run subprocess %v: %v\noutput:\n%s", args, err, out)
 	}
 	return string(out), exitErr.ExitCode()

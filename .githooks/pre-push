@@ -19,8 +19,9 @@ set -e
 cd "$(git rev-parse --show-toplevel)"
 
 # Only run if the repo has Go sources — keeps the hook a no-op in a docs-only
-# checkout.
-if ! ls ./*.go >/dev/null 2>&1; then
+# checkout. Go files live under cmd/ and internal/, not the repo root, so this
+# has to search the tree rather than glob the top level.
+if ! git ls-files -- '*.go' | head -n1 | grep -q .; then
     exit 0
 fi
 

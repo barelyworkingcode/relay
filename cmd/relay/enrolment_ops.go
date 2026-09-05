@@ -265,7 +265,7 @@ func (o *EnrolmentOps) Create(ctx context.Context, f enrolmentFields, via, credI
 	// own undo): the client key on disk is the credential, so an unrecorded
 	// create must not stand.
 	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
-		return EnrolmentCreated{}, fmt.Errorf("%w: %v", errEnrolmentUnrecorded, auditErr)
+		return EnrolmentCreated{}, fmt.Errorf("%w: %w", errEnrolmentUnrecorded, auditErr)
 	}
 	o.notify()
 	if bundleErr != nil {
@@ -327,7 +327,7 @@ func (o *EnrolmentOps) completeSigning(req enrolment.Request, csr *x509.Certific
 	// covers both artifacts a caller might hold — a key relay wrote, or a
 	// certificate over a key the client generated (audit_issuance.go).
 	if auditErr := recordEnrolmentIssued(o.auditor(), o.Store, bundle.Enrolment, via, credID, grant.ID()); auditErr != nil {
-		return EnrolmentCreated{}, fmt.Errorf("%w: %v", errEnrolmentUnrecorded, auditErr)
+		return EnrolmentCreated{}, fmt.Errorf("%w: %w", errEnrolmentUnrecorded, auditErr)
 	}
 	o.notify()
 	if bundleErr != nil {
@@ -744,8 +744,8 @@ func (o *EnrolmentOps) auditor() IssuanceAuditor {
 	return issuanceAuditorOrNil(o.Audit)
 }
 
-func (o *EnrolmentOps) RemoteConfig() (remoteConfigView, error) {
-	return remoteConfigViewOf(o.Store.Get(), o.auditEnabled()), nil
+func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
+	return remoteConfigViewOf(o.Store.Get(), o.auditEnabled())
 }
 
 func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, error) {

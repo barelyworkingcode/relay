@@ -39,7 +39,7 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	srv := httptest.NewServer(dispatcher)
 	defer srv.Close()
 
-	req, _ := http.NewRequest("POST", srv.URL+"/api/a/echo?x=1", strings.NewReader(`{"hello":"world"}`))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/a/echo?x=1", strings.NewReader(`{"hello":"world"}`))
 	req.Header.Set("Authorization", "Bearer FRONTEND-TOKEN-MUST-NOT-LEAK")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -54,7 +54,7 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	if got == nil {
 		t.Fatal("FakeService recorded no request")
 	}
-	if got.Method != "POST" || got.Path != "/api/a/echo" {
+	if got.Method != http.MethodPost || got.Path != "/api/a/echo" {
 		t.Fatalf("upstream got %s %s; want POST /api/a/echo", got.Method, got.Path)
 	}
 	if got.Query.Get("x") != "1" {

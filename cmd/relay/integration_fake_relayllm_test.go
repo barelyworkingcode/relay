@@ -67,7 +67,7 @@ func TestIntegration_FakeRelayLLM_InjectsServiceToken(t *testing.T) {
 	defer srv.Close()
 
 	const leak = "FRONTEND-EVE-TOKEN-NEVER-LEAK-TO-RELAYLLM"
-	req, _ := http.NewRequest("POST", srv.URL+"/api/sessions/", strings.NewReader(`{"msg":"hi"}`))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/sessions/", strings.NewReader(`{"msg":"hi"}`))
 	req.Header.Set("Authorization", "Bearer "+leak)
 	resp, err := http.DefaultClient.Do(req)
 	assertNoErr(t, err, "POST")

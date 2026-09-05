@@ -419,7 +419,7 @@ func TestILPasskeyHandlers_NeverEmitKeyMaterial(t *testing.T) {
 
 	surfaces := map[string]string{
 		"IPC events":  emittedJSON(t, ui),
-		"first paint": renderSettingsDocument(store.Get(), nil, nil, nil, nil, ""),
+		"first paint": renderSettingsDocument(store.Get(), nil, nil, nil, nil, "", overviewSeed{}),
 	}
 	needles := []string{
 		ilXMarker, ilYMarker,
@@ -455,7 +455,7 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 	ilSeedPasskey(t, store, id, "MacBook Touch ID", 0, false)
 	session := ilSeedSession(t, store, id, loginCredentialTTL)
 
-	html := renderSettingsDocument(store.Get(), nil, nil, nil, nil, "")
+	html := renderSettingsDocument(store.Get(), nil, nil, nil, nil, "", overviewSeed{})
 
 	for _, want := range []string{"MacBook Touch ID", abbreviatePasskeyID(id), session.Name, "loginCode: null"} {
 		if !strings.Contains(html, want) {

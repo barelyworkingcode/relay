@@ -12,9 +12,8 @@ nothing to check, because the answer is always yes. The presence gate is the
 mechanism that makes the determination rest on something the caller cannot
 supply: a user physically present at the keyboard, deciding, per act. This
 document is the durable reasoning behind it; see
-[ADR-017](decisions/017-config-dir-is-not-a-boundary.md) decisions 3 and 4 for
-the decision itself and
-[the implementation spec §6](decisions/017-implementation-spec.md) for the
+ADR-017 (a config directory alone is not a security boundary) decisions 3 and 4 for
+the decision itself and the ADR-017 implementation spec §6 for the
 wire-level detail.
 
 ## Why the gate lives in the operation core, never on a transport or in the CLI

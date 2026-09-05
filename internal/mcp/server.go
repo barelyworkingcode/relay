@@ -6,10 +6,20 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 )
+
+// mcpShutdownGrace bounds how long RunMCPServer waits for in-flight
+// tools/call goroutines once stdin has hit EOF. The parent (Claude Code, or
+// whatever spawned `relay mcp`) is what closed stdin, so it has already
+// gone: no caller remains to deliver a tools/call result to however long
+// this waits, and a call can legitimately run up to bridge's own 10-minute
+// inactivity timeout. Waiting for that would turn an ordinary parent exit
+// into a multi-minute hang of this process.
+const mcpShutdownGrace = 3 * time.Second
 
 // tools/call runs on its own goroutine so a long call (e.g. image generation,
 // minutes) doesn't block other tool calls or the progress notifications it
@@ -58,7 +68,18 @@ func RunMCPServer(token string) error {
 		}
 	}
 
-	wg.Wait()
+	// Bounded, not wg.Wait() outright: see mcpShutdownGrace's doc comment.
+	waitDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(mcpShutdownGrace):
+		slog.Warn("relay mcp: exiting with a tools/call still in flight after stdin closed", "grace", mcpShutdownGrace)
+	}
+
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("stdin read error: %w", err)
 	}
@@ -135,7 +156,7 @@ func handleToolsList(client *bridge.Client, req *jsonrpc.ServerRequest) *jsonrpc
 		return rpcError(req.ID, jsonrpc.CodeInternalError, err.Error())
 	}
 	data, err := marshalResult(map[string]interface{}{
-		"tools": json.RawMessage(tools),
+		"tools": tools,
 	})
 	return rpcResult(req.ID, data, err)
 }
@@ -175,7 +196,7 @@ func handleToolsCall(client *bridge.Client, req *jsonrpc.ServerRequest, emit fun
 		emit(rpcError(req.ID, jsonrpc.CodeInternalError, err.Error()))
 		return
 	}
-	emit(rpcResult(req.ID, json.RawMessage(result), nil))
+	emit(rpcResult(req.ID, result, nil))
 }
 
 func progressNotification(token interface{}, u bridge.ProgressUpdate) jsonrpc.Request {

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -117,6 +119,22 @@ type App struct {
 	// resetSealedStore is the one place outside FileSettingsStore itself
 	// that deletes files in this directory by name.
 	configDir string
+
+	// sealStatus is store.SealStatus()'s reason, captured once at boot: the
+	// sealed store degrades (or not) before EnsureInitialized returns, and
+	// nothing after that point changes it in the lifetime of this process.
+	// Empty means healthy. Surfaced on the Overview tab and in the tray menu.
+	sealStatus string
+
+	// mcpHealthMu guards lastHealth, written from the health observer (an
+	// mcpSupervisor's own goroutine, per SetHealthObserver's doc comment)
+	// and read whenever the Overview/MCP Servers tab payload is built.
+	mcpHealthMu sync.Mutex
+	// lastHealth is the most recent HealthEvent per external MCP id. No
+	// entry means no death or restart has ever been reported for that MCP —
+	// which combined with extMgr.IsConnected is what lets the UI tell "never
+	// had a problem" apart from "just recovered from one".
+	lastHealth map[string]mcpbroker.HealthEvent
 }
 
 // goFunc launches a tracked goroutine. All goroutines launched this way are
@@ -127,6 +145,32 @@ func (a *App) goFunc(fn func()) {
 		defer a.wg.Done()
 		fn()
 	}()
+}
+
+// cleanupWaitGroupTimeout bounds cleanup()'s wait for tracked goroutines.
+// cleanup runs ON the Cocoa main thread (the Exit menu item and
+// applicationWillTerminate both call it there directly), and a tracked
+// goroutine can itself need the main thread — ResetMcpPermissions
+// (ipc_mcp_permissions.go) dispatch_syncs to it. An unbounded Wait() there
+// would deadlock permanently: the goroutine can never reach a main thread
+// that is busy waiting for it. The process is exiting either way once
+// cleanup returns, so anything still running past this bound is abandoned,
+// not resumed.
+const cleanupWaitGroupTimeout = 5 * time.Second
+
+// waitWithTimeout reports whether wg finished within d.
+func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // Menu item IDs.
@@ -171,6 +215,7 @@ func runTrayApp() {
 		slog.Error("failed to initialize settings", "error", err)
 		os.Exit(1)
 	}
+	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
 		// §5.6: the read half works in full from here on — relay grant,
 		// relay audit, every list, the Settings window (rendering sealed
@@ -178,6 +223,7 @@ func runTrayApp() {
 		// Every sealed operation refuses naming this same reason; nothing
 		// here creates or adopts a replacement key (§5.5.1).
 		slog.Warn("sealed store is degraded — sealed operations will refuse until this is resolved", "reason", reason)
+		sealStatus = reason.Error()
 	}
 	settings := store.Get()
 	slog.Info("settings loaded")
@@ -196,7 +242,9 @@ func runTrayApp() {
 	// External MCP manager with injected callback for OAuth token refresh persistence.
 	extMgr := mcpbroker.NewManager(
 		func(mcpID string, oauth *config.OAuthState) {
-			store.With(func(s *config.Settings) { s.UpdateOAuthState(mcpID, oauth) })
+			if err := store.With(func(s *config.Settings) { s.UpdateOAuthState(mcpID, oauth) }); err != nil {
+				slog.Error("failed to persist refreshed OAuth token", "mcp", mcpID, "error", err)
+			}
 		},
 	)
 
@@ -214,6 +262,8 @@ func runTrayApp() {
 		presenceGate:  presenceGate,
 		sealedKeyring: keyring,
 		configDir:     configDir,
+		sealStatus:    sealStatus,
+		lastHealth:    map[string]mcpbroker.HealthEvent{},
 	}
 
 	// Event-driven menu updates: rebuild tray status dots immediately when
@@ -271,6 +321,8 @@ func runTrayApp() {
 		Tools:                  extMgr,
 		Enumerate:              extMgr,
 		Ops:                    serviceOps,
+		ConfigDir:              configDir,
+		LogsDir:                serviceLogDir,
 	}
 
 	// Tool-call audit log. A failure here is logged and auditing stays off
@@ -292,7 +344,10 @@ func runTrayApp() {
 	// abandonment, and this is where those reports become rows in the log an
 	// operator is told to treat as ground truth. Installed here rather than at
 	// construction because the manager is built before the recorder exists.
-	extMgr.SetHealthObserver(func(ev mcpbroker.HealthEvent) { recordMcpSupervision(rec, ev) })
+	extMgr.SetHealthObserver(func(ev mcpbroker.HealthEvent) {
+		recordMcpSupervision(rec, ev)
+		app.recordHealthEvent(ev)
+	})
 
 	// Create and start bridge server.
 	router := &appRouter{
@@ -512,7 +567,11 @@ func runTrayApp() {
 	app.registry.ReclaimOrphans(settings.Services)
 	app.registry.StartAllAutostart(settings.Services)
 
-	app.goFunc(func() { bs.Serve() })
+	app.goFunc(func() {
+		if err := bs.Serve(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("bridge server stopped serving", "error", err)
+		}
+	})
 	slog.Info("bridge server started")
 
 	// The remote listener sits BESIDE the bridge, never in front of it: the
@@ -529,7 +588,7 @@ func runTrayApp() {
 	// made `audit.enabled: false` a refusal that only held until the next
 	// launch. statusPoller drives the convergence from here on.
 	app.remote = NewRemoteSupervisor(ctx, store, router, rec, projectOps, extMgr.AllMcpSurfaces, app.goFunc)
-	app.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
+	app.remote.Reconcile() //nolint:errcheck // logs its own failure; a listener is never fatal to the tray
 
 	// Wires the Remote Clients tab's Pending requests panel and the tray's
 	// passive count line onto the SAME pending-enrolment-request table the
@@ -592,7 +651,7 @@ func (a *App) onExternalChange() {
 	// been TOLD, so acting on it costs nothing. In a tracked goroutine because
 	// a bind must not run on the main thread, and because the caller is a
 	// bridge handler that should not wait on a socket.
-	a.goFunc(func() { a.remote.Reconcile() })
+	a.goFunc(func() { _ = a.remote.Reconcile() }) // logs its own failure; a listener is never fatal to the tray
 	a.platform.DispatchToMain(func() {
 		a.pushFullSettings()
 		a.updateMenu()
@@ -644,7 +703,7 @@ func (a *App) statusPoller() {
 		// poll exists at all: relay is not one process, and the tray is not the
 		// only writer. Cheap and silent when nothing changed; see
 		// RemoteSupervisor.Reconcile for what "nothing changed" means.
-		a.remote.Reconcile()
+		_ = a.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
 
 		a.platform.DispatchToMain(func() {
 			// store.Get() deep-copies, so prefer the already-loaded snapshot
@@ -710,6 +769,11 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 		On      bool   `json:"on,omitempty"`
 		URL     string `json:"url,omitempty"`
 		Aux     string `json:"aux,omitempty"`
+		// Key is a Cocoa key equivalent ("," for Settings…, "q" for Quit
+		// Relay), always under the default Command modifier — cocoa_darwin.m
+		// never sets keyEquivalentModifierMask, so plain Command is what
+		// every NSMenuItem gets. Empty means no shortcut, the ordinary case.
+		Key string `json:"key,omitempty"`
 	}
 
 	// One registry-lock acquisition rather than IsRunning() per service.
@@ -792,11 +856,14 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	}
 
 	items = append(items,
-		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true},
+		menuItem{Title: "-", ID: 0},
+		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true, Key: ","},
 		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
+		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Reset Sealed Store...", ID: menuIDResetSealedStore, Enabled: true},
 		menuItem{Title: "-", ID: 0},
-		menuItem{Title: "Exit", ID: menuIDExit, Enabled: true},
+		// "Exit" is not a macOS word; every system app calls this Quit.
+		menuItem{Title: "Quit Relay", ID: menuIDExit, Enabled: true, Key: "q"},
 	)
 
 	data, err := json.Marshal(items)
@@ -967,10 +1034,19 @@ func (a *App) toggleService(menuItemID int) {
 			})
 		})
 	} else {
-		if err := a.registry.Start(cfg); err != nil {
-			slog.Error("service toggle failed", "error", err)
-		}
-		a.updateMenu()
+		// Off-main, same as Stop above: Start spawns a process and does its
+		// own file I/O (pidfile, log dir), neither of which belongs on the
+		// menu-click thread.
+		svcCfg := *cfg
+		a.goFunc(func() {
+			if err := a.registry.Start(&svcCfg); err != nil {
+				slog.Error("service toggle failed", "error", err)
+			}
+			a.platform.DispatchToMain(func() {
+				a.pushServiceStatus()
+				a.updateMenu()
+			})
+		})
 	}
 }
 
@@ -984,7 +1060,9 @@ func (a *App) toggleService(menuItemID int) {
 //     and remove the socket file.
 //  5. Kill service processes — runs last so it catches any service
 //     spawned by a ReloadService handler that raced with shutdown.
-//  6. Wait for tracked goroutines (statusPoller, Serve loop).
+//  6. Wait for tracked goroutines (statusPoller, Serve loop), bounded by
+//     cleanupWaitGroupTimeout rather than a plain Wait() — see its own doc
+//     comment for why an unbounded wait here can deadlock permanently.
 //
 // This ordering prevents orphan service processes: if StopAll ran before
 // bridge handlers drained, a concurrent Reload handler could Start a new
@@ -1020,7 +1098,10 @@ func (a *App) cleanup() {
 		if a.frontendChannel != nil {
 			a.frontendChannel.Close()
 		}
-		a.wg.Wait()
+		if !waitWithTimeout(&a.wg, cleanupWaitGroupTimeout) {
+			slog.Warn("cleanup: tracked goroutines did not finish within the shutdown grace period; exiting anyway",
+				"timeout", cleanupWaitGroupTimeout)
+		}
 		// Last: nothing can produce a tool call any more, so drain the audit
 		// queue and close the log. Closing earlier would drop the shutdown-time
 		// events that a post-incident review is most likely to want.

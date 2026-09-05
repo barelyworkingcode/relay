@@ -1127,7 +1127,7 @@ It works immediately; only the display is stale. Reopen Settings.
   [`README.md`](../../relayRemote/README.md#registrations-naming-an-identity-on-this-machine):
   the store's layout, the full selection order, and what `--as` does not buy.
 - **Why the transport and identity model is shaped this way** —
-  [ADR-010](decisions/010-remote-client-transport-and-identity.md),
-  [ADR-018](decisions/018-configuration-is-a-capability-of-an-identity.md),
-  and [ADR-019](decisions/019-registration-is-one-command.md) for the
+  ADR-010 (mTLS transport and certificate-based client identity),
+  ADR-018 (configuration is a capability of an identity, narrowing only),
+  and ADR-019 (registration is one command) for the
   comparison code and the registration store.

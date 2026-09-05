@@ -224,10 +224,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 		t.Fatal("POST /api/services must never have reached ServiceOps.Create on TCP")
 	}
 
-	before, err := enrolmentOps.RemoteConfig()
-	if err != nil {
-		t.Fatalf("RemoteConfig: %v", err)
-	}
+	before := enrolmentOps.RemoteConfig()
 	resp, body = doJSONAuth(t, "PUT", base+"/api/remote", map[string]interface{}{
 		"enabled": true,
 		"listen":  "127.0.0.1:9999",
@@ -238,10 +235,7 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 	if allow := resp.Header.Get("Allow"); allow == "" || strings.Contains(allow, "PUT") {
 		t.Fatalf("Allow = %q; want http.ServeMux's own 405 naming only the methods it serves", allow)
 	}
-	after, err := enrolmentOps.RemoteConfig()
-	if err != nil {
-		t.Fatalf("RemoteConfig: %v", err)
-	}
+	after := enrolmentOps.RemoteConfig()
 	if after != before {
 		t.Fatalf("PUT /api/remote must never have reached EnrolmentOps.SetRemoteConfig on TCP: before=%+v after=%+v", before, after)
 	}

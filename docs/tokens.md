@@ -187,6 +187,19 @@ second authentication path for it. An install whose record predates `proxy` is
 upgraded in place on the next start — same id, same created date, wider class
 set — because the migration owns that record's class set outright.
 
+`ServiceConfig.FrontendConsumer` decides who gets it: `nil` injects it (the
+implicit default, kept for backward compatibility — a backend registered
+before this field existed must keep working unchanged), `false` withholds it
+(`service register --no-frontend-creds`), `true` injects it explicitly
+(`--frontend-creds`, the opt-in counterpart naming a choice the operator
+actually made rather than fell into). `register` warns to stderr when a
+caller names neither flag, since an implicit "inject" is indistinguishable
+on disk from a deliberate one, and `service list`'s `FRONT-DOOR` column and
+the Settings IPC payload's `frontend_creds` field both spell all three cases
+apart (`ServiceConfig.FrontendCredsState()`: `"explicit"` / `"implicit"` /
+`"off"`) so an operator auditing which services can reach the front door
+never has to guess which nil meant.
+
 That is a **narrowing**, and it has a consequence worth stating plainly: a
 consumer that needs `grant` or `execute` over HTTP must now mint its own
 credential naming that class. In particular, **project token rotation

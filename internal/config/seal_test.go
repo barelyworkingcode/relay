@@ -86,7 +86,7 @@ func TestSecrets_ForEachVisitsEverySecretField(t *testing.T) {
 // does not already exercise.
 func walkForSecretFields(t reflect.Type, path string, out map[string]bool) {
 	switch t.Kind() {
-	case reflect.Ptr, reflect.Slice:
+	case reflect.Pointer, reflect.Slice:
 		walkForSecretFields(t.Elem(), path, out)
 	case reflect.Map:
 		walkForSecretFields(t.Elem(), path, out)
@@ -241,7 +241,7 @@ func TestSecret_NeverRendersPlaintext(t *testing.T) {
 	sec := NewSecret("format-verb-canary")
 	for _, rendered := range []string{
 		fmt.Sprintf("%v", sec),
-		fmt.Sprintf("%s", sec),
+		fmt.Sprintf("%s", sec), //nolint:staticcheck // deliberate: exercises the %s verb path through fmt, not just String() directly
 		fmt.Sprintf("%+v", sec),
 		sec.String(),
 	} {

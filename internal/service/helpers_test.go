@@ -43,3 +43,46 @@ func TestMergeEnv_MergesWithOsEnviron(t *testing.T) {
 		t.Error("merged env does not contain TEST_KEY_RELAY=test_value")
 	}
 }
+
+// A later MergeEnv call — relay's own RELAY_* injections always run after
+// the operator's cfg.Env in Registry.Start — must replace an earlier one's
+// value for the same key rather than appending a second, ambiguous entry.
+func TestMergeEnv_LaterCallOverridesEarlierForSameKey(t *testing.T) {
+	cmd := exec.Command("true")
+	MergeEnv(cmd, map[string]string{"RELAY_SERVICE_TOKEN": "operator-supplied"})
+	MergeEnv(cmd, map[string]string{"RELAY_SERVICE_TOKEN": "relays-real-token"})
+
+	var matches []string
+	for _, entry := range cmd.Env {
+		if len(entry) >= len("RELAY_SERVICE_TOKEN=") && entry[:len("RELAY_SERVICE_TOKEN=")] == "RELAY_SERVICE_TOKEN=" {
+			matches = append(matches, entry)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one RELAY_SERVICE_TOKEN entry, got %v", matches)
+	}
+	if matches[0] != "RELAY_SERVICE_TOKEN=relays-real-token" {
+		t.Errorf("got %q, want the later call's value to win", matches[0])
+	}
+}
+
+// Two independent keys across two calls must both survive — dedup must be
+// per-key, not "keep only the most recent call's env."
+func TestMergeEnv_UnrelatedKeysFromEarlierCallsSurvive(t *testing.T) {
+	cmd := exec.Command("true")
+	MergeEnv(cmd, map[string]string{"FIRST_KEY": "1"})
+	MergeEnv(cmd, map[string]string{"SECOND_KEY": "2"})
+
+	var sawFirst, sawSecond bool
+	for _, entry := range cmd.Env {
+		switch entry {
+		case "FIRST_KEY=1":
+			sawFirst = true
+		case "SECOND_KEY=2":
+			sawSecond = true
+		}
+	}
+	if !sawFirst || !sawSecond {
+		t.Errorf("expected both keys to survive, env = %v", cmd.Env)
+	}
+}

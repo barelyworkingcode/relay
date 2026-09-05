@@ -35,10 +35,6 @@ enhanced service. When an LLM in that service calls a tool: service's MCP client
 ```
 main.go                  Entry + command dispatch (relay / mcp / mcpExec / service)
 trayapp.go               App lifecycle, menu, settings IPC, ToolRouter wiring
-settings.go              Config, project CRUD, permission derivation
-settings_store.go        Atomic settings.json read/write
-types.go                 Project, StoredToken, ExternalMcp, ServiceConfig (Settings lives in settings.go)
-tokens.go                hashToken, auth sentinel errors
 project_routes.go        HTTP project routes; shares Settings mutators with ipc_projects.go
 project_dto.go           projectView DTO — strips the token from every response except rotate
 host_routes.go           HTTP host routes (docs/ssh-hosts.md) — GET/POST/PUT/DELETE /api/hosts[/{id}], probe, disconnect
@@ -55,7 +51,6 @@ audit_issuance.go        The gate-facing half of issuance: IssuanceAuditor, requ
 grant_cmd.go             `relay grant` CLI — the operator's view of a record's effective grant
 enrolment_ops.go         EnrolmentOps: the gated, audited core the CLI, HTTP and IPC doors share
 enrol_cmd.go             `relay enrol` CLI
-capability.go            CapabilityClass, Transport, RouteRegistrar — the one door every control-plane route registers through (ADR-015)
 api_credential.go        APICredential CRUD, the frontend-token migration, credentialAuthorizer
 credential_cmd.go        `relay credential` CLI — mint/list/revoke control-plane credentials
 login_ops.go             Bootstrap-code mint/consume, passkey + login-session views, LoginOps (the core the CLI, the tray item and the Passkeys tab share) — holds the presence.Gate, stays in main
@@ -79,6 +74,15 @@ log_rotate.go            RotatingWriter + serviceLogDir: shared by relay's own l
                          and every managed service's log via service.Registry.OpenLog
 ipc_*.go                 Settings-UI IPC handlers (projects, services, mcps, service action/config, audit, enrolments, passkeys)
 settings_html.go         Settings WKWebView HTML/JS
+config/                  Settings (settings.go: Config, project CRUD, permission derivation),
+                         SettingsStore/FileSettingsStore (store.go: atomic settings.json read/write),
+                         the domain models — Project, StoredToken, ExternalMcp, ServiceConfig, Host,
+                         APICredential, Enrolment, Passkey (models.go) — and config.HashToken plus the
+                         CA file-naming constants (identity.go). Declares the gated mutators
+                         gate_structural_test.go discovers every other package against. Depends on
+                         bridge/sealed; the gate, the audit sink and every door stay in main.
+control/                 CapabilityClass, Transport, RouteRegistrar — the one door every
+                         control-plane route registers through (ADR-015)
 bridge/                  Unix-socket IPC (newline-delimited JSON); manifest.go holds Manifest/FieldDecl.
                          frameconn.go is the framing/scanner/deadline plumbing BOTH listeners share;
                          remote_request.go + remote_caller.go are the remote wire type and attested identity
@@ -262,7 +266,7 @@ launches (`refuseRemotePty`) are refused at the point of use too, not just
 at validation — see ADR-009 for why each of these is defended twice rather
 than once.
 
-See [ADR-009](docs/decisions/009-remote-projects.md) for the full reasoning.
+See ADR-009 (a remote project is a capability grant to a client on another machine, not a directory) for the full reasoning.
 
 A project's directory can also live on another machine entirely, reached over
 `ssh` rather than a VM reaching *in* — the mirror image of the remote-project
@@ -456,7 +460,7 @@ tray's next poll — indistinguishable from a genuine misconfiguration (issue
 when it moved, which is what makes creation as immediate as revocation already
 was, per request and per connection.
 
-See [ADR-010](docs/decisions/010-remote-client-transport-and-identity.md).
+See ADR-010 (the remote listener's mTLS transport and certificate-based client identity model).
 
 ## Service manifest (enhanced services)
 
@@ -612,8 +616,20 @@ service: ADR-005.
 ## Settings UI
 
 IPC: `ipc(json)` → `window.webkit.messageHandlers.ipc.postMessage`. Tabs:
-Services, MCP Servers, Projects, Remote Clients, Passkeys, Service Inspector,
-Tool Calls.
+Overview, Services, MCP Servers, Projects, Hosts, Remote Clients, Passkeys,
+Service Inspector, Tool Calls.
+
+The Overview tab (`web/src/app.js`'s `renderOverview()`; no dedicated Go IPC
+file) is the landing page (`initialPage` defaults to it): one tile per other
+tab's headline state, a "Needs attention" list aggregated client-side from
+state every other tab already has (scope gaps, MCP health, unreachable hosts,
+autostart-but-not-running services, audit disabled/dropped, sealed-store
+degradation, pending enrolment requests), the last 6 audit rows, and a footer
+with the version and two "Reveal" actions (`reveal_config_dir`,
+`reveal_logs_dir`, both in `ipc_overview.go`). MCP health (`onMcpHealth`,
+whole-map push) and service runtime (folded into the existing
+`onServiceStatus` push) are the two pieces of data no other tab seeds on its
+own; both ride along in `onSettingsReloaded` too.
 
 The Remote Clients tab (`ipc_enrolments.go`) lists every enrolment beside the
 grants it reaches — by project *name*, with the certificate fingerprint in full
@@ -700,6 +716,9 @@ do with the code under test.
 
 Install the hooks once per clone: `git config core.hooksPath .githooks`.
 
+`golangci-lint` (`.golangci.yml`) is not wired into either hook — run it by
+hand with `golangci-lint run ./...`.
+
 ### Adding a test
 
 1. Pick the tier (ADR-001). ~95% belong in the default hermetic tier.
@@ -725,5 +744,5 @@ Install the hooks once per clone: `git config core.hooksPath .githooks`.
 - Live OAuth round-trips — `internal/mcpbroker/oauth_test.go` covers PKCE/dynamic registration in isolation.
 - Notarization / code-signing — exercised by `./build.sh --release`.
 
-ADRs: see [`docs/decisions/`](docs/decisions/). Cross-repo test status:
+Architecture decisions are cited inline throughout as ADR-NNN. Cross-repo test status:
 [`docs/testing-roadmap.md`](docs/testing-roadmap.md).

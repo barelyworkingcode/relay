@@ -228,7 +228,7 @@ func (c *Client) sendStreaming(req BridgeRequest, onProgress func(ProgressUpdate
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to Relay bridge at %s: %w (is the Relay tray app running?)", c.sockPath, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetDeadline(time.Now().Add(bridgeTimeout)); err != nil {
 		return nil, fmt.Errorf("set deadline: %w", err)

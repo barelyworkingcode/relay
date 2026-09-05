@@ -171,7 +171,7 @@ type loginSignedInResponse struct {
 
 func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
 	var req loginChallengeRequest
-	if err := decodeLoginBody(r, &req); err != nil {
+	if err := decodeLoginBody(w, r, &req); err != nil {
 		writeLoginRefusal(w, err)
 		return
 	}
@@ -210,7 +210,7 @@ func (lr *loginRoutes) serveChallenge(w http.ResponseWriter, r *http.Request) {
 
 func (lr *loginRoutes) serveVerify(w http.ResponseWriter, r *http.Request) {
 	var req loginVerifyRequest
-	if err := decodeLoginBody(r, &req); err != nil {
+	if err := decodeLoginBody(w, r, &req); err != nil {
 		writeLoginRefusal(w, err)
 		return
 	}
@@ -496,7 +496,11 @@ func loginAuditReason(err error) string {
 		return counter.Error()
 	}
 	for {
-		switch u := err.(type) {
+		// Deliberate manual unwrap: this walks to the leaf error to return its
+		// message, which errors.Is/As cannot do (they test identity against a
+		// target, not descend to bottom). The cases match the Unwrap behavioral
+		// interfaces, not a concrete error type, so wrapping doesn't defeat them.
+		switch u := err.(type) { //nolint:errorlint // manual unwrap walk to the leaf error, see comment above
 		case interface{ Unwrap() error }:
 			if u.Unwrap() == nil {
 				return err.Error()
@@ -555,6 +559,17 @@ func parseLoginCeremony(name string) (login.WebAuthnCeremony, error) {
 	return 0, fmt.Errorf("%w: %q", errLoginCeremonyUnknown, name)
 }
 
+// loginBodyReadDeadline bounds how long relay waits to receive a login
+// request body. These routes are the three unauthenticated
+// /relay/login patterns (ADR-016), so a slow-trickled body is a stranger's
+// lever on a handler goroutine, not a legitimate slow client — sessions
+// and terminals, which do need to run for minutes, never go through this
+// function.
+//
+// A var, not a const, so a test can shorten it rather than trickle a body
+// for the real 10s (the same accommodation MCPRequestTimeout makes).
+var loginBodyReadDeadline = 10 * time.Second
+
 // decodeLoginBody requires application/json.
 //
 // This is deliberate and is not decoration: a content type outside the three
@@ -562,9 +577,12 @@ func parseLoginCeremony(name string) (login.WebAuthnCeremony, error) {
 // relay answers no preflight and emits no CORS header — so a page on another
 // origin cannot reach these routes at all, on top of the origin binding the
 // ceremony itself carries.
-func decodeLoginBody(r *http.Request, v interface{}) error {
+func decodeLoginBody(w http.ResponseWriter, r *http.Request, v interface{}) error {
 	if ct := r.Header.Get("Content-Type"); ct != "application/json" {
 		return fmt.Errorf("%w: content type %q", errLoginBadRequest, ct)
+	}
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(loginBodyReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.Warn("login: could not set read deadline", "error", err)
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, loginMaxBodyBytes))
 	dec.DisallowUnknownFields()
