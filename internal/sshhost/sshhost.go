@@ -32,14 +32,24 @@ const controlPathBudget = 90
 // sun_path for OpenSSH's %C hash, it falls back to a per-uid temp directory,
 // which is short by construction.
 func ControlDir() (string, error) {
-	dir := filepath.Join(bridge.ConfigDir(), "run", "ssh")
-	if len(dir) >= controlPathBudget {
-		dir = fmt.Sprintf("/tmp/relay-ssh-%d", os.Getuid())
-	}
+	dir := controlDirFor(bridge.ConfigDir(), os.Getuid())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create ssh control dir %q: %w", dir, err)
 	}
 	return dir, nil
+}
+
+// controlDirFor picks the control-socket directory. The relay data dir is
+// preferred, but a path with whitespace is unusable: ssh's -o parser splits
+// "ControlPath=/a b/%C" at the space and refuses the option ("extra
+// arguments at end of line"), and the macOS data dir lives under
+// "Application Support".
+func controlDirFor(configDir string, uid int) string {
+	dir := filepath.Join(configDir, "run", "ssh")
+	if len(dir) >= controlPathBudget || strings.ContainsAny(dir, " \t\n\"'") {
+		return fmt.Sprintf("/tmp/relay-ssh-%d", uid)
+	}
+	return dir
 }
 
 // SSHArgv returns the ssh argv prefix for h, ending in the destination.
@@ -68,7 +78,7 @@ func SSHArgv(h config.Host, controlDir string) []string {
 }
 
 // shQuote single-quotes s for a POSIX sh command line: every ' becomes
-// '\'' (close the quote, an escaped literal quote, reopen the quote), the
+// '\” (close the quote, an escaped literal quote, reopen the quote), the
 // one escaping rule every Bourne-family shell agrees on (decision 8).
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

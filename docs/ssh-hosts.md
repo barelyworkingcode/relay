@@ -173,9 +173,13 @@ ssh
 
 Callers append `-T` or `-tt` and then `--` and the remote command. `%C` is
 OpenSSH's hash of the connection tuple, so the path stays short and unique.
-`controlDir` is `<relay data dir>/run/ssh` if that path is under 90 bytes,
-else `/tmp/relay-ssh-<uid>`; either is created `0700`. The 90-byte rule
-exists because `sun_path` is 104 bytes on macOS and the hash adds 40.
+`controlDir` is `<relay data dir>/run/ssh` if that path is under 90 bytes
+and contains no whitespace or quotes, else `/tmp/relay-ssh-<uid>`; either is
+created `0700`. The 90-byte rule exists because `sun_path` is 104 bytes on
+macOS and the hash adds 40. The whitespace rule exists because ssh's `-o`
+parser splits the value at a space and refuses the option, and the macOS
+data dir sits under `Application Support`, so on a Mac the `/tmp` form is
+the one actually in use.
 
 `RemoteCommand(cwd string, argv []string, env map[string]string) string`
 builds decision 8's launcher. The decoded script is
