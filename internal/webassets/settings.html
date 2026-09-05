@@ -1710,6 +1710,9 @@ window.__RELAY_INIT__ = {
     const rows = projAuthorityRows(p);
     const mounts = p.mounts || [];
     if (!rows.length && !mounts.length) {
+      if (p.host_id) {
+        return '<div class="proj-auth-row"><span class="proj-auth-none">on ' + esc(hostNameFor(p.host_id)) + " \u2014 the agent uses its built-in tools there; relay tools aren't available on a host yet</span></div>";
+      }
       return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs or mounts granted \u2014 this ' + esc(projNoun(p)) + " reaches nothing</span></div>";
     }
     let html = "";
@@ -1763,7 +1766,7 @@ window.__RELAY_INIT__ = {
         html += "</div>";
         html += '<div style="display:flex;gap:4px">';
         html += `<button class="btn btn-sm" onclick="editProject('` + esc(p.id) + `')">Edit</button>`;
-        if (!remote) {
+        if (!remote && !p.host_id) {
           html += `<button class="btn btn-sm" onclick="regenProjectSkill('` + esc(p.id) + `')" title="Regenerate SKILL.md now">Regen Skill</button>`;
         }
         html += `<button class="btn btn-sm btn-danger" onclick="removeProject('` + esc(p.id) + "', '" + esc(p.name) + `')">Delete</button>`;
