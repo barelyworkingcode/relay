@@ -353,3 +353,16 @@ func TestControlDir_CreatesShortPath(t *testing.T) {
 		t.Fatalf("expected %q to be a directory", dir)
 	}
 }
+
+func TestControlDirFor_AvoidsWhitespaceAndLongPaths(t *testing.T) {
+	if got := controlDirFor("/Users/x/Library/Application Support/relay", 501); got != "/tmp/relay-ssh-501" {
+		t.Fatalf("whitespace dir: got %q", got)
+	}
+	if got := controlDirFor("/short/relay", 501); got != "/short/relay/run/ssh" {
+		t.Fatalf("short dir: got %q", got)
+	}
+	long := "/" + strings.Repeat("a", 100)
+	if got := controlDirFor(long, 7); got != "/tmp/relay-ssh-7" {
+		t.Fatalf("long dir: got %q", got)
+	}
+}
