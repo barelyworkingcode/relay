@@ -204,8 +204,14 @@ document's *Fixtures* section so they cannot drift.
 | `POST /api/hosts` | Configure | `{name, target, port?, identity_file?}` → `hostView` (201); runs a probe synchronously, result included |
 | `PUT /api/hosts/{id}` | Configure | same fields, all optional → `hostView`; re-probes if `target`, `port` or `identity_file` changed |
 | `DELETE /api/hosts/{id}` | Configure | 204; 409 `{error, projects:[names]}` if referenced |
-| `POST /api/hosts/{id}/probe` | Execute | → `hostView` with fresh `probe`; 30 s cap |
-| `POST /api/hosts/{id}/disconnect` | Execute | `ssh -O exit`; → `hostView` |
+| `POST /api/hosts/{id}/probe` | Configure | → `hostView` with fresh `probe`; 30 s cap |
+| `POST /api/hosts/{id}/disconnect` | Configure | `ssh -O exit`; → `hostView` |
+
+Probe and disconnect are Configure, not Execute, on purpose: they only
+rewrite the host record's own `probe` field and the local control socket,
+and eve's frontend credential carries `read`, `configure` and `proxy` but
+never `execute`, so an Execute class would make the dialog's *Test
+connection* button dead from the browser.
 
 `hostView` is the record above plus two derived, read-only fields:
 
