@@ -199,14 +199,7 @@ func handleEnrolmentLodge(sink EnrolmentRequestSink, line []byte, remoteAddr str
 	if err != nil {
 		return enrolmentErrorResponse(err)
 	}
-	data, merr := json.Marshal(enrolmentRequestLodgeResult{
-		RequestID:        res.RequestID,
-		SPKISHA256:       res.SPKISHA256,
-		PollAfterSeconds: res.PollAfterSeconds,
-		ExpiresInSeconds: res.ExpiresInSeconds,
-		CAPEM:            res.CAPEM,
-		SASNonce:         res.SASNonce,
-	})
+	data, merr := json.Marshal(enrolmentRequestLodgeResult(res))
 	if merr != nil {
 		return bridge.ErrorResponse(jsonrpc.CodeInternalError, "enrolment request: "+merr.Error())
 	}
@@ -255,7 +248,7 @@ func pollProjects(projects []approvedProject) []enrolmentPollProject {
 	}
 	out := make([]enrolmentPollProject, 0, len(projects))
 	for _, p := range projects {
-		out = append(out, enrolmentPollProject{ID: p.ID, Name: p.Name})
+		out = append(out, enrolmentPollProject(p))
 	}
 	return out
 }
@@ -404,7 +397,7 @@ func (s *EnrolmentRequestServer) release() {
 
 func (s *EnrolmentRequestServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("enrolment-request handler panic (recovered)", "panic", r)

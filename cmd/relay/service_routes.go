@@ -115,7 +115,7 @@ func RegisterServiceRoutes(rr *control.RouteRegistrar, ops *ServiceOps) {
 	})
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/services/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := ops.Remove(r.Context(), r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
+		if err := ops.Remove(r.PathValue("id"), auditViaHTTP, credIDOf(r)); err != nil {
 			writeServiceError(w, err)
 			return
 		}

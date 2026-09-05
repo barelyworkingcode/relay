@@ -37,6 +37,12 @@ func main() {
 		LogLevel:          api.LogLevelWarning,
 		MinifyWhitespace:  false, // keep readable in the WKWebView inspector
 		MinifyIdentifiers: false,
+		// Pinned rather than left to default to the process's actual cwd:
+		// esbuild's cross-module comments are relative to this, and
+		// TestSettingsHTMLBundleUpToDate rebuilds independently from `go
+		// test`'s package-directory cwd -- both must agree on root, or the
+		// two rebuilds diverge on nothing but where each happened to run.
+		AbsWorkingDir: root,
 	})
 	if len(result.Errors) > 0 {
 		for _, e := range result.Errors {

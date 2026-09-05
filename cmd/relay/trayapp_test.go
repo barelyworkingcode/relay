@@ -13,10 +13,12 @@ import (
 	"encoding/json"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
+	"github.com/barelyworkingcode/relay/internal/service"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // recordingPlatform captures menu/UI calls and runs DispatchToMain inline so a
@@ -104,6 +106,9 @@ func (r *trayRegistry) PIDsByServiceID() map[string]int {
 	return out
 }
 func (r *trayRegistry) StopAll() { r.mu.Lock(); defer r.mu.Unlock(); r.stopAllCount++ }
+func (r *trayRegistry) Runtime() map[string]service.ServiceRuntime {
+	return map[string]service.ServiceRuntime{}
+}
 
 // menuEntry mirrors the fields updateMenuWithSettings marshals.
 type menuEntry struct {
@@ -186,7 +191,8 @@ func TestOnMenuClick_StartsStoppedService(t *testing.T) {
 	app := &App{platform: rp, registry: reg, store: fixedStore{s: s}}
 	app.updateMenuWithSettings(s) // populate svcMenuMap
 
-	app.onMenuClick(menuIDSvcBase + 0) // not running → Start
+	app.onMenuClick(menuIDSvcBase + 0) // not running → Start (in a tracked goroutine)
+	app.wg.Wait()
 
 	if len(reg.started) != 1 || reg.started[0] != "svc-x" {
 		t.Fatalf("expected Start(svc-x), got started=%v", reg.started)
@@ -265,6 +271,71 @@ func TestCleanup_IsIdempotentAndStopsServices(t *testing.T) {
 	}
 	if _, err := os.Stat(ep.Socket); !os.IsNotExist(err) {
 		t.Errorf("frontend socket should be removed by cleanup, stat err=%v", err)
+	}
+}
+
+// TestWaitWithTimeout_ReturnsFalseWhenWaitGroupNeverFinishes is item 7's
+// core-mechanism test: a WaitGroup that never reaches zero (standing in for
+// a goFunc-tracked goroutine permanently stuck dispatch_sync'ing to the
+// very main thread that is waiting on it) must not hang waitWithTimeout
+// forever.
+func TestWaitWithTimeout_ReturnsFalseWhenWaitGroupNeverFinishes(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1) // never Done()
+
+	start := time.Now()
+	if waitWithTimeout(&wg, 50*time.Millisecond) {
+		t.Fatal("expected false for a WaitGroup that never reaches zero")
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("returned before the timeout elapsed: %v", elapsed)
+	}
+}
+
+// TestWaitWithTimeout_ReturnsTrueWhenWaitGroupFinishesInTime is the control
+// case: a WaitGroup that finishes well inside the bound reports true, so
+// cleanup()'s ordinary (non-deadlocked) shutdown path is unaffected.
+func TestWaitWithTimeout_ReturnsTrueWhenWaitGroupFinishesInTime(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		wg.Done()
+	}()
+	if !waitWithTimeout(&wg, time.Second) {
+		t.Fatal("expected true when the group finishes before the deadline")
+	}
+}
+
+// TestCleanup_DoesNotHangOnATrackedGoroutineThatNeverFinishes reproduces
+// item 7's tray shutdown deadlock at the App level: cleanup() itself calls
+// a.wg.Wait() as its last step, and a goFunc-tracked goroutine that never
+// returns (in production: ResetMcpPermissions stuck dispatch_sync'ing to
+// the same main thread cleanup() is running on) must not turn cleanup()
+// into a permanent hang. Runs for roughly cleanupWaitGroupTimeout.
+func TestCleanup_DoesNotHangOnATrackedGoroutineThatNeverFinishes(t *testing.T) {
+	mkEmptySandboxRelayHome(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	app := &App{
+		ctx:      ctx,
+		cancel:   cancel,
+		extMgr:   mcpbroker.NewManager(nil),
+		registry: &trayRegistry{},
+		platform: &recordingPlatform{},
+	}
+	app.goFunc(func() { select {} }) // never returns
+
+	done := make(chan struct{})
+	go func() {
+		app.cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(cleanupWaitGroupTimeout + 3*time.Second):
+		t.Fatal("cleanup() did not return within its bounded wait for tracked goroutines")
 	}
 }
 

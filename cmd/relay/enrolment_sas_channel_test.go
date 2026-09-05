@@ -618,11 +618,7 @@ func TestSAS_AC14_NoResultTypeCarriesTheComparisonCode(t *testing.T) {
 		t.Fatalf("the row has no code to look for: %q", code)
 	}
 
-	lodgeJSONBytes, err := json.Marshal(enrolmentRequestLodgeResult{
-		RequestID: l.RequestID, SPKISHA256: l.SPKISHA256,
-		PollAfterSeconds: l.PollAfterSeconds, ExpiresInSeconds: l.ExpiresInSeconds,
-		CAPEM: l.CAPEM, SASNonce: l.SASNonce,
-	})
+	lodgeJSONBytes, err := json.Marshal(enrolmentRequestLodgeResult(l))
 	assertNoErr(t, err, "marshal the lodge result")
 
 	res, err := table.Poll(l.RequestID, "")

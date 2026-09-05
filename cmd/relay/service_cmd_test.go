@@ -7,7 +7,10 @@ import "github.com/barelyworkingcode/relay/internal/config"
 // — newBrokerRouter + serveBroker give it one, over the same store the
 // assertions read back from afterward.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func newCLISandboxStore(t *testing.T) config.SettingsStore {
 	t.Helper()
@@ -23,7 +26,7 @@ func TestServiceRegister_NoFrontendCredsSetsOptOut(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Backend Svc",
 		"--command", "/usr/bin/true",
 		"--no-frontend-creds",
@@ -46,7 +49,7 @@ func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "Frontend Svc",
 		"--command", "/usr/bin/true",
 		"--autostart",
@@ -68,5 +71,66 @@ func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
 	}
 	if cfg.URL != "http://127.0.0.1:9000" {
 		t.Errorf("URL = %q, want http://127.0.0.1:9000", cfg.URL)
+	}
+}
+
+func TestServiceRegister_FrontendCredsSetsExplicitTrue(t *testing.T) {
+	store := newCLISandboxStore(t)
+	serveBroker(t, newBrokerRouter(t, store, nil))
+
+	serviceRegister([]string{
+		"--name", "Explicit Frontend Svc",
+		"--command", "/usr/bin/true",
+		"--frontend-creds",
+	})
+
+	svcs := store.Get().Services
+	if len(svcs) != 1 {
+		t.Fatalf("want exactly 1 registered service, got %d", len(svcs))
+	}
+	cfg := svcs[0]
+	if cfg.FrontendConsumer == nil || !*cfg.FrontendConsumer {
+		t.Errorf("FrontendConsumer = %v, want explicit true", cfg.FrontendConsumer)
+	}
+	if got := cfg.FrontendCredsState(); got != "explicit" {
+		t.Errorf("FrontendCredsState() = %q, want \"explicit\"", got)
+	}
+}
+
+// --frontend-creds and --no-frontend-creds together must be refused before
+// requireService is even reached — the subprocess harness (cli_subprocess_test.go)
+// is what lets this test see exitError's real os.Exit(1) instead of killing
+// the suite.
+func TestServiceRegister_FrontendCredsMutualExclusionRefused(t *testing.T) {
+	dir := mkShortTempDir(t, "relay-refuse-")
+	out, code := runCLISubprocess(t, dir,
+		"service", "register", "--name", "x", "--command", "/bin/true",
+		"--frontend-creds", "--no-frontend-creds",
+	)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, output:\n%s", out)
+	}
+	if !strings.Contains(out, "mutually exclusive") {
+		t.Errorf("refusal does not mention mutual exclusivity: %q", out)
+	}
+}
+
+func TestFrontDoorColumn(t *testing.T) {
+	trueVal, falseVal := true, false
+	cases := []struct {
+		name string
+		cfg  config.ServiceConfig
+		want string
+	}{
+		{"implicit", config.ServiceConfig{}, "yes (implicit)"},
+		{"explicit", config.ServiceConfig{FrontendConsumer: &trueVal}, "yes"},
+		{"off", config.ServiceConfig{FrontendConsumer: &falseVal}, "no"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := frontDoorColumn(&tc.cfg); got != tc.want {
+				t.Errorf("frontDoorColumn() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

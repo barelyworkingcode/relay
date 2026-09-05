@@ -75,7 +75,7 @@ func TestEnrolmentSignFields_DigestBindsEveryFieldIncludingTheCSRKey(t *testing.
 	if base.presenceDigest(csrB) == baseDigest {
 		t.Error("variant \"csr public key\" produced the same digest as the base request")
 	}
-	if base.presenceDigest(csrA) != base.presenceDigest(csrA) {
+	if base.presenceDigest(csrA) != base.presenceDigest(csrA) { //nolint:staticcheck // deliberate: same input twice checks the digest is deterministic, not a copy-paste
 		t.Fatal("presenceDigest is not deterministic over the same request")
 	}
 }

@@ -84,29 +84,11 @@ type AuditQueryFields struct {
 }
 
 func AuditFieldsFromQuery(q AuditQuery) AuditQueryFields {
-	return AuditQueryFields{
-		ProjectID: q.ProjectID,
-		McpID:     q.McpID,
-		Outcome:   q.Outcome,
-		Event:     q.Event,
-		Kind:      q.Kind,
-		Text:      q.Text,
-		Limit:     q.Limit,
-		Deep:      q.Deep,
-	}
+	return AuditQueryFields(q)
 }
 
 func (f AuditQueryFields) toQuery() AuditQuery {
-	return AuditQuery{
-		ProjectID: f.ProjectID,
-		McpID:     f.McpID,
-		Outcome:   f.Outcome,
-		Event:     f.Event,
-		Kind:      f.Kind,
-		Text:      f.Text,
-		Limit:     f.Limit,
-		Deep:      f.Deep,
-	}
+	return AuditQuery(f)
 }
 
 func (f AuditQueryFields) validate() error {
@@ -184,7 +166,7 @@ func (o *AuditOps) Export(f AuditQueryFields) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create export: %w", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	enc := json.NewEncoder(out)
 	// Oldest-first in the export: a log read top-to-bottom should run forwards

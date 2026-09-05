@@ -197,7 +197,7 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (conf
 
 	result, err := mcpbroker.DiscoverExternalMcp(o.Ctx, f.DisplayName, id, f.Command, f.Args, f.Env)
 	if err != nil {
-		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
+		return config.ExternalMcp{}, fmt.Errorf("%w: %w", errMcpDiscovery, err)
 	}
 	result.TccServices = f.TccServices
 	if err := o.persist(*result, via, credID, grant.ID()); err != nil {
@@ -216,7 +216,7 @@ func (o *McpOps) Add(ctx context.Context, f mcpFields, via, credID string) (conf
 func (o *McpOps) addHTTP(displayName, id, mcpURL string, tccServices []string, via, credID, presenceID string) (config.ExternalMcp, error) {
 	result, err := mcpbroker.DiscoverHTTPMcp(o.Ctx, displayName, id, mcpURL, nil)
 	if err != nil && !errors.Is(err, mcpbroker.ErrAuthRequired) {
-		return config.ExternalMcp{}, fmt.Errorf("%w: %v", errMcpDiscovery, err)
+		return config.ExternalMcp{}, fmt.Errorf("%w: %w", errMcpDiscovery, err)
 	}
 	if result == nil {
 		return config.ExternalMcp{}, fmt.Errorf("%w: discovery returned no configuration", errMcpDiscovery)
@@ -265,7 +265,7 @@ func (o *McpOps) persist(cfg config.ExternalMcp, via, credID, presenceID string)
 	return nil
 }
 
-func (o *McpOps) Remove(ctx context.Context, id, via, credID string) error {
+func (o *McpOps) Remove(id, via, credID string) error {
 	// No requireGate call here (ADR-018 step 3, §5.1): unregistering only
 	// narrows what the caller already reaches, and re-registering under
 	// the same id still hits Add's gate. requireIssuanceAuditor and

@@ -5,8 +5,10 @@ package service
 import (
 	"fmt"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -85,8 +87,26 @@ func processCommand(pid int) string {
 	return strings.TrimSpace(string(out))
 }
 
+// commandIdentityMatches reports whether cmdLine's own first field — the
+// executable ps reports, never one of its arguments — identifies
+// expectCommand, either literally (a full path was configured) or by
+// basename (a bare command name was, and the shell or OS resolved it to a
+// full path by the time ps saw it). A substring search over the whole line
+// would also match expectCommand appearing inside an unrelated argument.
+func commandIdentityMatches(cmdLine, expectCommand string) bool {
+	if cmdLine == "" || expectCommand == "" {
+		return false
+	}
+	fields := strings.Fields(cmdLine)
+	if len(fields) == 0 {
+		return false
+	}
+	got := fields[0]
+	return got == expectCommand || filepath.Base(got) == filepath.Base(expectCommand)
+}
+
 // ReclaimOrphan kills pid's process group only if it is still alive AND its
-// command line still references expectCommand. Uses a 2s grace window
+// command line still identifies expectCommand. Uses a 2s grace window
 // (vs. KillProcessGroup's 1s): reclaim runs at tray startup, where a longer
 // wait beats SIGKILLing a daemon mid-shutdown.
 func ReclaimOrphan(pid int, expectCommand string) bool {
@@ -99,7 +119,14 @@ func ReclaimOrphan(pid int, expectCommand string) bool {
 	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
 		return false
 	}
-	if expectCommand != "" && !strings.Contains(processCommand(pid), expectCommand) {
+	// An empty expectCommand means the config this pidfile was written
+	// against carries no command to check identity against — that is "cannot
+	// verify", not "skip the check", so it must not reclaim.
+	if expectCommand == "" {
+		slog.Warn("service: cannot verify orphan identity with no configured command; not reclaiming", "pid", pid)
+		return false
+	}
+	if !commandIdentityMatches(processCommand(pid), expectCommand) {
 		return false
 	}
 

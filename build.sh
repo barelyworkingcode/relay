@@ -61,7 +61,8 @@ STAGE="/tmp/relay-build-$$"
 
 # Build Go binary with CGO enabled
 echo "Building relay..."
-CGO_ENABLED=1 go build -o relay ./cmd/relay
+RELAY_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+CGO_ENABLED=1 go build -ldflags "-X main.buildVersion=$RELAY_VERSION" -o relay ./cmd/relay
 
 # Build bundle in /tmp
 # Use cat to copy binary -- breaks provenance chain that cp preserves

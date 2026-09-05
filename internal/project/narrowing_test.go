@@ -272,4 +272,3 @@ func TestNarrowFieldNames_IncludesMountsOnlyWhenSet(t *testing.T) {
 		t.Fatalf("NarrowFieldNames = %v, want it to include \"mounts\" when f.Mounts is set", names)
 	}
 }
-

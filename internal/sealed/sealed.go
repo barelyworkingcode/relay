@@ -7,7 +7,13 @@
 // package main cannot construct or edit one by hand, and the cgo keychain
 // code (keychain_darwin.go) is easier to build-tag in isolation.
 //
-// This package is wired into nothing yet. Nothing outside it imports it.
+// internal/config seals every Secret field and the settings store's own key
+// through the Sealer interface here (seal.go, secret.go, sealed_store.go);
+// internal/enrolment seals relay's CA private key the same way (ca.go); and
+// cmd/relay's break-glass reset (sealed_reset.go) and the tray's own
+// keyring field talk to the Keyring interface directly, since resetting it
+// is the one act that must delete the keychain item outright rather than
+// go through a Sealer.
 package sealed
 
 import (
@@ -127,7 +133,7 @@ func (e *Envelope) UnmarshalJSON(b []byte) error {
 
 	var wire envelopeWire
 	if err := json.Unmarshal(b, &wire); err != nil {
-		return fmt.Errorf("%w: %v", ErrCorrupt, err)
+		return fmt.Errorf("%w: %w", ErrCorrupt, err)
 	}
 	if wire.Key == "" || wire.Nonce == "" || wire.CT == "" {
 		return fmt.Errorf("%w: missing key, n, or ct", ErrCorrupt)

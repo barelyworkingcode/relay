@@ -52,7 +52,7 @@ func TestLoginEnrol_CLIPrintsCodeButStoresOnlyItsHash(t *testing.T) {
 	store, dir := lcNewStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	out := lcCapture(t, func() { loginEnrol(store) })
+	out := lcCapture(t, func() { loginEnrol() })
 
 	const prefix = "login code: "
 	idx := strings.Index(out, prefix)

@@ -452,13 +452,13 @@ func spawnStdioConn(command string, args []string, env map[string]string, cfg *c
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stdin.Close()
+		_ = stdin.Close()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, fmt.Errorf("spawn failed: %w", err)
 	}
 
@@ -1473,6 +1473,12 @@ func (c *externalMcpConn) SendRequest(ctx context.Context, method string, params
 		}
 		return result.resp.Result, nil
 	case <-c.readerDone:
+		// Same cleanup as the ctx.Done()/timer.C branches below: the reader
+		// loop dying is exactly as much "this call is never getting an
+		// answer" as a timeout or cancellation is, and skipping it left id
+		// in c.pending forever (readLoop is what deletes entries, and it
+		// has, by definition, already stopped here).
+		c.removePending(id)
 		if c.readerErr != nil {
 			return nil, c.readerErr
 		}
@@ -1547,7 +1553,7 @@ func (c *externalMcpConn) SendNotification(method string) {
 func (c *externalMcpConn) Close() {
 	c.closeOnce.Do(func() {
 		if c.stdin != nil {
-			c.stdin.Close()
+			_ = c.stdin.Close()
 		}
 		if c.cmd != nil {
 			service.KillProcessGroup(c.cmd)

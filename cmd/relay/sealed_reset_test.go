@@ -170,7 +170,7 @@ func TestResetSealedStore_DigestBindsBothKeyIDs(t *testing.T) {
 		t.Error("an absent keychain key id produced the same digest as a present one")
 	}
 
-	if sealedResetDigest("x", sealed.NewMemoryKeyring("y", make([]byte, 32))) != sealedResetDigest("x", sealed.NewMemoryKeyring("y", make([]byte, 32))) {
+	if sealedResetDigest("x", sealed.NewMemoryKeyring("y", make([]byte, 32))) != sealedResetDigest("x", sealed.NewMemoryKeyring("y", make([]byte, 32))) { //nolint:staticcheck // deliberate: same input twice checks the digest is deterministic, not a copy-paste
 		t.Error("sealedResetDigest is not deterministic over the same inputs")
 	}
 }

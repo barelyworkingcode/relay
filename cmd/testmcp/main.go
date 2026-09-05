@@ -103,8 +103,8 @@ func main() {
 	writeLine := func(b []byte) {
 		mu.Lock()
 		defer mu.Unlock()
-		out.Write(b)
-		out.WriteByte('\n')
+		_, _ = out.Write(b)
+		_ = out.WriteByte('\n')
 		out.Flush()
 	}
 	// json.Marshal would compact the echoed params with HTML escaping on,
@@ -130,14 +130,14 @@ func main() {
 		chunk := bytes.Repeat([]byte("A"), 64*1024)
 		mu.Lock()
 		defer mu.Unlock()
-		out.WriteString(`{"jsonrpc":"2.0","id":`)
-		out.Write(idJSON)
-		out.WriteString(`,"result":"`)
+		_, _ = out.WriteString(`{"jsonrpc":"2.0","id":`)
+		_, _ = out.Write(idJSON)
+		_, _ = out.WriteString(`,"result":"`)
 		for written := 0; written < n; written += len(chunk) {
-			out.Write(chunk)
+			_, _ = out.Write(chunk)
 		}
-		out.WriteString(`"}`)
-		out.WriteByte('\n')
+		_, _ = out.WriteString(`"}`)
+		_ = out.WriteByte('\n')
 		out.Flush()
 	}
 

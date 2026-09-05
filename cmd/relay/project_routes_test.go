@@ -501,6 +501,9 @@ func TestProjectRoutes_PermissionPolicy(t *testing.T) {
 		t.Fatalf("clear policy: status %d", resp.StatusCode)
 	}
 	resp, body = doJSON(t, "GET", srv.URL+"/api/projects/"+created.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get after clear: status %d", resp.StatusCode)
+	}
 	var after config.Project
 	json.Unmarshal(body, &after)
 	if after.PermissionPolicy != nil {

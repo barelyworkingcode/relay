@@ -2,6 +2,7 @@ package presence
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestGate_NilProviderRefused(t *testing.T) {
 func TestGate_UnknownOpRefused(t *testing.T) {
 	g, _ := newGateForTest(t, &countingProvider{})
 	_, err := g.Request(context.Background(), "not.a.real.op", Digest{}, "do a thing")
-	if err != ErrUnknownOp {
+	if !errors.Is(err, ErrUnknownOp) {
 		t.Fatalf("got %v, want ErrUnknownOp", err)
 	}
 }
@@ -98,7 +99,7 @@ func TestGate_SingleUse(t *testing.T) {
 	if err := g.Redeem(gr, "credential.mint", d); err != nil {
 		t.Fatalf("first Redeem: %v", err)
 	}
-	if err := g.Redeem(gr, "credential.mint", d); err != ErrGrantInvalid {
+	if err := g.Redeem(gr, "credential.mint", d); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("second Redeem of the same grant returned %v, want ErrGrantInvalid", err)
 	}
 }
@@ -111,7 +112,7 @@ func TestGate_OperationBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if err := g.Redeem(gr, "credential.mint", d); err != ErrGrantInvalid {
+	if err := g.Redeem(gr, "credential.mint", d); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("Redeem against a different op returned %v, want ErrGrantInvalid", err)
 	}
 	// The grant is still live for its real operation, proving the failure
@@ -132,7 +133,7 @@ func TestGate_ArgumentDigestBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if err := g.Redeem(gr, "credential.mint", dWide); err != ErrGrantInvalid {
+	if err := g.Redeem(gr, "credential.mint", dWide); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("Redeem against a wider digest returned %v, want ErrGrantInvalid", err)
 	}
 }
@@ -155,7 +156,7 @@ func TestGate_ExpiresAt120Seconds(t *testing.T) {
 		t.Fatalf("Request: %v", err)
 	}
 	fc.advance(121 * time.Second)
-	if err := g.Redeem(gr2, "credential.mint", d); err != ErrGrantInvalid {
+	if err := g.Redeem(gr2, "credential.mint", d); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("Redeem at 121s returned %v, want ErrGrantInvalid", err)
 	}
 }
@@ -196,7 +197,7 @@ func TestGate_RefusalsAreUniform(t *testing.T) {
 		"wrong digest": g.Redeem(live, "credential.mint", other),
 	}
 	for name, got := range cases {
-		if got != ErrGrantInvalid {
+		if !errors.Is(got, ErrGrantInvalid) {
 			t.Errorf("%s: got %v, want ErrGrantInvalid", name, got)
 		}
 	}
@@ -210,7 +211,7 @@ func TestGate_PeerWithNoGraphicAccessRefusedWithoutCallingTheProvider(t *testing
 	d := NewDigestBuilder("login.bootstrap.mint").Build()
 
 	_, err := g.Request(ctx, "login.bootstrap.mint", d, "mint a login code")
-	if err != ErrNoSession {
+	if !errors.Is(err, ErrNoSession) {
 		t.Fatalf("got %v, want ErrNoSession", err)
 	}
 	if p.callCount() != 0 {
@@ -250,7 +251,7 @@ func TestGate_NoSessionOnContextPrompts(t *testing.T) {
 func TestGate_RequireDoesNotRedeemOnRefusal(t *testing.T) {
 	g, _ := newGateForTest(t, &countingProvider{result: ErrRefused})
 	d := NewDigestBuilder("credential.mint").StringField("name", true, "x").Build()
-	if _, err := g.Require(context.Background(), "credential.mint", d, "mint"); err != ErrRefused {
+	if _, err := g.Require(context.Background(), "credential.mint", d, "mint"); !errors.Is(err, ErrRefused) {
 		t.Fatalf("got %v, want ErrRefused", err)
 	}
 	if len(g.nonces) != 0 {
@@ -276,7 +277,7 @@ func TestGate_NonceTableIsBoundedAndEvictsOldest(t *testing.T) {
 	if len(g.nonces) > maxNonces {
 		t.Fatalf("nonce table grew to %d entries, want at most %d", len(g.nonces), maxNonces)
 	}
-	if err := g.Redeem(first, "credential.mint", d); err != ErrGrantInvalid {
+	if err := g.Redeem(first, "credential.mint", d); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatal("the oldest grant survived past the table's bound")
 	}
 	if err := g.Redeem(last, "credential.mint", d); err != nil {

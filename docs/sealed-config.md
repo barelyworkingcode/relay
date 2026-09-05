@@ -4,8 +4,8 @@
 and things relay only checks. This document is the durable reasoning behind
 moving the first kind off disk and into an AES-256-GCM envelope keyed from the
 login keychain, and behind the choices that follow from it. See
-[ADR-017](decisions/017-config-dir-is-not-a-boundary.md) for the decision and
-[the implementation spec](decisions/017-implementation-spec.md) for the wire
+ADR-017 (a config directory alone is not a security boundary) for the decision and
+the ADR-017 implementation spec for the wire
 format and acceptance criteria; this document is the *why* that a comment in
 `settings_seal.go` or `sealed/sealed.go` is not the place for.
 

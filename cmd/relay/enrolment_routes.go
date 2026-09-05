@@ -128,12 +128,7 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	})
 
 	rr.Handle(control.ClassRead, "GET /api/remote", func(w http.ResponseWriter, r *http.Request) {
-		view, err := ops.RemoteConfig()
-		if err != nil {
-			writeEnrolmentError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, view)
+		writeJSON(w, http.StatusOK, ops.RemoteConfig())
 	})
 
 	// execute: the body sets the mTLS listener's bind address, and now also

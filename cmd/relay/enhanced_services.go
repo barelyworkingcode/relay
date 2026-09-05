@@ -145,7 +145,7 @@ func (r *EnhancedServiceRegistry) LookupByPath(path string) *EnhancedService {
 	bestLen := -1
 	for _, rec := range r.services {
 		for _, route := range rec.Manifest.Routes {
-			matched := false
+			var matched bool
 			if strings.HasSuffix(route, "/") {
 				matched = strings.HasPrefix(path, route)
 			} else {

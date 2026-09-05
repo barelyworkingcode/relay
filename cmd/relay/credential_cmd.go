@@ -21,9 +21,9 @@ import (
 func runCredentialCommand(args []string) {
 	store := config.NewSettingsStore()
 	runSubcommands("credential", []cliSubcommand{
-		{"mint", func(a []string) { credentialMint(store, a) }},
+		{"mint", credentialMint},
 		{"list", func(a []string) { credentialList(store, a) }},
-		{"revoke", func(a []string) { credentialRevoke(store, a) }},
+		{"revoke", credentialRevoke},
 	}, args)
 }
 
@@ -77,7 +77,7 @@ type credentialMintRequest struct {
 // non-negative TTL) lives in the core now, not here: the request travels to
 // the tray unchecked and Mint is what refuses it, the same as every other
 // brokered command.
-func credentialMint(store config.SettingsStore, args []string) {
+func credentialMint(args []string) {
 	fs := flag.NewFlagSet("credential mint", flag.ExitOnError)
 	name := fs.String("name", "", "human-readable name for this credential (required)")
 	ttl := fs.Duration("ttl", 0, "how long this credential lives (e.g. 12h); omit for one that never expires")
@@ -160,7 +160,7 @@ func credentialList(store config.SettingsStore, args []string) {
 	w.Flush()
 }
 
-func credentialRevoke(store config.SettingsStore, args []string) {
+func credentialRevoke(args []string) {
 	fs := flag.NewFlagSet("credential revoke", flag.ExitOnError)
 	id := fs.String("id", "", "id of the credential to revoke (required)")
 	fs.Parse(args)

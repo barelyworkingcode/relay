@@ -1,7 +1,7 @@
 # Testing Roadmap
 
 Cross-repo status of bringing each sibling repo up to the bar in
-[ADR-001](decisions/001-testing-strategy.md). relay is the reference impl.
+ADR-001 (the three-tier testing strategy). relay is the reference impl.
 
 Headline rule everywhere: **no test may touch the user's real config
 directory** (full rationale in ADR-001). Each repo enforces it differently;
@@ -30,7 +30,7 @@ relayLLM's tier model is documented in its
    - Sandbox helpers that isolate `_meta.allowed_dirs` from the host FS.
    - Cross-repo contract test asserting its tool schema matches relay's
      auto-disable-on-fs expectation (relay keys off the `allowed_dirs`
-     field in the MCP schema — see `settings.go:398`).
+     field in the MCP schema — see `internal/project.V1AllowedDirsField`).
 2. **eve** — already has Jest unit + Playwright e2e; finish the standard:
    wire a pre-commit gate, add a sandbox guard, and reuse relay's
    `FakeRelayLLMService` over an injectable backend URL in the e2e tier.
@@ -57,7 +57,7 @@ contamination. Fix: ignore `logs/`, `run/`, and `*.sock` in the snapshot.
 See `support_safety_test.go:shouldIgnoreForSafetySnapshot`.
 
 ### `sync.Mutex` in `serviceTokenStore` must not be copied
-The router embeds `serviceTokenStore` by value (`router.go:71`); the
+The router embeds `serviceTokenStore` by value (`appRouter.serviceTokens`); the
 service registry takes a pointer to that same field. Wiring tests that
 allocate their own `&serviceTokenStore{}` and pass it to the registry
 while the router keeps a copy silently break token auth — registry writes
@@ -77,7 +77,7 @@ sandboxed, which is what the headline rule is about.
 
 ### No `exec.Command` factory for spawn tests
 Don't mock subprocess spawn — see ADR-002
-([002-test-seams.md](decisions/002-test-seams.md)). Use the real
+(test seams: use the real thing over a fake in-process double). Use the real
 `cmd/testservice/main.go` binary so tests exercise the production spawn
 path (env injection, pidfile, log routing, reaper, token cleanup).
 

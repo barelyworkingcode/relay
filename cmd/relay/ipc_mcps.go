@@ -15,11 +15,6 @@ func dispatchEmit(ctx *IPCContext, event string, args ...interface{}) {
 	})
 }
 
-// Despite the name, the events emitted here are not always errors.
-func dispatchError(ctx *IPCContext, event string, args ...interface{}) {
-	dispatchEmit(ctx, event, args...)
-}
-
 func (msg *ipcAddExternalMcpMsg) fields() mcpFields {
 	return mcpFields{
 		DisplayName: msg.DisplayName,
@@ -78,7 +73,7 @@ func ipcAuthenticateMcp(ctx *IPCContext, raw json.RawMessage) {
 		// flow; McpOps.StartOAuth takes it as a parameter precisely so this
 		// is the only place it gets supplied (ADR-014 section 4).
 		if _, err := ctx.McpOps.StartOAuth(ctx.Ctx, msg.ID, ctx.Platform.OpenURL, auditViaIPC, ""); err != nil {
-			dispatchError(ctx, "onOAuthError", msg.ID, err.Error())
+			dispatchEmit(ctx, "onOAuthError", msg.ID, err.Error())
 			return
 		}
 		dispatchEmit(ctx, "onOAuthComplete", msg.ID)
@@ -98,7 +93,7 @@ func ipcRemoveExternalMcp(ctx *IPCContext, raw json.RawMessage) {
 	// McpOps.Remove left alongside presence.GatedOps. Still dispatched off
 	// the main thread, matching this file's other IPC handlers.
 	ctx.GoFunc(func() {
-		if err := ctx.McpOps.Remove(ctx.Ctx, msg.ID, auditViaIPC, ""); err != nil {
+		if err := ctx.McpOps.Remove(msg.ID, auditViaIPC, ""); err != nil {
 			dispatchEmit(ctx, "onExternalMcpError", err.Error())
 			return
 		}

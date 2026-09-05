@@ -285,7 +285,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 
 	snap := c.snapshot()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request: %w", err)
 	}
@@ -296,7 +296,7 @@ func (c *httpMcpConn) SendRequest(ctx context.Context, method string, params int
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrAuthRequired
@@ -429,7 +429,7 @@ func (c *httpMcpConn) SendNotification(method string) {
 	ctx, cancel := context.WithTimeout(context.Background(), MCPNotificationTimeout)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create notification request", "method", method, "error", err)
 		return
@@ -441,7 +441,7 @@ func (c *httpMcpConn) SendNotification(method string) {
 		slog.Debug("HTTP MCP: notification failed", "method", method, "error", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func (c *httpMcpConn) Close() {
@@ -460,7 +460,7 @@ func (c *httpMcpConn) doClose() {
 	ctx, cancel := context.WithTimeout(context.Background(), HTTPSessionCloseTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "DELETE", c.url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		slog.Debug("HTTP MCP: failed to create session close request", "url", c.url, "error", err)
 		return
@@ -472,7 +472,7 @@ func (c *httpMcpConn) doClose() {
 		slog.Debug("HTTP MCP: session close failed", "url", c.url, "error", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func (m *Manager) startHTTP(ctx context.Context, mcpCfg *config.ExternalMcp) error {

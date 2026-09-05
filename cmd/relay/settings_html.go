@@ -47,7 +47,7 @@ func mustMarshalJSON(label string, v interface{}) string {
 // value" without anyone opening the editor first, and a list that had to
 // round-trip for that would render the reassuring answer first.
 func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]project.ScopeFieldView) string {
-	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil, "")
+	return renderSettingsDocument(settings, runningIDs, toolCache, scopeFields, nil, "", overviewSeed{})
 }
 
 // renderSettingsDocument is renderSettingsHTML plus the two things only the
@@ -61,7 +61,13 @@ func renderSettingsHTML(settings *config.Settings, runningIDs []string, toolCach
 // initialPage is one of web/src/app.js's showPage ids and is set only from a
 // constant in this repository; it never carries anything a network peer
 // supplied.
-func renderSettingsDocument(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]project.ScopeFieldView, loginCode *loginCodeView, initialPage string) string {
+//
+// seed is the Overview tab's extra payload (MCP health, service runtime,
+// seal status, version, paths). A zero-value overviewSeed{} is exactly what
+// a healthy, version-less dev build's first paint should show, so callers
+// that don't build one (renderSettingsHTML, most tests) pass it that way
+// rather than each reconstructing the same defaults.
+func renderSettingsDocument(settings *config.Settings, runningIDs []string, toolCache map[string][]config.ToolInfo, scopeFields map[string][]project.ScopeFieldView, loginCode *loginCodeView, initialPage string, seed overviewSeed) string {
 	if runningIDs == nil {
 		runningIDs = []string{}
 	}
@@ -119,5 +125,12 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, time.Now())),
 		"__LOGIN_CODE_JSON__", mustMarshalJSON("login_code", loginCode),
 		"__INITIAL_PAGE_JSON__", mustMarshalJSON("initial_page", initialPage),
+		// Overview tab (seeded like everything else above: no loading state
+		// to fail into on first paint).
+		"__MCP_HEALTH_JSON__", mustMarshalJSON("mcp_health", seed.MCPHealth),
+		"__SERVICE_RUNTIME_JSON__", mustMarshalJSON("service_runtime", seed.ServiceRuntime),
+		"__SEAL_STATUS_JSON__", mustMarshalJSON("seal_status", seed.SealStatus),
+		"__VERSION_JSON__", mustMarshalJSON("version", seed.Version),
+		"__PATHS_JSON__", mustMarshalJSON("paths", seed.Paths),
 	).Replace(settingsHTML)
 }

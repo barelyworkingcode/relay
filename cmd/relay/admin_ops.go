@@ -455,7 +455,7 @@ func adminMcpUnregister(ctx context.Context, r *appRouter, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if err := ops.Remove(ctx, req.ID, auditViaCLI, ""); err != nil {
+	if err := ops.Remove(req.ID, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {
@@ -514,7 +514,7 @@ func adminServiceUnregister(ctx context.Context, r *appRouter, args json.RawMess
 	if err != nil {
 		return nil, err
 	}
-	if err := ops.Remove(ctx, req.ID, auditViaCLI, ""); err != nil {
+	if err := ops.Remove(req.ID, auditViaCLI, ""); err != nil {
 		return nil, err
 	}
 	return marshalAdminResult(struct {

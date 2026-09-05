@@ -133,7 +133,7 @@ func TestApplyCreate_HostProject(t *testing.T) {
 	if created.HostID != "h_1" {
 		t.Fatalf("expected host_id to be set, got %q", created.HostID)
 	}
-	if created.Context != nil && len(created.Context) != 0 {
+	if len(created.Context) != 0 {
 		t.Fatalf("expected no derived context for a host project, got %v", created.Context)
 	}
 

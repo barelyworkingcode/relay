@@ -54,6 +54,17 @@ var errProjectSaveFailed = errors.New("failed to save settings")
 // door must treat this as an internal failure, not a validation refusal.
 var errProjectTokenUnrecorded = errors.New("the token was rotated but could not be recorded in the audit log, so it was not returned; rotate again")
 
+// errProjectHosted refuses a skill regen for a project whose directory
+// lives on a Host: proj.Path is meaningful only on that host, and
+// project.ValidateShape already refuses generate_skill on a hosted project
+// for the same reason, so the explicit "regen now" doors need the same
+// check the automatic path gets for free.
+var errProjectHosted = errors.New("project lives on a host; skills are generated on a console project's own filesystem only")
+
+// errProjectHasNoPath refuses a skill regen for a console project with an
+// empty Path (nothing for EmitSkills to write under).
+var errProjectHasNoPath = errors.New("project has no path")
+
 func (o *ProjectOps) notify() {
 	if o.OnChange != nil {
 		o.OnChange()
@@ -262,7 +273,7 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 	if err := o.Store.With(func(s *config.Settings) {
 		created, createErr = project.ApplyCreate(s, f, surfaces)
 	}); err != nil {
-		return config.Project{}, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
+		return config.Project{}, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
 	if createErr != nil {
 		return config.Project{}, createErr
@@ -300,7 +311,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	if err := o.Store.With(func(s *config.Settings) {
 		updated, found, updateErr = project.ApplyUpdate(s, id, f, surfaces)
 	}); err != nil {
-		return config.Project{}, false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
+		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
 	if updateErr != nil {
 		return config.Project{}, true, updateErr
@@ -316,6 +327,62 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	}
 	o.notify()
 	return updated, true, nil
+}
+
+// RegenSkill is the shared core behind the HTTP `POST
+// /api/projects/{id}/regen_skill` route and the IPC `regen_project_skill`
+// handler — both force a SKILL.md write regardless of the project's
+// GenerateSkill flag (that flag only gates *automatic* regen), so unlike
+// reconcileProjectSkill neither door gets IsHosted's refusal for free and
+// each needs to ask here explicitly. Not gated: it writes only into
+// .claude/skills, which project.grant already covers via allowed_tools/
+// allowed_mcp_ids at the time GenerateSkill was turned on.
+func (o *ProjectOps) RegenSkill(ctx context.Context, lister SkillLister, id string) (dir string, found bool, err error) {
+	proj, _ := config.FindProjectByID(o.Store.Get(), id)
+	if proj == nil {
+		return "", false, nil
+	}
+	if proj.IsHosted() {
+		return "", true, fmt.Errorf("%w: project %q lives on host %q", errProjectHosted, proj.Name, proj.HostID)
+	}
+	dir = projectSkillDir(*proj)
+	if dir == "" {
+		return "", true, errProjectHasNoPath
+	}
+	if _, err := EmitSkills(ctx, lister, *proj, dir, RegenAlways); err != nil {
+		return "", true, err
+	}
+	return dir, true, nil
+}
+
+// Remove deletes a project and its on-disk skill directory (best-effort;
+// EmitSkills only ever wrote there, so a hosted project — which cannot
+// carry GenerateSkill — has nothing to clean up and projectSkillDir simply
+// returns "" for one with an empty Path). The one core HTTP DELETE
+// /api/projects/{id} and IPC delete_project share, so removal and its
+// skill cleanup cannot drift between the two doors.
+func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err error) {
+	if err := o.Store.With(func(s *config.Settings) {
+		proj, _ := config.FindProjectByID(s, id)
+		if proj == nil {
+			return
+		}
+		found = true
+		removed = *proj
+		s.RemoveProject(id)
+	}); err != nil {
+		return config.Project{}, false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
+	}
+	if !found {
+		return config.Project{}, false, nil
+	}
+	if dir := projectSkillDir(removed); dir != "" {
+		if err := RemoveSkill(dir); err != nil {
+			slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
+		}
+	}
+	o.notify()
+	return removed, true, nil
 }
 
 // RotateToken issues a new token and withholds it on an audit failure,
@@ -338,16 +405,16 @@ func (o *ProjectOps) RotateToken(ctx context.Context, id, via, credID string) (s
 	if err := o.Store.With(func(s *config.Settings) {
 		newPlaintext, ok, genErr = s.RotateProjectToken(id)
 	}); err != nil {
-		return "", false, fmt.Errorf("%w: %v", errProjectSaveFailed, err)
+		return "", false, fmt.Errorf("%w: %w", errProjectSaveFailed, err)
 	}
 	if genErr != nil {
-		return "", false, fmt.Errorf("%w: %v", errProjectSaveFailed, genErr)
+		return "", false, fmt.Errorf("%w: %w", errProjectSaveFailed, genErr)
 	}
 	if !ok {
 		return "", false, nil
 	}
 	if auditErr := recordProjectTokenRotated(o.Issuance, id, via, credID, grant.ID()); auditErr != nil {
-		return "", false, fmt.Errorf("%w: %v", errProjectTokenUnrecorded, auditErr)
+		return "", false, fmt.Errorf("%w: %w", errProjectTokenUnrecorded, auditErr)
 	}
 	o.notify()
 	return newPlaintext, true, nil

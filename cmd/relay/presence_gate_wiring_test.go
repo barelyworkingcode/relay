@@ -223,7 +223,7 @@ func pgwUngatedCases(t *testing.T) []pgwUngatedCase {
 			},
 			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance}
-				return ops.Remove(context.Background(), "pgw-ungated-mcp", auditViaCLI, "")
+				return ops.Remove("pgw-ungated-mcp", auditViaCLI, "")
 			}},
 		{"ServiceOps.Remove",
 			func(t *testing.T, store config.SettingsStore) {
@@ -233,7 +233,7 @@ func pgwUngatedCases(t *testing.T) []pgwUngatedCase {
 			},
 			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 				ops := &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance}
-				return ops.Remove(context.Background(), "pgw-ungated-svc", auditViaCLI, "")
+				return ops.Remove("pgw-ungated-svc", auditViaCLI, "")
 			}},
 	}
 }
@@ -678,7 +678,7 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 			t.Errorf("variant %d (%+v) produced the same digest as the base request", i, v)
 		}
 	}
-	if base.presenceDigest() != base.presenceDigest() {
+	if base.presenceDigest() != base.presenceDigest() { //nolint:staticcheck // deliberate: same input twice checks the digest is deterministic, not a copy-paste
 		t.Fatal("presenceDigest is not deterministic over the same request")
 	}
 }
@@ -734,7 +734,7 @@ func TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields(t *testing.T) {
 			t.Errorf("changing %s alone did not move the digest", v.name)
 		}
 	}
-	if projectUpdateDigest("proj-x", base) != projectUpdateDigest("proj-x", base) {
+	if projectUpdateDigest("proj-x", base) != projectUpdateDigest("proj-x", base) { //nolint:staticcheck // deliberate: same input twice checks the digest is deterministic, not a copy-paste
 		t.Fatal("projectUpdateDigest is not deterministic over the same request")
 	}
 }

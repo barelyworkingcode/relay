@@ -143,7 +143,7 @@ func TestValidateMounts_CatchesNestingAcrossALexicographicNonNeighbour(t *testin
 	// Sanity check on the fixture itself: "/a-b" really does sort between
 	// "/a" and "/a/sub" lexicographically, which is the whole point of the
 	// regression.
-	if !(a < aDashB && aDashB < aSub) {
+	if a >= aDashB || aDashB >= aSub {
 		t.Fatalf("fixture does not have the intended lexicographic order: %q < %q < %q", a, aDashB, aSub)
 	}
 

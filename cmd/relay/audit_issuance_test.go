@@ -159,7 +159,7 @@ func TestIssuance_CLICredentialMintAndRevokeAreRecorded(t *testing.T) {
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	printed := aiQuiet(t, func() {
-		credentialMint(store, []string{"--name", "ci-deploy", "--class", "read", "--class", "grant"})
+		credentialMint([]string{"--name", "ci-deploy", "--class", "read", "--class", "grant"})
 	})
 
 	creds := store.Reload().APICredentials
@@ -185,7 +185,7 @@ func TestIssuance_CLICredentialMintAndRevokeAreRecorded(t *testing.T) {
 		t.Errorf("actor.kind = %q, want %q", issued.Actor.Kind, audit.AuditActorOperator)
 	}
 
-	aiQuiet(t, func() { credentialRevoke(store, []string{"--id", cred.ID}) })
+	aiQuiet(t, func() { credentialRevoke([]string{"--id", cred.ID}) })
 
 	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, cred.ID)
 	if revoked.Credential != auditCredentialAPI || revoked.Via != auditViaCLI {
@@ -226,7 +226,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	aiQuiet(t, func() {
-		enrolCreate(store, []string{"--client-id", "hermes-mail", "--grant", profile.ID})
+		enrolCreate([]string{"--client-id", "hermes-mail", "--grant", profile.ID})
 	})
 
 	issued := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialIssued, "hermes-mail")
@@ -247,7 +247,7 @@ func TestIssuance_EnrolCreateAndCLIRevokeAreRecorded(t *testing.T) {
 	keyPEM, err := os.ReadFile(filepath.Join(dir, enrolment.BundleDir, "hermes-mail", "client.key"))
 	assertNoErr(t, err, "read client key")
 
-	aiQuiet(t, func() { enrolRevoke(store, []string{"--client-id", "hermes-mail"}) })
+	aiQuiet(t, func() { enrolRevoke([]string{"--client-id", "hermes-mail"}) })
 	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, "hermes-mail")
 	if revoked.Credential != auditCredentialEnrolment {
 		t.Errorf("credential = %q, want %q", revoked.Credential, auditCredentialEnrolment)
@@ -281,7 +281,7 @@ func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
 	_, store := aiHome(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	printed := aiQuiet(t, func() { loginEnrol(store) })
+	printed := aiQuiet(t, func() { loginEnrol() })
 
 	anchor := store.Reload().LoginBootstrap
 	if anchor == nil {
@@ -296,7 +296,7 @@ func TestIssuance_CLILoginEnrolAndPasskeyRevokeAreRecorded(t *testing.T) {
 	}
 
 	passkey := aiStorePasskey(t, store, "pk-cli")
-	aiQuiet(t, func() { loginRevoke(store, []string{"--id", passkey.ID}) })
+	aiQuiet(t, func() { loginRevoke([]string{"--id", passkey.ID}) })
 	revoked := aiOnly(t, aiParse(t, aiLogText(t)), audit.AuditEventCredentialRevoked, passkey.ID)
 	if revoked.Credential != auditCredentialPasskey || revoked.SubjectName != passkey.Name {
 		t.Errorf("revocation record = %+v, want the passkey and its name", revoked)
@@ -766,9 +766,26 @@ func TestIssuance_RecordIssuanceIsANoOpForUngatedCallersWhenAuditingIsOff(t *tes
 	}
 }
 
+// cliIssuanceAuditor is what every issuing subcommand opens first. It exits
+// rather than returning an error: a CLI process that cannot open the sink has
+// nothing else to do, and proceeding would be the unrecorded issuance this
+// whole path exists to prevent. Kept here rather than in audit_issuance.go:
+// it has no caller outside this file's own doc comments (exitError's os.Exit
+// makes it unusable from an ordinary test body, see
+// TestIssuance_CLIRefusesWhenTheSinkCannotBeOpened below), so shipping it in
+// the production binary would only be dead weight.
+func cliIssuanceAuditor(store config.SettingsStore) (*audit.AuditRecorder, func()) { //nolint:unused // deliberate: kept as runnable documentation, see comment above; exitError makes it uncallable from a test body
+	rec, err := openCLIIssuanceRecorder(store)
+	if err != nil {
+		exitError("cannot open the audit log to record this (%v); nothing was issued or revoked. "+
+			"`relay audit --path` names the file relay could not write", err)
+	}
+	return rec, rec.Close
+}
+
 // TestIssuance_CLIRefusesWhenTheSinkCannotBeOpened is the CLI's fail-closed
-// half. cliIssuanceAuditor exits the process on this error, so what is
-// asserted here is the error it exits on — a sink that should exist and
+// half. cliIssuanceAuditor (above) exits the process on this error, so what
+// is asserted here is the error it exits on — a sink that should exist and
 // cannot be opened.
 func TestIssuance_CLIRefusesWhenTheSinkCannotBeOpened(t *testing.T) {
 	dir, store := aiHome(t)

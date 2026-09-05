@@ -3,6 +3,7 @@ package mcpbroker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -102,7 +103,7 @@ func TestHTTPMcpConn_SendRequest_401(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
-	if err != ErrAuthRequired {
+	if !errors.Is(err, ErrAuthRequired) {
 		t.Fatalf("expected ErrAuthRequired, got: %v", err)
 	}
 }

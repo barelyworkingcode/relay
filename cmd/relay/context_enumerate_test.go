@@ -246,7 +246,7 @@ func TestEnumerateRoute_RequiresTheFrontendToken(t *testing.T) {
 	_, sock := newTestFrontendServer(t, "the-token")
 	client := dialFrontendHTTP(sock)
 
-	req, _ := http.NewRequest("POST", "http://unix/api/mcps/macmcp/enumerate",
+	req, _ := http.NewRequest(http.MethodPost, "http://unix/api/mcps/macmcp/enumerate",
 		strings.NewReader(`{"field":"mail_accounts"}`))
 	resp, err := client.Do(req)
 	if err != nil {

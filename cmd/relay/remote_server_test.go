@@ -850,6 +850,37 @@ func TestRemoteServer_RevokingAnEnrolmentClosesItsLiveConnection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Connection admission
+// ---------------------------------------------------------------------------
+
+// A single enrolled client (one fingerprint) cannot hold more than
+// remoteMaxConnsPerFingerprint connections at once: the (cap+1)th completes
+// the TLS handshake -- admission depends on the certificate, which is only
+// known once the handshake finishes -- but is then closed with no response
+// at all, rather than served.
+func TestRemoteServer_PerFingerprintConnectionCapRefusesOverCap(t *testing.T) {
+	f := newRemoteFixture(t, remoteFixtureOpts{})
+
+	for i := 0; i < remoteMaxConnsPerFingerprint; i++ {
+		c := f.dial()
+		if c == nil {
+			t.Fatalf("connection %d could not complete the handshake", i)
+		}
+		if resp := c.roundTrip(`{"type":"ListTools"}`); resp.Type != bridge.RespTools {
+			t.Fatalf("connection %d: ListTools returned %s: %s", i, resp.Type, resp.Message)
+		}
+	}
+
+	over := f.dial()
+	if over == nil {
+		t.Fatal("expected the over-cap connection to complete the TLS handshake")
+	}
+	if resp, err := over.readFrame(); err == nil {
+		t.Fatalf("expected the over-cap connection to be closed with no response, got %s %s", resp.Type, resp.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Configuration (decision 9)
 // ---------------------------------------------------------------------------
 
