@@ -99,13 +99,17 @@ func TestScopePicker_ChoosingWritesTheStoredValue(t *testing.T) {
 	if !strings.Contains(html, "Bob (work)") {
 		t.Errorf("the MCP's own label is not shown\n%s", html)
 	}
+	// Per-row bindings come first, in offer order -- toggleProjScopeValueAt(0,
+	// ...) below depends on that -- with the bulk "select all" binding
+	// appended last, carrying every offered value as one array rather than
+	// one value each.
 	got := evalString(t, vm, `(function(){
 		var out = [];
 		for (var i = 0; i < window.state._scopeBind.length; i++) out.push(window.state._scopeBind[i].value);
 		return JSON.stringify(out);
 	})()`)
-	if got != `["Alice","Bob"]` {
-		t.Fatalf("bindings = %s, want both offered values", got)
+	if got != `["Alice","Bob",["Alice","Bob"]]` {
+		t.Fatalf("bindings = %s, want both offered values plus the bulk-select binding", got)
 	}
 	if strings.Count(html, " checked ") != 1 {
 		t.Errorf("want exactly the stored value ticked\n%s", html)
@@ -363,5 +367,136 @@ func TestScopePicker_OneValueIsOneChoiceHoweverOftenItIsOffered(t *testing.T) {
 	}
 	if !strings.Contains(html, "INBOX (Alice) · INBOX (Bob)") {
 		t.Errorf("the labels of a collapsed duplicate were thrown away\n%s", html)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// "Select all" / "Confirm: nothing to grant here" (ADR-011 addendum, "A star
+// and an empty array"). These write through the same setProjScopeText path
+// every other control does, so save/validate/audit need no changes; what's
+// under test here is that the buttons produce the right STORED value, that a
+// bulk write does not disturb dependency refresh, and that a field this
+// session never touches stays omitted regardless of what these buttons do to
+// OTHER fields.
+// ---------------------------------------------------------------------------
+
+func TestScopePicker_SelectAllStoresEveryOfferedValue(t *testing.T) {
+	vm := seedPickerVM(t)
+	openField(t, vm, "mail_accounts")
+	answer(t, vm, `{mcp_id:'macmcp', field:'mail_accounts', status:'ok', values:[{value:'Alice',label:'Alice'},{value:'Bob',label:'Bob'},{value:'Carol',label:'Carol'}]}`)
+
+	html := evalString(t, vm, `(function(){
+		window.selectAllScopeValuesAt(3); // 3 per-row bindings (0,1,2), then the bulk one
+		return window.renderProjectForm();
+	})()`)
+	if strings.Count(html, " checked") != 3 {
+		t.Errorf("want all 3 offered values ticked after select-all\n%s", html)
+	}
+
+	payload := evalString(t, vm, `(function(){
+		document.getElementById('projName').value = 'X';
+		return JSON.stringify(window.harvestProjectForm().context);
+	})()`)
+	if !strings.Contains(payload, `"mail_accounts":["Alice","Bob","Carol"]`) {
+		t.Fatalf("select-all did not reach the payload as every offered value: %s", payload)
+	}
+}
+
+// Clearing a field that already held a real value ("Bob", from the fixture)
+// has to OMIT it from the payload -- back to unset, not a confirmed-empty
+// grant. This is the deliberate distinction confirmScopeFieldEmpty's own
+// comment names: the two look identical once resolved to a VALUE ([]), and
+// have to be told apart before that, in the text they write.
+func TestScopePicker_ClearAllOmitsAPreviouslySetField(t *testing.T) {
+	vm := seedPickerVM(t)
+	payload := evalString(t, vm, `(function(){
+		window.clearScopeValues('macmcp', 'mail_accounts');
+		document.getElementById('projName').value = 'X';
+		return JSON.stringify(window.harvestProjectForm().context);
+	})()`)
+	if strings.Contains(payload, "mail_accounts") {
+		t.Errorf("a cleared field that had a real value was still sent: %s", payload)
+	}
+	// mail_mailboxes was never touched and must be unaffected.
+	if !strings.Contains(payload, "mail_mailboxes") {
+		t.Errorf("clearing one field disturbed another untouched one: %s", payload)
+	}
+}
+
+// The whole point of the button: contacts_list_groups (or any tool a field
+// like this governs) must stop erroring for an account that genuinely has
+// none. Zero offered values -> the button appears -> clicking it stores [],
+// which reaches the payload as an explicit empty array, not an omission.
+func TestScopePicker_ConfirmEmptyAppearsOnlyWithZeroOfferedValuesAndStoresAnEmptyArray(t *testing.T) {
+	vm := seedPickerVM(t)
+	evalString(t, vm, `(function(){ window.setProjScopeText('macmcp', 'mail_mailboxes', ''); return ''; })()`)
+	openField(t, vm, "mail_mailboxes")
+
+	// Nonzero offered: no confirm-empty button, select-all instead.
+	withValues := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'INBOX',label:'INBOX'}]}`)
+	if strings.Contains(withValues, "confirmScopeFieldEmpty") {
+		t.Errorf("the confirm-empty button appeared alongside real offered values\n%s", withValues)
+	}
+	if !strings.Contains(withValues, "selectAllScopeValuesAt") {
+		t.Errorf("select-all is missing when there are values to select\n%s", withValues)
+	}
+
+	// A second answer needs a second in-flight request armed first --
+	// onScopeFieldEnumerated drops an answer with none outstanding, which is
+	// what stops a late reply to a since-changed dependency from landing.
+	evalString(t, vm, `(function(){ window.retryScopeEnum('macmcp', 'mail_mailboxes'); return ''; })()`)
+
+	// Zero offered: the confirm-empty button appears, select-all does not.
+	empty := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[]}`)
+	if !strings.Contains(empty, `confirmScopeFieldEmpty('macmcp', 'mail_mailboxes')`) {
+		t.Fatalf("the confirm-empty button did not appear for zero offered values\n%s", empty)
+	}
+	if strings.Contains(empty, "selectAllScopeValuesAt") {
+		t.Errorf("select-all appeared with nothing to select\n%s", empty)
+	}
+
+	payload := evalString(t, vm, `(function(){
+		window.confirmScopeFieldEmpty('macmcp', 'mail_mailboxes');
+		document.getElementById('projName').value = 'X';
+		return JSON.stringify(window.harvestProjectForm().context);
+	})()`)
+	if !strings.Contains(payload, `"mail_mailboxes":[]`) {
+		t.Fatalf("confirm-empty did not store an explicit empty array: %s", payload)
+	}
+}
+
+// Reopening a project whose mail_accounts was already confirmed-empty, and
+// saving WITHOUT touching that field, must preserve [] -- not silently
+// revert to "unset" because the in-session text for an untouched field is
+// indistinguishable from blank. This is scopeFieldWasEverAsserted's
+// "not touched this session" branch, which reads the persisted record
+// instead of the lossy text round-trip.
+func TestScopePicker_ReopeningAConfirmedEmptyFieldPreservesItUntouched(t *testing.T) {
+	vm := newAppVM(t)
+	script := `(function(){
+		window.state.page = 'projects';
+		window.state.externalMcps = [{id:'macmcp', display_name:'macMCP'}];
+		window.state.mcpScopeFields = ` + pickerFieldsFixture + `;
+		window.state.projects = [
+			{id:'p_empty', name:'Confirmed Empty', kind:'remote', path:'', allowed_mcp_ids:['macmcp'], allowed_models:[],
+			 allowed_tools:{macmcp:['mail_*']}, access:{macmcp:'read'},
+			 context:{macmcp:{mail_accounts:[], mail_mailboxes:['INBOX']}}, disabled_tools:{}}
+		];
+		window.editProject('p_empty');
+		return true;
+	})()`
+	if _, err := vm.RunString(script); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	payload := evalString(t, vm, `(function(){
+		document.getElementById('projName').value = 'Confirmed Empty';
+		return JSON.stringify(window.harvestProjectForm().context);
+	})()`)
+	if !strings.Contains(payload, `"mail_accounts":[]`) {
+		t.Fatalf("an untouched confirmed-empty field reverted on save: %s", payload)
+	}
+	if !strings.Contains(payload, `"mail_mailboxes":["INBOX"]`) {
+		t.Fatalf("an untouched field with real values did not survive save: %s", payload)
 	}
 }

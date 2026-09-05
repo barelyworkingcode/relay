@@ -46,10 +46,18 @@ changes something and touches nothing beyond this Mac. So "read-only" does not
 mean "cannot send data out", and "may write" does not mean "may post". You set
 them independently, and a tool needs to clear both.
 
-**Empty never means "everything".** For a profile, an unset `allowed_tools`
+**Unset never means "everything".** For a profile, an unset `allowed_tools`
 means *no tools*; an unset scope value means *every tool that field governs is
-denied*. There is no wildcard for resources: to allow several accounts, list
-several accounts.
+denied*. To allow several accounts, list several accounts — or, if you mean
+literally every account this MCP could ever name, including one added later,
+set the value to exactly `["*"]` and expect the editor to say so loudly:
+`"*"` is a live, per-call wildcard the MCP resolves fresh every time, not a
+snapshot, and it is disclosed as unrestricted everywhere a grant that size is
+disclosed. An explicit, empty value (`[]`, chosen deliberately rather than
+left unset) is different again — it means "I looked, there is nothing to
+grant here", and the tools it governs succeed with nothing rather than being
+refused. See ADR-011's addendum ("A star and an empty array") for why these
+two are safe to spell explicitly where "unset" never is.
 
 The one place empty means "all" is a **picker filter** while you are choosing —
 before you have picked an account, the mailbox list shows all of them. That is a

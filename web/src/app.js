@@ -953,15 +953,31 @@ function projAllowExternal(p, mcpID) {
 }
 
 // scopeValueIsSet mirrors hasScopeValue on the Go side: absent, null, empty
-// string, empty list and empty object are all ABSENT, because a restrict field
-// with no value refuses every call it governs. "No restriction" is not
-// expressible as emptiness anywhere in this model.
+// string, empty list and empty object are all ABSENT. Used only where Go
+// uses hasScopeValue too -- scopeDependencyValues, the picker's enumerate
+// filter, which is a DIFFERENT axis (a query, not an authorisation) and was
+// never about decision 4. For "is this field's own value a live
+// authorisation the operator made", see scopeValueIsAsserted.
 function scopeValueIsSet(v) {
     if (v === undefined || v === null) return false;
     if (Array.isArray(v)) return v.length > 0;
     if (typeof v === 'string') return v.trim() !== '';
     if (typeof v === 'object') return Object.keys(v).length > 0;
     return true;
+}
+
+// scopeValueIsAsserted mirrors hasScopeAssertion on the Go side (ADR-011
+// addendum, "A star and an empty array"): a present, explicit empty ARRAY
+// counts as a live authorisation -- the confirmed-empty grant, distinct from
+// the field being unset -- while null / empty string / empty object still do
+// not. Used everywhere a value being present is what governs whether a tool
+// is refused: the "needs a scope value" banner (projMissingScopeFields), the
+// authority summary, and -- the one that matters most -- harvesting the form
+// for save, where treating [] as unset would silently discard a
+// "confirm nothing to grant" click on the way to the wire.
+function scopeValueIsAsserted(v) {
+    if (Array.isArray(v)) return true;
+    return scopeValueIsSet(v);
 }
 
 function projScopeValue(p, mcpID, fieldName) {
@@ -972,8 +988,14 @@ function projScopeValue(p, mcpID, fieldName) {
 // scopeValueText renders a stored value for a human. Arrays are the shape
 // every scope field met so far declares; anything else prints as its JSON,
 // which is honest about a shape this UI does not model.
+//
+// An empty array is the confirmed-empty grant (ADR-011 addendum, "A star
+// and an empty array") and gets its own phrase, mirroring Go's
+// renderScopeValue -- the alternative is an authority row reading
+// "mail_accounts: ", which looks like a rendering bug rather than a
+// deliberate choice.
 function scopeValueText(v) {
-    if (Array.isArray(v)) return v.join(', ');
+    if (Array.isArray(v)) return v.length ? v.join(', ') : 'confirmed empty — confined to nothing';
     if (typeof v === 'string') return v;
     if (v === undefined || v === null) return '';
     return JSON.stringify(v);
@@ -990,10 +1012,21 @@ function scopeValueText(v) {
 
 const SCOPE_BREADTH_ROOT = 'root';
 const SCOPE_BREADTH_HOME = 'home';
+// SCOPE_BREADTH_WILDCARD mirrors Go's scopeBreadthWildcard (ADR-011
+// addendum, "A star and an empty array"): a resource-scope field's value of
+// exactly ["*"], grouped with root rather than home because it discloses
+// nothing about this host a client could not already learn by calling the
+// field's own enumerator.
+const SCOPE_BREADTH_WILDCARD = 'wildcard';
+// SCOPE_WILDCARD_VALUE mirrors Go's ContextWildcardValue.
+const SCOPE_WILDCARD_VALUE = '*';
 
 function scopeBreadthPhrase(kind) {
     if (kind === SCOPE_BREADTH_ROOT) return 'unrestricted (the whole filesystem)';
     if (kind === SCOPE_BREADTH_HOME) return 'a whole home directory';
+    if (kind === SCOPE_BREADTH_WILDCARD) {
+        return 'unrestricted (every value, resolved fresh on every call -- including one added after this grant was made)';
+    }
     return '';
 }
 
@@ -1032,6 +1065,11 @@ function scopeEntryBreadth(entry) {
 // instead of the one in force.
 function scopeValueBreadth(v) {
     const entries = Array.isArray(v) ? v : (typeof v === 'string' ? [v] : []);
+    // Checked against the WHOLE value first, not per entry: the wildcard is
+    // recognised only as the array's sole element (ADR-011 addendum), the
+    // same rule the save-time validator enforces, so a mixed array can never
+    // reach here already stored.
+    if (entries.length === 1 && entries[0] === SCOPE_WILDCARD_VALUE) return SCOPE_BREADTH_WILDCARD;
     let widest = '';
     for (const e of entries) {
         const kind = scopeEntryBreadth(e);
@@ -1063,7 +1101,7 @@ function projMissingScopeFields(p, mcpID) {
     if (!fields) return [];
     return fields
         .filter(f => f.source !== 'project_path')
-        .filter(f => !scopeValueIsSet(projScopeValue(p, mcpID, f.name)))
+        .filter(f => !scopeValueIsAsserted(projScopeValue(p, mcpID, f.name)))
         .map(f => f.name);
 }
 
@@ -1111,7 +1149,7 @@ function projAuthorityRows(p) {
                 if (scopeValueIsSet(v)) derived.push(f.name + ': ' + scopeValueText(v));
                 continue;
             }
-            if (scopeValueIsSet(v)) scope.push(f.name + ': ' + scopeValueText(v));
+            if (scopeValueIsAsserted(v)) scope.push(f.name + ': ' + scopeValueText(v));
         }
         return {
             mcp: mcpID,
@@ -1703,6 +1741,45 @@ function projScopeText(f, mcpID, field) {
     return scopeTextFromValue(field, ((f.context || {})[mcpID] || {})[field.name]);
 }
 
+// SCOPE_CONFIRMED_EMPTY_TEXT is an internal-only sentinel scopeFieldWasEverAsserted
+// reads and confirmScopeFieldEmpty writes -- never sent to the wire, since
+// scopeValueFromText parses it to [] like any other blank-ish text before
+// harvest ever looks at the VALUE. What it preserves is the one bit the
+// value alone cannot carry: that this particular blank was an explicit
+// "I looked, there is nothing here" rather than "nothing typed". A single
+// space rather than empty string for exactly that reason -- ''.trim() === ''
+// is indistinguishable from never having touched the control, so the
+// sentinel has to be a string that is NOT ''.
+const SCOPE_CONFIRMED_EMPTY_TEXT = ' ';
+
+// scopeFieldWasEverAsserted answers a question the text round-trip cannot on
+// its own: for an array field, blank text and never-configured are the same
+// string (scopeValueFromText always returns [] for empty-ish text, never
+// undefined). Before the ADR-011 addendum ("A star and an empty array") that
+// did not matter: [] and absent meant the same thing, so harvesting a blank
+// field as [] and then dropping it (the old scopeValueIsSet) was harmless.
+// Now they do not, so this has to resolve three different things a blank
+// control can mean, in this order:
+//
+//  1. Touched THIS session, and cleared (blank, or the dedicated Clear
+//     button) -- an explicit "forget this", whatever was stored before.
+//     Omitted, regardless of what scopeFieldWasEverAsserted's caller would
+//     otherwise do with an old stored value; see clearScopeValues.
+//  2. Touched this session via confirmScopeFieldEmpty (the
+//     SCOPE_CONFIRMED_EMPTY_TEXT sentinel) or with real values typed/picked
+//     -- an assertion, stored as [] or as the list respectively.
+//  3. Not touched this session at all -- whatever the record already held
+//     stands, confirmed-empty included, which is what makes reopening an
+//     already-confirmed-empty project and saving without touching it a
+//     no-op rather than a silent reversion to "unset".
+function scopeFieldWasEverAsserted(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID] || {};
+    if (Object.prototype.hasOwnProperty.call(typed, field.name)) {
+        return typed[field.name] !== '';
+    }
+    return Object.prototype.hasOwnProperty.call((f.context || {})[mcpID] || {}, field.name);
+}
+
 function setProjScopeText(mcpID, fieldName, text) {
     const f = state.projectForm;
     if (!f) return;
@@ -2021,9 +2098,21 @@ function renderScopeFieldPicker(mcpID, field, f, text) {
 
     // Always visible, open or closed: what is stored is what confines the
     // client, so it never sits behind a control someone has to open.
+    //
+    // Zero selected is two different facts now (ADR-011 addendum, "A star
+    // and an empty array"), and scopeFieldWasEverAsserted is the only way to
+    // tell them apart -- see its own comment for why selected.length alone
+    // cannot: never having touched this field's control refuses every tool
+    // it governs, same as always; having touched it and landed on nothing
+    // (an explicit "Confirm: nothing to grant here", or every box unticked)
+    // is a reviewed decision that SUCCEEDS emptily instead.
+    let noneMessage = 'nothing selected — every tool this field governs is refused';
+    if (selected.length === 0 && scopeFieldWasEverAsserted(f, mcpID, field)) {
+        noneMessage = 'confirmed empty — every tool this field governs succeeds, reaching nothing';
+    }
     let html = '<div class="proj-scope-summary">' + (selected.length
         ? esc(selected.map(scopeEnumValueKey).join(', '))
-        : '<span class="proj-scope-none">nothing selected — every tool this field governs is refused</span>') + '</div>';
+        : '<span class="proj-scope-none">' + esc(noneMessage) + '</span>') + '</div>';
 
     const unknown = (res && res.status === 'ok') ? unrecognisedScopeValues(selected, res.values) : [];
     if (unknown.length) {
@@ -2098,9 +2187,19 @@ function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
     for (const row of rows) row.label = row.labels.join(' · ');
 
     if (!rows.length) {
-        return '<div class="proj-scope-desc">' + esc(mcpID) + ' offers no values for this field'
+        let html = '<div class="proj-scope-desc">' + esc(mcpID) + ' offers no values for this field'
             + (Object.keys(deps).length ? ' within the values chosen above' : '')
             + '. That is its answer, not a failure — there is nothing here to grant.</div>';
+        // There is nothing to pick from, so there is no picker for "select
+        // all" to operate on -- but the operator can still record that they
+        // looked (ADR-011 addendum, "A star and an empty array"), which is
+        // what turns this field's governed tools from a refusal into an
+        // ordinary, successful empty result.
+        if (multi) {
+            html += '<button type="button" class="btn btn-sm" onclick="confirmScopeFieldEmpty(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\')">'
+                + 'Confirm: nothing to grant here</button>';
+        }
+        return html;
     }
 
     const selectedKeys = new Set(selected.map(scopeEnumValueKey));
@@ -2117,6 +2216,23 @@ function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
         html += '</div>';
     }
     html += '</div>';
+    if (multi) {
+        // Appended AFTER every per-row bind, not before: a bind index is a
+        // stable handle other code (and every test pinning
+        // toggleProjScopeValueAt(0, ...)) reads as "the Nth offered row",
+        // and pushing this one first would shift all of them by one. The
+        // value list reaches its own handler through a bind index for the
+        // same reason an individual choice's does -- a mailbox path or
+        // account name can carry quotes, apostrophes and emoji, and
+        // building a JS array literal out of one in an HTML attribute is
+        // how that becomes a bug.
+        const allIdx = state._scopeBind.length;
+        state._scopeBind.push({ mcpID: mcpID, field: field.name, value: rows.map(r => r.value) });
+        html += '<div class="proj-scope-bulk">'
+            + '<button type="button" class="btn btn-sm" onclick="selectAllScopeValuesAt(' + allIdx + ')">Select all (' + rows.length + ')</button> '
+            + '<button type="button" class="btn btn-sm" onclick="clearScopeValues(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\')">Clear all</button>'
+            + '</div>';
+    }
     return html;
 }
 
@@ -2142,6 +2258,60 @@ function toggleProjScopeValueAt(index, checked) {
     setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === 'array' ? next : (next[0] !== undefined ? next[0] : '')));
     // Anything read WITHIN this field is now reading within something else.
     refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+}
+
+// selectAllScopeValuesAt sets a field to every value CURRENTLY offered --
+// no live call of its own, since the values are already in state.scopeEnum
+// from the fetch that opened the picker. This is deliberately a snapshot:
+// the stored array is a concrete list an operator can review, exactly what
+// typing every name by hand would produce, never a stored "*" that widens on
+// its own (ADR-011 decision 3 -- the addendum this button exists under
+// changes what an EMPTY array means, not that). An account or a mailbox
+// added to the host later does not silently join the grant; re-opening this
+// picker and clicking the button again is how an operator deliberately
+// re-syncs it.
+function selectAllScopeValuesAt(index) {
+    const bind = state._scopeBind[index];
+    if (!bind) return;
+    const f = state.projectForm;
+    if (!f) return;
+    const field = scopeFieldByName(bind.mcpID, bind.field);
+    if (!field) return;
+    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, bind.value));
+    refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+}
+
+// clearScopeValues empties a field back to nothing selected.
+function clearScopeValues(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, scopeTextFromValue(field, field.type === 'array' ? [] : ''));
+    refreshDependentScopeFields(mcpID, fieldName);
+    render();
+}
+
+// confirmScopeFieldEmpty is what a field with ZERO offered values needs
+// (ADR-011 addendum, "A star and an empty array"): there is nothing to
+// check, so there is no picker for "Select all" to run against, but the
+// operator can still explicitly record "I looked, and there is nothing
+// here" -- which is what lets this field's governed tools answer emptily
+// instead of refusing.
+//
+// Deliberately NOT the same write clearScopeValues makes, even though both
+// end up meaning "the value is []": this one writes
+// SCOPE_CONFIRMED_EMPTY_TEXT rather than '', so scopeFieldWasEverAsserted can
+// tell "I confirmed nothing here" apart from "I cleared this back to
+// unconfigured" for a field this SESSION touches. Collapsing the two was
+// tried and breaks a real, deliberate behaviour: clearing a field that
+// already held a real value (typed blank, or the Clear button) has to omit
+// it from the payload, not silently downgrade it to a confirmed-empty grant.
+function confirmScopeFieldEmpty(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, SCOPE_CONFIRMED_EMPTY_TEXT);
+    refreshDependentScopeFields(mcpID, fieldName);
     render();
 }
 
@@ -2760,8 +2930,16 @@ function harvestProjectPermissions(f) {
         const fields = mcpScopeFieldsFor(mcpID);
         for (const field of (fields || [])) {
             if (field.source === 'project_path') { delete existing[field.name]; continue; }
+            // A field this session never touched AND that was never stored
+            // stays omitted, full stop -- scopeFieldWasEverAsserted is what
+            // keeps that true now that blank text and confirmed-empty are
+            // both spelled [] (see its own comment).
+            if (!scopeFieldWasEverAsserted(f, mcpID, field)) { delete existing[field.name]; continue; }
             const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
-            if (scopeValueIsSet(value)) existing[field.name] = value;
+            // scopeValueIsAsserted, not scopeValueIsSet: an explicit empty
+            // array is the confirmed-empty grant and must reach the wire as
+            // [], not be silently dropped back to "field absent" here.
+            if (scopeValueIsAsserted(value)) existing[field.name] = value;
             else delete existing[field.name];
         }
         if (Object.keys(existing).length) context[mcpID] = existing;
@@ -5652,8 +5830,8 @@ Object.assign(window, {
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
-    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
-    captureProjectFormInputs, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeOpenKey, scopeSelectedValues, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
+    harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
+    captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
