@@ -13,7 +13,7 @@ func TestMcpRegisterAndUnregister_CLIDispatchThroughTheBroker(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	mcpRegister(store, []string{
+	mcpRegister([]string{
 		"--name", "Probe MCP",
 		"--command", buildTestMcpBinary(t),
 	})
@@ -38,7 +38,7 @@ func TestServiceRestart_CLIDispatchesThroughTheBroker(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	serviceRegister(store, []string{
+	serviceRegister([]string{
 		"--name", "restartable",
 		"--command", "/bin/true",
 	})

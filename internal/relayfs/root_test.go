@@ -175,7 +175,7 @@ func TestRelayfs_WalkOpenReadAt_ContentMatchesFixture(t *testing.T) {
 	}
 	buf := make([]byte, len(want))
 	n, err := f.ReadAt(buf, 0)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	if !bytes.Equal(buf[:n], want) {
@@ -198,7 +198,7 @@ func TestRelayfs_WalkOpenReadAt_LargeBinaryContentMatchesFixture(t *testing.T) {
 	}
 	buf := make([]byte, len(want))
 	n, err := f.ReadAt(buf, 0)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	if n != len(want) || !bytes.Equal(buf[:n], want) {
@@ -641,7 +641,7 @@ func TestRelayfs_ReadOnlyMount_MutationsRefusedReadsWork(t *testing.T) {
 		}
 		buf := make([]byte, len(want))
 		n, err := f.ReadAt(buf, 0)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("ReadAt: %v", err)
 		}
 		if !bytes.Equal(buf[:n], want) {
@@ -709,7 +709,7 @@ func TestRelayfs_Readdir_PagesWithSmallCount_FullSetNoDuplicatesNoGaps(t *testin
 	var offset uint64
 	for i := 0; i < 100; i++ {
 		ents, err := dir.Readdir(offset, wireByteBudget)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("Readdir(offset=%d): %v", offset, err)
 		}
 		if len(ents) == 0 {
@@ -719,7 +719,7 @@ func TestRelayfs_Readdir_PagesWithSmallCount_FullSetNoDuplicatesNoGaps(t *testin
 			got = append(got, e.Name)
 			offset = e.Offset
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if i == 99 {
@@ -751,7 +751,7 @@ func TestRelayfs_Close_ManyOpensDoNotLeak(t *testing.T) {
 			t.Fatalf("Open at iteration %d: %v", i, err)
 		}
 		buf := make([]byte, 4)
-		if _, err := f.ReadAt(buf, 0); err != nil && err != io.EOF {
+		if _, err := f.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("ReadAt at iteration %d: %v", i, err)
 		}
 		if err := f.Close(); err != nil {

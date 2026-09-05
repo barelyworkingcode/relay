@@ -22,13 +22,13 @@ import (
 func runLoginCommand(args []string) {
 	store := config.NewSettingsStore()
 	runSubcommands("login", []cliSubcommand{
-		{"enrol", func(_ []string) { loginEnrol(store) }},
+		{"enrol", func(_ []string) { loginEnrol() }},
 		{"list", func(_ []string) { loginList(store) }},
-		{"revoke", func(a []string) { loginRevoke(store, a) }},
+		{"revoke", loginRevoke},
 	}, args)
 }
 
-func loginEnrol(store config.SettingsStore) {
+func loginEnrol() {
 	client := requireService("relay login enrol")
 	raw, err := client.AdminOp("login.bootstrap.mint", nil)
 	if err != nil {
@@ -70,7 +70,7 @@ func loginList(store config.SettingsStore) {
 	w.Flush()
 }
 
-func loginRevoke(store config.SettingsStore, args []string) {
+func loginRevoke(args []string) {
 	fs := flag.NewFlagSet("login revoke", flag.ExitOnError)
 	id := fs.String("id", "", "credential id of the passkey to revoke (required)")
 	fs.Parse(args)

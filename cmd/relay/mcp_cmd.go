@@ -17,7 +17,7 @@ import (
 func runMcpCommand(args []string) {
 	store := config.NewSettingsStore()
 	runSubcommands("mcp", []cliSubcommand{
-		{"register", func(a []string) { mcpRegister(store, a) }},
+		{"register", mcpRegister},
 		{"unregister", func(a []string) { mcpUnregister(store, a) }},
 		{"list", func(_ []string) { mcpList(store) }},
 	}, args)
@@ -29,7 +29,7 @@ func runMcpCommand(args []string) {
 // act with no CLI door (ADR-014 section 4 — StartOAuth needs a local
 // callback listener and a real browser, and only the Settings window and
 // the tray's own IPC ever reach it).
-func mcpRegister(store config.SettingsStore, args []string) {
+func mcpRegister(args []string) {
 	fs := flag.NewFlagSet("mcp register", flag.ExitOnError)
 	var opts registerOpts
 	addRegisterFlags(fs, &opts)

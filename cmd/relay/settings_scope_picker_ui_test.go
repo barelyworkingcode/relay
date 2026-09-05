@@ -432,13 +432,28 @@ func TestScopePicker_ConfirmEmptyAppearsOnlyWithZeroOfferedValuesAndStoresAnEmpt
 	evalString(t, vm, `(function(){ window.setProjScopeText('macmcp', 'mail_mailboxes', ''); return ''; })()`)
 	openField(t, vm, "mail_mailboxes")
 
-	// Nonzero offered: no confirm-empty button, select-all instead.
-	withValues := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'INBOX',label:'INBOX'}]}`)
-	if strings.Contains(withValues, "confirmScopeFieldEmpty") {
-		t.Errorf("the confirm-empty button appeared alongside real offered values\n%s", withValues)
+	// bindNamesAfter resets _actBind (answer()/renderProjectForm() calls do
+	// not go through render(), so the table would otherwise accumulate
+	// every prior render's entries) and returns the fresh snapshot's bound
+	// function names — confirmScopeFieldEmpty and selectAllScopeValuesAt go
+	// through bind()/data-act, so their markup carries no function-call
+	// text left to grep for.
+	bindNamesAfter := func(enumJSON string) string {
+		return evalString(t, vm, `(function(){
+			window.onScopeFieldEnumerated(`+enumJSON+`);
+			window.state._actBind = [];
+			window.renderProjectForm();
+			return JSON.stringify(window.state._actBind.map(function(e){ return [e[0].name].concat(e[1]); }));
+		})()`)
 	}
-	if !strings.Contains(withValues, "selectAllScopeValuesAt") {
-		t.Errorf("select-all is missing when there are values to select\n%s", withValues)
+
+	// Nonzero offered: no confirm-empty button, select-all instead.
+	withValuesBinds := bindNamesAfter(`{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[{value:'INBOX',label:'INBOX'}]}`)
+	if strings.Contains(withValuesBinds, "confirmScopeFieldEmpty") {
+		t.Errorf("the confirm-empty button appeared alongside real offered values\n%s", withValuesBinds)
+	}
+	if !strings.Contains(withValuesBinds, "selectAllScopeValuesAt") {
+		t.Errorf("select-all is missing when there are values to select\n%s", withValuesBinds)
 	}
 
 	// A second answer needs a second in-flight request armed first --
@@ -447,12 +462,12 @@ func TestScopePicker_ConfirmEmptyAppearsOnlyWithZeroOfferedValuesAndStoresAnEmpt
 	evalString(t, vm, `(function(){ window.retryScopeEnum('macmcp', 'mail_mailboxes'); return ''; })()`)
 
 	// Zero offered: the confirm-empty button appears, select-all does not.
-	empty := answer(t, vm, `{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[]}`)
-	if !strings.Contains(empty, `confirmScopeFieldEmpty('macmcp', 'mail_mailboxes')`) {
-		t.Fatalf("the confirm-empty button did not appear for zero offered values\n%s", empty)
+	emptyBinds := bindNamesAfter(`{mcp_id:'macmcp', field:'mail_mailboxes', status:'ok', values:[]}`)
+	if !strings.Contains(emptyBinds, `["confirmScopeFieldEmpty","macmcp","mail_mailboxes"]`) {
+		t.Fatalf("the confirm-empty button did not appear for zero offered values\n%s", emptyBinds)
 	}
-	if strings.Contains(empty, "selectAllScopeValuesAt") {
-		t.Errorf("select-all appeared with nothing to select\n%s", empty)
+	if strings.Contains(emptyBinds, "selectAllScopeValuesAt") {
+		t.Errorf("select-all appeared with nothing to select\n%s", emptyBinds)
 	}
 
 	payload := evalString(t, vm, `(function(){

@@ -2,13 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/barelyworkingcode/relay/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // sdSettingsPath is where every store in this file writes.
@@ -54,7 +56,7 @@ func TestSettingsStore_ADeclinedCallbackWritesNothing(t *testing.T) {
 		s.AdminSecret = config.NewSecret("after")
 		return refusal
 	})
-	if err != refusal {
+	if !errors.Is(err, refusal) {
 		t.Fatalf("WithDeclinable returned %v, want the callback's own error %v", err, refusal)
 	}
 

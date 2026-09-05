@@ -151,7 +151,10 @@ Rules, enforced in `internal/project.ValidateShape` and a new
   never become a console fsMCP `allowed_dirs` value.
 - `host.name` is unique case-insensitively; `target` is non-empty and contains
   no whitespace or shell metacharacters (`[A-Za-z0-9._@:-]+` after an optional
-  `user@`); `port` is 0 or 1–65535; `identity_file` is absolute or empty.
+  `user@`), and neither its host part nor its user part may begin with `-` —
+  `SSHArgv` places the target positionally with no `--`, so a leading `-`
+  (e.g. `-oProxyCommand=...`) would be read as an ssh option instead of a
+  destination; `port` is 0 or 1–65535; `identity_file` is absolute or empty.
 
 ## `ssh_argv` — the one derivation
 

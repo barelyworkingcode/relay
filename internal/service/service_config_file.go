@@ -76,7 +76,7 @@ func ReadConfigFile(realPath string, want os.FileInfo) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if got, serr := f.Stat(); serr != nil {
 		return nil, fmt.Errorf("stat opened config file: %w", serr)
 	} else if want != nil && !os.SameFile(want, got) {

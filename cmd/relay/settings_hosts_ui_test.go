@@ -28,8 +28,10 @@ func TestHostsTab_RendersRows(t *testing.T) {
 			showsPort2: html.indexOf('ci@ci.example:2222') >= 0,
 			showsStatus2: html.indexOf('unreachable') >= 0,
 			showsError2: html.indexOf('Connection refused') >= 0,
-			showsDisconnectFor1: /disconnectHost\('h1'\)/.test(html),
-			noDisconnectFor2: !/disconnectHost\('h2'\)/.test(html)
+			// disconnectHost goes through bind()/data-act, so its markup
+			// carries no function-call text — read the bind table instead.
+			showsDisconnectFor1: window.state._actBind.some(function(e){ return e[0] === window.disconnectHost && e[1][0] === 'h1'; }),
+			noDisconnectFor2: !window.state._actBind.some(function(e){ return e[0] === window.disconnectHost && e[1][0] === 'h2'; })
 		});
 	})()`
 	got := evalString(t, vm, script)

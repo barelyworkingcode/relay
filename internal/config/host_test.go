@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestAddHost(t *testing.T) {
 	var s Settings
@@ -42,6 +45,24 @@ func TestAddHost(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses a target whose host or user part begins with '-'", func(t *testing.T) {
+		// Each of these already matches hostTargetPattern's charset (no shell
+		// metacharacter involved) — sshhost.SSHArgv places the target
+		// positionally with no "--", so ssh would read any of these as an
+		// option rather than a destination.
+		for i, bad := range []string{
+			"-A",                  // no '@': the whole string is the host part
+			"-oProxyCommand",      // same, a longer option-shaped host
+			"admin@-oport",        // host part begins with '-'
+			"-admin@devbox.local", // user part begins with '-'
+		} {
+			name := fmt.Sprintf("dash-%d", i)
+			if _, err := s.AddHost(Host{Name: name, Target: bad}); err == nil {
+				t.Fatalf("expected an error for target %q", bad)
+			}
+		}
+	})
+
 	t.Run("refuses an out-of-range port", func(t *testing.T) {
 		if _, err := s.AddHost(Host{Name: "p1", Target: "x@y", Port: -1}); err == nil {
 			t.Fatal("expected an error for a negative port")
@@ -68,6 +89,54 @@ func TestAddHost(t *testing.T) {
 			t.Fatalf("expected an absolute identity_file to be accepted: %v", err)
 		}
 	})
+}
+
+func TestValidateHost_TargetLeadingDash(t *testing.T) {
+	cases := []struct {
+		name    string
+		target  string
+		wantErr bool
+	}{
+		{"plain user@host", "admin@devbox.local", false},
+		{"bare host, no user", "devbox.local", false},
+		{"host with port-shaped colon", "devbox.local:22", false},
+		{"host begins with dash, no user", "-A", true},
+		{"host begins with dash, longer option shape", "-oProxyCommand", true},
+		{"host begins with dash, user present", "admin@-oport", true},
+		{"user begins with dash", "-admin@devbox.local", true},
+		{"dash appears mid-token, not leading", "dev-box.local", false},
+		{"dash appears mid-token in user, not leading", "ad-min@devbox.local", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Host{Name: "t-" + tc.name, Target: tc.target}
+			err := ValidateHost(h, nil, "")
+			if tc.wantErr && err == nil {
+				t.Fatalf("ValidateHost(%q): expected an error, got nil", tc.target)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ValidateHost(%q): unexpected error: %v", tc.target, err)
+			}
+		})
+	}
+}
+
+func TestSplitHostTarget(t *testing.T) {
+	cases := []struct {
+		target   string
+		wantUser string
+		wantHost string
+	}{
+		{"admin@devbox.local", "admin", "devbox.local"},
+		{"devbox.local", "", "devbox.local"},
+		{"a@b@c", "a@b", "c"}, // last '@' wins, matching ssh's own reading
+	}
+	for _, tc := range cases {
+		user, host := splitHostTarget(tc.target)
+		if user != tc.wantUser || host != tc.wantHost {
+			t.Errorf("splitHostTarget(%q) = (%q, %q), want (%q, %q)", tc.target, user, host, tc.wantUser, tc.wantHost)
+		}
+	}
 }
 
 func TestUpdateHost(t *testing.T) {

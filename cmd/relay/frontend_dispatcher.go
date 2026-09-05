@@ -77,14 +77,19 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 			"service", svc.ServiceID, "error", err)
 		return
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	upstreamHeader := http.Header{}
 	if svc.InternalToken != "" {
 		upstreamHeader.Set("Authorization", "Bearer "+svc.InternalToken)
 	}
-	upstreamConn, _, err := dialer.Dial("ws://internal.relay.localsocket"+r.URL.RequestURI(), upstreamHeader)
+	upstreamConn, resp, err := dialer.Dial("ws://internal.relay.localsocket"+r.URL.RequestURI(), upstreamHeader)
 	if err != nil {
+		// On handshake failure gorilla may still return a non-nil response
+		// whose body the caller owns; close it before bailing out.
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
 		slog.Warn("frontend dispatch: WS upstream dial failed",
 			"service", svc.ServiceID, "error", err)
 		_ = clientConn.WriteControl(
@@ -94,7 +99,7 @@ func (d *FrontendDispatcher) proxyWS(svc *EnhancedService, w http.ResponseWriter
 		)
 		return
 	}
-	defer upstreamConn.Close()
+	defer func() { _ = upstreamConn.Close() }()
 
 	done := make(chan struct{})
 	var once sync.Once

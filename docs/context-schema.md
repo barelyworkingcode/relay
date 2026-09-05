@@ -36,7 +36,7 @@ Relay stores the values an operator (or the derivation below) supplies, injects
 them into `_meta` on every `tools/call`, renders them, and refuses a call whose
 required value is missing. It does all of that **without knowing what any field
 means**. Every field name is an opaque map key from relay's side, start to
-finish. See [ADR-011](decisions/011-resource-scope.md) for why.
+finish. See ADR-011 (resource scope: relay tracks values, never their meaning) for why.
 
 ## The shape is flat
 

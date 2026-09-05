@@ -2,6 +2,7 @@ package presencetest_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -18,14 +19,14 @@ func TestDeny_ReturnsTheRefusalSentinel(t *testing.T) {
 	// A gated core switches on presence.ErrRefused specifically, so the
 	// fake must return exactly that value, not merely "some error".
 	err := presencetest.Deny().Evaluate(context.Background(), "do a thing")
-	if err != presence.ErrRefused {
+	if !errors.Is(err, presence.ErrRefused) {
 		t.Fatalf("Deny().Evaluate = %v, want presence.ErrRefused", err)
 	}
 }
 
 func TestNoSession_ReturnsTheUnavailableSentinel(t *testing.T) {
 	err := presencetest.NoSession().Evaluate(context.Background(), "do a thing")
-	if err != presence.ErrUnavailable {
+	if !errors.Is(err, presence.ErrUnavailable) {
 		t.Fatalf("NoSession().Evaluate = %v, want presence.ErrUnavailable", err)
 	}
 }
@@ -69,7 +70,7 @@ func TestGate_NeverReachesTheProviderOnRefusal(t *testing.T) {
 	ctx := presence.WithCallerSession(context.Background(), presence.CallerSession{GraphicAccess: false})
 	d := presence.NewDigestBuilder("credential.mint").StringField("name", true, "x").Build()
 
-	if _, err := g.Request(ctx, "credential.mint", d, "mint a credential"); err != presence.ErrNoSession {
+	if _, err := g.Request(ctx, "credential.mint", d, "mint a credential"); !errors.Is(err, presence.ErrNoSession) {
 		t.Fatalf("Request = %v, want presence.ErrNoSession", err)
 	}
 	if r.Calls() != 0 {

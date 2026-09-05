@@ -365,7 +365,7 @@ func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
 	})
 
 	sockClient := dialFrontendHTTP(srv.socketPath)
-	req, err := http.NewRequest("POST", "http://unix/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
+	req, err := http.NewRequest(http.MethodPost, "http://unix/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
 	assertNoErr(t, err, "new socket request")
 	req.Header.Set("Authorization", "Bearer "+eveToken)
 	resp, err := sockClient.Do(req)
@@ -379,7 +379,7 @@ func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
 	}
 
 	before := len(fake.Requests())
-	req, err = http.NewRequest("POST", "http://"+srv.tcpLn.Addr().String()+"/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
+	req, err = http.NewRequest(http.MethodPost, "http://"+srv.tcpLn.Addr().String()+"/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
 	assertNoErr(t, err, "new tcp request")
 	req.Header.Set("Authorization", "Bearer "+eveToken)
 	resp, err = http.DefaultClient.Do(req)

@@ -225,7 +225,7 @@ func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 	enrolCreateForCLITest(t, store, "hermes-mail", []string{mail.ID})
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--cli-admin"})
+	enrolUpdate([]string{"--client-id", "hermes-mail", "--cli-admin"})
 
 	events := aiParse(t, aiLogText(t))
 	var onRecords []audit.AuditEvent
@@ -248,7 +248,7 @@ func TestEnrolUpdate_CLIAdminToggleIsAudited(t *testing.T) {
 		t.Error("presence_id is empty")
 	}
 
-	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--cli-admin=false"})
+	enrolUpdate([]string{"--client-id", "hermes-mail", "--cli-admin=false"})
 	events = aiParse(t, aiLogText(t))
 	var offRecords []audit.AuditEvent
 	for _, ev := range events {
@@ -280,7 +280,7 @@ func TestEnrolmentRoutes_ListShowsCLIAdminAndOmitsWhenOff(t *testing.T) {
 	defer srv.Close()
 
 	resp, body := doJSON(t, "GET", srv.URL+"/api/enrolments", nil)
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list: status %d, body %s", resp.StatusCode, body)
 	}
 	var listed []enrolmentView
@@ -358,7 +358,7 @@ func TestEnrolList_PrintsCLIAdminColumn(t *testing.T) {
 		t.Fatalf("no CLI-ADMIN column in header: %q", lines[0])
 	}
 	// PROFILES must precede CLI-ADMIN and CALLS/WINDOW must follow it.
-	var profilesCol, callsCol int = -1, -1
+	var profilesCol, callsCol = -1, -1
 	for i, h := range header {
 		switch strings.TrimSpace(h) {
 		case "PROFILES":
@@ -367,7 +367,7 @@ func TestEnrolList_PrintsCLIAdminColumn(t *testing.T) {
 			callsCol = i
 		}
 	}
-	if !(profilesCol < col && col < callsCol) {
+	if profilesCol >= col || col >= callsCol {
 		t.Fatalf("CLI-ADMIN is not between PROFILES and CALLS/WINDOW: header = %q", lines[0])
 	}
 

@@ -42,6 +42,19 @@ func ValidateHost(h *Host, existing []Host, excludeID string) error {
 	if !hostTargetPattern.MatchString(target) {
 		return fmt.Errorf("host target %q is not valid: expected [user@]host, using only letters, digits, '.', '_', '-', ':' and one '@'", target)
 	}
+	// sshhost.SSHArgv places the target positionally, after its fixed option
+	// prefix, with no "--" to end option parsing. A host or user part
+	// beginning with '-' (e.g. "-oProxyCommand=...", "-A") is therefore an
+	// ssh option, not a destination, no matter what the rest of SSHArgv
+	// looks like — reject it here, since hostTargetPattern's charset admits
+	// '-' anywhere including first.
+	user, host := splitHostTarget(target)
+	if strings.HasPrefix(host, "-") {
+		return fmt.Errorf("host target %q is not valid: the host part must not begin with '-'", target)
+	}
+	if strings.HasPrefix(user, "-") {
+		return fmt.Errorf("host target %q is not valid: the user part must not begin with '-'", target)
+	}
 	h.Target = target
 
 	if h.Port != 0 && (h.Port < 1 || h.Port > 65535) {
@@ -53,4 +66,14 @@ func ValidateHost(h *Host, existing []Host, excludeID string) error {
 	}
 
 	return nil
+}
+
+// splitHostTarget separates a validated [user@]host target on its last '@',
+// matching how ssh itself reads the destination. user is "" when target
+// carries no '@'.
+func splitHostTarget(target string) (user, host string) {
+	if i := strings.LastIndex(target, "@"); i >= 0 {
+		return target[:i], target[i+1:]
+	}
+	return "", target
 }

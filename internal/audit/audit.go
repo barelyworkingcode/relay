@@ -631,7 +631,14 @@ type auditRing struct {
 	full bool
 }
 
+// newAuditRing clamps size to at least 1: add's modulo-by-len(r.buf) would
+// divide by zero for a zero size, and make would panic outright for a
+// negative one, either of which a hand-edited settings.json's ring_size can
+// otherwise reach.
 func newAuditRing(size int) *auditRing {
+	if size < 1 {
+		size = 1
+	}
 	return &auditRing{buf: make([]AuditEvent, size)}
 }
 
@@ -1099,7 +1106,7 @@ func ReadAuditTail(path string, budget int64) []AuditEvent {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {

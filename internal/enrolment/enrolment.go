@@ -357,7 +357,7 @@ func Create(store config.SettingsStore, req Request) (*Bundle, error) {
 		// caller "nothing happened," which is false — ErrBundle is
 		// what lets a caller hand back the record that landed instead of
 		// silently orphaning it.
-		return bundle, fmt.Errorf("%w: %v", ErrBundle, err)
+		return bundle, fmt.Errorf("%w: %w", ErrBundle, err)
 	}
 	return bundle, nil
 }
@@ -391,7 +391,7 @@ func Sign(store config.SettingsStore, req Request, csr *x509.CertificateRequest)
 	bundle.CertPEM = certPEM
 	bundle.CAPEM = caPEM
 	if err != nil {
-		return bundle, fmt.Errorf("%w: %v", ErrBundle, err)
+		return bundle, fmt.Errorf("%w: %w", ErrBundle, err)
 	}
 	return bundle, nil
 }

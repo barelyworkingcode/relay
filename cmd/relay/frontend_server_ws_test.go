@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -214,7 +215,8 @@ func TestFrontendServer_WSUpstreamDialFailure_ClosesClient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a close frame when the upstream socket is unreachable")
 	}
-	if ce, ok := err.(*websocket.CloseError); !ok || ce.Code != websocket.CloseInternalServerErr {
+	var ce *websocket.CloseError
+	if !errors.As(err, &ce) || ce.Code != websocket.CloseInternalServerErr {
 		t.Fatalf("want CloseInternalServerErr (1011), got %v", err)
 	}
 }

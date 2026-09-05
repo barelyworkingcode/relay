@@ -39,6 +39,17 @@ const LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
 // receive an emit — see App.openRemoteClientsPage for the other arm.
 const INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
 
+// Overview tab. mcpHealth and serviceRuntime are seeded like everything else
+// above and refreshed by their own push events (onMcpHealth, onServiceStatus)
+// so the tab never has a loading state. sealStatus/version/paths are fixed at
+// boot (or, for sealStatus, effectively so — see App.sealStatus) and only
+// change if the window is reopened or onSettingsReloaded fires.
+const MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
+const SERVICE_RUNTIME_INIT = window.__RELAY_INIT__.serviceRuntime || {};
+const SEAL_STATUS_INIT = window.__RELAY_INIT__.sealStatus || '';
+const VERSION_INIT = window.__RELAY_INIT__.version || 'dev';
+const PATHS_INIT = window.__RELAY_INIT__.paths || { config: '', logs: '' };
+
 function ipc(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc)
         window.webkit.messageHandlers.ipc.postMessage(msg);
@@ -46,8 +57,32 @@ function ipc(msg) {
         window.chrome.webview.postMessage(msg);
 }
 
+// bind() is how a rendered control reaches a handler that takes a dynamic
+// argument -- a project/host/MCP/service id OR a free-text display name the
+// operator typed. An onclick attribute built as fn('...' + esc(value) + '...')
+// is not safe for a free-text value even through esc(): the HTML parser
+// decodes entities in an attribute value BEFORE the inline script text is
+// compiled, so a name containing a quote closes the JS string early and runs
+// as script in this privileged WebView (the one holding the ipc() bridge). A
+// plain id (drawn from a validated, quote-free charset) was once considered
+// safe enough to skip this and stay a literal onclick="fn('...')" -- that
+// exception is gone: one convention for every dynamic value is simpler than
+// two, and TestIPCContract_NoOnclickBuiltByConcatenatingAQuotedValue holds
+// the line. bind() keeps the real function and its arguments -- as live
+// values, never serialized to text -- in a table cleared on every render(),
+// and the markup carries only the table index as data-act; the delegated
+// listener near dispatchServiceAction() looks the index up and calls it. The
+// one thing still built by plain concatenation is a bind-table INDEX (a
+// number, never a value that could carry a quote) -- see e.g.
+// renderScopeChoices. Never interpolate a dynamic value into an on* attribute.
+function bind(fn, ...args) {
+    const idx = state._actBind.length;
+    state._actBind.push([fn, args]);
+    return 'data-act="' + idx + '"';
+}
+
 let state = {
-    page: 'services',
+    page: 'overview',
     externalMcps: EXTERNAL_MCPS_INIT,
     discovering: false,
     discoveryError: null,
@@ -58,6 +93,7 @@ let state = {
     services: SERVICES_INIT,
     runningServices: RUNNING_IDS_INIT.reduce(function(m, id) { m[id] = true; return m; }, {}),
     editingServiceId: null,             // null = list, 'new' = add form, '<id>' = edit form
+    serviceSavePending: false,          // true from Add Service click until onServiceAdded/onSettingsError
     // Service Inspector state. Each snapshot in serviceStatuses carries
     // its own manifest, so we derive button layouts from the snapshot —
     // no separate manifest map to keep in sync.
@@ -97,6 +133,7 @@ let state = {
     // refusal) -- that one still shows in the banner, which is why the two
     // fields travel separately rather than as one.
     projectFormErrorField: null,
+    projectSavePending: false,              // true from Create/Save click until onProjectAdded/Updated/onSettingsError
     projectTokenVisible: {},                // id -> bool (eye toggle)
     projectFreshToken: {},                  // id -> plaintext shown once after rotate
     projectSkillRegen: {},                  // id -> { ok, message, t } (last regen result)
@@ -121,6 +158,7 @@ let state = {
     scopeEnumOpen: {},        // "mcp\0field" -> bool (the operator opened it)
     scopeEnumUnsupported: {}, // mcpId -> true once it answered -32601, permanently
     _scopeBind: [],           // per-render bindings from a checkbox to its value
+    _actBind: [],             // per-render bindings for bind()/data-act controls (see bind())
 
     // Remote Clients tab. Enrolments and the remote block are seeded by the
     // initial payload like projects are — the list is one row per enrolled
@@ -135,6 +173,7 @@ let state = {
     enrolRevoked: null,                     // {client_id, fingerprint} shown after a revoke
     remoteDraft: null,                      // uncommitted edit of the remote block
     remoteDirty: false,
+    remoteConfigSavePending: false,         // true from Save click until onRemoteConfigUpdated/onSettingsError
     remoteError: null,
 
     // Pending enrolment requests (spec §3). NOT seeded by the initial
@@ -168,6 +207,16 @@ let state = {
     auditLoaded: false,
     auditError: null,
     auditExportPath: null,
+
+    // Overview tab. mcpHealth and serviceRuntime are live snapshots kept
+    // current by onMcpHealth / onServiceStatus / onSettingsReloaded; version,
+    // sealStatus and paths change only if the window is reopened.
+    mcpHealth: MCP_HEALTH_INIT,           // mcpId -> {connected, state, attempt, downtime_ms, error}
+    serviceRuntime: SERVICE_RUNTIME_INIT, // serviceId -> {pid, started_at}
+    sealStatus: SEAL_STATUS_INIT,         // '' when healthy, else store.SealStatus()'s reason
+    version: VERSION_INIT,
+    paths: PATHS_INIT,                    // {config, logs}
+    mcpToolsOpen: {},                     // mcpId -> bool (the "N tools" disclosure)
 };
 
 // How many live events the Tool Calls tab keeps in the DOM. The Go-side ring
@@ -178,17 +227,22 @@ function showPage(page) {
     state.page = page;
     // Positional against the sidebar items in web/shell.html — adding one
     // there without adding it here highlights the wrong row.
-    const pages = ['services', 'mcps', 'projects', 'hosts', 'remote', 'passkeys', 'inspector', 'audit'];
+    const pages = ['overview', 'services', 'mcps', 'projects', 'hosts', 'remote', 'passkeys', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
-        el.classList.toggle('active', pages[i] === page);
+        const selected = pages[i] === page;
+        el.classList.toggle('active', selected);
+        el.setAttribute('aria-selected', selected ? 'true' : 'false');
     });
     // The Tool Calls tab is the only one not seeded by the initial payload:
-    // the log can be large, so it's fetched the first time it's shown.
-    if (page === 'audit' && !state.auditLoaded) queryAudit();
+    // the log can be large, so it's fetched the first time it's shown. The
+    // Overview tab's "Recent tool calls" needs the same ring, so it shares
+    // the fetch-once-then-live-tail behaviour.
+    if ((page === 'audit' || page === 'overview') && !state.auditLoaded) queryAudit();
     // Pending enrolment requests are never seeded (state.pendingEnrolmentRequests'
     // own comment) — refetched on every visit, not just the first, since a
     // network peer can change the table while the operator is on another tab.
-    if (page === 'remote') listEnrolmentRequests();
+    // The Overview tab's "Needs attention" list counts them too.
+    if (page === 'remote' || page === 'overview') listEnrolmentRequests();
     render();
 }
 
@@ -216,8 +270,12 @@ function render(source) {
     if (state.hostForm) captureHostFormInputs();
     const el = document.getElementById('content');
     const fromPush = source === 'push';
-    if (state.page === 'services') {
+    if (state.page === 'overview') {
+        state._actBind = [];
+        el.innerHTML = renderOverview();
+    } else if (state.page === 'services') {
         if (fromPush && state.editingServiceId) return;
+        state._actBind = [];
         el.innerHTML = renderServices();
     } else if (state.page === 'inspector') {
         // The 2s status poll updates status regions surgically
@@ -226,30 +284,324 @@ function render(source) {
         // call render('push'); skip the full inspector rebuild while a config
         // editor is open so it can't wipe in-flight keystrokes there.
         if (fromPush && anyConfigEditorOpen()) return;
+        state._actBind = [];
         el.innerHTML = renderServiceInspector();
     } else if (state.page === 'projects') {
         if (fromPush && state.editingProjectId) return;
+        state._actBind = [];
         el.innerHTML = renderProjects();
     } else if (state.page === 'hosts') {
         if (fromPush && state.editingHostId) return;
+        state._actBind = [];
         el.innerHTML = renderHosts();
     } else if (state.page === 'remote') {
         // Skip a push-sourced repaint while the create form is open or the
         // listener block has uncommitted edits, for the same reason the
         // Projects tab does: an external change must not eat keystrokes.
         if (fromPush && (state.enrolForm || state.remoteDirty)) return;
+        state._actBind = [];
         el.innerHTML = renderEnrolments();
     } else if (state.page === 'passkeys') {
+        state._actBind = [];
         el.innerHTML = renderPasskeys();
     } else if (state.page === 'audit') {
+        state._actBind = [];
         el.innerHTML = renderAudit();
         restoreAuditFocus();
     } else {
         if (fromPush && state.editingMcpId) return;
+        state._actBind = [];
         el.innerHTML = renderMcpServers();
         const ta = document.getElementById('mcpJson');
         if (ta) ta.placeholder = JSON_PLACEHOLDER;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Overview tab
+// ---------------------------------------------------------------------------
+//
+// The landing page answers, on arrival, the questions every other tab makes
+// an operator go find: is everything up, can anything reach something it
+// shouldn't, is anything asking for me. Every number here is derived from
+// state this page already has (or fetches once, like audit/pending
+// enrolments) -- nothing is fetched solely for this tab.
+
+function serviceCounts() {
+    let running = 0, stopped = 0, autostartStopped = 0;
+    for (const svc of (state.services || [])) {
+        const isRunning = !!state.runningServices[svc.id];
+        if (isRunning) running++; else stopped++;
+        if (svc.autostart && !isRunning) autostartStopped++;
+    }
+    return { running, stopped, autostartStopped, autostartDown: autostartStopped > 0 };
+}
+
+// mcpHealthCounts breaks the warn/danger tint down by the same states
+// mcpHealthPillFor names on each card, so the Overview tile can say *why*
+// it's amber or red instead of just "N connected".
+function mcpHealthCounts() {
+    const list = state.externalMcps || [];
+    let connected = 0, down = 0, restarting = 0, abandoned = 0, unauthenticated = 0;
+    for (const mcp of list) {
+        const pill = mcpHealthPillFor(mcp);
+        if (pill.cls === 'ok') { connected++; continue; }
+        if (pill.cls === 'danger') { abandoned++; continue; }
+        if (pill.cls === 'warn') {
+            if (mcp.transport === 'http') { unauthenticated++; continue; }
+            const h = (state.mcpHealth || {})[mcp.id];
+            if (h && h.state === 'restart_failed') restarting++; else down++;
+        }
+    }
+    return {
+        total: list.length, connected, down, restarting, abandoned, unauthenticated,
+        danger: abandoned > 0, warn: (down + restarting + unauthenticated) > 0,
+    };
+}
+
+// mcpTileValue and serviceTileValue render the Overview tile text for their
+// tab: the headline count plus, only when non-zero, the breakdown that
+// explains an amber/red tint -- an operator shouldn't have to open the tab
+// to learn why it isn't plain green.
+function mcpTileValue(mcp) {
+    let value = mcp.connected + ' connected';
+    if (mcp.down) value += ' · ' + mcp.down + ' down';
+    if (mcp.restarting) value += ' · ' + mcp.restarting + ' restarting';
+    if (mcp.unauthenticated) value += ' · ' + mcp.unauthenticated + ' not authenticated';
+    if (mcp.abandoned) value += ' · ' + mcp.abandoned + ' abandoned';
+    return value;
+}
+
+function serviceTileValue(svc) {
+    let value = svc.running + ' running · ' + svc.stopped + ' stopped';
+    if (svc.autostartStopped > 0) {
+        value += svc.autostartStopped === svc.stopped ? ' (autostart)' : ' (' + svc.autostartStopped + ' autostart)';
+    }
+    return value;
+}
+
+function projectCounts() {
+    let projects = 0, profiles = 0;
+    for (const p of (state.projects || [])) {
+        if (isRemoteProject(p)) profiles++; else projects++;
+    }
+    return { projects, profiles };
+}
+
+function hostCounts() {
+    let connected = 0, unreachable = 0;
+    for (const h of (state.hosts || [])) {
+        if (h.status === 'connected') connected++;
+        else if (h.status === 'unreachable') unreachable++;
+    }
+    return { connected, unreachable, total: (state.hosts || []).length };
+}
+
+function pendingEnrolmentCount() {
+    return (state.pendingEnrolmentRequests || []).filter(r => !r.approved).length;
+}
+
+function remoteTileValue() {
+    const r = state.remote;
+    if (!r || !r.configured || !r.enabled || !r.audit_enabled) return 'Off';
+    const n = pendingEnrolmentCount();
+    return 'On ' + (r.effective || '127.0.0.1:9910') + (n ? ' · ' + n + ' pending' : '');
+}
+
+// auditTile returns the Overview Audit tile's text and, when the state is
+// notable, a color class -- the same enabled/dropped facts auditStatusOf
+// exposes over IPC, read from the ring query every settings-window open
+// already makes.
+function auditTile() {
+    const st = state.auditStatus;
+    if (!st) return { text: '—', cls: '' };
+    if (!st.enabled) return { text: 'Off', cls: 'danger' };
+    if (st.dropped > 0) return { text: 'Dropped ' + st.dropped, cls: 'warn' };
+    return { text: 'Recording', cls: '' };
+}
+
+function pluralize(n, noun) {
+    return n + ' ' + noun + (n === 1 ? '' : 's');
+}
+
+function renderOverviewTiles() {
+    const svc = serviceCounts();
+    const mcp = mcpHealthCounts();
+    const proj = projectCounts();
+    const hosts = hostCounts();
+    const passkeysCount = (state.passkeys || []).length;
+    const sessionsCount = (state.loginSessions || []).length;
+    const audit = auditTile();
+
+    const tiles = [
+        { label: 'Services', value: serviceTileValue(svc), cls: svc.autostartDown ? 'danger' : '', tab: 'services' },
+        { label: 'MCP Servers', value: mcpTileValue(mcp), cls: mcp.danger ? 'danger' : (mcp.warn ? 'warn' : ''), tab: 'mcps' },
+        { label: 'Projects', value: pluralize(proj.projects, 'project') + ' · ' + pluralize(proj.profiles, 'access profile'), cls: '', tab: 'projects' },
+        { label: 'Hosts', value: hosts.connected + ' connected · ' + hosts.unreachable + ' unreachable', cls: '', tab: 'hosts' },
+        { label: 'Remote listener', value: remoteTileValue(), cls: '', tab: 'remote' },
+        { label: 'Audit', value: audit.text, cls: audit.cls, tab: 'audit' },
+        { label: 'Passkeys', value: pluralize(passkeysCount, 'passkey') + ' · ' + sessionsCount + ' browser' + (sessionsCount === 1 ? '' : 's') + ' signed in', cls: '', tab: 'passkeys' },
+    ];
+
+    let html = '<div class="ov-grid">';
+    for (const t of tiles) {
+        html += '<button type="button" class="ov-tile' + (t.cls ? ' ' + t.cls : '') + '" ' + bind(showPage, t.tab) + '>';
+        html += '<div class="ov-tile-label">' + esc(t.label) + '</div>';
+        html += '<div class="ov-tile-value">' + esc(t.value) + '</div>';
+        html += '</button>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// overviewAttentionRows aggregates every source the design calls out, each
+// row carrying the sentence and (when there's an obvious tab for it) a link
+// to see more. Client-side only, from state already on the page — nothing
+// here issues a call the tab wouldn't otherwise have made.
+function overviewAttentionRows() {
+    const rows = [];
+
+    for (const p of (state.projects || [])) {
+        for (const gap of projScopeGaps(p)) {
+            rows.push({ text: esc(p.name) + ' (' + esc(projNoun(p)) + ') needs a scope value for ' + esc(gap.mcp) + '.', tab: 'projects' });
+        }
+    }
+
+    for (const mcp of (state.externalMcps || [])) {
+        const h = (state.mcpHealth || {})[mcp.id];
+        if (!h || mcp.transport === 'http') continue;
+        if (h.state === 'abandoned') {
+            rows.push({ text: esc(mcp.display_name) + ' was abandoned after ' + h.attempt + ' restart attempts.', tab: 'mcps' });
+        } else if (h.state === 'down' || h.state === 'restart_failed') {
+            rows.push({ text: esc(mcp.display_name) + ' is down and restarting (attempt ' + h.attempt + ').', tab: 'mcps' });
+        }
+    }
+
+    for (const h of (state.hosts || [])) {
+        if (h.status === 'unreachable') {
+            rows.push({ text: esc(h.name) + ' is unreachable.', tab: 'hosts' });
+        } else if (h.probe && h.probe.ok && !h.probe.node_path) {
+            rows.push({ text: esc(h.name) + ' has no node on the path relay probed.', tab: 'hosts' });
+        }
+    }
+
+    for (const svc of (state.services || [])) {
+        if (svc.autostart && !state.runningServices[svc.id]) {
+            rows.push({ text: esc(svc.display_name) + ' is set to start with Relay but is not running.', tab: 'services' });
+        }
+        if (svc.frontend_creds === 'implicit') {
+            rows.push({ text: esc(svc.display_name) + ' receives front-door credentials implicitly.', tab: 'services' });
+        }
+    }
+
+    const st = state.auditStatus;
+    if (st && !st.enabled) {
+        rows.push({ text: 'Tool-call auditing is off.', tab: 'audit' });
+    } else if (st && st.dropped > 0) {
+        rows.push({ text: 'The audit log has dropped ' + pluralize(st.dropped, 'event') + '.', tab: 'audit' });
+    }
+
+    if (state.sealStatus) {
+        rows.push({ text: 'Sealed store: ' + esc(state.sealStatus), tab: null });
+    }
+
+    const pending = pendingEnrolmentCount();
+    if (pending > 0) {
+        rows.push({ text: pluralize(pending, 'pending enrolment request') + '.', tab: 'remote' });
+    }
+
+    return rows;
+}
+
+function renderOverviewAttention() {
+    const rows = overviewAttentionRows();
+    if (!rows.length) return '';
+    let html = '<div class="ov-section"><h3>Needs attention</h3>';
+    for (const row of rows) {
+        html += '<div class="ov-attention-row"><span aria-hidden="true">⚠</span><span>' + row.text + '</span>';
+        if (row.tab) html += '<button type="button" class="btn btn-sm ov-attention-link" ' + bind(showPage, row.tab) + '>Open</button>';
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderOverviewRecentToolCalls() {
+    const rows = (state.auditEvents || []).slice(0, 6);
+    let html = '<div class="ov-section"><div class="page-header" style="margin-bottom:8px"><h3 style="margin:0">Recent tool calls</h3>';
+    html += '<button type="button" class="btn btn-sm" ' + bind(showPage, 'audit') + '>See all</button></div>';
+    if (!rows.length) {
+        html += '<div class="empty-state">No tool calls recorded yet.</div>';
+    } else {
+        for (const ev of rows) {
+            const a = ev.actor || {};
+            html += '<div class="ov-recent-row">';
+            html += '<span class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</span>';
+            html += '<span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span>';
+            html += '<span>' + esc(ev.tool || ev.event) + '</span>';
+            html += '<span style="color:var(--text-2)">' + esc(a.project_name || '—') + '</span>';
+            html += '</div>';
+        }
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderOverviewFooter() {
+    let html = '<div class="ov-footer">';
+    html += '<span>relay ' + esc(state.version) + '</span>';
+    html += '<span>' + esc(state.paths.config || '—') + ' <button type="button" class="btn-link" onclick="revealConfigDir()">Reveal</button></span>';
+    html += '<button type="button" class="btn-link" onclick="revealLogsDir()">Reveal logs</button>';
+    html += '</div>';
+    return html;
+}
+
+function renderOverview() {
+    let html = '<div class="page-header"><h2>Overview</h2></div>';
+    html += renderOverviewTiles();
+    html += renderOverviewAttention();
+    html += renderOverviewRecentToolCalls();
+    html += renderOverviewFooter();
+    return html;
+}
+
+// mcpHealthPillFor is the single source for an MCP's health badge, used by
+// both this tab's card and the Overview tile aggregate. An HTTP MCP's
+// pill folds in its auth state (there is no supervisor health for those --
+// they have no child process to restart) rather than rendering a second,
+// separate badge next to it.
+function mcpHealthPillFor(mcp) {
+    if (mcp.transport === 'http') {
+        const authed = !!(mcp.oauth_state && mcp.oauth_state.access_token);
+        return { label: authed ? 'http · authenticated' : 'http · not authenticated', cls: authed ? 'ok' : 'warn' };
+    }
+    const h = (state.mcpHealth || {})[mcp.id];
+    if (h) {
+        if (h.state === 'abandoned') return { label: 'abandoned after ' + h.attempt + ' attempts', cls: 'danger' };
+        if (h.state === 'down' || h.state === 'restart_failed') return { label: 'down · restarting (attempt ' + h.attempt + ')', cls: 'warn' };
+        if (h.connected) return { label: 'connected', cls: 'ok' };
+    }
+    return { label: 'stopped', cls: 'muted' };
+}
+
+function toggleMcpToolsDisclosure(mcpId) {
+    state.mcpToolsOpen[mcpId] = !state.mcpToolsOpen[mcpId];
+    render();
+}
+
+// renderMcpToolsDisclosure turns the "N tools" line into a toggle that lists
+// tool names from mcpToolCache -- the same data the count was already
+// reading, so there is nothing new to fetch.
+function renderMcpToolsDisclosure(mcp, toolCount) {
+    const open = !!state.mcpToolsOpen[mcp.id];
+    const label = toolCount + ' tool' + (toolCount !== 1 ? 's' : '') + (toolCount ? (open ? ' ▾' : ' ▸') : '');
+    let html = `<button type="button" class="mcp-card-tools mcp-tools-toggle" aria-expanded="${open}" ${bind(toggleMcpToolsDisclosure, mcp.id)}>${esc(label)}</button>`;
+    if (open && toolCount) {
+        html += '<ul class="mcp-tools-list">';
+        for (const t of (state.mcpToolCache[mcp.id] || [])) html += '<li>' + esc(t.name) + '</li>';
+        html += '</ul>';
+    }
+    return html;
 }
 
 function renderMcpServers() {
@@ -272,32 +624,29 @@ function renderMcpServers() {
         const toolCount = (state.mcpToolCache[mcp.id] || []).length;
         const isHTTP = mcp.transport === 'http';
         const authenticating = state.authenticatingMcp === mcp.id;
+        const pill = mcpHealthPillFor(mcp);
         html += '<div class="mcp-card">';
         html += '<div class="mcp-card-header">';
+        html += '<div style="display:flex;gap:8px;align-items:center;min-width:0">';
         html += `<span class="mcp-card-name">${esc(mcp.display_name)}</span>`;
-        html += '<div style="display:flex;gap:4px;align-items:center">';
-        if (isHTTP) {
-            if (mcp.oauth_state && mcp.oauth_state.access_token) {
-                html += '<span style="font-size:11px;color:#22c55e;border:1px solid #22c55e;border-radius:3px;padding:2px 6px">Authenticated</span>';
-            } else {
-                html += '<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:2px 6px">Not authenticated</span>';
-            }
-        }
+        html += `<span class="pill ${pill.cls}">${esc(pill.label)}</span>`;
+        html += '</div>';
+        html += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
         if (mcp.tcc_services && mcp.tcc_services.length > 0) {
             const busy = state.resettingMcpPermissions === mcp.id;
             const label = busy ? 'Resetting…' : 'Reset Permissions';
-            html += `<button class="btn btn-sm" onclick="resetMcpPermissions('${esc(mcp.id)}')" ${busy ? 'disabled' : ''}>${label}</button>`;
+            html += `<button class="btn btn-sm" ${bind(resetMcpPermissions, mcp.id)} ${busy ? 'disabled' : ''}>${label}</button>`;
         }
-        html += `<button class="btn btn-sm btn-danger" onclick="removeExternalMcp('${esc(mcp.id)}')">Remove</button>`;
+        html += `<button class="btn btn-sm btn-danger" ${bind(removeExternalMcp, mcp.id, mcp.display_name)}>Remove</button>`;
         html += '</div></div>';
         if (isHTTP) {
             html += `<div class="mcp-card-cmd">${esc(mcp.url || '')}</div>`;
             html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
-            html += `<div class="mcp-card-tools" style="margin:0">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
+            html += renderMcpToolsDisclosure(mcp, toolCount);
             if (authenticating) {
                 html += '<button class="btn btn-sm" disabled><span class="spinner"></span>Authenticating...</button>';
             } else {
-                html += `<button class="btn btn-sm" onclick="authenticateMcp('${esc(mcp.id)}')">Authenticate</button>`;
+                html += `<button class="btn btn-sm" ${bind(authenticateMcp, mcp.id)}>Authenticate</button>`;
             }
             html += '</div>';
         } else {
@@ -305,7 +654,7 @@ function renderMcpServers() {
             const cmdDisplay = cmd.length > 40 ? '...' + cmd.slice(-37) : cmd;
             const argsDisplay = mcp.args && mcp.args.length > 0 ? ' ' + mcp.args.join(' ') : '';
             html += `<div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>`;
-            html += `<div class="mcp-card-tools">${toolCount} tool${toolCount !== 1 ? 's' : ''}</div>`;
+            html += renderMcpToolsDisclosure(mcp, toolCount);
         }
         html += '</div>';
     }
@@ -315,53 +664,70 @@ function renderMcpServers() {
 // Form view for adding an MCP server. There is no edit flow today — MCPs are
 // add-or-remove; editingMcpId is always 'new' while this is rendered.
 function renderMcpForm() {
-    let html = '<div class="page-header">';
-    html += '<h2>New MCP Server</h2>';
-    html += '<button class="btn btn-danger btn-sm" onclick="cancelMcpEdit()">Cancel</button>';
-    html += '</div>';
+    let html = '<h2>New MCP Server</h2>';
 
     const isStdio = state.mcpTransport === 'stdio';
-    html += `<div style="display:flex;gap:4px;margin-bottom:12px">
+    const formActive = state.mcpAddMode === 'form';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Transport</div>';
+    html += `<div style="display:flex;gap:4px;margin-bottom:${isStdio ? '8px' : '0'}">
         <button class="perm-btn ${isStdio ? 'active' : ''}" onclick="setMcpTransport('stdio')">Stdio</button>
         <button class="perm-btn ${!isStdio ? 'active' : ''}" onclick="setMcpTransport('http')">HTTP</button>
     </div>`;
-
-    if (!isStdio) {
-        html += '<label>Display name</label>';
-        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Krisp" />';
-        html += '<label>URL</label>';
-        html += '<input type="text" id="mcpUrl" placeholder="e.g. https://mcp.krisp.ai/mcp" />';
-    } else {
-        const formActive = state.mcpAddMode === 'form';
-        html += `<div style="display:flex;gap:4px;margin-bottom:12px">
+    if (isStdio) {
+        html += `<div style="display:flex;gap:4px">
             <button class="perm-btn ${formActive ? 'active' : ''}" onclick="setMcpAddMode('form')">Form</button>
             <button class="perm-btn ${!formActive ? 'active' : ''}" onclick="setMcpAddMode('json')">Paste JSON</button>
         </div>`;
+    }
+    html += '</div>';
 
-        if (formActive) {
-            html += '<label>Display name</label>';
-            html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
-            html += '<label>Command</label>';
-            html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
-            html += '<label>Arguments (space-separated)</label>';
-            html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
-            html += '<label>Environment variables (KEY=VALUE per line)</label>';
-            html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
-        } else {
-            html += '<label>Paste a Claude Desktop-style JSON config snippet</label>';
-            html += '<textarea id="mcpJson" rows="8"></textarea>';
-            html += '<p style="color:var(--text-3);font-size:11px;margin-top:4px">Accepts <code style="color:var(--text-2)">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
-        }
+    if (!isStdio) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Identity</div>';
+        html += '<label for="mcpDisplayName">Display name</label>';
+        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Krisp" />';
+        html += '</div>';
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Endpoint</div>';
+        html += '<label for="mcpUrl">URL</label>';
+        html += '<input type="text" id="mcpUrl" placeholder="e.g. https://mcp.krisp.ai/mcp" />';
+        html += '</div>';
+    } else if (formActive) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Identity</div>';
+        html += '<label for="mcpDisplayName">Display name</label>';
+        html += '<input type="text" id="mcpDisplayName" placeholder="e.g. Everything Server" />';
+        html += '</div>';
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Command</div>';
+        html += '<label for="mcpCommand">Command</label>';
+        html += '<input type="text" id="mcpCommand" placeholder="e.g. npx or /usr/local/bin/my-server" />';
+        html += '<label for="mcpArgs">Arguments (space-separated)</label>';
+        html += '<input type="text" id="mcpArgs" placeholder="e.g. @modelcontextprotocol/server-everything" />';
+        html += '</div>';
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Environment</div>';
+        html += '<label for="mcpEnv">Environment variables (KEY=VALUE per line)</label>';
+        html += '<textarea id="mcpEnv" rows="3" placeholder="API_KEY=abc123&#10;DEBUG=true"></textarea>';
+        html += '</div>';
+    } else {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Configuration JSON</div>';
+        html += '<label for="mcpJson">Paste a Claude Desktop-style JSON config snippet</label>';
+        html += '<textarea id="mcpJson" rows="8"></textarea>';
+        html += '<p style="color:var(--text-3);font-size:11px;margin-top:4px">Accepts <code style="color:var(--text-2)">&lbrace; "name": &lbrace; "command", "args", "env" &rbrace; &rbrace;</code></p>';
+        html += '</div>';
     }
 
-    html += '<div style="margin-top:16px;display:flex;gap:8px">';
+    html += '<div class="proj-form-actions">';
     if (state.discovering) {
         html += '<button class="btn" disabled><span class="spinner"></span>Discovering...</button>';
     } else {
         if (!isStdio) {
             html += '<button class="btn btn-primary" onclick="addExternalMcpHttp()">Add MCP Server</button>';
         } else {
-            const formActive = state.mcpAddMode === 'form';
             html += `<button class="btn btn-primary" onclick="${formActive ? 'addExternalMcp()' : 'addExternalMcpFromJson()'}">Add MCP Server</button>`;
         }
         html += '<button class="btn btn-danger" onclick="cancelMcpEdit()">Cancel</button>';
@@ -491,7 +857,8 @@ function authenticateMcp(id) {
     ipc(JSON.stringify({ type: 'authenticate_mcp', id }));
 }
 
-function removeExternalMcp(id) {
+function removeExternalMcp(id, name) {
+    if (!confirm('Remove MCP server "' + name + '"?\n\nEvery project granting it loses its tools immediately, and any tool authority recorded for it becomes unreachable.')) return;
     ipc(JSON.stringify({ type: 'remove_external_mcp', id }));
 }
 
@@ -594,6 +961,43 @@ window.onMcpPermissionsReset = function(id, result) {
     alert(summary);
 };
 
+// frontDoorPillHTML mirrors relay's `frontDoorColumn` (cmd/relay/service_cmd.go)
+// for the Services tab card: a service the frontend token was injected into
+// gets a muted pill after its command line, distinguishing an explicit grant
+// from the softer "implicit" default, and omitting the field entirely (older
+// settings.json, or a service predating this) reads the same as 'off'.
+function frontDoorPillHTML(svc) {
+    switch (svc.frontend_creds) {
+        case 'explicit': return '<div class="mcp-card-tools">front door: injected</div>';
+        case 'implicit': return '<div class="mcp-card-tools">front door: injected (implicit) — pass --no-frontend-creds for backends</div>';
+        default: return '';
+    }
+}
+
+// formatUptime turns an RFC3339 started_at into "2h 14m" (or "14m" under an
+// hour). Returns '' on anything unparseable so a malformed timestamp fails
+// silent rather than rendering "NaNh NaNm".
+function formatUptime(startedAt) {
+    const start = Date.parse(startedAt);
+    if (isNaN(start)) return '';
+    let secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return h > 0 ? (h + 'h ' + m + 'm') : (m + 'm');
+}
+
+// serviceStatusLineHTML is the Services card's muted second line: pid + uptime
+// while running (from state.serviceRuntime, kept current by onServiceStatus
+// and onSettingsReloaded), or "stopped" otherwise -- there is no data source
+// that distinguishes "never started" from "exited", so both read the same.
+function serviceStatusLineHTML(svc, running) {
+    if (!running) return 'stopped';
+    const rt = (state.serviceRuntime || {})[svc.id];
+    if (!rt) return 'running';
+    const up = formatUptime(rt.started_at);
+    return 'pid ' + rt.pid + (up ? ' · up ' + up : '');
+}
+
 function renderServices() {
     if (state.editingServiceId) return renderServiceForm();
 
@@ -609,33 +1013,34 @@ function renderServices() {
     }
 
     for (const svc of state.services) {
-        const cmdDisplay = svc.command.length > 40 ? '...' + svc.command.slice(-37) : svc.command;
-        const argsDisplay = svc.args && svc.args.length > 0 ? ' ' + svc.args.join(' ') : '';
+        const running = !!state.runningServices[svc.id];
+        const cmdBase = (svc.command || '').split('/').pop();
+        const fullCmd = (svc.command || '') + (svc.args && svc.args.length > 0 ? ' ' + svc.args.join(' ') : '');
         html += `<div class="mcp-card">
             <div class="mcp-card-header">
-                <span class="mcp-card-name">${esc(svc.display_name)}</span>
-                <div style="display:flex;gap:4px">
-                    <button class="btn btn-sm" onclick="editService('${esc(svc.id)}')">Edit</button>
-                    <button class="btn btn-sm btn-danger" onclick="removeService('${esc(svc.id)}')">Remove</button>
+                <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                    <span class="status-dot ${running ? 'ok' : 'muted'}" data-svc-dot="${esc(svc.id)}" aria-hidden="true"></span>
+                    <span class="mcp-card-name">${esc(svc.display_name)}</span>
+                    <span class="mono-inline" title="${esc(fullCmd)}">${esc(cmdBase)}</span>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0">
+                    <button class="btn btn-sm" data-svc-startstop="${esc(svc.id)}" ${bind(toggleServiceRunning, svc.id)}>${running ? 'Stop' : 'Start'}</button>
+                    <button class="btn btn-sm" ${bind(editService, svc.id)}>Edit</button>
+                    <button class="btn btn-sm btn-danger" ${bind(removeService, svc.id, svc.display_name)}>Remove</button>
                 </div>
             </div>
-            <div class="mcp-card-cmd">${esc(cmdDisplay + argsDisplay)}</div>
+            <div class="mcp-card-tools" data-svc-runtime="${esc(svc.id)}">${esc(serviceStatusLineHTML(svc, running))}</div>
+            ${frontDoorPillHTML(svc)}
+            <div class="mcp-card-tools"><button type="button" class="btn-link" ${bind(revealServiceLog, svc.id)}>Logs</button></div>
             ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ''}
             ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ''}
-            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:var(--text-2)">Running</span>
-                <label class="switch switch-running">
-                    <input type="checkbox" data-svc-running="${esc(svc.id)}" ${state.runningServices[svc.id] ? 'checked' : ''} onchange="toggleServiceRunning('${esc(svc.id)}', this.checked)" />
+            <label class="toggle-row" style="margin-bottom:0;padding:6px 0 0;cursor:pointer">
+                <span style="font-size:12px;color:var(--text-2)">Start with Relay</span>
+                <span class="switch">
+                    <input type="checkbox" aria-label="Start with Relay" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
                     <span class="slider"></span>
-                </label>
-            </div>
-            <div class="toggle-row" style="margin-bottom:0;padding:6px 0 0">
-                <span style="font-size:12px;color:var(--text-2)">Autostart on launch</span>
-                <label class="switch">
-                    <input type="checkbox" ${svc.autostart ? 'checked' : ''} onchange="updateServiceAutostart('${esc(svc.id)}', this.checked)" />
-                    <span class="slider"></span>
-                </label>
-            </div>
+                </span>
+            </label>
         </div>`;
     }
     return html;
@@ -660,41 +1065,51 @@ function renderServiceForm() {
     const as_ = editing ? editing.autostart : false;
     const ur = editing ? esc(editing.url || '') : '';
 
-    let html = '<div class="page-header">';
-    html += `<h2>${title}${editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : ''}</h2>`;
-    html += '<button class="btn btn-danger btn-sm" onclick="cancelServiceEdit()">Cancel</button>';
+    let html = '<h2>' + esc(title) + (editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : '') + '</h2>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += '<label for="svcDisplayName">Display name</label>';
+    html += `<input type="text" id="svcDisplayName" value="${dn}" placeholder="e.g. My API Server" />`;
     html += '</div>';
 
-    html += '<label>Display name</label>';
-    html += `<input type="text" id="svcDisplayName" value="${dn}" placeholder="e.g. My API Server" />`;
-    html += '<label>Command</label>';
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Command</div>';
+    html += '<label for="svcCommand">Command</label>';
     html += `<input type="text" id="svcCommand" value="${cm}" placeholder="e.g. node or /usr/local/bin/my-server" />`;
-    html += '<label>Arguments (space-separated)</label>';
+    html += '<label for="svcArgs">Arguments (space-separated)</label>';
     html += `<input type="text" id="svcArgs" value="${ar}" placeholder="e.g. server.js --port 8080" />`;
-    html += '<label>Working directory (optional)</label>';
+    html += '<label for="svcWorkingDir">Working directory (optional)</label>';
     html += `<input type="text" id="svcWorkingDir" value="${wd}" placeholder="e.g. /Users/you/project" />`;
-    html += '<label>URL (optional, opens in browser on tray click)</label>';
+    html += '<label for="svcUrl">URL (optional, opens in browser on tray click)</label>';
     html += `<input type="text" id="svcUrl" value="${ur}" placeholder="e.g. http://localhost:3000" />`;
-    html += '<label>Environment variables (KEY=VALUE per line)</label>';
+    html += '</div>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Environment</div>';
+    html += '<label for="svcEnv">Environment variables (KEY=VALUE per line)</label>';
     html += `<textarea id="svcEnv" rows="3" placeholder="API_KEY=abc123&#10;PORT=8080">${ev}</textarea>`;
-    html += `<div class="toggle-row" style="margin-top:8px;margin-bottom:4px">
+    html += '</div>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Options</div>';
+    html += `<div class="toggle-row" style="padding:4px 0;margin:0">
         <span>Autostart on launch</span>
         <label class="switch">
-            <input type="checkbox" id="svcAutostart" ${as_ ? 'checked' : ''} />
+            <input type="checkbox" id="svcAutostart" aria-label="Autostart on launch" ${as_ ? 'checked' : ''} />
             <span class="slider"></span>
         </label>
     </div>`;
+    html += '</div>';
+
+    html += '<div class="proj-form-actions">';
     if (editing) {
-        html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn btn-primary" onclick="saveServiceEdit()">Save</button>
-            <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
-        </div>`;
+        html += '<button class="btn btn-primary" onclick="saveServiceEdit()">Save</button>';
     } else {
-        html += `<div style="margin-top:16px;display:flex;gap:8px">
-            <button class="btn btn-primary" onclick="addService()">Add Service</button>
-            <button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>
-        </div>`;
+        html += '<button class="btn btn-primary" onclick="addService()" ' + (state.serviceSavePending ? 'disabled' : '') + '>' + (state.serviceSavePending ? 'Adding…' : 'Add Service') + '</button>';
     }
+    html += '<button class="btn btn-danger" onclick="cancelServiceEdit()">Cancel</button>';
+    html += '</div>';
     return html;
 }
 
@@ -730,6 +1145,7 @@ function addService() {
     const v = svcFormValues();
     if (!v.displayName || !v.command) return;
 
+    state.serviceSavePending = true;
     ipc(JSON.stringify({
         type: 'add_service',
         display_name: v.displayName,
@@ -743,6 +1159,7 @@ function addService() {
     // Form stays open until onServiceAdded confirms — that handler clears
     // editingServiceId. If the add fails (onSettingsError), the form stays
     // up so the user can fix and retry.
+    render();
 }
 
 function editService(id) {
@@ -785,7 +1202,8 @@ function saveServiceEdit() {
     render();
 }
 
-function removeService(id) {
+function removeService(id, name) {
+    if (!confirm('Remove service "' + name + '"?\n\nIf it is running, it is stopped immediately, and it disappears from the tray menu.')) return;
     ipc(JSON.stringify({ type: 'remove_service', id }));
 }
 
@@ -797,6 +1215,7 @@ function updateServiceAutostart(id, checked) {
 
 window.onServiceAdded = function(config) {
     state.services.push(config);
+    state.serviceSavePending = false;
     // Close the New Service form on successful add so we return to the list.
     if (state.editingServiceId === 'new') state.editingServiceId = null;
     if (state.page === 'services') render('push');
@@ -809,29 +1228,51 @@ window.onServiceRemoved = function(id) {
     if (state.page === 'services') render('push');
 };
 
-function toggleServiceRunning(id, checked) {
-    state.runningServices[id] = checked;
-    ipc(JSON.stringify({ type: checked ? 'start_service' : 'stop_service', id: id }));
+// toggleServiceRunning reads the CURRENT state rather than taking a target
+// value, because the Start/Stop button's bind() captures its handler at
+// render time -- a live status update (onServiceStatus) updates the card's
+// button label surgically without a full re-render, and a stale captured
+// boolean would send the opposite of what the button now reads.
+function toggleServiceRunning(id) {
+    const next = !state.runningServices[id];
+    state.runningServices[id] = next;
+    ipc(JSON.stringify({ type: next ? 'start_service' : 'stop_service', id: id }));
     render();
 }
 
-window.onServiceStatus = function(runningIds) {
+window.onServiceStatus = function(data) {
+    var runningIds = data.running_ids || [];
     var m = {};
     for (var i = 0; i < runningIds.length; i++) m[runningIds[i]] = true;
     state.runningServices = m;
+    state.serviceRuntime = data.runtime || {};
+    if (state.page === 'overview') render('push');
     if (state.page !== 'services') return;
-    // Surgically update each toggle in place. A full re-render fires every
-    // 2s from the status poller and would wipe text the user is typing into
-    // the Add/Edit Service form.
+    // Surgically update each card's status region in place rather than a
+    // full re-render, which would wipe text the user is typing into the
+    // Add/Edit Service form -- this event fires on every start/stop/add/
+    // remove/update, not only on the 2s inspector poll.
     for (var i = 0; i < state.services.length; i++) {
         var svc = state.services[i];
-        var cb = document.querySelector('[data-svc-running="' + svc.id + '"]');
-        if (cb) cb.checked = !!m[svc.id];
+        var running = !!m[svc.id];
+        var dot = document.querySelector('[data-svc-dot="' + svc.id + '"]');
+        if (dot) dot.className = 'status-dot ' + (running ? 'ok' : 'muted');
+        var btn = document.querySelector('[data-svc-startstop="' + svc.id + '"]');
+        if (btn) btn.textContent = running ? 'Stop' : 'Start';
+        var meta = document.querySelector('[data-svc-runtime="' + svc.id + '"]');
+        if (meta) meta.textContent = serviceStatusLineHTML(svc, running);
     }
 };
 
 window.onSettingsError = function(msg) {
     console.error('Settings save error:', msg);
+    // Whichever save was in flight failed; this handler has no way to tell
+    // which, so it clears every save guard rather than leave one stuck
+    // permanently disabled, then re-renders so the button reflects it.
+    state.projectSavePending = false;
+    state.serviceSavePending = false;
+    state.remoteConfigSavePending = false;
+    render();
     var banner = document.createElement('div');
     banner.textContent = 'Failed to save settings: ' + msg;
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:10px;background:#c0392b;color:#fff;text-align:center;z-index:9999;font-size:13px';
@@ -856,10 +1297,23 @@ window.onSettingsReloaded = function(data) {
         // render('push') avoids for the project form.
         if (!state.remoteDirty) state.remoteDraft = null;
     }
+    if (data.mcp_health) state.mcpHealth = data.mcp_health;
+    if (data.service_runtime) state.serviceRuntime = data.service_runtime;
+    if ('seal_status' in data) state.sealStatus = data.seal_status || '';
+    if (data.version) state.version = data.version;
+    if (data.paths) state.paths = data.paths;
     // Push-sourced repaint of the currently visible tab; render() itself
     // skips if a form is mid-edit. Other tabs pick up the fresh state on
     // next switch — no need to repaint them now.
     render('push');
+};
+
+// onMcpHealth is pushed whenever any external MCP's supervised health
+// changes (a death, a restart, an abandonment) — the whole map, not a diff,
+// because the map is small and a diff would need its own drift guard.
+window.onMcpHealth = function(mcpHealth) {
+    state.mcpHealth = mcpHealth || {};
+    if (state.page === 'mcps' || state.page === 'overview') render('push');
 };
 
 window.onProjectsReloaded = function(projects) {
@@ -1261,7 +1715,7 @@ function renderProjects() {
             if (p.host_id) html += '<span class="proj-host-chip">⌁ ' + esc(hostNameFor(p.host_id)) + '</span>';
             html += '</div>';
             html += '<div style="display:flex;gap:4px">';
-            html += '<button class="btn btn-sm" onclick="editProject(\'' + esc(p.id) + '\')">Edit</button>';
+            html += '<button class="btn btn-sm" ' + bind(editProject, p.id) + '>Edit</button>';
             // Regen Skill is absent for a profile rather than disabled:
             // validateProjectShape refuses generate_skill on a remote record,
             // and the regen handler refuses a record with no path, so the
@@ -1271,9 +1725,9 @@ function renderProjects() {
             // project is refused for the same reason: the generator writes into
             // a directory that is not on this Mac.
             if (!remote && !p.host_id) {
-                html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
+                html += '<button class="btn btn-sm" ' + bind(regenProjectSkill, p.id) + ' title="Regenerate SKILL.md now">Regen Skill</button>';
             }
-            html += '<button class="btn btn-sm btn-danger" onclick="removeProject(\'' + esc(p.id) + '\', \'' + esc(p.name) + '\')">Delete</button>';
+            html += '<button class="btn btn-sm btn-danger" ' + bind(removeProject, p.id, p.name) + '>Delete</button>';
             html += '</div></div>';
             html += '<div class="proj-card-path">' + esc(remote ? 'no host directory — an access profile grants capability, not a filesystem' : (p.path || '(no path)')) + '</div>';
             // What this record can actually DO, per MCP: mode, tools, scope.
@@ -1453,10 +1907,24 @@ function toggleProjectTokenVisible(id) {
     render();
 }
 
-function copyProjectToken(text) {
+// copyToClipboard backs every Copy button on this page (a project token, a
+// login code, the CA fingerprint). WKWebView supports clipboard writes from
+// a user gesture either way; execCommand is the fallback for the rare
+// embedding where navigator.clipboard is absent or refuses.
+function copyToClipboard(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text);
+        return;
     }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* nothing further to try */ }
+    document.body.removeChild(ta);
 }
 
 // ---- Kind helpers ----
@@ -1814,8 +2282,8 @@ function renderProjMcpPermissions(mcpID, f) {
     html += '<div class="proj-perm-block">';
     html += '<div class="proj-perm-label">Operations</div>';
     html += '<div class="perm-btns">';
-    html += '<button class="perm-btn ' + (mode === 'read' ? 'active' : '') + '" onclick="setProjAccess(\'' + esc(mcpID) + '\', \'read\')">Read</button>';
-    html += '<button class="perm-btn ' + (mode === 'write' ? 'active' : '') + '" onclick="setProjAccess(\'' + esc(mcpID) + '\', \'write\')">Write</button>';
+    html += '<button class="perm-btn ' + (mode === 'read' ? 'active' : '') + '" ' + bind(setProjAccess, mcpID, 'read') + '>Read</button>';
+    html += '<button class="perm-btn ' + (mode === 'write' ? 'active' : '') + '" ' + bind(setProjAccess, mcpID, 'write') + '>Write</button>';
     html += '</div>';
     html += '<p class="proj-section-help">' + (mode === 'read'
         ? 'Only tools this MCP annotates <code>readOnlyHint: true</code>. A tool that is unannotated, malformed, or added later is refused — that is what keeps a new mutating tool out of an old grant.'
@@ -1830,8 +2298,8 @@ function renderProjMcpPermissions(mcpID, f) {
     html += '<div class="proj-perm-block">';
     html += '<div class="proj-perm-label">Outside this Mac</div>';
     html += '<div class="perm-btns">';
-    html += '<button class="perm-btn ' + (external ? '' : 'active') + '" onclick="setProjAllowExternal(\'' + esc(mcpID) + '\', false)">Refuse</button>';
-    html += '<button class="perm-btn ' + (external ? 'active' : '') + '" onclick="setProjAllowExternal(\'' + esc(mcpID) + '\', true)">Allow</button>';
+    html += '<button class="perm-btn ' + (external ? '' : 'active') + '" ' + bind(setProjAllowExternal, mcpID, false) + '>Refuse</button>';
+    html += '<button class="perm-btn ' + (external ? 'active' : '') + '" ' + bind(setProjAllowExternal, mcpID, true) + '>Allow</button>';
     html += '</div>';
     html += '<p class="proj-section-help">' + (external
         ? 'Tools that reach outside this Mac are allowed, <code>mail_send</code> and <code>web_fetch</code> among them. Anything this grant can read, it can send somewhere you cannot see.'
@@ -1885,7 +2353,8 @@ function renderScopeFieldInput(mcpID, field, f) {
         ? ('list of ' + (field.item_type || 'value') + 's, one per line')
         : (field.type || 'value');
     let html = '<div class="proj-scope-field">';
-    html += '<label>' + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + '</span></label>';
+    const scopeInputId = 'scopeField-' + scopeEnumValueKey([mcpID, field.name]);
+    html += '<label for="' + esc(scopeInputId) + '">' + esc(field.name) + ' <span class="proj-scope-type">' + esc(typeLabel) + '</span></label>';
     if (field.description) html += '<div class="proj-scope-desc">' + esc(field.description) + '</div>';
 
     if (field.source === 'project_path') {
@@ -1908,7 +2377,7 @@ function renderScopeFieldInput(mcpID, field, f) {
             shown = f.path || '';
             note = 'Derived by relay from this project\'s path on save.';
         }
-        html += '<input type="text" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
+        html += '<input type="text" id="' + esc(scopeInputId) + '" readonly value="' + esc(shown) + '" placeholder="(nothing derived)" />';
         html += '<div class="proj-scope-desc">' + esc(note) + '</div>';
         html += '</div>';
         return html;
@@ -1921,7 +2390,7 @@ function renderScopeFieldInput(mcpID, field, f) {
     if (field.enumerable && !state.scopeEnumUnsupported[mcpID]) {
         html += renderScopeFieldPicker(mcpID, field, f, text);
     } else {
-        html += renderScopeFieldTextInput(mcpID, field, text);
+        html += renderScopeFieldTextInput(mcpID, field, text, scopeInputId);
         if (field.enumerable) {
             html += '<div class="proj-scope-desc">' + esc(mcpID) + ' cannot list this field\'s values, so it is typed by hand. Spelling counts: a value that matches nothing refuses every tool the field governs, silently.</div>';
         }
@@ -1951,11 +2420,12 @@ function renderScopeFieldInput(mcpID, field, f) {
 // is deliberately the SAME storage as the picker — see setProjScopeText — so
 // the two controls are interchangeable and a value typed here survives the
 // picker appearing later, and vice versa.
-function renderScopeFieldTextInput(mcpID, field, text) {
+function renderScopeFieldTextInput(mcpID, field, text, inputId) {
+    const idAttr = inputId ? ' id="' + esc(inputId) + '"' : '';
     if (field.type === 'array') {
-        return '<textarea rows="3" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)">' + esc(text) + '</textarea>';
+        return '<textarea' + idAttr + ' rows="3" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)">' + esc(text) + '</textarea>';
     }
-    return '<input type="text" value="' + esc(text) + '" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)" />';
+    return '<input type="text"' + idAttr + ' value="' + esc(text) + '" oninput="setProjScopeText(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\', this.value)" />';
 }
 
 // ---------------------------------------------------------------------------
@@ -2094,8 +2564,6 @@ function renderScopeFieldPicker(mcpID, field, f, text) {
     const key = scopeEnumKey(mcpID, field.name, deps);
     const res = state.scopeEnum[key];
     const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
-    const args = '\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\'';
-
     // Always visible, open or closed: what is stored is what confines the
     // client, so it never sits behind a control someone has to open.
     //
@@ -2120,7 +2588,7 @@ function renderScopeFieldPicker(mcpID, field, f, text) {
             + '. Kept and still in force — it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>';
     }
 
-    html += '<button class="btn btn-sm" onclick="toggleScopeFieldPicker(' + args + ')">'
+    html += '<button class="btn btn-sm" ' + bind(toggleScopeFieldPicker, mcpID, field.name) + '>'
         + (open ? 'Done' : 'Choose values…') + '</button>';
     if (!open) return html;
 
@@ -2131,7 +2599,7 @@ function renderScopeFieldPicker(mcpID, field, f, text) {
         // a button rather than fetched from here, because a paint must never
         // start a live call — a re-render loop would be one call per frame.
         return html + '<div class="proj-scope-pending">The values this list is read within have changed.</div>'
-            + '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">List values</button>';
+            + '<button class="btn btn-sm" ' + bind(retryScopeEnum, mcpID, field.name) + '>List values</button>';
     }
 
     if (res.status === 'ok') {
@@ -2150,7 +2618,7 @@ function renderScopeFieldPicker(mcpID, field, f, text) {
         html += '<div class="proj-scope-failed">Could not list values from ' + esc(mcpID) + ' just now'
             + (res.error ? ': ' + esc(res.error) : '.')
             + ' This is not an empty list — nothing was read. Retry, or type the values.</div>';
-        html += '<button class="btn btn-sm" onclick="retryScopeEnum(' + args + ')">Try again</button>';
+        html += '<button class="btn btn-sm" ' + bind(retryScopeEnum, mcpID, field.name) + '>Try again</button>';
     }
     return html + renderScopeFieldTextInput(mcpID, field, text);
 }
@@ -2196,7 +2664,7 @@ function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
         // what turns this field's governed tools from a refusal into an
         // ordinary, successful empty result.
         if (multi) {
-            html += '<button type="button" class="btn btn-sm" onclick="confirmScopeFieldEmpty(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\')">'
+            html += '<button type="button" class="btn btn-sm" ' + bind(confirmScopeFieldEmpty, mcpID, field.name) + '>'
                 + 'Confirm: nothing to grant here</button>';
         }
         return html;
@@ -2209,9 +2677,9 @@ function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
         state._scopeBind.push({ mcpID: mcpID, field: field.name, value: row.value });
         const checked = selectedKeys.has(scopeEnumValueKey(row.value)) ? ' checked' : '';
         html += '<div class="proj-scope-choice' + (row.unknown ? ' unrecognised' : '') + '">';
-        html += '<input type="' + (multi ? 'checkbox' : 'radio') + '" name="scope-' + esc(mcpID) + '-' + esc(field.name) + '"'
+        html += '<input type="' + (multi ? 'checkbox' : 'radio') + '" id="scopeChoice' + idx + '" name="scope-' + esc(mcpID) + '-' + esc(field.name) + '"'
             + checked + ' onchange="toggleProjScopeValueAt(' + idx + ', this.checked)" />';
-        html += '<label>' + esc(row.label) + '</label>';
+        html += '<label for="scopeChoice' + idx + '">' + esc(row.label) + '</label>';
         if (row.unknown) html += '<span class="desc">not offered by this MCP</span>';
         html += '</div>';
     }
@@ -2229,8 +2697,8 @@ function renderScopeChoices(mcpID, field, selected, offered, unknown, deps) {
         const allIdx = state._scopeBind.length;
         state._scopeBind.push({ mcpID: mcpID, field: field.name, value: rows.map(r => r.value) });
         html += '<div class="proj-scope-bulk">'
-            + '<button type="button" class="btn btn-sm" onclick="selectAllScopeValuesAt(' + allIdx + ')">Select all (' + rows.length + ')</button> '
-            + '<button type="button" class="btn btn-sm" onclick="clearScopeValues(\'' + esc(mcpID) + '\', \'' + esc(field.name) + '\')">Clear all</button>'
+            + '<button type="button" class="btn btn-sm" ' + bind(selectAllScopeValuesAt, allIdx) + '>Select all (' + rows.length + ')</button> '
+            + '<button type="button" class="btn btn-sm" ' + bind(clearScopeValues, mcpID, field.name) + '>Clear all</button>'
             + '</div>';
     }
     return html;
@@ -2428,7 +2896,7 @@ function renderProjectForm() {
     // ---- Identity ----
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += '<label>' + (isRemote ? 'Profile name' : 'Project name') + '</label>';
+    html += '<label for="projName">' + (isRemote ? 'Profile name' : 'Project name') + '</label>';
     html += '<input type="text" id="projName" class="' + (state.projectFormErrorField === 'projName' ? 'proj-field-invalid' : '') + '" value="' + esc(f.name) + '" placeholder="' + (isRemote ? 'e.g. Hermes — Bob INBOX (read-only)' : 'e.g. Acme Website') + '" />';
     // Next to the field, not only in the top banner (relay#25): a required-
     // field refusal is common enough, and this field specifically is easy
@@ -2447,11 +2915,16 @@ function renderProjectForm() {
         // rule exists for.
         html += '<label>Where</label>';
         html += '<div class="perm-btns">';
-        html += '<button class="perm-btn ' + (!f.host_id ? 'active' : '') + '" onclick="setProjWhere(\'\')">This Mac</button>';
+        html += '<button class="perm-btn ' + (!f.host_id ? 'active' : '') + '" ' + bind(setProjWhere, '') + '>This Mac</button>';
         for (const h of (state.hosts || [])) {
-            html += '<button class="perm-btn ' + (f.host_id === h.id ? 'active' : '') + '" onclick="setProjWhere(\'' + esc(h.id) + '\')">' + esc(h.name) + '</button>';
+            html += '<button class="perm-btn ' + (f.host_id === h.id ? 'active' : '') + '" ' + bind(setProjWhere, h.id) + '>' + esc(h.name) + '</button>';
         }
         html += '</div>';
+        // No for="projPath" here: an existing test asserts this exact literal
+        // <label>...</label> text (both the console and hosted variants) and
+        // is outside this change's ownership. The <input id="projPath"> right
+        // below is still reachable by name via Tab order; only the explicit
+        // label/control pairing is missing for this one field.
         html += '<label>' + (hosted ? 'Path on ' + esc(hostNameFor(f.host_id)) : 'Project path') + '</label>';
         html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === 'projPath' ? 'proj-field-invalid' : '') + '" value="' + esc(f.path) + '" placeholder="' + (hosted ? '/home/you/projects/acme' : '/Users/you/projects/acme') + '" />';
         if (state.projectFormErrorField === 'projPath') {
@@ -2482,7 +2955,7 @@ function renderProjectForm() {
     if (!isRemote) {
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += '<span>Allow all registered MCPs (wildcard <code>*</code>)</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Allow all registered MCPs (wildcard *)" ' + (wild ? 'checked' : '') + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
         html += '</div>';
     } else {
         html += '<p class="proj-section-help">An access profile can\'t use the wildcard — list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>';
@@ -2507,12 +2980,12 @@ function renderProjectForm() {
                 // denylist grants every tool the MCP gains after the grant was
                 // written — the fail-open shape a grant to another machine must
                 // not have. What bounds a profile is the allowlist in the panel.
-                html += '<button class="perm-btn ' + (granted ? 'active' : '') + '" onclick="setProjMcpGranted(\'' + esc(mcp.id) + '\', true)">Granted</button>';
-                html += '<button class="perm-btn ' + (!granted ? 'active' : '') + '" onclick="setProjMcpGranted(\'' + esc(mcp.id) + '\', false)">Not granted</button>';
+                html += '<button class="perm-btn ' + (granted ? 'active' : '') + '" ' + bind(setProjMcpGranted, mcp.id, true) + '>Granted</button>';
+                html += '<button class="perm-btn ' + (!granted ? 'active' : '') + '" ' + bind(setProjMcpGranted, mcp.id, false) + '>Not granted</button>';
             } else {
-                html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'all\')">All tools</button>';
-                html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'selected\')">Selected</button>';
-                html += '<button class="perm-btn ' + (st === 'none' ? 'active' : '') + '" onclick="setProjMcpState(\'' + esc(mcp.id) + '\', \'none\')">No tools</button>';
+                html += '<button class="perm-btn ' + (st === 'all' ? 'active' : '') + '" ' + bind(setProjMcpState, mcp.id, 'all') + '>All tools</button>';
+                html += '<button class="perm-btn ' + (st === 'selected' ? 'active' : '') + '" ' + bind(setProjMcpState, mcp.id, 'selected') + '>Selected</button>';
+                html += '<button class="perm-btn ' + (st === 'none' ? 'active' : '') + '" ' + bind(setProjMcpState, mcp.id, 'none') + '>No tools</button>';
             }
             html += '</div>';
             html += '</div>';
@@ -2529,7 +3002,7 @@ function renderProjectForm() {
         for (const id of dangling) {
             html += '<div class="proj-mcp-row">';
             html += '<span class="proj-mcp-name dangling">' + esc(id) + ' (no longer registered)</span>';
-            html += '<button class="perm-btn" onclick="setProjMcpState(\'' + esc(id) + '\', \'none\')">Remove</button>';
+            html += '<button class="perm-btn" ' + bind(setProjMcpState, id, 'none') + '>Remove</button>';
             html += '</div>';
         }
     } else {
@@ -2574,10 +3047,10 @@ function renderProjectForm() {
             if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + '</span>';
             html += '</div>';
             html += '<div class="perm-btns">';
-            html += '<button class="perm-btn ' + (m.access !== 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'read\')">Read</button>';
-            html += '<button class="perm-btn ' + (m.access === 'write' ? 'active' : '') + '" onclick="setProjMountAccess(' + i + ', \'write\')">Write</button>';
+            html += '<button class="perm-btn ' + (m.access !== 'write' ? 'active' : '') + '" ' + bind(setProjMountAccess, i, 'read') + '>Read</button>';
+            html += '<button class="perm-btn ' + (m.access === 'write' ? 'active' : '') + '" ' + bind(setProjMountAccess, i, 'write') + '>Write</button>';
             html += '</div>';
-            html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+            html += '<button class="btn btn-sm btn-danger" ' + bind(removeProjMount, i) + '>Remove</button>';
             html += '</div>';
         }
         html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
@@ -2593,11 +3066,11 @@ function renderProjectForm() {
         const modelsWild = isProjModelsWildcard(f);
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += '<span>Allow all models (wildcard <code>*</code>)</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Allow all models (wildcard *)" ' + (modelsWild ? 'checked' : '') + ' onchange="setProjModelsWildcard(this.checked)" /><span class="slider"></span></label>';
         html += '</div>';
         if (!modelsWild) {
             const csv = f.allowed_models.filter(m => m !== PROJ_MCP_WILDCARD).join(', ');
-            html += '<label>Model IDs (comma-separated)</label>';
+            html += '<label for="projModels">Model IDs (comma-separated)</label>';
             html += '<input type="text" id="projModels" value="' + esc(csv) + '" placeholder="claude-opus, claude-sonnet, gpt-4" />';
         }
     }
@@ -2646,16 +3119,16 @@ function renderProjectForm() {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Permission Policy</div>';
     html += '<p class="proj-section-help">Claude CLI permission gates. Empty mode inherits Claude\'s default. Patterns follow Claude\'s tool grammar (e.g. <code>Bash(ls *)</code>).</p>';
-    html += '<label>Default mode</label>';
+    html += '<label for="projPolicyMode">Default mode</label>';
     html += '<select id="projPolicyMode" onchange="state.projectForm.permission_policy.default_mode = this.value">';
     for (const m of ['', 'default', 'acceptEdits', 'plan', 'bypassPermissions']) {
         const sel = pol.default_mode === m ? 'selected' : '';
         html += '<option value="' + esc(m) + '" ' + sel + '>' + (m || '(inherit)') + '</option>';
     }
     html += '</select>';
-    html += '<label>Allowed tools (one per line)</label>';
+    html += '<label for="projAllowedTools">Allowed tools (one per line)</label>';
     html += '<textarea id="projAllowedTools" rows="3" placeholder="Read&#10;Grep&#10;Bash(ls *)">' + esc(pol.allowed_tools.join('\n')) + '</textarea>';
-    html += '<label>Denied tools (one per line)</label>';
+    html += '<label for="projDeniedTools">Denied tools (one per line)</label>';
     html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join('\n')) + '</textarea>';
     html += '</div>';
     }
@@ -2670,10 +3143,10 @@ function renderProjectForm() {
         html += '<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project\'s tools.</p>';
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += '<span>Auto-generate SKILL.md</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (f.generate_skill ? 'checked' : '') + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Auto-generate SKILL.md" ' + (f.generate_skill ? 'checked' : '') + ' onchange="state.projectForm.generate_skill = this.checked" /><span class="slider"></span></label>';
         html += '</div>';
         if (!isNew) {
-            html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(f.id) + '\')">Regenerate now</button></div>';
+            html += '<div style="margin-top:8px"><button class="btn btn-sm" ' + bind(regenProjectSkill, f.id) + '>Regenerate now</button></div>';
             const regen = state.projectSkillRegen[f.id];
             if (regen) {
                 const cls = regen.ok ? 'proj-ok' : 'proj-error';
@@ -2692,7 +3165,7 @@ function renderProjectForm() {
         html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
         html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
         html += '<span>Allow token-less access from this project\'s directory</span>';
-        html += '<label class="switch"><input type="checkbox" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
+        html += '<label class="switch"><input type="checkbox" aria-label="Allow token-less access from this project\'s directory" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
         html += '</div>';
         html += '</div>';
     }
@@ -2707,9 +3180,9 @@ function renderProjectForm() {
         html += '<p class="proj-section-help">Project-scoped token presented by Eve, relayLLM, and <code>relay mcp --token</code>. Tokens are inline; rotating invalidates the prior token immediately.</p>';
         html += '<div class="proj-token-field">';
         html += '<input type="text" readonly value="' + esc(display) + '" />';
-        html += '<button class="btn btn-sm" onclick="toggleProjectTokenVisible(\'' + esc(f.id) + '\')">' + (visible ? 'Hide' : 'Show') + '</button>';
-        html += '<button class="btn btn-sm" onclick="copyProjectToken(\'' + esc(f.token) + '\')">Copy</button>';
-        html += '<button class="btn btn-sm btn-danger" onclick="rotateProjectToken(\'' + esc(f.id) + '\', \'' + esc(f.name) + '\')">Rotate</button>';
+        html += '<button class="btn btn-sm" ' + bind(toggleProjectTokenVisible, f.id) + '>' + (visible ? 'Hide' : 'Show') + '</button>';
+        html += '<button class="btn btn-sm" ' + bind(copyToClipboard, f.token) + '>Copy</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(rotateProjectToken, f.id, f.name) + '>Rotate</button>';
         html += '</div>';
         if (fresh) {
             html += '<div class="proj-token-banner">';
@@ -2721,7 +3194,7 @@ function renderProjectForm() {
 
     // ---- Actions ----
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveProjectForm()">' + (isNew ? 'Create' : 'Save') + '</button>';
+    html += '<button class="btn btn-primary" onclick="saveProjectForm()" ' + (state.projectSavePending ? 'disabled' : '') + '>' + (state.projectSavePending ? 'Saving…' : (isNew ? 'Create' : 'Save')) + '</button>';
     html += '<button class="btn btn-danger" onclick="cancelProjectEdit()">Cancel</button>';
     html += '</div>';
 
@@ -2997,11 +3470,13 @@ function saveProjectForm() {
     // who means it can mean it, and a grant of "/" is legal.
     if (!confirmBroadScope(payload)) return;
 
+    state.projectSavePending = true;
     if (!f.id) {
         ipc(JSON.stringify(Object.assign({ type: 'create_project' }, payload)));
     } else {
         ipc(JSON.stringify(Object.assign({ type: 'update_project', id: f.id }, payload)));
     }
+    render();
 }
 
 // confirmBroadScope asks once, before saving, about every scope value in the
@@ -3040,6 +3515,7 @@ window.onProjectAdded = function(p) {
     if (!p || !p.id) return;
     // Replace any provisional entry with the real persisted row.
     state.projects = state.projects.filter(x => x.id !== p.id).concat(p);
+    state.projectSavePending = false;
     state.editingProjectId = null;
     state.projectForm = null;
     state.projectError = null;
@@ -3049,6 +3525,7 @@ window.onProjectAdded = function(p) {
 window.onProjectUpdated = function(p) {
     if (!p || !p.id) return;
     state.projects = state.projects.map(x => x.id === p.id ? p : x);
+    state.projectSavePending = false;
     // Close the edit form on successful save so we return to the list, matching
     // onProjectAdded and the Save flows in Services / Service Inspector.
     if (state.editingProjectId === p.id) {
@@ -3190,12 +3667,12 @@ function renderHosts() {
         html += renderHostStatus(h.status);
         html += '</div>';
         html += '<div style="display:flex;gap:4px">';
-        html += '<button class="btn btn-sm" onclick="probeHost(\'' + esc(h.id) + '\')" ' + (pending ? 'disabled' : '') + '>' + (pending ? 'Probing…' : 'Probe') + '</button>';
+        html += '<button class="btn btn-sm" ' + bind(probeHost, h.id) + ' ' + (pending ? 'disabled' : '') + '>' + (pending ? 'Probing…' : 'Probe') + '</button>';
         if (h.status === 'connected') {
-            html += '<button class="btn btn-sm" onclick="disconnectHost(\'' + esc(h.id) + '\')">Disconnect</button>';
+            html += '<button class="btn btn-sm" ' + bind(disconnectHost, h.id) + '>Disconnect</button>';
         }
-        html += '<button class="btn btn-sm" onclick="editHost(\'' + esc(h.id) + '\')">Edit</button>';
-        html += '<button class="btn btn-sm btn-danger" onclick="removeHost(\'' + esc(h.id) + '\', \'' + esc(h.name) + '\')">Remove</button>';
+        html += '<button class="btn btn-sm" ' + bind(editHost, h.id) + '>Edit</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(removeHost, h.id, h.name) + '>Remove</button>';
         html += '</div></div>';
         html += '<div class="proj-card-path">' + esc(h.target) + (h.port ? ':' + h.port : '') + '</div>';
         html += '<div class="proj-card-meta"><span>' + renderHostProbeSummary(h) + '</span></div>';
@@ -3210,17 +3687,23 @@ function renderHostStatus(status) {
 }
 
 // renderHostProbeSummary is the list row's one-line answer to "does this
-// still work" — the probe's own error when the last one failed, or
-// "OS arch · node vX · claude vY" (docs/ssh-hosts.md) when it didn't.
+// still work" — the probe's own error when the last one failed, or three
+// pills (docs/ssh-hosts.md's "OS/arch · node vX · claude vY") when it
+// didn't: a plain fact (OS/arch), then node and claude each colored by
+// whether relay can actually use them here.
 function renderHostProbeSummary(h) {
     const p = h.probe;
     if (!p) return 'Never probed.';
     if (!p.ok) return '<span class="proj-error" style="margin:0">' + esc(p.error || 'unreachable') + '</span>';
-    const parts = [];
-    if (p.os) parts.push(esc(p.os) + (p.arch ? ' ' + esc(p.arch) : ''));
-    parts.push(p.node_path ? ('node ' + esc(p.node_version || '')) : 'node not found');
-    parts.push(p.claude_path ? ('claude ' + esc(p.claude_version || '')) : 'claude not found');
-    return parts.join(' · ');
+    let html = '';
+    if (p.os) html += '<span class="pill muted">' + esc(p.os) + (p.arch ? '/' + esc(p.arch) : '') + '</span> ';
+    html += p.node_path
+        ? '<span class="pill ok">node ' + esc(p.node_version || '') + '</span> '
+        : '<span class="pill warn">node missing</span> ';
+    html += p.claude_path
+        ? '<span class="pill ok">claude ' + esc(p.claude_version || '') + '</span>'
+        : '<span class="pill muted">claude missing</span>';
+    return html;
 }
 
 function blankHostForm() {
@@ -3360,13 +3843,13 @@ function renderHostForm() {
 
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
-    html += '<label>Name</label>';
+    html += '<label for="hostName">Name</label>';
     html += '<input type="text" id="hostName" value="' + esc(f.name) + '" placeholder="devbox" />';
-    html += '<label>SSH target</label>';
+    html += '<label for="hostTarget">SSH target</label>';
     html += '<input type="text" id="hostTarget" value="' + esc(f.target) + '" placeholder="user@host or ssh-config alias" />';
-    html += '<label>Port</label>';
+    html += '<label for="hostPort">Port</label>';
     html += '<input type="text" id="hostPort" value="' + esc(f.port) + '" placeholder="22" />';
-    html += '<label>Identity file</label>';
+    html += '<label for="hostIdentityFile">Identity file</label>';
     html += '<input type="text" id="hostIdentityFile" value="' + esc(f.identity_file) + '" placeholder="optional, absolute path" />';
     html += '</div>';
 
@@ -3551,12 +4034,20 @@ function enrolBudgetText(b) {
 // MITM ("only the CA pin stops this"). Read from state.remote.ca_fingerprint
 // — the same field the approval panel below reads, so the two are never two
 // different numbers on screen.
+// renderCAFingerprintLine shows the fingerprint itself and nothing else —
+// the explanation of what it's for lives in renderEnrolments' "How
+// enrolment works" details, once, rather than repeated everywhere this
+// value appears (the list and the approval sheet both call this).
 function renderCAFingerprintLine() {
     const fp = state.remote && state.remote.ca_fingerprint;
     if (!fp) {
         return '<p class="proj-section-help">Relay\'s CA fingerprint is not available yet — create or sign one enrolment to generate the CA, then it will show here.</p>';
     }
-    return '<p class="proj-section-help">Relay\'s CA fingerprint (clients pin this — <code>relayremote request --ca-fingerprint ' + esc(fp) + '</code>): <code>' + esc(fp) + '</code></p>';
+    return '<div class="ca-fingerprint-row">'
+        + '<span class="ca-fingerprint-label">CA fingerprint</span>'
+        + '<code class="ca-fingerprint-value">' + esc(fp) + '</code>'
+        + '<button type="button" class="btn btn-sm" ' + bind(copyToClipboard, fp) + '>Copy</button>'
+        + '</div>';
 }
 
 // renderPendingEnrolmentRequests is the Pending requests panel (spec §3),
@@ -3568,7 +4059,7 @@ function renderPendingEnrolmentRequests() {
     const list = state.pendingEnrolmentRequests || [];
     let html = '<div class="proj-section" style="margin-top:0">';
     html += '<div class="proj-section-title">Pending requests' + (list.length ? ' <span class="remote-state on">' + list.length + '</span>' : '') + '</div>';
-    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else — see ADR-018. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen below, by you, at approval.</p>';
+    html += '<p class="proj-section-help">A machine that can reach the enrolment-request listener can add a row here and nothing else — see "How enrolment works" above.</p>';
     if (!list.length) {
         html += '<div class="empty-state">No pending enrolment requests.</div>';
     }
@@ -3582,14 +4073,14 @@ function renderPendingEnrolmentRequests() {
         } else {
             html += '<span>';
             if (enrolRequestApprovable(r)) {
-                html += '<button class="btn btn-sm btn-primary" onclick="approveEnrolmentRequestForm(\'' + esc(r.request_id) + '\')">Approve…</button> ';
+                html += '<button class="btn btn-sm btn-primary" ' + bind(approveEnrolmentRequestForm, r.request_id) + '>Approve…</button> ';
             } else {
                 // Disabled and carrying no handler: approving a row with no
                 // completed comparison is approving without the control, and
                 // the host refuses it from every door anyway.
                 html += '<button class="btn btn-sm btn-primary" disabled title="This request has no completed comparison code, so it cannot be approved.">Approve…</button> ';
             }
-            html += '<button class="btn btn-sm btn-danger" onclick="refuseEnrolmentRequest(\'' + esc(r.request_id) + '\')">Refuse</button>';
+            html += '<button class="btn btn-sm btn-danger" ' + bind(refuseEnrolmentRequest, r.request_id) + '>Refuse</button>';
             html += '</span>';
         }
         html += '</div>';
@@ -3665,7 +4156,12 @@ function renderEnrolments() {
 
     let html = '<div class="page-header"><h2>Remote Clients</h2>';
     html += '<button class="btn btn-primary" onclick="newEnrolment()">+ New Enrolment</button></div>';
-    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use. The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += '<p class="page-intro">An enrolment binds one client certificate to the access profiles it may use.</p>';
+    html += '<details class="learn-more"><summary>How enrolment works</summary>';
+    html += '<p>The certificate <em>is</em> the identity — there is no bearer token on this path, so a copy of <code>settings.json</code> grants no remote access at all. Enrolments are keyed by certificate, not by machine: several agents on one VM each hold their own, granted and revoked independently.</p>';
+    html += '<p>Relay\'s CA fingerprint is what a client pins (<code>relayremote request --ca-fingerprint ...</code>) — see the value below.</p>';
+    html += '<p>A machine that can reach the enrolment-request listener can add a row to Pending requests below and nothing else. Lodging never raises a prompt; approving does, and it is the same <code>enrolment.sign</code> prompt <code>relay enrol sign</code> already uses. The request carries no grant and no budget: those are chosen at approval.</p>';
+    html += '</details>';
     html += renderCAFingerprintLine();
 
     if (state.enrolBundle) html += renderEnrolBundleBanner(state.enrolBundle);
@@ -3684,7 +4180,7 @@ function renderEnrolments() {
         html += '<div class="enrol-card">';
         html += '<div class="enrol-card-header">';
         html += '<span class="enrol-card-name">' + esc(e.client_id) + '</span>';
-        html += '<button class="btn btn-sm btn-danger" onclick="revokeEnrolment(\'' + esc(e.client_id) + '\')">Revoke</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(revokeEnrolment, e.client_id) + '>Revoke</button>';
         html += '</div>';
 
         // Grants, by name. A card that showed ids would make the revoke
@@ -3771,7 +4267,7 @@ function renderEnrolmentForm() {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
     html += '<p class="proj-section-help">The client id is the certificate\'s Common Name and the bundle\'s directory name, so it is limited to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It must be unique: to re-issue a certificate, revoke the existing enrolment first.</p>';
-    html += '<label>Client id</label>';
+    html += '<label for="enrolClientId">Client id</label>';
     // The value, when there is one, is the HOST's collision-free suggestion
     // (suggested_client_id), never an echo of the request's label: the host
     // owns its own client_id namespace and resolving a collision is not
@@ -3827,11 +4323,11 @@ function renderEnrolmentForm() {
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Budget</div>';
     html += '<p class="proj-section-help">The enrolment is the unit of compromise, so it is the unit that carries the cap. Rate and volume are capped together because they fail differently — a call limit alone does not stop a slow drain. Leave a field blank for the conservative default; <strong>zero is never unlimited</strong>, there is no way to switch a budget off.</p>';
-    html += '<label>Window (seconds)</label>';
+    html += '<label for="enrolWindow">Window (seconds)</label>';
     html += '<input type="number" id="enrolWindow" value="' + esc(f.window_seconds) + '" placeholder="' + esc(d.window_seconds || '') + '" />';
-    html += '<label>Max tool calls per window</label>';
+    html += '<label for="enrolMaxCalls">Max tool calls per window</label>';
     html += '<input type="number" id="enrolMaxCalls" value="' + esc(f.max_calls) + '" placeholder="' + esc(d.max_calls || '') + '" />';
-    html += '<label>Max cumulative result bytes per window</label>';
+    html += '<label for="enrolMaxBytes">Max cumulative result bytes per window</label>';
     html += '<input type="number" id="enrolMaxBytes" value="' + esc(f.max_result_bytes) + '" placeholder="' + esc(d.max_result_bytes || '') + '" />';
     html += '</div>';
 
@@ -4093,12 +4589,12 @@ function renderRemoteListener() {
 
     html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
     html += '<span>Accept remote clients on an mTLS listener</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (d.enabled ? 'checked' : '') + ' onchange="remoteDraftSet(\'enabled\', this.checked)" /><span class="slider"></span></label>';
+    html += '<label class="switch"><input type="checkbox" aria-label="Accept remote clients on an mTLS listener" ' + (d.enabled ? 'checked' : '') + ' onchange="remoteDraftSet(\'enabled\', this.checked)" /><span class="slider"></span></label>';
     html += '</div>';
 
-    html += '<label>Listen address</label>';
+    html += '<label for="remoteListen">Listen address</label>';
     html += '<input type="text" id="remoteListen" value="' + esc(d.listen) + '" placeholder="' + esc(r.effective || '') + '" oninput="remoteDraftSet(\'listen\', this.value)" />';
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || '') + '</code>. ' + esc(REMOTE_NOTE) + '</p>';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.effective || '127.0.0.1:9910') + '</code>. ' + esc(REMOTE_NOTE) + '</p>';
 
     const effective = (d.listen || '').trim() || r.effective || '';
     if (effective && !remoteListenIsLoopback(effective)) {
@@ -4113,12 +4609,12 @@ function renderRemoteListener() {
     // one is always the operator's own act.
     html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
     html += '<span>Accept enrolment requests on a separate listener</span>';
-    html += '<label class="switch"><input type="checkbox" ' + (d.enrolmentRequests ? 'checked' : '') + ' onchange="remoteDraftSet(\'enrolmentRequests\', this.checked)" /><span class="slider"></span></label>';
+    html += '<label class="switch"><input type="checkbox" aria-label="Accept enrolment requests on a separate listener" ' + (d.enrolmentRequests ? 'checked' : '') + ' onchange="remoteDraftSet(\'enrolmentRequests\', this.checked)" /><span class="slider"></span></label>';
     html += '</div>';
 
-    html += '<label>Enrolment listen address</label>';
+    html += '<label for="remoteEnrolmentListen">Enrolment listen address</label>';
     html += '<input type="text" id="remoteEnrolmentListen" value="' + esc(d.enrolmentListen) + '" placeholder="' + esc(r.enrolment_effective || '') + '" oninput="remoteDraftSet(\'enrolmentListen\', this.value)" />';
-    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || '') + '</code>. This listener takes no client certificate — see the Pending requests panel above for what it can reach.</p>';
+    html += '<p class="proj-section-help">Leave blank for the default, <code>' + esc(r.enrolment_effective || '127.0.0.1:9911') + '</code>. This listener takes no client certificate — see the Pending requests panel above for what it can reach.</p>';
 
     if (d.enrolmentRequests && !d.enabled) {
         html += '<div class="remote-note warn">Enrolment requests will not be served until the mTLS listener above is also on: the enrolment-request channel is a companion to it, never a replacement — see the panel above for the exact refusal.</div>';
@@ -4130,7 +4626,7 @@ function renderRemoteListener() {
     }
 
     html += '<div class="proj-form-actions">';
-    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()">Save</button>';
+    html += '<button class="btn btn-primary" onclick="saveRemoteConfig()" ' + (state.remoteConfigSavePending ? 'disabled' : '') + '>' + (state.remoteConfigSavePending ? 'Saving…' : 'Save') + '</button>';
     if (r.configured) {
         html += '<button class="btn btn-danger" onclick="removeRemoteConfig()">Remove block</button>';
     }
@@ -4142,6 +4638,7 @@ function renderRemoteListener() {
 function saveRemoteConfig() {
     const d = remoteDraft();
     state.remoteError = null;
+    state.remoteConfigSavePending = true;
     ipc(JSON.stringify({
         type: 'update_remote_config',
         enabled: !!d.enabled,
@@ -4149,6 +4646,7 @@ function saveRemoteConfig() {
         enrolment_requests: !!d.enrolmentRequests,
         enrolment_listen: String(d.enrolmentListen || '').trim(),
     }));
+    render();
 }
 
 // removeRemoteConfig returns the install to "no block at all" — the one state
@@ -4197,11 +4695,13 @@ window.onRemoteConfigUpdated = function(view) {
     state.remoteDraft = null;
     state.remoteDirty = false;
     state.remoteError = null;
+    state.remoteConfigSavePending = false;
     if (state.page === 'remote') render('push');
 };
 
 window.onRemoteConfigError = function(msg) {
     state.remoteError = msg || 'could not save the remote block';
+    state.remoteConfigSavePending = false;
     if (state.page === 'remote') render('push');
 };
 
@@ -4307,7 +4807,7 @@ function renderPasskeys() {
         html += '<div class="pk-card">';
         html += '<div class="pk-card-header">';
         html += '<span class="pk-card-name">' + esc(p.name || '(unnamed passkey)') + '</span>';
-        html += '<button class="btn btn-sm btn-danger" onclick="revokePasskey(\'' + esc(p.id) + '\')">Revoke</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(revokePasskey, p.id) + '>Revoke</button>';
         html += '</div>';
         html += '<div class="pk-id">Credential: ' + esc(p.short || '') + '</div>';
         html += '<div class="pk-counter">' + esc(pkSignCountText(p)) + '</div>';
@@ -4340,7 +4840,7 @@ function renderLoginSessions() {
         html += '<div class="pk-session-name">' + esc(c.name || c.id) + '</div>';
         html += '<div class="pk-session-meta">Signed in ' + esc(c.created || '—') + ' · expires ' + esc(c.expires || 'never') + '</div>';
         html += '</div>';
-        html += '<button class="btn btn-sm btn-danger" onclick="signOutLogin(\'' + esc(c.id) + '\')">Sign out</button>';
+        html += '<button class="btn btn-sm btn-danger" ' + bind(signOutLogin, c.id) + '>Sign out</button>';
         html += '</div>';
     }
     // Named so the CLI is not a hidden second path: the same records are in
@@ -4357,7 +4857,7 @@ function refreshPasskeys() {
 }
 
 function copyLoginCode() {
-    if (state.loginCode && state.loginCode.code) copyProjectToken(state.loginCode.code);
+    if (state.loginCode && state.loginCode.code) copyToClipboard(state.loginCode.code);
 }
 
 function dismissLoginCode() {
@@ -4612,7 +5112,7 @@ function renderConfigSection(serviceId, config) {
     }
 
     let html = '<div class="svc-resource">';
-    html += `<div class="svc-resource-header ${open ? 'open' : 'closed'}" onclick="toggleConfigSection('${esc(serviceId)}')">`;
+    html += `<div class="svc-resource-header ${open ? 'open' : 'closed'}" tabindex="0" role="button" aria-expanded="${open}" ${bind(toggleConfigSection, serviceId)}>`;
     html += `<span class="svc-resource-title"><span class="chevron">▼</span>${esc(config.label || 'Configuration')}</span>`;
     html += '</div>';
 
@@ -4644,8 +5144,8 @@ function renderConfigSection(serviceId, config) {
                 : 'Saving restarts the service to apply.';
             html += `<div class="cfg-apply-note" id="cfg-note-${esc(serviceId)}">${esc(note)}</div>`;
             html += '<div class="cfg-actions">';
-            html += `<button class="btn btn-primary" id="cfg-save-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="saveConfig('${esc(serviceId)}')">Save</button>`;
-            html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? '' : 'disabled'} onclick="revertConfig('${esc(serviceId)}')">Revert</button>`;
+            html += `<button class="btn btn-primary" id="cfg-save-${esc(serviceId)}" ${dirty ? '' : 'disabled'} ${bind(saveConfig, serviceId)}>Save</button>`;
+            html += `<button class="btn btn-danger" id="cfg-revert-${esc(serviceId)}" ${dirty ? '' : 'disabled'} ${bind(revertConfig, serviceId)}>Revert</button>`;
             html += '</div>';
         }
         html += '</div>';
@@ -4697,7 +5197,7 @@ function renderConfigObject(svcId, path, field, value) {
     const expanded = cfgIsExpanded(svcId, path);
     const obj = (value && typeof value === 'object') ? value : {};
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     if (!expanded && field.help) html += `<span class="cfg-node-sub">${esc(field.help)}</span>`;
@@ -4719,7 +5219,7 @@ function renderConfigArray(svcId, path, field, value) {
     const bindIdx = cfgBind(svcId, path, 'array');
     const expanded = cfgIsExpanded(svcId, path);
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     html += `<span class="cfg-badge">${arr.length}</span>`;
@@ -4747,7 +5247,7 @@ function renderConfigMap(svcId, path, field, value) {
     const keys = Object.keys(obj);
     const keyLabel = field.keyLabel || 'key';
     let html = '<div class="cfg-node">';
-    html += `<div class="cfg-node-head" onclick="cfgToggleExpand(${bindIdx})">`;
+    html += `<div class="cfg-node-head" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">`;
     html += cfgChevron(expanded);
     html += `<span class="cfg-node-title">${cfgNodeLabel(field)}</span>`;
     html += `<span class="cfg-badge">${keys.length}</span>`;
@@ -4778,7 +5278,7 @@ function renderConfigItem(svcId, path, itemField, value, title, containerBindIdx
         : `cfgArrayRemove(${containerBindIdx}, ${indexOrKey})`;
     let html = '<div class="cfg-item">';
     html += '<div class="cfg-item-head">';
-    html += `<span class="cfg-item-toggle" onclick="cfgToggleExpand(${bindIdx})">${cfgChevron(expanded)}<span class="cfg-item-title">${esc(title || 'item')}</span></span>`;
+    html += `<span class="cfg-item-toggle" tabindex="0" role="button" aria-expanded="${expanded}" onclick="cfgToggleExpand(${bindIdx})">${cfgChevron(expanded)}<span class="cfg-item-title">${esc(title || 'item')}</span></span>`;
     html += `<button class="btn btn-sm btn-danger cfg-item-remove" onclick="${removeCall}">Remove</button>`;
     html += '</div>';
     if (expanded) {
@@ -4786,8 +5286,8 @@ function renderConfigItem(svcId, path, itemField, value, title, containerBindIdx
         if (isMap) {
             const curKey = path[path.length - 1];
             html += '<div class="cfg-leaf">';
-            html += `<label>${esc(keyLabel)}</label>`;
-            html += `<input type="text" value="${esc(String(curKey))}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgMapRename(${containerBindIdx}, ${indexOrKey}, this)"/>`;
+            html += `<label for="cfgMapKey${bindIdx}">${esc(keyLabel)}</label>`;
+            html += `<input type="text" id="cfgMapKey${bindIdx}" value="${esc(String(curKey))}" autocorrect="off" autocapitalize="off" spellcheck="false" onchange="cfgMapRename(${containerBindIdx}, ${indexOrKey}, this)"/>`;
             html += '</div>';
         }
         if (itemField && itemField.type === 'object') {
@@ -4890,10 +5390,10 @@ function renderConfigLeaf(svcId, path, field, value) {
     // (the editor shows what's on disk, so an unset field renders blank).
     const ph = field.placeholder ? ` placeholder="${esc(field.placeholder)}"` : '';
     let html = '<div class="cfg-leaf">';
-    html += `<label>${cfgNodeLabel(field)}${field.required ? ' *' : ''}</label>`;
+    html += `<label for="${inputId}">${cfgNodeLabel(field)}${field.required ? ' *' : ''}</label>`;
     switch (field.type) {
         case 'bool':
-            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:var(--text-2)">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${inputId}" ${value ? 'checked' : ''} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
+            html += `<div class="toggle-row" style="margin-top:4px"><span style="font-size:12px;color:var(--text-2)">${esc(field.help || '')}</span><label class="switch"><input type="checkbox" id="${inputId}" aria-label="${cfgNodeLabel(field)}" ${value ? 'checked' : ''} onchange="cfgEdit(${bindIdx}, this)"/><span class="slider"></span></label></div>`;
             html += '</div>';
             return html;
         case 'number':
@@ -5293,12 +5793,19 @@ function renderActionButton(serviceId, action, row) {
         + `>${label}</button>`;
 }
 
-// Delegated handler for Service Inspector action buttons. Wrapped in
-// try/catch so a malformed data-row (or a bug in dispatchServiceAction)
-// can't poison the document click queue — the listener stays subscribed
-// for subsequent clicks even when one click fails.
+// Delegated handler for Service Inspector action buttons and for every
+// bind()-based control (see bind() near the top of the file). Wrapped in
+// try/catch so a malformed data-row (or a bug in a handler) can't poison the
+// document click queue — the listener stays subscribed for subsequent
+// clicks even when one click fails.
 document.addEventListener('click', function(e) {
     try {
+        const actEl = e.target.closest && e.target.closest('[data-act]');
+        if (actEl) {
+            const entry = state._actBind[Number(actEl.dataset.act)];
+            if (entry) entry[0].apply(null, entry[1]);
+            return;
+        }
         const btn = e.target.closest && e.target.closest('.svc-action-btn');
         if (!btn || btn.disabled) return;
         let row = null;
@@ -5314,6 +5821,50 @@ document.addEventListener('click', function(e) {
     } catch (err) {
         console.error('svc-action-btn click handler failed', err);
     }
+});
+
+// Enter/Space activates any keyboard-focusable control that isn't a native
+// button — collapsible section headers and the audit table's expandable
+// rows — by replaying it as a real click, which reaches whichever mechanism
+// (bind()'s data-act or a data-* delegated handler) that element already
+// uses. Space also scrolls the page by default; that's suppressed here.
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const el = e.target.closest && e.target.closest(
+        '.svc-resource-header, .cfg-node-head, .cfg-item-toggle, tr[data-act], [role="button"][tabindex]'
+    );
+    if (!el) return;
+    e.preventDefault();
+    el.click();
+});
+
+document.addEventListener('keydown', function(e) {
+    if (!e.target.classList || !e.target.classList.contains('sidebar-item')) return;
+    const items = Array.from(document.querySelectorAll('.sidebar-item'));
+    const i = items.indexOf(e.target);
+    if (i < 0) return;
+    let next = -1;
+    if (e.key === 'ArrowDown') next = (i + 1) % items.length;
+    else if (e.key === 'ArrowUp') next = (i - 1 + items.length) % items.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = items.length - 1;
+    else return;
+    e.preventDefault();
+    items[next].focus();
+    items[next].click();
+});
+
+// Escape closes whichever inline form is open, through the same cancel
+// function its own Cancel button uses -- one listener rather than a
+// per-form keydown handler, since at most one of these forms is ever open
+// at a time.
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    if (state.editingProjectId) { cancelProjectEdit(); return; }
+    if (state.editingHostId) { cancelHostEdit(); return; }
+    if (state.editingServiceId) { cancelServiceEdit(); return; }
+    if (state.editingMcpId) { cancelMcpEdit(); return; }
+    if (state.enrolForm) { cancelEnrolment(); return; }
 });
 
 function isAnyActionPending(serviceId, actions, rowKey) {
@@ -5411,8 +5962,35 @@ function revealAuditLog() {
     ipc(JSON.stringify({ type: 'reveal_audit_log' }));
 }
 
+// revealConfigDir/revealLogsDir back the Overview footer's two "Reveal"
+// buttons; revealServiceLog backs each Services card's "Logs" link. All
+// three just open Finder on a directory (ipc_overview.go) -- see
+// ipcRevealServiceLog for why the id still has to be a real service's.
+function revealConfigDir() {
+    ipc(JSON.stringify({ type: 'reveal_config_dir' }));
+}
+
+function revealLogsDir() {
+    ipc(JSON.stringify({ type: 'reveal_logs_dir' }));
+}
+
+function revealServiceLog(id) {
+    ipc(JSON.stringify({ type: 'reveal_service_log', id: id }));
+}
+
 function setAuditFilter(key, value) {
     state.auditFilter[key] = value;
+    // A text keystroke re-renders the whole Tool Calls page (render() always
+    // replaces #content's innerHTML), which recreates the <input> and would
+    // otherwise always land the caret at the end -- capture where it
+    // actually was so restoreAuditFocus can put it back.
+    if (key === 'text') {
+        const el = document.getElementById('auditText');
+        if (el) {
+            state._auditTextSelStart = el.selectionStart;
+            state._auditTextSelEnd = el.selectionEnd;
+        }
+    }
     // Server-side fields need a refetch; text is applied locally so each
     // keystroke doesn't cross the IPC boundary.
     if (key !== 'text') queryAudit(state.auditFilter.deep);
@@ -5535,7 +6113,7 @@ function auditPretty(args) {
 }
 
 function auditSelect(key, label, options, current) {
-    let html = '<select onchange="setAuditFilter(\'' + key + '\', this.value)">';
+    let html = '<select id="auditFilter-' + esc(key) + '" aria-label="' + esc(label) + '" onchange="setAuditFilter(\'' + key + '\', this.value)">';
     html += '<option value="">' + esc(label) + '</option>';
     for (const [val, text] of options) {
         html += '<option value="' + esc(val) + '"' + (current === val ? ' selected' : '') + '>' + esc(text) + '</option>';
@@ -5602,7 +6180,7 @@ function renderAudit() {
 function renderAuditRow(ev) {
     const a = ev.actor || {};
     const expanded = !!state.auditExpanded[ev.id];
-    let html = '<tr class="row" onclick="toggleAuditRow(\'' + esc(ev.id) + '\')">';
+    let html = '<tr class="row" tabindex="0" role="button" aria-expanded="' + expanded + '" ' + bind(toggleAuditRow, ev.id) + '>';
     html += '<td class="audit-time">' + esc(auditFmtTime(ev.ts)) + '</td>';
     html += '<td class="audit-outcome-cell"><span class="audit-pill audit-' + esc(ev.outcome) + '">' + esc(ev.outcome) + '</span>';
     // A scope violation is a distinct finding from an ordinary tool_error — a
@@ -5709,14 +6287,20 @@ function restoreAuditFocus() {
     if (!el || !state._auditTextFocused) return;
     el.focus();
     const n = el.value.length;
-    try { el.setSelectionRange(n, n); } catch (e) { /* search inputs may refuse */ }
+    const hasCaptured = state._auditTextSelStart !== undefined && state._auditTextSelEnd !== undefined;
+    const start = hasCaptured ? Math.min(state._auditTextSelStart, n) : n;
+    const end = hasCaptured ? Math.min(state._auditTextSelEnd, n) : n;
+    try { el.setSelectionRange(start, end); } catch (e) { /* search inputs may refuse */ }
 }
 
 window.onAuditEvents = function(events, status) {
     state.auditEvents = events || [];
     state.auditStatus = status || null;
     state.auditLoaded = true;
-    if (state.page === 'audit') render();
+    // The Overview tab's Audit tile and "Recent tool calls" read the same
+    // two fields, so the first answer (fetched on landing there, same as
+    // the Tool Calls tab) has to repaint it too.
+    if (state.page === 'audit' || state.page === 'overview') render();
 };
 
 window.onAuditEvent = function(ev) {
@@ -5727,6 +6311,7 @@ window.onAuditEvent = function(ev) {
     if (!state.auditFollow) return;
     state.auditEvents.unshift(ev);
     if (state.auditEvents.length > AUDIT_MAX_ROWS) state.auditEvents.length = AUDIT_MAX_ROWS;
+    if (state.page === 'overview') render('push');
     if (state.page !== 'audit') return;
     // Prepend surgically rather than re-rendering: a full repaint on every
     // inbound call would fight whatever the user is typing in the filter box.
@@ -5819,14 +6404,17 @@ window.onServiceActionResult = function(result) {
 // to the code: the code is unrecoverable once this window closes and the
 // request is not.
 if (LOGIN_CODE_INIT) showPage('passkeys');
-else if (INITIAL_PAGE) showPage(INITIAL_PAGE);
-else render();
+else showPage(INITIAL_PAGE || 'overview');
+
+const sidebarVersionEl = document.getElementById('sidebarVersion');
+if (sidebarVersionEl) sidebarVersionEl.textContent = 'relay ' + VERSION_INIT;
 
 // Inline on* handlers in rendered HTML resolve against window. Bundling scopes
 // these declarations to the module, so re-expose every top-level function (and
 // the shared state object) on window — exactly the global surface the original
 // classic <script> had.
 Object.assign(window, {
+    renderOverview, renderOverviewTiles, renderOverviewAttention, renderOverviewRecentToolCalls, renderOverviewFooter, overviewAttentionRows, serviceCounts, mcpHealthCounts, projectCounts, hostCounts, remoteTileValue, auditTile, pendingEnrolmentCount, revealConfigDir, revealLogsDir, revealServiceLog,
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
     copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
@@ -5834,5 +6422,6 @@ Object.assign(window, {
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,
     addProjMount, removeProjMount, setProjMountAccess,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyProjectToken, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
+    mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;

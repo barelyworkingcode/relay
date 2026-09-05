@@ -206,6 +206,9 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	}
 
 	cfg := f.toConfig(id)
+	if err := cfg.Validate(); err != nil {
+		return config.ServiceConfig{}, invalidService(err.Error())
+	}
 	if err := o.Store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
 		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
@@ -219,7 +222,7 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	}
 	o.notify()
 	if startErr != nil {
-		return cfg, fmt.Errorf("%w: autostart failed: %v", errServiceProcess, startErr)
+		return cfg, fmt.Errorf("%w: autostart failed: %w", errServiceProcess, startErr)
 	}
 	return cfg, nil
 }
@@ -278,10 +281,13 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 		if f.Env == nil {
 			cfg.Env = existing.Env
 		}
+		if err := cfg.Validate(); err != nil {
+			return invalidService(err.Error())
+		}
 		s.UpdateService(cfg)
 		return nil
 	}); err != nil {
-		if errors.Is(err, errServiceNotFound) {
+		if errors.Is(err, errServiceNotFound) || errors.Is(err, errServiceInvalid) {
 			return config.ServiceConfig{}, err
 		}
 		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
@@ -296,12 +302,12 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	}
 	o.notify()
 	if reloadErr != nil {
-		return cfg, fmt.Errorf("%w: restart failed: %v", errServiceProcess, reloadErr)
+		return cfg, fmt.Errorf("%w: restart failed: %w", errServiceProcess, reloadErr)
 	}
 	return cfg, nil
 }
 
-func (o *ServiceOps) Remove(ctx context.Context, id, via, credID string) error {
+func (o *ServiceOps) Remove(id, via, credID string) error {
 	// No requireGate call here (ADR-018 step 3, §5.2): unregistering only
 	// narrows what the caller already reaches -- stopping the process is
 	// already ungated configure, and re-registering under the same id

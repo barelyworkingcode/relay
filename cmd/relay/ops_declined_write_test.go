@@ -124,7 +124,7 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedService(t, store) },
 			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
+				return ops.Remove("ghost", auditViaIPC, "")
 			},
 			want: errServiceNotFound,
 		},
@@ -142,7 +142,7 @@ func TestOpsThatFindNothingWriteNothing(t *testing.T) {
 			seed: func(t *testing.T, _ string, store *config.FileSettingsStore) { odwSeedMcp(t, store) },
 			run: func(t *testing.T, _ string, store *config.FileSettingsStore) error {
 				ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-				return ops.Remove(context.Background(), "ghost", auditViaIPC, "")
+				return ops.Remove("ghost", auditViaIPC, "")
 			},
 			want: errMcpNotFound,
 		},
@@ -269,7 +269,7 @@ func TestStartOAuthDoesNotResurrectAnMcpRemovedMidCeremony(t *testing.T) {
 	var before odwSnapshot
 	ops := &McpOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	ops.StartFlow = func(mcpURL string, _ func(string)) (*mcpbroker.OAuthResult, error) {
-		if err := (&McpOps{Store: sealedSettingsStoreAt(dir), Gate: ops.Gate, Issuance: ops.Issuance}).Remove(context.Background(), "authy", auditViaIPC, ""); err != nil {
+		if err := (&McpOps{Store: sealedSettingsStoreAt(dir), Gate: ops.Gate, Issuance: ops.Issuance}).Remove("authy", auditViaIPC, ""); err != nil {
 			t.Errorf("concurrent remove: %v", err)
 		}
 		before = odwSnap(t, dir)

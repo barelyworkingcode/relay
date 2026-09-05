@@ -62,7 +62,7 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 	}
 	// Enforce owner-only access regardless of umask.
 	if err := os.Chmod(sockPath, 0o600); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
@@ -85,7 +85,7 @@ func (s *BridgeServer) Serve() error {
 			return err
 		}
 		if !s.trackConn() {
-			conn.Close()
+			_ = conn.Close()
 			return net.ErrClosed
 		}
 		go s.handleConn(conn)
@@ -129,7 +129,7 @@ func bridgeError(code int, msg string) BridgeResponse {
 
 func (s *BridgeServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("bridge handler panic (recovered)", "panic", r)

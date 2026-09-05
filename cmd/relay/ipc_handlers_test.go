@@ -11,6 +11,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sealed"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 func TestIPCDispatch_AllDeclaredMessageTypesHaveHandlers(t *testing.T) {
@@ -84,6 +85,8 @@ func TestIPCDispatch_HandlerSurvivesMalformedPayload(t *testing.T) {
 		// Listen all zero is a legitimate request (disable the block) — so
 		// EnrolmentOps must be real or SetRemoteConfig panics on nil.
 		EnrolmentOps: &EnrolmentOps{Store: noopStore{}},
+		ConfigDir:    t.TempDir(),
+		LogsDir:      func() (string, error) { return t.TempDir(), nil },
 	}
 	bad := json.RawMessage(`{"unexpected":"shape"}`)
 	for name, handler := range ipcHandlers {
@@ -123,7 +126,10 @@ func (noopServiceManager) Reload(string, *config.ServiceConfig) error { return n
 func (noopServiceManager) IsRunning(string) bool                      { return false }
 func (noopServiceManager) RunningIDs() []string                       { return nil }
 func (noopServiceManager) PIDsByServiceID() map[string]int            { return map[string]int{} }
-func (noopServiceManager) CleanupDead()                               {}
-func (noopServiceManager) ReclaimOrphans([]config.ServiceConfig)      {}
-func (noopServiceManager) StartAllAutostart([]config.ServiceConfig)   {}
-func (noopServiceManager) StopAll()                                   {}
+func (noopServiceManager) Runtime() map[string]service.ServiceRuntime {
+	return map[string]service.ServiceRuntime{}
+}
+func (noopServiceManager) CleanupDead()                             {}
+func (noopServiceManager) ReclaimOrphans([]config.ServiceConfig)    {}
+func (noopServiceManager) StartAllAutostart([]config.ServiceConfig) {}
+func (noopServiceManager) StopAll()                                 {}

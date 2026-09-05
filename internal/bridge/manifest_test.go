@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -99,10 +100,10 @@ func TestManifestValidate_NormalizesActionMethodCase(t *testing.T) {
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if m.Actions[0].Method != "GET" {
+	if m.Actions[0].Method != http.MethodGet {
 		t.Errorf("method[0] not normalized: got %q want GET", m.Actions[0].Method)
 	}
-	if m.Actions[1].Method != "POST" {
+	if m.Actions[1].Method != http.MethodPost {
 		t.Errorf("method[1] not normalized: got %q want POST", m.Actions[1].Method)
 	}
 }

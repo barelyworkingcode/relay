@@ -52,7 +52,6 @@ func PollStatuses(ctx context.Context, poller SnapshotPoller) []StatusSnapshot {
 	var wg sync.WaitGroup
 	wg.Add(len(records))
 	for i, rec := range records {
-		i, rec := i, rec
 		go func() {
 			defer wg.Done()
 			snap := StatusSnapshot{

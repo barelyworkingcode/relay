@@ -24,7 +24,7 @@ func TestSec_FrontendTokenDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
 	srv := httptest.NewServer(dispatcher)
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/api/secret/", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/secret/", nil)
 	const secret = "SUPER-SECRET-FRONTEND-TOKEN-NEVER-LEAK"
 	req.Header.Set("Authorization", "Bearer "+secret)
 	resp, err := http.DefaultClient.Do(req)
