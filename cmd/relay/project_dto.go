@@ -26,6 +26,7 @@ type projectView struct {
 	Name             string                     `json:"name"`
 	Path             string                     `json:"path"`
 	Kind             config.ProjectKind         `json:"kind,omitempty"`
+	HostID           string                     `json:"host_id,omitempty"`
 	AllowedMcpIDs    []string                   `json:"allowed_mcp_ids"`
 	AllowedModels    []string                   `json:"allowed_models"`
 	ChatTemplates    []config.ChatTemplate      `json:"chat_templates,omitempty"`
@@ -49,6 +50,7 @@ func projectToView(p config.Project) projectView {
 		Name:             p.Name,
 		Path:             p.Path,
 		Kind:             p.Kind,
+		HostID:           p.HostID,
 		AllowedMcpIDs:    p.AllowedMcpIDs,
 		AllowedModels:    p.AllowedModels,
 		ChatTemplates:    p.ChatTemplates,

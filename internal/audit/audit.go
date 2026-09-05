@@ -66,6 +66,13 @@ const (
 	AuditEventMountAttach = "mount_attach"
 	AuditEventMountOp     = "mount_op"
 	AuditEventMountDetach = "mount_detach"
+
+	// HostProbe records one ssh probe of a Host (docs/ssh-hosts.md): outcome
+	// ok/error, the target reached, and (on success) the paths and versions
+	// discovered — Args carries that detail rather than a new field per
+	// datum, the same choice ADR-011's per-call Scope makes for structured
+	// per-event detail relay does not otherwise need to query on.
+	AuditEventHostProbe = "host.probe"
 )
 
 // Denied means a known credential was refused a tool it may not use;
