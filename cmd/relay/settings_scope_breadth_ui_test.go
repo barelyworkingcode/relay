@@ -174,7 +174,7 @@ func TestScopeValueBreadthJs_MirrorsGoForTheWildcard(t *testing.T) {
 		{`["Bob"]`, project.ScopeBreadthBounded},
 		{`["Bob","*"]`, project.ScopeBreadthBounded},
 	} {
-		var goRaw json.RawMessage = json.RawMessage(tc.value)
+		var goRaw = json.RawMessage(tc.value)
 		want := project.ScopeValueBreadth(goRaw)
 		if want != tc.want {
 			t.Fatalf("fixture drifted from its own expectation: ScopeValueBreadth(%s) = %q, want %q", tc.value, want, tc.want)

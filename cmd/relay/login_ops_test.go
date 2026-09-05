@@ -1,9 +1,11 @@
 package main
 
 import (
-	"github.com/barelyworkingcode/relay/internal/config"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 func TestConsumeBootstrapCode_VerifiesOnceThenRefusesReplay(t *testing.T) {
@@ -25,7 +27,7 @@ func TestConsumeBootstrapCode_VerifiesOnceThenRefusesReplay(t *testing.T) {
 	assertNoErr(t, err, "store.With consume 1")
 
 	err = store.With(func(s *config.Settings) {
-		if cErr := consumeBootstrapCode(s, plaintext); cErr != errBootstrapCodeInvalid {
+		if cErr := consumeBootstrapCode(s, plaintext); !errors.Is(cErr, errBootstrapCodeInvalid) {
 			t.Fatalf("replay: got %v, want errBootstrapCodeInvalid", cErr)
 		}
 	})
@@ -52,16 +54,16 @@ func TestConsumeBootstrapCode_ExpiredWrongAndAbsentAreIdentical(t *testing.T) {
 	assertNoErr(t, err, "mintBootstrapCode (wrong-code case)")
 	errWrong := consumeBootstrapCode(sWrong, "not-the-real-code")
 
-	if errAbsent != errBootstrapCodeInvalid {
+	if !errors.Is(errAbsent, errBootstrapCodeInvalid) {
 		t.Fatalf("absent record: got %v, want errBootstrapCodeInvalid", errAbsent)
 	}
-	if errExpired != errBootstrapCodeInvalid {
+	if !errors.Is(errExpired, errBootstrapCodeInvalid) {
 		t.Fatalf("expired record: got %v, want errBootstrapCodeInvalid", errExpired)
 	}
-	if errWrong != errBootstrapCodeInvalid {
+	if !errors.Is(errWrong, errBootstrapCodeInvalid) {
 		t.Fatalf("wrong code: got %v, want errBootstrapCodeInvalid", errWrong)
 	}
-	if errAbsent != errExpired || errExpired != errWrong {
+	if !errors.Is(errAbsent, errExpired) || !errors.Is(errExpired, errWrong) {
 		t.Fatalf("the three refusals are not identical: absent=%v expired=%v wrong=%v", errAbsent, errExpired, errWrong)
 	}
 }
@@ -82,7 +84,7 @@ func TestMintBootstrapCode_ReplacesRatherThanAccumulates(t *testing.T) {
 		t.Fatalf("a second mint did not replace the first record's hash")
 	}
 
-	if cErr := consumeBootstrapCode(s, first); cErr != errBootstrapCodeInvalid {
+	if cErr := consumeBootstrapCode(s, first); !errors.Is(cErr, errBootstrapCodeInvalid) {
 		t.Fatalf("the code from before a re-mint still verifies: got %v, want errBootstrapCodeInvalid", cErr)
 	}
 	if cErr := consumeBootstrapCode(s, second); cErr != nil {
@@ -95,7 +97,7 @@ func TestConsumeBootstrapCode_WrongCodeDoesNotConsumeTheRealOne(t *testing.T) {
 	real, err := mintBootstrapCode(s)
 	assertNoErr(t, err, "mint")
 
-	if cErr := consumeBootstrapCode(s, "totally-wrong-guess"); cErr != errBootstrapCodeInvalid {
+	if cErr := consumeBootstrapCode(s, "totally-wrong-guess"); !errors.Is(cErr, errBootstrapCodeInvalid) {
 		t.Fatalf("wrong code: got %v, want errBootstrapCodeInvalid", cErr)
 	}
 	if s.LoginBootstrap == nil {

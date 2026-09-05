@@ -93,7 +93,7 @@ func TestEnrolUpdate_CLIDispatchesTheParsedRequestThroughTheBroker(t *testing.T)
 	enrolCreateForCLITest(t, store, "hermes-mail", []string{profile.ID})
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	enrolUpdate(store, []string{"--client-id", "hermes-mail", "--max-calls", "999"})
+	enrolUpdate([]string{"--client-id", "hermes-mail", "--max-calls", "999"})
 
 	got := enrolment.Find(store.Get(), "hermes-mail").Budget
 	if got.MaxCalls != 999 {
@@ -221,7 +221,7 @@ func TestEnrolSign_CLIDispatchesTheParsedRequestThroughTheBroker(t *testing.T) {
 	csrPath := writeTestCSRFile(t, "hermes-mail")
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
-	enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID})
+	enrolSign([]string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID})
 
 	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
@@ -246,7 +246,7 @@ func TestEnrolSign_OutDirWritesByteIdenticalCopies(t *testing.T) {
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	outDir := t.TempDir()
-	enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
+	enrolSign([]string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
 
 	stored := enrolment.Find(store.Get(), "hermes-mail")
 	if stored == nil {
@@ -296,7 +296,7 @@ func TestEnrolSign_BundleErrorLeavesOutDirUntouchedAndReportsFailureFirst(t *tes
 	assertNoErr(t, os.WriteFile(filepath.Join(outDir, "ca.crt"), existingCA, 0644), "seed existing ca.crt")
 
 	out := captureStdout(t, func() {
-		enrolSign(store, []string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
+		enrolSign([]string{"--client-id", "hermes-mail", "--csr", csrPath, "--grant", profile.ID, "--out", outDir})
 	})
 
 	gotCert, err := os.ReadFile(filepath.Join(outDir, "client.crt"))

@@ -2,7 +2,10 @@
 
 package presence
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestClassifyLAResult_NumericCodesOnly is the whole of AC-19g: success and
 // -2 (LAErrorUserCancel) are the only two outcomes recognised, and every
@@ -27,7 +30,7 @@ func TestClassifyLAResult_NumericCodesOnly(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := classifyLAResult(c.result); got != c.wantErr {
+			if got := classifyLAResult(c.result); !errors.Is(got, c.wantErr) {
 				t.Errorf("classifyLAResult(%+v) = %v, want %v", c.result, got, c.wantErr)
 			}
 		})
@@ -41,7 +44,7 @@ func TestClassifyLAResult_NumericCodesOnly(t *testing.T) {
 func TestClassifyLAResult_MinusOneThousandIsNotSpecialCased(t *testing.T) {
 	minusOneThousand := classifyLAResult(laResult{success: false, code: -1000})
 	arbitraryOtherCode := classifyLAResult(laResult{success: false, code: -424242})
-	if minusOneThousand != arbitraryOtherCode {
+	if !errors.Is(minusOneThousand, arbitraryOtherCode) {
 		t.Fatalf("-1000 classified as %v but an arbitrary undocumented code classified as %v; -1000 must not be special-cased", minusOneThousand, arbitraryOtherCode)
 	}
 }

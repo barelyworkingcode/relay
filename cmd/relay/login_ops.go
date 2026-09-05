@@ -350,8 +350,8 @@ func (o *LoginOps) RevokePasskey(ctx context.Context, id string) (config.Passkey
 		return config.Passkey{}, err
 	}
 	// Reported and not refused: the passkey is already gone, and a revocation
-	// narrows — see warnUnrecordedRevocation for why that direction is
-	// fail-open where issuance is not.
+	// narrows — a failing log must not be the reason a compromised credential
+	// stays live, the opposite balance from issuance.
 	if err := recordPasskeyRevoked(o.auditor(), removed, auditViaIPC, grant.ID()); err != nil {
 		slog.Error("passkey revoked but not recorded in the audit log", "id", abbreviatePasskeyID(removed.ID), "error", err)
 	}

@@ -14,7 +14,7 @@
 #
 # What does NOT run:
 #   - -tags=live  (needs ../relayLLM binary; spawned subprocesses)
-#   - go test -race (slower; run via `make race` or .githooks/pre-push)
+#   - go test -race (slower; run via .githooks/pre-push)
 
 set -e
 

@@ -128,7 +128,13 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 	}
 
 	probe, _ := sshhost.Probe(ctx, created)
-	_ = o.Store.With(func(s *config.Settings) { s.SetHostProbe(created.ID, probe) })
+	// Propagated rather than swallowed, the same as Probe below: a caller
+	// that gets an error here knows the auto-probe's result did not make it
+	// to disk, instead of reading a host record whose probe field silently
+	// never updated.
+	if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(created.ID, probe) }); err != nil {
+		return created, fmt.Errorf("save probe result: %w", err)
+	}
 	recordHostProbe(o.Auditor, created, probe)
 	if h, _ := config.FindHostByID(o.Store.Get(), created.ID); h != nil {
 		created = *h
@@ -143,7 +149,7 @@ func (o *HostOps) Create(ctx context.Context, f hostFields) (config.Host, error)
 func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (config.Host, bool, error) {
 	before, err := o.Get(id)
 	if err != nil {
-		return config.Host{}, false, nil
+		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
 	}
 
 	var updated config.Host
@@ -165,7 +171,9 @@ func (o *HostOps) Update(ctx context.Context, id string, f hostPatchFields) (con
 
 	if f.touchesConnection(before) {
 		probe, _ := sshhost.Probe(ctx, updated)
-		_ = o.Store.With(func(s *config.Settings) { s.SetHostProbe(id, probe) })
+		if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(id, probe) }); err != nil {
+			return updated, true, fmt.Errorf("save probe result: %w", err)
+		}
 		recordHostProbe(o.Auditor, updated, probe)
 		if h, _ := config.FindHostByID(o.Store.Get(), id); h != nil {
 			updated = *h
@@ -195,7 +203,7 @@ func (o *HostOps) Remove(id string) (found bool, refs []string, err error) {
 func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, error) {
 	h, err := o.Get(id)
 	if err != nil {
-		return config.Host{}, false, nil
+		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
 	}
 	probe, _ := sshhost.Probe(ctx, h)
 	if err := o.Store.With(func(s *config.Settings) { s.SetHostProbe(id, probe) }); err != nil {
@@ -212,12 +220,13 @@ func (o *HostOps) Probe(ctx context.Context, id string) (config.Host, bool, erro
 // comment reasons about it: the caller wants "no master after this
 // returns", and the hostView's status will read unreachable/unknown from
 // the next Check either way.
-func (o *HostOps) Disconnect(id string) (config.Host, bool, error) {
+func (o *HostOps) Disconnect(id string) (config.Host, bool, error) { //nolint:unparam // deliberate: matches Probe's (host, found, error) shape so host_routes.go's two action handlers stay parallel
 	h, err := o.Get(id)
 	if err != nil {
-		return config.Host{}, false, nil
+		return config.Host{}, false, nil //nolint:nilerr // Get's only error is not-found; found=false is the signal here, not the error return
 	}
 	_ = sshhost.Disconnect(h)
+	invalidateHostStatusCache(h.ID)
 	return h, true, nil
 }
 

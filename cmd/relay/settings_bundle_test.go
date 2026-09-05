@@ -4,6 +4,7 @@ package main
 // the current web/src tree (not the committed web/dist artifact).
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -565,4 +566,72 @@ func itoaTest(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// TestSettingsHTMLBundleUpToDate guards internal/webassets/settings.html — a
+// committed, //go:embed'd artifact — against drifting from the web/src it is
+// generated from. web/gen is `package main`, not importable, so this mirrors
+// its BuildOptions and marker-substitution logic by hand rather than calling
+// into it; keep the two in sync by eye if either changes.
+func TestSettingsHTMLBundleUpToDate(t *testing.T) {
+	root := repoRoot(t)
+	entryPoint := filepath.Join(root, "web", "src", "entry.js")
+	shellPath := filepath.Join(root, "web", "shell.html")
+	outPath := filepath.Join(root, "internal", "webassets", "settings.html")
+
+	result := api.Build(api.BuildOptions{
+		EntryPoints: []string{entryPoint},
+		Bundle:      true,
+		Format:      api.FormatIIFE,
+		// Matches web/gen/bundle.go: ES2017 keeps async/await + spread
+		// untouched while staying within what every WebKit the app targets
+		// (and goja, in the other tests here) parses cleanly.
+		Target:            api.ES2017,
+		Write:             false,
+		LogLevel:          api.LogLevelWarning,
+		MinifyWhitespace:  false,
+		MinifyIdentifiers: false,
+		// esbuild's cross-module comments (e.g. "// web/src/lib/pure.js")
+		// are relative to AbsWorkingDir, which defaults to the process's
+		// actual cwd -- go test always runs a package's tests with cwd set
+		// to the package directory, never the repo root. Pinning this to
+		// root matches web/gen/bundle.go's own (repo-root-relative) output
+		// regardless of where `go test` happens to be invoked from.
+		AbsWorkingDir: root,
+	})
+	if len(result.Errors) > 0 {
+		var b strings.Builder
+		for _, e := range result.Errors {
+			b.WriteString(e.Text)
+			b.WriteByte('\n')
+		}
+		t.Fatalf("esbuild bundling %s failed:\n%s", entryPoint, b.String())
+	}
+	if len(result.OutputFiles) != 1 {
+		t.Fatalf("expected 1 output file, got %d", len(result.OutputFiles))
+	}
+	js := string(result.OutputFiles[0].Contents)
+
+	shell, err := os.ReadFile(shellPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", shellPath, err)
+	}
+	const marker = "<!--RELAY_BUNDLE-->"
+	if !strings.Contains(string(shell), marker) {
+		t.Fatalf("%s does not contain marker %q", shellPath, marker)
+	}
+
+	// Same escaping web/gen applies: neutralize any literal </script in the
+	// JS so the inline script can't be terminated early by the HTML parser.
+	js = strings.ReplaceAll(js, "</script", "<\\/script")
+	inline := "<script>\n" + js + "</script>"
+	want := strings.Replace(string(shell), marker, inline, 1)
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s is stale relative to web/src and web/shell.html — run go run ./web/gen", outPath)
+	}
 }

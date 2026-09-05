@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
@@ -43,6 +44,11 @@ type Manager interface {
 	IsRunning(id string) bool
 	RunningIDs() []string
 	PIDsByServiceID() map[string]int
+	// Runtime reports pid + start time for every running service, keyed by
+	// id. The Services tab's "pid 21093 · up 2h 14m" line reads this instead
+	// of pairing PIDsByServiceID with a separate start-time map that could
+	// drift from it under a concurrent Stop/Start.
+	Runtime() map[string]ServiceRuntime
 	CleanupDead()
 	ReclaimOrphans(configs []config.ServiceConfig)
 	StartAllAutostart(configs []config.ServiceConfig)
@@ -56,6 +62,15 @@ type serviceProcess struct {
 	logFile   io.WriteCloser
 	done      chan struct{}
 	tokenHash string
+	startedAt time.Time
+}
+
+// ServiceRuntime is the process-identity half of a running service's status
+// that outlives any single poll: a pid and a start time, neither of which
+// PollStatuses' manifest round-trip carries.
+type ServiceRuntime struct {
+	PID       int
+	StartedAt time.Time
 }
 
 // Registry manages background service processes and their lifecycle.
@@ -169,7 +184,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		return fmt.Errorf("failed to start '%s': %w", cfg.DisplayName, err)
 	}
 	committed = true
@@ -184,6 +199,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		logFile:   logFile,
 		done:      make(chan struct{}),
 		tokenHash: tokenHash,
+		startedAt: time.Now(),
 	}
 
 	// Defers run LIFO: logFile.Close -> close(done) -> OnProcessExit,
@@ -196,7 +212,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 			}
 		}()
 		defer close(proc.done)
-		defer logFile.Close()
+		defer func() { _ = logFile.Close() }()
 		defer removePidFile(serviceID)
 		if proc.tokenHash != "" && r.TokenStore != nil {
 			defer r.TokenStore.Remove(proc.tokenHash)
@@ -366,6 +382,22 @@ func (r *Registry) PIDsByServiceID() map[string]int {
 			continue
 		}
 		out[id] = proc.cmd.Process.Pid
+	}
+	return out
+}
+
+func (r *Registry) Runtime() map[string]ServiceRuntime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]ServiceRuntime, len(r.processes))
+	for id, proc := range r.processes {
+		if !r.isRunningLocked(id) {
+			continue
+		}
+		if proc.cmd == nil || proc.cmd.Process == nil {
+			continue
+		}
+		out[id] = ServiceRuntime{PID: proc.cmd.Process.Pid, StartedAt: proc.startedAt}
 	}
 	return out
 }

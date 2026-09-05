@@ -234,7 +234,7 @@ func validateAllowedToolPatterns(proj *config.Project) error {
 // allowlist deliberately cannot express.
 func validateToolPattern(mcpID, pattern string) error {
 	if _, err := matchToolPattern(pattern, toolPatternProbes[0]); err != nil {
-		return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%v); an entry that will not compile matches no tool, so this allowlist would grant less than it reads as", mcpID, pattern, err)
+		return fmt.Errorf("allowed_tools for %q: pattern %q is not a valid tool pattern (%w); an entry that will not compile matches no tool, so this allowlist would grant less than it reads as", mcpID, pattern, err)
 	}
 	if reason, over := overBroadToolPattern(pattern); over {
 		return fmt.Errorf("allowed_tools for %q: pattern %q is too broad — %s. A tool this MCP gains tomorrow would join the grant with nobody reviewing it, which is the fail-open shape an allowlist exists to close; name the tools, or use a pattern with a real prefix such as %q", mcpID, pattern, reason, "mail_*")

@@ -409,9 +409,10 @@ void cocoa_update_menu(const char* menuJSON) {
             continue;
         }
 
+        NSString *key = item[@"key"];
         NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:title
                                                     action:@selector(menuItemClicked:)
-                                             keyEquivalent:@""];
+                                             keyEquivalent:(key.length > 0 ? key : @"")];
         mi.target = menuTarget;
         mi.tag = [itemID integerValue];
         mi.enabled = enabled ? [enabled boolValue] : YES;

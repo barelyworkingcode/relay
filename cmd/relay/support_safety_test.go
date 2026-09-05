@@ -103,14 +103,16 @@ func snapshotDir(dir string) (dirSnapshot, bool) {
 	}
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			// A walk error means the entry is unreadable, not that the walk
+			// should abort; returning err here would do the latter.
+			return nil //nolint:nilerr // deliberate: skip the entry, keep walking
 		}
 		if shouldIgnoreForSafetySnapshot(dir, path) {
 			return nil
 		}
 		fi, err := d.Info()
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // deliberate: skip the entry, keep walking
 		}
 		snap.entries[path] = fi.ModTime()
 		return nil

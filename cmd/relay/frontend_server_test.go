@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +104,7 @@ func TestFrontendServer_BearerAuth_RejectsWrong(t *testing.T) {
 	_, sock := newTestFrontendServer(t, "good-token")
 	client := dialFrontendHTTP(sock)
 
-	req, _ := http.NewRequest("GET", "http://unix/api/unclaimed", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/unclaimed", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	resp, err := client.Do(req)
 	assertNoErr(t, err, "GET")
@@ -117,7 +118,7 @@ func TestFrontendServer_BearerAuth_AcceptsCorrect_Returns404ForUnknownRoute(t *t
 	_, sock := newTestFrontendServer(t, "good-token")
 	client := dialFrontendHTTP(sock)
 
-	req, _ := http.NewRequest("GET", "http://unix/api/unclaimed", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/unclaimed", nil)
 	req.Header.Set("Authorization", "Bearer good-token")
 	resp, err := client.Do(req)
 	assertNoErr(t, err, "GET")
@@ -149,7 +150,7 @@ func TestFrontendServer_BearerAuth_RejectsWrongScheme(t *testing.T) {
 	_, sock := newTestFrontendServer(t, "good-token")
 	client := dialFrontendHTTP(sock)
 
-	req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/x", nil)
 	req.Header.Set("Authorization", "Basic good-token") // wrong scheme
 	resp, err := client.Do(req)
 	assertNoErr(t, err, "GET")
@@ -219,7 +220,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	}
 
 	// read, with bearer: the route is registered and answers for real.
-	req, _ := http.NewRequest("GET", base+"/api/services", nil)
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/services", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -232,7 +233,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 
 	// configure, no bearer: same enforcement as read.
 	autostartBody := func() *bytes.Buffer { return bytes.NewBufferString(`{"autostart":true}`) }
-	req, _ = http.NewRequest("PUT", base+"/api/services/worker/autostart", autostartBody())
+	req, _ = http.NewRequest(http.MethodPut, base+"/api/services/worker/autostart", autostartBody())
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("PUT: %v", err)
@@ -243,7 +244,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	}
 
 	// configure, with bearer: reachable, and mutates real state.
-	req, _ = http.NewRequest("PUT", base+"/api/services/worker/autostart", autostartBody())
+	req, _ = http.NewRequest(http.MethodPut, base+"/api/services/worker/autostart", autostartBody())
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -264,7 +265,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	// "/" catch-all is socket-only (ADR-016 decision 4) and absorbs nothing
 	// here. Either way no handler ran, which the Allow header and the
 	// unchanged store below both attest.
-	req, _ = http.NewRequest("POST", base+"/api/services", bytes.NewBufferString(`{"display_name":"phantom","command":"/bin/true"}`))
+	req, _ = http.NewRequest(http.MethodPost, base+"/api/services", bytes.NewBufferString(`{"display_name":"phantom","command":"/bin/true"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -292,5 +293,41 @@ func TestListenLoopback_AbsentAddrBindsNothing(t *testing.T) {
 	}
 	if s.tcpLn != nil {
 		t.Fatal("absent means no listener at all")
+	}
+}
+
+// deadlineRecorder adds the SetReadDeadline method http.NewResponseController
+// looks for, on top of an ordinary httptest.ResponseRecorder, so a unit test
+// can observe whether withRelayRouteReadDeadline reached for it.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlineSet bool
+}
+
+func (d *deadlineRecorder) SetReadDeadline(time.Time) error {
+	d.deadlineSet = true
+	return nil
+}
+
+// The catch-all proxies to relayLLM's sessions/terminals/WS, which must
+// never carry this deadline; a route relay registers for itself must always
+// get one. withRelayRouteReadDeadline is what the socket mux is wrapped in
+// (NewFrontendServer) to draw exactly that line.
+func TestWithRelayRouteReadDeadline_SkipsCatchAllSetsForOwnRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/api/testroute", func(w http.ResponseWriter, r *http.Request) {})
+	handler := withRelayRouteReadDeadline(mux)
+
+	catchAll := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(catchAll, httptest.NewRequest(http.MethodGet, "/anything/not/registered", nil))
+	if catchAll.deadlineSet {
+		t.Error(`the "/" catch-all must not get a read deadline`)
+	}
+
+	owned := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(owned, httptest.NewRequest(http.MethodGet, "/api/testroute", nil))
+	if !owned.deadlineSet {
+		t.Error("a relay-owned route must get a read deadline")
 	}
 }

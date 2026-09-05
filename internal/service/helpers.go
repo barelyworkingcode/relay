@@ -3,16 +3,33 @@ package service
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
-// MergeEnv adds environment variables to a command.
+// MergeEnv adds environment variables to a command, replacing rather than
+// duplicating any existing entry for the same key. Registry.Start calls this
+// several times per spawn — once for the operator's cfg.Env, then again for
+// relay's own RELAY_* injections (service token, frontend creds, bridge
+// socket) — and a later call must always win: a duplicate key in a child's
+// envp is otherwise implementation-defined (which one getenv returns depends
+// on the runtime reading it), which is not a fact relay's own credentials
+// should depend on.
 func MergeEnv(cmd *exec.Cmd, env map[string]string) {
 	if len(env) == 0 {
 		return
 	}
-	cmd.Env = append(cmd.Environ(), envSlice(env)...)
+	base := cmd.Environ()
+	kept := make([]string, 0, len(base))
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if _, overridden := env[key]; overridden {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	cmd.Env = append(kept, envSlice(env)...)
 }
 
 func envSlice(env map[string]string) []string {

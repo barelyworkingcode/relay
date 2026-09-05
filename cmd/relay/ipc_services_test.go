@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -118,6 +119,48 @@ func TestIPCAddService_HappyPathPersistsAndEmits(t *testing.T) {
 	if len(reg.started) != 0 {
 		t.Errorf("non-autostart service should not be started; got %v", reg.started)
 	}
+}
+
+// onServiceAdded's payload must carry the FrontendConsumer tri-state spelled
+// out (see ServiceConfig.FrontendCredsState), not just the raw nil/true/false
+// nativeServiceConfig already serializes as frontend_consumer — the Settings
+// window should not have to re-derive "implicit" vs "explicit" itself.
+func TestIPCAddService_EmitsFrontendCredsState(t *testing.T) {
+	store := newCLISandboxStore(t)
+	reg := &svcRecorder{}
+	ipc, ui := newServicesIPC(t, store, reg)
+
+	ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "My Svc", Command: "/bin/x"}))
+
+	payload := lastEventPayload(t, ui, "onServiceAdded")
+	if got := payload["frontend_creds"]; got != "implicit" {
+		t.Errorf("frontend_creds = %v, want %q", got, "implicit")
+	}
+}
+
+// lastEventPayload decodes the json.RawMessage marshalForUI produces for
+// events like onServiceAdded, distinct from lastEventNamed/lastResult which
+// read events emitted with an already-decoded map.
+func lastEventPayload(t *testing.T, ui *recordingUI, name string) map[string]interface{} {
+	t.Helper()
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	for i := len(ui.events) - 1; i >= 0; i-- {
+		if ui.events[i].Name != name {
+			continue
+		}
+		raw, ok := ui.events[i].Args[0].(json.RawMessage)
+		if !ok {
+			t.Fatalf("%s arg was %T, want json.RawMessage", name, ui.events[i].Args[0])
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", name, err)
+		}
+		return payload
+	}
+	t.Fatalf("no %s emitted", name)
+	return nil
 }
 
 func TestIPCAddService_AutostartStartsService(t *testing.T) {

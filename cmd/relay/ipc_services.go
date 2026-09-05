@@ -4,7 +4,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
+
+// nativeServiceConfigWithCreds augments native_view.go's shared
+// nativeServiceConfig with the field it does not carry: FrontendConsumer's
+// tri-state spelled out as "explicit"/"implicit"/"off", the same three cases
+// `relay service list`'s FRONT-DOOR column shows, rather than leaving the
+// Settings window to re-derive them from FrontendConsumer's raw nil/true/false.
+type nativeServiceConfigWithCreds struct {
+	nativeServiceConfig
+	FrontendCreds string `json:"frontend_creds"`
+}
+
+func serviceConfigToNativeViewWithCreds(c config.ServiceConfig) nativeServiceConfigWithCreds {
+	return nativeServiceConfigWithCreds{
+		nativeServiceConfig: serviceConfigToNativeView(c),
+		FrontendCreds:       c.FrontendCredsState(),
+	}
+}
 
 // fields always sets WorkingDir, Autostart and URL (never leaves them nil):
 // the Settings window's form carries the service's complete state on every
@@ -53,7 +72,7 @@ func ipcAddService(ctx *IPCContext, raw json.RawMessage) {
 				ctx.UI.EmitEvent("onSettingsError", fmt.Sprintf("service added but %v", err))
 			}
 			ctx.UpdateMenu()
-			ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeView(created)))
+			ctx.UI.EmitEvent("onServiceAdded", marshalForUI(serviceConfigToNativeViewWithCreds(created)))
 		})
 	})
 }
@@ -66,7 +85,7 @@ func ipcRemoveService(ctx *IPCContext, raw json.RawMessage) {
 
 	// Remove blocks on the stopped process's exit, so it runs off the UI thread.
 	ctx.GoFunc(func() {
-		err := ctx.Ops.Remove(ctx.Ctx, msg.ID, auditViaIPC, "")
+		err := ctx.Ops.Remove(msg.ID, auditViaIPC, "")
 		ctx.Platform.DispatchToMain(func() {
 			if err != nil {
 				ctx.UI.EmitEvent("onSettingsError", err.Error())

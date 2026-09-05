@@ -414,7 +414,7 @@ func (s *RemoteServer) Close() {
 // request, so an unenrolled caller cannot probe for valid grants or names.
 func (s *RemoteServer) handleConn(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("remote handler panic (recovered)", "panic", r)
@@ -476,7 +476,15 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	})
 
 	rc := &remoteConn{conn: conn, clientID: enr.ClientID, fingerprint: fingerprint}
-	s.track(rc)
+	if !s.track(rc) {
+		// Refused after the handshake, not before: admission depends on
+		// which fingerprint this is, which only the certificate (verified
+		// above) answers. No read, no write beyond the TLS teardown
+		// deferred conn.Close() already does.
+		slog.Warn("remote: closing connection, too many concurrent connections",
+			"client_id", enr.ClientID, "fingerprint", fingerprint, "remote_addr", conn.RemoteAddr().String())
+		return
+	}
 	defer s.untrack(rc)
 
 	if state.NegotiatedProtocol == mountALPN {
@@ -514,7 +522,7 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 		return bridge.ErrorResponse(jsonrpc.CodeInvalidParams, "remote request: "+err.Error())
 	}
 
-	settings, enrolment, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
+	settings, enr, proj, err := s.resolveCaller(fingerprint, req.ProjectID)
 	if err != nil {
 		return bridge.ErrorResponse(bridge.ErrorCode(err), err.Error())
 	}
@@ -529,9 +537,9 @@ func (s *RemoteServer) handleRequest(ctx context.Context, fingerprint, line stri
 
 	if entry, ok := remoteConfigHandlers[req.Type]; ok {
 		caller, _ := bridge.RemoteCallerFromContext(ctx)
-		if !enrolment.CLIAdmin {
+		if !enr.CLIAdmin {
 			s.recordConfigRefusal(entry.class, req.Type, caller)
-			return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound, cliAdminRequiredMessage(enrolment.ClientID))
+			return bridge.ErrorResponse(jsonrpc.CodeMethodNotFound, cliAdminRequiredMessage(enr.ClientID))
 		}
 		// A nil configurer means the configuration table is absent (fail
 		// closed) — no different, from the wire, than a type nobody
@@ -641,15 +649,40 @@ func revealProjectToken(proj *config.Project) (string, error) {
 	return token, nil
 }
 
-func (s *RemoteServer) track(rc *remoteConn) {
+// remoteMaxConnsPerFingerprint and remoteMaxConnsGlobal bound how many
+// concurrent connections this listener admits: a single enrolled client
+// leaking connections (or a compromised one deliberately opening many)
+// cannot fork unbounded handleConn goroutines and fds, and no combination
+// of clients can exceed the global cap either.
+const (
+	remoteMaxConnsPerFingerprint = 16
+	remoteMaxConnsGlobal         = 128
+)
+
+// track admits rc into the conns table and returns true, unless doing so
+// would exceed remoteMaxConnsPerFingerprint or remoteMaxConnsGlobal, in
+// which case it tracks nothing and returns false — the caller must then
+// close the connection without untracking it (there is nothing to untrack).
+func (s *RemoteServer) track(rc *remoteConn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	total := 0
+	for _, byFP := range s.conns {
+		total += len(byFP)
+	}
+	if total >= remoteMaxConnsGlobal {
+		return false
+	}
 	byFP := s.conns[rc.fingerprint]
+	if len(byFP) >= remoteMaxConnsPerFingerprint {
+		return false
+	}
 	if byFP == nil {
 		byFP = map[*remoteConn]struct{}{}
 		s.conns[rc.fingerprint] = byFP
 	}
 	byFP[rc] = struct{}{}
+	return true
 }
 
 func (s *RemoteServer) untrack(rc *remoteConn) {

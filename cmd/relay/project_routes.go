@@ -149,12 +149,11 @@ func reconcileProjectSkill(ctx context.Context, lister SkillLister, proj config.
 //
 // onChange fires after any successful create/update/delete/rotate so the
 // tray-window state can re-render. nil = no fan-out (tests use this).
-func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) {
-	notify := func() {
-		if onChange != nil {
-			onChange()
-		}
-	}
+// onChange is unused here directly — every mutation now goes through ops,
+// which already holds the identical ProjectsChangedFn as its own OnChange
+// (see NewFrontendServer) and fires it itself. The parameter stays for
+// callers and doc symmetry with the IPC surface.
+func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStore, ops *ProjectOps, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, skillLister SkillLister, onChange ProjectsChangedFn) { //nolint:unparam // deliberate: kept for doc/call-site symmetry with the IPC surface, see comment above
 	rr.Handle(control.ClassRead, "GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects := store.Get().Projects
 		if projects == nil {
@@ -234,31 +233,17 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 
 	rr.Handle(control.ClassConfigure, "DELETE /api/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		var existed bool
-		var removed config.Project
-		if err := store.With(func(s *config.Settings) {
-			proj, _ := config.FindProjectByID(s, id)
-			if proj == nil {
-				return
-			}
-			existed = true
-			removed = *proj
-			s.RemoveProject(id)
-		}); err != nil {
+		_, found, err := ops.Remove(id)
+		if err != nil {
 			slog.Error("delete project: save failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
 			return
 		}
-		if !existed {
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		if dir := projectSkillDir(removed); dir != "" {
-			if err := RemoveSkill(dir); err != nil {
-				slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
-			}
-		}
-		notify()
+		// ops.Remove already fired ops.OnChange; notify() here would double it.
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -311,18 +296,17 @@ func RegisterProjectRoutes(rr *control.RouteRegistrar, store config.SettingsStor
 			return
 		}
 		id := r.PathValue("id")
-		proj, _ := config.FindProjectByID(store.Get(), id)
-		if proj == nil {
+		dir, found, err := ops.RegenSkill(r.Context(), skillLister, id)
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		dir := projectSkillDir(*proj)
-		if dir == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project has no path"})
-			return
-		}
-		if _, err := EmitSkills(r.Context(), skillLister, *proj, dir, RegenAlways); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, errProjectHosted) || errors.Is(err, errProjectHasNoPath) {
+				status = http.StatusBadRequest
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"path": dir})

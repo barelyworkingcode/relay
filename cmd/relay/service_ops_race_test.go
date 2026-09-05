@@ -90,7 +90,7 @@ func TestServiceOpsRace_UpdateLosesToConcurrentRemove(t *testing.T) {
 	reg := &sorRaceRegistry{}
 	ops := &ServiceOps{Store: store, Registry: reg, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
 	reg.trigger = func(id string) bool {
-		if err := ops.Remove(context.Background(), id, auditViaIPC, ""); err != nil {
+		if err := ops.Remove(id, auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 		return true // stale: it WAS running before the remove committed
@@ -122,12 +122,12 @@ func TestServiceOpsRace_RemoveDuringConcurrentRemove(t *testing.T) {
 	other := &ServiceOps{Store: store, Registry: reg, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove(context.Background(), "svc", auditViaIPC, ""); err != nil {
+		if err := other.Remove("svc", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
 
-	if err := ops.Remove(context.Background(), "svc", auditViaIPC, ""); !errors.Is(err, errServiceNotFound) {
+	if err := ops.Remove("svc", auditViaIPC, ""); !errors.Is(err, errServiceNotFound) {
 		t.Fatalf("Remove err = %v, want errServiceNotFound", err)
 	}
 }
@@ -145,7 +145,7 @@ func TestServiceOpsRace_SetAutostartDuringConcurrentRemove(t *testing.T) {
 	other := &ServiceOps{Store: store, Registry: reg, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove(context.Background(), "svc", auditViaIPC, ""); err != nil {
+		if err := other.Remove("svc", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
@@ -171,12 +171,12 @@ func TestServiceOpsRace_McpRemoveDuringConcurrentRemove(t *testing.T) {
 	other := &McpOps{Store: store, Gate: ops.Gate, Issuance: ops.Issuance}
 
 	hooked.preWith = func() {
-		if err := other.Remove(context.Background(), "mcp1", auditViaIPC, ""); err != nil {
+		if err := other.Remove("mcp1", auditViaIPC, ""); err != nil {
 			t.Fatalf("concurrent remove: %v", err)
 		}
 	}
 
-	if err := ops.Remove(context.Background(), "mcp1", auditViaIPC, ""); !errors.Is(err, errMcpNotFound) {
+	if err := ops.Remove("mcp1", auditViaIPC, ""); !errors.Is(err, errMcpNotFound) {
 		t.Fatalf("Remove err = %v, want errMcpNotFound", err)
 	}
 }

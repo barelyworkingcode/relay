@@ -328,7 +328,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	// a socket has no origin, so there is no ceremony to serve here and the
 	// public mux is nil rather than populated. Composing it anyway is what
 	// keeps the two doors' shape identical.
-	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, frontendRecover(socketMux)))
+	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, frontendRecover(withRelayRouteReadDeadline(socketMux))))
 
 	srv := &http.Server{
 		Handler: handler,
@@ -494,6 +494,12 @@ func frontendCredentialAuth(store config.SettingsStore, next http.Handler) http.
 // absorbs every unmatched path, so a miss there is the dispatcher's, not
 // the mux's.
 //
+// It also carries the TCP mux's read-deadline duty (withRelayRouteReadDeadline's
+// doc comment explains why): both need mux.Handler(r)'s matched pattern
+// before ServeHTTP runs, and the TCP mux never registers the "/" catch-all
+// (ClassProxy is socket-only), so every match here is one of relay's own
+// routes and gets the deadline unconditionally.
+//
 // This is subtle: the handler mux.Handler returns is discarded rather than
 // served. Only ServeMux.ServeHTTP stores the wildcard values a handler reads
 // back through r.PathValue, so serving it directly would empty every {id} in
@@ -503,6 +509,8 @@ func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
 		if _, pattern := mux.Handler(r); pattern == "" {
 			slog.Warn(unmatchedRouteWarning,
 				"method", r.Method, "path", r.URL.Path, "transport", string(control.TransportTCP))
+		} else {
+			setFrontendRouteReadDeadline(w, r)
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -511,6 +519,43 @@ func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
 // unmatchedRouteWarning is a constant so a test can match the line without
 // restating it.
 const unmatchedRouteWarning = "frontend: no route registered for this request"
+
+// frontendRouteReadDeadline bounds how long relay waits to receive the body
+// of a request against one of ITS OWN routes (projects, services, audit,
+// MCPs, hosts, enrolments). It must never reach the "/" catch-all: sessions
+// and terminals proxied through it run for many minutes, and a WS upgrade
+// on that path is a long-lived connection, not a slow request.
+//
+// A var, not a const, so a test can shorten it rather than trickle a body
+// for the real 10s (the same accommodation MCPRequestTimeout makes).
+var frontendRouteReadDeadline = 10 * time.Second
+
+func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.Warn("frontend: could not set read deadline", "error", err, "path", r.URL.Path)
+	}
+}
+
+// withRelayRouteReadDeadline sets frontendRouteReadDeadline before serving
+// any request that resolves to one of relay's own registered patterns on
+// mux, and leaves the "/" catch-all (the proxied dispatcher, including WS
+// upgrades) untouched — that mount is registered by registerFrontendRoutes
+// on the socket mux only (control.ClassProxy is socket-only), so this is the
+// socket door's counterpart to warnOnUnmatchedTCPRoute's deadline duty on
+// the TCP door.
+//
+// mux.Handler(r) only looks up the match; it neither invokes nor consumes
+// the request, so calling it ahead of ServeHTTP is safe — the same
+// technique warnOnUnmatchedTCPRoute uses to inspect the match before
+// dispatch.
+func withRelayRouteReadDeadline(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" && pattern != "/" {
+			setFrontendRouteReadDeadline(w, r)
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
 
 func frontendRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

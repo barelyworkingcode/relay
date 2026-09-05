@@ -77,7 +77,7 @@ func (c *StatusClient) do(ctx context.Context, method, path string, body json.Ra
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxStatusBodyBytes))
 	if err != nil {

@@ -48,6 +48,7 @@ func buildPage(html string) string {
 		"__SERVICES_JSON__", fixtureServices,
 		"__RUNNING_IDS_JSON__", fixtureRunningIDs,
 		"__PROJECTS_JSON__", fixtureProjects,
+		"__HOSTS_JSON__", fixtureHosts,
 		"__MCP_TOOL_CACHE_JSON__", fixtureMcpToolCache,
 		"__MCP_SCOPE_FIELDS_JSON__", fixtureMcpScopeFields,
 		"__ENROLMENTS_JSON__", fixtureEnrolments,
@@ -57,6 +58,11 @@ func buildPage(html string) string {
 		"__LOGIN_SESSIONS_JSON__", fixtureLoginSessions,
 		"__LOGIN_CODE_JSON__", fixtureLoginCode,
 		"__INITIAL_PAGE_JSON__", `""`,
+		"__MCP_HEALTH_JSON__", fixtureMcpHealth,
+		"__SERVICE_RUNTIME_JSON__", fixtureServiceRuntime,
+		"__SEAL_STATUS_JSON__", fixtureSealStatus,
+		"__VERSION_JSON__", fixtureVersion,
+		"__PATHS_JSON__", fixturePaths,
 	).Replace(html)
 
 	// window.webkit must exist before the page's ipc() runs, so the mock goes
@@ -75,9 +81,9 @@ const fixtureExternalMcps = `[
 ]`
 
 const fixtureServices = `[
-  {"id":"relay-llm","display_name":"Relay LLM","command":"/Users/you/source/relayLLM/relayllm","args":["--router-port","8180"],"env":{},"autostart":true},
-  {"id":"relaytts-daemon","display_name":"relaytts-daemon","command":"/Users/you/source/relayTTS/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true},
-  {"id":"stt-daemon","display_name":"STT Daemon","command":"/Users/you/source/whisper/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true},
+  {"id":"relay-llm","display_name":"Relay LLM","command":"/Users/you/source/relayLLM/relayllm","args":["--router-port","8180"],"env":{},"autostart":true,"frontend_creds":"explicit"},
+  {"id":"relaytts-daemon","display_name":"relaytts-daemon","command":"/Users/you/source/relayTTS/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true,"frontend_creds":"implicit"},
+  {"id":"stt-daemon","display_name":"STT Daemon","command":"/Users/you/source/whisper/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true,"frontend_creds":"off"},
   {"id":"relaycomfy","display_name":"relaycomfy","command":"/Users/you/source/relayComfy/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":false,"url":"http://localhost:8188"}
 ]`
 
@@ -86,7 +92,15 @@ const fixtureRunningIDs = `["relay-llm","relaytts-daemon","stt-daemon"]`
 const fixtureProjects = `[
   {"id":"proj-acme","name":"Acme Website","path":"/Users/you/projects/acme","allowed_mcp_ids":["*"],"allowed_models":["*"],"chat_templates":[{"id":"tpl-1","name":"Default","model":"claude-sonnet","system_prompt":"You are a helpful assistant.","append_claude_md":true,"use_relay_tools":true}],"permission_policy":{"default_mode":"acceptEdits","allowed_tools":["Read","Grep"],"denied_tools":["Bash(rm *)"]},"generate_skill":true,"token":"relay_proj_8f2a1c9d4e6b0a7f3c5d","disabled_tools":{}},
   {"id":"proj-internal","name":"Internal Tools","path":"/Users/you/projects/internal","allowed_mcp_ids":["fsmcp"],"allowed_models":["claude-opus","claude-sonnet"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"allow_cwd_auth":true,"token":"relay_proj_1a2b3c4d5e6f7a8b9c0d","disabled_tools":{"fsmcp":["write_file"]}},
+  {"id":"proj-lab","name":"Remote Lab","path":"/home/you/remote-lab","host_id":"h_devbox","allowed_mcp_ids":[],"allowed_models":["*"],"chat_templates":[],"permission_policy":{"default_mode":""},"generate_skill":false,"token":"relay_proj_9e8d7c6b5a4f3e2d1c0b","disabled_tools":{}},
   {"id":"proj-mail","name":"Mail (remote)","kind":"remote","allowed_mcp_ids":["macmcp"],"allowed_models":[],"chat_templates":[],"generate_skill":false,"token":"relay_proj_0f1e2d3c4b5a6978","disabled_tools":{}}
+]`
+
+// ssh_argv is present because the real hostView carries it to the tray;
+// it never reaches eve (docs/ssh-hosts.md).
+const fixtureHosts = `[
+  {"id":"h_devbox","name":"devbox","target":"admin@devbox.local","port":22,"created_at":"2026-09-05T07:00:00Z","status":"connected","ssh_argv":["ssh","-o","ControlMaster=auto","admin@devbox.local"],"probe":{"ok":true,"at":"2026-09-05T07:30:00Z","os":"linux","arch":"arm64","home":"/home/you","shell":"/bin/bash","node_version":"v22.4.0"}},
+  {"id":"h_build","name":"build-box","target":"ci@10.0.0.7","port":2222,"identity_file":"~/.ssh/id_build","created_at":"2026-08-20T09:00:00Z","status":"unreachable","ssh_argv":["ssh","ci@10.0.0.7"],"probe":{"ok":false,"at":"2026-09-05T06:00:00Z","error":"ssh: connect to host 10.0.0.7 port 2222: Connection timed out"}}
 ]`
 
 // The fingerprint is never truncated: after an enrolment is deleted it is the
@@ -97,7 +111,7 @@ const fixtureEnrolments = `[
   {"client_id":"hermes-mail","fingerprint":"sha256:9f2a4c1d6b8e0f37a5c9d2e4b6081f3a7c5e9d1b3f5a7c9e1d3b5f7a9c1e3d5b","project_ids":["proj-mail"],"budget":{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608},"created_at":"2026-08-20T09:14:00Z"}
 ]`
 
-const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true}`
+const fixtureRemote = `{"configured":true,"enabled":true,"listen":"127.0.0.1:9910","effective":"127.0.0.1:9910","audit_enabled":true,"ca_fingerprint":"sha256:1a2b3c4d5e6f70819203a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f","enrolment_requests":false,"enrolment_listen":"","enrolment_effective":"127.0.0.1:9911"}`
 
 const fixtureEnrolmentBudgetDefaults = `{"window_seconds":60,"max_calls":60,"max_result_bytes":8388608}`
 
@@ -128,6 +142,28 @@ const fixtureMcpScopeFields = `{
   "krisp":[]
 }`
 
+// macMCP is mid-restart-loop so the Overview tile and the MCP Servers pill
+// both have a warn state to render; fsMCP has never had a problem; Krisp is
+// HTTP, so its pill comes from oauth_state instead and this entry is unused.
+const fixtureMcpHealth = `{
+  "fsmcp":{"id":"fsmcp","display_name":"fsMCP","connected":true},
+  "macmcp":{"id":"macmcp","display_name":"macMCP","connected":false,"state":"restart_failed","attempt":2,"downtime_ms":48000,"error":"read response: EOF"}
+}`
+
+const fixtureServiceRuntime = `{
+  "relay-llm":{"pid":21093,"started_at":"2026-09-05T05:12:00Z"},
+  "relaytts-daemon":{"pid":21110,"started_at":"2026-09-05T05:12:03Z"},
+  "stt-daemon":{"pid":21114,"started_at":"2026-09-05T05:12:04Z"}
+}`
+
+// Empty means healthy, the ordinary case; devui models that rather than the
+// break-glass path, which has no UI of its own beyond this string.
+const fixtureSealStatus = `""`
+
+const fixtureVersion = `"0.9.0-dev"`
+
+const fixturePaths = `{"config":"/Users/you/Library/Application Support/relay","logs":"/Users/you/Library/Application Support/relay/logs"}`
+
 const fixtureMcpToolCache = `{
   "fsmcp":[
     {"name":"read_file","description":"Read the contents of a file at the given path."},
@@ -144,6 +180,7 @@ var mockBridgeScript = `<script>
   var FIXTURE_TOOLS = ` + inlineJSON(fixtureMcpToolCacheTools) + `;
   var FIXTURE_AUDIT = ` + inlineJSON(fixtureAuditEvents) + `;
   var FIXTURE_AUDIT_STATUS = ` + inlineJSON(fixtureAuditStatus) + `;
+  var FIXTURE_REMOTE = ` + inlineJSON(fixtureRemote) + `;
   window.webkit = { messageHandlers: { ipc: { postMessage: function (raw) {
     var msg; try { msg = JSON.parse(raw); } catch (e) { console.warn('[devui] bad ipc', raw); return; }
     console.log('[devui ipc →]', msg);
@@ -161,6 +198,9 @@ var mockBridgeScript = `<script>
       case 'query_audit': window.onAuditEvents(FIXTURE_AUDIT, FIXTURE_AUDIT_STATUS); break;
       case 'export_audit': window.onAuditExported('/Users/you/Library/Application Support/relay/logs/audit/toolcalls-export-20260819-150000.jsonl'); break;
       case 'reveal_audit_log': console.log('[devui] would reveal the audit log'); break;
+      case 'reveal_config_dir': console.log('[devui] would reveal the config dir'); break;
+      case 'reveal_logs_dir': console.log('[devui] would reveal the logs dir'); break;
+      case 'reveal_service_log': console.log('[devui] would reveal the log for service', msg.id); break;
       case 'create_enrolment':
         // The real handler emits the persisted record plus a bundle DIRECTORY.
         // The mock does the same, key material included nowhere — mirroring it
@@ -174,9 +214,16 @@ var mockBridgeScript = `<script>
         window.onEnrolmentRevoked(msg.client_id, 'sha256:' + '0123456789abcdef'.repeat(4));
         break;
       case 'update_remote_config':
-        if (msg.remove) { window.onRemoteConfigUpdated({ configured: false, enabled: false, listen: '', effective: '127.0.0.1:9910', audit_enabled: true }); break; }
+        if (msg.remove) {
+          window.onRemoteConfigUpdated({ configured: false, enabled: false, listen: '', effective: '127.0.0.1:9910', audit_enabled: true,
+                                         ca_fingerprint: FIXTURE_REMOTE.ca_fingerprint, enrolment_requests: false, enrolment_listen: '', enrolment_effective: '127.0.0.1:9911' });
+          break;
+        }
         window.onRemoteConfigUpdated({ configured: true, enabled: !!msg.enabled, listen: msg.listen || '',
-                                       effective: msg.listen || '127.0.0.1:9910', audit_enabled: true });
+                                       effective: msg.listen || '127.0.0.1:9910', audit_enabled: true,
+                                       ca_fingerprint: FIXTURE_REMOTE.ca_fingerprint,
+                                       enrolment_requests: !!msg.enrolment_requests, enrolment_listen: msg.enrolment_listen || '',
+                                       enrolment_effective: msg.enrolment_listen || '127.0.0.1:9911' });
         break;
       // add/update/remove/start/stop etc. are no-ops here; already logged above
     }

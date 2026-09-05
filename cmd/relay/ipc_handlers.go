@@ -28,7 +28,7 @@ func (a *App) openSettingsWindow() {
 	// "Settings..." click reopens on a tab nobody asked for.
 	page := a.pendingSettingsPage
 	a.pendingSettingsPage = ""
-	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code, page)
+	html := renderSettingsDocument(s, a.registry.RunningIDs(), a.buildToolCache(s), a.buildScopeFields(), code, page, a.buildOverviewSeed(s))
 	a.platform.OpenSettings(html)
 	a.settingsOpen.Store(true)
 	// First paint shouldn't wait the full 2s poll interval. pushServiceStatusBatch
@@ -69,7 +69,18 @@ func (a *App) emitSettingsEvent(name string, args ...interface{}) {
 }
 
 func (a *App) pushServiceStatus() {
-	a.emitSettingsEvent("onServiceStatus", a.registry.RunningIDs())
+	a.emitSettingsEvent("onServiceStatus", serviceStatusEventPayload(a.registry))
+}
+
+// serviceStatusEventPayload is onServiceStatus's shared shape: running_ids
+// carries whatever it always has, and runtime rides along so the Services
+// tab's "pid 21093 · up 2h 14m" line updates on the same event a start/stop
+// already fires, instead of waiting for the next full onSettingsReloaded.
+func serviceStatusEventPayload(reg service.Manager) map[string]interface{} {
+	return map[string]interface{}{
+		"running_ids": reg.RunningIDs(),
+		"runtime":     serviceRuntimeToNativeView(reg.Runtime()),
+	}
 }
 
 // pushFullSettings sends the complete settings state to an open settings window.
@@ -81,6 +92,7 @@ func (a *App) pushServiceStatus() {
 // on ExternalMcp itself.
 func (a *App) pushFullSettings() {
 	s := a.store.Get()
+	seed := a.buildOverviewSeed(s)
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
 		"external_mcps":    s.ExternalMcps,
 		"services":         s.Services,
@@ -101,6 +113,15 @@ func (a *App) pushFullSettings() {
 		// in a terminal, and a browser completing the ceremony.
 		"passkeys":       a.loginOps.Passkeys(),
 		"login_sessions": a.loginOps.Sessions(),
+		// Overview tab. Rebuilt with the same helper openSettingsWindow's
+		// first paint uses, so a reload mid-session and a fresh window never
+		// disagree about MCP health, service runtime, or the seal/version
+		// facts that don't change after boot.
+		"mcp_health":      seed.MCPHealth,
+		"service_runtime": seed.ServiceRuntime,
+		"seal_status":     seed.SealStatus,
+		"version":         seed.Version,
+		"paths":           seed.Paths,
 	})
 }
 
@@ -214,6 +235,12 @@ type IPCContext struct {
 	// it too, so a host created from curl and one created from the tray
 	// share the same probe and the same audit record.
 	HostOps *HostOps
+	// ConfigDir and LogsDir back the Overview tab's "Reveal" actions
+	// (ipc_overview.go). ConfigDir is a plain string because it is fixed at
+	// boot; LogsDir is a func because resolving it can fail (directory
+	// creation) the way ConfigDir never does.
+	ConfigDir string
+	LogsDir   func() (string, error)
 }
 
 // withSettings atomically mutates settings and emits an error event on failure.
@@ -249,7 +276,7 @@ func (ctx *IPCContext) withSettingsNotify(fn func(*config.Settings), notify func
 // refreshServiceUI emits current service status and rebuilds the tray menu.
 // Must be called on the main thread.
 func (ctx *IPCContext) refreshServiceUI() {
-	ctx.UI.EmitEvent("onServiceStatus", ctx.Registry.RunningIDs())
+	ctx.UI.EmitEvent("onServiceStatus", serviceStatusEventPayload(ctx.Registry))
 	ctx.UpdateMenu()
 }
 
@@ -332,6 +359,11 @@ const (
 	MsgRemoveHost     = "remove_host"
 	MsgProbeHost      = "probe_host"
 	MsgDisconnectHost = "disconnect_host"
+
+	// Overview (ipc_overview.go)
+	MsgRevealConfigDir  = "reveal_config_dir"
+	MsgRevealLogsDir    = "reveal_logs_dir"
+	MsgRevealServiceLog = "reveal_service_log"
 )
 
 // ---------------------------------------------------------------------------
@@ -393,6 +425,11 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRemoveHost:     ipcRemoveHost,
 	MsgProbeHost:      ipcProbeHost,
 	MsgDisconnectHost: ipcDisconnectHost,
+
+	// Overview (ipc_overview.go)
+	MsgRevealConfigDir:  ipcRevealConfigDir,
+	MsgRevealLogsDir:    ipcRevealLogsDir,
+	MsgRevealServiceLog: ipcRevealServiceLog,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

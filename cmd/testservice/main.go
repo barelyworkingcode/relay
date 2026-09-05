@@ -61,8 +61,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen %s: %v", internalSock, err)
 	}
-	defer ln.Close()
-	defer os.RemoveAll(internalDir)
+	defer func() { _ = ln.Close() }()
+	defer func() { _ = os.RemoveAll(internalDir) }()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +129,7 @@ func sendRegisterManifest(sockPath, token string, req bridge.RegisterManifestReq
 	if err != nil {
 		return fmt.Errorf("dial bridge: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	args, err := json.Marshal(req)
@@ -147,7 +147,7 @@ func sendRegisterManifest(sockPath, token string, req bridge.RegisterManifestReq
 	}
 	sc := bridge.NewScanner(conn)
 	if !sc.Scan() {
-		return fmt.Errorf("read: %v", sc.Err())
+		return fmt.Errorf("read: %w", sc.Err())
 	}
 	var resp bridge.BridgeResponse
 	if err := json.Unmarshal(sc.Bytes(), &resp); err != nil {

@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -129,8 +130,8 @@ func TestCredentialAuthorizer_Authorize_MissingHeader(t *testing.T) {
 	store := newCLISandboxStore(t)
 	auth := NewCredentialAuthorizer(store)
 
-	req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
-	if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/x", nil)
+	if err := auth.Authorize(req, control.ClassRead); !errors.Is(err, control.ErrNoCredential) {
 		t.Fatalf("missing header: got %v, want control.ErrNoCredential", err)
 	}
 }
@@ -140,9 +141,9 @@ func TestCredentialAuthorizer_Authorize_MalformedHeader(t *testing.T) {
 	auth := NewCredentialAuthorizer(store)
 
 	for _, header := range []string{"Basic dXNlcjpwYXNz", "Bearer", "Token abc123", "Bearer "} {
-		req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
+		req, _ := http.NewRequest(http.MethodGet, "http://unix/api/x", nil)
 		req.Header.Set("Authorization", header)
-		if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+		if err := auth.Authorize(req, control.ClassRead); !errors.Is(err, control.ErrNoCredential) {
 			t.Errorf("header %q: got %v, want control.ErrNoCredential", header, err)
 		}
 	}
@@ -152,9 +153,9 @@ func TestCredentialAuthorizer_Authorize_UnknownTokenIsNoCredential(t *testing.T)
 	store := newCLISandboxStore(t)
 	auth := NewCredentialAuthorizer(store)
 
-	req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/api/x", nil)
 	req.Header.Set("Authorization", "Bearer this-token-was-never-minted")
-	if err := auth.Authorize(req, control.ClassRead); err != control.ErrNoCredential {
+	if err := auth.Authorize(req, control.ClassRead); !errors.Is(err, control.ErrNoCredential) {
 		t.Fatalf("unknown token: got %v, want control.ErrNoCredential", err)
 	}
 }
@@ -170,9 +171,9 @@ func TestCredentialAuthorizer_Authorize_KnownTokenWithoutClassIsRefused(t *testi
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
-	req, _ := http.NewRequest("POST", "http://unix/api/projects", nil)
+	req, _ := http.NewRequest(http.MethodPost, "http://unix/api/projects", nil)
 	req.Header.Set("Authorization", "Bearer "+plaintext)
-	if err := auth.Authorize(req, control.ClassConfigure); err != control.ErrClassNotGranted {
+	if err := auth.Authorize(req, control.ClassConfigure); !errors.Is(err, control.ErrClassNotGranted) {
 		t.Fatalf("credential without the class: got %v, want control.ErrClassNotGranted", err)
 	}
 }
@@ -189,7 +190,7 @@ func TestCredentialAuthorizer_Authorize_KnownTokenWithClassIsAllowedAndExposesCr
 		assertNoErr(t, err, "Mint")
 	}), "store.With")
 
-	req, _ := http.NewRequest("PUT", "http://unix/api/services/x", nil)
+	req, _ := http.NewRequest(http.MethodPut, "http://unix/api/services/x", nil)
 	req.Header.Set("Authorization", "Bearer "+plaintext)
 	if err := auth.Authorize(req, control.ClassConfigure); err != nil {
 		t.Fatalf("credential with the class: got %v, want nil", err)
@@ -218,9 +219,9 @@ func TestCredentialAuthorizer_Authorize_EmptyClassesRefusedForEveryClass(t *test
 	}), "store.With")
 
 	for _, class := range allClasses {
-		req, _ := http.NewRequest("GET", "http://unix/api/x", nil)
+		req, _ := http.NewRequest(http.MethodGet, "http://unix/api/x", nil)
 		req.Header.Set("Authorization", "Bearer "+plaintext)
-		if err := auth.Authorize(req, class); err != control.ErrClassNotGranted {
+		if err := auth.Authorize(req, class); !errors.Is(err, control.ErrClassNotGranted) {
 			t.Errorf("class %q: got %v, want control.ErrClassNotGranted", class, err)
 		}
 	}

@@ -192,7 +192,7 @@ func (ss *FileSettingsStore) SealStatus() error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if ss.sealUnavailable != nil {
-		return fmt.Errorf("%w: %v", ErrSealUnavailable, ss.sealUnavailable)
+		return fmt.Errorf("%w: %w", ErrSealUnavailable, ss.sealUnavailable)
 	}
 	for _, err := range ss.sealErrors {
 		return err
@@ -339,17 +339,17 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	// os.CreateTemp fixes its own 0600 regardless of what the caller asked
 	// for, so perm is applied here rather than at open.
 	if err := f.Chmod(perm); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("sync temp file: %w", err)
 	}
@@ -390,7 +390,7 @@ func (ss *FileSettingsStore) save(s *Settings) error {
 	// step already prevents from ever being written.
 	if ss.sealer == nil {
 		if ss.sealUnavailable != nil {
-			return fmt.Errorf("%w: %v", ErrSealUnavailable, ss.sealUnavailable)
+			return fmt.Errorf("%w: %w", ErrSealUnavailable, ss.sealUnavailable)
 		}
 		return ErrSealerRequired
 	}

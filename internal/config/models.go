@@ -204,8 +204,24 @@ type ServiceConfig struct {
 	// FrontendConsumer is tri-state: nil injects relay's front-door creds
 	// (RELAY_FRONTEND_SOCKET/TOKEN) for backward compatibility, false
 	// withholds them so they never land in a backend's env, true injects
-	// explicitly. Set false via `service register --no-frontend-creds`.
+	// explicitly. Set false via `service register --no-frontend-creds`, true
+	// via `service register --frontend-creds`.
 	FrontendConsumer *bool `json:"frontend_consumer,omitempty"`
+}
+
+// FrontendCredsState spells FrontendConsumer's tri-state for a surface that
+// must show all three cases apart — "implicit" (nil) is not the same fact as
+// "explicit" (true) even though both inject the same credential, since only
+// the first is a default the operator never chose.
+func (c *ServiceConfig) FrontendCredsState() string {
+	switch {
+	case c.FrontendConsumer == nil:
+		return "implicit"
+	case *c.FrontendConsumer:
+		return "explicit"
+	default:
+		return "off"
+	}
 }
 
 type ChatTemplate struct {
@@ -598,6 +614,15 @@ func (c *ServiceConfig) Validate() error {
 	}
 	if c.Command == "" {
 		return fmt.Errorf("service command is required")
+	}
+	// relay injects its own RELAY_* variables into every spawned service
+	// (bridge socket, service token, frontend creds) after the operator's
+	// env is applied; an operator-supplied key in that namespace would only
+	// ever collide with one of them, never mean anything on its own.
+	for k := range c.Env {
+		if strings.HasPrefix(k, "RELAY_") {
+			return fmt.Errorf("service env key %q is reserved: the RELAY_ prefix is relay's own", k)
+		}
 	}
 	return nil
 }

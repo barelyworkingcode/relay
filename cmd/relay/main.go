@@ -13,6 +13,11 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
+// buildVersion is set by build.sh via -ldflags "-X main.buildVersion=...";
+// a plain `go build` (a developer checkout, or this repo's own tests) keeps
+// "dev" rather than failing or lying about a release it isn't.
+var buildVersion = "dev"
+
 func main() {
 	logLevel := slog.LevelInfo
 	if env := os.Getenv("RELAY_LOG_LEVEL"); env != "" {

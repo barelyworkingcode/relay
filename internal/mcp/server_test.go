@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -26,6 +27,11 @@ type stubRouter struct {
 	calledName   string
 	calledArgs   json.RawMessage
 	calledToken  string
+	// callBlock, when non-nil, is received from before CallTool returns --
+	// a stand-in for a bridge call that never completes (TestRunMCPServer_
+	// ReturnsWithGraceWhileACallIsStillInFlight never closes it, so this
+	// simulates the router side just never answering).
+	callBlock chan struct{}
 }
 
 func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage, error) {
@@ -35,6 +41,9 @@ func (s *stubRouter) ListTools(_ context.Context, token string) (json.RawMessage
 	return s.tools, s.toolsErr
 }
 func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error) {
+	if s.callBlock != nil {
+		<-s.callBlock
+	}
 	s.mu.Lock()
 	s.calledName = name
 	s.calledArgs = args
@@ -281,5 +290,66 @@ func TestHandleMethod_UnknownMethod_NotificationIgnored(t *testing.T) {
 	resp := handleMethod(client, &jsonrpc.ServerRequest{Method: "totally/made/up"}) // no ID
 	if resp != nil {
 		t.Fatalf("notification must not produce a response; got %+v", resp)
+	}
+}
+
+// TestRunMCPServer_ReturnsWithGraceWhileACallIsStillInFlight is item 6's
+// regression test: RunMCPServer must return promptly once its stdin hits
+// EOF even while a tools/call goroutine is still blocked on a bridge call
+// that never answers (callBlock is never closed) -- the parent that closed
+// stdin is already gone, so waiting the full 10-minute bridge inactivity
+// timeout would hang this process for no one.
+func TestRunMCPServer_ReturnsWithGraceWhileACallIsStillInFlight(t *testing.T) {
+	router := &stubRouter{callBlock: make(chan struct{})}
+	startBridgeForMCP(t, router, "tok") // wires bridge.SetConfigDirForTest so RunMCPServer's own client dials this test's socket
+	// Registered after startBridgeForMCP's own t.Cleanup(srv.Close), so LIFO
+	// runs this FIRST: unblock the router's still-in-flight CallTool before
+	// BridgeServer.Close's wg.Wait() waits on the connection goroutine
+	// calling it, or teardown itself would hang on the very thing this test
+	// proves RunMCPServer no longer waits for.
+	t.Cleanup(func() { close(router.callBlock) })
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe (stdin): %v", err)
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe (stdout): %v", err)
+	}
+
+	origStdin, origStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinR, stdoutW
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout = origStdin, origStdout
+		_ = stdinR.Close()
+		_ = stdoutR.Close()
+	})
+	// Drain stdout so RunMCPServer's writes (the tools/call eventually
+	// completing, whenever the leaked goroutine's Read finally errors out)
+	// never block on a full pipe buffer after the test has moved on.
+	go func() { _, _ = io.Copy(io.Discard, stdoutR) }()
+
+	params, _ := json.Marshal(map[string]any{"name": "slow_tool", "arguments": map[string]any{}})
+	req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": MethodToolsCall, "params": json.RawMessage(params)})
+	if _, err := stdinW.Write(append(req, '\n')); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	// EOF stdin while the request above is still in flight (the router
+	// hasn't received from callBlock, so CallTool hasn't returned).
+	if err := stdinW.Close(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- RunMCPServer("tok") }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMCPServer returned an error: %v", err)
+		}
+	case <-time.After(mcpShutdownGrace + 3*time.Second):
+		t.Fatal("RunMCPServer did not return within the shutdown grace window while a call was in flight")
 	}
 }

@@ -45,8 +45,12 @@ func (r credentialMintRequest) presenceDigest() presence.Digest {
 // Mint validates and mints exactly as mintAPICredential always has, adding
 // the hard audit dependency and the presence gate in front of it. The
 // plaintext is the only moment that value exists, same as before; a caller
-// receiving a non-nil error alongside it MUST NOT disclose it — see
-// refuseUnrecordedIssuance's reasoning, which is unchanged.
+// receiving a non-nil error alongside it MUST NOT disclose it: an audit
+// failure after a mint has committed means the credential's secret was never
+// disclosed, so refusing to print it is a real refusal, not theatre (ADR-010
+// decision 5). The inert record is left in settings.json rather than swept —
+// the store has just demonstrated it cannot be written to reliably, and a
+// second write on that evidence is worse than naming the cleanup command.
 func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via, credID string) (config.APICredential, string, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -88,15 +92,15 @@ func (o *CredentialOps) Mint(ctx context.Context, req credentialMintRequest, via
 	}); auditErr != nil {
 		// The mint already committed. The caller must treat a non-nil error
 		// here as "do not show the plaintext" regardless of what else it
-		// received — refuseUnrecordedIssuance is the CLI's version of this
-		// same rule.
+		// received.
 		return cred, plaintext, auditErr
 	}
 	return cred, plaintext, nil
 }
 
-// Revoke narrows, so an audit failure is reported rather than undone —
-// warnUnrecordedRevocation's balance, unchanged.
+// Revoke narrows, so an audit failure is reported rather than undone: a
+// failing log must not be the reason a compromised credential stays live —
+// the opposite balance from Mint, where the gap is the whole attack.
 func (o *CredentialOps) Revoke(ctx context.Context, id, via, credID string) (config.APICredential, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {

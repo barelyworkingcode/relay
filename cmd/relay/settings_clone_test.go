@@ -45,7 +45,7 @@ func fillDistinct(v reflect.Value, counter *int) {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		*counter++
 		v.SetUint(uint64(*counter))
-	case reflect.Ptr:
+	case reflect.Pointer:
 		p := reflect.New(v.Type().Elem())
 		fillDistinct(p.Elem(), counter)
 		v.Set(p)
@@ -99,7 +99,7 @@ func checkIndependent(t *testing.T, path string, orig, clone reflect.Value) {
 		return
 	}
 	switch clone.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if orig.IsNil() || clone.IsNil() {
 			return
 		}

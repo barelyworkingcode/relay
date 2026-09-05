@@ -137,7 +137,7 @@ func TestReservedRoutes_AnExecuteRouteAbsentFromTCPIsStillReserved(t *testing.T)
 	rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportTCP, Reserve: reg}
 	rr.Handle(control.ClassExecute, "POST "+novel, func(w http.ResponseWriter, _ *http.Request) {})
 
-	probe, err := http.NewRequest("POST", "http://unix"+novel, nil)
+	probe, err := http.NewRequest(http.MethodPost, "http://unix"+novel, nil)
 	assertNoErr(t, err, "new request")
 	if _, pattern := mux.Handler(probe); pattern != "" {
 		t.Fatalf("an execute-class route reached the TCP mux under pattern %q", pattern)
