@@ -1155,6 +1155,9 @@ function renderAuthorityRows(p) {
     const rows = projAuthorityRows(p);
     const mounts = p.mounts || [];
     if (!rows.length && !mounts.length) {
+        if (p.host_id) {
+            return '<div class="proj-auth-row"><span class="proj-auth-none">on ' + esc(hostNameFor(p.host_id)) + ' — the agent uses its built-in tools there; relay tools aren\'t available on a host yet</span></div>';
+        }
         return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs or mounts granted — this ' + esc(projNoun(p)) + ' reaches nothing</span></div>';
     }
     let html = '';
@@ -1226,8 +1229,10 @@ function renderProjects() {
             // and the regen handler refuses a record with no path, so the
             // button could never do anything. ADR-009 decision 2's argument
             // applies to the control as much as to the flag — refusing at the
-            // door is more honest than something that quietly no-ops.
-            if (!remote) {
+            // door is more honest than something that quietly no-ops. A host
+            // project is refused for the same reason: the generator writes into
+            // a directory that is not on this Mac.
+            if (!remote && !p.host_id) {
                 html += '<button class="btn btn-sm" onclick="regenProjectSkill(\'' + esc(p.id) + '\')" title="Regenerate SKILL.md now">Regen Skill</button>';
             }
             html += '<button class="btn btn-sm btn-danger" onclick="removeProject(\'' + esc(p.id) + '\', \'' + esc(p.name) + '\')">Delete</button>';
