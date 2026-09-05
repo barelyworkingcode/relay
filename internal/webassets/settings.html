@@ -1576,21 +1576,30 @@ window.__RELAY_INIT__ = {
     if (typeof v === "object") return Object.keys(v).length > 0;
     return true;
   }
+  function scopeValueIsAsserted(v) {
+    if (Array.isArray(v)) return true;
+    return scopeValueIsSet(v);
+  }
   function projScopeValue(p, mcpID, fieldName) {
     const perMcp = p && p.context ? p.context[mcpID] : null;
     return perMcp ? perMcp[fieldName] : void 0;
   }
   function scopeValueText(v) {
-    if (Array.isArray(v)) return v.join(", ");
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "confirmed empty \u2014 confined to nothing";
     if (typeof v === "string") return v;
     if (v === void 0 || v === null) return "";
     return JSON.stringify(v);
   }
   var SCOPE_BREADTH_ROOT = "root";
   var SCOPE_BREADTH_HOME = "home";
+  var SCOPE_BREADTH_WILDCARD = "wildcard";
+  var SCOPE_WILDCARD_VALUE = "*";
   function scopeBreadthPhrase(kind) {
     if (kind === SCOPE_BREADTH_ROOT) return "unrestricted (the whole filesystem)";
     if (kind === SCOPE_BREADTH_HOME) return "a whole home directory";
+    if (kind === SCOPE_BREADTH_WILDCARD) {
+      return "unrestricted (every value, resolved fresh on every call -- including one added after this grant was made)";
+    }
     return "";
   }
   function scopeCleanPath(v) {
@@ -1619,6 +1628,7 @@ window.__RELAY_INIT__ = {
   }
   function scopeValueBreadth(v) {
     const entries = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+    if (entries.length === 1 && entries[0] === SCOPE_WILDCARD_VALUE) return SCOPE_BREADTH_WILDCARD;
     let widest = "";
     for (const e of entries) {
       const kind = scopeEntryBreadth(e);
@@ -1639,7 +1649,7 @@ window.__RELAY_INIT__ = {
   function projMissingScopeFields(p, mcpID) {
     const fields = mcpScopeFieldsFor(mcpID);
     if (!fields) return [];
-    return fields.filter((f) => f.source !== "project_path").filter((f) => !scopeValueIsSet(projScopeValue(p, mcpID, f.name))).map((f) => f.name);
+    return fields.filter((f) => f.source !== "project_path").filter((f) => !scopeValueIsAsserted(projScopeValue(p, mcpID, f.name))).map((f) => f.name);
   }
   function projScopeGaps(p) {
     const out = [];
@@ -1672,7 +1682,7 @@ window.__RELAY_INIT__ = {
           if (scopeValueIsSet(v)) derived.push(f.name + ": " + scopeValueText(v));
           continue;
         }
-        if (scopeValueIsSet(v)) scope.push(f.name + ": " + scopeValueText(v));
+        if (scopeValueIsAsserted(v)) scope.push(f.name + ": " + scopeValueText(v));
       }
       return {
         mcp: mcpID,
@@ -2113,6 +2123,14 @@ window.__RELAY_INIT__ = {
     if (typed && Object.prototype.hasOwnProperty.call(typed, field.name)) return typed[field.name];
     return scopeTextFromValue(field, ((f.context || {})[mcpID] || {})[field.name]);
   }
+  var SCOPE_CONFIRMED_EMPTY_TEXT = " ";
+  function scopeFieldWasEverAsserted(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID] || {};
+    if (Object.prototype.hasOwnProperty.call(typed, field.name)) {
+      return typed[field.name] !== "";
+    }
+    return Object.prototype.hasOwnProperty.call((f.context || {})[mcpID] || {}, field.name);
+  }
   function setProjScopeText(mcpID, fieldName, text) {
     const f = state.projectForm;
     if (!f) return;
@@ -2309,7 +2327,11 @@ window.__RELAY_INIT__ = {
     const res = state.scopeEnum[key];
     const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
     const args = "'" + esc(mcpID) + "', '" + esc(field.name) + "'";
-    let html = '<div class="proj-scope-summary">' + (selected.length ? esc(selected.map(scopeEnumValueKey).join(", ")) : '<span class="proj-scope-none">nothing selected \u2014 every tool this field governs is refused</span>') + "</div>";
+    let noneMessage = "nothing selected \u2014 every tool this field governs is refused";
+    if (selected.length === 0 && scopeFieldWasEverAsserted(f, mcpID, field)) {
+      noneMessage = "confirmed empty \u2014 every tool this field governs succeeds, reaching nothing";
+    }
+    let html = '<div class="proj-scope-summary">' + (selected.length ? esc(selected.map(scopeEnumValueKey).join(", ")) : '<span class="proj-scope-none">' + esc(noneMessage) + "</span>") + "</div>";
     const unknown = res && res.status === "ok" ? unrecognisedScopeValues(selected, res.values) : [];
     if (unknown.length) {
       html += '<div class="proj-scope-unrecognised">' + esc(mcpID) + " does not offer " + esc(unknown.map(scopeEnumValueKey).join(", ")) + ". Kept and still in force \u2014 it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>";
@@ -2350,7 +2372,11 @@ window.__RELAY_INIT__ = {
     for (const o of offered || []) push(o.value, o.label || scopeEnumValueKey(o.value), false);
     for (const row of rows) row.label = row.labels.join(" \xB7 ");
     if (!rows.length) {
-      return '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
+      let html2 = '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
+      if (multi) {
+        html2 += `<button type="button" class="btn btn-sm" onclick="confirmScopeFieldEmpty('` + esc(mcpID) + "', '" + esc(field.name) + `')">Confirm: nothing to grant here</button>`;
+      }
+      return html2;
     }
     const selectedKeys = new Set(selected.map(scopeEnumValueKey));
     let html = '<div class="proj-scope-choices">';
@@ -2365,6 +2391,11 @@ window.__RELAY_INIT__ = {
       html += "</div>";
     }
     html += "</div>";
+    if (multi) {
+      const allIdx = state._scopeBind.length;
+      state._scopeBind.push({ mcpID, field: field.name, value: rows.map((r) => r.value) });
+      html += '<div class="proj-scope-bulk"><button type="button" class="btn btn-sm" onclick="selectAllScopeValuesAt(' + allIdx + ')">Select all (' + rows.length + `)</button> <button type="button" class="btn btn-sm" onclick="clearScopeValues('` + esc(mcpID) + "', '" + esc(field.name) + `')">Clear all</button></div>`;
+    }
     return html;
   }
   function toggleProjScopeValueAt(index, checked) {
@@ -2385,6 +2416,31 @@ window.__RELAY_INIT__ = {
     }
     setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === "array" ? next : next[0] !== void 0 ? next[0] : ""));
     refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+  }
+  function selectAllScopeValuesAt(index) {
+    const bind = state._scopeBind[index];
+    if (!bind) return;
+    const f = state.projectForm;
+    if (!f) return;
+    const field = scopeFieldByName(bind.mcpID, bind.field);
+    if (!field) return;
+    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, bind.value));
+    refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+  }
+  function clearScopeValues(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, scopeTextFromValue(field, field.type === "array" ? [] : ""));
+    refreshDependentScopeFields(mcpID, fieldName);
+    render();
+  }
+  function confirmScopeFieldEmpty(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, SCOPE_CONFIRMED_EMPTY_TEXT);
+    refreshDependentScopeFields(mcpID, fieldName);
     render();
   }
   function captureProjectFormInputs() {
@@ -2820,8 +2876,12 @@ window.__RELAY_INIT__ = {
           delete existing[field.name];
           continue;
         }
+        if (!scopeFieldWasEverAsserted(f, mcpID, field)) {
+          delete existing[field.name];
+          continue;
+        }
         const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
-        if (scopeValueIsSet(value)) existing[field.name] = value;
+        if (scopeValueIsAsserted(value)) existing[field.name] = value;
         else delete existing[field.name];
       }
       if (Object.keys(existing).length) context[mcpID] = existing;
@@ -5013,6 +5073,7 @@ That browser's credential stops authenticating on its next request and it has to
     scopeValueBreadth,
     scopeValueFromText,
     scopeValueIsSet,
+    scopeValueIsAsserted,
     scopeValueText,
     setProjAccess,
     setProjAllowExternal,
@@ -5020,6 +5081,8 @@ That browser's credential stops authenticating on its next request and it has to
     setProjMcpGranted,
     setProjScopeText,
     captureProjectFormInputs,
+    clearScopeValues,
+    confirmScopeFieldEmpty,
     focusProjectFormIssue,
     isPolicyEmpty,
     refreshDependentScopeFields,
@@ -5030,8 +5093,10 @@ That browser's credential stops authenticating on its next request and it has to
     scopeEnumValueKey,
     scopeFieldByName,
     scopeFieldIsOpen,
+    scopeFieldWasEverAsserted,
     scopeOpenKey,
     scopeSelectedValues,
+    selectAllScopeValuesAt,
     toggleProjScopeValueAt,
     toggleScopeFieldPicker,
     unrecognisedScopeValues,

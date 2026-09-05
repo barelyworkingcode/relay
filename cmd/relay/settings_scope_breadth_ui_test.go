@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,6 +155,33 @@ func TestScopeBreadthJs_MirrorsGo(t *testing.T) {
 		got := evalString(t, vm, `window.scopeEntryBreadth(`+jsQuote(entry)+`)`)
 		if got != want {
 			t.Errorf("scopeEntryBreadth(%q): js=%q go=%q", entry, got, want)
+		}
+	}
+}
+
+// The wildcard is a whole-VALUE classification (recognised only as the
+// array's sole element), not a per-entry one, so it needs its own parity
+// check against project.ScopeValueBreadth rather than riding on the
+// entry-level test above.
+func TestScopeValueBreadthJs_MirrorsGoForTheWildcard(t *testing.T) {
+	vm := newAppVM(t)
+	for _, tc := range []struct {
+		value string // a JS array literal
+		want  string
+	}{
+		{`["*"]`, project.ScopeBreadthWildcard},
+		{`["*","Bob"]`, project.ScopeBreadthBounded},
+		{`["Bob"]`, project.ScopeBreadthBounded},
+		{`["Bob","*"]`, project.ScopeBreadthBounded},
+	} {
+		var goRaw json.RawMessage = json.RawMessage(tc.value)
+		want := project.ScopeValueBreadth(goRaw)
+		if want != tc.want {
+			t.Fatalf("fixture drifted from its own expectation: ScopeValueBreadth(%s) = %q, want %q", tc.value, want, tc.want)
+		}
+		got := evalString(t, vm, `window.scopeValueBreadth(`+tc.value+`)`)
+		if got != want {
+			t.Errorf("scopeValueBreadth(%s): js=%q go=%q", tc.value, got, want)
 		}
 	}
 }
