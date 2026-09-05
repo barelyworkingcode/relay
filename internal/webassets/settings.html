@@ -338,6 +338,19 @@ textarea:focus {
 .proj-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .proj-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
 .proj-badge-remote { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; border-radius: 4px; color: var(--accent); border: 1px solid var(--accent); }
+/* Host chip on a project card (docs/ssh-hosts.md) — monospace-flavoured, like
+   a host's own target string, so it reads as "this is infrastructure" next
+   to the project's plain-text name. */
+.proj-host-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; font-size: 10px; font-family: var(--mono); border-radius: 4px; color: var(--text-2); border: 1px solid var(--border); }
+/* Host status dot + word, reused on the Hosts tab list and (in a later pass)
+   eve's own host chip -- connected green, idle grey-filled, unreachable red,
+   unknown a grey OUTLINE so "never probed" doesn't read as "probed and grey". */
+.host-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-2); text-transform: capitalize; }
+.host-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-3); }
+.host-status-dot.connected { background: var(--ok); }
+.host-status-dot.idle { background: var(--text-3); }
+.host-status-dot.unreachable { background: var(--danger); }
+.host-status-dot.unknown { background: transparent; border: 1px solid var(--text-3); }
 .proj-kind-label { font-size: 13px; color: var(--text); padding: 4px 0; }
 .proj-card-path { color: var(--text-2); font-size: 11px; font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card-meta { color: var(--text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -558,6 +571,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
     <div class="sidebar-item active" onclick="showPage('services')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Services</div>
     <div class="sidebar-item" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</div>
     <div class="sidebar-item" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</div>
+    <div class="sidebar-item" onclick="showPage('hosts')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="4" width="20" height="8" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>Hosts</div>
     <div class="sidebar-item" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</div>
     <div class="sidebar-item" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</div>
     <div class="sidebar-item" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</div>
@@ -571,6 +585,7 @@ window.__RELAY_INIT__ = {
   services: __SERVICES_JSON__,
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
+  hosts: __HOSTS_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
   mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,
@@ -789,6 +804,7 @@ window.__RELAY_INIT__ = {
   var SERVICES_INIT = window.__RELAY_INIT__.services;
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
+  var HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
   var MCP_SCOPE_FIELDS_INIT = window.__RELAY_INIT__.mcpScopeFields || {};
   var ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
@@ -881,6 +897,15 @@ window.__RELAY_INIT__ = {
     // id -> { ok, message, t } (last regen result)
     projectError: null,
     rotatingProjectId: null,
+    // Hosts tab (docs/ssh-hosts.md).
+    hosts: HOSTS_INIT,
+    editingHostId: null,
+    // null = list, 'new' = add form, '<id>' = edit form
+    hostForm: null,
+    hostFormError: null,
+    hostProbePending: {},
+    // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
+    hostError: null,
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
     // fetched when an operator opens the control and cached for the life of
@@ -953,7 +978,7 @@ window.__RELAY_INIT__ = {
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
     state.page = page;
-    const pages = ["services", "mcps", "projects", "remote", "passkeys", "inspector", "audit"];
+    const pages = ["services", "mcps", "projects", "hosts", "remote", "passkeys", "inspector", "audit"];
     document.querySelectorAll(".sidebar-item").forEach((el, i) => {
       el.classList.toggle("active", pages[i] === page);
     });
@@ -965,6 +990,7 @@ window.__RELAY_INIT__ = {
   function render(source) {
     if (state.projectForm) captureProjectFormInputs();
     if (state.enrolForm) captureEnrolFormInputs();
+    if (state.hostForm) captureHostFormInputs();
     const el = document.getElementById("content");
     const fromPush = source === "push";
     if (state.page === "services") {
@@ -976,6 +1002,9 @@ window.__RELAY_INIT__ = {
     } else if (state.page === "projects") {
       if (fromPush && state.editingProjectId) return;
       el.innerHTML = renderProjects();
+    } else if (state.page === "hosts") {
+      if (fromPush && state.editingHostId) return;
+      el.innerHTML = renderHosts();
     } else if (state.page === "remote") {
       if (fromPush && (state.enrolForm || state.remoteDirty)) return;
       el.innerHTML = renderEnrolments();
@@ -1547,21 +1576,30 @@ window.__RELAY_INIT__ = {
     if (typeof v === "object") return Object.keys(v).length > 0;
     return true;
   }
+  function scopeValueIsAsserted(v) {
+    if (Array.isArray(v)) return true;
+    return scopeValueIsSet(v);
+  }
   function projScopeValue(p, mcpID, fieldName) {
     const perMcp = p && p.context ? p.context[mcpID] : null;
     return perMcp ? perMcp[fieldName] : void 0;
   }
   function scopeValueText(v) {
-    if (Array.isArray(v)) return v.join(", ");
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "confirmed empty \u2014 confined to nothing";
     if (typeof v === "string") return v;
     if (v === void 0 || v === null) return "";
     return JSON.stringify(v);
   }
   var SCOPE_BREADTH_ROOT = "root";
   var SCOPE_BREADTH_HOME = "home";
+  var SCOPE_BREADTH_WILDCARD = "wildcard";
+  var SCOPE_WILDCARD_VALUE = "*";
   function scopeBreadthPhrase(kind) {
     if (kind === SCOPE_BREADTH_ROOT) return "unrestricted (the whole filesystem)";
     if (kind === SCOPE_BREADTH_HOME) return "a whole home directory";
+    if (kind === SCOPE_BREADTH_WILDCARD) {
+      return "unrestricted (every value, resolved fresh on every call -- including one added after this grant was made)";
+    }
     return "";
   }
   function scopeCleanPath(v) {
@@ -1590,6 +1628,7 @@ window.__RELAY_INIT__ = {
   }
   function scopeValueBreadth(v) {
     const entries = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+    if (entries.length === 1 && entries[0] === SCOPE_WILDCARD_VALUE) return SCOPE_BREADTH_WILDCARD;
     let widest = "";
     for (const e of entries) {
       const kind = scopeEntryBreadth(e);
@@ -1610,7 +1649,7 @@ window.__RELAY_INIT__ = {
   function projMissingScopeFields(p, mcpID) {
     const fields = mcpScopeFieldsFor(mcpID);
     if (!fields) return [];
-    return fields.filter((f) => f.source !== "project_path").filter((f) => !scopeValueIsSet(projScopeValue(p, mcpID, f.name))).map((f) => f.name);
+    return fields.filter((f) => f.source !== "project_path").filter((f) => !scopeValueIsAsserted(projScopeValue(p, mcpID, f.name))).map((f) => f.name);
   }
   function projScopeGaps(p) {
     const out = [];
@@ -1643,7 +1682,7 @@ window.__RELAY_INIT__ = {
           if (scopeValueIsSet(v)) derived.push(f.name + ": " + scopeValueText(v));
           continue;
         }
-        if (scopeValueIsSet(v)) scope.push(f.name + ": " + scopeValueText(v));
+        if (scopeValueIsAsserted(v)) scope.push(f.name + ": " + scopeValueText(v));
       }
       return {
         mcp: mcpID,
@@ -1662,10 +1701,29 @@ window.__RELAY_INIT__ = {
       };
     });
   }
+  function renderProjMountRows(p) {
+    const mounts = p.mounts || [];
+    let html = "";
+    for (const m of mounts) {
+      html += '<div class="proj-auth-row">';
+      html += '<span class="proj-auth-mcp">mount ' + esc(m.id) + "</span>";
+      const access = m.access === "write" ? "write" : "read";
+      html += '<span class="proj-auth-mode ' + esc(access) + '">' + esc(access) + "</span>";
+      html += '<span class="proj-auth-scope">' + esc(m.path || "") + "</span>";
+      const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ""));
+      if (phrase) html += '<span class="proj-auth-unrestricted">' + esc(phrase) + "</span>";
+      html += "</div>";
+    }
+    return html;
+  }
   function renderAuthorityRows(p) {
     const rows = projAuthorityRows(p);
-    if (!rows.length) {
-      return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs granted \u2014 this ' + esc(projNoun(p)) + " reaches nothing</span></div>";
+    const mounts = p.mounts || [];
+    if (!rows.length && !mounts.length) {
+      if (p.host_id) {
+        return '<div class="proj-auth-row"><span class="proj-auth-none">on ' + esc(hostNameFor(p.host_id)) + " \u2014 the agent uses its built-in tools there; relay tools aren't available on a host yet</span></div>";
+      }
+      return '<div class="proj-auth-row"><span class="proj-auth-none">no MCPs or mounts granted \u2014 this ' + esc(projNoun(p)) + " reaches nothing</span></div>";
     }
     let html = "";
     for (const r of rows) {
@@ -1686,6 +1744,7 @@ window.__RELAY_INIT__ = {
       if (r.schemaUnknown) html += '<span class="proj-auth-scope none">not connected \u2014 scope unknown</span>';
       html += "</div>";
     }
+    html += renderProjMountRows(p);
     return html;
   }
   function renderProjects() {
@@ -1713,10 +1772,11 @@ window.__RELAY_INIT__ = {
         html += '<div style="display:flex;align-items:center;gap:6px">';
         html += '<span class="proj-card-name">' + esc(p.name) + "</span>";
         if (remote) html += '<span class="proj-badge-remote">Access profile</span>';
+        if (p.host_id) html += '<span class="proj-host-chip">\u2301 ' + esc(hostNameFor(p.host_id)) + "</span>";
         html += "</div>";
         html += '<div style="display:flex;gap:4px">';
         html += `<button class="btn btn-sm" onclick="editProject('` + esc(p.id) + `')">Edit</button>`;
-        if (!remote) {
+        if (!remote && !p.host_id) {
           html += `<button class="btn btn-sm" onclick="regenProjectSkill('` + esc(p.id) + `')" title="Regenerate SKILL.md now">Regen Skill</button>`;
         }
         html += `<button class="btn btn-sm btn-danger" onclick="removeProject('` + esc(p.id) + "', '" + esc(p.name) + `')">Delete</button>`;
@@ -1765,6 +1825,9 @@ window.__RELAY_INIT__ = {
       // 'local' | 'remote' — see setProjKind
       name: "",
       path: "",
+      // host_id names a Host this project's Path lives on instead of this
+      // Mac (docs/ssh-hosts.md). '' is the console — see setProjWhere.
+      host_id: "",
       allowed_mcp_ids: [PROJ_MCP_WILDCARD],
       // wildcard by default
       allowed_models: [PROJ_MCP_WILDCARD],
@@ -1793,6 +1856,13 @@ window.__RELAY_INIT__ = {
       // and a local agent already has one.
       allow_external: {},
       // mcpID -> true | false
+      // The mount-plane grant (remote/access-profile only): each row is
+      // { id, path, access }. Unlike allowed_tools/context, id and path are
+      // live-bound straight into this array on blur (onchange), not
+      // deferred through a _xxxText sibling — a mount row's own two fields
+      // have no picker and no per-key structure to reconcile, so there is
+      // nothing captureProjectFormInputs needs to do for them.
+      mounts: [],
       // Raw text as typed, so a half-finished value survives a re-render and
       // is parsed exactly once, at harvest. Underscore-prefixed: never sent.
       _scopeText: {},
@@ -1808,6 +1878,7 @@ window.__RELAY_INIT__ = {
       kind: isRemoteProject(p) ? "remote" : "local",
       name: p.name || "",
       path: p.path || "",
+      host_id: p.host_id || "",
       allowed_mcp_ids: (p.allowed_mcp_ids || []).slice(),
       allowed_models: (p.allowed_models || []).slice(),
       chat_templates: JSON.parse(JSON.stringify(p.chat_templates || [])),
@@ -1823,6 +1894,7 @@ window.__RELAY_INIT__ = {
       allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
       context: JSON.parse(JSON.stringify(p.context || {})),
       allow_external: JSON.parse(JSON.stringify(p.allow_external || {})),
+      mounts: JSON.parse(JSON.stringify(p.mounts || [])),
       _scopeText: {},
       _toolsText: {},
       token: p.token || ""
@@ -1882,11 +1954,26 @@ window.__RELAY_INIT__ = {
   function isRemoteForm(f) {
     return !!f && f.kind === "remote";
   }
+  function isHostedForm(f) {
+    return !!f && !isRemoteForm(f) && !!f.host_id;
+  }
+  function setProjWhere(hostId) {
+    const f = state.projectForm;
+    if (!f) return;
+    f.host_id = hostId || "";
+    if (f.host_id) {
+      f.allowed_mcp_ids = [];
+      f.generate_skill = false;
+      f.allow_cwd_auth = false;
+    }
+    render();
+  }
   function setProjKind(kind) {
     const f = state.projectForm;
     if (!f) return;
     f.kind = kind;
     if (kind === "remote") {
+      f.host_id = "";
       if (isProjMcpWildcard(f)) f.allowed_mcp_ids = [];
       f.allowed_models = [];
     }
@@ -1993,6 +2080,24 @@ window.__RELAY_INIT__ = {
     }
     render();
   }
+  function addProjMount() {
+    const f = state.projectForm;
+    if (!f) return;
+    f.mounts.push({ id: "", path: "", access: "read" });
+    render();
+  }
+  function removeProjMount(index) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts.splice(index, 1);
+    render();
+  }
+  function setProjMountAccess(index, access) {
+    const f = state.projectForm;
+    if (!f || !f.mounts[index]) return;
+    f.mounts[index].access = access;
+    render();
+  }
   function scopeTextFromValue(field, v) {
     if (v === void 0 || v === null) return "";
     if (Array.isArray(v)) return v.join("\n");
@@ -2017,6 +2122,14 @@ window.__RELAY_INIT__ = {
     const typed = (f._scopeText || {})[mcpID];
     if (typed && Object.prototype.hasOwnProperty.call(typed, field.name)) return typed[field.name];
     return scopeTextFromValue(field, ((f.context || {})[mcpID] || {})[field.name]);
+  }
+  var SCOPE_CONFIRMED_EMPTY_TEXT = " ";
+  function scopeFieldWasEverAsserted(f, mcpID, field) {
+    const typed = (f._scopeText || {})[mcpID] || {};
+    if (Object.prototype.hasOwnProperty.call(typed, field.name)) {
+      return typed[field.name] !== "";
+    }
+    return Object.prototype.hasOwnProperty.call((f.context || {})[mcpID] || {}, field.name);
   }
   function setProjScopeText(mcpID, fieldName, text) {
     const f = state.projectForm;
@@ -2214,7 +2327,11 @@ window.__RELAY_INIT__ = {
     const res = state.scopeEnum[key];
     const pending = !res && state.scopeEnumReq[scopeOpenKey(mcpID, field.name)] === key;
     const args = "'" + esc(mcpID) + "', '" + esc(field.name) + "'";
-    let html = '<div class="proj-scope-summary">' + (selected.length ? esc(selected.map(scopeEnumValueKey).join(", ")) : '<span class="proj-scope-none">nothing selected \u2014 every tool this field governs is refused</span>') + "</div>";
+    let noneMessage = "nothing selected \u2014 every tool this field governs is refused";
+    if (selected.length === 0 && scopeFieldWasEverAsserted(f, mcpID, field)) {
+      noneMessage = "confirmed empty \u2014 every tool this field governs succeeds, reaching nothing";
+    }
+    let html = '<div class="proj-scope-summary">' + (selected.length ? esc(selected.map(scopeEnumValueKey).join(", ")) : '<span class="proj-scope-none">' + esc(noneMessage) + "</span>") + "</div>";
     const unknown = res && res.status === "ok" ? unrecognisedScopeValues(selected, res.values) : [];
     if (unknown.length) {
       html += '<div class="proj-scope-unrecognised">' + esc(mcpID) + " does not offer " + esc(unknown.map(scopeEnumValueKey).join(", ")) + ". Kept and still in force \u2014 it may have been renamed on the host, or this MCP may be reading a different one. Untick it to remove it.</div>";
@@ -2255,7 +2372,11 @@ window.__RELAY_INIT__ = {
     for (const o of offered || []) push(o.value, o.label || scopeEnumValueKey(o.value), false);
     for (const row of rows) row.label = row.labels.join(" \xB7 ");
     if (!rows.length) {
-      return '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
+      let html2 = '<div class="proj-scope-desc">' + esc(mcpID) + " offers no values for this field" + (Object.keys(deps).length ? " within the values chosen above" : "") + ". That is its answer, not a failure \u2014 there is nothing here to grant.</div>";
+      if (multi) {
+        html2 += `<button type="button" class="btn btn-sm" onclick="confirmScopeFieldEmpty('` + esc(mcpID) + "', '" + esc(field.name) + `')">Confirm: nothing to grant here</button>`;
+      }
+      return html2;
     }
     const selectedKeys = new Set(selected.map(scopeEnumValueKey));
     let html = '<div class="proj-scope-choices">';
@@ -2270,6 +2391,11 @@ window.__RELAY_INIT__ = {
       html += "</div>";
     }
     html += "</div>";
+    if (multi) {
+      const allIdx = state._scopeBind.length;
+      state._scopeBind.push({ mcpID, field: field.name, value: rows.map((r) => r.value) });
+      html += '<div class="proj-scope-bulk"><button type="button" class="btn btn-sm" onclick="selectAllScopeValuesAt(' + allIdx + ')">Select all (' + rows.length + `)</button> <button type="button" class="btn btn-sm" onclick="clearScopeValues('` + esc(mcpID) + "', '" + esc(field.name) + `')">Clear all</button></div>`;
+    }
     return html;
   }
   function toggleProjScopeValueAt(index, checked) {
@@ -2290,6 +2416,31 @@ window.__RELAY_INIT__ = {
     }
     setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, field.type === "array" ? next : next[0] !== void 0 ? next[0] : ""));
     refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+  }
+  function selectAllScopeValuesAt(index) {
+    const bind = state._scopeBind[index];
+    if (!bind) return;
+    const f = state.projectForm;
+    if (!f) return;
+    const field = scopeFieldByName(bind.mcpID, bind.field);
+    if (!field) return;
+    setProjScopeText(bind.mcpID, bind.field, scopeTextFromValue(field, bind.value));
+    refreshDependentScopeFields(bind.mcpID, bind.field);
+    render();
+  }
+  function clearScopeValues(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, scopeTextFromValue(field, field.type === "array" ? [] : ""));
+    refreshDependentScopeFields(mcpID, fieldName);
+    render();
+  }
+  function confirmScopeFieldEmpty(mcpID, fieldName) {
+    const field = scopeFieldByName(mcpID, fieldName);
+    if (!field) return;
+    setProjScopeText(mcpID, fieldName, SCOPE_CONFIRMED_EMPTY_TEXT);
+    refreshDependentScopeFields(mcpID, fieldName);
     render();
   }
   function captureProjectFormInputs() {
@@ -2367,73 +2518,114 @@ window.__RELAY_INIT__ = {
       html += '<div class="proj-field-error">' + esc(state.projectFormError) + "</div>";
     }
     if (!isRemote) {
-      html += "<label>Project path</label>";
-      html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === "projPath" ? "proj-field-invalid" : "") + '" value="' + esc(f.path) + '" placeholder="/Users/you/projects/acme" />';
+      const hosted = isHostedForm(f);
+      html += "<label>Where</label>";
+      html += '<div class="perm-btns">';
+      html += '<button class="perm-btn ' + (!f.host_id ? "active" : "") + `" onclick="setProjWhere('')">This Mac</button>`;
+      for (const h of state.hosts || []) {
+        html += '<button class="perm-btn ' + (f.host_id === h.id ? "active" : "") + `" onclick="setProjWhere('` + esc(h.id) + `')">` + esc(h.name) + "</button>";
+      }
+      html += "</div>";
+      html += "<label>" + (hosted ? "Path on " + esc(hostNameFor(f.host_id)) : "Project path") + "</label>";
+      html += '<input type="text" id="projPath" class="' + (state.projectFormErrorField === "projPath" ? "proj-field-invalid" : "") + '" value="' + esc(f.path) + '" placeholder="' + (hosted ? "/home/you/projects/acme" : "/Users/you/projects/acme") + '" />';
       if (state.projectFormErrorField === "projPath") {
         html += '<div class="proj-field-error">' + esc(state.projectFormError) + "</div>";
       }
-      html += '<p class="proj-section-help">Absolute path. Filesystem MCPs are auto-scoped to this directory.</p>';
+      html += '<p class="proj-section-help">' + (hosted ? "Absolute path on " + esc(hostNameFor(f.host_id)) + ". Relay never checks whether it exists \u2014 the host does that when a session or terminal opens it." : "Absolute path. Filesystem MCPs are auto-scoped to this directory.") + "</p>";
     } else {
       html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += "</div>";
-    const wild = !isRemote && isProjMcpWildcard(f);
-    html += '<div class="proj-section">';
-    html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
-    if (!isRemote) {
-      html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-      html += "<span>Allow all registered MCPs (wildcard <code>*</code>)</span>";
-      html += '<label class="switch"><input type="checkbox" ' + (wild ? "checked" : "") + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+    if (isHostedForm(f)) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
+      html += `<p class="proj-section-help">Relay tools aren't available on a host yet \u2014 the agent uses its built-in tools there.</p>`;
       html += "</div>";
     } else {
-      html += `<p class="proj-section-help">An access profile can't use the wildcard \u2014 list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>`;
-    }
-    if (!wild) {
-      const registered = state.externalMcps.slice();
-      const registeredIds = new Set(registered.map((m) => m.id));
-      const dangling = f.allowed_mcp_ids.filter((id) => id !== PROJ_MCP_WILDCARD && !registeredIds.has(id));
-      if (registered.length === 0 && dangling.length === 0) {
-        html += '<div class="proj-tool-empty">No MCPs registered yet. Add one in the <strong>MCP Servers</strong> tab.</div>';
+      const wild = !isRemote && isProjMcpWildcard(f);
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">MCPs, Tools, Operations, External Access &amp; Resources</div>';
+      if (!isRemote) {
+        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
+        html += "<span>Allow all registered MCPs (wildcard <code>*</code>)</span>";
+        html += '<label class="switch"><input type="checkbox" ' + (wild ? "checked" : "") + ' onchange="setProjMcpWildcard(this.checked)" /><span class="slider"></span></label>';
+        html += "</div>";
+      } else {
+        html += `<p class="proj-section-help">An access profile can't use the wildcard \u2014 list MCPs explicitly, because registering a new MCP on the host would otherwise silently widen what this client reaches. Zero granted is a valid starting point; widen it deliberately later.</p>`;
       }
-      for (const mcp of registered) {
-        const st = projMcpState(f, mcp.id);
-        const granted = f.allowed_mcp_ids.indexOf(mcp.id) >= 0;
-        html += '<div class="proj-mcp-row">';
-        html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
-        html += '<div class="perm-btns">';
-        if (isRemote) {
-          html += '<button class="perm-btn ' + (granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', true)">Granted</button>`;
-          html += '<button class="perm-btn ' + (!granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', false)">Not granted</button>`;
-        } else {
-          html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'all')">All tools</button>`;
-          html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'selected')">Selected</button>`;
-          html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'none')">No tools</button>`;
+      if (!wild) {
+        const registered = state.externalMcps.slice();
+        const registeredIds = new Set(registered.map((m) => m.id));
+        const dangling = f.allowed_mcp_ids.filter((id) => id !== PROJ_MCP_WILDCARD && !registeredIds.has(id));
+        if (registered.length === 0 && dangling.length === 0) {
+          html += '<div class="proj-tool-empty">No MCPs registered yet. Add one in the <strong>MCP Servers</strong> tab.</div>';
         }
-        html += "</div>";
-        html += "</div>";
-        if (!isRemote && st === "selected") {
-          html += renderProjToolPicker(mcp.id, f);
+        for (const mcp of registered) {
+          const st = projMcpState(f, mcp.id);
+          const granted = f.allowed_mcp_ids.indexOf(mcp.id) >= 0;
+          html += '<div class="proj-mcp-row">';
+          html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
+          html += '<div class="perm-btns">';
+          if (isRemote) {
+            html += '<button class="perm-btn ' + (granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', true)">Granted</button>`;
+            html += '<button class="perm-btn ' + (!granted ? "active" : "") + `" onclick="setProjMcpGranted('` + esc(mcp.id) + `', false)">Not granted</button>`;
+          } else {
+            html += '<button class="perm-btn ' + (st === "all" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'all')">All tools</button>`;
+            html += '<button class="perm-btn ' + (st === "selected" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'selected')">Selected</button>`;
+            html += '<button class="perm-btn ' + (st === "none" ? "active" : "") + `" onclick="setProjMcpState('` + esc(mcp.id) + `', 'none')">No tools</button>`;
+          }
+          html += "</div>";
+          html += "</div>";
+          if (!isRemote && st === "selected") {
+            html += renderProjToolPicker(mcp.id, f);
+          }
+          if (granted) {
+            html += renderProjMcpPermissions(mcp.id, f);
+          }
         }
-        if (granted) {
+        for (const id of dangling) {
+          html += '<div class="proj-mcp-row">';
+          html += '<span class="proj-mcp-name dangling">' + esc(id) + " (no longer registered)</span>";
+          html += `<button class="perm-btn" onclick="setProjMcpState('` + esc(id) + `', 'none')">Remove</button>`;
+          html += "</div>";
+        }
+      } else {
+        for (const mcp of state.externalMcps) {
+          html += '<div class="proj-mcp-row">';
+          html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
+          html += '<span class="proj-mcp-name" style="color:var(--text-3)">granted by the wildcard</span>';
+          html += "</div>";
           html += renderProjMcpPermissions(mcp.id, f);
         }
       }
-      for (const id of dangling) {
-        html += '<div class="proj-mcp-row">';
-        html += '<span class="proj-mcp-name dangling">' + esc(id) + " (no longer registered)</span>";
-        html += `<button class="perm-btn" onclick="setProjMcpState('` + esc(id) + `', 'none')">Remove</button>`;
-        html += "</div>";
-      }
-    } else {
-      for (const mcp of state.externalMcps) {
-        html += '<div class="proj-mcp-row">';
-        html += '<span class="proj-mcp-name">' + esc(mcp.display_name || mcp.id) + ' <span style="color:var(--text-3);font-size:11px">(' + esc(mcp.id) + ")</span></span>";
-        html += '<span class="proj-mcp-name" style="color:var(--text-3)">granted by the wildcard</span>';
-        html += "</div>";
-        html += renderProjMcpPermissions(mcp.id, f);
-      }
+      html += "</div>";
     }
-    html += "</div>";
+    if (isRemote) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Mounts</div>';
+      html += `<p class="proj-section-help">Exposes a host directory to this client as a real POSIX filesystem mount (relayfs), instead of through an MCP's curated tool surface. Each mount needs an id unique on this profile (what the client names in its attach request), an absolute host path, and read or write.</p>`;
+      if (f.mounts.length === 0) {
+        html += '<div class="proj-tool-empty">No mounts yet.</div>';
+      }
+      for (let i = 0; i < f.mounts.length; i++) {
+        const m = f.mounts[i];
+        const breadth = scopeBreadthPhrase(scopeEntryBreadth(m.path || ""));
+        html += '<div class="proj-mcp-row" style="align-items:flex-start;flex-wrap:wrap;gap:8px">';
+        html += '<div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:220px">';
+        html += '<input type="text" id="projMountId_' + i + '" value="' + esc(m.id || "") + '" placeholder="mount id, e.g. src" onchange="state.projectForm.mounts[' + i + '].id = this.value" />';
+        html += '<input type="text" id="projMountPath_' + i + '" value="' + esc(m.path || "") + '" placeholder="/absolute/host/path" onchange="state.projectForm.mounts[' + i + '].path = this.value" />';
+        if (breadth) html += '<span style="color:#b45309;font-size:12px">' + esc(breadth) + "</span>";
+        html += "</div>";
+        html += '<div class="perm-btns">';
+        html += '<button class="perm-btn ' + (m.access !== "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'read')">Read</button>`;
+        html += '<button class="perm-btn ' + (m.access === "write" ? "active" : "") + '" onclick="setProjMountAccess(' + i + `, 'write')">Write</button>`;
+        html += "</div>";
+        html += '<button class="btn btn-sm btn-danger" onclick="removeProjMount(' + i + ')">Remove</button>';
+        html += "</div>";
+      }
+      html += '<div style="margin-top:8px"><button class="btn btn-sm" onclick="addProjMount()">Add mount</button></div>';
+      html += "</div>";
+    }
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Allowed Models</div>';
     if (isRemote) {
@@ -2493,7 +2685,7 @@ window.__RELAY_INIT__ = {
       html += '<textarea id="projDeniedTools" rows="3" placeholder="Bash(rm *)&#10;Write">' + esc(pol.denied_tools.join("\n")) + "</textarea>";
       html += "</div>";
     }
-    if (!isRemote) {
+    if (!isRemote && !isHostedForm(f)) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Skill (CLAUDE.md / SKILL.md)</div>';
       html += `<p class="proj-section-help">When enabled, relay regenerates <code>&lt;path&gt;/.claude/skills/relay/SKILL.md</code> on project save and MCP changes so Claude Code can discover this project's tools.</p>`;
@@ -2511,7 +2703,7 @@ window.__RELAY_INIT__ = {
       }
       html += "</div>";
     }
-    if (!isRemote) {
+    if (!isRemote && !isHostedForm(f)) {
       html += '<div class="proj-section">';
       html += '<div class="proj-section-title">Directory Auth</div>';
       html += `<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project's path, granting exactly this project's tools. <strong>Any process running as you</strong> gets them by being in the directory \u2014 including agents you started for something else. Leave off unless you want that trade.</p>`;
@@ -2595,6 +2787,7 @@ window.__RELAY_INIT__ = {
     const f = state.projectForm;
     if (!f) return null;
     const isRemote = isRemoteForm(f);
+    const hosted = isHostedForm(f);
     const name = (document.getElementById("projName") || {}).value || f.name;
     let allowedModels = f.allowed_models;
     if (isRemote) {
@@ -2616,14 +2809,29 @@ window.__RELAY_INIT__ = {
     const payload = {
       name: name.trim(),
       kind: isRemote ? "remote" : "local",
-      allowed_mcp_ids: f.allowed_mcp_ids,
+      // host_id: '' moves (or keeps) the project on the console —
+      // validateHostShape refuses allowed_mcp_ids and the two flags below
+      // on a host project, so this harvest forces all three to the value
+      // that will pass regardless of stale form state, the same discipline
+      // the remote branch already applies to itself.
+      host_id: isRemote ? "" : f.host_id,
+      allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
       allowed_models: allowedModels,
       permission_policy: policy,
-      // Both are directory-flavored and meaningless without a path;
-      // force them off for remote regardless of stale form state.
-      generate_skill: isRemote ? false : f.generate_skill,
-      allow_cwd_auth: isRemote ? false : f.allow_cwd_auth,
-      disabled_tools: f.disabled_tools
+      // Both are directory-flavored and meaningless without a console
+      // path; force them off for remote AND for a hosted project
+      // regardless of stale form state.
+      generate_skill: isRemote || hosted ? false : f.generate_skill,
+      allow_cwd_auth: isRemote || hosted ? false : f.allow_cwd_auth,
+      disabled_tools: f.disabled_tools,
+      // Local-project mounts must not be sent even if a stray row survived
+      // a kind switch on a still-open new-project form — ValidateMounts
+      // refuses non-empty mounts on kind:local, and this is the harvest
+      // that has to make that unreachable rather than an error to hit.
+      // Blank rows (Add clicked, never filled in) are dropped rather than
+      // sent — a convenience, same as everywhere else in this function;
+      // the server is still what actually validates a filled-in row.
+      mounts: isRemote ? f.mounts.filter((m) => (m.id || "").trim() && (m.path || "").trim()).map((m) => ({ id: m.id.trim(), path: m.path.trim(), access: m.access === "write" ? "write" : "read" })) : []
     };
     if (isRemote && f.chat_templates.length > 0) payload.chat_templates = [];
     const perms = harvestProjectPermissions(f);
@@ -2668,8 +2876,12 @@ window.__RELAY_INIT__ = {
           delete existing[field.name];
           continue;
         }
+        if (!scopeFieldWasEverAsserted(f, mcpID, field)) {
+          delete existing[field.name];
+          continue;
+        }
         const value = scopeValueFromText(field, projScopeText(f, mcpID, field));
-        if (scopeValueIsSet(value)) existing[field.name] = value;
+        if (scopeValueIsAsserted(value)) existing[field.name] = value;
         else delete existing[field.name];
       }
       if (Object.keys(existing).length) context[mcpID] = existing;
@@ -2720,6 +2932,11 @@ window.__RELAY_INIT__ = {
         const phrase = scopeBreadthPhrase(scopeValueBreadth(values[field]));
         if (phrase) findings.push(mcpID + " \xB7 " + field + " is " + phrase);
       }
+    }
+    const mounts = payload && payload.mounts || [];
+    for (const m of mounts) {
+      const phrase = scopeBreadthPhrase(scopeEntryBreadth(m.path || ""));
+      if (phrase) findings.push("mount " + m.id + " is " + phrase);
     }
     if (!findings.length) return true;
     return confirm(
@@ -2794,6 +3011,245 @@ window.__RELAY_INIT__ = {
     if (state.page !== "projects") return;
     render();
     focusProjectFormIssue();
+  };
+  function hostNameFor(hostId) {
+    if (!hostId) return "";
+    const h = (state.hosts || []).find((x) => x.id === hostId);
+    return h ? h.name : hostId;
+  }
+  function renderHosts() {
+    if (state.editingHostId) return renderHostForm();
+    let html = '<div class="page-header">';
+    html += "<h2>Hosts</h2>";
+    html += '<button class="btn btn-primary" onclick="newHost()">+ Add host</button>';
+    html += "</div>";
+    html += '<p class="page-intro">A host is a machine you reach over ssh; projects can live on one.</p>';
+    if (state.hostError) html += '<div class="proj-error">' + esc(state.hostError) + "</div>";
+    if ((state.hosts || []).length === 0) {
+      html += '<div class="empty-state">No hosts yet. A host is a machine you reach over ssh; projects can live on one. <button class="btn btn-sm btn-primary" onclick="newHost()">Add host</button></div>';
+      return html;
+    }
+    for (const h of state.hosts) {
+      const pending = !!state.hostProbePending[h.id];
+      html += '<div class="proj-card">';
+      html += '<div class="proj-card-header">';
+      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<span class="proj-card-name">' + esc(h.name) + "</span>";
+      html += renderHostStatus(h.status);
+      html += "</div>";
+      html += '<div style="display:flex;gap:4px">';
+      html += `<button class="btn btn-sm" onclick="probeHost('` + esc(h.id) + `')" ` + (pending ? "disabled" : "") + ">" + (pending ? "Probing\u2026" : "Probe") + "</button>";
+      if (h.status === "connected") {
+        html += `<button class="btn btn-sm" onclick="disconnectHost('` + esc(h.id) + `')">Disconnect</button>`;
+      }
+      html += `<button class="btn btn-sm" onclick="editHost('` + esc(h.id) + `')">Edit</button>`;
+      html += `<button class="btn btn-sm btn-danger" onclick="removeHost('` + esc(h.id) + "', '" + esc(h.name) + `')">Remove</button>`;
+      html += "</div></div>";
+      html += '<div class="proj-card-path">' + esc(h.target) + (h.port ? ":" + h.port : "") + "</div>";
+      html += '<div class="proj-card-meta"><span>' + renderHostProbeSummary(h) + "</span></div>";
+      html += "</div>";
+    }
+    return html;
+  }
+  function renderHostStatus(status) {
+    const label = status || "unknown";
+    return '<span class="host-status"><span class="host-status-dot ' + esc(label) + '"></span>' + esc(label) + "</span>";
+  }
+  function renderHostProbeSummary(h) {
+    const p = h.probe;
+    if (!p) return "Never probed.";
+    if (!p.ok) return '<span class="proj-error" style="margin:0">' + esc(p.error || "unreachable") + "</span>";
+    const parts = [];
+    if (p.os) parts.push(esc(p.os) + (p.arch ? " " + esc(p.arch) : ""));
+    parts.push(p.node_path ? "node " + esc(p.node_version || "") : "node not found");
+    parts.push(p.claude_path ? "claude " + esc(p.claude_version || "") : "claude not found");
+    return parts.join(" \xB7 ");
+  }
+  function blankHostForm() {
+    return { id: null, name: "", target: "", port: "", identity_file: "" };
+  }
+  function hostFormFromExisting(h) {
+    return {
+      id: h.id,
+      name: h.name || "",
+      target: h.target || "",
+      port: h.port ? String(h.port) : "",
+      identity_file: h.identity_file || ""
+    };
+  }
+  function newHost() {
+    state.editingHostId = "new";
+    state.hostForm = blankHostForm();
+    state.hostFormError = null;
+    render();
+  }
+  function editHost(id) {
+    const h = (state.hosts || []).find((x) => x.id === id);
+    if (!h) return;
+    state.editingHostId = id;
+    state.hostForm = hostFormFromExisting(h);
+    state.hostFormError = null;
+    render();
+  }
+  function cancelHostEdit() {
+    state.editingHostId = null;
+    state.hostForm = null;
+    state.hostFormError = null;
+    render();
+  }
+  function captureHostFormInputs() {
+    const f = state.hostForm;
+    if (!f) return;
+    const val = (id) => {
+      const el = document.getElementById(id);
+      return el && typeof el.value === "string" ? el.value : "";
+    };
+    f.name = val("hostName") || f.name;
+    f.target = val("hostTarget") || f.target;
+    f.port = val("hostPort");
+    f.identity_file = val("hostIdentityFile");
+  }
+  function harvestHostForm() {
+    const name = (document.getElementById("hostName") || {}).value || "";
+    const target = (document.getElementById("hostTarget") || {}).value || "";
+    const portStr = (document.getElementById("hostPort") || {}).value || "";
+    const identityFile = (document.getElementById("hostIdentityFile") || {}).value || "";
+    const payload = { name: name.trim(), target: target.trim() };
+    const port = parseInt(portStr, 10);
+    if (portStr.trim() && !isNaN(port)) payload.port = port;
+    if (identityFile.trim()) payload.identity_file = identityFile.trim();
+    return payload;
+  }
+  function saveHostForm() {
+    const f = state.hostForm;
+    if (!f) return;
+    const payload = harvestHostForm();
+    if (!payload.name) {
+      state.hostFormError = "Host name is required";
+      render();
+      return;
+    }
+    if (!payload.target) {
+      state.hostFormError = "SSH target is required";
+      render();
+      return;
+    }
+    const isNew = !f.id;
+    state.hostProbePending[isNew ? "new" : f.id] = true;
+    if (isNew) {
+      ipc(JSON.stringify(Object.assign({ type: "create_host" }, payload)));
+    } else {
+      ipc(JSON.stringify(Object.assign({ type: "update_host", id: f.id }, payload)));
+    }
+    render();
+  }
+  function testHostConnection() {
+    const f = state.hostForm;
+    if (!f) return;
+    if (f.id) {
+      probeHost(f.id);
+      return;
+    }
+    saveHostForm();
+  }
+  function removeHost(id, name) {
+    if (!confirm('Remove host "' + name + '"?\n\nAny project on it must be moved back to this Mac or another host first.')) return;
+    ipc(JSON.stringify({ type: "remove_host", id }));
+  }
+  function probeHost(id) {
+    state.hostProbePending[id] = true;
+    render();
+    ipc(JSON.stringify({ type: "probe_host", id }));
+  }
+  function disconnectHost(id) {
+    ipc(JSON.stringify({ type: "disconnect_host", id }));
+  }
+  function renderHostForm() {
+    const f = state.hostForm;
+    if (!f) return '<div class="empty-state">No form state.</div>';
+    const isNew = !f.id;
+    const pendingKey = isNew ? "new" : f.id;
+    const pending = !!state.hostProbePending[pendingKey];
+    let html = "<h2>" + (isNew ? "Add host" : "Edit host") + "</h2>";
+    if (state.hostFormError) html += '<div class="proj-error" id="hostFormBanner" tabindex="-1">' + esc(state.hostFormError) + "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Identity</div>';
+    html += "<label>Name</label>";
+    html += '<input type="text" id="hostName" value="' + esc(f.name) + '" placeholder="devbox" />';
+    html += "<label>SSH target</label>";
+    html += '<input type="text" id="hostTarget" value="' + esc(f.target) + '" placeholder="user@host or ssh-config alias" />';
+    html += "<label>Port</label>";
+    html += '<input type="text" id="hostPort" value="' + esc(f.port) + '" placeholder="22" />';
+    html += "<label>Identity file</label>";
+    html += '<input type="text" id="hostIdentityFile" value="' + esc(f.identity_file) + '" placeholder="optional, absolute path" />';
+    html += "</div>";
+    const existing = !isNew ? (state.hosts || []).find((x) => x.id === f.id) : null;
+    if (existing && existing.probe) {
+      html += renderHostProbeCard(existing.probe, existing.target);
+    }
+    html += '<div class="proj-form-actions">';
+    html += '<button class="btn btn-primary" onclick="saveHostForm()" ' + (pending ? "disabled" : "") + ">Save</button>";
+    html += '<button class="btn btn-sm" onclick="testHostConnection()" ' + (pending ? "disabled" : "") + ">" + (pending ? "Testing\u2026" : "Test connection") + "</button>";
+    html += '<button class="btn btn-danger" onclick="cancelHostEdit()">Cancel</button>';
+    html += "</div>";
+    return html;
+  }
+  function renderHostProbeCard(p, target) {
+    let html = '<div class="proj-section">';
+    html += '<div class="proj-section-title">Probe result</div>';
+    if (!p.ok) {
+      html += '<div class="proj-error">\u2717 ' + esc(p.error || "unreachable") + "</div>";
+      html += "</div>";
+      return html;
+    }
+    html += '<div class="proj-ok">\u2713 Reachable as ' + esc(target || "") + "</div>";
+    if (p.node_path) {
+      html += '<div class="proj-ok">\u2713 node ' + esc(p.node_version || "") + " at " + esc(p.node_path) + "</div>";
+    } else {
+      html += '<div class="proj-error">\u2717 node not found</div>';
+    }
+    if (p.claude_path) {
+      html += '<div class="proj-ok">\u2713 claude ' + esc(p.claude_version || "") + " at " + esc(p.claude_path) + "</div>";
+    } else {
+      html += '<div class="proj-error">\u2717 claude not found \u2014 install Claude Code on this host and run Probe again</div>';
+    }
+    html += "</div>";
+    return html;
+  }
+  window.onHostsListed = function(hosts) {
+    state.hosts = hosts || [];
+    if (state.page === "hosts") render("push");
+  };
+  window.onHostAdded = function(h) {
+    if (!h || !h.id) return;
+    state.hosts = state.hosts.filter((x) => x.id !== h.id).concat(h);
+    delete state.hostProbePending["new"];
+    state.editingHostId = null;
+    state.hostForm = null;
+    state.hostError = null;
+    if (state.page === "hosts") render("push");
+  };
+  window.onHostUpdated = function(h) {
+    if (!h || !h.id) return;
+    state.hosts = state.hosts.map((x) => x.id === h.id ? h : x);
+    delete state.hostProbePending[h.id];
+    state.hostError = null;
+    if (state.page === "hosts") render("push");
+  };
+  window.onHostRemoved = function(id) {
+    state.hosts = state.hosts.filter((x) => x.id !== id);
+    if (state.editingHostId === id) {
+      state.editingHostId = null;
+      state.hostForm = null;
+    }
+    if (state.page === "hosts") render("push");
+  };
+  window.onHostError = function(msg) {
+    state.hostError = msg;
+    state.hostFormError = msg;
+    state.hostProbePending = {};
+    if (state.page !== "hosts") return;
+    render();
   };
   var REMOTE_NOTE = "Enabling, disabling and moving the listener take effect within a few seconds \u2014 no restart needed. Re-enabling auditing after turning it off is the exception: that still needs Relay to relaunch.";
   function remoteGrantableProjects() {
@@ -4617,6 +5073,7 @@ That browser's credential stops authenticating on its next request and it has to
     scopeValueBreadth,
     scopeValueFromText,
     scopeValueIsSet,
+    scopeValueIsAsserted,
     scopeValueText,
     setProjAccess,
     setProjAllowExternal,
@@ -4624,6 +5081,8 @@ That browser's credential stops authenticating on its next request and it has to
     setProjMcpGranted,
     setProjScopeText,
     captureProjectFormInputs,
+    clearScopeValues,
+    confirmScopeFieldEmpty,
     focusProjectFormIssue,
     isPolicyEmpty,
     refreshDependentScopeFields,
@@ -4634,11 +5093,36 @@ That browser's credential stops authenticating on its next request and it has to
     scopeEnumValueKey,
     scopeFieldByName,
     scopeFieldIsOpen,
+    scopeFieldWasEverAsserted,
     scopeOpenKey,
     scopeSelectedValues,
+    selectAllScopeValuesAt,
     toggleProjScopeValueAt,
     toggleScopeFieldPicker,
     unrecognisedScopeValues,
+    addProjMount,
+    removeProjMount,
+    setProjMountAccess,
+    blankHostForm,
+    cancelHostEdit,
+    captureHostFormInputs,
+    disconnectHost,
+    editHost,
+    harvestHostForm,
+    hostFormFromExisting,
+    hostNameFor,
+    isHostedForm,
+    newHost,
+    probeHost,
+    removeHost,
+    renderHostForm,
+    renderHostProbeCard,
+    renderHostProbeSummary,
+    renderHostStatus,
+    renderHosts,
+    saveHostForm,
+    setProjWhere,
+    testHostConnection,
     addExternalMcp,
     addExternalMcpFromJson,
     addExternalMcpHttp,

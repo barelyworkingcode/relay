@@ -28,6 +28,14 @@ type budgetWindow struct {
 	calls  []time.Time
 	volume []volumeSample
 	bytes  int64
+
+	// Mount-plane series, on the same window as the two above but counted
+	// separately: a mount cannot starve tool calls and the reverse.
+	mountOps         []time.Time
+	mountReadVolume  []volumeSample
+	mountReadBytes   int64
+	mountWriteVolume []volumeSample
+	mountWriteBytes  int64
 }
 
 type volumeSample struct {
@@ -95,6 +103,79 @@ func (b *Budgets) Charge(rc bridge.RemoteCaller, budget config.EnrolmentBudget, 
 	w.bytes += int64(n)
 }
 
+// AdmitMountOp checks and records one mount-plane 9P request against the
+// enrolment's mount-ops series — the same admit-then-record shape as
+// Admit, just a separate counter. Every 9P request the mount plane handles
+// calls this once, mutating or not (P2/P4's job to call it; this method
+// only enforces the ledger).
+func (b *Budgets) AdmitMountOp(rc bridge.RemoteCaller, budget config.EnrolmentBudget) error {
+	budget = NormalizeBudget(budget)
+	span := time.Duration(budget.WindowSeconds) * time.Second
+	w, now := b.windowFor(rc.Fingerprint)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prune(now.Add(-span))
+
+	if len(w.mountOps) >= budget.MountMaxOps {
+		return fmt.Errorf("throttled: enrolment %q has used %d of %d mount operations in the last %ds",
+			rc.ClientID, len(w.mountOps), budget.MountMaxOps, budget.WindowSeconds)
+	}
+	w.mountOps = append(w.mountOps, now)
+	return nil
+}
+
+// AdmitMountRead admits-and-charges n bytes about to be read, BEFORE they
+// are returned to the caller — unlike the tool-plane Charge (which runs
+// AFTER a result, because a tool result's size isn't known beforehand), a
+// mount read's byte count is known up front (it's the size the client
+// asked to read), so this can and must be a hard ceiling: refuse before
+// the bytes leave, not "one read's worth over".
+func (b *Budgets) AdmitMountRead(rc bridge.RemoteCaller, budget config.EnrolmentBudget, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	budget = NormalizeBudget(budget)
+	span := time.Duration(budget.WindowSeconds) * time.Second
+	w, now := b.windowFor(rc.Fingerprint)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prune(now.Add(-span))
+
+	if w.mountReadBytes+int64(n) > budget.MountMaxReadBytes {
+		return fmt.Errorf("throttled: enrolment %q has drawn %d of %d mount-read bytes in the last %ds",
+			rc.ClientID, w.mountReadBytes, budget.MountMaxReadBytes, budget.WindowSeconds)
+	}
+	w.mountReadVolume = append(w.mountReadVolume, volumeSample{at: now, bytes: int64(n)})
+	w.mountReadBytes += int64(n)
+	return nil
+}
+
+// AdmitMountWrite is AdmitMountRead's write-side counterpart — a 9P
+// Twrite also carries its own byte count up front, so this is a hard
+// ceiling too, not an after-the-fact charge.
+func (b *Budgets) AdmitMountWrite(rc bridge.RemoteCaller, budget config.EnrolmentBudget, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	budget = NormalizeBudget(budget)
+	span := time.Duration(budget.WindowSeconds) * time.Second
+	w, now := b.windowFor(rc.Fingerprint)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prune(now.Add(-span))
+
+	if w.mountWriteBytes+int64(n) > budget.MountMaxWriteBytes {
+		return fmt.Errorf("throttled: enrolment %q has drawn %d of %d mount-write bytes in the last %ds",
+			rc.ClientID, w.mountWriteBytes, budget.MountMaxWriteBytes, budget.WindowSeconds)
+	}
+	w.mountWriteVolume = append(w.mountWriteVolume, volumeSample{at: now, bytes: int64(n)})
+	w.mountWriteBytes += int64(n)
+	return nil
+}
+
 // windowFor creates the enrolment's window on first use. Windows are never
 // reclaimed, and nothing here sweeps them: the key space is the set of
 // enrolled certificate fingerprints, so no unauthenticated caller can mint
@@ -152,6 +233,29 @@ func (w *budgetWindow) prune(cutoff time.Time) {
 	}
 	if j > 0 {
 		w.volume = slices.Delete(w.volume, 0, j)
+	}
+	k := 0
+	for k < len(w.mountOps) && !w.mountOps[k].After(cutoff) {
+		k++
+	}
+	if k > 0 {
+		w.mountOps = slices.Delete(w.mountOps, 0, k)
+	}
+	l := 0
+	for l < len(w.mountReadVolume) && !w.mountReadVolume[l].at.After(cutoff) {
+		w.mountReadBytes -= w.mountReadVolume[l].bytes
+		l++
+	}
+	if l > 0 {
+		w.mountReadVolume = slices.Delete(w.mountReadVolume, 0, l)
+	}
+	m := 0
+	for m < len(w.mountWriteVolume) && !w.mountWriteVolume[m].at.After(cutoff) {
+		w.mountWriteBytes -= w.mountWriteVolume[m].bytes
+		m++
+	}
+	if m > 0 {
+		w.mountWriteVolume = slices.Delete(w.mountWriteVolume, 0, m)
 	}
 }
 

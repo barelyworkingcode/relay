@@ -15,6 +15,7 @@ func (s *Settings) Clone() *Settings {
 	cp.ExternalMcps = cloneExternalMcps(s.ExternalMcps)
 	cp.Services = cloneServiceConfigs(s.Services)
 	cp.Projects = cloneProjects(s.Projects)
+	cp.Hosts = cloneHosts(s.Hosts)
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
@@ -162,6 +163,7 @@ func cloneProject(p Project) Project {
 	p.AllowedTools = cloneStringSliceMap(p.AllowedTools)
 	p.Access = cloneMap(p.Access)
 	p.AllowExternal = cloneMap(p.AllowExternal)
+	p.Mounts = cloneSlice(p.Mounts)
 	p.PermissionPolicy = clonePermissionPolicy(p.PermissionPolicy)
 	p.SessionFolders = cloneSlice(p.SessionFolders)
 	return p
@@ -174,6 +176,30 @@ func cloneProjects(s []Project) []Project {
 	out := make([]Project, len(s))
 	for i, p := range s {
 		out[i] = cloneProject(p)
+	}
+	return out
+}
+
+func cloneHostProbe(p *HostProbe) *HostProbe {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
+func cloneHost(h Host) Host {
+	h.Probe = cloneHostProbe(h.Probe)
+	return h
+}
+
+func cloneHosts(s []Host) []Host {
+	if s == nil {
+		return nil
+	}
+	out := make([]Host, len(s))
+	for i, h := range s {
+		out[i] = cloneHost(h)
 	}
 	return out
 }

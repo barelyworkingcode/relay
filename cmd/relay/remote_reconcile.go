@@ -125,6 +125,8 @@ func (sup *RemoteSupervisor) Reconcile() error {
 
 	toolErr := sup.reconcileToolListenerLocked(settings)
 	enrolErr := sup.reconcileEnrolmentListenerLocked(settings)
+	// Nil-safe: a nil or not-yet-started server is a valid steady state.
+	sup.server.revalidateMounts()
 	return errors.Join(toolErr, enrolErr)
 }
 

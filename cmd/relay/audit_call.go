@@ -57,11 +57,7 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 	// number.
 	if rc, ok := bridge.RemoteCallerFromContext(ctx); ok {
 		a.remote = true
-		a.ev.Actor.Kind = audit.AuditActorRemote
-		a.ev.Actor.Auth = audit.AuditAuthMTLS
-		a.ev.Actor.ClientID = rc.ClientID
-		a.ev.Actor.Fingerprint = rc.Fingerprint
-		a.ev.Actor.RemoteAddr = rc.RemoteAddr
+		a.ev.Actor = remoteAuditActor(rc)
 		return a
 	}
 	// Resolve now, while the caller is certainly still alive: a `relay mcp
@@ -72,6 +68,19 @@ func (r *appRouter) beginAudit(ctx context.Context, event string) *auditCall {
 		a.ev.Actor.Proc, a.ev.Actor.Parent = audit.ProcessNames(pid)
 	}
 	return a
+}
+
+// remoteAuditActor builds the actor half of an audit event for a caller
+// identified by its certificate — the tool plane (beginAudit) and the
+// mount plane (audit_mount.go) both call this so the two never diverge.
+func remoteAuditActor(rc bridge.RemoteCaller) audit.AuditActor {
+	return audit.AuditActor{
+		Kind:        audit.AuditActorRemote,
+		Auth:        audit.AuditAuthMTLS,
+		ClientID:    rc.ClientID,
+		Fingerprint: rc.Fingerprint,
+		RemoteAddr:  rc.RemoteAddr,
+	}
 }
 
 // Arguments are redacted and capped here rather than at write time so the raw

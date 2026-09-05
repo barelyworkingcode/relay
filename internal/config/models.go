@@ -248,12 +248,85 @@ type PermissionPolicy struct {
 	DeniedTools  []string `json:"denied_tools,omitempty"`
 }
 
+// HostProbe is the last probe result for a Host: absent until the first
+// probe runs, then replaced wholesale by every later one. OK false means
+// Error names why; OK true means every other field was discovered live.
+type HostProbe struct {
+	At            string `json:"at"`
+	OK            bool   `json:"ok"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	Home          string `json:"home,omitempty"`
+	Shell         string `json:"shell,omitempty"`
+	NodePath      string `json:"node_path,omitempty"`
+	NodeVersion   string `json:"node_version,omitempty"`
+	ClaudePath    string `json:"claude_path,omitempty"`
+	ClaudeVersion string `json:"claude_version,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// Host is a machine reached over ssh that a project's directory can live on
+// (docs/ssh-hosts.md). Relay execs /usr/bin/ssh with this record turned into
+// an argv prefix (internal/sshhost.SSHArgv) — it never opens a raw TCP
+// connection or handles a private key itself.
+type Host struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Target is user@host, host, or an ssh_config alias — whatever
+	// /usr/bin/ssh's destination argument accepts.
+	Target string `json:"target"`
+	// Port is 0 to mean "ssh default / ssh_config", never literally 22 by
+	// default: a 0 asks ssh to decide, an explicit 22 would override an
+	// ssh_config Port an operator already set for this alias.
+	Port int `json:"port,omitempty"`
+	// IdentityFile is passed as -i when set; empty defers to the operator's
+	// own ssh-agent/config, which is the ordinary case.
+	IdentityFile string `json:"identity_file,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	// Probe is the last probe result; nil until the first one runs.
+	Probe *HostProbe `json:"probe,omitempty"`
+}
+
 type ProjectKind string
 
 const (
 	ProjectKindLocal  ProjectKind = "local"
 	ProjectKindRemote ProjectKind = "remote"
 )
+
+// MountGrant is one relay-granted host directory exposed to a remote client
+// as a real filesystem mount, over the mount plane (relay-9p/1), never
+// through fsMCP. It exists only on a kind: remote project.
+type MountGrant struct {
+	// ID is a surface name the client names in its MountAttach preamble,
+	// unique within the project. Must satisfy enrolment.SafeID (it is not
+	// joined into a filesystem path the way an enrolment's client id is, but
+	// the charset restriction is reused so a mount id is always safe to log,
+	// to put in an audit mcp_id field, and to put in a CLI flag value with
+	// no quoting question).
+	ID string `json:"id"`
+	// Path is an absolute host directory. It is an operator value, not
+	// caller input: checked once at validation (must exist, must not be a
+	// symlink), and re-opened with os.OpenRoot at attach time by a later
+	// piece — a path that changed shape between validation and attach fails
+	// then, not here.
+	Path string `json:"path"`
+	// Access is "read" or "write"; absent means read. Mirrors
+	// StoredToken.AccessMode's asymmetric-default pattern: an unset or
+	// misspelled value must never be readable as write.
+	Access string `json:"access,omitempty"`
+}
+
+// AccessMode reads Access the same way StoredToken.AccessMode reads a
+// project's per-MCP access map: "write" only on the exact string "write",
+// anything else (absent, a typo, "Write", "rw") reads as read. A typo must
+// narrow, never widen.
+func (m MountGrant) AccessMode() string {
+	if m.Access == AccessWrite {
+		return AccessWrite
+	}
+	return AccessRead
+}
 
 type Project struct {
 	ID   string `json:"id"`
@@ -271,7 +344,15 @@ type Project struct {
 	// equality check invites someone to later write `Kind != ProjectKindRemote`
 	// wrongly, or to compare against the wrong constant. IsRemote() is the one
 	// place that decision is made.
-	Kind           ProjectKind     `json:"kind,omitempty"`
+	Kind ProjectKind `json:"kind,omitempty"`
+	// HostID names a Host this project's Path lives on instead of the
+	// console (docs/ssh-hosts.md). Empty means the console, same
+	// zero-value-is-safe discipline as Kind: every project written before
+	// this field existed round-trips as a console project. Mutually
+	// exclusive with Kind == ProjectKindRemote — the two solve different
+	// problems (a host project still IS kind: local in shape) and must never
+	// be read together.
+	HostID         string          `json:"host_id,omitempty"`
 	AllowedMcpIDs  []string        `json:"allowed_mcp_ids"`
 	AllowedModels  []string        `json:"allowed_models"`
 	ChatTemplates  []ChatTemplate  `json:"chat_templates,omitempty"`
@@ -325,6 +406,13 @@ type Project struct {
 	// (settings.json is 0600 and already holds every token in plaintext),
 	// but it does erase the deliberate hand-off, so it stays opt-in.
 	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
+
+	// Mounts is the mount-plane grant: each entry exposes one host directory to
+	// a remote client as a real POSIX filesystem mount, kernel-contained,
+	// instead of through fsMCP's curated tool surface. Refused on a
+	// kind: local project (project.ValidateMounts) — a local project already
+	// reaches its directory through shells and fsMCP.
+	Mounts []MountGrant `json:"mounts,omitempty"`
 }
 
 // EnrolmentBudget bounds what one enrolled client may draw per rolling
@@ -336,6 +424,13 @@ type EnrolmentBudget struct {
 	WindowSeconds  int   `json:"window_seconds"`
 	MaxCalls       int   `json:"max_calls"`
 	MaxResultBytes int64 `json:"max_result_bytes"`
+	// MountMaxOps, MountMaxReadBytes and MountMaxWriteBytes bound the mount
+	// plane on the same rolling window as the tool-plane fields above,
+	// counted separately: a mount cannot starve tool calls and the reverse.
+	// Zero never means unlimited — see enrolment.NormalizeBudget.
+	MountMaxOps        int   `json:"mount_max_ops,omitempty"`
+	MountMaxReadBytes  int64 `json:"mount_max_read_bytes,omitempty"`
+	MountMaxWriteBytes int64 `json:"mount_max_write_bytes,omitempty"`
 }
 
 // Enrolment binds one client certificate to the grants it may use. It is
@@ -463,6 +558,13 @@ func (k ProjectKind) IsRemote() bool {
 
 func (p *Project) IsRemote() bool {
 	return p.Kind.IsRemote()
+}
+
+// IsHosted reports whether this project's directory lives on a Host rather
+// than the console. Test this, never `HostID != ""` inline, for the same
+// reason IsRemote exists as a method: one place decides what the field means.
+func (p *Project) IsHosted() bool {
+	return p.HostID != ""
 }
 
 // normalizeProjectKind collapses anything that isn't ProjectKindRemote to

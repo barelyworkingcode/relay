@@ -121,8 +121,25 @@ func ValidateShape(proj *config.Project) error {
 	if err := validateAllowedToolPatterns(proj); err != nil {
 		return err
 	}
+	// Kind-independent like validateAllowedToolPatterns: a local project with
+	// non-empty Mounts must be refused, and that refusal lives inside
+	// ValidateMounts, not here.
+	if err := ValidateMounts(proj); err != nil {
+		return err
+	}
+	// Kind-independent: a host project is kind: local in shape (it is a
+	// directory, just not one on the console) and a remote project is a
+	// capability grant with no directory at all — the two answer different
+	// questions and a record naming both is unrepresentable, not merely
+	// unusual.
+	if proj.IsHosted() && proj.IsRemote() {
+		return fmt.Errorf(`project cannot set both host_id and kind: "remote": a host project is kind: local with its directory on another machine; a remote project is a capability grant with no directory`)
+	}
 	if !proj.IsRemote() {
-		return validateProjectPath(proj.Path)
+		if err := validateProjectPath(proj.Path); err != nil {
+			return err
+		}
+		return validateHostShape(proj)
 	}
 	if proj.Path != "" {
 		return fmt.Errorf("remote project must not have a path: %q", proj.Path)

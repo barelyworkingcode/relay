@@ -8,6 +8,7 @@ package project
 import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -165,3 +166,110 @@ func TestNarrowsOnly_RefusesAllowExternalKeyOnAnMcpNotInTheResultingSet(t *testi
 		t.Errorf("error = %q, want it to name the offending MCP %q", err, "other")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mounts narrowing (relayfs P1a): write->read only, no path change, no
+// adding via narrow, and dropping an unlisted mount is always allowed.
+// ---------------------------------------------------------------------------
+
+func mountStoredProject(mounts ...config.MountGrant) config.Project {
+	return config.Project{Kind: config.ProjectKindRemote, Mounts: mounts}
+}
+
+func TestNarrowsOnly_MountNarrowingWriteToReadIsAllowed(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail", Access: config.AccessWrite})
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead}}
+	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err != nil {
+		t.Fatalf("narrowing write->read must be allowed, got: %v", err)
+	}
+}
+
+func TestNarrowsOnly_MountWideningReadToWriteIsRefused(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead})
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessWrite}}
+	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err == nil {
+		t.Fatal("widening a mount from read to write via narrowing must be refused")
+	}
+}
+
+func TestNarrowsOnly_MountRequestNamingAnUnstoredIDIsRefused(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail"})
+	narrowed := []config.MountGrant{
+		{ID: "mail", Path: "/tmp/mail"},
+		{ID: "calendar", Path: "/tmp/cal"},
+	}
+	err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed})
+	if err == nil {
+		t.Fatal("narrowing must not be able to add a mount id that is not already stored")
+	}
+	if !strings.Contains(err.Error(), "calendar") {
+		t.Errorf("error = %q, want it to name the offending mount id %q", err, "calendar")
+	}
+}
+
+func TestNarrowsOnly_MountRequestChangingPathIsRefused(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail"})
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail-2"}}
+	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err == nil {
+		t.Fatal("narrowing must not be able to change a listed mount's path")
+	}
+}
+
+// Omitting a currently-stored mount entirely is how a narrow request drops
+// it — that is narrowing, always allowed, and NarrowsOnly must not iterate
+// the stored mounts complaining about ones missing from the request (only
+// the request's own entries are checked against what is stored).
+func TestNarrowsOnly_MountOmittingAStoredMountIsAllowed(t *testing.T) {
+	stored := mountStoredProject(
+		config.MountGrant{ID: "mail", Path: "/tmp/mail"},
+		config.MountGrant{ID: "calendar", Path: "/tmp/cal"},
+	)
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail"}}
+	if err := NarrowsOnly(stored, NarrowFields{Mounts: &narrowed}); err != nil {
+		t.Fatalf("dropping a stored mount by omitting it must be allowed, got: %v", err)
+	}
+}
+
+func TestNarrowUpdateFields_MountsReplacesWithTheRequestSetDroppingOmittedOnes(t *testing.T) {
+	stored := mountStoredProject(
+		config.MountGrant{ID: "mail", Path: "/tmp/mail"},
+		config.MountGrant{ID: "calendar", Path: "/tmp/cal"},
+	)
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail"}}
+	got := NarrowUpdateFields(stored, NarrowFields{Mounts: &narrowed})
+	if got.Mounts == nil || len(*got.Mounts) != 1 || (*got.Mounts)[0].ID != "mail" {
+		t.Fatalf("NarrowUpdateFields.Mounts = %v, want exactly [mail] (calendar dropped)", got.Mounts)
+	}
+}
+
+// Re-listing every stored mount with an identical path and access — even
+// when access is spelled differently (stored has no Access set at all, the
+// request explicitly sends "read") — must read as a no-op, never as a
+// change: AccessMode() is the comparison, not the raw string.
+func TestNarrowingIsNoop_MountsIdenticalRelistIsNoopEvenWithDifferentAccessSpelling(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail"}) // Access absent
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead}}
+	if !NarrowingIsNoop(stored, NarrowFields{Mounts: &narrowed}) {
+		t.Fatal("re-listing an identical mount, with access respelled from absent to \"read\", must be a no-op")
+	}
+}
+
+func TestNarrowingIsNoop_MountAccessNarrowingIsNotANoop(t *testing.T) {
+	stored := mountStoredProject(config.MountGrant{ID: "mail", Path: "/tmp/mail", Access: config.AccessWrite})
+	narrowed := []config.MountGrant{{ID: "mail", Path: "/tmp/mail", Access: config.AccessRead}}
+	if NarrowingIsNoop(stored, NarrowFields{Mounts: &narrowed}) {
+		t.Fatal("narrowing write->read is an actual change and must not read as a no-op")
+	}
+}
+
+func TestNarrowFieldNames_IncludesMountsOnlyWhenSet(t *testing.T) {
+	if names := NarrowFieldNames(NarrowFields{}); slices.Contains(names, "mounts") {
+		t.Fatalf("NarrowFieldNames(%+v) = %v, must not include \"mounts\" when f.Mounts is nil", NarrowFields{}, names)
+	}
+	mounts := []config.MountGrant{{ID: "mail", Path: "/tmp/mail"}}
+	names := NarrowFieldNames(NarrowFields{Mounts: &mounts})
+	if !slices.Contains(names, "mounts") {
+		t.Fatalf("NarrowFieldNames = %v, want it to include \"mounts\" when f.Mounts is set", names)
+	}
+}
+

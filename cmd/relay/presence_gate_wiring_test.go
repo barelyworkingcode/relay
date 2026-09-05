@@ -637,6 +637,30 @@ func TestProjectOps_AllowExternalTurningOnIsGated(t *testing.T) {
 	}
 }
 
+// TestProjectOps_MountsIsGated is AC-16c's argument extended to the
+// mount-plane grant: a mount is exactly as widening as allowed_tools or
+// allow_external — it hands the token a real filesystem reach — so setting
+// it must be refused by a denying gate exactly like every other
+// grant-shape field, and the refusal must leave the stored project
+// untouched (ApplyUpdate validates and gates before ANY mutation runs).
+func TestProjectOps_MountsIsGated(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := mkStoreProject(t, store, config.ProjectKindRemote, "mount-project", "")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	mounts := []config.MountGrant{{ID: "src", Path: t.TempDir(), Access: "write"}}
+	_, _, err = ops.Update(context.Background(), proj.ID, project.UpdateFields{Mounts: &mounts}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("setting mounts: err = %v, want presence.ErrRefused", err)
+	}
+	if len(store.Get().Projects[0].Mounts) != 0 {
+		t.Fatal("mounts was set despite the gate refusing")
+	}
+}
+
 // TestCredentialOps_DigestBindsNameClassesAndTTL is AC-22d's argument for
 // credential.mint specifically: changing any digested field must move the
 // digest, so a grant answered for one mint cannot be redeemed for another.
@@ -661,15 +685,17 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 
 const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond units
 
-// TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields is AC-9,
+// TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields is AC-9,
 // standing guard over §2.4's trap: projectUpdateDigest must
-// keep binding all eight grant-shape fields even though a future narrowing
+// keep binding all nine grant-shape fields even though a future narrowing
 // of project.grant's GATE to fire only on allow_cwd_auth (ADR-018, blocked
 // on the local cli-admin identity binding) will make it look natural to
-// shrink the digest to match. Changing any one of the eight, holding the
+// shrink the digest to match. Changing any one of the nine, holding the
 // rest fixed, must move the digest — the prompt authorises the request,
-// not the reason the request was privileged.
-func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
+// not the reason the request was privileged. mounts joined the other eight
+// when the mount plane's operator write path was wired up; it is exactly
+// as grant-widening as allowed_tools, so it is bound on the same footing.
+func TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields(t *testing.T) {
 	base := project.UpdateFields{
 		AllowedMcpIDs: ptr([]string{"macmcp"}),
 		AllowedTools:  ptr(map[string][]string{"macmcp": {"mail_*"}}),
@@ -679,6 +705,7 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		AllowCwdAuth:  ptr(false),
 		Kind:          ptr(config.ProjectKindLocal),
 		Path:          ptr("/tmp/base"),
+		Mounts:        ptr([]config.MountGrant{{ID: "src", Path: "/tmp/a", Access: "read"}}),
 	}
 	baseDigest := projectUpdateDigest("proj-x", base)
 
@@ -696,6 +723,9 @@ func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 		{"allow_cwd_auth", func(f *project.UpdateFields) { f.AllowCwdAuth = ptr(true) }},
 		{"kind", func(f *project.UpdateFields) { f.Kind = ptr(config.ProjectKindRemote) }},
 		{"path", func(f *project.UpdateFields) { f.Path = ptr("/tmp/other") }},
+		{"mounts", func(f *project.UpdateFields) {
+			f.Mounts = ptr([]config.MountGrant{{ID: "src", Path: "/tmp/b", Access: "read"}})
+		}},
 	}
 	for _, v := range variants {
 		variant := base
