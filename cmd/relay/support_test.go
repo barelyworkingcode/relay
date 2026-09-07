@@ -245,6 +245,7 @@ func newBrokerRouter(t *testing.T, store config.SettingsStore, mutate func(*appR
 		mcpOps:          &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance},
 		serviceOps:      &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance},
 		eveEnrolmentOps: &EveEnrolmentOps{Store: store, Gate: gate, Audit: audit},
+		evePasskeyOps:   &EvePasskeyOps{Store: store, Gate: gate, Audit: audit},
 	}
 	if mutate != nil {
 		mutate(r)

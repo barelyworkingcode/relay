@@ -26,6 +26,11 @@ const (
 	// true, Subject: the enrolling browser's source IP) — one credential
 	// kind, told apart by Revoked.
 	auditCredentialEveEnrolment = "eve_enrolment"
+	// auditCredentialEvePasskey covers a revoke recorded against relay's
+	// eve-passkey mirror (docs/eve-passkey-enrolment.md decision 9) --
+	// always Revoked: true, since relay never issues one of these, only
+	// retires it.
+	auditCredentialEvePasskey = "eve_passkey"
 
 	// The config_change vocabulary (§7.5): a gated act that mutates
 	// settings without issuing anything a holder could authenticate with.
@@ -232,6 +237,19 @@ func recordEveEnrolmentConsumed(a IssuanceAuditor, claim eveEnrolmentClaim, via 
 		Subject:    claim.IP,
 		Name:       claim.Label,
 		Via:        via,
+	})
+}
+
+// recordEvePasskeyRevoked records a pending revocation against relay's
+// eve-passkey mirror. Subject is the credential id, the same public,
+// non-secret handle recordPasskeyRevoked uses for relay's own passkeys.
+func recordEvePasskeyRevoked(a IssuanceAuditor, id, via, presenceID string) error {
+	return recordIssuance(a, audit.CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialEvePasskey,
+		Subject:    id,
+		Via:        via,
+		PresenceID: presenceID,
 	})
 }
 

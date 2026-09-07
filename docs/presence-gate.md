@@ -70,6 +70,14 @@ what runs.** Concretely:
   window, and a browser spending the slot narrows what it reaches rather
   than widening anything, the same footing "What is not gated, and why
   removal is not escalation" gives below.
+- **Revoking an eve passkey** (`eve.passkey.revoke`) — gated on the same
+  footing as `login.passkey.revoke`, even though relay never touches eve
+  directly: it records a pending revocation eve will apply on its own next
+  poll or login check, and an unforgeable act reaching another program's
+  credential store must not be reversible by an agent that merely holds the
+  socket. Reporting eve's own list and reading pending revocations are not
+  gated: both are eve narrating or asking about its own state, never
+  choosing what relay issues.
 - **Registering an MCP or a service, and starting an MCP's OAuth ceremony**
   (`mcp.register`, `mcp.oauth.start`, `service.register`) — the caller
   chooses what runs, or what bearer relay will hold and present upstream on

@@ -644,6 +644,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .pk-session { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 8px; }
 .pk-session-name { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
 .pk-session-meta { color: var(--text-3); font-size: 11px; margin-top: 3px; }
+.pk-pending { color: var(--warn); font-size: 12px; font-weight: 500; }
 </style></head>
 <body>
 <nav class="sidebar">
@@ -680,6 +681,7 @@ window.__RELAY_INIT__ = {
   enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
   passkeys: __PASSKEYS_JSON__,
   loginSessions: __LOGIN_SESSIONS_JSON__,
+  evePasskeys: __EVE_PASSKEYS_JSON__,
   loginCode: __LOGIN_CODE_JSON__,
   initialPage: __INITIAL_PAGE_JSON__,
   mcpHealth: __MCP_HEALTH_JSON__,
@@ -904,6 +906,7 @@ window.__RELAY_INIT__ = {
   var ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
   var PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
   var LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
+  var EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
   var LOGIN_CODE_INIT = window.__RELAY_INIT__.loginCode || null;
   var INITIAL_PAGE = window.__RELAY_INIT__.initialPage || null;
   var MCP_HEALTH_INIT = window.__RELAY_INIT__.mcpHealth || {};
@@ -1070,6 +1073,9 @@ window.__RELAY_INIT__ = {
     // {name, short} shown after a revoke
     loginSignedOut: null,
     // credential name shown after a sign-out
+    // The eve section of the same tab (docs/eve-passkey-enrolment.md decision
+    // 7): eve's own credential mirror, reported by eve and never edited here.
+    evePasskeys: EVE_PASSKEYS_INIT,
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
     // on the Go side so it can be sent verbatim.
@@ -1258,6 +1264,7 @@ window.__RELAY_INIT__ = {
     const hosts = hostCounts();
     const passkeysCount = (state.passkeys || []).length;
     const sessionsCount = (state.loginSessions || []).length;
+    const evePasskeysCount = (state.evePasskeys || []).length;
     const audit = auditTile();
     const tiles = [
       { label: "Services", value: serviceTileValue(svc), cls: svc.autostartDown ? "danger" : "", tab: "services" },
@@ -1266,7 +1273,7 @@ window.__RELAY_INIT__ = {
       { label: "Hosts", value: hosts.connected + " connected \xB7 " + hosts.unreachable + " unreachable", cls: "", tab: "hosts" },
       { label: "Remote listener", value: remoteTileValue(), cls: "", tab: "remote" },
       { label: "Audit", value: audit.text, cls: audit.cls, tab: "audit" },
-      { label: "Passkeys", value: pluralize(passkeysCount, "passkey") + " \xB7 " + sessionsCount + " browser" + (sessionsCount === 1 ? "" : "s") + " signed in", cls: "", tab: "passkeys" }
+      { label: "Passkeys", value: pluralize(passkeysCount, "passkey") + " \xB7 " + sessionsCount + " browser" + (sessionsCount === 1 ? "" : "s") + " signed in \xB7 " + pluralize(evePasskeysCount, "eve passkey"), cls: "", tab: "passkeys" }
     ];
     let html = '<div class="ov-grid">';
     for (const t of tiles) {
@@ -1969,6 +1976,7 @@ window.__RELAY_INIT__ = {
     if (data.enrolments) state.enrolments = data.enrolments;
     if (data.passkeys) state.passkeys = data.passkeys;
     if (data.login_sessions) state.loginSessions = data.login_sessions;
+    if (data.eve_passkeys) state.evePasskeys = data.eve_passkeys;
     if (data.remote) {
       state.remote = data.remote;
       if (!state.remoteDirty) state.remoteDraft = null;
@@ -4274,7 +4282,35 @@ window.__RELAY_INIT__ = {
       html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || "\u2014") + "</strong></span></div>";
       html += "</div>";
     }
+    html += renderEvePasskeys();
     html += renderLoginSessions();
+    return html;
+  }
+  function renderEvePasskeys() {
+    const list = state.evePasskeys || [];
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Eve passkeys</div>';
+    html += '<p class="proj-section-help">Browsers that can sign in to Eve. Eve owns these credentials and reports this list to relay; revoking one here does not touch Eve directly \u2014 Eve applies it on its own next poll, or immediately if that browser tries to sign in, and signs out every session it minted.</p>';
+    if (!list.length) {
+      html += '<div class="empty-state">Eve has not reported any passkeys yet.</div>';
+      html += "</div>";
+      return html;
+    }
+    for (const p of list) {
+      html += '<div class="pk-card">';
+      html += '<div class="pk-card-header">';
+      html += '<span class="pk-card-name">' + esc(p.label || "(unnamed passkey)") + "</span>";
+      if (p.revocation_pending) {
+        html += '<span class="pk-pending">revocation pending</span>';
+      } else {
+        html += '<button class="btn btn-sm btn-danger" ' + bind(revokeEvePasskey, p.id) + ">Revoke</button>";
+      }
+      html += "</div>";
+      html += '<div class="pk-id">Credential: ' + esc(p.short || "") + "</div>";
+      html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || "\u2014") + "</strong></span> <span>Last used: <strong>" + esc(p.last_used || "\u2014") + "</strong></span></div>";
+      html += "</div>";
+    }
+    html += "</div>";
     return html;
   }
   function renderLoginSessions() {
@@ -4331,9 +4367,18 @@ That browser's credential stops authenticating on its next request and it has to
     state.passkeyError = null;
     ipc(JSON.stringify({ type: "sign_out_login", id }));
   }
-  window.onPasskeysReloaded = function(passkeys, sessions) {
+  function revokeEvePasskey(id) {
+    const p = (state.evePasskeys || []).find((x) => x.id === id);
+    if (!p) return;
+    const msg = 'Revoke the Eve passkey "' + (p.label || p.short) + '"?\n\nIt stops working on its next use. Eve signs out every browser session it minted with this passkey when it applies the revocation.';
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: "revoke_eve_passkey", id }));
+  }
+  window.onPasskeysReloaded = function(passkeys, sessions, evePasskeys) {
     state.passkeys = passkeys || [];
     state.loginSessions = sessions || [];
+    state.evePasskeys = evePasskeys || [];
     state.passkeyError = null;
     if (state.page === "passkeys") render("push");
   };
@@ -4350,6 +4395,13 @@ That browser's credential stops authenticating on its next request and it has to
     state.passkeyError = null;
     state.passkeyRevoked = null;
     state.loginSignedOut = name || id || "";
+    if (state.page === "passkeys") render("push");
+  };
+  window.onEvePasskeyRevoked = function(id) {
+    state.evePasskeys = (state.evePasskeys || []).map(function(p) {
+      return p.id === id ? Object.assign({}, p, { revocation_pending: true }) : p;
+    });
+    state.passkeyError = null;
     if (state.page === "passkeys") render("push");
   };
   window.onPasskeyError = function(msg) {
@@ -5581,6 +5633,8 @@ That browser's credential stops authenticating on its next request and it has to
     renderPasskeys,
     revokePasskey,
     signOutLogin,
+    renderEvePasskeys,
+    revokeEvePasskey,
     approveEnrolmentRequestForm,
     cancelEnrolment,
     dismissEnrolBundle,

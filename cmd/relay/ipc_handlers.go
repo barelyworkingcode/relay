@@ -113,6 +113,10 @@ func (a *App) pushFullSettings() {
 		// in a terminal, and a browser completing the ceremony.
 		"passkeys":       a.loginOps.Passkeys(),
 		"login_sessions": a.loginOps.Sessions(),
+		// Eve's mirror rides along for the same reason: a report or a
+		// revoke made outside this window (eve's own poll, `relay eve
+		// revoke`) must show up here without a manual reload.
+		"eve_passkeys": a.evePasskeyOps.List(),
 		// Overview tab. Rebuilt with the same helper openSettingsWindow's
 		// first paint uses, so a reload mid-session and a fresh window never
 		// disagree about MCP health, service runtime, or the seal/version
@@ -219,6 +223,12 @@ type IPCContext struct {
 	// host-side act, and giving it a route would be the self-service
 	// enrolment ADR-010 decision 8 and ADR-016 decision 2 both refuse.
 	LoginOps *LoginOps
+	// EvePasskeyOps is LoginOps' counterpart for the Passkeys tab's eve
+	// section (docs/eve-passkey-enrolment.md) -- ipc_eve_passkeys.go's
+	// handler is a thin adapter over it. Like LoginOps it has no route on
+	// this server's own HTTP door beyond eve's own PUT/GET pair, which is
+	// registered separately (RegisterEvePasskeyRoutes).
+	EvePasskeyOps *EvePasskeyOps
 	// McpOps is Ops's counterpart for the MCPs tab and RegisterMcpRoutes
 	// (ADR-014) — ipc_mcps.go's and ipc_mcp_permissions.go's handlers are
 	// thin adapters over it too. Unlike Ops and EnrolmentOps, two of its
@@ -414,9 +424,10 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRefuseEnrolmentRequest:  ipcRefuseEnrolmentRequest,
 
 	// Passkeys (ipc_login.go)
-	MsgListPasskeys:  ipcListPasskeys,
-	MsgRevokePasskey: ipcRevokePasskey,
-	MsgSignOutLogin:  ipcSignOutLogin,
+	MsgListPasskeys:     ipcListPasskeys,
+	MsgRevokePasskey:    ipcRevokePasskey,
+	MsgSignOutLogin:     ipcSignOutLogin,
+	MsgRevokeEvePasskey: ipcRevokeEvePasskey,
 
 	// Hosts (ipc_hosts.go)
 	MsgListHosts:      ipcListHosts,

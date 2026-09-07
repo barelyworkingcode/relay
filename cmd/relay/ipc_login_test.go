@@ -92,6 +92,7 @@ func ilIPC(t *testing.T) (*IPCContext, config.SettingsStore, *recordingUI) {
 		NotifyReconcile:        func(string) error { return nil },
 		NotifyReloadMcp:        func(string, string) error { return nil },
 		LoginOps:               &LoginOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)},
+		EvePasskeyOps:          &EvePasskeyOps{Store: store, Gate: allowGate(t), Audit: enabledIssuanceRecorder(t)},
 	}, store, ui
 }
 
@@ -161,10 +162,10 @@ func TestILListPasskeys_NoneRegistered(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected onPasskeysReloaded; got %+v", ui.events)
 	}
-	if len(args) != 2 {
-		t.Fatalf("onPasskeysReloaded carried %d arguments, want passkeys and sessions", len(args))
+	if len(args) != 3 {
+		t.Fatalf("onPasskeysReloaded carried %d arguments, want passkeys, sessions and eve passkeys", len(args))
 	}
-	for i, label := range []string{"passkeys", "sessions"} {
+	for i, label := range []string{"passkeys", "sessions", "eve passkeys"} {
 		raw, isRaw := args[i].(json.RawMessage)
 		if !isRaw {
 			t.Fatalf("%s argument was %T, want json.RawMessage", label, args[i])
@@ -316,6 +317,79 @@ func TestILRevokePasskey_DoesNotEndTheSessionsItSignedIn(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Eve passkeys (docs/eve-passkey-enrolment.md's second half)
+// ---------------------------------------------------------------------------
+
+func TestILListPasskeys_IncludesTheEveMirrorAsAThirdArgument(t *testing.T) {
+	ipc, store, ui := ilIPC(t)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "eve-1", Label: "iPhone", Created: "2026-09-07T10:00:00Z"}}
+	}), "seed an eve passkey")
+
+	ipcListPasskeys(ipc, mustRaw(t, map[string]interface{}{"type": MsgListPasskeys}))
+
+	args, ok := findEvent(ui, "onPasskeysReloaded")
+	if !ok {
+		t.Fatalf("expected onPasskeysReloaded; got %+v", ui.events)
+	}
+	views := ilDecodeViews[evePasskeyView](t, args[2])
+	if len(views) != 1 || views[0].ID != "eve-1" || views[0].Label != "iPhone" {
+		t.Fatalf("eve passkeys argument = %+v, want the seeded mirror", views)
+	}
+}
+
+func TestILRevokeEvePasskey_RecordsAPendingRevocationAndNamesTheID(t *testing.T) {
+	ipc, store, ui := ilIPC(t)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "eve-keep"}, {ID: "eve-drop"}}
+	}), "seed two eve passkeys")
+
+	ipcRevokeEvePasskey(ipc, mustRaw(t, map[string]interface{}{"id": "eve-drop"}))
+
+	args, ok := findEvent(ui, "onEvePasskeyRevoked")
+	if !ok {
+		t.Fatalf("expected onEvePasskeyRevoked; got %+v", ui.events)
+	}
+	if got, _ := args[0].(string); got != "eve-drop" {
+		t.Errorf("revoked event named id %q, want eve-drop", got)
+	}
+
+	revs := store.Get().EvePasskeyRevocations
+	if len(revs) != 1 || revs[0].ID != "eve-drop" {
+		t.Fatalf("no pending revocation was written: %+v", revs)
+	}
+	// Unlike relay's own RevokePasskey, this never deletes the mirror entry
+	// -- eve's own report is the acknowledgement (decision 12).
+	if len(store.Get().EvePasskeys) != 2 {
+		t.Fatalf("revoking pruned the mirror directly: %+v", store.Get().EvePasskeys)
+	}
+}
+
+func TestILRevokeEvePasskey_UnknownIDIsRefusedByName(t *testing.T) {
+	ipc, store, ui := ilIPC(t)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "eve-keep"}, {ID: "eve-other"}}
+	}), "seed two eve passkeys")
+
+	ipcRevokeEvePasskey(ipc, mustRaw(t, map[string]interface{}{"id": "ghost"}))
+
+	args, ok := findEvent(ui, "onPasskeyError")
+	if !ok {
+		t.Fatalf("expected onPasskeyError; got %+v", ui.events)
+	}
+	msg, _ := args[0].(string)
+	if !strings.Contains(msg, "ghost") {
+		t.Errorf("refusal must name the unknown id; got: %s", msg)
+	}
+	if _, revoked := findEvent(ui, "onEvePasskeyRevoked"); revoked {
+		t.Error("a refused revoke announced a revocation")
+	}
+	if len(store.Get().EvePasskeyRevocations) != 0 {
+		t.Error("a refused revoke wrote a pending record anyway")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Sign out
 // ---------------------------------------------------------------------------
 
@@ -454,10 +528,13 @@ func TestILRenderSettingsDocument_SeedsPasskeysAndSessions(t *testing.T) {
 	const id = "AAAABBBBCCCCDDDDEEEE"
 	ilSeedPasskey(t, store, id, "MacBook Touch ID", 0, false)
 	session := ilSeedSession(t, store, id, loginCredentialTTL)
+	assertNoErr(t, store.With(func(s *config.Settings) {
+		s.EvePasskeys = []config.EvePasskey{{ID: "eve-first-paint", Label: "iPhone"}}
+	}), "seed an eve passkey")
 
 	html := renderSettingsDocument(store.Get(), nil, nil, nil, nil, "", overviewSeed{})
 
-	for _, want := range []string{"MacBook Touch ID", abbreviatePasskeyID(id), session.Name, "loginCode: null"} {
+	for _, want := range []string{"MacBook Touch ID", abbreviatePasskeyID(id), session.Name, "loginCode: null", "iPhone", abbreviatePasskeyID("eve-first-paint")} {
 		if !strings.Contains(html, want) {
 			t.Errorf("first paint is missing %q", want)
 		}
@@ -770,6 +847,46 @@ func TestILPasskeysTab_RevokeConfirmationSaysSessionsSurvive(t *testing.T) {
 	sent := evalString(t, vm, `window.__sent.join('\n')`)
 	if !strings.Contains(sent, `"type":"revoke_passkey"`) || !strings.Contains(sent, "AAAABBBBCCCCDDDDEEEE") {
 		t.Errorf("the confirmed revoke sent %q", sent)
+	}
+}
+
+const ilEvePasskeysFixture = `[
+	{ id: 'eve-cred-a', short: 'eve-cred-a…', label: 'iPhone', created: '2026-09-07T10:00:00Z', last_used: '2026-09-07T11:00:00Z', revocation_pending: false },
+	{ id: 'eve-cred-b', short: 'eve-cred-b…', label: 'MacBook', created: '2026-09-06T10:00:00Z', last_used: '', revocation_pending: true }
+]`
+
+// The eve section renders under relay's own passkey list: a non-pending row
+// gets a Revoke button, a pending one shows the pending text instead
+// (docs/eve-passkey-enrolment.md: "A row with a pending revocation shows
+// that text instead of the button").
+func TestILPasskeysTab_EveSectionShowsRevokeOrPendingPerRow(t *testing.T) {
+	vm := ilSeedPasskeyVM(t, `[]`, `[]`, `null`)
+	if _, err := vm.RunString(`window.state.evePasskeys = ` + ilEvePasskeysFixture + `;`); err != nil {
+		t.Fatalf("seeding eve passkeys: %v", err)
+	}
+	html := evalString(t, vm, `window.renderPasskeys()`)
+
+	for _, want := range []string{"Eve passkeys", "iPhone", "MacBook", "revocation pending"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the eve section is missing %q\n%s", want, html)
+		}
+	}
+}
+
+// Revoking an eve passkey sends the eve-specific IPC message type, never the
+// relay one -- the two must not collide on the wire.
+func TestILPasskeysTab_RevokeEvePasskeySendsTheEveMessageType(t *testing.T) {
+	vm := ilSeedPasskeyVM(t, `[]`, `[]`, `null`)
+	if _, err := vm.RunString(`window.state.evePasskeys = ` + ilEvePasskeysFixture + `;`); err != nil {
+		t.Fatalf("seeding eve passkeys: %v", err)
+	}
+	if _, err := vm.RunString(`window.revokeEvePasskey('eve-cred-a')`); err != nil {
+		t.Fatalf("revokeEvePasskey: %v", err)
+	}
+
+	sent := evalString(t, vm, `window.__sent.join('\n')`)
+	if !strings.Contains(sent, `"type":"revoke_eve_passkey"`) || !strings.Contains(sent, "eve-cred-a") {
+		t.Errorf("the confirmed eve revoke sent %q", sent)
 	}
 }
 

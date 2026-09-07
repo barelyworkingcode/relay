@@ -38,6 +38,7 @@ var adminOps = map[string]adminOpHandler{
 	"login.bootstrap.mint":      adminLoginBootstrapMint,
 	"login.passkey.revoke":      adminLoginPasskeyRevoke,
 	"eve.enrolment.open":        adminEveEnrolmentOpen,
+	"eve.passkey.revoke":        adminEvePasskeyRevoke,
 	"mcp.register":              adminMcpRegister,
 	"mcp.unregister":            adminMcpUnregister,
 	"service.register":          adminServiceRegister,
@@ -92,6 +93,13 @@ func requireEveEnrolmentOps(r *appRouter) (*EveEnrolmentOps, error) {
 		return nil, errEveEnrolmentOpsUnavailable
 	}
 	return r.eveEnrolmentOps, nil
+}
+
+func requireEvePasskeyOps(r *appRouter) (*EvePasskeyOps, error) {
+	if r.evePasskeyOps == nil {
+		return nil, errEvePasskeyOpsUnavailable
+	}
+	return r.evePasskeyOps, nil
 }
 
 func requireMcpOps(r *appRouter) (*McpOps, error) {
@@ -434,6 +442,26 @@ func adminEveEnrolmentOpen(ctx context.Context, r *appRouter, _ json.RawMessage)
 		return nil, err
 	}
 	return marshalAdminResult(view)
+}
+
+type evePasskeyRevokeRequest struct {
+	ID string `json:"id"`
+}
+
+func adminEvePasskeyRevoke(ctx context.Context, r *appRouter, args json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEvePasskeyOps(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := decodeAdminArgs[evePasskeyRevokeRequest]("eve.passkey.revoke", args)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := ops.Revoke(ctx, req.ID, auditViaCLI)
+	if err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(rec)
 }
 
 // adminMcpRegister responds with mcpView, the same JSON-safe projection the

@@ -23,6 +23,8 @@ func (s *Settings) Clone() *Settings {
 	cp.LoginBootstrap = cloneLoginBootstrap(s.LoginBootstrap)
 	cp.Passkeys = clonePasskeys(s.Passkeys)
 	cp.EveEnrolment = cloneEveEnrolmentWindow(s.EveEnrolment)
+	cp.EvePasskeys = cloneSlice(s.EvePasskeys)
+	cp.EvePasskeyRevocations = cloneSlice(s.EvePasskeyRevocations)
 	return &cp
 }
 

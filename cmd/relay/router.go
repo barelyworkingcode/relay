@@ -226,6 +226,13 @@ type appRouter struct {
 	// eve's own status/consume routes can never disagree about whether one
 	// is open.
 	eveEnrolmentOps *EveEnrolmentOps
+
+	// evePasskeyOps backs `relay eve list|revoke` and eve's own PUT/GET
+	// mirror routes (docs/eve-passkey-enrolment.md). The SAME instance the
+	// Passkeys tab's eve section and RegisterEvePasskeyRoutes hold, so a
+	// revoke from a terminal, the tab, and eve's own report can never
+	// disagree about what is pending.
+	evePasskeyOps *EvePasskeyOps
 }
 
 const serviceTokenName = "service"

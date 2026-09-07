@@ -99,6 +99,7 @@ func brokeredCLICommands(t *testing.T) []brokeredCLICommand {
 		{"relay login enrol", []string{"login", "enrol"}},
 		{"relay login revoke", []string{"login", "revoke", "--id", "x"}},
 		{"relay eve enrol", []string{"eve", "enrol"}},
+		{"relay eve revoke", []string{"eve", "revoke", "--id", "x"}},
 		{"relay mcp register", []string{"mcp", "register", "--name", "x", "--command", "/bin/true"}},
 		{"relay mcp unregister", []string{"mcp", "unregister", "--id", "x"}},
 		{"relay service register", []string{"service", "register", "--name", "x", "--command", "/bin/true"}},

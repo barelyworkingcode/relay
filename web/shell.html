@@ -644,6 +644,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
 .pk-session { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 8px; }
 .pk-session-name { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
 .pk-session-meta { color: var(--text-3); font-size: 11px; margin-top: 3px; }
+.pk-pending { color: var(--warn); font-size: 12px; font-weight: 500; }
 </style></head>
 <body>
 <nav class="sidebar">
@@ -680,6 +681,7 @@ window.__RELAY_INIT__ = {
   enrolmentBudgetDefaults: __ENROLMENT_BUDGET_DEFAULTS_JSON__,
   passkeys: __PASSKEYS_JSON__,
   loginSessions: __LOGIN_SESSIONS_JSON__,
+  evePasskeys: __EVE_PASSKEYS_JSON__,
   loginCode: __LOGIN_CODE_JSON__,
   initialPage: __INITIAL_PAGE_JSON__,
   mcpHealth: __MCP_HEALTH_JSON__,

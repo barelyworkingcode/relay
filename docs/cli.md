@@ -77,6 +77,8 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay login enrol` | yes | **yes** | no |
 | `relay login revoke` | yes | **yes** | no |
 | `relay eve enrol` | yes | **yes** | no |
+| `relay eve list` | no | no | yes |
+| `relay eve revoke` | yes | **yes** | no |
 | `relay mcp list` | no | no | yes |
 | `relay mcp register` | yes | **yes** | no |
 | `relay mcp unregister` | yes | no | yes |
@@ -197,6 +199,7 @@ Every gated command has its own version of this reason string:
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
 | `eve enrol` | `open a five-minute window for one new browser to register an Eve passkey` |
+| `eve revoke` | `revoke the Eve passkey ID` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
 | `service register` | `register the service "NAME" (id) that runs COMMAND` (or, when the id already exists and this is an update, `update the service "ID" to run COMMAND`) |
 
@@ -846,6 +849,8 @@ Enrolment…** item or this command.
 
 ```
 relay eve enrol
+relay eve list
+relay eve revoke --id ID
 ```
 
 ### `eve enrol`
@@ -867,6 +872,35 @@ is the same door, useful over a terminal in the desktop session when no one
 is at the keyboard to click the tray. Relay notifies the console when the
 window opens and again when it is consumed, naming the source address that
 took it.
+
+### `eve list`
+
+Reads relay's mirror of eve's own credential list straight off disk
+([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md) decision 8) --
+no running tray required. STATUS is `-` for an ordinary credential or
+`revocation pending` for one relay has revoked that eve has not yet applied.
+
+```
+$ relay eve list
+LABEL                    CREDENTIAL ID  CREATED               LAST USED             STATUS
+Mozilla/5.0 (iPhone...)  xNtuo_H_0XSA…  2026-09-07T10:12:31Z  2026-09-07T18:02:11Z  -
+```
+
+Needs service: no. Prompts: no. Works over SSH: yes.
+
+### `eve revoke`
+
+```
+$ relay eve revoke -h
+Usage of eve revoke:
+  -id string
+    	credential id of the eve passkey to revoke (required)
+```
+
+Needs service: yes. Prompts: yes. Works over SSH: no. Relay records the
+revocation as pending and never touches eve directly -- eve applies it on
+its own next 30-second poll, or immediately if that browser tries to sign in
+first, and signs out every session that passkey minted.
 
 ## `relay mcp`
 
