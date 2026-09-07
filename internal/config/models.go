@@ -542,6 +542,16 @@ type LoginBootstrap struct {
 	Expires string `json:"expires"`
 }
 
+// EveEnrolmentWindow is the anchor an operator opens so one new browser may
+// register an eve passkey (docs/eve-passkey-enrolment.md), the same shape of
+// lifetime as LoginBootstrap: an RFC 3339 expiry, at most one at a time, and
+// opening a new one replaces whatever was there. Unlike LoginBootstrap it
+// carries no secret to hash — the window is single-use because eve consumes
+// it atomically through relay, not because anything here is unguessable.
+type EveEnrolmentWindow struct {
+	Expires string `json:"expires"`
+}
+
 // Passkey is one registered WebAuthn credential (ADR-016 decisions 2 and 7).
 // Only public material is stored: X and Y are the COSE ES256 public key's
 // coordinates, never a private key, which never leaves the authenticator.

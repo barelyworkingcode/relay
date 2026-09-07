@@ -176,7 +176,13 @@ type frontendRouteDeps struct {
 	mcpOps            *McpOps
 	projectOps        *ProjectOps
 	hostOps           *HostOps
-	enhanced          *EnhancedServiceRegistry
+	// eveEnrolmentOps backs eve's own status/consume door
+	// (docs/eve-passkey-enrolment.md). Unlike every other field here it has
+	// no IPC-tab counterpart: Open is reachable only from the tray menu and
+	// `relay eve enrol`, never from this server, so registerFrontendRoutes
+	// wires only Status and Consume onto it.
+	eveEnrolmentOps *EveEnrolmentOps
+	enhanced        *EnhancedServiceRegistry
 	// issuance is derived once here from auditOps' recorder so the socket mux,
 	// the TCP mux and the login routes cannot disagree about whether an
 	// issuance is recorded.
@@ -210,6 +216,9 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 	}
 	if deps.hostOps != nil {
 		RegisterHostRoutes(rr, deps.hostOps)
+	}
+	if deps.eveEnrolmentOps != nil {
+		RegisterEveEnrolmentRoutes(rr, deps.eveEnrolmentOps)
 	}
 
 	// Catch-all dispatcher: any path not matched by a more specific handler
@@ -276,6 +285,14 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // enhanced-services registry to pick a target service per request — no
 // hardcoded per-service handlers live here.
 //
+// eveEnrolmentOps backs eve's own status/consume door
+// (docs/eve-passkey-enrolment.md) -- the same instance the tray menu item
+// and `relay eve enrol` call Open on. A nil eveEnrolmentOps is filled in with
+// a bare *EveEnrolmentOps{Store: store}, the same discipline projectOps and
+// hostOps follow: Consume is ungated, so this is never "everyone can open a
+// window," only "everyone can ask whether one is open and try to consume
+// it."
+//
 // authz decides which credential may exercise which class (ADR-015); nil
 // allows everything, which is what the hermetic route tests want. auditor
 // records every authorization decision; nil is safe and simply records
@@ -287,7 +304,7 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -299,6 +316,9 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	}
 	if hostOps == nil {
 		hostOps = &HostOps{Store: store}
+	}
+	if eveEnrolmentOps == nil {
+		eveEnrolmentOps = &EveEnrolmentOps{Store: store}
 	}
 
 	deps := frontendRouteDeps{
@@ -314,6 +334,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		mcpOps:            mcpOps,
 		projectOps:        projectOps,
 		hostOps:           hostOps,
+		eveEnrolmentOps:   eveEnrolmentOps,
 		enhanced:          enhanced,
 		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
 	}

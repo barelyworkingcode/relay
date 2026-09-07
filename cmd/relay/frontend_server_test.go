@@ -53,6 +53,7 @@ func newTestFrontendServer(t *testing.T, token string) (*FrontendServer, string)
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -195,7 +196,7 @@ func TestListenLoopback_ServesReadAndConfigureButNotExecute(t *testing.T) {
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
 		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil,
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

@@ -363,6 +363,7 @@ var docReasonRequiredOps = []string{
 	"enrolment.revoke",
 	"login.bootstrap.mint",
 	"login.passkey.revoke",
+	"eve.enrolment.open",
 	"mcp.register",
 	"mcp.oauth.start",
 	"service.register",
@@ -467,6 +468,7 @@ var docReasonCLICommandOps = map[string]string{
 	"enrol revoke":      "enrolment.revoke",
 	"login enrol":       "login.bootstrap.mint",
 	"login revoke":      "login.passkey.revoke",
+	"eve enrol":         "eve.enrolment.open",
 	"mcp register":      "mcp.register",
 	"service register":  "service.register",
 }

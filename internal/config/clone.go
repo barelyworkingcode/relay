@@ -22,6 +22,7 @@ func (s *Settings) Clone() *Settings {
 	cp.APICredentials = cloneAPICredentials(s.APICredentials)
 	cp.LoginBootstrap = cloneLoginBootstrap(s.LoginBootstrap)
 	cp.Passkeys = clonePasskeys(s.Passkeys)
+	cp.EveEnrolment = cloneEveEnrolmentWindow(s.EveEnrolment)
 	return &cp
 }
 
@@ -263,6 +264,14 @@ func cloneLoginBootstrap(b *LoginBootstrap) *LoginBootstrap {
 		return nil
 	}
 	cp := *b
+	return &cp
+}
+
+func cloneEveEnrolmentWindow(w *EveEnrolmentWindow) *EveEnrolmentWindow {
+	if w == nil {
+		return nil
+	}
+	cp := *w
 	return &cp
 }
 

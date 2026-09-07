@@ -87,6 +87,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		&McpOps{Store: store, Ctx: context.Background()},
 		nil,
 		nil,
+		nil,
 		NewCredentialAuthorizer(store), auditor,
 	)
 	if err != nil {

@@ -35,6 +35,7 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 		"service.register",
 		"service.unregister",
 		"service.restart",
+		"eve.enrolment.open",
 	}
 	sort.Strings(want)
 
@@ -80,5 +81,43 @@ func TestAppRouter_AdminOpRefusesWhenCoreNotWired(t *testing.T) {
 	_, err := r.AdminOp(context.Background(), "credential.mint", json.RawMessage(`{"name":"x","classes":["read"]}`))
 	if err == nil {
 		t.Fatal("AdminOp succeeded with no CredentialOps wired")
+	}
+}
+
+// TestAdminEveEnrolmentOpen_DispatchesIntoEveEnrolmentOps proves
+// "eve.enrolment.open" reaches the SAME core `relay eve enrol` and the
+// tray's own menu item call, exactly as adminLoginBootstrapMint's own
+// dispatch does for "login.bootstrap.mint" — newBrokerRouter wires
+// EveEnrolmentOps with an allowing gate and a live issuance auditor, the
+// shape that proves a brokered call genuinely dispatches into its core
+// rather than merely reaching the transport.
+func TestAdminEveEnrolmentOpen_DispatchesIntoEveEnrolmentOps(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+
+	raw, err := r.AdminOp(context.Background(), "eve.enrolment.open", json.RawMessage(`{}`))
+	assertNoErr(t, err, "AdminOp eve.enrolment.open")
+
+	var view eveEnrolmentStatusView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !view.Open || view.Expires == "" {
+		t.Fatalf("result = %+v, want an open window", view)
+	}
+	if store.Get().EveEnrolment == nil {
+		t.Fatal("no eve_enrolment record was written")
+	}
+}
+
+// TestAdminEveEnrolmentOpen_RefusesWhenCoreNotWired is
+// TestAppRouter_AdminOpRefusesWhenCoreNotWired's counterpart for
+// requireEveEnrolmentOps.
+func TestAdminEveEnrolmentOpen_RefusesWhenCoreNotWired(t *testing.T) {
+	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
+
+	_, err := r.AdminOp(context.Background(), "eve.enrolment.open", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("AdminOp succeeded with no EveEnrolmentOps wired")
 	}
 }
