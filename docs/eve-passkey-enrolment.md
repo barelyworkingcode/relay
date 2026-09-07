@@ -201,7 +201,11 @@ The login screen keeps its primary *Sign In* button and gains a secondary
 *Add this browser* button that is hidden unless `status.enrollmentOpen`.
 While the login screen is visible the client re-fetches `/api/auth/status`
 every 3 seconds so the button appears within a few seconds of the operator
-opening the window from the tray; polling stops when the screen hides.
+opening the window from the tray. After three minutes on the login screen
+the poll slows to every 15 seconds, and a tab the browser reports as hidden
+skips the fetch entirely: every poll is a relay round-trip that lands in
+relay's audit log, and a tab left on the login screen overnight has no
+operator walking towards it. Polling stops when the screen hides.
 Clicking it runs the existing `enroll()` ceremony. Message under the
 buttons when the window is open: *Enrolment is open for a few minutes.*
 
