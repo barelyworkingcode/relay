@@ -88,6 +88,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewCredentialAuthorizer(store), auditor,
 	)
 	if err != nil {

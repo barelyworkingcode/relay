@@ -637,6 +637,7 @@ func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 		&ProjectOps{Store: store, Gate: allowGate(t), Issuance: issuanceAuditorOrNil(rec)},
 		nil,
 		nil,
+		nil,
 		NewCredentialAuthorizer(store), auditor,
 	)
 	assertNoErr(t, err, "NewFrontendServer")

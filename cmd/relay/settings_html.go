@@ -123,6 +123,10 @@ func renderSettingsDocument(settings *config.Settings, runningIDs []string, tool
 		// able to say so with both lists on screen.
 		"__PASSKEYS_JSON__", mustMarshalJSON("passkeys", passkeyViews(settings)),
 		"__LOGIN_SESSIONS_JSON__", mustMarshalJSON("login_sessions", loginSessionViews(settings, time.Now())),
+		// Eve's mirror is seeded the same way, for the same reason: a
+		// credential you cannot see is one you will not revoke
+		// (docs/eve-passkey-enrolment.md decision 7).
+		"__EVE_PASSKEYS_JSON__", mustMarshalJSON("eve_passkeys", evePasskeyViews(settings)),
 		"__LOGIN_CODE_JSON__", mustMarshalJSON("login_code", loginCode),
 		"__INITIAL_PAGE_JSON__", mustMarshalJSON("initial_page", initialPage),
 		// Overview tab (seeded like everything else above: no loading state

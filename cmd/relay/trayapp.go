@@ -84,6 +84,11 @@ type App struct {
 	// through (docs/eve-passkey-enrolment.md).
 	eveEnrolmentOps *EveEnrolmentOps
 
+	// evePasskeyOps backs the Passkeys tab's eve section and
+	// pushFullSettings' eve_passkeys payload; it is the same core `relay eve
+	// list|revoke` and eve's own PUT/GET mirror routes use.
+	evePasskeyOps *EvePasskeyOps
+
 	// pendingLoginCode is a just-minted bootstrap code waiting for the first
 	// paint of a Settings window that is not open yet. Main-thread only, like
 	// lastMenuJSON and svcMenuMap.
@@ -437,6 +442,26 @@ func runTrayApp() {
 	app.eveEnrolmentOps = eveEnrolmentOps
 	router.eveEnrolmentOps = eveEnrolmentOps
 
+	// evePasskeyOps is the mirror-and-revoke counterpart to loginOps for
+	// eve's own credentials (docs/eve-passkey-enrolment.md decisions 8-13):
+	// the Passkeys tab's eve section, `relay eve list|revoke`, and eve's own
+	// PUT/GET routes (RegisterEvePasskeyRoutes, wired into NewFrontendServer
+	// below) all share this exact instance. OnChange refreshes an open
+	// Settings window the same way loginOps' does -- an eve report or a
+	// revoke from a terminal must show up without a manual reload.
+	evePasskeyOps := &EvePasskeyOps{
+		Store: store,
+		Audit: rec,
+		Gate:  presenceGate,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullSettings)
+		},
+		Notify: platform.Notify,
+	}
+	app.evePasskeyOps = evePasskeyOps
+	app.ipcCtx.EvePasskeyOps = evePasskeyOps
+	router.evePasskeyOps = evePasskeyOps
+
 	// mcpOps is the one core behind both the MCP Servers tab (via
 	// app.ipcCtx.McpOps) and RegisterMcpRoutes on the frontend server
 	// (ADR-014) -- an MCP added from curl and one added from the tray share
@@ -549,7 +574,7 @@ func runTrayApp() {
 		OnChange: onProjectsChanged,
 	}
 	app.ipcCtx.HostOps = hostOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

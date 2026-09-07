@@ -14,23 +14,25 @@ import "encoding/json"
 // to keep it off.
 
 const (
-	MsgListPasskeys  = "list_passkeys"
-	MsgRevokePasskey = "revoke_passkey"
-	MsgSignOutLogin  = "sign_out_login"
+	MsgListPasskeys     = "list_passkeys"
+	MsgRevokePasskey    = "revoke_passkey"
+	MsgSignOutLogin     = "sign_out_login"
+	MsgRevokeEvePasskey = "revoke_eve_passkey"
 )
 
 type ipcPasskeyIDMsg struct {
 	ID string `json:"id"`
 }
 
-// ipcListPasskeys answers with both halves at once. They are one question —
-// "who can sign in, and who is signed in" — and a tab that fetched them
-// separately could render a passkey list next to a stale session list and
-// make the revoke decision on the wrong facts.
+// ipcListPasskeys answers with all three lists at once: who can sign in to
+// relay, who is signed in, and who can sign in to eve. A tab that fetched
+// them separately could render one list next to a stale other and make a
+// revoke decision on the wrong facts.
 func ipcListPasskeys(ctx *IPCContext, _ json.RawMessage) {
 	ctx.UI.EmitEvent("onPasskeysReloaded",
 		marshalForUI(ctx.LoginOps.Passkeys()),
-		marshalForUI(ctx.LoginOps.Sessions()))
+		marshalForUI(ctx.LoginOps.Sessions()),
+		marshalForUI(ctx.EvePasskeyOps.List()))
 }
 
 // ipcRevokePasskey removes the registration; it deliberately does NOT touch
@@ -69,4 +71,23 @@ func ipcSignOutLogin(ctx *IPCContext, raw json.RawMessage) {
 		return
 	}
 	ctx.UI.EmitEvent("onLoginSessionRevoked", removed.ID, removed.Name)
+}
+
+// ipcRevokeEvePasskey records a pending revocation against eve's mirror. Off
+// the main thread for the same reason ipcRevokePasskey is: eve.passkey.revoke
+// is gated, and Gate.Require blocks on LocalAuthentication's async
+// completion handler, which needs the run loop pumped.
+func ipcRevokeEvePasskey(ctx *IPCContext, raw json.RawMessage) {
+	msg, ok := unmarshalIPC[ipcPasskeyIDMsg](raw, MsgRevokeEvePasskey)
+	if !ok || msg.ID == "" {
+		return
+	}
+	ctx.GoFunc(func() {
+		rec, err := ctx.EvePasskeyOps.Revoke(ctx.Ctx, msg.ID, auditViaIPC)
+		if err != nil {
+			dispatchEmit(ctx, "onPasskeyError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onEvePasskeyRevoked", rec.ID)
+	})
 }
