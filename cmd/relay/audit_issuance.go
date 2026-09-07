@@ -20,6 +20,12 @@ const (
 	auditCredentialPasskey   = "passkey"
 	auditCredentialBootstrap = "bootstrap_code"
 	auditCredentialProject   = "project_token"
+	// auditCredentialEveEnrolment covers both directions of the eve
+	// second-browser window (docs/eve-passkey-enrolment.md): Open's record
+	// (Revoked: false, Subject: the window's expiry) and Consume's (Revoked:
+	// true, Subject: the enrolling browser's source IP) — one credential
+	// kind, told apart by Revoked.
+	auditCredentialEveEnrolment = "eve_enrolment"
 
 	// The config_change vocabulary (§7.5): a gated act that mutates
 	// settings without issuing anything a holder could authenticate with.
@@ -197,6 +203,35 @@ func recordBootstrapIssued(a IssuanceAuditor, expires, via, presenceID string) e
 		Subject:    expires,
 		Via:        via,
 		PresenceID: presenceID,
+	})
+}
+
+// recordEveEnrolmentIssued records the opening of an eve passkey enrolment
+// window. Subject is the window's own EXPIRY, the same non-secret
+// distinguishing fact recordBootstrapIssued uses for LoginBootstrap: unlike a
+// bootstrap code, the window carries no plaintext at all for the subject to
+// risk leaking.
+func recordEveEnrolmentIssued(a IssuanceAuditor, expires, via, presenceID string) error {
+	return recordIssuance(a, audit.CredentialIssuance{
+		Credential: auditCredentialEveEnrolment,
+		Subject:    expires,
+		Via:        via,
+		PresenceID: presenceID,
+	})
+}
+
+// recordEveEnrolmentConsumed records who took an open window: the source IP
+// and the enrolling browser's label, the two facts
+// docs/eve-passkey-enrolment.md's consume route accepts and the tray's own
+// notification quotes. Revoked: true because Consume is what closes the
+// window, the same direction RevokePasskey's own record takes.
+func recordEveEnrolmentConsumed(a IssuanceAuditor, claim eveEnrolmentClaim, via string) error {
+	return recordIssuance(a, audit.CredentialIssuance{
+		Revoked:    true,
+		Credential: auditCredentialEveEnrolment,
+		Subject:    claim.IP,
+		Name:       claim.Label,
+		Via:        via,
 	})
 }
 

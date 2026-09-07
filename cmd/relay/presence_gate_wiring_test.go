@@ -183,6 +183,11 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Create(context.Background(), project.CreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
 		}},
+		{"eve.enrolment.open", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			ops := &EveEnrolmentOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
+			_, err := ops.Open(context.Background(), auditViaCLI)
+			return err
+		}},
 	}
 }
 

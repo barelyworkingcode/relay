@@ -75,6 +75,13 @@ type Settings struct {
 	// never registers one keeps settings.json byte-identical to before this
 	// field existed.
 	Passkeys []Passkey `json:"passkeys,omitempty"`
+
+	// EveEnrolment is the single-use anchor an operator opens (tray or
+	// `relay eve enrol`) so a second browser may register an eve passkey
+	// (docs/eve-passkey-enrolment.md). omitempty: absent means closed, both
+	// the pre-feature state and the state the moment after the slot is
+	// consumed or expires.
+	EveEnrolment *EveEnrolmentWindow `json:"eve_enrolment,omitempty"`
 }
 
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {

@@ -37,6 +37,7 @@ var adminOps = map[string]adminOpHandler{
 	"enrolment.request.refuse":  adminEnrolmentRequestRefuse,
 	"login.bootstrap.mint":      adminLoginBootstrapMint,
 	"login.passkey.revoke":      adminLoginPasskeyRevoke,
+	"eve.enrolment.open":        adminEveEnrolmentOpen,
 	"mcp.register":              adminMcpRegister,
 	"mcp.unregister":            adminMcpUnregister,
 	"service.register":          adminServiceRegister,
@@ -84,6 +85,13 @@ func requireLoginOps(r *appRouter) (*LoginOps, error) {
 		return nil, errLoginOpsUnavailable
 	}
 	return r.loginOps, nil
+}
+
+func requireEveEnrolmentOps(r *appRouter) (*EveEnrolmentOps, error) {
+	if r.eveEnrolmentOps == nil {
+		return nil, errEveEnrolmentOpsUnavailable
+	}
+	return r.eveEnrolmentOps, nil
 }
 
 func requireMcpOps(r *appRouter) (*McpOps, error) {
@@ -414,6 +422,18 @@ func adminLoginPasskeyRevoke(ctx context.Context, r *appRouter, args json.RawMes
 		return nil, err
 	}
 	return marshalAdminResult(removed)
+}
+
+func adminEveEnrolmentOpen(ctx context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireEveEnrolmentOps(r)
+	if err != nil {
+		return nil, err
+	}
+	view, err := ops.Open(ctx, auditViaCLI)
+	if err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(view)
 }
 
 // adminMcpRegister responds with mcpView, the same JSON-safe projection the

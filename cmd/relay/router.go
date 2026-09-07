@@ -217,6 +217,15 @@ type appRouter struct {
 	loginOps      *LoginOps
 	mcpOps        *McpOps
 	serviceOps    *ServiceOps
+
+	// eveEnrolmentOps backs `relay eve enrol` (docs/eve-passkey-enrolment.md).
+	// Not one of the six S5 cores above (it predates none of ADR-017's
+	// history and has no IPC tab of its own), but wired the same way: the
+	// SAME instance trayapp.go's tray menu item and RegisterEveEnrolmentRoutes
+	// hold, so opening the window from the CLI, the tray, and answering
+	// eve's own status/consume routes can never disagree about whether one
+	// is open.
+	eveEnrolmentOps *EveEnrolmentOps
 }
 
 const serviceTokenName = "service"

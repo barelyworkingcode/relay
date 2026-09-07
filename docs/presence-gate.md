@@ -63,6 +63,13 @@ what runs.** Concretely:
 - **Minting a login bootstrap code, or revoking a passkey**
   (`login.bootstrap.mint`, `login.passkey.revoke`) — issues or destroys a
   login identity.
+- **Opening an eve passkey enrolment window** (`eve.enrolment.open`) — issues
+  a second browser's window onto eve's own passkey registration
+  ([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Consuming it
+  is not gated: the operator already answered this prompt to open the
+  window, and a browser spending the slot narrows what it reaches rather
+  than widening anything, the same footing "What is not gated, and why
+  removal is not escalation" gives below.
 - **Registering an MCP or a service, and starting an MCP's OAuth ceremony**
   (`mcp.register`, `mcp.oauth.start`, `service.register`) — the caller
   chooses what runs, or what bearer relay will hold and present upstream on
