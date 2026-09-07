@@ -234,16 +234,18 @@ func newBrokerRouter(t *testing.T, store config.SettingsStore, mutate func(*appR
 	t.Cleanup(audit.Close)
 	issuance := issuanceAuditorOrNil(audit)
 	r := &appRouter{
-		store:         store,
-		tools:         mcpbroker.NewManager(nil),
-		services:      noopServiceManager{},
-		enhanced:      NewEnhancedServiceRegistry(nil),
-		onChange:      func() {},
-		credentialOps: &CredentialOps{Store: store, Gate: gate, Issuance: issuance},
-		enrolmentOps:  &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance},
-		loginOps:      &LoginOps{Store: store, Gate: gate, Audit: audit},
-		mcpOps:        &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance},
-		serviceOps:    &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance},
+		store:           store,
+		tools:           mcpbroker.NewManager(nil),
+		services:        noopServiceManager{},
+		enhanced:        NewEnhancedServiceRegistry(nil),
+		onChange:        func() {},
+		credentialOps:   &CredentialOps{Store: store, Gate: gate, Issuance: issuance},
+		enrolmentOps:    &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance},
+		loginOps:        &LoginOps{Store: store, Gate: gate, Audit: audit},
+		mcpOps:          &McpOps{Store: store, Ctx: context.Background(), Gate: gate, Issuance: issuance},
+		serviceOps:      &ServiceOps{Store: store, Registry: noopServiceManager{}, Gate: gate, Issuance: issuance},
+		eveEnrolmentOps: &EveEnrolmentOps{Store: store, Gate: gate, Audit: audit},
+		evePasskeyOps:   &EvePasskeyOps{Store: store, Gate: gate, Audit: audit},
 	}
 	if mutate != nil {
 		mutate(r)

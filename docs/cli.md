@@ -76,6 +76,9 @@ Two consequences follow immediately, and both are covered in full below:
 | `relay login list` | no | no | yes |
 | `relay login enrol` | yes | **yes** | no |
 | `relay login revoke` | yes | **yes** | no |
+| `relay eve enrol` | yes | **yes** | no |
+| `relay eve list` | no | no | yes |
+| `relay eve revoke` | yes | **yes** | no |
 | `relay mcp list` | no | no | yes |
 | `relay mcp register` | yes | **yes** | no |
 | `relay mcp unregister` | yes | no | yes |
@@ -195,6 +198,8 @@ Every gated command has its own version of this reason string:
 | `enrol revoke` | `revoke the enrolment "ID"` |
 | `login enrol` | `mint a login bootstrap code` |
 | `login revoke` | `revoke the passkey "ID"` |
+| `eve enrol` | `open a five-minute window for one new browser to register an Eve passkey` |
+| `eve revoke` | `revoke the Eve passkey ID` |
 | `mcp register` | `register the MCP "NAME" (id) that runs COMMAND` (or `at URL` for HTTP) |
 | `service register` | `register the service "NAME" (id) that runs COMMAND` (or, when the id already exists and this is an update, `update the service "ID" to run COMMAND`) |
 
@@ -833,6 +838,69 @@ lifetimes — a browser that logged in earlier keeps working, up to twelve
 hours, until its own control-plane credential expires or is revoked with
 `relay credential revoke` (or Settings → Passkeys → Signed-in Browsers →
 Sign out).
+
+## `relay eve`
+
+Host-side anchor for a second browser to register an eve passkey
+([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md)). Eve's first
+visitor enrols directly; every later browser needs an operator to open a
+five-minute, single-use window first — from the tray's **Allow Eve Passkey
+Enrolment…** item or this command.
+
+```
+relay eve enrol
+relay eve list
+relay eve revoke --id ID
+```
+
+### `eve enrol`
+
+Needs service: yes. Prompts: yes. Works over SSH: no. Opens (and replaces
+any existing) enrolment window. Illustrative output — reconstructed from
+`eveEnrol`'s print format; not run here, since it is gated and would raise a
+real password prompt:
+
+```
+$ relay eve enrol
+eve passkey enrolment open until 10:15:00 (5m0s, single use)
+  on the new browser, open Eve, and tap "Add this browser"
+```
+
+The tray's own **Allow Eve Passkey Enrolment…** menu item reaches the
+identical gated core method — this command is not a weaker second door, it
+is the same door, useful over a terminal in the desktop session when no one
+is at the keyboard to click the tray. Relay notifies the console when the
+window opens and again when it is consumed, naming the source address that
+took it.
+
+### `eve list`
+
+Reads relay's mirror of eve's own credential list straight off disk
+([`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md) decision 8) --
+no running tray required. STATUS is `-` for an ordinary credential or
+`revocation pending` for one relay has revoked that eve has not yet applied.
+
+```
+$ relay eve list
+LABEL                    CREDENTIAL ID  CREATED               LAST USED             STATUS
+Mozilla/5.0 (iPhone...)  xNtuo_H_0XSA…  2026-09-07T10:12:31Z  2026-09-07T18:02:11Z  -
+```
+
+Needs service: no. Prompts: no. Works over SSH: yes.
+
+### `eve revoke`
+
+```
+$ relay eve revoke -h
+Usage of eve revoke:
+  -id string
+    	credential id of the eve passkey to revoke (required)
+```
+
+Needs service: yes. Prompts: yes. Works over SSH: no. Relay records the
+revocation as pending and never touches eve directly -- eve applies it on
+its own next 30-second poll, or immediately if that browser tries to sign in
+first, and signs out every session that passkey minted.
 
 ## `relay mcp`
 

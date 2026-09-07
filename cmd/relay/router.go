@@ -217,6 +217,22 @@ type appRouter struct {
 	loginOps      *LoginOps
 	mcpOps        *McpOps
 	serviceOps    *ServiceOps
+
+	// eveEnrolmentOps backs `relay eve enrol` (docs/eve-passkey-enrolment.md).
+	// Not one of the six S5 cores above (it predates none of ADR-017's
+	// history and has no IPC tab of its own), but wired the same way: the
+	// SAME instance trayapp.go's tray menu item and RegisterEveEnrolmentRoutes
+	// hold, so opening the window from the CLI, the tray, and answering
+	// eve's own status/consume routes can never disagree about whether one
+	// is open.
+	eveEnrolmentOps *EveEnrolmentOps
+
+	// evePasskeyOps backs `relay eve list|revoke` and eve's own PUT/GET
+	// mirror routes (docs/eve-passkey-enrolment.md). The SAME instance the
+	// Passkeys tab's eve section and RegisterEvePasskeyRoutes hold, so a
+	// revoke from a terminal, the tab, and eve's own report can never
+	// disagree about what is pending.
+	evePasskeyOps *EvePasskeyOps
 }
 
 const serviceTokenName = "service"
