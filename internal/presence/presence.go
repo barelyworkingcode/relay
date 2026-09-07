@@ -60,6 +60,8 @@ var GatedOps = []string{
 	"project.rotate_token",
 	"project.grant",
 	"sealed.reset",
+	"eve.enrolment.open",
+	"eve.passkey.revoke",
 }
 
 var gatedOps = func() map[string]struct{} {

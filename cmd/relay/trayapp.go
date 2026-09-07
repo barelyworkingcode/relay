@@ -79,6 +79,16 @@ type App struct {
 	// the same core `relay login` runs through.
 	loginOps *LoginOps
 
+	// eveEnrolmentOps backs the tray's "Allow Eve Passkey Enrolment…" item
+	// and its countdown line; it is the same core `relay eve enrol` runs
+	// through (docs/eve-passkey-enrolment.md).
+	eveEnrolmentOps *EveEnrolmentOps
+
+	// evePasskeyOps backs the Passkeys tab's eve section and
+	// pushFullSettings' eve_passkeys payload; it is the same core `relay eve
+	// list|revoke` and eve's own PUT/GET mirror routes use.
+	evePasskeyOps *EvePasskeyOps
+
 	// pendingLoginCode is a just-minted bootstrap code waiting for the first
 	// paint of a Settings window that is not open yet. Main-thread only, like
 	// lastMenuJSON and svcMenuMap.
@@ -180,6 +190,7 @@ const (
 	menuIDLoginCode         = 4
 	menuIDResetSealedStore  = 5
 	menuIDPendingEnrolments = 6
+	menuIDEveEnrolment      = 7
 	menuIDSvcBase           = 100 // service items start here
 )
 
@@ -413,6 +424,44 @@ func runTrayApp() {
 	app.ipcCtx.LoginOps = loginOps
 	router.loginOps = loginOps
 
+	// eveEnrolmentOps is the second-browser counterpart to loginOps
+	// (docs/eve-passkey-enrolment.md): the tray's "Allow Eve Passkey
+	// Enrolment…" item and `relay eve enrol` both call Open on this exact
+	// instance, and RegisterEveEnrolmentRoutes (wired into NewFrontendServer
+	// below) shares it for Status/Consume, so the menu's countdown line and
+	// eve's own poll can never disagree about whether a window is open.
+	eveEnrolmentOps := &EveEnrolmentOps{
+		Store: store,
+		Audit: rec,
+		Gate:  presenceGate,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.updateMenu)
+		},
+		Notify: platform.Notify,
+	}
+	app.eveEnrolmentOps = eveEnrolmentOps
+	router.eveEnrolmentOps = eveEnrolmentOps
+
+	// evePasskeyOps is the mirror-and-revoke counterpart to loginOps for
+	// eve's own credentials (docs/eve-passkey-enrolment.md decisions 8-13):
+	// the Passkeys tab's eve section, `relay eve list|revoke`, and eve's own
+	// PUT/GET routes (RegisterEvePasskeyRoutes, wired into NewFrontendServer
+	// below) all share this exact instance. OnChange refreshes an open
+	// Settings window the same way loginOps' does -- an eve report or a
+	// revoke from a terminal must show up without a manual reload.
+	evePasskeyOps := &EvePasskeyOps{
+		Store: store,
+		Audit: rec,
+		Gate:  presenceGate,
+		OnChange: func() {
+			app.platform.DispatchToMain(app.pushFullSettings)
+		},
+		Notify: platform.Notify,
+	}
+	app.evePasskeyOps = evePasskeyOps
+	app.ipcCtx.EvePasskeyOps = evePasskeyOps
+	router.evePasskeyOps = evePasskeyOps
+
 	// mcpOps is the one core behind both the MCP Servers tab (via
 	// app.ipcCtx.McpOps) and RegisterMcpRoutes on the frontend server
 	// (ADR-014) -- an MCP added from curl and one added from the tray share
@@ -525,7 +574,7 @@ func runTrayApp() {
 		OnChange: onProjectsChanged,
 	}
 	app.ipcCtx.HostOps = hostOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
@@ -859,6 +908,22 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Settings...", ID: menuIDSettings, Enabled: true, Key: ","},
 		menuItem{Title: "Show Login Code...", ID: menuIDLoginCode, Enabled: true},
+		menuItem{Title: "Allow Eve Passkey Enrolment…", ID: menuIDEveEnrolment, Enabled: true},
+	)
+
+	// The disabled countdown line (docs/eve-passkey-enrolment.md): shown
+	// only while a window is open, computed fresh on every poll so it can
+	// never drift from what Status() and eve's own login-screen poll agree
+	// on. Recomputed from s.EveEnrolment directly rather than through
+	// a.eveEnrolmentOps.Status() — s is the exact snapshot this whole
+	// rebuild already carries, and reading through the ops core again would
+	// risk a second, later Get() disagreeing with it under a concurrent
+	// Open/Consume.
+	if remaining, open := eveEnrolmentRemaining(s.EveEnrolment, time.Now()); open {
+		items = append(items, menuItem{Title: "Eve enrolment open — " + remaining, ID: 0})
+	}
+
+	items = append(items,
 		menuItem{Title: "-", ID: 0},
 		menuItem{Title: "Reset Sealed Store...", ID: menuIDResetSealedStore, Enabled: true},
 		menuItem{Title: "-", ID: 0},
@@ -925,6 +990,9 @@ func (a *App) onMenuClick(itemID int) {
 	case itemID == menuIDLoginCode:
 		a.showLoginCode()
 
+	case itemID == menuIDEveEnrolment:
+		a.openEveEnrolment()
+
 	case itemID == menuIDResetSealedStore:
 		a.confirmAndResetSealedStore()
 
@@ -977,6 +1045,25 @@ func (a *App) showLoginCode() {
 			}
 			a.openSettingsWindow()
 		})
+	})
+}
+
+// openEveEnrolment mints an eve passkey enrolment window from the tray menu.
+// Unlike showLoginCode there is nothing to display beyond the notification
+// -- eve's own login screen is where the operator (or whoever taps "Add this
+// browser") sees the result -- so this has no pending/emit split and no
+// Settings window to open; EveEnrolmentOps.Open's own OnChange already
+// rebuilds the menu so the countdown line appears without a second dispatch
+// here.
+//
+// Runs in a tracked goroutine for the reason showLoginCode's doc comment
+// gives in full: eve.enrolment.open is gated, and onMenuClick runs on the
+// Cocoa main thread that the presence dialog needs pumped.
+func (a *App) openEveEnrolment() {
+	a.goFunc(func() {
+		if _, err := a.eveEnrolmentOps.Open(a.ctx, auditViaTray); err != nil {
+			slog.Error("failed to open an eve passkey enrolment window from the tray", "error", err)
+		}
 	})
 }
 

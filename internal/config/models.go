@@ -542,6 +542,41 @@ type LoginBootstrap struct {
 	Expires string `json:"expires"`
 }
 
+// EveEnrolmentWindow is the anchor an operator opens so one new browser may
+// register an eve passkey (docs/eve-passkey-enrolment.md), the same shape of
+// lifetime as LoginBootstrap: an RFC 3339 expiry, at most one at a time, and
+// opening a new one replaces whatever was there. Unlike LoginBootstrap it
+// carries no secret to hash — the window is single-use because eve consumes
+// it atomically through relay, not because anything here is unguessable.
+type EveEnrolmentWindow struct {
+	Expires string `json:"expires"`
+}
+
+// EvePasskey is relay's mirror of one credential eve reports about itself
+// (docs/eve-passkey-enrolment.md decision 8). Display metadata only — never
+// a public key or a counter, which is eve's alone to keep — refreshed
+// wholesale on every report rather than merged field by field, so the
+// mirror can never drift into a shape eve never actually sent.
+type EvePasskey struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Created  string `json:"created"`
+	LastUsed string `json:"last_used"`
+	// Reported is when relay last heard about this credential, so a mirror
+	// eve has not refreshed in a while (eve down for a week) is visibly
+	// stale in the Passkeys tab rather than silently trusted.
+	Reported string `json:"reported"`
+}
+
+// EvePasskeyRevocation is a revoke relay has recorded but eve has not yet
+// applied (decision 9). It is dropped the moment a report from eve no
+// longer lists the id (decision 12) — the report IS the acknowledgement,
+// so there is no separate ack to forget or replay.
+type EvePasskeyRevocation struct {
+	ID        string `json:"id"`
+	Requested string `json:"requested"`
+}
+
 // Passkey is one registered WebAuthn credential (ADR-016 decisions 2 and 7).
 // Only public material is stored: X and Y are the COSE ES256 public key's
 // coordinates, never a private key, which never leaves the authenticator.

@@ -183,6 +183,28 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Create(context.Background(), project.CreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
 		}},
+		{"eve.enrolment.open", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			ops := &EveEnrolmentOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
+			_, err := ops.Open(context.Background(), auditViaCLI)
+			return err
+		}},
+		{"eve.passkey.revoke",
+			func(t *testing.T, store config.SettingsStore) {
+				// Two mirrored credentials: revoking one must not trip the
+				// last-credential refusal, which is a pre-gate check this
+				// case is not exercising.
+				assertNoErr(t, store.With(func(s *config.Settings) {
+					s.EvePasskeys = []config.EvePasskey{
+						{ID: "pgw-eve-passkey", Label: "pgw"},
+						{ID: "pgw-eve-passkey-2", Label: "pgw-2"},
+					}
+				}), "seed eve passkey mirror")
+			},
+			func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+				ops := &EvePasskeyOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
+				_, err := ops.Revoke(context.Background(), "pgw-eve-passkey", auditViaCLI)
+				return err
+			}},
 	}
 }
 

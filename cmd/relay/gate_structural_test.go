@@ -89,6 +89,12 @@ var gateAllowlistedFiles = map[string]string{
 		"POST /api/services/{id}/stop) and still calls requireIssuanceAuditor",
 	"cmd/relay/enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
 	"cmd/relay/login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
+	"cmd/relay/eve_enrolment_ops.go": "the EveEnrolmentOps core: Gate.Require runs before Open touches the store; Consume is deliberately " +
+		"UNGATED (docs/eve-passkey-enrolment.md decision 2 -- consuming a window the operator already opened narrows it rather " +
+		"than widening anything) and does not call requireIssuanceAuditor either, since its own audit record is best-effort",
+	"cmd/relay/eve_passkey_ops.go": "the EvePasskeyOps core: Gate.Require runs before Revoke touches the store; Report and Unrevoke are " +
+		"deliberately UNGATED (docs/eve-passkey-enrolment.md decisions 8 and 13 -- Report is eve narrating its own state, and " +
+		"Unrevoke only narrows a pending revocation nobody has applied yet) and neither calls requireIssuanceAuditor",
 
 	// Where the mutators themselves, and the free functions a core
 	// delegates to, are defined.
@@ -326,7 +332,7 @@ var wantGateAllowlistedFiles = []string{
 	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
 	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
 	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/frontend_server.go", "cmd/relay/login_routes.go",
-	"cmd/relay/host_ops.go",
+	"cmd/relay/host_ops.go", "cmd/relay/eve_enrolment_ops.go", "cmd/relay/eve_passkey_ops.go",
 }
 
 // TestGate_MutatorAndAllowlistSetsHaveNotShrunk is AC-11: a
@@ -400,6 +406,8 @@ var wantGatedOps = []string{
 	"project.rotate_token",
 	"project.grant",
 	"sealed.reset",
+	"eve.enrolment.open",
+	"eve.passkey.revoke",
 }
 
 func TestGate_GatedOpsMatchesPinnedList(t *testing.T) {
@@ -440,6 +448,8 @@ var wantGateCallSites = map[string][]string{
 	"project.rotate_token": {"ProjectOps.RotateToken"},
 	"project.grant":        {"ProjectOps.Create", "ProjectOps.Update"},
 	"sealed.reset":         {"resetSealedStore"},
+	"eve.enrolment.open":   {"EveEnrolmentOps.Open"},
+	"eve.passkey.revoke":   {"EvePasskeyOps.Revoke"},
 }
 
 func equalStringSlices(a, b []string) bool {

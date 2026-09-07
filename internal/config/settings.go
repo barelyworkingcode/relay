@@ -75,6 +75,26 @@ type Settings struct {
 	// never registers one keeps settings.json byte-identical to before this
 	// field existed.
 	Passkeys []Passkey `json:"passkeys,omitempty"`
+
+	// EveEnrolment is the single-use anchor an operator opens (tray or
+	// `relay eve enrol`) so a second browser may register an eve passkey
+	// (docs/eve-passkey-enrolment.md). omitempty: absent means closed, both
+	// the pre-feature state and the state the moment after the slot is
+	// consumed or expires.
+	EveEnrolment *EveEnrolmentWindow `json:"eve_enrolment,omitempty"`
+
+	// EvePasskeys mirrors eve's own credential list, reported by eve at
+	// startup and after every change (docs/eve-passkey-enrolment.md decision
+	// 8). omitempty: an eve that has never reported (or a relay that has
+	// never run alongside one) keeps settings.json byte-identical to before
+	// this field existed.
+	EvePasskeys []EvePasskey `json:"eve_passkeys,omitempty"`
+
+	// EvePasskeyRevocations is every eve passkey revocation relay has
+	// recorded but eve has not yet acknowledged by omitting the id from a
+	// later report (decisions 9 and 12). omitempty, for the same reason as
+	// EvePasskeys.
+	EvePasskeyRevocations []EvePasskeyRevocation `json:"eve_passkey_revocations,omitempty"`
 }
 
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {

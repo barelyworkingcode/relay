@@ -29,6 +29,7 @@ const REMOTE_INIT = window.__RELAY_INIT__.remote || null;
 const ENROLMENT_BUDGET_DEFAULTS_INIT = window.__RELAY_INIT__.enrolmentBudgetDefaults || {};
 const PASSKEYS_INIT = window.__RELAY_INIT__.passkeys || [];
 const LOGIN_SESSIONS_INIT = window.__RELAY_INIT__.loginSessions || [];
+const EVE_PASSKEYS_INIT = window.__RELAY_INIT__.evePasskeys || [];
 // A bootstrap code minted by the tray's "Show Login Code..." item, seeded into
 // the first paint because the window it is meant for did not exist when the
 // code was minted. Null on every ordinary open, and never persisted anywhere:
@@ -195,6 +196,10 @@ let state = {
     passkeyError: null,
     passkeyRevoked: null,                   // {name, short} shown after a revoke
     loginSignedOut: null,                   // credential name shown after a sign-out
+
+    // The eve section of the same tab (docs/eve-passkey-enrolment.md decision
+    // 7): eve's own credential mirror, reported by eve and never edited here.
+    evePasskeys: EVE_PASSKEYS_INIT,
 
     // Tool Calls tab. Events arrive newest-first from the recorder's ring (or
     // from a deep query over the log file); `auditFilter` mirrors AuditQuery
@@ -431,6 +436,7 @@ function renderOverviewTiles() {
     const hosts = hostCounts();
     const passkeysCount = (state.passkeys || []).length;
     const sessionsCount = (state.loginSessions || []).length;
+    const evePasskeysCount = (state.evePasskeys || []).length;
     const audit = auditTile();
 
     const tiles = [
@@ -440,7 +446,7 @@ function renderOverviewTiles() {
         { label: 'Hosts', value: hosts.connected + ' connected · ' + hosts.unreachable + ' unreachable', cls: '', tab: 'hosts' },
         { label: 'Remote listener', value: remoteTileValue(), cls: '', tab: 'remote' },
         { label: 'Audit', value: audit.text, cls: audit.cls, tab: 'audit' },
-        { label: 'Passkeys', value: pluralize(passkeysCount, 'passkey') + ' · ' + sessionsCount + ' browser' + (sessionsCount === 1 ? '' : 's') + ' signed in', cls: '', tab: 'passkeys' },
+        { label: 'Passkeys', value: pluralize(passkeysCount, 'passkey') + ' · ' + sessionsCount + ' browser' + (sessionsCount === 1 ? '' : 's') + ' signed in' + ' · ' + pluralize(evePasskeysCount, 'eve passkey'), cls: '', tab: 'passkeys' },
     ];
 
     let html = '<div class="ov-grid">';
@@ -1290,6 +1296,7 @@ window.onSettingsReloaded = function(data) {
     if (data.enrolments) state.enrolments = data.enrolments;
     if (data.passkeys) state.passkeys = data.passkeys;
     if (data.login_sessions) state.loginSessions = data.login_sessions;
+    if (data.eve_passkeys) state.evePasskeys = data.eve_passkeys;
     if (data.remote) {
         state.remote = data.remote;
         // Re-seed the listener draft from the server's answer unless the user
@@ -4815,7 +4822,42 @@ function renderPasskeys() {
         html += '</div>';
     }
 
+    html += renderEvePasskeys();
     html += renderLoginSessions();
+    return html;
+}
+
+// renderEvePasskeys is the Passkeys tab's second section
+// (docs/eve-passkey-enrolment.md decisions 7-13): eve owns these
+// credentials and reports the list here, so this section never mints or
+// edits one -- only revoke, which relay records as pending and never
+// applies itself.
+function renderEvePasskeys() {
+    const list = state.evePasskeys || [];
+    let html = '<div class="proj-section" style="margin-top:24px">';
+    html += '<div class="proj-section-title">Eve passkeys</div>';
+    html += '<p class="proj-section-help">Browsers that can sign in to Eve. Eve owns these credentials and reports this list to relay; revoking one here does not touch Eve directly — Eve applies it on its own next poll, or immediately if that browser tries to sign in, and signs out every session it minted.</p>';
+
+    if (!list.length) {
+        html += '<div class="empty-state">Eve has not reported any passkeys yet.</div>';
+        html += '</div>';
+        return html;
+    }
+    for (const p of list) {
+        html += '<div class="pk-card">';
+        html += '<div class="pk-card-header">';
+        html += '<span class="pk-card-name">' + esc(p.label || '(unnamed passkey)') + '</span>';
+        if (p.revocation_pending) {
+            html += '<span class="pk-pending">revocation pending</span>';
+        } else {
+            html += '<button class="btn btn-sm btn-danger" ' + bind(revokeEvePasskey, p.id) + '>Revoke</button>';
+        }
+        html += '</div>';
+        html += '<div class="pk-id">Credential: ' + esc(p.short || '') + '</div>';
+        html += '<div class="pk-meta"><span>Registered: <strong>' + esc(p.created || '—') + '</strong></span> <span>Last used: <strong>' + esc(p.last_used || '—') + '</strong></span></div>';
+        html += '</div>';
+    }
+    html += '</div>';
     return html;
 }
 
@@ -4892,11 +4934,25 @@ function signOutLogin(id) {
     ipc(JSON.stringify({ type: 'sign_out_login', id: id }));
 }
 
+// revokeEvePasskey names what changes, the same discipline revokePasskey
+// follows: relay only records the revocation as pending here -- it never
+// touches eve directly (decision 9).
+function revokeEvePasskey(id) {
+    const p = (state.evePasskeys || []).find(x => x.id === id);
+    if (!p) return;
+    const msg = 'Revoke the Eve passkey "' + (p.label || p.short) + '"?\n\n'
+        + 'It stops working on its next use. Eve signs out every browser session it minted with this passkey when it applies the revocation.';
+    if (!confirm(msg)) return;
+    state.passkeyError = null;
+    ipc(JSON.stringify({ type: 'revoke_eve_passkey', id: id }));
+}
+
 // ---- Passkeys IPC event handlers ----
 
-window.onPasskeysReloaded = function(passkeys, sessions) {
+window.onPasskeysReloaded = function(passkeys, sessions, evePasskeys) {
     state.passkeys = passkeys || [];
     state.loginSessions = sessions || [];
+    state.evePasskeys = evePasskeys || [];
     state.passkeyError = null;
     if (state.page === 'passkeys') render('push');
 };
@@ -4915,6 +4971,17 @@ window.onLoginSessionRevoked = function(id, name) {
     state.passkeyError = null;
     state.passkeyRevoked = null;
     state.loginSignedOut = name || id || '';
+    if (state.page === 'passkeys') render('push');
+};
+
+// onEvePasskeyRevoked marks the row pending rather than removing it: the
+// credential is still in eve's mirror until eve's own next report drops it
+// (decision 12) -- removing it here early would say "gone" before it is.
+window.onEvePasskeyRevoked = function(id) {
+    state.evePasskeys = (state.evePasskeys || []).map(function(p) {
+        return p.id === id ? Object.assign({}, p, { revocation_pending: true }) : p;
+    });
+    state.passkeyError = null;
     if (state.page === 'passkeys') render('push');
 };
 
@@ -6416,7 +6483,7 @@ if (sidebarVersionEl) sidebarVersionEl.textContent = 'relay ' + VERSION_INIT;
 Object.assign(window, {
     renderOverview, renderOverviewTiles, renderOverviewAttention, renderOverviewRecentToolCalls, renderOverviewFooter, overviewAttentionRows, serviceCounts, mcpHealthCounts, projectCounts, hostCounts, remoteTileValue, auditTile, pendingEnrolmentCount, revealConfigDir, revealLogsDir, revealServiceLog,
     auditBaseDetail, auditCaller, auditDetail, auditFmtTime, auditMatches, auditPretty, auditScopeBreadthText, auditScopeText, auditSelect, auditVisible, exportAudit, queryAudit, renderAudit, renderAuditDetail, renderAuditRow, restoreAuditFocus, revealAuditLog, setAuditFilter, toggleAuditFollow, toggleAuditRow,
-    copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin,
+    copyLoginCode, dismissLoginCode, pkSignCountText, refreshPasskeys, renderLoginCodeBanner, renderLoginSessions, renderPasskeys, revokePasskey, signOutLogin, renderEvePasskeys, revokeEvePasskey,
     approveEnrolmentRequestForm, cancelEnrolment, dismissEnrolBundle, enrolBudgetText, enrolBytes, enrolGrantNames, enrolGrantSummary, listEnrolmentRequests, newEnrolment, refuseEnrolmentRequest, remoteDraft, remoteDraftSet, remoteGrantableProjects, remoteListenIsLoopback, removeRemoteConfig, renderCAFingerprintLine, renderEnrolBundleBanner, renderEnrolmentForm, renderEnrolments, renderPendingEnrolmentRequests, renderPendingRequestFields, renderRemoteListener, renderRequestComparison, enrolRequestApprovable, toggleEnrolNoGrant, captureEnrolFormInputs, revokeEnrolment, saveEnrolment, saveRemoteConfig, toggleEnrolGrant,
     harvestProjectPermissions, mcpScopeFieldsFor, projAccessMode, projAllowExternal, projAllowedToolPatterns, projAllowedToolsText, projAuthorityRows, projFormAccessMode, projFormAllowExternal, projFormAllowExternalDefault, projGrantedMcpIds, projMissingScopeFields, projNoun, projScopeBreadthWarnings, projScopeGaps, projScopeText, projScopeValue, projToolAuthorityText, renderAuthorityRows, renderProjMcpPermissions, renderScopeFieldInput, renderScopeFieldPicker, renderScopeFieldTextInput, renderScopeChoices, renderScopeGapBanner, scopeBreadthPhrase, scopeCleanPath, scopeEntryBreadth, scopeTextFromValue, scopeValueBreadth, scopeValueFromText, scopeValueIsSet, scopeValueIsAsserted, scopeValueText, setProjAccess, setProjAllowExternal, setProjAllowedToolsText, setProjMcpGranted, setProjScopeText,
     captureProjectFormInputs, clearScopeValues, confirmScopeFieldEmpty, focusProjectFormIssue, isPolicyEmpty, refreshDependentScopeFields, requestScopeEnum, retryScopeEnum, scopeDependencyValues, scopeEnumKey, scopeEnumValueKey, scopeFieldByName, scopeFieldIsOpen, scopeFieldWasEverAsserted, scopeOpenKey, scopeSelectedValues, selectAllScopeValuesAt, toggleProjScopeValueAt, toggleScopeFieldPicker, unrecognisedScopeValues,

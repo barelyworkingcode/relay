@@ -351,6 +351,13 @@ a password, and it never authenticates a request to relay's API on its own
   credential revoke, above. Both operator surfaces say so at the point of the
   act rather than leaving it to be discovered.
 
+**A second browser's passkey is a different anchor, not this one.** Eve's
+`auth.json` holds its own passkeys, entirely outside this inventory; relay's
+part is only the five-minute `eve_enrolment` window that lets a second
+browser register one. See
+[`docs/eve-passkey-enrolment.md`](eve-passkey-enrolment.md) for the design
+and `relay eve enrol` in [`docs/cli.md`](cli.md#relay-eve) for the door.
+
 **A second presentation of the code, not a second anchor.** The tray's
 **Show Login Code...** item and `relay login enrol` both reach the same gated
 core method, `LoginOps.MintBootstrap`, and show the result in the Settings
