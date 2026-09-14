@@ -45,8 +45,8 @@ Two checks run, in this order, and they do different jobs:
 
 1. `frontendCredentialAuth` resolves the caller before any handler runs — so an
    unauthenticated WS upgrade never allocates a session. A request with no
-   `Authorization` header whose socket peer is a launch identity holding `frontend`
-   identity is that identity ([`docs/launch-identity.md`](launch-identity.md)).
+   `Authorization` header whose socket peer holds the `frontend` capability is
+   that identity ([`docs/launch-identity.md`](launch-identity.md)).
    Any other request must carry an `Authorization: Bearer` that resolves,
    constant-time, to a credential in `Settings.APICredentials`. Absent,
    malformed and unknown bearers, and a headerless caller with no identity, get
