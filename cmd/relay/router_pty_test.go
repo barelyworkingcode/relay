@@ -13,7 +13,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
+func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, context.Context) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
@@ -39,9 +39,8 @@ func newPtyTestRouter(t *testing.T) (*appRouter, config.Project, string) {
 		services: &fakeServiceReloader{},
 		enhanced: NewEnhancedServiceRegistry(nil),
 	}
-	const svcToken = "svc-token-pty-test"
-	router.serviceTokens.Register(config.HashToken(svcToken))
-	return router, proj, svcToken
+	svcCtx := bindTestServiceIdentity(t, router)
+	return router, proj, svcCtx
 }
 
 func codeOf(err error) int {
@@ -53,12 +52,12 @@ func codeOf(err error) int {
 }
 
 func TestResolvePtyEnv_ByProjectID(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)
 	}
@@ -71,13 +70,13 @@ func TestResolvePtyEnv_ByProjectID(t *testing.T) {
 }
 
 func TestResolvePtyEnv_ByProjectID_AcceptsSubdir(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 
 	sub := filepath.Join(proj.Path, "nested", "pkg")
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: sub,
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv (subdir): %v", err)
 	}
@@ -87,12 +86,12 @@ func TestResolvePtyEnv_ByProjectID_AcceptsSubdir(t *testing.T) {
 }
 
 func TestResolvePtyEnv_DirectoryMismatch_Rejected(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: t.TempDir(), // a different tree, not within proj.Path
-	}, svcToken)
+	}, "")
 	if err == nil {
 		t.Fatal("expected rejection for directory outside the project")
 	}
@@ -106,11 +105,11 @@ func TestResolvePtyEnv_DirectoryMismatch_Rejected(t *testing.T) {
 }
 
 func TestResolvePtyEnv_UnknownProjectID(t *testing.T) {
-	router, _, svcToken := newPtyTestRouter(t)
+	router, _, svcCtx := newPtyTestRouter(t)
 
-	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	_, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: "does-not-exist",
-	}, svcToken)
+	}, "")
 	if code := codeOf(err); code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("error code = %d, want CodeMethodNotFound (%d)", code, jsonrpc.CodeMethodNotFound)
 	}
@@ -130,12 +129,12 @@ func TestResolvePtyEnv_RequiresServiceToken(t *testing.T) {
 }
 
 func TestResolvePtyEnv_LegacyDirectoryMatchStillWorks(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 
 	// No ProjectID: relay falls back to matching Directory against Project.Path.
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		Directory: proj.Path,
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("legacy directory-match resolve: %v", err)
 	}

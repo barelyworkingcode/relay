@@ -5,30 +5,20 @@ package main
 // matrix and controlStatus's three named branches individually — this file
 // goes at what they leave shallow: the full error-variant matrix run
 // through control.RouteRegistrar.Handle (including a wrapped control.ErrNoCredential) with a
-// leak check on the response body, a multi-restart migration sequence
-// against one persisted Settings with an unrelated credential present to
-// prove it survives untouched, the migrated credential's grant/execute
-// refusal proven through the real control.Authorizer + Handle stack rather than
-// Grants alone, and an end-to-end audit-record leak check against a real
+// leak check on the response body, and an end-to-end audit-record leak check against a real
 // minted credential.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
-	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 type ceFakeAuthorizer struct {
@@ -113,110 +103,6 @@ func TestCredentialEnforcement_Handle_ErrorVariantMatrix_StatusAndNoLeak(t *test
 			}
 			if strings.Contains(body, secret) {
 				t.Fatalf("response body leaked the bearer token: %q", body)
-			}
-		})
-	}
-}
-
-// FrontendChannel.Ensure mints a fresh random token every process start and
-// never persists it, so a realistic sequence is many restarts, each handing
-// migrateFrontendTokenToCredential a DIFFERENT token, against the SAME
-// persisted Settings. The marker-name keying must converge on one
-// credential regardless, and an unrelated pre-existing credential must ride
-// along untouched.
-func TestCredentialEnforcement_Migration_ConvergesAcrossManyRestarts(t *testing.T) {
-	s := &config.Settings{}
-
-	other := config.APICredential{
-		ID:      "other-tool-id",
-		Name:    "other-tool",
-		Hash:    config.HashToken("other-tool-token"),
-		Classes: []control.CapabilityClass{control.ClassRead},
-		Created: "2020-01-01T00:00:00Z",
-	}
-	addAPICredential(s, other)
-
-	const restarts = 7
-	var lastToken string
-	for i := 0; i < restarts; i++ {
-		lastToken = "boot-token-" + strconv.Itoa(i)
-		migrateFrontendTokenToCredential(s, lastToken)
-	}
-
-	if len(s.APICredentials) != 2 {
-		t.Fatalf("want 2 credentials (other + legacy) after %d restarts, got %d: %+v", restarts, len(s.APICredentials), s.APICredentials)
-	}
-
-	var legacy *config.APICredential
-	for i := range s.APICredentials {
-		if s.APICredentials[i].Name == legacyFrontendCredentialName {
-			legacy = &s.APICredentials[i]
-		}
-	}
-	if legacy == nil {
-		t.Fatal("no credential named legacyFrontendCredentialName survived the restart sequence")
-	}
-	if legacy.Hash != config.HashToken(lastToken) {
-		t.Fatal("legacy credential's hash does not match the LATEST restart's token")
-	}
-	if len(legacy.Classes) != 3 || !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) || !legacy.Grants(control.ClassProxy) {
-		t.Fatalf("legacy credential's classes drifted across restarts: %+v", legacy.Classes)
-	}
-	if legacy.Grants(control.ClassGrant) || legacy.Grants(control.ClassExecute) {
-		t.Fatalf("legacy credential picked up a class the migration must never carry: %+v", legacy.Classes)
-	}
-
-	for i := 0; i < restarts-1; i++ {
-		stale := "boot-token-" + strconv.Itoa(i)
-		if authenticateAPICredential(s, stale) != nil {
-			t.Fatalf("a token from an earlier restart (%q) still authenticates", stale)
-		}
-	}
-	if authenticateAPICredential(s, lastToken) == nil {
-		t.Fatal("the latest restart's token does not authenticate")
-	}
-
-	found := findAPICredential(s, "other-tool-id")
-	if found == nil {
-		t.Fatal("migration removed the unrelated pre-existing credential")
-	}
-	if found.Hash != other.Hash || found.Name != other.Name || len(found.Classes) != 1 || found.Classes[0] != control.ClassRead {
-		t.Fatalf("migration disturbed the unrelated pre-existing credential: %+v", found)
-	}
-}
-
-func TestCredentialEnforcement_MigratedCredential_DeniedGrantAndExecute_ThroughRealStack(t *testing.T) {
-	store := newCLISandboxStore(t)
-	const frontendToken = "ce-migrated-frontend-token"
-	assertNoErr(t, store.With(func(s *config.Settings) {
-		if !migrateFrontendTokenToCredential(s, frontendToken) {
-			t.Fatal("migration reported no change on first call")
-		}
-	}), "store.With migrate")
-
-	authz := NewCredentialAuthorizer(store)
-
-	for _, tc := range []struct {
-		class control.CapabilityClass
-		want  int
-	}{
-		{control.ClassRead, http.StatusOK},
-		{control.ClassConfigure, http.StatusOK},
-		{control.ClassGrant, http.StatusForbidden},
-		{control.ClassExecute, http.StatusForbidden},
-	} {
-		t.Run(string(tc.class), func(t *testing.T) {
-			mux := http.NewServeMux()
-			rr := &control.RouteRegistrar{CredentialID: APICredentialIDFromContext, Mux: mux, Transport: control.TransportSocket, Authz: authz}
-			rr.Handle(tc.class, "POST /api/ce-y", func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			})
-			srv := httptest.NewServer(mux)
-			defer srv.Close()
-
-			status, _ := ceDoBearer(t, "POST", srv.URL+"/api/ce-y", frontendToken)
-			if status != tc.want {
-				t.Fatalf("class %s: status = %d, want %d", tc.class, status, tc.want)
 			}
 		})
 	}
@@ -323,72 +209,5 @@ func TestCredentialEnforcement_ControlDecision_NeverLeaksCredentialTokenOrHash(t
 	refused := aud.decisions[1]
 	if refused.Allowed || refused.CredID != cred.ID {
 		t.Fatalf("refused decision = %+v, want Allowed=false CredID=%q", refused, cred.ID)
-	}
-}
-
-// TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit is the
-// compatibility claim ADR-016 decision 4 rests on, made against a real
-// enhanced service rather than against the dispatcher's 404. Eve holds
-// RELAY_FRONTEND_TOKEN and dials the frontend SOCKET, so a socket-only
-// control.ClassProxy must leave it reaching exactly what it reached before -- proven
-// by the upstream service recording the request, not by the status alone.
-//
-// The TCP half is the other side of the same decision, and it is a change:
-// the proxied surface is gone from the loopback bind for every credential,
-// Eve's included.
-func TestCredentialEnforcement_EveIsUnaffectedByTheProxySplit(t *testing.T) {
-	store := newCLISandboxStore(t)
-	const eveToken = "ce-eve-frontend-token"
-
-	registry := NewEnhancedServiceRegistry(nil)
-	fake := NewFakeService(t, FakeServiceOptions{ServiceID: "ce-svc", Manifest: newManifest("/api/a/")})
-	assertNoErr(t, registry.RegisterManifest(fake.ServiceID(), fake.Socket(), fake.Token(), fake.Manifest()), "register manifest")
-
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}}
-	extMgr := mcpbroker.NewManager(nil)
-	dir := mkShortTempDir(t, "ce-eve-")
-	projOps := &ProjectOps{Store: store, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-	srv, err := NewFrontendServer(
-		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: eveToken},
-		registry, nil, nil, ops, &EnrolmentOps{Store: store}, &audit.AuditOps{}, &McpOps{Store: store, Ctx: context.Background()}, projOps, nil, nil, nil,
-		NewCredentialAuthorizer(store), nil,
-	)
-	assertNoErr(t, err, "NewFrontendServer")
-	go func() { _ = srv.Serve() }()
-	assertNoErr(t, srv.ListenLoopback("127.0.0.1:0"), "ListenLoopback")
-	go func() { _ = srv.ServeLoopback() }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-	})
-
-	sockClient := dialFrontendHTTP(srv.socketPath)
-	req, err := http.NewRequest(http.MethodPost, "http://unix/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
-	assertNoErr(t, err, "new socket request")
-	req.Header.Set("Authorization", "Bearer "+eveToken)
-	resp, err := sockClient.Do(req)
-	assertNoErr(t, err, "POST over the frontend socket")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("RELAY_FRONTEND_TOKEN on a proxied route over the socket: status = %d, want 200", resp.StatusCode)
-	}
-	if got := fake.LastRequest(); got == nil || got.Path != "/api/a/echo" {
-		t.Fatalf("the enhanced service never saw Eve's request: %+v", got)
-	}
-
-	before := len(fake.Requests())
-	req, err = http.NewRequest(http.MethodPost, "http://"+srv.tcpLn.Addr().String()+"/api/a/echo", strings.NewReader(`{"hello":"eve"}`))
-	assertNoErr(t, err, "new tcp request")
-	req.Header.Set("Authorization", "Bearer "+eveToken)
-	resp, err = http.DefaultClient.Do(req)
-	assertNoErr(t, err, "POST over loopback TCP")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("a proxied route over loopback TCP: status = %d, want 404 (the mount is socket-only)", resp.StatusCode)
-	}
-	if after := len(fake.Requests()); after != before {
-		t.Fatalf("the enhanced service saw %d requests over TCP; the proxied surface must be absent there", after-before)
 	}
 }

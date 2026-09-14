@@ -1,6 +1,7 @@
 // Command testservice is a real spawnable binary (not a mock) that the
 // hermetic test suite uses to exercise relay's real service spawn path —
-// env-var injection, pidfile, log file, reaper — without mocking exec.Command.
+// env-var injection, the launch fd and Hello, pidfile, log file, reaper —
+// without mocking exec.Command.
 //
 // Built on demand by TestMain in service_registry_test.go.
 package main
@@ -39,15 +40,29 @@ func main() {
 
 	serviceID := os.Getenv(bridge.EnvServiceID)
 	bridgeSock := os.Getenv(bridge.EnvBridgeSocket)
-	mcpToken := os.Getenv(bridge.EnvServiceToken)
-	if mcpToken == "" {
-		mcpToken = os.Getenv(bridge.EnvServiceTokenLegacy) // fallback for callers using the legacy env var name
-	}
 
 	if serviceID == "" {
 		log.Fatal("testservice: RELAY_SERVICE_ID not set")
 	}
 	log.Printf("testservice %s starting (bridge=%s)", serviceID, bridgeSock)
+
+	// Before anything else that could spawn: a relay launch that cannot
+	// complete its Hello exits non-zero rather than running without an
+	// identity relay believes it has.
+	secret, launched, err := bridge.ReadLaunchSecret()
+	if err != nil {
+		log.Fatalf("testservice: launch fd: %v", err)
+	}
+	if launched {
+		if bridgeSock == "" {
+			log.Fatal("testservice: launched by relay with no RELAY_BRIDGE_SOCKET")
+		}
+		hello, err := bridge.SendHello(bridgeSock, serviceID, secret)
+		if err != nil {
+			log.Fatalf("testservice: hello: %v", err)
+		}
+		log.Printf("testservice %s identity bound (relay pid %d)", hello.ServiceID, hello.RelayPID)
+	}
 
 	// Per-pid tempdir so concurrent test runs don't collide.
 	internalDir, err := os.MkdirTemp("", "testservice-")
@@ -88,13 +103,13 @@ func main() {
 		if bridgeSock == "" {
 			log.Fatal("testservice: --register requires RELAY_BRIDGE_SOCKET")
 		}
-		if mcpToken == "" {
-			log.Fatal("testservice: --register requires RELAY_SERVICE_TOKEN")
+		if !launched {
+			log.Fatal("testservice: --register requires a relay launch identity")
 		}
 		// Dial bridgeSock directly rather than going through bridge.Client:
 		// bridge.SocketPath() derives from ConfigDir, but our parent might be
 		// running a non-default one, so it wouldn't find the same socket.
-		if err := sendRegisterManifest(bridgeSock, mcpToken, bridge.RegisterManifestRequest{
+		if err := sendRegisterManifest(bridgeSock, bridge.RegisterManifestRequest{
 			ServiceID: serviceID,
 			Manifest: bridge.Manifest{
 				Routes: []string{"/api/" + serviceID},
@@ -124,7 +139,9 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
-func sendRegisterManifest(sockPath, token string, req bridge.RegisterManifestRequest) error {
+// sendRegisterManifest sends no token: relay authenticates the request by
+// this process's audit token, bound at Hello.
+func sendRegisterManifest(sockPath string, req bridge.RegisterManifestRequest) error {
 	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial bridge: %w", err)
@@ -139,7 +156,6 @@ func sendRegisterManifest(sockPath, token string, req bridge.RegisterManifestReq
 	payload, _ := json.Marshal(bridge.BridgeRequest{
 		Type:      bridge.ReqRegisterManifest,
 		Arguments: args,
-		Token:     token,
 	})
 	payload = append(payload, '\n')
 	if _, err := conn.Write(payload); err != nil {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/barelyworkingcode/relay/internal/peertoken"
 )
 
 const MaxMessageSize = 10 * 1024 * 1024
@@ -22,6 +24,10 @@ const (
 	ReqResolvePtyEnv          = "ResolvePtyEnv"
 	ReqResolveProjectTemplate = "ResolveProjectTemplate"
 	ReqRegisterManifest       = "RegisterManifest"
+
+	// ReqHello binds a launch secret to the calling process's audit token
+	// (docs/launch-identity.md). Name is the launch name, Token the secret.
+	ReqHello = "Hello"
 
 	// ReqDescribeProject is the one project read a project token may make:
 	// its own record and resolved grant, never another project's, never a
@@ -77,32 +83,45 @@ const (
 
 // Env vars relay injects into every spawned service. Lives in bridge so
 // cross-repo consumers can import the names without depending on relay's
-// main package.
+// main package. None of them is a secret (docs/launch-identity.md).
 const (
 	EnvFrontendSocket = "RELAY_FRONTEND_SOCKET"
-	EnvFrontendToken  = "RELAY_FRONTEND_TOKEN"
 	EnvBridgeSocket   = "RELAY_BRIDGE_SOCKET"
 	EnvServiceID      = "RELAY_SERVICE_ID"
 	EnvMcpCommand     = "RELAY_MCP_COMMAND"
 
-	// EnvServiceToken is ephemeral and full-access. Never inject it into a
-	// spawned child's shell — only the service process itself gets it.
-	EnvServiceToken = "RELAY_SERVICE_TOKEN"
+	// EnvLaunchFD names the inherited descriptor holding the launch secret.
+	// Its value is always LaunchFD; the secret itself is never in the
+	// environment.
+	EnvLaunchFD = "RELAY_LAUNCH_FD"
 
-	// EnvProjectToken is scoped to one project's allowed MCPs/tools, unlike
-	// the full-access EnvServiceToken.
+	// EnvProjectToken is scoped to one project's allowed MCPs/tools.
 	EnvProjectToken = "RELAY_PROJECT_TOKEN"
 
-	// Legacy names, kept one release as a fallback for cross-repo migration.
-	// Remove once relay + relayLLM have both shipped the rename.
-	EnvServiceTokenLegacy = "RELAY_MCP_TOKEN"
 	EnvProjectTokenLegacy = "RELAY_TOKEN"
 )
 
-// PtyEnvRequest resolves a project-scoped token + working dir. Service-token
-// caller required. ProjectID is authoritative; when Directory is also set,
-// relay validates it lies within the project's path so a service-token
-// holder can't bind an arbitrary cwd to another project's token.
+// LaunchFD is the descriptor number the launch secret arrives on:
+// exec.Cmd.ExtraFiles[0].
+const LaunchFD = 3
+
+// RemovedCredentialEnv lists names that once carried a relay credential in a
+// service's environment. Relay scrubs every one of them from any environment
+// it passes to a service, so none can reach a service by inheritance.
+var RemovedCredentialEnv = []string{"RELAY_SERVICE_TOKEN", "RELAY_MCP_TOKEN", "RELAY_FRONTEND_TOKEN"}
+
+// HelloResult is a successful Hello's Data. It recognises the caller and
+// never carries a credential.
+type HelloResult struct {
+	Kind      string `json:"kind"`
+	ServiceID string `json:"service_id"`
+	RelayPID  int    `json:"relay_pid"`
+}
+
+// PtyEnvRequest resolves a project-scoped token + working dir. A bridge
+// service identity is required. ProjectID is authoritative; when Directory is
+// also set, relay validates it lies within the project's path so a service
+// can't bind an arbitrary cwd to another project's token.
 type PtyEnvRequest struct {
 	ProjectID string `json:"project_id,omitempty"`
 	Project   string `json:"project,omitempty"`
@@ -274,6 +293,25 @@ func CallerPIDFromContext(ctx context.Context) int {
 	return pid
 }
 
+type callerPeerCtxKey struct{}
+
+// WithCallerPeer carries the connection's peer audit token. Unlike the pid
+// above this IS an authorization input: a launch identity is bound to it, and
+// only a (pid, pidversion) pair — never a pid alone — is matched.
+func WithCallerPeer(ctx context.Context, tok peertoken.Token) context.Context {
+	if !tok.Valid() {
+		return ctx
+	}
+	return context.WithValue(ctx, callerPeerCtxKey{}, tok)
+}
+
+// CallerPeerFromContext returns the zero Token, which matches no identity,
+// when the connection's peer could not be read.
+func CallerPeerFromContext(ctx context.Context) peertoken.Token {
+	tok, _ := ctx.Value(callerPeerCtxKey{}).(peertoken.Token)
+	return tok
+}
+
 type ToolRouter interface {
 	ListTools(ctx context.Context, token string) (json.RawMessage, error)
 	CallTool(ctx context.Context, name string, args json.RawMessage, token string) (json.RawMessage, error)
@@ -281,8 +319,10 @@ type ToolRouter interface {
 	ReconcileExternalMcps(ctx context.Context)
 	ReloadExternalMcp(ctx context.Context, id string) error
 	ReloadService(id string) error
-	ListProjects(token string) (json.RawMessage, error)
-	GetProject(id string, token string) (json.RawMessage, error)
+	// Hello binds a launch secret to the caller's peer audit token.
+	Hello(ctx context.Context, name, secret string) (HelloResult, error)
+	ListProjects(ctx context.Context, token string) (json.RawMessage, error)
+	GetProject(ctx context.Context, id string, token string) (json.RawMessage, error)
 	// Project token only; answers for that token's own project.
 	DescribeProject(ctx context.Context, token string) (ProjectDescription, error)
 	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)

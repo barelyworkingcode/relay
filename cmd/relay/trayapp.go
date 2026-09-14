@@ -490,10 +490,13 @@ func runTrayApp() {
 		}
 		app.platform.DispatchToMain(func() { app.emitSettingsEvent("onAuditEvent", ev) })
 	})
-	// Share the in-memory service token store between the router (auth) and
-	// the registry (token lifecycle). Tokens live only in memory — no cleanup
-	// needed on crash.
-	registry.TokenStore = &router.serviceTokens
+	// One launch table: the registry begins and ends launches, the bridge
+	// router binds them at Hello and authenticates by them, and the frontend
+	// server admits frontend consumers by them. It lives only in memory, so a
+	// crashed relay leaves no identity behind.
+	launches := service.NewLaunches()
+	registry.Launches = launches
+	router.launches = launches
 
 	frontendChannel := NewFrontendChannel()
 	app.frontendChannel = frontendChannel
@@ -519,23 +522,14 @@ func runTrayApp() {
 	app.bridgeServer = bs
 
 	// Materialize the channel up front so the frontend HTTP server can bind
-	// before any client (Eve, scheduler) tries to dial it. Spawned services
-	// inherit the same credentials via registry.FrontendEnv.
+	// before any client (Eve, scheduler) tries to dial it. Spawned consumers
+	// learn the same socket path via registry.FrontendEnv.
 	frontendEndpoint, err := frontendChannel.Ensure()
 	if err != nil {
 		slog.Error("failed to provision frontend channel", "error", err)
 		os.Exit(1)
 	}
-	// Existing frontend consumers (Eve, relayScheduler) hold RELAY_FRONTEND_TOKEN;
-	// this mints or refreshes the read+configure credential that lets them keep
-	// authenticating unchanged (ADR-015 decision 3). Not fatal: a relay that
-	// fails this still starts, it just leaves those consumers to 401 until the
-	// next restart retries the migration.
-	if err := store.With(func(s *config.Settings) {
-		migrateFrontendTokenToCredential(s, frontendEndpoint.Token)
-	}); err != nil {
-		slog.Error("failed to migrate legacy frontend token to a credential", "error", err)
-	}
+	retireLegacyFrontendCredentialOnStart(store)
 	// onProjectsChanged refreshes the tray Settings webview when projects
 	// mutate via the HTTP API (Eve, scheduler, CLI). Local IPC mutations
 	// fire their own emit events; this fan-out keeps the in-tray Projects
@@ -574,7 +568,7 @@ func runTrayApp() {
 		OnChange: onProjectsChanged,
 	}
 	app.ipcCtx.HostOps = hostOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec))
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)

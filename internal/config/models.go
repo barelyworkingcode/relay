@@ -201,9 +201,10 @@ type ServiceConfig struct {
 	Autostart  bool              `json:"autostart"`
 	URL        string            `json:"url,omitempty"`
 
-	// FrontendConsumer is tri-state: nil injects relay's front-door creds
-	// (RELAY_FRONTEND_SOCKET/TOKEN) for backward compatibility, false
-	// withholds them so they never land in a backend's env, true injects
+	// FrontendConsumer is tri-state and decides the service's launch identity
+	// (docs/launch-identity.md): nil and true are a frontend consumer, told
+	// RELAY_FRONTEND_SOCKET and holding the frontend socket; false is a bridge
+	// service, holding the bridge service operations. true names the choice
 	// explicitly. Set false via `service register --no-frontend-creds`, true
 	// via `service register --frontend-creds`.
 	FrontendConsumer *bool `json:"frontend_consumer,omitempty"`
@@ -651,7 +652,7 @@ func (c *ServiceConfig) Validate() error {
 		return fmt.Errorf("service command is required")
 	}
 	// relay injects its own RELAY_* variables into every spawned service
-	// (bridge socket, service token, frontend creds) after the operator's
+	// (bridge socket, launch fd, frontend socket) after the operator's
 	// env is applied; an operator-supplied key in that namespace would only
 	// ever collide with one of them, never mean anything on its own.
 	for k := range c.Env {

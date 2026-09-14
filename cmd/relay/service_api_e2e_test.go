@@ -63,8 +63,8 @@ func TestServiceAPI_LifecycleOverLoopback(t *testing.T) {
 	// and the tray's own socket traffic share one ServiceOps.
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -139,9 +139,9 @@ func TestServiceAPI_UnauthenticatedIsRefused(t *testing.T) {
 	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
+		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
 		NewEnhancedServiceRegistry(nil), nil, nil,
-		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		&ServiceOps{Store: store, Registry: &svcRecorder{}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -191,8 +191,8 @@ func TestServiceAPI_TCPMuxRejectsExecuteRoutesAsMissing(t *testing.T) {
 
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: "tok"},
-		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil, nil, nil, nil, nil,
+		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), "tok"),
+		NewEnhancedServiceRegistry(nil), nil, nil, ops, enrolmentOps, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

@@ -42,10 +42,9 @@ func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
 		var served string
 		r := collidingRouter(t, map[string]config.Permission{"mcp-a": config.PermOn, "mcp-b": config.PermOn},
 			[]string{"mcp-a", "mcp-b"}, &served)
-		const svcToken = "svc-token-for-ambiguity-test-0011223344556677"
-		r.serviceTokens.Register(config.HashToken(svcToken))
+		svcCtx := bindTestServiceIdentity(t, r)
 
-		_, err := r.CallTool(context.Background(), "fs_read", nil, svcToken)
+		_, err := r.CallTool(svcCtx, "fs_read", nil, "")
 		if err == nil {
 			t.Fatalf("run %d: expected a service token to be refused on an ambiguous name", i)
 		}
@@ -57,7 +56,7 @@ func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
 		if served != "" {
 			t.Errorf("run %d: an ambiguous service-token call reached %q", i, served)
 		}
-		if _, err := r.CallTool(context.Background(), "only_mcp-b", nil, svcToken); err != nil {
+		if _, err := r.CallTool(svcCtx, "only_mcp-b", nil, ""); err != nil {
 			t.Fatalf("run %d: expected the unshared tool to still work, got %v", i, err)
 		}
 	}
