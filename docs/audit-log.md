@@ -68,7 +68,7 @@ from anything the caller asserted:
   the same value relay injects into `_meta.project_id`.
 - `auth` is how the caller was identified: `token` (a project token was
   presented), `cwd` ([directory auth](tokens.md#directory-auth-allow_cwd_auth)),
-  `service` (a full-access service token), or `mtls` (a client certificate on
+  `service` (a bridge service's launch identity), or `mtls` (a client certificate on
   the remote listener).
 - `cwd` appears only for directory auth. That grant has no deliberate credential
   hand-off to point at afterwards, so the log is its audit trail.
