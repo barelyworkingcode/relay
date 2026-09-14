@@ -117,14 +117,14 @@ service detects RELAY_LAUNCH_FD, reads the launch secret, sends Hello (docs/laun
 service picks its own internal socket + bearer token
 service binds the listener (0600 perms)
 service dials the bridge, sends RegisterManifest{serviceId, manifest, internalSocket, internalToken} with no token
-relay authenticates the call by the peer's bridge-service launch identity
+relay authenticates the call by the peer's launch identity, which must hold the manifest capability
 relay refuses a serviceId other than the identity's own
 relay validates the manifest, checks route conflicts, updates its dispatch table
 front-door requests start flowing
 ```
 
-Only a `frontend_consumer: false` service is a bridge service and may
-register a manifest. The internal bearer lives only in the memory of relay and
+Only a service whose record grants the `manifest` capability may register a
+manifest (`relay service register --capability manifest`). The internal bearer lives only in the memory of relay and
 the service.
 
 Lifecycle:
@@ -176,7 +176,7 @@ matching service's internal Unix socket — one handler serves both HTTP and WS
 (it detects upgrades). It strips inbound `Authorization` (a control-plane
 credential, already validated, when one was sent) and injects the
 service-declared internal token. Two trust boundaries stay distinct: a
-frontend-consumer launch identity or a control-plane credential authenticates
+launch identity holding `frontend` or a control-plane credential authenticates
 the caller → relay; the internal token authenticates relay → service.
 
 ## Standalone vs enhanced

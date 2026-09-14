@@ -9,11 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/barelyworkingcode/relay/internal/config"
-	"github.com/barelyworkingcode/relay/internal/service"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // svcRecorder is a service.Manager that records lifecycle calls and lets a test
@@ -121,11 +122,9 @@ func TestIPCAddService_HappyPathPersistsAndEmits(t *testing.T) {
 	}
 }
 
-// onServiceAdded's payload must carry the FrontendConsumer tri-state spelled
-// out (see ServiceConfig.FrontendCredsState), not just the raw nil/true/false
-// nativeServiceConfig already serializes as frontend_consumer — the Settings
-// window should not have to re-derive "implicit" vs "explicit" itself.
-func TestIPCAddService_EmitsFrontendCredsState(t *testing.T) {
+// A service added from the Settings window without capabilities holds none,
+// and onServiceAdded says so as an empty list rather than omitting the field.
+func TestIPCAddService_EmitsTheCapabilitySet(t *testing.T) {
 	store := newCLISandboxStore(t)
 	reg := &svcRecorder{}
 	ipc, ui := newServicesIPC(t, store, reg)
@@ -133,8 +132,8 @@ func TestIPCAddService_EmitsFrontendCredsState(t *testing.T) {
 	ipcAddService(ipc, mustJSON(t, ipcServiceMsg{DisplayName: "My Svc", Command: "/bin/x"}))
 
 	payload := lastEventPayload(t, ui, "onServiceAdded")
-	if got := payload["frontend_creds"]; got != "implicit" {
-		t.Errorf("frontend_creds = %v, want %q", got, "implicit")
+	if caps, ok := payload["capabilities"].([]interface{}); !ok || len(caps) != 0 {
+		t.Errorf("capabilities = %#v, want an empty list", payload["capabilities"])
 	}
 }
 

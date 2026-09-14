@@ -156,7 +156,7 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 	_ = dialUnixWithTimeout(t, bridge.SocketPath(), 2*time.Second).Close()
 
 	fake := NewFakeRelayLLMService(t)
-	helloAsLaunchedService(t, router.launches, bridge.SocketPath(), fake.ServiceID(), false)
+	helloAsLaunchedService(t, router.launches, bridge.SocketPath(), fake.ServiceID(), capsBridge)
 	client := bridge.NewClient("")
 	if err := fake.Register(client); err != nil {
 		t.Fatalf("Register: %v", err)

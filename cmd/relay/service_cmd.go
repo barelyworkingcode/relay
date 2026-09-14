@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/barelyworkingcode/relay/internal/config"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 // register, unregister and restart are brokered (ADR-017 decision 2): this
@@ -33,8 +34,8 @@ func serviceRegister(args []string) {
 	workdir := fs.String("workdir", "", "working directory")
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
-	frontendCreds := fs.Bool("frontend-creds", false, "explicitly make this service a frontend consumer: it is told RELAY_FRONTEND_SOCKET and its launch identity reaches the frontend socket, not the bridge service operations; this is the default when neither flag is given, but naming it records that the choice was deliberate")
-	noFrontendCreds := fs.Bool("no-frontend-creds", false, "make this service a bridge service: its launch identity reaches the bridge service operations (RegisterManifest, ResolvePtyEnv, ...) and not the frontend socket; set for backends that never dial the front door")
+	var capabilityFlags stringSlice
+	fs.Var(&capabilityFlags, "capability", "grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held")
 	fs.Parse(args)
 
 	if opts.Name == "" {
@@ -54,28 +55,13 @@ func serviceRegister(args []string) {
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 
-	// nil (neither flag given) leaves the setting untouched on re-register
-	// (see ServiceOps.Update's own merge for FrontendConsumer) and, on a
-	// fresh register, resolves to the implicit default (inject) —
-	// service.frontendCredsEnabled reads FrontendConsumer == nil that way.
-	// --frontend-creds and --no-frontend-creds set it explicitly in either
-	// direction; a caller who names neither is warned, since that silence is
-	// indistinguishable on disk from having chosen the default on purpose.
-	if visited["frontend-creds"] && visited["no-frontend-creds"] {
-		exitError("--frontend-creds and --no-frontend-creds are mutually exclusive")
-	}
-	var frontendConsumer *bool
-	switch {
-	case *noFrontendCreds:
-		f := false
-		frontendConsumer = &f
-	case *frontendCreds:
-		t := true
-		frontendConsumer = &t
-	default:
-		fmt.Fprintln(os.Stderr, "relay: neither --frontend-creds nor --no-frontend-creds given — "+
-			"this service will be a frontend consumer and cannot register a manifest. "+
-			"A backend that never dials the front door should pass --no-frontend-creds.")
+	// This is deliberate: capabilities are always sent, never left to
+	// Update's absent-preserves-existing merge. A register names every
+	// capability the service holds, so repeating a register without them
+	// narrows to none rather than silently keeping a grant nobody restated.
+	capabilities, err := parseServiceCapabilities(capabilityFlags)
+	if err != nil {
+		exitError("%v", err)
 	}
 
 	env, err := parseEnvPairs(opts.EnvPairs)
@@ -107,15 +93,15 @@ func serviceRegister(args []string) {
 	}
 
 	fields := serviceFields{
-		ID:               opts.ID,
-		DisplayName:      opts.Name,
-		Command:          *command,
-		Args:             []string(opts.Args),
-		Env:              env,
-		WorkingDir:       workingDir,
-		Autostart:        autostartSet,
-		URL:              serviceURL,
-		FrontendConsumer: frontendConsumer,
+		ID:           opts.ID,
+		DisplayName:  opts.Name,
+		Command:      *command,
+		Args:         []string(opts.Args),
+		Env:          env,
+		WorkingDir:   workingDir,
+		Autostart:    autostartSet,
+		URL:          serviceURL,
+		Capabilities: &capabilities,
 	}
 
 	client := requireService("relay service register")
@@ -133,9 +119,40 @@ func serviceRegister(args []string) {
 	}
 
 	fmt.Printf("registered service %q (%s)\n", view.DisplayName, view.ID)
+	fmt.Printf("  capabilities: %s\n", capabilitiesColumn(view.Capabilities))
+	if len(view.Capabilities) == 0 {
+		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|projects to grant one")
+	}
 	if view.ProcessError != "" {
 		fmt.Printf("  note: %s\n", view.ProcessError)
 	}
+}
+
+// parseServiceCapabilities refuses a name relay does not know, before the
+// request reaches the tray, and drops repeats while keeping order.
+func parseServiceCapabilities(names []string) ([]config.ServiceCapability, error) {
+	out := []config.ServiceCapability{}
+	for _, n := range names {
+		c := config.ServiceCapability(strings.TrimSpace(n))
+		if !slices.Contains(config.ServiceCapabilities, c) {
+			return nil, fmt.Errorf("unknown capability %q: use frontend, manifest or projects", n)
+		}
+		if !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func capabilitiesColumn(caps []config.ServiceCapability) string {
+	if len(caps) == 0 {
+		return "none"
+	}
+	names := make([]string, len(caps))
+	for i, c := range caps {
+		names[i] = string(c)
+	}
+	return strings.Join(names, ",")
 }
 
 func serviceUnregister(store config.SettingsStore, args []string) {
@@ -199,20 +216,6 @@ func serviceRestart(store config.SettingsStore, args []string) {
 	}
 }
 
-// frontDoorColumn spells FrontendCredsState for `relay service list`: "yes
-// (implicit)" is called out separately from a plain "yes" because only the
-// latter is a choice the operator is on record as having made.
-func frontDoorColumn(svc *config.ServiceConfig) string {
-	switch svc.FrontendCredsState() {
-	case "explicit":
-		return "yes"
-	case "implicit":
-		return "yes (implicit)"
-	default:
-		return "no"
-	}
-}
-
 func serviceList(store config.SettingsStore) {
 	s := store.Get()
 
@@ -222,7 +225,7 @@ func serviceList(store config.SettingsStore) {
 	}
 
 	w := newTabWriter()
-	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tFRONT-DOOR")
+	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tCAPABILITIES")
 	for _, svc := range s.Services {
 		cmd := svc.Command
 		if len(svc.Args) > 0 {
@@ -236,7 +239,7 @@ func serviceList(store config.SettingsStore) {
 		if urlStr == "" {
 			urlStr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, frontDoorColumn(&svc))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, capabilitiesColumn(svc.Capabilities))
 	}
 	w.Flush()
 }

@@ -1,19 +1,21 @@
 package main
 
-import "github.com/barelyworkingcode/relay/internal/config"
+import (
+	"slices"
+	"testing"
 
-import "testing"
+	"github.com/barelyworkingcode/relay/internal/config"
+)
 
-// Re-registering a service without the flag must not silently flip it back to
-// the default (inject) — MergeServiceDefaults preserves the prior opt-out.
-func TestMergeServiceDefaults_PreservesFrontendConsumer(t *testing.T) {
-	fls := false
+// A merge from a record that names no capabilities keeps the stored set.
+func TestMergeServiceDefaults_PreservesCapabilities(t *testing.T) {
+	stored := []config.ServiceCapability{config.ServiceCapabilityManifest}
 	s := &config.Settings{Services: []config.ServiceConfig{
-		{ID: "svc", DisplayName: "S", Command: "/bin/x", FrontendConsumer: &fls},
+		{ID: "svc", DisplayName: "S", Command: "/bin/x", Capabilities: stored},
 	}}
-	cfg := config.ServiceConfig{ID: "svc", Command: "/bin/x"} // nil FrontendConsumer (flag absent)
+	cfg := config.ServiceConfig{ID: "svc", Command: "/bin/x"}
 	s.MergeServiceDefaults(&cfg)
-	if cfg.FrontendConsumer == nil || *cfg.FrontendConsumer {
-		t.Errorf("FrontendConsumer not preserved on re-register: %v", cfg.FrontendConsumer)
+	if !slices.Equal(cfg.Capabilities, stored) {
+		t.Errorf("capabilities not preserved: %v", cfg.Capabilities)
 	}
 }

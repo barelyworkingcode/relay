@@ -94,7 +94,7 @@ func TestDescribeProject_RefusesCallersWithoutAProjectToken(t *testing.T) {
 		token string
 	}{
 		"tokenless":               {context.Background(), ""},
-		"bridge service identity": {svcCtx, ""},
+		"service launch identity": {svcCtx, ""},
 		"unknown token":           {context.Background(), "not-a-real-token"},
 	} {
 		t.Run(name, func(t *testing.T) {

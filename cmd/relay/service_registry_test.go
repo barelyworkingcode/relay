@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -167,13 +168,12 @@ func TestServiceRegistry_Spawn_RegistersManifest(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	_, reg := startSandboxBridge(t, enhanced)
 
-	backend := false
 	cfg := &config.ServiceConfig{
-		ID:               "svc-manifest",
-		DisplayName:      "Test Manifest",
-		Command:          binPath,
-		Args:             []string{"--register"},
-		FrontendConsumer: &backend,
+		ID:           "svc-manifest",
+		DisplayName:  "Test Manifest",
+		Command:      binPath,
+		Args:         []string{"--register"},
+		Capabilities: capsBridge,
 	}
 	if err := reg.Start(cfg); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -235,13 +235,12 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 	enhanced := NewEnhancedServiceRegistry(nil)
 	router, reg := startSandboxBridge(t, enhanced)
 
-	backend := false
 	cfg := &config.ServiceConfig{
-		ID:               "svc-reload",
-		DisplayName:      "Test Reload",
-		Command:          binPath,
-		Args:             []string{"--register"},
-		FrontendConsumer: &backend,
+		ID:           "svc-reload",
+		DisplayName:  "Test Reload",
+		Command:      binPath,
+		Args:         []string{"--register"},
+		Capabilities: capsBridge,
 	}
 	if err := reg.Start(cfg); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -289,10 +288,10 @@ func TestServiceRegistry_Reload_RestartsInPlace(t *testing.T) {
 	})
 }
 
-// The frontend socket path goes only to consumers, every launch gets the
-// launch fd, and no removed credential name reaches either — including one
-// relay's own environment carries.
-func TestServiceRegistry_Spawn_FrontendEnvIsolation(t *testing.T) {
+// RELAY_FRONTEND_SOCKET is set exactly when the capability set holds
+// frontend, every launch gets the launch fd, and no removed credential name
+// reaches any of them — including one relay's own environment carries.
+func TestServiceRegistry_Spawn_FrontendSocketFollowsTheFrontendCapability(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	for _, name := range bridge.RemovedCredentialEnv {
 		t.Setenv(name, "relay-inherited-this")
@@ -315,65 +314,51 @@ func TestServiceRegistry_Spawn_FrontendEnvIsolation(t *testing.T) {
 	}
 
 	dumpDir := mkShortTempDir(t, "envdump-")
-	backendEnvFile := filepath.Join(dumpDir, "backend.env")
-	frontendEnvFile := filepath.Join(dumpDir, "frontend.env")
+	launched := map[string][]config.ServiceCapability{
+		"svc-backend":   capsBridge,
+		"svc-frontend":  capsFrontend,
+		"svc-scheduler": {config.ServiceCapabilityFrontend, config.ServiceCapabilityManifest},
+		"svc-manifest":  {config.ServiceCapabilityManifest},
+		"svc-bare":      {},
+	}
+	envFiles := map[string]string{}
+	for id, caps := range launched {
+		envFiles[id] = filepath.Join(dumpDir, id+".env")
+		cfg := &config.ServiceConfig{ID: id, DisplayName: id, Command: binPath, Args: []string{"--dump-env", envFiles[id]}, Capabilities: caps}
+		if err := reg.Start(cfg); err != nil {
+			t.Fatalf("Start %s: %v", id, err)
+		}
+		t.Cleanup(func() { reg.Stop(id) })
+	}
 
-	falseVal := false
-	backend := &config.ServiceConfig{
-		ID:               "svc-backend",
-		DisplayName:      "Backend",
-		Command:          binPath,
-		Args:             []string{"--dump-env", backendEnvFile},
-		FrontendConsumer: &falseVal,
-	}
-	if err := reg.Start(backend); err != nil {
-		t.Fatalf("Start backend: %v", err)
-	}
-	t.Cleanup(func() { reg.Stop(backend.ID) })
+	for id, caps := range launched {
+		file := envFiles[id]
+		waitFor(t, 5*time.Second, id+" env dump", func() bool {
+			_, err := os.Stat(file)
+			return err == nil
+		})
+		env := readDumpedEnv(t, file)
 
-	frontend := &config.ServiceConfig{
-		ID:          "svc-frontend",
-		DisplayName: "Frontend",
-		Command:     binPath,
-		Args:        []string{"--dump-env", frontendEnvFile},
-		// FrontendConsumer nil → default (inject).
-	}
-	if err := reg.Start(frontend); err != nil {
-		t.Fatalf("Start frontend: %v", err)
-	}
-	t.Cleanup(func() { reg.Stop(frontend.ID) })
-
-	waitFor(t, 5*time.Second, "backend env dump", func() bool {
-		_, err := os.Stat(backendEnvFile)
-		return err == nil
-	})
-	waitFor(t, 5*time.Second, "frontend env dump", func() bool {
-		_, err := os.Stat(frontendEnvFile)
-		return err == nil
-	})
-
-	backendEnv := readDumpedEnv(t, backendEnvFile)
-	frontendEnv := readDumpedEnv(t, frontendEnvFile)
-
-	if _, ok := backendEnv[EnvFrontendSocket]; ok {
-		t.Errorf("backend received %s", EnvFrontendSocket)
-	}
-	if backendEnv[EnvBridgeSocket] == "" {
-		t.Errorf("backend missing %s", EnvBridgeSocket)
-	}
-	if got := backendEnv[EnvServiceID]; got != backend.ID {
-		t.Errorf("backend %s = %q, want %q", EnvServiceID, got, backend.ID)
-	}
-	if got := frontendEnv[EnvFrontendSocket]; got != endpoint.Socket {
-		t.Errorf("frontend %s = %q, want injected socket", EnvFrontendSocket, got)
-	}
-	for who, env := range map[string]map[string]string{"backend": backendEnv, "frontend": frontendEnv} {
-		if got := env[EnvLaunchFD]; got != "3" {
-			t.Errorf("%s %s = %q, want 3", who, EnvLaunchFD, got)
+		wantSocket := slices.Contains(caps, config.ServiceCapabilityFrontend)
+		got, has := env[EnvFrontendSocket]
+		if has != wantSocket {
+			t.Errorf("%s (capabilities %v): %s present = %v, want %v", id, caps, EnvFrontendSocket, has, wantSocket)
+		}
+		if wantSocket && got != endpoint.Socket {
+			t.Errorf("%s %s = %q, want %q", id, EnvFrontendSocket, got, endpoint.Socket)
+		}
+		if env[EnvBridgeSocket] == "" {
+			t.Errorf("%s missing %s", id, EnvBridgeSocket)
+		}
+		if env[EnvServiceID] != id {
+			t.Errorf("%s %s = %q", id, EnvServiceID, env[EnvServiceID])
+		}
+		if env[EnvLaunchFD] != "3" {
+			t.Errorf("%s %s = %q, want 3", id, EnvLaunchFD, env[EnvLaunchFD])
 		}
 		for _, name := range bridge.RemovedCredentialEnv {
 			if v, ok := env[name]; ok {
-				t.Errorf("%s received %s=%q", who, name, v)
+				t.Errorf("%s received %s=%q", id, name, v)
 			}
 		}
 	}

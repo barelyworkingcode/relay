@@ -265,6 +265,12 @@ func (ss *FileSettingsStore) load() *Settings {
 	}
 	ss.sealErrors = openErrs
 
+	for i := range s.Services {
+		s.Services[i].migrateCapabilities()
+		if err := s.Services[i].validateCapabilities(); err != nil {
+			slog.Error("service record refused: relay will not start it", "id", s.Services[i].ID, "error", err)
+		}
+	}
 	s.normalize()
 	return &s
 }
@@ -303,6 +309,7 @@ func (s *Settings) normalize() {
 	for i := range s.Services {
 		ensureSlice(&s.Services[i].Args)
 		ensureMap(&s.Services[i].Env)
+		ensureSlice(&s.Services[i].Capabilities)
 	}
 	ensureSlice(&s.Projects)
 	for i := range s.Projects {

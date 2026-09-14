@@ -237,13 +237,13 @@ func reapExpiredAPICredentials(s *config.Settings) bool {
 }
 
 // legacyFrontendCredentialName is reserved. A credential under this name held
-// the hash of a bearer relay once put in every frontend consumer's
+// the hash of a bearer relay once put in every frontend-consuming service's
 // environment, where any same-user process could read it; relay deletes every
 // record under the name on start (retireLegacyFrontendCredential), so an
 // operator-minted credential under it would be deleted too.
 const legacyFrontendCredentialName = "legacy-frontend-token"
 
-// frontendConsumerClasses is what a frontend-consumer launch identity holds
+// frontendConsumerClasses is what a launch identity holding the frontend capability holds
 // on the frontend socket: never control.ClassGrant or control.ClassExecute. A
 // consumer that needs either must be handed a credential naming it.
 // control.ClassProxy is what reaches the proxied surface; it is not
@@ -344,7 +344,7 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class control.Capabili
 type frontendIdentityCtxKey struct{}
 
 // withFrontendIdentity is set only by frontendCredentialAuth, after it has
-// resolved the connection's peer to a frontend-consumer launch identity.
+// resolved the connection's peer to a launch identity holding the frontend capability.
 // Nothing a caller sends can put a value under this unexported key.
 func withFrontendIdentity(ctx context.Context, id service.Identity) context.Context {
 	return context.WithValue(ctx, frontendIdentityCtxKey{}, id)

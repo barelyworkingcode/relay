@@ -9,8 +9,7 @@ package main
 //     differently than the id it was first registered under;
 //  2. ServiceOps.Update applied every field in the request literally, so a
 //     `register` that repeats only --command wiped --workdir, --url,
-//     --autostart, --env and the --no-frontend-creds opt-out back to their
-//     zero values.
+//     --autostart and --env back to their zero values.
 //
 // Both are exercised end to end through the real CLI parsing and the real
 // bridge (newBrokerRouter + serveBroker), the same shape
@@ -163,9 +162,9 @@ func TestServiceRegister_ReregisterWithSameIDUpdatesRecordInPlace(t *testing.T) 
 // TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse is
 // regression 2 from the report: ServiceOps.Update used to apply every field
 // in the request literally, so a `register` that repeated only --command
-// wiped --workdir, --url, --autostart, --env and the --no-frontend-creds
-// opt-out back to their zero values. A flag left off the second call must
-// leave the stored value alone.
+// wiped --workdir, --url, --autostart and --env back to their zero values. A
+// flag left off the second call must leave the stored value alone. --capability
+// is the deliberate exception: a register always restates the whole set.
 func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
@@ -177,7 +176,7 @@ func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.
 		"--url", "http://127.0.0.1:9000",
 		"--autostart",
 		"--env", "FOO=bar",
-		"--no-frontend-creds",
+		"--capability", "manifest",
 	})
 
 	serviceRegister([]string{
@@ -205,8 +204,8 @@ func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.
 	if got, _ := cfg.Env["FOO"].Reveal(); got != "bar" {
 		t.Errorf("env FOO = %q, want it preserved from the first register", got)
 	}
-	if cfg.FrontendConsumer == nil || *cfg.FrontendConsumer {
-		t.Errorf("FrontendConsumer = %v, want the --no-frontend-creds opt-out preserved", cfg.FrontendConsumer)
+	if cfg.Capabilities == nil || len(cfg.Capabilities) != 0 {
+		t.Errorf("capabilities = %#v, want none: a register that names no --capability grants none", cfg.Capabilities)
 	}
 }
 

@@ -463,9 +463,9 @@ func frontendPeerFromContext(ctx context.Context) peertoken.Token {
 // leaves "may they do this?" to control.RouteRegistrar's per-route class
 // check.
 //
-// A request with no Authorization header whose connection's peer is bound as
-// a frontend-consumer launch identity is that identity, holding exactly
-// frontendConsumerClasses. It is resolved per request, not per connection,
+// A request with no Authorization header whose connection's peer is bound to
+// a launch identity holding the frontend capability is that identity, holding
+// exactly frontendConsumerClasses. It is resolved per request, not per connection,
 // so a connection outliving its launch stops being admitted.
 //
 // Every other request must present a bearer that resolves to a credential in
@@ -488,7 +488,7 @@ func frontendCredentialAuth(store config.SettingsStore, launches *service.Launch
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, hasHeader := r.Header["Authorization"]; !hasHeader {
 			id, ok := launches.Lookup(frontendPeerFromContext(r.Context()))
-			if !ok || !id.IsFrontendConsumer() {
+			if !ok || !id.Allows(service.OpFrontendSocket) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

@@ -142,7 +142,7 @@ it.
   | `GET /api/eve/passkey-enrolment` | `read` | `200 {"open": true, "expires": "…"}` or `{"open": false}` |
   | `POST /api/eve/passkey-enrolment/consume` | `configure` | body `{"ip": "…", "label": "…"}` → `200 {"expires": "…"}` when consumed, `409 {"error": "…"}` when closed |
 
-  Eve's frontend-consumer launch identity holds `read`, `configure` and
+  Eve's launch identity, holding the `frontend` capability, has `read`, `configure` and
   `proxy`, so both are reachable with no `Authorization` header. They are registered
   through `RouteRegistrar.Handle`, so they are socket-only unless a class
   says otherwise, and they reserve their paths ahead of the manifest

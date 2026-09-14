@@ -1023,7 +1023,7 @@ and how to reach it.
 relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
                         [--autostart[=true|false]]
-                        [--frontend-creds | --no-frontend-creds]
+                        [--capability frontend|manifest|projects ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service list
@@ -1038,18 +1038,16 @@ Usage of service register:
     	command arguments (repeatable)
   -autostart
     	start automatically
+  -capability value
+    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held
   -command string
     	command to run (required)
   -env value
     	environment KEY=VALUE (repeatable)
-  -frontend-creds
-    	explicitly inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); this is the default when neither flag is given, but naming it records that the choice was deliberate
   -id string
     	record id (default: slugified --name)
   -name string
     	display name (required)
-  -no-frontend-creds
-    	do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells
   -url string
     	service URL
   -workdir string
@@ -1077,26 +1075,20 @@ encodes the presence bit, so "leave autostart alone" and "set autostart to
 false" are bound to different digests and a prompt answered for one can
 never be redeemed for the other.
 
-**`--no-frontend-creds` / `--frontend-creds` choose the service's launch
-identity, and whichever was last given survives a re-register.** Passing
-`--no-frontend-creds` once makes the service a bridge service: it holds the
-bridge service operations (`RegisterManifest`, `ResolvePtyEnv`, …), no frontend
-access, and is not told `RELAY_FRONTEND_SOCKET` ([`docs/launch-identity.md`](launch-identity.md)). A
-frontend consumer holds the frontend socket as `read`+`configure`+`proxy` and
-no bridge service operation. Neither receives a credential in its environment, and
-every later `service register` call that doesn't repeat either flag leaves
-that opt-out in place — it is not something a later register accidentally
-resets. `--frontend-creds` is the explicit opt-in counterpart, for a
-frontend consumer that wants its choice on record rather than resting on the
-implicit default; the two are mutually exclusive on one invocation.
-**Passing neither is still accepted** — `FrontendConsumer` stays `nil`,
-which resolves to a frontend consumer (the implicit default) on a fresh
-register, or leaves whatever is already stored on
-a re-register — but `service register` prints a one-line warning to stderr
-naming the default and pointing at `--no-frontend-creds`, since a backend
-that never intended to reach the front door but never said so is the exact
-shape of the mistake this default makes easy: such a service cannot register a manifest. `service list`'s `FRONT-DOOR`
-column shows `yes` (explicit), `yes (implicit)`, or `no` for the three cases.
+**`--capability` sets what the service's launch identity may do, and every
+register restates the whole set.** Repeat it once per capability — `frontend`
+(the frontend socket as `read`+`configure`+`proxy`, and `RELAY_FRONTEND_SOCKET`
+in the service's environment), `manifest` (`RegisterManifest` under the
+service's own id), `projects` (`ResolvePtyEnv`, `ResolveProjectTemplate`,
+`ListProjects`, `GetProject`, service-scope `ListTools`/`CallTool`); see
+[`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities).
+An unknown name is refused before anything reaches the tray. Unlike
+`--workdir`, `--url` and `--autostart`, capabilities are not absent-aware: a
+register with no `--capability` sets the **empty set** — the service can
+start and say `Hello` and can do nothing else through relay — and the command
+says so in its output rather than leaving it silent. A relayScheduler-style
+service that both runs work through the front door and serves routes is
+`--capability frontend --capability manifest`.
 
 ### `service unregister`
 
@@ -1145,10 +1137,8 @@ no services registered
 
 (This machine's stack — macMCP, fsMCP — is registered as MCPs, not
 services; nothing is currently registered as a background service.) When a
-service is registered, the table carries a `FRONT-DOOR` column spelling
-`ServiceConfig.FrontendCredsState()`: `yes` for an explicit
-`--frontend-creds`, `yes (implicit)` for the nil default, `no` for
-`--no-frontend-creds`. Needs service: no. Prompts: no. Works over SSH: yes.
+service is registered, the table carries a `CAPABILITIES` column listing the
+record's capabilities, or `none`. Needs service: no. Prompts: no. Works over SSH: yes.
 
 ## `relay mcpExec` (also `relay mcp call`)
 

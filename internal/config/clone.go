@@ -114,7 +114,8 @@ func cloneExternalMcps(s []ExternalMcp) []ExternalMcp {
 func cloneServiceConfig(c ServiceConfig) ServiceConfig {
 	c.Args = cloneSlice(c.Args)
 	c.Env = cloneMap(c.Env)
-	c.FrontendConsumer = cloneBoolPtr(c.FrontendConsumer)
+	c.Capabilities = cloneSlice(c.Capabilities)
+	c.LegacyFrontendConsumer = cloneBoolPtr(c.LegacyFrontendConsumer)
 	return c
 }
 

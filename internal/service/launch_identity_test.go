@@ -10,7 +10,7 @@ import (
 
 func beginService(t *testing.T, table *Launches, name string, frontend bool) (string, *Launch) {
 	t.Helper()
-	secret, l, err := table.Begin(Identity{Kind: IdentityKindService, Name: name, FrontendConsumer: frontend})
+	secret, l, err := table.Begin(Identity{Kind: IdentityKindService, Name: name, Capabilities: capsFor(frontend)})
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestLaunches_BindRecordsTheProcessAndLookupFindsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
-	if id.Kind != IdentityKindService || id.Name != "svc" || !id.IsBridgeService() || id.IsFrontendConsumer() {
+	if id.Kind != IdentityKindService || id.Name != "svc" || !id.Allows(OpRegisterManifest) || id.Allows(OpFrontendSocket) {
 		t.Fatalf("bound identity = %+v", id)
 	}
 	got, ok := table.Lookup(peer)
