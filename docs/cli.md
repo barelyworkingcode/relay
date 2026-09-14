@@ -1140,6 +1140,16 @@ services; nothing is currently registered as a background service.) When a
 service is registered, the table carries a `CAPABILITIES` column listing the
 record's capabilities, or `none`. Needs service: no. Prompts: no. Works over SSH: yes.
 
+The table also carries a `STATE` column reporting relay's restart-supervision
+state for the row (docs/service-manifest.md#restart-supervision): `running`,
+`restarting (attempt N, next in Xs)`, `failed (exit E)`, or `-` when relay is
+not supervising the service (never started this session, or the operator
+stopped it) or the tray is not reachable to ask. Unlike every other column,
+`STATE` needs a live tray: restart-supervision state exists only in its
+memory, never in `settings.json`, so `service list` probes for it best-effort
+(`service.status`, ungated) and falls back to `-` with the tray stopped rather
+than failing the whole command.
+
 ## `relay mcpExec` (also `relay mcp call`)
 
 One-shot tool listing and invocation over the bridge, using a **project**

@@ -11,13 +11,15 @@ import (
 )
 
 // TestAdminOps_TableHasExactlyTheS6Operations pins §7.2's operation table:
-// every mutating CLI command S6 brokers has an entry, and nothing else does.
-// `project.rotate_token` and `project.grant` are presence-gated
-// (presence.GatedOps) but have no admin_op entry — they have no CLI
-// surface (§7.2: "— (IPC + HTTP today)") — and `mcp.oauth.start` is
-// IPC-only by design (ADR-014 section 4), so neither belongs here. Adding
-// an op to this table without adding it here, or the reverse, fails the
-// test by name.
+// every mutating CLI command S6 brokers has an entry, plus `service.status`,
+// which is ungated (ADR-015 §6.4 -- it changes nothing) but still needs a
+// live tray, since restart-supervision state exists only in its memory and
+// nowhere on disk `relay service list` could read directly. `project.rotate_token`
+// and `project.grant` are presence-gated (presence.GatedOps) but have no
+// admin_op entry — they have no CLI surface (§7.2: "— (IPC + HTTP
+// today)") — and `mcp.oauth.start` is IPC-only by design (ADR-014 section
+// 4), so neither belongs here. Adding an op to this table without adding it
+// here, or the reverse, fails the test by name.
 func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 	want := []string{
 		"credential.mint",
@@ -36,6 +38,7 @@ func TestAdminOps_TableHasExactlyTheS6Operations(t *testing.T) {
 		"service.register",
 		"service.unregister",
 		"service.restart",
+		"service.status",
 		"eve.enrolment.open",
 		"eve.passkey.revoke",
 	}

@@ -44,6 +44,7 @@ var adminOps = map[string]adminOpHandler{
 	"service.register":          adminServiceRegister,
 	"service.unregister":        adminServiceUnregister,
 	"service.restart":           adminServiceRestart,
+	"service.status":            adminServiceStatus,
 }
 
 // decodeAdminArgs unmarshals an admin_op payload into T, naming the
@@ -589,4 +590,18 @@ func adminServiceRestart(_ context.Context, r *appRouter, args json.RawMessage) 
 	return marshalAdminResult(struct {
 		ID string `json:"id"`
 	}{ID: req.ID})
+}
+
+// service.status is not gated: it changes nothing and names no secret, only
+// the restart-supervision state (internal/service.SupervisionStatus) of
+// every service id relay is currently supervising. `relay service list`
+// calls this as a best-effort extra when the tray happens to be reachable
+// (it works with the tray stopped either way, reading settings.json
+// directly), and it is the same map the Settings window's status poll reads.
+func adminServiceStatus(_ context.Context, r *appRouter, _ json.RawMessage) (json.RawMessage, error) {
+	ops, err := requireServiceOps(r)
+	if err != nil {
+		return nil, err
+	}
+	return marshalAdminResult(ops.Registry.SupervisionStatuses())
 }

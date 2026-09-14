@@ -133,3 +133,6 @@ func (noopServiceManager) CleanupDead()                             {}
 func (noopServiceManager) ReclaimOrphans([]config.ServiceConfig)    {}
 func (noopServiceManager) StartAllAutostart([]config.ServiceConfig) {}
 func (noopServiceManager) StopAll()                                 {}
+func (noopServiceManager) SupervisionStatuses() map[string]service.SupervisionStatus {
+	return map[string]service.SupervisionStatus{}
+}
