@@ -99,6 +99,16 @@ any earlier launch under the same name. Matching on pidversion as well as pid
 means a recycled pid never inherits an identity. The table lives only in
 relay's memory.
 
+This holds identically whether the restart is an operator's (`relay service
+restart`, Settings, tray relaunch) or relay's own, after a service exits on
+its own and relay's supervision restarts it (`docs/service-manifest.md#restart-supervision`):
+both call the same `Start`, both mint a fresh secret, and the exiting
+process's own defers clear its identity before that call can begin. This is
+what makes a service's own "restart myself" story safe to remove — a service
+cannot hand its successor a still-valid secret to skip Hello, because there
+is no such thing; the successor is a new launch like any other, and the
+predecessor's identity is gone before it exists.
+
 ## Fail-closed rules
 
 - `RELAY_LAUNCH_FD` set, and the read fails or yields anything but 64 hex

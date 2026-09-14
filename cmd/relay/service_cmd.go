@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // register, unregister and restart are brokered (ADR-017 decision 2): this
@@ -224,8 +227,13 @@ func serviceList(store config.SettingsStore) {
 		return
 	}
 
+	// Best-effort and read-only: list keeps working with the tray stopped
+	// (unlike register/unregister/restart, which require it), so a missing
+	// or unreachable tray just means no STATE column detail beyond "-".
+	statuses := fetchServiceSupervisionStatuses()
+
 	w := newTabWriter()
-	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tCAPABILITIES")
+	fmt.Fprintln(w, "ID\tNAME\tCOMMAND\tURL\tAUTOSTART\tCAPABILITIES\tSTATE")
 	for _, svc := range s.Services {
 		cmd := svc.Command
 		if len(svc.Args) > 0 {
@@ -239,7 +247,51 @@ func serviceList(store config.SettingsStore) {
 		if urlStr == "" {
 			urlStr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, capabilitiesColumn(svc.Capabilities))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", svc.ID, svc.DisplayName, cmd, urlStr, auto, capabilitiesColumn(svc.Capabilities), serviceStateColumn(svc.ID, statuses))
 	}
 	w.Flush()
+}
+
+// fetchServiceSupervisionStatuses probes the running tray for restart-
+// supervision state (running/restarting/failed), which lives only in its
+// memory. Returns nil -- never exits, never prints -- when relay is not
+// running or the call fails, so `relay service list` keeps its documented
+// property of working with the tray stopped.
+func fetchServiceSupervisionStatuses() map[string]service.SupervisionStatus {
+	if !serviceReachable() {
+		return nil
+	}
+	raw, err := bridge.NewClient("").AdminOp("service.status", nil)
+	if err != nil {
+		return nil
+	}
+	var statuses map[string]service.SupervisionStatus
+	if err := json.Unmarshal(raw, &statuses); err != nil {
+		return nil
+	}
+	return statuses
+}
+
+// serviceStateColumn renders one row's STATE cell. "-" covers both "not
+// supervised" (never started this session, or the operator stopped it) and
+// "the tray wasn't reachable to ask."
+func serviceStateColumn(id string, statuses map[string]service.SupervisionStatus) string {
+	st, ok := statuses[id]
+	if !ok {
+		return "-"
+	}
+	switch st.Phase {
+	case service.SupervisionRestarting:
+		wait := time.Until(st.NextAttempt).Round(time.Second)
+		if wait < 0 {
+			wait = 0
+		}
+		return fmt.Sprintf("restarting (attempt %d, next in %s)", st.Attempt, wait)
+	case service.SupervisionFailed:
+		return fmt.Sprintf("failed (exit %d)", st.LastExitCode)
+	case service.SupervisionRunning:
+		return "running"
+	default:
+		return "-"
+	}
 }
