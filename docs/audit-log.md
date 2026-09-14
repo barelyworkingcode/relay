@@ -68,7 +68,8 @@ from anything the caller asserted:
   the same value relay injects into `_meta.project_id`.
 - `auth` is how the caller was identified: `token` (a project token was
   presented), `cwd` ([directory auth](tokens.md#directory-auth-allow_cwd_auth)),
-  `service` (a full-access service token), or `mtls` (a client certificate on
+  `service` (a launch identity holding the `projects` capability; the record
+  carries the kernel `pid`, not the service id), or `mtls` (a client certificate on
   the remote listener).
 - `cwd` appears only for directory auth. That grant has no deliberate credential
   hand-off to point at afterwards, so the log is its audit trail.
@@ -122,8 +123,8 @@ and re-reading `settings.json` at query time answers a different question. So a
 - **`access`** is the operation mode the call ran under — `read` or `write`.
   Relay applies this rule itself and this field is the record of what it
   decided; the *input* (whether a tool is read-only) is the MCP's own
-  `annotations.readOnlyHint`. Absent for a service token, which is not scoped
-  by it.
+  `annotations.readOnlyHint`. Absent for a call by a service's launch identity (`auth: service`), which
+  is not scoped by it.
 - **`allow_external`** is the other half of what relay decided by itself
   (ADR-011 decision 2c): whether this grant could call a tool that reaches
   outside the host. It is written as an explicit `true` or `false`, never
@@ -131,7 +132,7 @@ and re-reading `settings.json` at query time answers a different question. So a
   is the resting state, and the one a `denied` on that layer was decided by. An
   omitted key would make "the grant was not given" and "nobody recorded a
   grant" the same record. It is absent only where there was no authority to
-  record: a service token, and events that name no MCP.
+  record: a call by a service's launch identity, and events that name no MCP.
 - **`scope`** is the resource scope relay injected, taken from the `_meta` it
   assembled rather than from the project, so what is recorded is what went on
   the wire. It carries **only** the fields the MCP declared as

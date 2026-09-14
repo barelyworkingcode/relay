@@ -3,12 +3,14 @@ package service
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,18 +20,11 @@ import (
 
 // Environment variable names for services (from bridge package).
 const (
-	EnvBridgeSocket       = bridge.EnvBridgeSocket
-	EnvServiceID          = bridge.EnvServiceID
-	EnvServiceToken       = bridge.EnvServiceToken
-	EnvServiceTokenLegacy = bridge.EnvServiceTokenLegacy
-	EnvMcpCommand         = bridge.EnvMcpCommand
+	EnvBridgeSocket = bridge.EnvBridgeSocket
+	EnvServiceID    = bridge.EnvServiceID
+	EnvMcpCommand   = bridge.EnvMcpCommand
+	EnvLaunchFD     = bridge.EnvLaunchFD
 )
-
-// TokenStore registers and tracks service authentication tokens.
-type TokenStore interface {
-	Register(hash string)
-	Remove(hash string)
-}
 
 // EnhancedRegistry tracks registered services for dispatch.
 type EnhancedRegistry interface {
@@ -61,7 +56,7 @@ type serviceProcess struct {
 	cmd       *exec.Cmd
 	logFile   io.WriteCloser
 	done      chan struct{}
-	tokenHash string
+	launch    *Launch
 	startedAt time.Time
 }
 
@@ -78,13 +73,18 @@ type Registry struct {
 	mu        sync.Mutex
 	processes map[string]*serviceProcess
 
-	// TokenStore, FrontendEnv, OpenLog, Enhanced, and OnProcessExit are all
+	// Launches, FrontendEnv, OpenLog, Enhanced, and OnProcessExit are all
 	// set once during initialization, before any services are started, so
 	// concurrent reads from reaper goroutines need no lock of their own.
-	TokenStore TokenStore
-	// FrontendEnv provisions the frontend socket/token and returns the
-	// environment variables a frontend-consuming service needs. Nil means no
-	// frontend channel is wired up (no consumer will get credentials). A
+	//
+	// Launches is where every start records its launch secret and where Hello
+	// binds it (docs/launch-identity.md). Nil launches services with no launch
+	// fd, so they can never obtain an identity.
+	Launches *Launches
+	// FrontendEnv provisions the frontend socket and returns the environment
+	// variables a frontend-consuming service needs. Nil means no frontend
+	// channel is wired up. None of it is a credential: a consumer reaches the
+	// socket by its launch identity. A
 	// callback rather than a manager type: the registry has no business
 	// depending on the frontend channel's concrete type or owning its
 	// lifecycle -- main provisions it, main closes it, the registry only
@@ -125,47 +125,49 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		return fmt.Errorf("build command for %q: %w", cfg.ID, err)
 	}
 
-	var tokenHash string
-	if r.TokenStore != nil {
-		rawToken, err := GenerateRandomHex(32)
-		if err != nil {
-			return fmt.Errorf("generate service token for %q: %w", cfg.ID, err)
-		}
-		tokenHash = config.HashToken(rawToken)
-		r.TokenStore.Register(tokenHash)
+	// Relay's own environment is what the child inherits, so a relay started
+	// from a shell that carries any of these must not pass them on.
+	ScrubEnv(cmd, append([]string{EnvLaunchFD, bridge.EnvFrontendSocket}, bridge.RemovedCredentialEnv...)...)
 
-		relayBin, _ := os.Executable()
-		relayBin, _ = filepath.EvalSymlinks(relayBin)
+	relayBin, _ := os.Executable()
+	relayBin, _ = filepath.EvalSymlinks(relayBin)
+	MergeEnv(cmd, map[string]string{
+		EnvBridgeSocket: bridge.SocketPath(),
+		EnvServiceID:    cfg.ID,
+		EnvMcpCommand:   relayBin,
+	})
 
-		MergeEnv(cmd, map[string]string{
-			EnvServiceToken: rawToken,
-			// Transition: also set the legacy name so an un-migrated service
-			// (older relayLLM) still authenticates. Drop after relayLLM ships
-			// the rename.
-			EnvServiceTokenLegacy: rawToken,
-			EnvMcpCommand:         relayBin,
-		})
-	}
-
-	// Frontend creds (RELAY_FRONTEND_SOCKET/TOKEN) go only to frontend
-	// consumers (e.g. eve); backends never dial the front door, and handing
-	// them the bearer would leak it into any process they spawn.
-	if r.FrontendEnv != nil && frontendCredsEnabled(cfg) {
+	// The frontend socket path goes only to a service holding the frontend
+	// capability; to any other it would be a door its identity cannot open.
+	if r.FrontendEnv != nil && cfg.HasCapability(config.ServiceCapabilityFrontend) {
 		env, err := r.FrontendEnv()
 		if err != nil {
 			return fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
 		}
 		MergeEnv(cmd, env)
 	}
-	MergeEnv(cmd, map[string]string{
-		EnvBridgeSocket: bridge.SocketPath(),
-		EnvServiceID:    cfg.ID,
-	})
+
+	var launch *Launch
+	var launchRead *os.File
+	if r.Launches != nil {
+		launch, launchRead, err = r.beginLaunch(cfg)
+		if err != nil {
+			return err
+		}
+		cmd.ExtraFiles = []*os.File{launchRead}
+		MergeEnv(cmd, map[string]string{EnvLaunchFD: strconv.Itoa(bridge.LaunchFD)})
+	}
 
 	committed := false
 	defer func() {
-		if !committed && tokenHash != "" {
-			r.TokenStore.Remove(tokenHash)
+		// The child holds its own copy of the read end from cmd.Start on;
+		// relay's copy is closed on every path so the pipe's only reader is
+		// the child.
+		if launchRead != nil {
+			_ = launchRead.Close()
+		}
+		if !committed {
+			launch.End()
 		}
 	}()
 
@@ -198,12 +200,14 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		cmd:       cmd,
 		logFile:   logFile,
 		done:      make(chan struct{}),
-		tokenHash: tokenHash,
+		launch:    launch,
 		startedAt: time.Now(),
 	}
 
-	// Defers run LIFO: logFile.Close -> close(done) -> OnProcessExit,
-	// ensuring done is closed before the exit callback reads process state.
+	// Defers run LIFO: launch.End -> logFile.Close -> close(done) ->
+	// OnProcessExit, so the identity is gone before Stop, which waits on
+	// done, returns, and done is closed before the exit callback reads
+	// process state.
 	serviceID := cfg.ID
 	go func() {
 		defer func() {
@@ -214,9 +218,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		defer close(proc.done)
 		defer func() { _ = logFile.Close() }()
 		defer removePidFile(serviceID)
-		if proc.tokenHash != "" && r.TokenStore != nil {
-			defer r.TokenStore.Remove(proc.tokenHash)
-		}
+		defer proc.launch.End()
 		if r.Enhanced != nil {
 			defer r.Enhanced.Forget(serviceID)
 		}
@@ -229,8 +231,33 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	return nil
 }
 
-func frontendCredsEnabled(cfg *config.ServiceConfig) bool {
-	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
+// beginLaunch records a launch for cfg and returns the read end of a pipe
+// already holding its secret and closed for writing, so the child reads the
+// secret to EOF and nothing else can ever be written behind it.
+func (r *Registry) beginLaunch(cfg *config.ServiceConfig) (*Launch, *os.File, error) {
+	secret, launch, err := r.Launches.Begin(Identity{
+		Kind:         IdentityKindService,
+		Name:         cfg.ID,
+		Capabilities: cfg.Capabilities,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin launch for %q: %w", cfg.ID, err)
+	}
+	read, write, err := os.Pipe()
+	if err != nil {
+		launch.End()
+		return nil, nil, fmt.Errorf("launch pipe for %q: %w", cfg.ID, err)
+	}
+	// This is deliberate: 64 bytes is below PIPE_BUF, so the write completes
+	// without a reader and cannot block Start while holding r.mu.
+	_, writeErr := write.WriteString(secret)
+	closeErr := write.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = read.Close()
+		launch.End()
+		return nil, nil, fmt.Errorf("write launch secret for %q: %w", cfg.ID, errors.Join(writeErr, closeErr))
+	}
+	return launch, read, nil
 }
 
 // GenerateRandomHex returns a random hex string, or an error rather than a

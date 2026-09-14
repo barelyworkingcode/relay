@@ -2,7 +2,7 @@ package main
 
 // WebSocket coverage through the REAL FrontendServer (bearer auth + model
 // guard + dispatcher), not the bare dispatcher the existing WS tests dial.
-// The front-door bearer must gate WS upgrades exactly as it gates HTTP — an
+// Frontend authentication must gate WS upgrades exactly as it gates HTTP — an
 // unauthenticated upgrade must never reach an upstream service. Also covers
 // the upstream-dial-failure close frame. Both paths were previously untested
 // at the server seam.
@@ -34,7 +34,7 @@ func startFrontendServerWith(t *testing.T, token string, enhanced *EnhancedServi
 		t.Fatalf("EnsureInitialized: %v", err)
 	}
 	extMgr := mcpbroker.NewManager(nil)
-	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, Endpoint{Socket: sock, Token: token}, enhanced, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv, err := NewFrontendServer(store, extMgr, extMgr, extMgr, seededEndpoint(t, store, sock, token), enhanced, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
 	}

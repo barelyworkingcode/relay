@@ -13,7 +13,7 @@ import (
 // The project is built directly rather than through the create path so these
 // guards are proven independently of validation — the whole point of a second
 // line of defence is that it holds when the first one didn't run.
-func remoteProjectRouter(t *testing.T) (*appRouter, string) {
+func remoteProjectRouter(t *testing.T) (*appRouter, context.Context) {
 	t.Helper()
 	s := makeSettings(nil, nil, nil)
 	s.Projects = append(s.Projects, config.Project{
@@ -28,9 +28,8 @@ func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 		ShellTemplates: []config.ShellTemplate{{ID: "tpl-1", Name: "ssh", Command: "/usr/bin/ssh"}},
 	})
 	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
-	svcToken := "service-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	r.serviceTokens.Register(config.HashToken(svcToken))
-	return r, svcToken
+	svcCtx := bindTestServiceIdentity(t, r)
+	return r, svcCtx
 }
 
 // The hole this closes: project.DirWithin("", "") returns true, because the
@@ -39,10 +38,10 @@ func remoteProjectRouter(t *testing.T) (*appRouter, string) {
 // back the remote project's plaintext token with WorkingDir: "", which Go's
 // exec.Cmd resolves to relay's own working directory.
 func TestResolvePtyEnv_RefusesRemoteProject(t *testing.T) {
-	r, svcToken := remoteProjectRouter(t)
+	r, svcCtx := remoteProjectRouter(t)
 
-	resp, err := r.ResolvePtyEnv(context.Background(),
-		bridge.PtyEnvRequest{ProjectID: "remote-proj", Directory: ""}, svcToken)
+	resp, err := r.ResolvePtyEnv(svcCtx,
+		bridge.PtyEnvRequest{ProjectID: "remote-proj", Directory: ""}, "")
 	if err == nil {
 		t.Fatalf("remote project PTY launch was permitted, returned working_dir=%q token_len=%d",
 			resp.WorkingDir, len(resp.RelayToken))
@@ -58,10 +57,10 @@ func TestResolvePtyEnv_RefusesRemoteProject(t *testing.T) {
 // The legacy resolution branch (no ProjectID, matched by name) must refuse too,
 // or the guard is bypassable by using the older request shape.
 func TestResolvePtyEnv_RefusesRemoteProjectViaLegacyPath(t *testing.T) {
-	r, svcToken := remoteProjectRouter(t)
+	r, svcCtx := remoteProjectRouter(t)
 
-	if _, err := r.ResolvePtyEnv(context.Background(),
-		bridge.PtyEnvRequest{Project: "remote"}, svcToken); err == nil {
+	if _, err := r.ResolvePtyEnv(svcCtx,
+		bridge.PtyEnvRequest{Project: "remote"}, ""); err == nil {
 		t.Fatal("legacy project-name resolution let a remote project through")
 	}
 }
@@ -71,11 +70,10 @@ func TestResolvePtyEnv_LocalProjectStillResolves(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	s.Projects[0].Path = dir
 	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
-	svcToken := "service-token-cccccccccccccccccccccccccccccccc"
-	r.serviceTokens.Register(config.HashToken(svcToken))
+	svcCtx := bindTestServiceIdentity(t, r)
 
-	resp, err := r.ResolvePtyEnv(context.Background(),
-		bridge.PtyEnvRequest{ProjectID: "test-project", Directory: dir}, svcToken)
+	resp, err := r.ResolvePtyEnv(svcCtx,
+		bridge.PtyEnvRequest{ProjectID: "test-project", Directory: dir}, "")
 	if err != nil {
 		t.Fatalf("local project PTY launch was refused: %v", err)
 	}
@@ -85,12 +83,12 @@ func TestResolvePtyEnv_LocalProjectStillResolves(t *testing.T) {
 }
 
 func TestResolveProjectTemplate_RefusesRemoteProject(t *testing.T) {
-	r, svcToken := remoteProjectRouter(t)
+	r, svcCtx := remoteProjectRouter(t)
 
 	// The fixture deliberately carries a shell template, so a missing guard
 	// would resolve it rather than falling through to "not found".
-	resp, err := r.ResolveProjectTemplate(context.Background(),
-		bridge.ShellTemplateRequest{ProjectID: "remote-proj", TemplateID: "tpl-1"}, svcToken)
+	resp, err := r.ResolveProjectTemplate(svcCtx,
+		bridge.ShellTemplateRequest{ProjectID: "remote-proj", TemplateID: "tpl-1"}, "")
 	if err == nil {
 		t.Fatalf("remote project resolved a host shell template: command=%q", resp.Command)
 	}

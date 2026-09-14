@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/barelyworkingcode/relay/internal/config"
-	"github.com/barelyworkingcode/relay/internal/enrolment"
-	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/enrolment"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 // The decisive assertion in this file is that settings.json was not REWRITTEN,
@@ -220,32 +221,6 @@ func TestCreateEnrolmentThatIsRefusedWritesNothing(t *testing.T) {
 		t.Fatalf("enrolment.Create error = %v, want one matching enrolment.ErrInvalid", err)
 	}
 	before.assertUntouched(t, dir, "enrolment.Create")
-}
-
-// The frontend-token migration reports whether it changed anything, and the
-// caller must honour that answer. What reaches the no-change case is the
-// ordinary cross-process one — two relay starts, or a start racing a tray,
-// migrating the same token — which the hook makes deterministic.
-func TestFrontendTokenMigrationThatFindsNothingToDoWritesNothing(t *testing.T) {
-	dir, store := odwSandbox(t)
-	const token = "odw-frontend-token"
-
-	hooked := &odwHookStore{FileSettingsStore: store}
-	var before odwSnapshot
-	hooked.preWrite = func() {
-		ensureFrontendTokenIsCredential(sealedSettingsStoreAt(dir), token)
-		before = odwSnap(t, dir)
-	}
-
-	ensureFrontendTokenIsCredential(hooked, token)
-
-	if before.info == nil {
-		t.Fatal("the migration never reached its write, so the fixture proves nothing")
-	}
-	before.assertUntouched(t, dir, "ensureFrontendTokenIsCredential")
-	if authenticateAPICredential(config.FreshSettings(store), token) == nil {
-		t.Fatal("the token does not authenticate after the second migration declined")
-	}
 }
 
 // StartOAuth resolves the MCP outside the settings lock and persists inside it,

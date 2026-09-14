@@ -241,8 +241,8 @@ func TestEnumerateRoute_HTTPCarriesTheChosenDependencies(t *testing.T) {
 }
 
 // Enumeration is disclosure — every mail account on this machine — so it sits
-// behind the same bearer token as any other project route.
-func TestEnumerateRoute_RequiresTheFrontendToken(t *testing.T) {
+// behind the same authentication as any other project route.
+func TestEnumerateRoute_RequiresAuthentication(t *testing.T) {
 	_, sock := newTestFrontendServer(t, "the-token")
 	client := dialFrontendHTTP(sock)
 

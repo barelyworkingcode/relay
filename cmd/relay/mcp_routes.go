@@ -13,7 +13,7 @@ import (
 // mcpView is an explicit allow-list, not ExternalMcp marshaled directly:
 // ExternalMcp carries OAuthState (client secret, access/refresh tokens), and
 // none of it may ever ride out over this API. Add a field here only if it is
-// safe to hand to whoever holds the frontend bearer token.
+// safe to hand to any caller admitted to the frontend API.
 type mcpView struct {
 	ID          string            `json:"id"`
 	DisplayName string            `json:"display_name"`

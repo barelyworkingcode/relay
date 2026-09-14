@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
+	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
 
@@ -143,6 +144,9 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	// life of the socket, and the getsockopt is pure overhead on every
 	// subsequent frame. Audit attribution only.
 	ctx = WithCallerPID(ctx, PeerPID(conn))
+	if tok, err := peertoken.FromConn(conn); err == nil {
+		ctx = WithCallerPeer(ctx, tok)
+	}
 
 	// Resolved once per connection too, beside PeerPID, and for the same
 	// reason: it can't change for the socket's lifetime. Unlike PeerPID this
@@ -191,6 +195,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
 	ReqDescribeProject:        {handle: handleDescribeProject},
 	ReqRegisterManifest:       {handle: handleRegisterManifest},
+	ReqHello:                  {handle: handleHello},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
@@ -220,8 +225,9 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 	}
 
 	// Directory auth is a fallback for a tokenless caller; every handler that
-	// doesn't authenticate a project ignores it.
-	if req.Token == "" {
+	// doesn't authenticate a project ignores it. Hello's token field is the
+	// launch secret, never absent in a valid Hello, and never a project token.
+	if req.Token == "" && req.Type != ReqHello {
 		ctx = WithCallerCwd(ctx, req.Cwd)
 	}
 
@@ -267,16 +273,32 @@ func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRoute
 	return BridgeResponse{Type: RespOK}
 }
 
-func handleListProjects(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.ListProjects(req.Token)
+// handleHello answers every refusal with one fixed message: the router's
+// error names the reason for relay's log, and a caller must learn neither
+// that reason nor, ever, the secret it sent.
+func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	result, err := router.Hello(ctx, req.Name, req.Token)
+	if err != nil {
+		slog.Warn("bridge: hello refused", "name", req.Name, "peer_pid", CallerPIDFromContext(ctx), "reason", err)
+		return bridgeError(jsonrpc.CodeUnauthorized, "hello refused")
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return bridgeError(jsonrpc.CodeInternalError, "hello: encode result")
+	}
+	return BridgeResponse{Type: RespOK, Data: data}
+}
+
+func handleListProjects(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	data, err := router.ListProjects(ctx, req.Token)
 	if err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespProjects, Data: data}
 }
 
-func handleGetProject(_ context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.GetProject(req.ProjectID, req.Token)
+func handleGetProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	data, err := router.GetProject(ctx, req.ProjectID, req.Token)
 	if err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}

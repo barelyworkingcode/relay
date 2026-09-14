@@ -40,7 +40,7 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/a/echo?x=1", strings.NewReader(`{"hello":"world"}`))
-	req.Header.Set("Authorization", "Bearer FRONTEND-TOKEN-MUST-NOT-LEAK")
+	req.Header.Set("Authorization", "Bearer INBOUND-BEARER-MUST-NOT-LEAK")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -63,9 +63,9 @@ func TestFrontendDispatcher_RoutesAndInjectsToken(t *testing.T) {
 	if string(got.Body) != `{"hello":"world"}` {
 		t.Fatalf("body lost; got %q", got.Body)
 	}
-	// The inbound frontend token must not leak to the upstream service.
+	// The caller's inbound bearer must not leak to the upstream service.
 	auth := got.Headers.Get("Authorization")
-	if strings.Contains(auth, "FRONTEND-TOKEN-MUST-NOT-LEAK") {
+	if strings.Contains(auth, "INBOUND-BEARER-MUST-NOT-LEAK") {
 		t.Fatalf("inbound Authorization leaked to upstream: %q", auth)
 	}
 	if auth != "Bearer "+fake.Token() {
