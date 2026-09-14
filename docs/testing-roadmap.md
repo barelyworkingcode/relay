@@ -56,13 +56,12 @@ modifies its log files mid-run and the naive snapshot guard flags it as
 contamination. Fix: ignore `logs/`, `run/`, and `*.sock` in the snapshot.
 See `support_safety_test.go:shouldIgnoreForSafetySnapshot`.
 
-### `sync.Mutex` in `serviceTokenStore` must not be copied
-The router embeds `serviceTokenStore` by value (`appRouter.serviceTokens`); the
-service registry takes a pointer to that same field. Wiring tests that
-allocate their own `&serviceTokenStore{}` and pass it to the registry
-while the router keeps a copy silently break token auth — registry writes
-hashes into one map, router reads from another. Mirror production:
-`reg.TokenStore = &router.serviceTokens`. See
+### The router and the registry must share one launch table
+The registry begins launches in `service.Launches` and the router binds and
+looks them up there. Wiring a test that gives each its own
+`service.NewLaunches()` silently breaks identity auth — every `Hello` is
+refused because the router's table never saw the launch. Mirror production:
+`reg.Launches = router.launches`. See
 `service_registry_test.go:startSandboxBridge`.
 
 ### A sandboxed `HOME` breaks a spawned browser, silently
