@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -158,57 +159,6 @@ func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 	return b.Build()
 }
 
-// projectUpdateTouchesGrant is AC-16c's "does" list: allowed_mcp_ids,
-// allowed_tools, access, context, allow_external, allow_cwd_auth, kind,
-// path or mounts. A request touching only name, chat_templates,
-// session_folders, generate_skill, permission_policy, allowed_models or
-// shell_templates must NOT prompt — none of those widen what a token
-// reaches. disabled_tools is deliberately absent too: it is a denylist and
-// can only narrow (§6.4). mounts is exactly as grant-widening as
-// allowed_tools — a mount is a filesystem reach the token gains — so it is
-// gated on the same footing, not treated as a lesser field because it
-// shipped later.
-func projectUpdateTouchesGrant(f project.UpdateFields) bool {
-	return f.AllowedMcpIDs != nil || f.AllowedTools != nil || f.Access != nil ||
-		f.Context != nil || f.AllowExternal != nil || f.AllowCwdAuth != nil || f.Kind != nil ||
-		f.Path != nil || f.Mounts != nil || f.HostID != nil
-}
-
-func projectUpdateGrantFieldNames(f project.UpdateFields) []string {
-	var names []string
-	if f.AllowedMcpIDs != nil {
-		names = append(names, "allowed_mcp_ids")
-	}
-	if f.AllowedTools != nil {
-		names = append(names, "allowed_tools")
-	}
-	if f.Access != nil {
-		names = append(names, "access")
-	}
-	if f.Context != nil {
-		names = append(names, "context")
-	}
-	if f.AllowExternal != nil {
-		names = append(names, "allow_external")
-	}
-	if f.AllowCwdAuth != nil {
-		names = append(names, "allow_cwd_auth")
-	}
-	if f.Kind != nil {
-		names = append(names, "kind")
-	}
-	if f.HostID != nil {
-		names = append(names, "host_id")
-	}
-	if f.Path != nil {
-		names = append(names, "path")
-	}
-	if f.Mounts != nil {
-		names = append(names, "mounts")
-	}
-	return names
-}
-
 func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	names := []string{"kind", "path"}
 	if f.HostID != "" {
@@ -238,15 +188,18 @@ func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	return names
 }
 
-// projectGrantUpdateReason names the actual act (§6.5.2). allow_cwd_auth
-// gets its own sentence when it is the field being turned on: the ADR
-// singles it out because turning it on hands the project's whole tool set
-// to any process standing in the directory, with no token at all.
-func projectGrantUpdateReason(id string, f project.UpdateFields, cwdAuthTurningOn bool) string {
+// projectGrantUpdateReason names the actual act (§6.5.2), naming only the
+// fields project.UpdateWidensGrant found to actually widen the grant — a
+// request that also resends nine unchanged or narrowed fields must not read
+// as widening all nine. allow_cwd_auth gets its own sentence when it is the
+// field being turned on: the ADR singles it out because turning it on hands
+// the project's whole tool set to any process standing in the directory,
+// with no token at all.
+func projectGrantUpdateReason(id string, widened []string, cwdAuthTurningOn bool) string {
 	if cwdAuthTurningOn {
 		return fmt.Sprintf("turn on directory authentication for the project %q", id)
 	}
-	return fmt.Sprintf("widen the grant for the project %q (%s)", id, strings.Join(projectUpdateGrantFieldNames(f), ", "))
+	return fmt.Sprintf("widen the grant for the project %q (%s)", id, strings.Join(widened, ", "))
 }
 
 // Create is unconditionally gated: every create sets Kind and Path, so
@@ -286,19 +239,34 @@ func (o *ProjectOps) Create(ctx context.Context, f project.CreateFields, surface
 	return created, nil
 }
 
-// Update gates only when the request touches the configure subset
-// (projectUpdateTouchesGrant) — AC-16c requires that a rename or a
-// chat-template edit not prompt.
+// Update gates only when the request actually widens the grant
+// (project.UpdateWidensGrant) — AC-16c requires that a rename or a
+// chat-template edit not prompt, and ADR-18 decision 1 requires the same of
+// an unchanged resend or a pure narrowing: a caller like the Settings
+// window that always sends the whole record must not have that resend read
+// as widening every field it happens to carry.
+//
+// stored is read before anything else, outside Store.With's lock, the same
+// read-then-gate-then-mutate shape ServiceOps.Update uses: it only ever
+// feeds the widen comparison and the digest, and project.ApplyUpdate
+// re-reads and re-validates the live record inside the actual mutation, so
+// a settings.json changed by something else between this read and the
+// write below is caught there, not silently papered over here.
 func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFields, surfaces func() project.McpSurfaces, via, credID string) (config.Project, bool, error) {
-	touchesGrant := projectUpdateTouchesGrant(f)
+	var stored config.Project
+	if existing, _ := config.FindProjectByID(o.Store.Get(), id); existing != nil {
+		stored = *existing
+	}
+	widened := project.UpdateWidensGrant(stored, f)
+	touchesGrant := len(widened) > 0
 	var presenceID string
 	if touchesGrant {
 		if err := requireIssuanceAuditor(o.Issuance); err != nil {
 			return config.Project{}, false, err
 		}
-		cwdAuthTurningOn := f.AllowCwdAuth != nil && *f.AllowCwdAuth
+		cwdAuthTurningOn := slices.Contains(widened, "allow_cwd_auth")
 		grant, err := requireGate(o.Gate, ctx, "project.grant", projectUpdateDigest(id, f),
-			projectGrantUpdateReason(id, f, cwdAuthTurningOn))
+			projectGrantUpdateReason(id, widened, cwdAuthTurningOn))
 		if err != nil {
 			return config.Project{}, false, err
 		}
@@ -321,7 +289,7 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 	}
 	if touchesGrant {
 		if auditErr := recordConfigChange(o.Issuance, auditCredentialProjectGrant, id,
-			projectUpdateGrantFieldNames(f), via, credID, presenceID); auditErr != nil {
+			widened, via, credID, presenceID); auditErr != nil {
 			slog.Error("project grant updated but not recorded in the audit log", "id", id, "error", auditErr)
 		}
 	}

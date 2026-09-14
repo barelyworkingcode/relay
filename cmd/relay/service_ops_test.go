@@ -7,9 +7,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/presence"
+	"github.com/barelyworkingcode/relay/internal/presence/presencetest"
 )
 
 func TestServiceOps_Create_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T) {
@@ -19,7 +23,7 @@ func TestServiceOps_Create_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T)
 	_, err := r.serviceOps.Create(context.Background(), serviceFields{
 		DisplayName: "Bad Env Svc",
 		Command:     "/bin/true",
-		Env:         map[string]string{"RELAY_SERVICE_TOKEN": "poison"},
+		Env:         map[string]*string{"RELAY_SERVICE_TOKEN": ptr("poison")},
 	}, auditViaCLI, "")
 	if err == nil {
 		t.Fatal("expected an error for a RELAY_-prefixed env key")
@@ -59,7 +63,7 @@ func TestServiceOps_Update_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T)
 	_, err := r.serviceOps.Update(context.Background(), "svc1", serviceFields{
 		DisplayName: "Svc1",
 		Command:     "/bin/new",
-		Env:         map[string]string{"RELAY_FRONTEND_TOKEN": "poison"},
+		Env:         map[string]*string{"RELAY_FRONTEND_TOKEN": ptr("poison")},
 	}, auditViaCLI, "")
 	if err == nil {
 		t.Fatal("expected an error for a RELAY_-prefixed env key")
@@ -68,5 +72,214 @@ func TestServiceOps_Update_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T)
 	svc, _ := config.FindServiceByID(store.Get(), "svc1")
 	if svc == nil || svc.Command != "/bin/old" {
 		t.Fatalf("the existing record must be untouched by a refused update, got %+v", svc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 2: the env wire representation. A key's value is *string on the wire:
+// nil ("no new value") keeps whatever is already sealed for that key, a
+// non-nil value replaces it, and a key omitted from the map entirely is
+// removed (Env's whole-map-replace semantics predate this field).
+// ---------------------------------------------------------------------------
+
+// svcEnvSandbox seeds a service with two env values and returns the record
+// as the store itself now holds it -- after store.With's own seal pass,
+// which populates each Secret's envelope -- not the pre-seal literal this
+// function built, so a later `!=` against a freshly re-read Secret compares
+// like with like.
+func svcEnvSandbox(t *testing.T) (config.SettingsStore, config.ServiceConfig) {
+	t.Helper()
+	store := newCLISandboxStore(t)
+	cfg := config.ServiceConfig{
+		ID: "svc", DisplayName: "Svc", Command: "/bin/old",
+		Env: map[string]config.Secret{"A": config.NewSecret("secret-a"), "B": config.NewSecret("secret-b")},
+	}
+	if err := store.With(func(s *config.Settings) { s.UpsertService(cfg) }); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+	seeded, _ := config.FindServiceByID(store.Get(), "svc")
+	return store, *seeded
+}
+
+func TestServiceOps_UpdateEnv_NullKeepsTheStoredValue(t *testing.T) {
+	store, seeded := svcEnvSandbox(t)
+	beforeA, ok := seeded.Env["A"].Reveal()
+	if !ok {
+		t.Fatal("seeded value A did not reveal")
+	}
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+
+	_, err := ops.Update(context.Background(), "svc", serviceFields{
+		DisplayName: "Svc", Command: "/bin/old",
+		Env: map[string]*string{"A": nil, "B": ptr("new-b")},
+	}, auditViaIPC, "")
+	assertNoErr(t, err, "Update")
+
+	after, _ := config.FindServiceByID(store.Get(), "svc")
+	if after == nil {
+		t.Fatal("service not found")
+	}
+	// Every settings.json write reseals every Secret with a fresh envelope
+	// regardless of whether its plaintext changed (SealAllSecrets' own
+	// comment: "always calls Seal fresh"), so the byte-identical check is
+	// Reveal()'s plaintext, not the struct or its envelope.
+	if pt, ok := after.Env["A"].Reveal(); !ok || pt != beforeA {
+		t.Fatalf("A = %q, ok=%v; want %q, true -- an unchanged key must keep its exact stored value", pt, ok, beforeA)
+	}
+	if pt, ok := after.Env["B"].Reveal(); !ok || pt != "new-b" {
+		t.Fatalf("B = %q, ok=%v; want \"new-b\", true", pt, ok)
+	}
+}
+
+func TestServiceOps_UpdateEnv_OmittedKeyIsRemoved(t *testing.T) {
+	store, _ := svcEnvSandbox(t)
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+
+	_, err := ops.Update(context.Background(), "svc", serviceFields{
+		DisplayName: "Svc", Command: "/bin/old",
+		Env: map[string]*string{"A": nil},
+	}, auditViaIPC, "")
+	assertNoErr(t, err, "Update")
+
+	after, _ := config.FindServiceByID(store.Get(), "svc")
+	if after == nil {
+		t.Fatal("service not found")
+	}
+	if _, ok := after.Env["B"]; ok {
+		t.Fatalf("B should have been removed (omitted from the request), got %+v", after.Env)
+	}
+	if _, ok := after.Env["A"]; !ok {
+		t.Fatalf("A should still be present, got %+v", after.Env)
+	}
+}
+
+func TestServiceOps_UpdateEnv_RefusesSerializedObjectArtifact(t *testing.T) {
+	store, seeded := svcEnvSandbox(t)
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+
+	_, err := ops.Update(context.Background(), "svc", serviceFields{
+		DisplayName: "Svc", Command: "/bin/old",
+		Env: map[string]*string{"A": ptr("[object Object]")},
+	}, auditViaIPC, "")
+	if !errors.Is(err, errServiceInvalid) {
+		t.Fatalf("err = %v, want errServiceInvalid", err)
+	}
+
+	after, _ := config.FindServiceByID(store.Get(), "svc")
+	if after.Env["A"] != seeded.Env["A"] {
+		t.Fatalf("a refused update must leave the stored secret untouched")
+	}
+}
+
+func TestServiceOps_CreateEnv_RefusesSerializedObjectArtifact(t *testing.T) {
+	store := newCLISandboxStore(t)
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
+
+	_, err := ops.Create(context.Background(), serviceFields{
+		DisplayName: "Bad Env", Command: "/bin/true",
+		Env: map[string]*string{"A": ptr("[object Object]")},
+	}, auditViaCLI, "")
+	if !errors.Is(err, errServiceInvalid) {
+		t.Fatalf("err = %v, want errServiceInvalid", err)
+	}
+	if len(store.Get().Services) != 0 {
+		t.Fatalf("a refused create persisted a record: %+v", store.Get().Services)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 1: capability gating. Removing a capability only narrows what a
+// service's launch identity may do and must not prompt; adding one is new
+// reach and always must.
+// ---------------------------------------------------------------------------
+
+func TestServiceOps_RemovingACapabilityDoesNotPrompt(t *testing.T) {
+	store := newCLISandboxStore(t)
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{
+			ID: "relaytts", DisplayName: "relayTTS", Command: "/bin/tts",
+			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects},
+		})
+	}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
+
+	caps := []config.ServiceCapability{config.ServiceCapabilityManifest}
+	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
+		DisplayName: "relayTTS", Command: "/bin/tts", Capabilities: &caps,
+	}, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("narrowing a service's capabilities must not reach the gate: %v", err)
+	}
+
+	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
+	if svc == nil || !slices.Equal(svc.Capabilities, caps) {
+		t.Fatalf("capabilities = %+v, want %v", svc, caps)
+	}
+}
+
+func TestServiceOps_AddingACapabilityIsGated(t *testing.T) {
+	store := newCLISandboxStore(t)
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{
+			ID: "relaytts", DisplayName: "relayTTS", Command: "/bin/tts",
+			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest},
+		})
+	}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
+
+	caps := []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}
+	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
+		DisplayName: "relayTTS", Command: "/bin/tts", Capabilities: &caps,
+	}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("adding a capability: err = %v, want presence.ErrRefused", err)
+	}
+
+	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
+	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest}) {
+		t.Fatalf("capabilities were changed despite the gate refusing: %+v", svc)
+	}
+}
+
+// TestServiceOps_UnchangedUpdateDoesNotPrompt is bug 1's precondition,
+// mirrored from the same fix applied to ProjectOps.Update: the Settings
+// window resends the whole record on every save, and a resend that changes
+// nothing at all must not reach the gate either.
+func TestServiceOps_UnchangedUpdateDoesNotPrompt(t *testing.T) {
+	store := newCLISandboxStore(t)
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{
+			ID: "svc", DisplayName: "Svc", Command: "/bin/old", Args: []string{"--flag"},
+			WorkingDir: "/tmp", URL: "http://localhost", Autostart: true,
+			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest},
+			Env:          map[string]config.Secret{"A": config.NewSecret("secret-a")},
+		})
+	}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
+
+	caps := []config.ServiceCapability{config.ServiceCapabilityManifest}
+	_, err = ops.Update(context.Background(), "svc", serviceFields{
+		DisplayName: "Svc", Command: "/bin/old", Args: []string{"--flag"},
+		WorkingDir: ptr("/tmp"), URL: ptr("http://localhost"), Autostart: ptr(true),
+		Capabilities: &caps,
+		Env:          map[string]*string{"A": nil},
+	}, auditViaIPC, "")
+	if err != nil {
+		t.Fatalf("an unchanged resend must not reach the gate: %v", err)
 	}
 }
