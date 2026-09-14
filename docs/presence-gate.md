@@ -163,12 +163,26 @@ see ADR-018's step-3 record for the escalation analysis
 ops are marked narrowed rather than deleted — the record of what used to be
 gated, and why, is kept.
 
-**`project.grant` stays gated**, unlike these two. It is not a narrowing —
-an update can widen `allowed_tools`, `access`, `allow_external` or
-`allow_cwd_auth` — so decision 1's rule keeps it on the gated list. Narrowing
-it to fire only on `allow_cwd_auth` is a real, separate change blocked on a
-local identity binding for `cli-admin` that does not exist yet (ADR-018's
-Open questions); it is not part of this step.
+**`project.grant` stays gated**, unlike these two — an update to any of its
+ten fields *can* widen the grant, so decision 1's rule keeps every one of
+them a candidate. What decision 1 also requires, and what the operator door
+did not do until it was fixed as part of the Settings-window capability
+work below, is judging each *value* the same way: a field the request
+carries but does not actually change (the Settings window resends the whole
+record on every save), and a field that changes only by narrowing (fewer
+MCPs, a smaller tool pattern, write moved to read), must not gate, and the
+prompt must name only the field or fields that genuinely widen —
+`project.UpdateWidensGrant` (`internal/project/grant_widening.go`) is that
+per-field comparison, called from `ProjectOps.Update` before
+`projectUpdateDigest` and the reason string are built. The digest itself is
+unchanged by this: it still binds all ten fields' presence exactly as
+before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
+own comment for why shrinking the digest to the gating subset would be
+wrong), so a grant answered for one shape still cannot be redeemed for a
+different one. Narrowing the *field set* itself to fire only on
+`allow_cwd_auth` is a separate, larger change, still blocked on a local
+identity binding for `cli-admin` that does not exist yet (ADR-018's Open
+questions); it is not part of this step.
 
 ## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 

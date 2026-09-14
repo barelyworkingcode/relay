@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -47,15 +49,23 @@ func invalidService(reason string) error {
 // gets the preserving nil. Args and Env need no such change: encoding/json
 // already leaves a slice or map nil when its key is absent, which is the
 // same absent-vs-empty distinction the pointer gives the scalar fields.
+//
+// Env's value type is *string, not string: a sealed value can never be
+// displayed, so the Settings window can never resubmit one, and a key it
+// shows only a masked placeholder for is carried on the wire as present
+// with a null value -- "no new value for this key" -- rather than omitted.
+// Omitting a key entirely still means what it always has for this
+// whole-map-replace field: that key is gone. resolveServiceEnv is the one
+// place that reads this map; see its own comment for the three cases.
 type serviceFields struct {
-	ID          string            `json:"id,omitempty"`
-	DisplayName string            `json:"display_name"`
-	Command     string            `json:"command"`
-	Args        []string          `json:"args"`
-	Env         map[string]string `json:"env"`
-	WorkingDir  *string           `json:"working_dir,omitempty"`
-	Autostart   *bool             `json:"autostart,omitempty"`
-	URL         *string           `json:"url,omitempty"`
+	ID          string             `json:"id,omitempty"`
+	DisplayName string             `json:"display_name"`
+	Command     string             `json:"command"`
+	Args        []string           `json:"args"`
+	Env         map[string]*string `json:"env"`
+	WorkingDir  *string            `json:"working_dir,omitempty"`
+	Autostart   *bool              `json:"autostart,omitempty"`
+	URL         *string            `json:"url,omitempty"`
 	// Capabilities nil means "leave whatever is stored alone" on Update, so an
 	// edit form that never mentions it cannot change what a service's launch
 	// identity may do; on Create it means the empty set. A non-nil pointer to
@@ -77,7 +87,10 @@ func (f serviceFields) resolvedID() string {
 // flag never given) becomes its zero value, same as before these fields
 // were pointers. Update's absent-preserves-existing behaviour is layered on
 // top of this in ServiceOps.Update, not here -- toConfig alone cannot know
-// what "existing" is.
+// what "existing" is. Env is deliberately NOT set here: resolving it needs
+// resolveServiceEnv's existing-vs-null logic (and can fail, which toConfig's
+// signature has no way to report), so every caller sets cfg.Env itself
+// immediately after calling this.
 func (f serviceFields) toConfig(id string) config.ServiceConfig {
 	var workingDir string
 	if f.WorkingDir != nil {
@@ -100,12 +113,153 @@ func (f serviceFields) toConfig(id string) config.ServiceConfig {
 		DisplayName:  f.DisplayName,
 		Command:      f.Command,
 		Args:         f.Args,
-		Env:          config.SecretMapFromPlain(f.Env),
 		WorkingDir:   workingDir,
 		Autostart:    autostart,
 		URL:          url,
 		Capabilities: capabilities,
 	}
+}
+
+// envSerializationArtifact is the exact string a stale, unpatched client's
+// `key + '=' + value` string concatenation produces when value is the
+// sealed envelope object the API used to return (JavaScript's default
+// Object-to-string coercion) -- refusing exactly this literal is what stops
+// a client that has not picked up the masked-env editor from silently
+// overwriting a real secret with eight characters that were never a value
+// anyone typed.
+const envSerializationArtifact = "[object Object]"
+
+// resolveServiceEnv turns the wire's per-key optional-value map into the
+// sealed-in-memory map config.ServiceConfig.Env stores, given whatever env
+// the record already holds (nil on Create, where there is nothing to keep).
+// Three cases, one per key in requested:
+//
+//   - value is non-nil: an explicit new value -- sealed fresh, refused if it
+//     is envSerializationArtifact.
+//   - value is nil (JSON null): no new value. The Settings window sends
+//     this for every key it only shows a masked placeholder for, and the
+//     stored sealed value for that key -- untouched, never round-tripped
+//     through plaintext -- carries forward. A key with no stored value to
+//     carry forward (Create, or a key requested but never previously
+//     stored) becomes an empty secret rather than inventing content.
+//   - key absent from requested entirely: Env replaces the whole map (same
+//     as before this field existed), so an omitted key is removed, exactly
+//     the way an operator deleting a row in the editor means it.
+func resolveServiceEnv(existing map[string]config.Secret, requested map[string]*string) (map[string]config.Secret, error) {
+	out := make(map[string]config.Secret, len(requested))
+	for k, v := range requested {
+		if v == nil {
+			if s, ok := existing[k]; ok {
+				out[k] = s
+				continue
+			}
+			out[k] = config.NewSecret("")
+			continue
+		}
+		if *v == envSerializationArtifact {
+			return nil, invalidService(fmt.Sprintf("env %q: refusing a value that looks like a stale client's stringified object (%q); re-enter the value", k, *v))
+		}
+		out[k] = config.NewSecret(*v)
+	}
+	return out, nil
+}
+
+// serviceEnvChanges answers Update's gating question directly off the wire
+// shapes, without resolving a single Secret: a key present in existing but
+// dropped from requested is a removal, an explicit (non-nil) value is
+// always counted as a set even if it happens to match what is already
+// stored (the same literal reading project.grant's own allow_external/
+// access widen checks use -- an operator who retyped a value chose to pin
+// it, not to leave it alone), and a null value for a key that was never
+// stored is still a change (a new, empty-valued key). requested == nil
+// means the request does not touch env at all.
+func serviceEnvChanges(existing map[string]config.Secret, requested map[string]*string) bool {
+	if requested == nil {
+		return false
+	}
+	for k := range existing {
+		if _, ok := requested[k]; !ok {
+			return true
+		}
+	}
+	for k, v := range requested {
+		if v != nil {
+			return true
+		}
+		if _, ok := existing[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceAddsCapability reports whether requested holds any capability
+// existing does not -- addition is the only direction that widens what a
+// service's launch identity may do (docs/launch-identity.md); dropping one
+// only narrows it (ADR-018 decision 1).
+func serviceAddsCapability(existing, requested []config.ServiceCapability) bool {
+	for _, c := range requested {
+		if !slices.Contains(existing, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceUpdateNeedsGate decides whether an Update actually needs the
+// presence gate, judging each field against what f carries rather than
+// gating unconditionally the way every prior Update did. command, args,
+// working_dir, url and autostart have no narrower reading -- any actual
+// change to what the service runs or how is "the caller chooses what runs"
+// regardless of direction, so those gate on simple inequality. Capabilities
+// is the one field with a real narrow/widen axis: dropping one only shrinks
+// what the launched identity may do and must not prompt (bug: an operator
+// could not narrow relayTTS from manifest+projects to manifest without
+// this), while adding one is new reach and always gates. A request that
+// changes nothing at all -- a resend of the exact stored record, which the
+// Settings window's save button always sends -- needs no gate either.
+func serviceUpdateNeedsGate(existing config.ServiceConfig, f serviceFields) bool {
+	if f.Command != existing.Command {
+		return true
+	}
+	if f.Args != nil && !slices.Equal(f.Args, existing.Args) {
+		return true
+	}
+	if f.WorkingDir != nil && *f.WorkingDir != existing.WorkingDir {
+		return true
+	}
+	if f.URL != nil && *f.URL != existing.URL {
+		return true
+	}
+	if f.Autostart != nil && *f.Autostart != existing.Autostart {
+		return true
+	}
+	if serviceEnvChanges(existing.Env, f.Env) {
+		return true
+	}
+	if f.Capabilities != nil && serviceAddsCapability(existing.Capabilities, *f.Capabilities) {
+		return true
+	}
+	return false
+}
+
+// envDigestField renders env's per-key optional-value shape into
+// RawJSONMapField's input: json.Marshal of a *string produces `null` for a
+// nil pointer and a quoted string otherwise, so "no new value" and "set to
+// this value" -- including the empty string, a legitimate value -- encode
+// to distinguishable, length-prefixed bytes. Reusing StringMapField instead
+// would need a sentinel plaintext value to stand for "unchanged," and any
+// sentinel is a string an operator could also legitimately type.
+func envDigestField(env map[string]*string) map[string][]byte {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string][]byte, len(env))
+	for k, v := range env {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
 }
 
 // presenceDigest binds a service.register grant to exactly the record being
@@ -132,7 +286,7 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 		b.StringField("url", false, "")
 	}
 	b.StringSeqField("args", f.Args != nil, f.Args)
-	b.StringMapField("env", f.Env != nil, f.Env)
+	b.RawJSONMapField("env", f.Env != nil, envDigestField(f.Env))
 	if f.Autostart != nil {
 		b.BoolField("autostart", true, *f.Autostart)
 	} else {
@@ -212,6 +366,11 @@ func (o *ServiceOps) Create(ctx context.Context, f serviceFields, via, credID st
 	}
 
 	cfg := f.toConfig(id)
+	env, err := resolveServiceEnv(nil, f.Env)
+	if err != nil {
+		return config.ServiceConfig{}, err
+	}
+	cfg.Env = env
 	if err := cfg.Validate(); err != nil {
 		return config.ServiceConfig{}, invalidService(err.Error())
 	}
@@ -244,10 +403,26 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	if err := requireIssuanceAuditor(o.Issuance); err != nil {
 		return config.ServiceConfig{}, err
 	}
-	grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
-		fmt.Sprintf("update the service %q to run %s", id, f.Command))
-	if err != nil {
-		return config.ServiceConfig{}, err
+
+	// existing is read outside the store lock purely to decide whether this
+	// update needs the gate at all; the mutation below re-reads it inside
+	// config.WithDeclinable, which is what actually has to be race-safe
+	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove). A record that
+	// disappears between this read and the lock either way ends in
+	// errServiceNotFound, gated needlessly or not -- allowGate-equipped
+	// tests aside, that path never reaches a real prompt.
+	var existing config.ServiceConfig
+	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
+		existing = *e
+	}
+	var presenceID string
+	if serviceUpdateNeedsGate(existing, f) {
+		grant, err := requireGate(o.Gate, ctx, "service.register", f.presenceDigest(id),
+			fmt.Sprintf("update the service %q to run %s", id, f.Command))
+		if err != nil {
+			return config.ServiceConfig{}, err
+		}
+		presenceID = grant.ID()
 	}
 
 	// IsRunning is sampled before the commit, same as the config merge below;
@@ -284,6 +459,12 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 		}
 		if f.Env == nil {
 			cfg.Env = existing.Env
+		} else {
+			env, envErr := resolveServiceEnv(existing.Env, f.Env)
+			if envErr != nil {
+				return envErr
+			}
+			cfg.Env = env
 		}
 		if err := cfg.Validate(); err != nil {
 			return invalidService(err.Error())
@@ -296,7 +477,7 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 		}
 		return config.ServiceConfig{}, fmt.Errorf("save service: %w", err)
 	}
-	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, grant.ID()); err != nil {
+	if err := recordConfigChange(o.Issuance, auditCredentialService, id, nil, via, credID, presenceID); err != nil {
 		slog.Error("service updated but not recorded in the audit log", "id", id, "error", err)
 	}
 
