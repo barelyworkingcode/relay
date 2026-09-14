@@ -48,6 +48,10 @@ type stubRouter struct {
 	getProjectResp json.RawMessage
 	getProjectErr  error
 
+	describeProjectToks []string
+	describeProjectResp ProjectDescription
+	describeProjectErr  error
+
 	resolvePtyReqs []PtyEnvRequest
 	resolvePtyToks []string
 	resolvePtyResp PtyEnvResponse
@@ -136,6 +140,13 @@ func (s *stubRouter) GetProject(id, token string) (json.RawMessage, error) {
 	s.getProjectIDs = append(s.getProjectIDs, id)
 	s.getProjectToks = append(s.getProjectToks, token)
 	return s.getProjectResp, s.getProjectErr
+}
+
+func (s *stubRouter) DescribeProject(_ context.Context, token string) (ProjectDescription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.describeProjectToks = append(s.describeProjectToks, token)
+	return s.describeProjectResp, s.describeProjectErr
 }
 
 func (s *stubRouter) ResolvePtyEnv(_ context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error) {

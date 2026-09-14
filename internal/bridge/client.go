@@ -104,6 +104,26 @@ func (c *Client) GetProject(id string) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
+// DescribeProject requires a project token and answers for that token's own
+// project only.
+func (c *Client) DescribeProject() (ProjectDescription, error) {
+	resp, err := c.send(BridgeRequest{
+		Type:  ReqDescribeProject,
+		Token: c.token,
+	})
+	if err != nil {
+		return ProjectDescription{}, fmt.Errorf("describe project: %w", err)
+	}
+	if err := checkError(resp); err != nil {
+		return ProjectDescription{}, err
+	}
+	var out ProjectDescription
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return ProjectDescription{}, fmt.Errorf("parse response: %w", err)
+	}
+	return out, nil
+}
+
 // ResolvePtyEnv requires service-token authentication. Skill generation is
 // owned by relay and is not driven by this call.
 func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {

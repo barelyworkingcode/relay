@@ -23,6 +23,11 @@ const (
 	ReqResolveProjectTemplate = "ResolveProjectTemplate"
 	ReqRegisterManifest       = "RegisterManifest"
 
+	// ReqDescribeProject is the one project read a project token may make:
+	// its own record and resolved grant, never another project's, never a
+	// token or hash.
+	ReqDescribeProject = "DescribeProject"
+
 	// ReqAdminOp is the one entry point for every brokered mutation (ADR-017
 	// decision 2): BridgeRequest.Name carries the operation name and
 	// Arguments its JSON payload. It is deliberately absent from
@@ -60,6 +65,8 @@ const (
 	RespPtyEnv          = "PtyEnv"
 	RespProjectTemplate = "ProjectTemplate"
 	RespProgress        = "Progress"
+
+	RespProjectDescription = "ProjectDescription"
 )
 
 const (
@@ -146,6 +153,30 @@ type ShellTemplateResponse struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+}
+
+// ProjectDescription is DescribeProject's answer: the caller's own project
+// and its grant as the router resolves it. It carries no credential.
+type ProjectDescription struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	HostID string `json:"host_id,omitempty"`
+	// AllowedModels is the record's value verbatim; empty or ["*"] means
+	// unrestricted, the same rule the frontend session guard applies.
+	AllowedModels []string                `json:"allowed_models"`
+	Mcps          []ProjectMcpDescription `json:"mcps"`
+}
+
+// ProjectMcpDescription is one MCP the grant reaches. Tools is exactly what
+// ListTools lists from this MCP for the same token. Root is the --root relay
+// launched the MCP with, empty when it was launched without one.
+type ProjectMcpDescription struct {
+	ID     string   `json:"id"`
+	Access string   `json:"access"`
+	Root   string   `json:"root,omitempty"`
+	Tools  []string `json:"tools"`
 }
 
 type BridgeRequest struct {
@@ -252,6 +283,8 @@ type ToolRouter interface {
 	ReloadService(id string) error
 	ListProjects(token string) (json.RawMessage, error)
 	GetProject(id string, token string) (json.RawMessage, error)
+	// Project token only; answers for that token's own project.
+	DescribeProject(ctx context.Context, token string) (ProjectDescription, error)
 	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
 	// Never returns the project token.
 	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
