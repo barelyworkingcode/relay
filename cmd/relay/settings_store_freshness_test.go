@@ -48,7 +48,7 @@ func ssfBumpModTime(t *testing.T, path string) {
 
 // ssfStack is the composed read-side fixture: a store over a real config dir,
 // a real frontend server with a real credentialAuthorizer over that same
-// store, one minted read-class credential, and the legacy frontend token.
+// store, one minted read-class credential, and the seeded read+configure+proxy bearer.
 type ssfStack struct {
 	dir       string
 	store     *config.FileSettingsStore

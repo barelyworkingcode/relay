@@ -36,7 +36,8 @@ type ActionDecl struct {
 // render an editor for it. Path is validated here as absolute + no ".."
 // (schema-level only) — relay re-validates against an allowed root and a
 // regular-file check at use time, since a service-declared path is never
-// trusted blindly even though registration is service-token authenticated.
+// trusted blindly even though registration is authenticated by a launch identity
+// holding the manifest capability.
 type ConfigDecl struct {
 	Path      string      `json:"path"`
 	Format    string      `json:"format,omitempty"`
@@ -98,8 +99,8 @@ const (
 // RegisterManifestRequest is the Arguments payload for a ReqRegisterManifest
 // call. The service picks InternalSocket and InternalToken itself; relay
 // trusts the declared values as defense-in-depth on top of socket FS
-// permissions, since the bridge connection is already service-token
-// authenticated.
+// permissions, since the call is already authenticated by a launch identity
+// holding the manifest capability.
 type RegisterManifestRequest struct {
 	ServiceID      string   `json:"serviceId"`
 	Manifest       Manifest `json:"manifest"`

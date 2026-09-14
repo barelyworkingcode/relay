@@ -630,7 +630,7 @@ func aiNewLoginServer(t *testing.T, rec *audit.AuditRecorder) *lrServer {
 	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		seededEndpoint(t, store, sock, "ai-frontend-token"),
+		seededEndpoint(t, store, sock, "ai-bearer"),
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, &audit.AuditOps{Audit: rec},
 		&McpOps{Store: store, Ctx: context.Background()},

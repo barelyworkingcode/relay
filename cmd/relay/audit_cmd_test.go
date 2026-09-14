@@ -71,7 +71,7 @@ func TestAuditScopeSummary_AbsentEmptyAndPopulatedReadDifferently(t *testing.T) 
 }
 
 func TestAuditAuthorityLine_OmittedWhenNothingWasRecorded(t *testing.T) {
-	// A service token, a list event, or a refusal before an MCP resolved: none
+	// A service's launch identity, a list event, or a refusal before an MCP resolved: none
 	// of these ever reach setAuthority, so Access stays "".
 	if _, ok := auditAuthorityLine(audit.AuditEvent{}); ok {
 		t.Error("authority line rendered for a record with no recorded authority")
@@ -185,6 +185,6 @@ func TestWriteAuditTable_AuthorityFlagSkipsRecordsWithNoAuthority(t *testing.T) 
 	writeAuditTable(&buf, events, true)
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
-		t.Errorf("service-token call grew an authority line it has nothing to fill in: %q", lines)
+		t.Errorf("service-identity call grew an authority line it has nothing to fill in: %q", lines)
 	}
 }

@@ -57,8 +57,8 @@ type Settings struct {
 	// block must never open a network socket.
 	Remote *RemoteConfig `json:"remote,omitempty"`
 
-	// APICredentials replace the single frontend bearer with credentials
-	// that each name their own capability classes (ADR-015 decision 3).
+	// APICredentials are the bearer credentials the control-plane API
+	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one
 	// keeps a settings.json byte-identical to the one it had before this
 	// field existed.
@@ -661,7 +661,7 @@ func FindExternalMcpByID(s *Settings, id string) (*ExternalMcp, int) {
 }
 
 // findProjectByTokenHash uses a constant-time compare for consistency with
-// the admin/frontend token checks — both sides are SHA-256 hashes, but
+// the admin secret and API credential checks — both sides are SHA-256 hashes, but
 // matching the hardened path keeps the auth-comparison policy uniform.
 func (s *Settings) findProjectByTokenHash(hash string) *Project {
 	want := []byte(hash)

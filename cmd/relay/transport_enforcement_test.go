@@ -70,7 +70,7 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 	extMgr := mcpbroker.NewManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
 
-	const token = "te-frontend-token"
+	const token = "te-bearer"
 	sockDir := mkShortTempDir(t, "te-fe-")
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,

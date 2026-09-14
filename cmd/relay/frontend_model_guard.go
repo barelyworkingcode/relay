@@ -145,7 +145,7 @@ func isSessionModelUpdatePath(p string) (id string, ok bool) {
 // relayLLM itself — through next, the same handler this request would
 // otherwise be forwarded to unchecked — with an internal GET /api/sessions
 // carrying over the incoming request's headers so the proxy authenticates
-// and injects its own service token exactly as it does for any other
+// and injects relayLLM's own internal bearer exactly as it does for any other
 // forwarded request.
 //
 // FAIL CLOSED throughout: a lookup error, a non-200 lookup response, or a

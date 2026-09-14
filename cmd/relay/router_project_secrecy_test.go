@@ -6,8 +6,8 @@ import (
 )
 
 // TestListProjectsAndGetProject_NeverCarryTokenOrHash pins AC-8 / issue
-// #64: ListProjects and GetProject are answered to any service-token
-// holder, and must never marshal the raw Project — only ResolvePtyEnv may
+// #64: ListProjects and GetProject are answered to any service
+// holding the projects capability, and must never marshal the raw Project — only ResolvePtyEnv may
 // hand out a project's plaintext token over the bridge. Checked by string
 // search on the raw JSON, not by decoding into a Project (which would
 // silently pass by coincidence if the DTO ever gained a differently-named

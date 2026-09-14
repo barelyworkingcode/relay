@@ -39,7 +39,7 @@ import (
 // alone cannot tell a *Settings receiver from an unrelated one — which is
 // why the allowlist below also has to admit files that call these SAME
 // names for a reason unconnected to a gated operation (the WebAuthn login
-// ceremony's own mintAPICredentialFor, the frontend-token migration's own With, and so
+// ceremony's own mintAPICredentialFor, the OAuth refresh callback's own With, and so
 // on): the test's job is to make every call site visible and reviewed, not
 // to prove each one is a gated act.
 var gatedMutatorNames = map[string]bool{

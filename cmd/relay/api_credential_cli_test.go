@@ -33,7 +33,7 @@ import (
 
 // accLegacyToken is the bearer accNewServer seeds as a read+configure+proxy
 // credential.
-const accLegacyToken = "acc-frontend-token"
+const accLegacyToken = "acc-bearer"
 
 type accServer struct {
 	store    config.SettingsStore
@@ -43,9 +43,9 @@ type accServer struct {
 
 // accNewServer wires the REAL composed stack — real ServiceOps/EnrolmentOps/
 // audit.AuditOps/McpOps, a real 0600 socket, a real loopback TCP listener, and a
-// real credentialAuthorizer over the same store. frontendToken is seeded as a
+// real credentialAuthorizer over the same store. bearer is seeded as a
 // read+configure+proxy credential; "" seeds none, which is the fail-closed case.
-func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string) *accServer {
+func accNewServer(t *testing.T, store config.SettingsStore, bearer string) *accServer {
 	t.Helper()
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -57,7 +57,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string
 	dir := mkShortTempDir(t, "acc-fe-")
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), frontendToken),
+		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), bearer),
 		NewEnhancedServiceRegistry(nil), nil, nil,
 		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil, nil, nil,
 		NewCredentialAuthorizer(store), nil, nil,

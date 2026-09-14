@@ -439,9 +439,9 @@ func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 	}
 }
 
-func TestCheckToolAccess_ServiceTokensAreUnaffected(t *testing.T) {
+func TestCheckToolAccess_ServiceIdentityIsUnaffected(t *testing.T) {
 	// Assert through the router, not checkToolAccess — that's where the
-	// service-token bypass lives.
+	// service-identity bypass lives.
 	r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote})
 	svcCtx := bindTestServiceIdentity(t, r)
 	raw, err := r.ListTools(svcCtx, "")
@@ -449,9 +449,9 @@ func TestCheckToolAccess_ServiceTokensAreUnaffected(t *testing.T) {
 		t.Fatalf("ListTools as service: %v", err)
 	}
 	if got := len(unmarshalTools(t, raw)); got != len(macmcpToolSurface()) {
-		t.Fatalf("service token saw %d tools, want all %d", got, len(macmcpToolSurface()))
+		t.Fatalf("service identity saw %d tools, want all %d", got, len(macmcpToolSurface()))
 	}
 	if _, err := r.CallTool(svcCtx, "messages_send", json.RawMessage(`{}`), ""); err != nil {
-		t.Fatalf("service token was refused a tool: %v", err)
+		t.Fatalf("service identity was refused a tool: %v", err)
 	}
 }
