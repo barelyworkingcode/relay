@@ -137,9 +137,9 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		EnvMcpCommand:   relayBin,
 	})
 
-	// The frontend socket path goes only to frontend consumers (e.g. eve);
-	// a backend has no frontend identity, so the path would be of no use to it.
-	if r.FrontendEnv != nil && frontendCredsEnabled(cfg) {
+	// The frontend socket path goes only to a service holding the frontend
+	// capability; to any other it would be a door its identity cannot open.
+	if r.FrontendEnv != nil && cfg.HasCapability(config.ServiceCapabilityFrontend) {
 		env, err := r.FrontendEnv()
 		if err != nil {
 			return fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
@@ -231,18 +231,14 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	return nil
 }
 
-func frontendCredsEnabled(cfg *config.ServiceConfig) bool {
-	return cfg.FrontendConsumer == nil || *cfg.FrontendConsumer
-}
-
 // beginLaunch records a launch for cfg and returns the read end of a pipe
 // already holding its secret and closed for writing, so the child reads the
 // secret to EOF and nothing else can ever be written behind it.
 func (r *Registry) beginLaunch(cfg *config.ServiceConfig) (*Launch, *os.File, error) {
 	secret, launch, err := r.Launches.Begin(Identity{
-		Kind:             IdentityKindService,
-		Name:             cfg.ID,
-		FrontendConsumer: frontendCredsEnabled(cfg),
+		Kind:         IdentityKindService,
+		Name:         cfg.ID,
+		Capabilities: cfg.Capabilities,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin launch for %q: %w", cfg.ID, err)

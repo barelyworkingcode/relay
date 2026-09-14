@@ -208,8 +208,8 @@ func (s *Settings) MergeServiceDefaults(cfg *ServiceConfig) {
 	if cfg.URL == "" {
 		cfg.URL = existing.URL
 	}
-	if cfg.FrontendConsumer == nil {
-		cfg.FrontendConsumer = existing.FrontendConsumer
+	if cfg.Capabilities == nil {
+		cfg.Capabilities = existing.Capabilities
 	}
 }
 

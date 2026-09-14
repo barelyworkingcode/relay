@@ -492,7 +492,7 @@ func runTrayApp() {
 	})
 	// One launch table: the registry begins and ends launches, the bridge
 	// router binds them at Hello and authenticates by them, and the frontend
-	// server admits frontend consumers by them. It lives only in memory, so a
+	// server admits a service holding the frontend capability by them. It lives only in memory, so a
 	// crashed relay leaves no identity behind.
 	launches := service.NewLaunches()
 	registry.Launches = launches

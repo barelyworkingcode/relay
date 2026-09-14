@@ -9,7 +9,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -427,32 +426,4 @@ func doJSONAuth(t *testing.T, method, url string, body interface{}, token string
 		t.Fatalf("read body: %v", err)
 	}
 	return resp, raw
-}
-
-// `service register --no-frontend-creds` sets FrontendConsumer=false so the
-// front-door bearer never reaches a backend. An edit must not revoke that.
-func TestServiceOps_UpdatePreservesFrontendConsumerOptOut(t *testing.T) {
-	store := newCLISandboxStore(t)
-	optOut := false
-	if err := store.With(func(s *config.Settings) {
-		s.UpsertService(config.ServiceConfig{ID: "backend", DisplayName: "Backend", Command: "/bin/old", FrontendConsumer: &optOut})
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
-
-	if _, err := ops.Update(context.Background(), "backend", serviceFields{DisplayName: "Backend", Command: "/bin/new"}, auditViaIPC, ""); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	svc, _ := config.FindServiceByID(store.Get(), "backend")
-	if svc == nil {
-		t.Fatal("service vanished")
-	}
-	if svc.FrontendConsumer == nil || *svc.FrontendConsumer {
-		t.Fatalf("editing a service must not re-enable front-door credential injection; FrontendConsumer = %v", svc.FrontendConsumer)
-	}
-	if svc.Command != "/bin/new" {
-		t.Fatalf("the edit itself must still apply, got %q", svc.Command)
-	}
 }

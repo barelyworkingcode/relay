@@ -54,12 +54,12 @@ var testIdentityPIDs atomic.Int32
 // bindTestIdentity binds a launch named name on r to a synthetic process and
 // returns a context carrying that process as the bridge peer. For router
 // tests that call methods directly rather than through a socket.
-func bindTestIdentity(t *testing.T, r *appRouter, name string, frontendConsumer bool) context.Context {
+func bindTestIdentity(t *testing.T, r *appRouter, name string, caps []config.ServiceCapability) context.Context {
 	t.Helper()
 	if r.launches == nil {
 		r.launches = service.NewLaunches()
 	}
-	secret, _, err := r.launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, FrontendConsumer: frontendConsumer})
+	secret, _, err := r.launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, Capabilities: caps})
 	assertNoErr(t, err, "Begin")
 	peer := peertoken.ForProcessForTest(2_000_000+testIdentityPIDs.Add(1), 1)
 	_, err = r.launches.Bind(name, secret, peer)
@@ -69,7 +69,7 @@ func bindTestIdentity(t *testing.T, r *appRouter, name string, frontendConsumer 
 
 func bindTestServiceIdentity(t *testing.T, r *appRouter) context.Context {
 	t.Helper()
-	return bindTestIdentity(t, r, "test-service", false)
+	return bindTestIdentity(t, r, "test-service", capsBridge)
 }
 
 // selfPeerToken is this test process's own audit token, as the kernel
@@ -96,9 +96,9 @@ func selfPeerToken(t *testing.T) peertoken.Token {
 
 // helloAsLaunchedService begins a launch and completes its Hello over the
 // real bridge socket, so the identity is bound to this test process.
-func helloAsLaunchedService(t *testing.T, launches *service.Launches, sock, name string, frontendConsumer bool) *service.Launch {
+func helloAsLaunchedService(t *testing.T, launches *service.Launches, sock, name string, caps []config.ServiceCapability) *service.Launch {
 	t.Helper()
-	secret, launch, err := launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, FrontendConsumer: frontendConsumer})
+	secret, launch, err := launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, Capabilities: caps})
 	assertNoErr(t, err, "Begin")
 	_, err = bridge.SendHello(sock, name, secret)
 	assertNoErr(t, err, "Hello")
@@ -132,9 +132,9 @@ func startIdentityBridge(t *testing.T) *idBridge {
 	return b
 }
 
-func (b *idBridge) begin(t *testing.T, name string, frontendConsumer bool) (string, *service.Launch) {
+func (b *idBridge) begin(t *testing.T, name string, caps []config.ServiceCapability) (string, *service.Launch) {
 	t.Helper()
-	secret, launch, err := b.launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, FrontendConsumer: frontendConsumer})
+	secret, launch, err := b.launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, Capabilities: caps})
 	assertNoErr(t, err, "Begin")
 	return secret, launch
 }
@@ -172,7 +172,7 @@ func assertBridgeUnauthorized(t *testing.T, resp bridge.BridgeResponse, what str
 	}
 }
 
-// serviceOperationRequests is every bridge operation only a bridge service
+// serviceOperationRequests is every bridge operation only a launch identity with the right capability
 // identity may make, each sent with no token.
 func serviceOperationRequests(t *testing.T, serviceID string) map[string]bridge.BridgeRequest {
 	t.Helper()
@@ -196,7 +196,7 @@ func serviceOperationRequests(t *testing.T, serviceID string) map[string]bridge.
 
 func TestHello_BindsTheCallingProcessAndAnswersWithoutACredential(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, _ := b.begin(t, "svc-hello", false)
+	secret, _ := b.begin(t, "svc-hello", capsBridge)
 
 	resp, line := b.hello(t, "svc-hello", secret)
 	if resp.Type != bridge.RespOK {
@@ -229,7 +229,7 @@ func TestHello_BindsTheCallingProcessAndAnswersWithoutACredential(t *testing.T) 
 
 func TestHello_AForgedSecretIsRefusedAndBindsNothing(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, _ := b.begin(t, "svc-forged", false)
+	secret, _ := b.begin(t, "svc-forged", capsBridge)
 	forged := strings.Repeat("0", service.LaunchSecretHexLen)
 
 	resp, line := b.hello(t, "svc-forged", forged)
@@ -249,7 +249,7 @@ func TestHello_AForgedSecretIsRefusedAndBindsNothing(t *testing.T) {
 
 func TestHello_ASecondHelloWithTheRightSecretIsRefused(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, _ := b.begin(t, "svc-twice", false)
+	secret, _ := b.begin(t, "svc-twice", capsBridge)
 
 	if resp, line := b.hello(t, "svc-twice", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("first Hello: %s", line)
@@ -266,7 +266,7 @@ func TestHello_ASecondHelloWithTheRightSecretIsRefused(t *testing.T) {
 
 func TestBridge_ATokenlessRequestFromAnUnboundPeerIsNotAService(t *testing.T) {
 	b := startIdentityBridge(t)
-	b.begin(t, "svc-unbound", false)
+	b.begin(t, "svc-unbound", capsBridge)
 
 	for op, req := range serviceOperationRequests(t, "svc-unbound") {
 		resp, _ := b.send(t, req)
@@ -283,25 +283,25 @@ func TestBridge_ATokenlessRequestFromAnUnboundPeerIsNotAService(t *testing.T) {
 	}
 }
 
-func TestBridge_AFrontendConsumerIdentityIsRefusedEveryServiceOperation(t *testing.T) {
+func TestBridge_AFrontendOnlyIdentityIsRefusedEveryServiceOperation(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, _ := b.begin(t, "eve-like", true)
+	secret, _ := b.begin(t, "eve-like", capsFrontend)
 	if resp, line := b.hello(t, "eve-like", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("Hello: %s", line)
 	}
 
 	for op, req := range serviceOperationRequests(t, "eve-like") {
 		resp, _ := b.send(t, req)
-		assertBridgeUnauthorized(t, resp, op+" from a frontend consumer")
+		assertBridgeUnauthorized(t, resp, op+" from a frontend-only service")
 	}
 	if b.enhanced.Get("eve-like") != nil {
-		t.Fatal("a frontend consumer registered a manifest")
+		t.Fatal("a frontend-only service registered a manifest")
 	}
 }
 
 func TestBridge_ABridgeServiceIdentityAuthenticatesLaterTokenlessConnections(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, _ := b.begin(t, "llm-like", false)
+	secret, _ := b.begin(t, "llm-like", capsBridge)
 	if resp, line := b.hello(t, "llm-like", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("Hello: %s", line)
 	}
@@ -330,7 +330,7 @@ func TestBridge_ABridgeServiceIdentityAuthenticatesLaterTokenlessConnections(t *
 
 func TestBridge_TheIdentityIsClearedWhenTheLaunchEnds(t *testing.T) {
 	b := startIdentityBridge(t)
-	secret, launch := b.begin(t, "svc-ends", false)
+	secret, launch := b.begin(t, "svc-ends", capsBridge)
 	if resp, line := b.hello(t, "svc-ends", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("Hello: %s", line)
 	}
@@ -348,15 +348,15 @@ func TestResolveAuth_BridgeServiceIdentity(t *testing.T) {
 	svcCtx := bindTestServiceIdentity(t, r)
 	stored, _, err := r.resolveAuth(svcCtx, "")
 	if err != nil || stored.Name != serviceIdentityName {
-		t.Fatalf("a bound bridge service resolved to %+v, %v", stored, err)
+		t.Fatalf("a bound manifest+projects service resolved to %+v, %v", stored, err)
 	}
 	if _, _, err := r.resolveAuth(svcCtx, "not-a-project-token"); err == nil {
 		t.Fatal("a token beside a bound identity must be judged as a token")
 	}
 
-	feCtx := bindTestIdentity(t, r, "eve-like", true)
+	feCtx := bindTestIdentity(t, r, "eve-like", capsFrontend)
 	if stored, _, err := r.resolveAuth(feCtx, ""); err == nil {
-		t.Fatalf("a frontend consumer authenticated on the bridge as %q", stored.Name)
+		t.Fatalf("a frontend-only service authenticated on the bridge as %q", stored.Name)
 	}
 }
 
@@ -387,9 +387,9 @@ func startIdentityFrontend(t *testing.T, enhanced *EnhancedServiceRegistry) (*Fr
 }
 
 // bindSelf binds a launch to this test process's real audit token.
-func bindSelf(t *testing.T, launches *service.Launches, name string, frontendConsumer bool) *service.Launch {
+func bindSelf(t *testing.T, launches *service.Launches, name string, caps []config.ServiceCapability) *service.Launch {
 	t.Helper()
-	secret, launch, err := launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, FrontendConsumer: frontendConsumer})
+	secret, launch, err := launches.Begin(service.Identity{Kind: service.IdentityKindService, Name: name, Capabilities: caps})
 	assertNoErr(t, err, "Begin")
 	_, err = launches.Bind(name, secret, selfPeerToken(t))
 	assertNoErr(t, err, "Bind")
@@ -417,7 +417,7 @@ func TestFrontend_AConsumerIdentityAuthenticatesWithNoAuthorizationHeader(t *tes
 		t.Fatalf("before any identity: status = %d, want 401", got)
 	}
 
-	launch := bindSelf(t, launches, "eve-like", true)
+	launch := bindSelf(t, launches, "eve-like", capsFrontend)
 	if got := frontendStatus(t, client, "GET", "http://unix/api/services", ""); got != http.StatusOK {
 		t.Fatalf("read-class route by identity: status = %d, want 200", got)
 	}
@@ -436,9 +436,9 @@ func TestFrontend_AConsumerIdentityAuthenticatesWithNoAuthorizationHeader(t *tes
 
 func TestFrontend_ABridgeServiceIdentityIsRefused(t *testing.T) {
 	srv, launches, _ := startIdentityFrontend(t, NewEnhancedServiceRegistry(nil))
-	bindSelf(t, launches, "llm-like", false)
+	bindSelf(t, launches, "llm-like", capsBridge)
 	if got := frontendStatus(t, dialFrontendHTTP(srv.socketPath), "GET", "http://unix/api/services", ""); got != http.StatusUnauthorized {
-		t.Fatalf("a bridge service on the frontend socket: status = %d, want 401", got)
+		t.Fatalf("a service without the frontend capability on the frontend socket: status = %d, want 401", got)
 	}
 }
 
@@ -452,7 +452,7 @@ func TestFrontend_AConsumerIdentityReachesTheProxiedSurfaceOverTheSocketOnly(t *
 	srv, launches, _ := startIdentityFrontend(t, registry)
 	assertNoErr(t, srv.ListenLoopback("127.0.0.1:0"), "ListenLoopback")
 	go func() { _ = srv.ServeLoopback() }()
-	bindSelf(t, launches, "eve-like", true)
+	bindSelf(t, launches, "eve-like", capsFrontend)
 
 	if got := frontendStatus(t, dialFrontendHTTP(srv.socketPath), "POST", "http://unix/api/a/echo", ""); got != http.StatusOK {
 		t.Fatalf("proxied route by identity over the socket: status = %d, want 200", got)
@@ -470,9 +470,9 @@ func TestFrontend_AConsumerIdentityReachesTheProxiedSurfaceOverTheSocketOnly(t *
 	}
 }
 
-func TestFrontendConsumerIdentity_HoldsExactlyReadConfigureAndProxy(t *testing.T) {
+func TestFrontendCapability_HoldsExactlyReadConfigureAndProxy(t *testing.T) {
 	authz := NewCredentialAuthorizer(newCLISandboxStore(t))
-	id := service.Identity{Kind: service.IdentityKindService, Name: "eve-like", FrontendConsumer: true}
+	id := service.Identity{Kind: service.IdentityKindService, Name: "eve-like", Capabilities: capsFrontend}
 	for class, want := range map[control.CapabilityClass]error{
 		control.ClassRead:      nil,
 		control.ClassConfigure: nil,

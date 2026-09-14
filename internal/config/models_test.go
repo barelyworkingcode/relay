@@ -66,25 +66,3 @@ func TestServiceConfig_Validate(t *testing.T) {
 		}
 	})
 }
-
-func TestServiceConfig_FrontendCredsState(t *testing.T) {
-	trueVal := true
-	falseVal := false
-
-	cases := []struct {
-		name string
-		cfg  ServiceConfig
-		want string
-	}{
-		{"nil is implicit", ServiceConfig{}, "implicit"},
-		{"true is explicit", ServiceConfig{FrontendConsumer: &trueVal}, "explicit"},
-		{"false is off", ServiceConfig{FrontendConsumer: &falseVal}, "off"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.cfg.FrontendCredsState(); got != tc.want {
-				t.Errorf("FrontendCredsState() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}

@@ -239,23 +239,24 @@ type appRouter struct {
 	evePasskeyOps *EvePasskeyOps
 }
 
-// serviceIdentityName is the Name of the synthetic StoredToken a bridge
-// service identity resolves to. It holds every MCP unfiltered; nothing but
-// resolveServiceIdentity ever builds one.
+// serviceIdentityName is the Name of the synthetic StoredToken a launch
+// identity holding the projects capability resolves to for ListTools and
+// CallTool. It holds every MCP unfiltered; nothing but resolveServiceIdentity
+// ever builds one.
 const serviceIdentityName = "service"
 
-// bridgeServiceIdentity returns the bridge-service identity bound to this
-// request's peer, if there is one. A frontend-consumer identity is not one.
-func (r *appRouter) bridgeServiceIdentity(ctx context.Context) (service.Identity, bool) {
+// identityAllowed returns the launch identity bound to this request's peer
+// if that identity may perform op.
+func (r *appRouter) identityAllowed(ctx context.Context, op service.Operation) (service.Identity, bool) {
 	id, ok := r.launches.Lookup(bridge.CallerPeerFromContext(ctx))
-	if !ok || !id.IsBridgeService() {
+	if !ok || !id.Allows(op) {
 		return service.Identity{}, false
 	}
 	return id, true
 }
 
 func (r *appRouter) resolveServiceIdentity(ctx context.Context) *config.StoredToken {
-	if _, ok := r.bridgeServiceIdentity(ctx); !ok {
+	if _, ok := r.identityAllowed(ctx, service.OpServiceTools); !ok {
 		return nil
 	}
 	return &config.StoredToken{Name: serviceIdentityName}
@@ -268,7 +269,8 @@ var (
 )
 
 // resolveAuth, in order: a present token is a project token or a hard
-// failure; no token from a peer bound as a bridge service is that service;
+// failure; no token from a peer whose identity holds the projects capability
+// is that service;
 // any other tokenless caller falls back to directory auth (resolveCwdAuth),
 // opt-in per project. The fallback must never rescue a bad credential, only
 // the absence of one.
@@ -930,17 +932,17 @@ func (r *appRouter) ReloadService(id string) error {
 	return nil
 }
 
-// requireServiceIdentity admits only a tokenless caller whose peer is bound
-// as a bridge service. It deliberately never consults resolveAuth: a present
-// token can only be a project token, and directory auth only ever yields a
-// project, so neither may reach a service operation.
-func (r *appRouter) requireServiceIdentity(ctx context.Context, token, op string) (service.Identity, error) {
+// requireServiceIdentity admits only a tokenless caller whose peer's launch
+// identity may perform op. It deliberately never consults resolveAuth: a
+// present token can only be a project token, and directory auth only ever
+// yields a project, so neither may reach a service operation.
+func (r *appRouter) requireServiceIdentity(ctx context.Context, token string, op service.Operation) (service.Identity, error) {
 	if token != "" {
 		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires the calling service's launch identity, not a token", op))
 	}
-	id, ok := r.bridgeServiceIdentity(ctx)
+	id, ok := r.identityAllowed(ctx, op)
 	if !ok {
-		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires a bridge service launch identity", op))
+		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires a launch identity holding that capability", op))
 	}
 	return id, nil
 }
@@ -955,25 +957,25 @@ func (r *appRouter) Hello(ctx context.Context, name, secret string) (bridge.Hell
 	if err != nil {
 		return bridge.HelloResult{}, err
 	}
-	slog.Info("launch identity bound", "kind", id.Kind, "name", id.Name, "pid", id.Process.PID, "frontend_consumer", id.FrontendConsumer)
+	slog.Info("launch identity bound", "kind", id.Kind, "name", id.Name, "pid", id.Process.PID, "capabilities", id.Capabilities)
 	return bridge.HelloResult{Kind: string(id.Kind), ServiceID: id.Name, RelayPID: os.Getpid()}, nil
 }
 
 // ListProjects and GetProject answer through projectToView/projectsToView —
 // the same allow-list the eve-facing HTTP routes project through
 // (project_dto.go) — rather than marshalling the raw Project. Marshalling
-// Project directly would hand any bridge service every project's
+// Project directly would hand any service holding the projects capability every project's
 // plaintext token: ResolvePtyEnv below is the sole plaintext-token egress
 // over the bridge, and no other bridge response may carry one.
 func (r *appRouter) ListProjects(ctx context.Context, token string) (json.RawMessage, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, "ListProjects"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, service.OpListProjects); err != nil {
 		return nil, err
 	}
 	return json.Marshal(projectsToView(r.store.Get().Projects))
 }
 
 func (r *appRouter) GetProject(ctx context.Context, id string, token string) (json.RawMessage, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, "GetProject"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, service.OpGetProject); err != nil {
 		return nil, err
 	}
 	proj, _ := config.FindProjectByID(r.store.Get(), id)
@@ -1074,7 +1076,7 @@ func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *con
 // never expose it in argv, files, or logs. Remote projects are refused
 // outright -- see refuseRemotePty.
 func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, "ResolvePtyEnv"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, service.OpResolvePtyEnv); err != nil {
 		return bridge.PtyEnvResponse{}, err
 	}
 
@@ -1128,7 +1130,7 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 // that surface. Do not be tempted to reuse GetProject here -- that marshals
 // the raw Project including its plaintext token.
 func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.ShellTemplateRequest, token string) (bridge.ShellTemplateResponse, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, "ResolveProjectTemplate"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, service.OpResolveProjectTemplate); err != nil {
 		return bridge.ShellTemplateResponse{}, err
 	}
 
@@ -1261,8 +1263,9 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 	return nil
 }
 
-// RegisterManifest authenticates the caller's bridge service identity then
-// forwards the full record to the enhanced-services registry. The registry
+// RegisterManifest authenticates the caller's launch identity, which must
+// hold the manifest capability, then forwards the full record to the
+// enhanced-services registry. The registry
 // handles conflict detection and triggers an onChange notification so the
 // front-door dispatcher rebuilds its routing table.
 //
@@ -1270,7 +1273,7 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 // manifest by the id of the launch that exited, so a manifest under any other
 // id would outlive the process that serves it.
 func (r *appRouter) RegisterManifest(ctx context.Context, req bridge.RegisterManifestRequest, token string) error {
-	id, err := r.requireServiceIdentity(ctx, token, bridge.ReqRegisterManifest)
+	id, err := r.requireServiceIdentity(ctx, token, service.OpRegisterManifest)
 	if err != nil {
 		return err
 	}

@@ -82,7 +82,7 @@ that presents a token is judged as that token, never as the identity beside it.
 
 The frontend socket reads the same peer audit token per connection and
 resolves it per request: a request with **no `Authorization` header** from a
-bound frontend-consumer identity is that identity. A request with an
+identity holding the `frontend` capability is that identity. A request with an
 `Authorization` header is always judged as a bearer.
 
 Only the exact process that said Hello is the identity. Its children are not,
@@ -107,8 +107,8 @@ relay's memory.
   a relay-less mode while relay believes it launched it.
 - `RELAY_LAUNCH_FD` unset: the process was not launched by relay and runs its
   own standalone mode.
-- A tokenless bridge request from a peer with no bridge-service identity is not
-  a service: it falls to directory auth (`allow_cwd_auth`), which can only ever
+- A tokenless bridge request from a peer whose identity does not hold the
+  operation's capability is not a service: it falls to directory auth (`allow_cwd_auth`), which can only ever
   yield a project, and never reaches a service operation.
 - A peer whose audit token cannot be read matches no identity.
 
@@ -120,7 +120,7 @@ Set by relay on a service launch. None of it is secret.
 |---|---|
 | `RELAY_BRIDGE_SOCKET` | bridge socket path |
 | `RELAY_SERVICE_ID` | the launch name Hello presents |
-| `RELAY_FRONTEND_SOCKET` | frontend socket path, frontend consumers only |
+| `RELAY_FRONTEND_SOCKET` | frontend socket path, set exactly when the service holds the `frontend` capability |
 | `RELAY_MCP_COMMAND` | relay binary path |
 | `RELAY_LAUNCH_FD` | `3` |
 
@@ -133,19 +133,60 @@ it spawns.
 ## Identity kinds and capabilities
 
 An identity record carries a `kind`. The protocol above is identical for every
-kind; the kind decides which capability lookup reads the record.
+kind; the kind decides which capability table the record is read against.
+There is one decision function, `service.Allowed(kind, capabilities,
+operation)`, and both the bridge router and the frontend server ask it and
+nothing else.
 
-| kind | bound for | capability |
-|---|---|---|
-| `service`, `frontend_consumer` unset or `true` | eve, relaySTT | The frontend socket, holding exactly `read`, `configure` and `proxy` (never `grant` or `execute`). **No** bridge service operation. Attributed in `control_decision` records as `launch:service:<id>`. |
-| `service`, `frontend_consumer: false` | relayLLM, relayTTS | The bridge service operations: `RegisterManifest` (under its own id only), `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`, `GetProject`, and service-scope `ListTools`/`CallTool`. **No** frontend access. |
+Today every identity is kind `service`, and its capabilities are the service
+record's `capabilities` — a set, fixed when the launch begins:
 
-Hello itself is open to every kind.
+| capability | operations it grants |
+|---|---|
+| `frontend` | The frontend socket, with no `Authorization` header, holding exactly `read`, `configure` and `proxy` (never `grant` or `execute`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. |
+| `manifest` | `RegisterManifest`, only for a `serviceId` equal to the launch name. |
+| `projects` | `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across every MCP. |
 
-A later kind — a project session, whose capability is one project's grant —
-is a new `kind` value and a new branch in that lookup, bound by this same
-launch fd, Hello and audit-token check. `RELAY_PROJECT_TOKEN` is still injected
-into project shells today; it is not governed by this document yet.
+`Hello` needs no capability: every launched service may say it. A service
+with an empty set can start and say `Hello` and can do nothing else through
+relay. The set grants the union of its capabilities' operations and nothing
+else, and a capability name relay does not know grants nothing.
+
+| service | capabilities |
+|---|---|
+| eve, relaySTT | `frontend` |
+| relayLLM | `manifest`, `projects` |
+| relayTTS | `manifest` (a migrated record starts with `manifest`, `projects`; narrow it with `relay service register --capability manifest`) |
+| relayScheduler | `frontend`, `manifest` |
+
+### The service record
+
+```json
+{"id": "relayllm", "command": "…", "capabilities": ["manifest", "projects"]}
+```
+
+Every record relay writes carries `capabilities`, an empty set as `[]`. A
+record whose `capabilities` names anything other than `frontend`, `manifest`
+or `projects` fails validation: relay logs it on load, keeps it in
+`settings.json` untouched, and refuses to start it.
+
+A record written before capabilities existed has no `capabilities` key
+(`null` reads the same) and may carry `frontend_consumer`. It is migrated once,
+in memory, on load — `frontend_consumer` unset or `true` becomes
+`["frontend"]`, `false` becomes `["manifest", "projects"]` — and the next write
+persists `capabilities` and drops `frontend_consumer`. A record that already
+has `capabilities` keeps them and its `frontend_consumer` is discarded.
+
+`relay service register --capability NAME` (repeatable) sets the set; a
+register with no `--capability` sets the empty set and says so. An HTTP or
+Settings-window update that omits `capabilities` keeps the stored set.
+
+### Later kinds
+
+A project session, whose capability is one project's grant, is a new `kind`
+value and a new table in `service.Allowed`, bound by this same launch fd,
+Hello and audit-token check. `RELAY_PROJECT_TOKEN` is still injected into
+project shells today; it is not governed by this document yet.
 
 Code: `internal/service/launch_identity.go` (the table and `Identity`),
 `internal/peertoken` (the audit token), `internal/bridge/launch.go` (the Go

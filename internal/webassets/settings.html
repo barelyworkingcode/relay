@@ -1312,9 +1312,6 @@ window.__RELAY_INIT__ = {
       if (svc.autostart && !state.runningServices[svc.id]) {
         rows.push({ text: esc(svc.display_name) + " is set to start with Relay but is not running.", tab: "services" });
       }
-      if (svc.frontend_creds === "implicit") {
-        rows.push({ text: esc(svc.display_name) + " receives front-door credentials implicitly.", tab: "services" });
-      }
     }
     const st = state.auditStatus;
     if (st && !st.enabled) {
@@ -1703,15 +1700,9 @@ window.__RELAY_INIT__ = {
     }
     alert(summary);
   };
-  function frontDoorPillHTML(svc) {
-    switch (svc.frontend_creds) {
-      case "explicit":
-        return '<div class="mcp-card-tools">front door: injected</div>';
-      case "implicit":
-        return '<div class="mcp-card-tools">front door: injected (implicit) \u2014 pass --no-frontend-creds for backends</div>';
-      default:
-        return "";
-    }
+  function capabilitiesPillHTML(svc) {
+    const caps = svc.capabilities || [];
+    return '<div class="mcp-card-tools">capabilities: ' + (caps.length ? esc(caps.join(", ")) : "none") + "</div>";
   }
   function formatUptime(startedAt) {
     const start = Date.parse(startedAt);
@@ -1757,7 +1748,7 @@ window.__RELAY_INIT__ = {
                 </div>
             </div>
             <div class="mcp-card-tools" data-svc-runtime="${esc(svc.id)}">${esc(serviceStatusLineHTML(svc, running))}</div>
-            ${frontDoorPillHTML(svc)}
+            ${capabilitiesPillHTML(svc)}
             <div class="mcp-card-tools"><button type="button" class="btn-link" ${bind(revealServiceLog, svc.id)}>Logs</button></div>
             ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ""}
             ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ""}

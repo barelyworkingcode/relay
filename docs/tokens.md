@@ -7,7 +7,7 @@ for the project-token brokering model.
 | Token | Where it's named | Purpose | Privilege / scope | Lifecycle & storage |
 |---|---|---|---|---|
 | **Project token** | env `RELAY_PROJECT_TOKEN` *(legacy: `RELAY_TOKEN`)* | The security boundary for MCP tool access — identifies the project for a tool call; relay injects the authenticated `project_id` into `_meta`. Injected into project shells / LLM CLIs / the `relay mcp` child. On the bridge it may call `ListTools`, `CallTool` and `DescribeProject` — the last returns its own project's record and resolved grant (path, allowed models, per-MCP access, launch root and tools), never a token, hash or another project. | **Scoped.** Permissions derived at auth time from the project's `allowed_mcp_ids` + `disabled_tools`. | Long-lived. Sealed on disk (AES-256-GCM, keyed from the login keychain) alongside a clear SHA-256 (`TokenHash`) — see [`docs/sealed-config.md`](sealed-config.md). Rotatable via the `rotate_token` HTTP route / `rotate_project_token` IPC, both of which now go through the running service and a presence prompt (ADR-017 decision 3): rotation issues the security boundary itself. |
-| **Launch identity** *(not a bearer)* | a single-use 64-hex launch secret on inherited **fd 3** (`RELAY_LAUNCH_FD=3`), presented once in a bridge `Hello` | Recognises a process relay launched. `Hello` binds the launch to the kernel audit token (pid + pidversion) of the process that presented the secret; every later request from that exact process authenticates by its peer audit token, with no token on the wire. Protocol: [`docs/launch-identity.md`](launch-identity.md). | By kind. A **bridge service** (`frontend_consumer: false`; relayLLM, relayTTS) holds the bridge service operations — `RegisterManifest` under its own id, `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`/`GetProject`, and unfiltered service-scope `ListTools`/`CallTool` — and no frontend access. A **frontend consumer** (`frontend_consumer` unset or `true`; eve, relaySTT) holds the frontend socket as `read`+`configure`+`proxy` and no bridge service operation. | The secret lives only in the pipe and, as a SHA-256, in relay's memory; it is spent by the first successful `Hello`. The identity lives until the registry sees that launch end. Nothing is persisted, and nothing is in any environment or argv. |
+| **Launch identity** *(not a bearer)* | a single-use 64-hex launch secret on inherited **fd 3** (`RELAY_LAUNCH_FD=3`), presented once in a bridge `Hello` | Recognises a process relay launched. `Hello` binds the launch to the kernel audit token (pid + pidversion) of the process that presented the secret; every later request from that exact process authenticates by its peer audit token, with no token on the wire. Protocol: [`docs/launch-identity.md`](launch-identity.md). | By the service record's `capabilities`, a set: `frontend` is the frontend socket as `read`+`configure`+`proxy`; `manifest` is `RegisterManifest` under its own id; `projects` is `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`/`GetProject` and unfiltered service-scope `ListTools`/`CallTool`. The empty set reaches only `Hello`. | The secret lives only in the pipe and, as a SHA-256, in relay's memory; it is spent by the first successful `Hello`. The identity lives until the registry sees that launch end. Nothing is persisted, and nothing is in any environment or argv. |
 | **Control-plane credential** | `settings.json` field `api_credentials`; minted by `relay credential mint` | Authenticates a caller to relay's control-plane HTTP API (the frontend socket and, if bound, `RELAY_API_LISTEN`). Replaces the single frontend bearer as the API's authenticator (ADR-015). | **Classed.** Carries an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; an absent set grants nothing. `execute` and `proxy` are socket-only. | Long-lived by default; `relay credential mint --ttl 12h` gives one an expiry. SHA-256 only in `settings.json` (0600) — the plaintext is printed once by `relay credential mint` and is not recoverable. Revoke with `relay credential revoke --id ID`. |
 | **Enhanced-service internal bearer** | declared via `RegisterManifest` (per service) | Secures the internal socket between relay's dispatcher and an enhanced service (relayLLM, relayScheduler). Relay strips inbound `Authorization` and injects this token when proxying front-door traffic onward. | That service's internal endpoint only. Distinct from frontend creds. | Each service picks its own socket + token; told to relay at manifest registration. |
 | **Admin secret** | `settings.json` field `admin_secret` | Gates admin-only bridge ops: `ReconcileExternalMcps`, `ReloadExternalMcp`, `ReloadService`. | Administrative control-plane. | Auto-generated on first run; constant-time compared via `ValidateAdmin` at the bridge layer. Sealed on disk; only the tray, which holds the keychain key, ever reads it back (see [`docs/sealed-config.md`](sealed-config.md)). |
@@ -18,9 +18,9 @@ Notes:
 
 - `TokenHash` is not a separate credential — it's the SHA-256 at-rest/comparison
   form of the project token.
-- The **project token** and a **bridge service identity** are deliberately
-  distinct: a project token is scoped to one project's tools; a bridge service
-  is full bridge access and cannot be handed on, since it is a property of one
+- The **project token** and a **launch identity holding `projects`** are
+  deliberately distinct: a project token is scoped to one project's tools; the
+  `projects` capability is every project and cannot be handed on, since it is a property of one
   process rather than a value. If a project token can't be resolved, a spawned
   child gets no token at all (fail closed).
 - **No relay credential is in any service's environment.** Relay removes
@@ -40,12 +40,12 @@ Notes:
 
 The HTTP API that Eve, relayScheduler and the settings view consume is
 authenticated by a **control-plane credential** or, on the frontend socket, by
-a **frontend-consumer launch identity** — never by a single shared bearer.
+a **launch identity holding the `frontend` capability** — never by a single shared bearer.
 Two checks run, in this order, and they do different jobs:
 
 1. `frontendCredentialAuth` resolves the caller before any handler runs — so an
    unauthenticated WS upgrade never allocates a session. A request with no
-   `Authorization` header whose socket peer is a bound frontend-consumer launch
+   `Authorization` header whose socket peer is a launch identity holding `frontend`
    identity is that identity ([`docs/launch-identity.md`](launch-identity.md)).
    Any other request must carry an `Authorization: Bearer` that resolves,
    constant-time, to a credential in `Settings.APICredentials`. Absent,
@@ -92,10 +92,10 @@ follow.
   through the catch-all is strictly less able than it was and must be
   re-minted naming `proxy`.
 - Eve reaches the proxied surface: it dials the frontend **socket**, and a
-  frontend-consumer identity holds `proxy` alongside `read`+`configure`.
+  `frontend` capability holds `proxy` alongside `read`+`configure`.
 
 `proxy` is a class rather than `execute` because `execute` would also hand a
-frontend consumer `POST /api/mcps` and `PUT /api/services/{id}` — the two
+service holding the `frontend` capability `POST /api/mcps` and `PUT /api/services/{id}` — the two
 things its class set exists to withhold. Classing per route is the real answer and
 needs the manifest to describe blast radius, which is a protocol change across
 repositories and is still deferred.
@@ -185,28 +185,21 @@ exactly where revocation was the only option.
 name on start, so an operator-minted credential under it would be deleted too.
 Both `mint` and `revoke` refuse it.
 
-### Frontend consumers
+### The frontend capability
 
-A frontend consumer authenticates to the frontend socket by its launch
-identity, sending no `Authorization` header, and holds exactly
-`read`+`configure`+`proxy`. There is no frontend bearer and no per-start
-frontend token. A record named `legacy-frontend-token` — the hash of a bearer
-relay once placed in consumers' environments, where any same-user process
-could read it — is deleted on start, and settings.json is not written when
-there is none.
+A service holding the `frontend` capability authenticates to the frontend
+socket by its launch identity, sending no `Authorization` header, and holds
+exactly `read`+`configure`+`proxy`. There is no frontend bearer and no
+per-start frontend token. A record named `legacy-frontend-token` — the hash of
+a bearer relay once placed in consumers' environments, where any same-user
+process could read it — is deleted on start, and settings.json is not written
+when there is none.
 
-`ServiceConfig.FrontendConsumer` decides which kind of service identity a
-launch gets: `nil` is a frontend consumer (the implicit default), `false` is a
-bridge service (`service register --no-frontend-creds`), `true` is a frontend
-consumer explicitly (`--frontend-creds`, the opt-in counterpart naming a
-choice the operator actually made rather than fell into). Only a frontend
-consumer is told `RELAY_FRONTEND_SOCKET`. `register` warns to stderr when a
-caller names neither flag, since an implicit choice is indistinguishable on
-disk from a deliberate one, and `service list`'s `FRONT-DOOR` column and the
-Settings IPC payload's `frontend_creds` field both spell all three cases apart
-(`ServiceConfig.FrontendCredsState()`: `"explicit"` / `"implicit"` / `"off"`)
-so an operator auditing which services can reach the front door never has to
-guess which nil meant.
+`ServiceConfig.Capabilities` decides it, alongside `manifest` and `projects`
+([`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities)).
+Only a service holding `frontend` is told `RELAY_FRONTEND_SOCKET`.
+`relay service register --capability frontend` grants it; `service list`'s
+`CAPABILITIES` column and the Settings window's service card show the set.
 
 That class set is a **narrowing**, and it has a consequence worth stating
 plainly: a consumer that needs `grant` or `execute` over HTTP must be handed
@@ -739,10 +732,10 @@ project's path is authenticated as that project. Default is off, per project.
   Relay ignores an inbound `cwd` whenever a token is set, so a directory can't
   re-scope an authenticated call.
 - **Service ops stay out of reach.** Directory auth yields a project-scoped
-  token, and `requireServiceIdentity` admits only a tokenless peer bound as a
-  bridge service, never consulting directory auth, so `ResolvePtyEnv` /
+  token, and `requireServiceIdentity` admits only a tokenless peer whose launch
+  identity holds the operation's capability, never consulting directory auth, so `ResolvePtyEnv` /
   `RegisterManifest` / project reads can never be satisfied this way. A
-  tokenless caller is checked for a bound bridge-service identity first and
+  tokenless caller is checked for a launch identity holding `projects` first and
   falls to directory auth only when it has none.
 - **Nested projects** resolve to the most specific opted-in project containing
   the directory. A nested project that has *not* opted in does not shadow an

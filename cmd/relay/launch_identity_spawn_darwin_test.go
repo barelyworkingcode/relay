@@ -113,10 +113,9 @@ func TestServiceLaunch_RealEnvironmentHoldsNoRelayCredential(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			enhanced := NewEnhancedServiceRegistry(nil)
 			router, reg := startSandboxBridge(t, enhanced)
-			backend := false
 			cfg := &config.ServiceConfig{
 				ID: tc.id, DisplayName: tc.id, Command: tc.command,
-				Args: []string{"--register"}, FrontendConsumer: &backend,
+				Args: []string{"--register"}, Capabilities: capsBridge,
 			}
 			assertNoErr(t, reg.Start(cfg), "Start")
 			t.Cleanup(func() { reg.Stop(cfg.ID) })
@@ -144,7 +143,7 @@ func TestServiceLaunch_RealEnvironmentHoldsNoRelayCredential(t *testing.T) {
 				t.Errorf("%s = %q, want %q", bridge.EnvServiceID, got, cfg.ID)
 			}
 			if _, ok := bound.env[bridge.EnvFrontendSocket]; ok {
-				t.Errorf("a bridge service received %s", bridge.EnvFrontendSocket)
+				t.Errorf("a service without the frontend capability received %s", bridge.EnvFrontendSocket)
 			}
 			assertNoRelaySecret(t, "bound process", bound)
 			if launchedPID != 0 && launchedPID != int(id.Process.PID) {
@@ -154,7 +153,7 @@ func TestServiceLaunch_RealEnvironmentHoldsNoRelayCredential(t *testing.T) {
 	}
 }
 
-func TestServiceLaunch_AFrontendConsumerCannotRegisterAManifestAndItsIdentityEndsWithIt(t *testing.T) {
+func TestServiceLaunch_AServiceWithoutManifestCannotRegisterOneAndItsIdentityEndsWithIt(t *testing.T) {
 	binPath := buildTestServiceBinary(t)
 	enhanced := NewEnhancedServiceRegistry(nil)
 	router, reg := startSandboxBridge(t, enhanced)
@@ -166,16 +165,16 @@ func TestServiceLaunch_AFrontendConsumerCannotRegisterAManifestAndItsIdentityEnd
 		}
 	}
 
-	cfg := &config.ServiceConfig{ID: "svc-consumer-register", DisplayName: "consumer", Command: binPath, Args: []string{"--register"}}
+	cfg := &config.ServiceConfig{ID: "svc-consumer-register", DisplayName: "consumer", Command: binPath, Args: []string{"--register"}, Capabilities: capsFrontend}
 	assertNoErr(t, reg.Start(cfg), "Start")
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):
-		t.Fatal("a frontend consumer refused RegisterManifest did not exit")
+		t.Fatal("a service refused RegisterManifest did not exit")
 	}
 
 	if enhanced.Get(cfg.ID) != nil {
-		t.Fatal("a frontend consumer registered a manifest")
+		t.Fatal("a service without the manifest capability registered a manifest")
 	}
 	if _, ok := router.launches.Bound(cfg.ID); ok {
 		t.Fatal("the identity outlived its launch")

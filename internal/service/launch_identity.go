@@ -5,8 +5,10 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 )
 
@@ -17,7 +19,7 @@ type IdentityKind string
 
 const (
 	// IdentityKindService is a process relay's service registry launched.
-	// Its capability comes from the service record's frontend_consumer.
+	// Its capabilities are the service record's capabilities.
 	IdentityKindService IdentityKind = "service"
 )
 
@@ -28,22 +30,16 @@ type Identity struct {
 	// Name is the launch's name on the wire: Hello's "name". For a service it
 	// is the service id.
 	Name string
-	// FrontendConsumer is meaningful only for IdentityKindService.
-	FrontendConsumer bool
+	// Capabilities is fixed when the launch begins; editing the service record
+	// changes the next launch, not this one.
+	Capabilities []config.ServiceCapability
 	// Process is the zero value until Hello binds the launch.
 	Process peertoken.Process
 }
 
-// IsFrontendConsumer reports whether this identity is a service that reaches
-// the frontend socket, and therefore no bridge service operation.
-func (i Identity) IsFrontendConsumer() bool {
-	return i.Kind == IdentityKindService && i.FrontendConsumer
-}
-
-// IsBridgeService reports whether this identity is a service that holds the
-// bridge service operations, and therefore no frontend access.
-func (i Identity) IsBridgeService() bool {
-	return i.Kind == IdentityKindService && !i.FrontendConsumer
+// Allows reports whether this identity may perform op.
+func (i Identity) Allows(op Operation) bool {
+	return Allowed(i.Kind, i.Capabilities, op)
 }
 
 // LaunchSecretHexLen is the length of the launch secret on the wire: 32
@@ -99,6 +95,7 @@ func (t *Launches) Begin(id Identity) (string, *Launch, error) {
 		return "", nil, fmt.Errorf("launch identity: %w", err)
 	}
 	id.Process = peertoken.Process{}
+	id.Capabilities = slices.Clone(id.Capabilities)
 	l := &Launch{table: t, id: id, secretHash: sha256.Sum256([]byte(secret))}
 
 	t.mu.Lock()
