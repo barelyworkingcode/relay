@@ -97,8 +97,15 @@ func (a *App) pushFullSettings() {
 	s := a.store.Get()
 	seed := a.buildOverviewSeed(s)
 	a.emitSettingsEvent("onSettingsReloaded", map[string]interface{}{
-		"external_mcps":    s.ExternalMcps,
-		"services":         s.Services,
+		// Native-viewed, not the raw settings slices: config.Secret refuses to
+		// marshal at all once it holds a real sealed value (Secret.MarshalJSON),
+		// and even where an already-sealed record's envelope still marshals, the
+		// JS side would receive that envelope object rather than a plaintext
+		// string -- exactly the corruption a stale onSettingsReloaded broadcast
+		// used to leave sitting in state.services right after a correctly
+		// revealed onServiceAdded/onServiceUpdated had just rendered it right.
+		"external_mcps":    externalMcpsToNativeView(s.ExternalMcps),
+		"services":         serviceConfigsToNativeView(s.Services),
 		"running_ids":      a.registry.RunningIDs(),
 		"projects":         s.Projects,
 		"mcp_tool_cache":   a.buildToolCache(s),
@@ -315,14 +322,16 @@ type ipcIDMsg struct {
 	ID string `json:"id"`
 }
 
-// ipcServiceMsg is the shared message format for add and update service operations.
-// For add: ID is empty (derived from DisplayName). For update: ID is required.
+// ipcServiceMsg is the shared message format for add and update service
+// operations. For add: ID is empty (derived from DisplayName). For update:
+// ID is required. Env's value type is *string, matching serviceFields.Env
+// -- see that field's own comment for what null versus an omitted key means.
 type ipcServiceMsg struct {
 	ID           string                      `json:"id"`
 	DisplayName  string                      `json:"display_name"`
 	Command      string                      `json:"command"`
 	Args         []string                    `json:"args"`
-	Env          map[string]string           `json:"env"`
+	Env          map[string]*string          `json:"env"`
 	WorkingDir   string                      `json:"working_dir,omitempty"`
 	Autostart    bool                        `json:"autostart"`
 	URL          string                      `json:"url,omitempty"`

@@ -86,6 +86,15 @@ what runs.** Concretely:
   relay presents to a third party, and it opens a browser at a URL the
   caller chose. Unregistering either kind is deliberately **not** gated —
   see "What is not gated, and why removal is not escalation" below.
+  `service.register`'s update path applies decision 1 to one field within
+  itself: `command`, `args`, `working_dir`, `url` and `autostart` have no
+  narrower reading (any actual change to what runs, or how, gates), but a
+  service's launch-identity `capabilities` does — dropping one only narrows
+  what the identity may do and does not gate, adding one is new reach and
+  always does (`serviceUpdateNeedsGate`, `cmd/relay/service_ops.go`), and a
+  request that changes nothing at all (the Settings window resends the whole
+  record on every save) needs no gate either. docs/launch-identity.md's
+  "Editing capabilities from the Settings window" has the detail.
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
 - **Widening a project's grant shape** (`project.grant`) — see below.
@@ -163,12 +172,26 @@ see ADR-018's step-3 record for the escalation analysis
 ops are marked narrowed rather than deleted — the record of what used to be
 gated, and why, is kept.
 
-**`project.grant` stays gated**, unlike these two. It is not a narrowing —
-an update can widen `allowed_tools`, `access`, `allow_external` or
-`allow_cwd_auth` — so decision 1's rule keeps it on the gated list. Narrowing
-it to fire only on `allow_cwd_auth` is a real, separate change blocked on a
-local identity binding for `cli-admin` that does not exist yet (ADR-018's
-Open questions); it is not part of this step.
+**`project.grant` stays gated**, unlike these two — an update to any of its
+ten fields *can* widen the grant, so decision 1's rule keeps every one of
+them a candidate. What decision 1 also requires, and what the operator door
+did not do until it was fixed as part of the Settings-window capability
+work below, is judging each *value* the same way: a field the request
+carries but does not actually change (the Settings window resends the whole
+record on every save), and a field that changes only by narrowing (fewer
+MCPs, a smaller tool pattern, write moved to read), must not gate, and the
+prompt must name only the field or fields that genuinely widen —
+`project.UpdateWidensGrant` (`internal/project/grant_widening.go`) is that
+per-field comparison, called from `ProjectOps.Update` before
+`projectUpdateDigest` and the reason string are built. The digest itself is
+unchanged by this: it still binds all ten fields' presence exactly as
+before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
+own comment for why shrinking the digest to the gating subset would be
+wrong), so a grant answered for one shape still cannot be redeemed for a
+different one. Narrowing the *field set* itself to fire only on
+`allow_cwd_auth` is a separate, larger change, still blocked on a local
+identity binding for `cli-admin` that does not exist yet (ADR-018's Open
+questions); it is not part of this step.
 
 ## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 

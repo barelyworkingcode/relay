@@ -1058,9 +1058,9 @@ function renderServiceForm() {
     const cm = editing ? esc(editing.command) : '';
     const ar = editing ? esc((editing.args || []).join(' ')) : '';
     const wd = editing ? esc(editing.working_dir || '') : '';
-    const ev = editing ? esc(Object.entries(editing.env || {}).map(([k,v]) => k + '=' + v).join('\n')) : '';
     const as_ = editing ? editing.autostart : false;
     const ur = editing ? esc(editing.url || '') : '';
+    const caps = editing ? (editing.capabilities || []) : [];
 
     let html = '<h2>' + esc(title) + (editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ')</span>' : '') + '</h2>';
 
@@ -1084,8 +1084,27 @@ function renderServiceForm() {
 
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Environment</div>';
-    html += '<label for="svcEnv">Environment variables (KEY=VALUE per line)</label>';
-    html += `<textarea id="svcEnv" rows="3" placeholder="API_KEY=abc123&#10;PORT=8080">${ev}</textarea>`;
+    html += '<p class="proj-section-help">Values are sealed at rest and this window never shows a stored one again. Replace a value to change it, or remove a variable entirely.</p>';
+    html += '<div id="svcEnvRows">' + renderServiceEnvRows() + '</div>';
+    html += '<div style="display:flex;gap:6px;margin-top:8px">';
+    html += '<input type="text" id="svcEnvNewKey" placeholder="KEY" style="width:160px" />';
+    html += '<input type="text" id="svcEnvNewValue" placeholder="value" style="flex:1" />';
+    html += '<button type="button" class="btn btn-sm" onclick="svcEnvAddRow()">Add</button>';
+    html += '</div>';
+    html += '</div>';
+
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Capabilities</div>';
+    html += '<p class="proj-section-help">What this service\'s launch identity may do through relay once it says Hello (docs/launch-identity.md). None held is legitimate: the service can start and say Hello and reach nothing else through relay.</p>';
+    html += serviceCapabilityNames.map(function(cap) {
+        return '<label class="toggle-row" style="padding:4px 0;margin:0;cursor:pointer">' +
+            '<span>' + esc(cap) + '</span>' +
+            '<span class="switch">' +
+            '<input type="checkbox" id="svcCap_' + cap + '" aria-label="' + esc(cap) + ' capability" ' + (caps.indexOf(cap) >= 0 ? 'checked' : '') + ' />' +
+            '<span class="slider"></span>' +
+            '</span>' +
+            '</label>';
+    }).join('');
     html += '</div>';
 
     html += '<div class="proj-section">';
@@ -1110,31 +1129,138 @@ function renderServiceForm() {
     return html;
 }
 
+// serviceCapabilityNames is the whole vocabulary (docs/launch-identity.md,
+// config.ServiceCapabilities on the Go side) — hardcoded here the same way
+// the CLI's own --capability flag help text names them, since a fourth
+// capability is a rare, deliberate protocol change, not routine config.
+const serviceCapabilityNames = ['frontend', 'manifest', 'projects'];
+
+// renderServiceEnvRows renders state.svcEnvDraft, the edit session's own env
+// draft (seeded by editService/newService, never derived from `editing`
+// directly): each row's stored value is masked, never displayed or
+// resubmitted, and the row itself carries what the operator has done to it
+// ('keep', 'replace' with a typed value, or 'removed') so svcFormValues can
+// build the wire's per-key optional-value map straight off this array
+// without ever having held a stored value in the clear.
+function renderServiceEnvRows() {
+    const rows = state.svcEnvDraft || [];
+    let html = '';
+    let shown = 0;
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.mode === 'removed') continue;
+        shown++;
+        html += '<div class="svc-env-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">';
+        html += '<span class="mono-inline" style="min-width:140px;word-break:break-all" title="' + esc(row.key) + '">' + esc(row.key) + '</span>';
+        if (row.mode === 'replace') {
+            html += '<input type="text" value="' + esc(row.value || '') + '" placeholder="new value" style="flex:1" onchange="svcEnvSetValue(' + i + ', this.value)" />';
+        } else {
+            html += '<span class="mono-inline" style="flex:1;color:var(--text-3)">••••••••</span>';
+            html += '<button type="button" class="btn btn-sm" ' + bind(svcEnvSetMode, i, 'replace') + '>Replace</button>';
+        }
+        html += '<button type="button" class="btn btn-sm btn-danger" ' + bind(svcEnvRemoveRow, i) + '>Remove</button>';
+        html += '</div>';
+    }
+    if (shown === 0) html += '<div class="empty-state">No environment variables.</div>';
+    return html;
+}
+
+function svcEnvSetMode(i, mode) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.mode = mode;
+    if (mode === 'replace' && row.value == null) row.value = '';
+    render();
+}
+
+// svcEnvSetValue is wired to onchange (fires on blur/commit), not oninput,
+// the same discipline the project form's mount id/path fields already use
+// (renderProjMounts): render() rebuilds this whole form from state, and a
+// field that only syncs on commit survives that rebuild instead of dropping
+// whatever the operator was mid-typing when some other control's click
+// triggered it.
+function svcEnvSetValue(i, value) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.value = value;
+}
+
+function svcEnvRemoveRow(i) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.mode = 'removed';
+    render();
+}
+
+function svcEnvAddRow() {
+    const keyEl = document.getElementById('svcEnvNewKey');
+    const valEl = document.getElementById('svcEnvNewValue');
+    if (!keyEl) return;
+    const key = keyEl.value.trim();
+    if (!key) return;
+    if (!state.svcEnvDraft) state.svcEnvDraft = [];
+    const row = { key: key, mode: 'replace', value: valEl ? valEl.value : '' };
+    // A key re-added after being marked removed, or typed twice, replaces
+    // the earlier row rather than producing two -- the wire map can only
+    // ever hold one value per key.
+    const existingIdx = state.svcEnvDraft.findIndex(function(r) { return r.key === key; });
+    if (existingIdx >= 0) state.svcEnvDraft[existingIdx] = row;
+    else state.svcEnvDraft.push(row);
+    keyEl.value = '';
+    if (valEl) valEl.value = '';
+    render();
+}
+
+// svcEnvWireValue turns the draft into env's wire shape (serviceFields.Env):
+// null for a kept key, the typed string for a replaced one, and a removed
+// row is simply absent -- Env's own whole-map-replace semantics read an
+// absent key as "gone".
+function svcEnvWireValue() {
+    const env = {};
+    for (const row of (state.svcEnvDraft || [])) {
+        if (row.mode === 'removed') continue;
+        env[row.key] = row.mode === 'replace' ? row.value : null;
+    }
+    return env;
+}
+
+// svcEnvMergedForDisplay answers what env WILL hold after this save lands,
+// in the clear -- used only for the optimistic local patch in
+// saveServiceEdit, the same "show it now, the next real read will confirm
+// it" convenience every other field in this form's optimistic update
+// already relies on. A kept row's plaintext comes from the record's
+// existing env (already revealed, never resealed by this window merely
+// displaying it — see native_view.go); nothing here goes over the wire.
+function svcEnvMergedForDisplay(existingEnv) {
+    const env = {};
+    for (const row of (state.svcEnvDraft || [])) {
+        if (row.mode === 'removed') continue;
+        env[row.key] = row.mode === 'replace' ? row.value : ((existingEnv || {})[row.key] || '');
+    }
+    return env;
+}
+
 function svcFormValues() {
     const displayName = document.getElementById('svcDisplayName').value.trim();
     const command = document.getElementById('svcCommand').value.trim();
     const argsStr = document.getElementById('svcArgs').value.trim();
     const workingDir = document.getElementById('svcWorkingDir').value.trim();
-    const envStr = document.getElementById('svcEnv').value.trim();
     const autostart = document.getElementById('svcAutostart').checked;
     const url = document.getElementById('svcUrl').value.trim();
 
     const args = argsStr ? argsStr.split(/\s+/) : [];
-    const env = {};
-    if (envStr) {
-        for (const line of envStr.split('\n')) {
-            const eq = line.indexOf('=');
-            if (eq > 0) {
-                env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-            }
-        }
-    }
+    const env = svcEnvWireValue();
+    const capabilities = serviceCapabilityNames.filter(function(cap) {
+        const el = document.getElementById('svcCap_' + cap);
+        return !!(el && el.checked);
+    });
 
-    return { displayName, command, args, env, workingDir, autostart, url };
+    return { displayName, command, args, env, workingDir, autostart, url, capabilities };
 }
 
 function newService() {
     state.editingServiceId = 'new';
+    state.svcEnvDraft = [];
     render();
 }
 
@@ -1152,6 +1278,7 @@ function addService() {
         working_dir: v.workingDir || null,
         autostart: v.autostart,
         url: v.url || null,
+        capabilities: v.capabilities,
     }));
     // Form stays open until onServiceAdded confirms — that handler clears
     // editingServiceId. If the add fails (onSettingsError), the form stays
@@ -1161,11 +1288,18 @@ function addService() {
 
 function editService(id) {
     state.editingServiceId = id;
+    const svc = state.services.find(s => s.id === id);
+    // Every existing key starts 'keep': masked, and never resubmitted unless
+    // the operator explicitly clicks Replace.
+    state.svcEnvDraft = Object.keys((svc && svc.env) || {}).sort().map(function(k) {
+        return { key: k, mode: 'keep', value: '' };
+    });
     render();
 }
 
 function cancelServiceEdit() {
     state.editingServiceId = null;
+    state.svcEnvDraft = null;
     render();
 }
 
@@ -1183,19 +1317,23 @@ function saveServiceEdit() {
         working_dir: v.workingDir || null,
         autostart: v.autostart,
         url: v.url || null,
+        capabilities: v.capabilities,
     }));
 
     const svc = state.services.find(s => s.id === state.editingServiceId);
     if (svc) {
+        const mergedEnv = svcEnvMergedForDisplay(svc.env);
         svc.display_name = v.displayName;
         svc.command = v.command;
         svc.args = v.args;
-        svc.env = v.env;
+        svc.env = mergedEnv;
         svc.working_dir = v.workingDir || null;
         svc.autostart = v.autostart;
         svc.url = v.url || null;
+        svc.capabilities = v.capabilities;
     }
     state.editingServiceId = null;
+    state.svcEnvDraft = null;
     render();
 }
 
@@ -6481,5 +6619,5 @@ Object.assign(window, {
     addProjMount, removeProjMount, setProjMountAccess,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;
