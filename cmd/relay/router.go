@@ -370,28 +370,9 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 	}
 	au.setActor(ctx, stored, settings, token)
 
-	isServiceToken := stored.Name == serviceTokenName
 	tools := make([]mcp.Tool, 0)
-	ambiguous := r.ambiguousToolNames(stored, settings, isServiceToken)
-
-	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
-			continue
-		}
-		view := newScopeView(r, stored, ext.ID, isServiceToken)
-		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
-				continue
-			}
-			if !view.listable(t.Name) {
-				continue
-			}
-			if ambiguous[t.Name] {
-				continue
-			}
-			view.annotate(&t)
-			tools = append(tools, t)
-		}
+	for _, listing := range r.listableToolsByMcp(stored, settings) {
+		tools = append(tools, listing.tools...)
 	}
 
 	au.setToolCount(len(tools))
@@ -1000,6 +981,91 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
 	}
 	return json.Marshal(projectToView(*proj))
+}
+
+// DescribeProject lets a process launched holding only RELAY_PROJECT_TOKEN
+// configure itself from the grant relay enforces, rather than from a second
+// copy of it on disk. A tokenless caller is refused rather than resolved by
+// directory auth, and so is a service token, which names no project.
+func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.ProjectDescription, error) {
+	if token == "" {
+		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
+	}
+	stored, settings, err := r.resolveAuth(ctx, token)
+	if err != nil {
+		return bridge.ProjectDescription{}, err
+	}
+	if stored.Name == serviceTokenName || stored.ProjectID == "" {
+		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
+	}
+	proj, _ := config.FindProjectByID(settings, stored.ProjectID)
+	if proj == nil {
+		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", stored.ProjectID))
+	}
+
+	kind := config.ProjectKindLocal
+	if proj.IsRemote() {
+		kind = config.ProjectKindRemote
+	}
+	out := bridge.ProjectDescription{
+		ID:            proj.ID,
+		Name:          proj.Name,
+		Kind:          string(kind),
+		Path:          proj.Path,
+		HostID:        proj.HostID,
+		AllowedModels: append([]string{}, proj.AllowedModels...),
+		Mcps:          []bridge.ProjectMcpDescription{},
+	}
+	for _, listing := range r.listableToolsByMcp(stored, settings) {
+		names := make([]string, 0, len(listing.tools))
+		for _, t := range listing.tools {
+			names = append(names, t.Name)
+		}
+		out.Mcps = append(out.Mcps, bridge.ProjectMcpDescription{
+			ID:     listing.mcpID,
+			Access: stored.AccessMode(listing.mcpID),
+			Root:   r.tools.McpSurfaceFor(listing.mcpID).Root,
+			Tools:  names,
+		})
+	}
+	return out, nil
+}
+
+type mcpListing struct {
+	mcpID string
+	tools []mcp.Tool
+}
+
+// listableToolsByMcp is ListTools' membership rule grouped by owning MCP, in
+// settings order. DescribeProject reads the same grouping, so the tools a
+// description names can never differ from the tools ListTools lists.
+func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *config.Settings) []mcpListing {
+	isServiceToken := stored.Name == serviceTokenName
+	ambiguous := r.ambiguousToolNames(stored, settings, isServiceToken)
+
+	var out []mcpListing
+	for _, ext := range settings.ExternalMcps {
+		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
+			continue
+		}
+		view := newScopeView(r, stored, ext.ID, isServiceToken)
+		listing := mcpListing{mcpID: ext.ID}
+		for _, t := range r.tools.Tools(ext.ID) {
+			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
+				continue
+			}
+			if !view.listable(t.Name) {
+				continue
+			}
+			if ambiguous[t.Name] {
+				continue
+			}
+			view.annotate(&t)
+			listing.tools = append(listing.tools, t)
+		}
+		out = append(out, listing)
+	}
+	return out
 }
 
 // ResolvePtyEnv returns the env bundle (project-scoped token + working dir)
