@@ -86,6 +86,15 @@ what runs.** Concretely:
   relay presents to a third party, and it opens a browser at a URL the
   caller chose. Unregistering either kind is deliberately **not** gated —
   see "What is not gated, and why removal is not escalation" below.
+  `service.register`'s update path applies decision 1 to one field within
+  itself: `command`, `args`, `working_dir`, `url` and `autostart` have no
+  narrower reading (any actual change to what runs, or how, gates), but a
+  service's launch-identity `capabilities` does — dropping one only narrows
+  what the identity may do and does not gate, adding one is new reach and
+  always does (`serviceUpdateNeedsGate`, `cmd/relay/service_ops.go`), and a
+  request that changes nothing at all (the Settings window resends the whole
+  record on every save) needs no gate either. docs/launch-identity.md's
+  "Editing capabilities from the Settings window" has the detail.
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
 - **Widening a project's grant shape** (`project.grant`) — see below.
