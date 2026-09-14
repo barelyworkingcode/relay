@@ -48,6 +48,11 @@ type Manager interface {
 	ReclaimOrphans(configs []config.ServiceConfig)
 	StartAllAutostart(configs []config.ServiceConfig)
 	StopAll()
+	// SupervisionStatuses reports the restart-campaign state of every
+	// service relay is currently supervising (running/restarting/failed).
+	// An id absent from the result is not supervised: never started this
+	// session, or the operator stopped it.
+	SupervisionStatuses() map[string]SupervisionStatus
 }
 
 var _ Manager = (*Registry)(nil)
@@ -58,6 +63,12 @@ type serviceProcess struct {
 	done      chan struct{}
 	launch    *Launch
 	startedAt time.Time
+	// sup is the supervisor of record at the moment this process was
+	// spawned. The exit goroutine hands it to superviseExit rather than
+	// looking id up again, so a newer supervisor installed after this
+	// process started (a fresh explicit Start) is never mistaken for this
+	// one's owner.
+	sup *serviceSupervisor
 }
 
 // ServiceRuntime is the process-identity half of a running service's status
@@ -97,17 +108,30 @@ type Registry struct {
 	OpenLog       func(id string) (io.WriteCloser, error)
 	Enhanced      EnhancedRegistry
 	OnProcessExit func()
+
+	// Clock is the source of "now" and of the cancellable delay restart
+	// backoff sleeps on. Nil means the real wall clock; a supervision test
+	// injects a FakeClock so a crash loop can be driven to its give-up limit
+	// without waiting out real backoff delays.
+	Clock Clock
+
+	svMu        sync.Mutex
+	supervisors map[string]*serviceSupervisor
 }
 
 // NewRegistry creates a new service registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		processes: make(map[string]*serviceProcess),
+		processes:   make(map[string]*serviceProcess),
+		supervisors: make(map[string]*serviceSupervisor),
 	}
 }
 
 // Start spawns the service through the platform shell so the user's profile
-// (PATH, env) is loaded.
+// (PATH, env) is loaded, and installs it as the id's supervisor of record:
+// from here on, an exit relay did not request (Stop/Reload/StopAll) is
+// restarted through this same path (docs/service-manifest.md's lifecycle
+// section).
 func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid service config: %w", err)
@@ -120,9 +144,27 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		return nil
 	}
 
+	sup := r.installSupervisor(cfg)
+	if _, err := r.startLocked(cfg, sup); err != nil {
+		// Nothing was ever spawned, so there will never be an exit event to
+		// drive a restart -- an idle "running" supervisor left behind here
+		// would be a state IsRunning already contradicts.
+		r.retireSupervisor(sup)
+		return err
+	}
+	return nil
+}
+
+// startLocked does the actual spawn; the caller holds r.mu and has already
+// decided sup is the process's supervisor. Both Start (an operator's first
+// launch) and restartAfterBackoff (a supervised relaunch) call this, so a
+// crash and an explicit Start begin an identical launch -- BuildCommand,
+// launch identity, log file, pidfile, reaper -- and both mint a brand new
+// launch secret (Launches.Begin ends any prior launch under the same name).
+func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor) (*serviceProcess, error) {
 	cmd, err := BuildCommand(cfg)
 	if err != nil {
-		return fmt.Errorf("build command for %q: %w", cfg.ID, err)
+		return nil, fmt.Errorf("build command for %q: %w", cfg.ID, err)
 	}
 
 	// Relay's own environment is what the child inherits, so a relay started
@@ -142,7 +184,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	if r.FrontendEnv != nil && cfg.HasCapability(config.ServiceCapabilityFrontend) {
 		env, err := r.FrontendEnv()
 		if err != nil {
-			return fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
+			return nil, fmt.Errorf("provision frontend channel for %s: %w", cfg.ID, err)
 		}
 		MergeEnv(cmd, env)
 	}
@@ -152,7 +194,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	if r.Launches != nil {
 		launch, launchRead, err = r.beginLaunch(cfg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		cmd.ExtraFiles = []*os.File{launchRead}
 		MergeEnv(cmd, map[string]string{EnvLaunchFD: strconv.Itoa(bridge.LaunchFD)})
@@ -172,14 +214,14 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 	}()
 
 	if r.OpenLog == nil {
-		return fmt.Errorf("start %q: no log destination configured", cfg.ID)
+		return nil, fmt.Errorf("start %q: no log destination configured", cfg.ID)
 	}
 	// Assigning an io.Writer (not *os.File) makes Go pump the child's merged
 	// stdout+stderr through one copy goroutine, which cmd.Wait awaits before
 	// the reaper closes the writer below.
 	logFile, err := r.OpenLog(cfg.ID)
 	if err != nil {
-		return fmt.Errorf("failed to create log file: %w", err)
+		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
 
 	cmd.Stdout = logFile
@@ -187,7 +229,7 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return fmt.Errorf("failed to start '%s': %w", cfg.DisplayName, err)
+		return nil, fmt.Errorf("failed to start '%s': %w", cfg.DisplayName, err)
 	}
 	committed = true
 
@@ -201,15 +243,23 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		logFile:   logFile,
 		done:      make(chan struct{}),
 		launch:    launch,
-		startedAt: time.Now(),
+		startedAt: r.clock().Now(),
+		sup:       sup,
 	}
 
-	// Defers run LIFO: launch.End -> logFile.Close -> close(done) ->
-	// OnProcessExit, so the identity is gone before Stop, which waits on
-	// done, returns, and done is closed before the exit callback reads
-	// process state.
+	// Defers run LIFO. Textual order below is (last to run first):
+	// superviseExit -> OnProcessExit -> close(done) -> logFile.Close ->
+	// removePidFile -> launch.End -> Enhanced.Forget. superviseExit is
+	// registered FIRST so it runs LAST: any restart it schedules begins
+	// after the launch identity is cleared, the pidfile removed and the log
+	// closed, i.e. after a completely fresh launch has become possible.
 	serviceID := cfg.ID
 	go func() {
+		var exitCode int
+		startedAt := proc.startedAt
+		defer func() {
+			r.superviseExit(sup, exitCode, r.clock().Now().Sub(startedAt))
+		}()
 		defer func() {
 			if r.OnProcessExit != nil {
 				r.OnProcessExit()
@@ -222,13 +272,19 @@ func (r *Registry) Start(cfg *config.ServiceConfig) error {
 		if r.Enhanced != nil {
 			defer r.Enhanced.Forget(serviceID)
 		}
-		if err := cmd.Wait(); err != nil {
-			slog.Warn("service exited with error", "id", serviceID, "error", err)
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			slog.Warn("service exited with error", "id", serviceID, "error", waitErr)
+		}
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+		} else {
+			exitCode = -1
 		}
 	}()
 
 	r.processes[cfg.ID] = proc
-	return nil
+	return proc, nil
 }
 
 // beginLaunch records a launch for cfg and returns the read end of a pipe
@@ -274,7 +330,14 @@ func GenerateRandomHex(n int) (string, error) {
 // Stop kills a service and waits for it to exit. The process stays in the
 // map while stopping so IsRunning returns true, preventing a concurrent
 // Start from spawning a duplicate.
+//
+// stopSupervision runs before anything else: whichever of this and a
+// concurrent crash's exit reaches the supervisor-of-record check first, this
+// wins (its own doc comment has the full argument), so a service the
+// operator stops is never restarted underneath them.
 func (r *Registry) Stop(id string) {
+	r.stopSupervision(id)
+
 	r.mu.Lock()
 	proc, ok := r.processes[id]
 	r.mu.Unlock()
@@ -292,6 +355,10 @@ func (r *Registry) Stop(id string) {
 	}
 }
 
+// Reload is Stop then Start in place: Stop already retires id's supervisor
+// and cancels any pending restart before this returns, so the crash path (if
+// the old process happened to be mid-backoff) never fires a second, redundant
+// relaunch alongside this one.
 func (r *Registry) Reload(id string, cfg *config.ServiceConfig) error {
 	r.Stop(id)
 	return r.Start(cfg)
@@ -356,8 +423,12 @@ func (r *Registry) StartAllAutostart(configs []config.ServiceConfig) {
 }
 
 // StopAll stops every running service concurrently so one slow shutdown
-// doesn't block the others.
+// doesn't block the others. stopAllSupervision runs first and unconditionally,
+// so tray shutdown cancels every pending or in-flight restart before a
+// single process is killed -- nothing relaunches partway through teardown.
 func (r *Registry) StopAll() {
+	r.stopAllSupervision()
+
 	r.mu.Lock()
 	procs := make(map[string]*serviceProcess, len(r.processes))
 	for id, proc := range r.processes {

@@ -167,7 +167,54 @@ Lifecycle:
 - **Socket cleanup** is the service's job: remove a stale socket on startup,
   `os.Remove` on shutdown. Relay never touches the file.
 
-## Front-door dispatch
+## Restart supervision
+
+Relay only ever started a service at tray launch (autostart) or on an
+explicit `Start`/`Reload`, and never noticed one die on its own — a crashed
+eve, relayLLM or relayTTS stayed down until the next tray restart. Launch
+identity (`docs/launch-identity.md`) made this worse for a service trying to
+restart itself: its launch secret is single-use and spent at Hello, so a
+wrapper that respawned its own daemon produced a second process with no way
+to get a secret of its own, and now exits `78` instead.
+
+`internal/service.Registry` supervises every service it starts — autostart
+or an explicit `Start` this session, never one the operator stopped
+(`relay service` `stop`/`Stop`) — and restarts an unrequested exit through
+the same `Start` path a fresh launch always uses (a brand new secret, a new
+Hello; see `docs/launch-identity.md`'s Lifetime section for why the previous
+identity is already gone by the time this runs). Numbers, all in
+`internal/service/supervision.go`:
+
+| constant | value | meaning |
+|---|---|---|
+| `ServiceRestartBaseDelay` | 1s | delay before the first restart attempt |
+| `ServiceRestartMaxDelay` | 60s | backoff cap (doubles each attempt: 1s, 2s, 4s, 8s, 16s, ...) |
+| `ServiceRestartMaxAttempts` | 5 | consecutive failures before relay gives up |
+| `ServiceRestartStableWindow` | 60s | a run at least this long resets the attempt counter |
+
+The counter bounds restart *intensity*, not lifetime attempts: a service that
+crashes once a week is restarted forever, one that crashes on every launch is
+marked **failed** (with its last exit code) after `ServiceRestartMaxAttempts`
+and stays down until an explicit start or restart — `relay service restart`,
+Settings, or a tray relaunch. Exit code 78 (`EX_CONFIG` — a service that
+could not establish its launch identity) counts as a failure like any other
+and is logged distinctly, since it usually means the service tried to
+restart itself instead of exiting for relay to do it.
+
+Every restart is one log line naming the service id, attempt number, exit
+code and delay — never a secret, since none of those fields is one. State is
+exposed read-only, never mutated by a reader: `relay service list`'s `STATE`
+column and the Settings status poll both show `running` / `restarting
+(attempt N, next in Xs)` / `failed (exit E)`, reading
+`Registry.SupervisionStatuses()`, which exists only in the running tray's
+memory (`relay service list` still works with the tray stopped; that column
+alone falls back to `-`).
+
+An operator `Stop` (directly, via `Remove`, or as `Reload`'s first half)
+always retires the id's restart campaign before anything is killed, so a
+service the operator stopped is never mistaken for a crash; `StopAll` (tray
+shutdown) does the same for every id at once, cancelling any restart mid
+backoff before a single process is torn down.
 
 `frontend_server.go` wires relay-internal project routes first, then falls
 through to `frontend_dispatcher.go`. The dispatcher does longest-prefix-match
