@@ -12,8 +12,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Trust boundaries stay distinct end to end: the frontend token authenticates
-// Eve/Scheduler to relay, and a separate internal token (injected per
+// Trust boundaries stay distinct end to end: a control-plane credential or a
+// launch identity authenticates the caller to relay, and a separate internal token (injected per
 // service, never the caller's) authenticates relay to the enhanced service.
 type FrontendDispatcher struct {
 	registry *EnhancedServiceRegistry

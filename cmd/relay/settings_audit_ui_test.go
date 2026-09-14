@@ -395,7 +395,7 @@ func TestAuditTab_NoAuthorityRecordedShowsNoAuthorityLines(t *testing.T) {
 		return window.renderAudit();
 	})()`)
 	if strings.Contains(html, "Access mode") || strings.Contains(html, "Outbound") {
-		t.Errorf("a service-token event grew authority lines it has nothing to fill in:\n%s", html)
+		t.Errorf("a service-identity event grew authority lines it has nothing to fill in:\n%s", html)
 	}
 }
 

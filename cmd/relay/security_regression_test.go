@@ -12,7 +12,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
-func TestSec_FrontendTokenDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
+func TestSec_InboundBearerDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
 	registry := NewEnhancedServiceRegistry(nil)
 	fake := NewFakeService(t, FakeServiceOptions{
 		ServiceID: "svc-secret-leak",
@@ -25,7 +25,7 @@ func TestSec_FrontendTokenDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/secret/", nil)
-	const secret = "SUPER-SECRET-FRONTEND-TOKEN-NEVER-LEAK"
+	const secret = "SUPER-SECRET-INBOUND-BEARER-NEVER-LEAK"
 	req.Header.Set("Authorization", "Bearer "+secret)
 	resp, err := http.DefaultClient.Do(req)
 	assertNoErr(t, err, "dispatch")
@@ -36,7 +36,7 @@ func TestSec_FrontendTokenDoesNotLeakToUpstream_RegressionGuard(t *testing.T) {
 		t.Fatal("upstream never reached")
 	}
 	if strings.Contains(got.Headers.Get("Authorization"), secret) {
-		t.Fatalf("frontend token leaked to upstream: %q", got.Headers.Get("Authorization"))
+		t.Fatalf("inbound bearer leaked to upstream: %q", got.Headers.Get("Authorization"))
 	}
 }
 

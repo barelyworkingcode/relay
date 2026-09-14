@@ -479,9 +479,9 @@ func grantRoutesToolTo(tok *config.StoredToken, mcpID, toolName string) bool {
 //
 // More than one candidate is REFUSED rather than resolved: picking one would
 // silently apply one MCP's scope to a call the operator may have meant for
-// the other's. Service tokens follow the same rule -- they admit every MCP,
-// so "pick one at random" is never more correct for them than for anyone
-// else.
+// the other's. A service's launch identity follows the same rule -- it admits
+// every MCP, so "pick one at random" is never more correct for it than for
+// anyone else.
 //
 // A zero-candidate name falls through to owners[0] ONLY when that owner is
 // granted at the MCP level (just refused at the tool/mode/disabled layer):
@@ -825,7 +825,7 @@ type scopeView struct {
 	schema   project.ContextSchema
 	values   map[string]json.RawMessage
 	isRemote bool
-	// scoped is false for a service token, which holds no project context
+	// scoped is false for a service's launch identity, which holds no project context
 	// and is not scoped at all: nothing truthful to say about its limits and
 	// nothing to withhold from it.
 	scoped bool
@@ -1084,7 +1084,7 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 	var proj *config.Project
 	if req.ProjectID != "" {
 		// Validating that the requested directory belongs to the project
-		// matters: without it a service token could bind an arbitrary cwd
+		// matters: without it a service could bind an arbitrary cwd
 		// to another project's token (confused deputy).
 		proj, _ = config.FindProjectByID(s, req.ProjectID)
 		if proj == nil {

@@ -7,7 +7,7 @@ import "encoding/json"
 // projectView is the projection of a Project safe to expose to a caller that
 // is not the tray itself: relay's HTTP/frontend surface (eve, and through it
 // the browser) and the bridge's ListProjects/GetProject, answered to any
-// service-token holder. The plaintext project token and its hash are
+// launch identity holding the projects capability. The plaintext project token and its hash are
 // deliberately excluded — the only place a token legitimately crosses either
 // surface is the rotate_token response, which returns the new plaintext
 // exactly once, and ResolvePtyEnv, the bridge's sole plaintext-token egress.

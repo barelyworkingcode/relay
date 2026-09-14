@@ -34,9 +34,9 @@ func collidingRouter(t *testing.T, perms map[string]config.Permission, order []s
 	return setupRouter(t, perms, nil, nil, mocks)
 }
 
-// A service token admits every MCP, which makes it the grant most likely to be
+// A service's launch identity admits every MCP, which makes it the grant most likely to be
 // ambiguous — so it is held to the same rule rather than allowed to pick.
-func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
+func TestCallTool_ServiceIdentityIsRefusedOnAmbiguityToo(t *testing.T) {
 	const runs = 20
 	for i := 0; i < runs; i++ {
 		var served string
@@ -46,7 +46,7 @@ func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
 
 		_, err := r.CallTool(svcCtx, "fs_read", nil, "")
 		if err == nil {
-			t.Fatalf("run %d: expected a service token to be refused on an ambiguous name", i)
+			t.Fatalf("run %d: expected a service identity to be refused on an ambiguous name", i)
 		}
 		for _, want := range []string{"fs_read", "mcp-a", "mcp-b"} {
 			if !strings.Contains(err.Error(), want) {
@@ -54,7 +54,7 @@ func TestCallTool_ServiceTokenIsRefusedOnAmbiguityToo(t *testing.T) {
 			}
 		}
 		if served != "" {
-			t.Errorf("run %d: an ambiguous service-token call reached %q", i, served)
+			t.Errorf("run %d: an ambiguous service-identity call reached %q", i, served)
 		}
 		if _, err := r.CallTool(svcCtx, "only_mcp-b", nil, ""); err != nil {
 			t.Fatalf("run %d: expected the unshared tool to still work, got %v", i, err)

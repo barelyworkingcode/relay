@@ -115,7 +115,7 @@ func TestResolvePtyEnv_UnknownProjectID(t *testing.T) {
 	}
 }
 
-func TestResolvePtyEnv_RequiresServiceToken(t *testing.T) {
+func TestResolvePtyEnv_RequiresServiceIdentity(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 
 	projTok, _ := proj.Token.Reveal()

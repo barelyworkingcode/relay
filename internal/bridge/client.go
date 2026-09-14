@@ -124,7 +124,8 @@ func (c *Client) DescribeProject() (ProjectDescription, error) {
 	return out, nil
 }
 
-// ResolvePtyEnv requires service-token authentication. Skill generation is
+// ResolvePtyEnv requires a launch identity holding the projects capability,
+// so the client carries no token. Skill generation is
 // owned by relay and is not driven by this call.
 func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	args, err := json.Marshal(req)
@@ -149,7 +150,8 @@ func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
 	return out, nil
 }
 
-// ResolveProjectTemplate requires service-token authentication. The response
+// ResolveProjectTemplate requires a launch identity holding the projects
+// capability, so the client carries no token. The response
 // carries only the template definition — never a token.
 func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplateResponse, error) {
 	args, err := json.Marshal(req)
@@ -175,7 +177,8 @@ func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplate
 }
 
 // RegisterManifest is called on startup after the service has picked + bound
-// its own internal socket. Service-token authentication required.
+// its own internal socket. It requires a launch identity holding the manifest
+// capability, so the client carries no token.
 // Re-registration with the same serviceID replaces the prior record.
 func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	args, err := json.Marshal(req)

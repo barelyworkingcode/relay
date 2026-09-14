@@ -78,7 +78,7 @@ func TestResolveProjectTemplate_UnknownTemplate(t *testing.T) {
 	}
 }
 
-func TestResolveProjectTemplate_RequiresServiceToken(t *testing.T) {
+func TestResolveProjectTemplate_RequiresServiceIdentity(t *testing.T) {
 	router, proj, _ := newPtyTestRouter(t)
 	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{{ID: "t", Name: "T", Command: "ssh"}})
 

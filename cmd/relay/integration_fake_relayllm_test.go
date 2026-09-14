@@ -56,7 +56,7 @@ func TestIntegration_FakeRelayLLM_DispatchesEveryDeclaredRoute(t *testing.T) {
 	}
 }
 
-func TestIntegration_FakeRelayLLM_InjectsServiceToken(t *testing.T) {
+func TestIntegration_FakeRelayLLM_InjectsTheServiceInternalBearer(t *testing.T) {
 	mkSandboxRelayHome(t)
 	registry := NewEnhancedServiceRegistry(nil)
 	fake := NewFakeRelayLLMService(t)
@@ -66,7 +66,7 @@ func TestIntegration_FakeRelayLLM_InjectsServiceToken(t *testing.T) {
 	srv := httptest.NewServer(dispatcher)
 	defer srv.Close()
 
-	const leak = "FRONTEND-EVE-TOKEN-NEVER-LEAK-TO-RELAYLLM"
+	const leak = "INBOUND-BEARER-NEVER-LEAK-TO-RELAYLLM"
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/sessions/", strings.NewReader(`{"msg":"hi"}`))
 	req.Header.Set("Authorization", "Bearer "+leak)
 	resp, err := http.DefaultClient.Do(req)
@@ -78,7 +78,7 @@ func TestIntegration_FakeRelayLLM_InjectsServiceToken(t *testing.T) {
 		t.Fatal("upstream never reached")
 	}
 	if strings.Contains(got.Headers.Get("Authorization"), leak) {
-		t.Fatalf("Eve token leaked to relayLLM: %q", got.Headers.Get("Authorization"))
+		t.Fatalf("inbound bearer leaked to relayLLM: %q", got.Headers.Get("Authorization"))
 	}
 	want := "Bearer " + fake.Token()
 	if got.Headers.Get("Authorization") != want {
