@@ -495,9 +495,6 @@ function overviewAttentionRows() {
         if (svc.autostart && !state.runningServices[svc.id]) {
             rows.push({ text: esc(svc.display_name) + ' is set to start with Relay but is not running.', tab: 'services' });
         }
-        if (svc.frontend_creds === 'implicit') {
-            rows.push({ text: esc(svc.display_name) + ' receives front-door credentials implicitly.', tab: 'services' });
-        }
     }
 
     const st = state.auditStatus;
@@ -967,17 +964,11 @@ window.onMcpPermissionsReset = function(id, result) {
     alert(summary);
 };
 
-// frontDoorPillHTML mirrors relay's `frontDoorColumn` (cmd/relay/service_cmd.go)
-// for the Services tab card: a service the frontend token was injected into
-// gets a muted pill after its command line, distinguishing an explicit grant
-// from the softer "implicit" default, and omitting the field entirely (older
-// settings.json, or a service predating this) reads the same as 'off'.
-function frontDoorPillHTML(svc) {
-    switch (svc.frontend_creds) {
-        case 'explicit': return '<div class="mcp-card-tools">front door: injected</div>';
-        case 'implicit': return '<div class="mcp-card-tools">front door: injected (implicit) — pass --no-frontend-creds for backends</div>';
-        default: return '';
-    }
+// capabilitiesPillHTML mirrors relay's `capabilitiesColumn` (cmd/relay/service_cmd.go):
+// what the service's launch identity may do, docs/launch-identity.md.
+function capabilitiesPillHTML(svc) {
+    const caps = svc.capabilities || [];
+    return '<div class="mcp-card-tools">capabilities: ' + (caps.length ? esc(caps.join(', ')) : 'none') + '</div>';
 }
 
 // formatUptime turns an RFC3339 started_at into "2h 14m" (or "14m" under an
@@ -1036,7 +1027,7 @@ function renderServices() {
                 </div>
             </div>
             <div class="mcp-card-tools" data-svc-runtime="${esc(svc.id)}">${esc(serviceStatusLineHTML(svc, running))}</div>
-            ${frontDoorPillHTML(svc)}
+            ${capabilitiesPillHTML(svc)}
             <div class="mcp-card-tools"><button type="button" class="btn-link" ${bind(revealServiceLog, svc.id)}>Logs</button></div>
             ${svc.working_dir ? `<div class="mcp-card-tools">cwd: ${esc(svc.working_dir)}</div>` : ''}
             ${svc.url ? `<div class="mcp-card-tools">url: ${esc(svc.url)}</div>` : ''}

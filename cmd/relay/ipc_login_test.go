@@ -444,8 +444,8 @@ func TestILSignOutLogin_RefusesACredentialThatIsNotALoginSession(t *testing.T) {
 	}
 }
 
-// The legacy migration's record is refused too — a WebView must not be able to
-// break every consumer relay injects RELAY_FRONTEND_TOKEN into.
+// A record under the reserved legacy name is refused too — a WebView must not
+// be able to remove a record only relay's own start may delete.
 //
 // This is deliberate: the property is defended twice and no single change
 // falsifies it. The name does not begin loginCredentialPrefix, so SignOut's
@@ -456,7 +456,7 @@ func TestILSignOutLogin_RefusesACredentialThatIsNotALoginSession(t *testing.T) {
 func TestILSignOutLogin_RefusesTheLegacyFrontendCredential(t *testing.T) {
 	ipc, store, ui := ilIPC(t)
 	assertNoErr(t, store.With(func(s *config.Settings) {
-		migrateFrontendTokenToCredential(s, "il-legacy-token")
+		addAPICredential(s, config.APICredential{ID: "il-legacy-id", Name: legacyFrontendCredentialName, Hash: config.HashToken("il-legacy-token"), Classes: frontendConsumerClasses})
 	}), "seed the legacy credential")
 	legacyID := store.Get().APICredentials[0].ID
 

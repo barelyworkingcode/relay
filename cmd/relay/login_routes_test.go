@@ -81,7 +81,7 @@ func lrNewServer(t *testing.T) *lrServer {
 	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: sock, Token: "lr-frontend-token"},
+		seededEndpoint(t, store, sock, "lr-bearer"),
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, nil,
 		&McpOps{Store: store, Ctx: context.Background()},
@@ -89,7 +89,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		nil,
 		nil,
 		nil,
-		NewCredentialAuthorizer(store), auditor,
+		NewCredentialAuthorizer(store), auditor, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -513,7 +513,7 @@ func TestLoginRoutes_MintedCredentialHoldsOnlyReadAndConfigure(t *testing.T) {
 	// The same catch-all with a credential that does hold proxy reaches the
 	// dispatcher instead, so the 403 above is the class check and not the
 	// route simply being absent.
-	if resp, body := s.socketDo("GET", "/some/proxied/path", "lr-frontend-token"); resp.StatusCode != http.StatusNotFound {
+	if resp, body := s.socketDo("GET", "/some/proxied/path", "lr-bearer"); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("proxy-class catch-all with the legacy credential: status %d, want 404, body %s", resp.StatusCode, body)
 	}
 }
@@ -637,7 +637,7 @@ func TestLoginRoutes_AbsentWithoutALoopbackListener(t *testing.T) {
 	}
 	// Authenticated, the socket has no login document to serve: the
 	// dispatcher's catch-all owns the path and knows no service for it.
-	if resp, body := s.socketDo("GET", "/relay/login", "lr-frontend-token"); resp.StatusCode != http.StatusNotFound {
+	if resp, body := s.socketDo("GET", "/relay/login", "lr-bearer"); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("socket /relay/login with a credential: status %d, want 404, body %s", resp.StatusCode, body)
 	}
 }

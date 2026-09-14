@@ -70,12 +70,12 @@ func teNewServer(t *testing.T, store config.SettingsStore, authz control.Authori
 	extMgr := mcpbroker.NewManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
 
-	const token = "te-frontend-token"
+	const token = "te-bearer"
 	sockDir := mkShortTempDir(t, "te-fe-")
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(sockDir, "frontend.sock"), Token: token},
-		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, projOps, nil, nil, nil, authz, nil,
+		seededEndpoint(t, store, filepath.Join(sockDir, "frontend.sock"), token),
+		enhanced, nil, nil, ops, enrolOps, auditOps, mcpOps, projOps, nil, nil, nil, authz, nil, nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()
@@ -400,9 +400,7 @@ func TestTCPRemoteConfigPut_ExecuteRouteAbsent_HandlerNeverRan(t *testing.T) {
 // strongest available proof that decision 2 is a routing property and not an
 // authorization refusal in disguise: it wires the REAL credentialAuthorizer
 // and mints a credential carrying control.ClassExecute (among all four classes),
-// hashed to the SAME bearer this test sends -- mirroring how
-// migrateFrontendTokenToCredential lets one token satisfy both
-// frontendBearerAuth and the credential authorizer in production. If
+// hashed to the SAME bearer this test sends. If
 // ADR-015 decision 2 were a policy check inside the handler instead of an
 // absent registration, this credential would sail through it, so a 404 here
 // can only mean the pattern was never handed to the TCP mux at all.

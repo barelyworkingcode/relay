@@ -40,10 +40,14 @@ Every spawned service receives:
 ```
 RELAY_BRIDGE_SOCKET=/path/to/relay.sock
 RELAY_SERVICE_ID=relayllm
+RELAY_LAUNCH_FD=3
 ```
 
-Present → enhanced mode (bind a listener, dial the bridge, register a
-manifest). Absent → standalone mode (read config from disk, serve directly).
+Present → enhanced mode (read the launch secret and say `Hello`, bind a
+listener, register a manifest). Absent → standalone mode (read config from
+disk, serve directly). None of these is a credential; how a launched process
+proves who it is — the launch fd, `Hello`, and authentication by peer audit
+token — is [`docs/launch-identity.md`](launch-identity.md).
 
 There is no `enhanced: true` setting and no slug list in relay. A service that
 doesn't implement the protocol simply ignores the env vars; no manifest
@@ -109,13 +113,19 @@ token** and tells relay both, so relay never dictates or guesses where the
 service listens:
 
 ```
-service detects RELAY_BRIDGE_SOCKET, picks its own internal socket + bearer token
+service detects RELAY_LAUNCH_FD, reads the launch secret, sends Hello (docs/launch-identity.md)
+service picks its own internal socket + bearer token
 service binds the listener (0600 perms)
-service dials the bridge, sends RegisterManifest{serviceId, manifest, internalSocket, internalToken}
-relay authenticates the call with the service's MCP token (issued at spawn)
+service dials the bridge, sends RegisterManifest{serviceId, manifest, internalSocket, internalToken} with no token
+relay authenticates the call by the peer's launch identity, which must hold the manifest capability
+relay refuses a serviceId other than the identity's own
 relay validates the manifest, checks route conflicts, updates its dispatch table
 front-door requests start flowing
 ```
+
+Only a service whose record grants the `manifest` capability may register a
+manifest (`relay service register --capability manifest`). The internal bearer lives only in the memory of relay and
+the service.
 
 Lifecycle:
 
@@ -163,10 +173,11 @@ Lifecycle:
 through to `frontend_dispatcher.go`. The dispatcher does longest-prefix-match
 against every registered manifest's routes, then reverse-proxies to the
 matching service's internal Unix socket — one handler serves both HTTP and WS
-(it detects upgrades). It strips inbound `Authorization` (the frontend token,
-already validated) and injects the service-declared internal token. Two trust
-boundaries stay distinct: frontend token authenticates Eve/Scheduler → relay;
-internal token authenticates relay → service.
+(it detects upgrades). It strips inbound `Authorization` (a control-plane
+credential, already validated, when one was sent) and injects the
+service-declared internal token. Two trust boundaries stay distinct: a
+launch identity holding `frontend` or a control-plane credential authenticates
+the caller → relay; the internal token authenticates relay → service.
 
 ## Standalone vs enhanced
 

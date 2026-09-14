@@ -201,27 +201,63 @@ type ServiceConfig struct {
 	Autostart  bool              `json:"autostart"`
 	URL        string            `json:"url,omitempty"`
 
-	// FrontendConsumer is tri-state: nil injects relay's front-door creds
-	// (RELAY_FRONTEND_SOCKET/TOKEN) for backward compatibility, false
-	// withholds them so they never land in a backend's env, true injects
-	// explicitly. Set false via `service register --no-frontend-creds`, true
-	// via `service register --frontend-creds`.
-	FrontendConsumer *bool `json:"frontend_consumer,omitempty"`
+	// Capabilities is what this service's launch identity may do
+	// (docs/launch-identity.md). Every record relay writes spells the empty set
+	// as []; a nil here exists only on a record read from a file written before
+	// the field existed, and load migrates it from LegacyFrontendConsumer.
+	Capabilities []ServiceCapability `json:"capabilities"`
+
+	// LegacyFrontendConsumer is read only to migrate a record that predates
+	// Capabilities, and is never written back.
+	LegacyFrontendConsumer *bool `json:"frontend_consumer,omitempty"`
 }
 
-// FrontendCredsState spells FrontendConsumer's tri-state for a surface that
-// must show all three cases apart — "implicit" (nil) is not the same fact as
-// "explicit" (true) even though both inject the same credential, since only
-// the first is a default the operator never chose.
-func (c *ServiceConfig) FrontendCredsState() string {
-	switch {
-	case c.FrontendConsumer == nil:
-		return "implicit"
-	case *c.FrontendConsumer:
-		return "explicit"
-	default:
-		return "off"
+// ServiceCapability names one thing a service's launch identity may do.
+type ServiceCapability string
+
+const (
+	// ServiceCapabilityFrontend is the frontend socket as read+configure+proxy.
+	ServiceCapabilityFrontend ServiceCapability = "frontend"
+	// ServiceCapabilityManifest is RegisterManifest under the service's own id.
+	ServiceCapabilityManifest ServiceCapability = "manifest"
+	// ServiceCapabilityProjects is ResolvePtyEnv, ResolveProjectTemplate,
+	// ListProjects, GetProject and service-scope ListTools/CallTool.
+	ServiceCapabilityProjects ServiceCapability = "projects"
+)
+
+// ServiceCapabilities is every capability relay knows.
+var ServiceCapabilities = []ServiceCapability{ServiceCapabilityFrontend, ServiceCapabilityManifest, ServiceCapabilityProjects}
+
+// HasCapability reports whether the record grants want.
+func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
+	return slices.Contains(c.Capabilities, want)
+}
+
+// migrateCapabilities converts a record that predates Capabilities, once, on
+// load: frontend_consumer unset or true becomes [frontend], false becomes
+// [manifest, projects], the set each kind of service held before capabilities
+// were named. A record that already carries capabilities keeps them, and the
+// legacy field is dropped either way so it is never written back.
+func (c *ServiceConfig) migrateCapabilities() {
+	if c.Capabilities == nil {
+		if c.LegacyFrontendConsumer != nil && !*c.LegacyFrontendConsumer {
+			c.Capabilities = []ServiceCapability{ServiceCapabilityManifest, ServiceCapabilityProjects}
+		} else {
+			c.Capabilities = []ServiceCapability{ServiceCapabilityFrontend}
+		}
 	}
+	c.LegacyFrontendConsumer = nil
+}
+
+// validateCapabilities refuses a capability name relay does not know. A record
+// that fails it fails Validate, so relay will not start it.
+func (c *ServiceConfig) validateCapabilities() error {
+	for _, capability := range c.Capabilities {
+		if !slices.Contains(ServiceCapabilities, capability) {
+			return fmt.Errorf("service capability %q is unknown: use frontend, manifest or projects", capability)
+		}
+	}
+	return nil
 }
 
 type ChatTemplate struct {
@@ -651,7 +687,7 @@ func (c *ServiceConfig) Validate() error {
 		return fmt.Errorf("service command is required")
 	}
 	// relay injects its own RELAY_* variables into every spawned service
-	// (bridge socket, service token, frontend creds) after the operator's
+	// (bridge socket, launch fd, frontend socket) after the operator's
 	// env is applied; an operator-supplied key in that namespace would only
 	// ever collide with one of them, never mean anything on its own.
 	for k := range c.Env {
@@ -659,7 +695,7 @@ func (c *ServiceConfig) Validate() error {
 			return fmt.Errorf("service env key %q is reserved: the RELAY_ prefix is relay's own", k)
 		}
 	}
-	return nil
+	return c.validateCapabilities()
 }
 
 // IsSafeID guards persisted IDs that are used as filenames by application

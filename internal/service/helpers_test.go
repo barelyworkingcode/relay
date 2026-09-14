@@ -49,19 +49,19 @@ func TestMergeEnv_MergesWithOsEnviron(t *testing.T) {
 // value for the same key rather than appending a second, ambiguous entry.
 func TestMergeEnv_LaterCallOverridesEarlierForSameKey(t *testing.T) {
 	cmd := exec.Command("true")
-	MergeEnv(cmd, map[string]string{"RELAY_SERVICE_TOKEN": "operator-supplied"})
-	MergeEnv(cmd, map[string]string{"RELAY_SERVICE_TOKEN": "relays-real-token"})
+	MergeEnv(cmd, map[string]string{"RELAY_BRIDGE_SOCKET": "operator-supplied"})
+	MergeEnv(cmd, map[string]string{"RELAY_BRIDGE_SOCKET": "relays-real-value"})
 
 	var matches []string
 	for _, entry := range cmd.Env {
-		if len(entry) >= len("RELAY_SERVICE_TOKEN=") && entry[:len("RELAY_SERVICE_TOKEN=")] == "RELAY_SERVICE_TOKEN=" {
+		if len(entry) >= len("RELAY_BRIDGE_SOCKET=") && entry[:len("RELAY_BRIDGE_SOCKET=")] == "RELAY_BRIDGE_SOCKET=" {
 			matches = append(matches, entry)
 		}
 	}
 	if len(matches) != 1 {
-		t.Fatalf("expected exactly one RELAY_SERVICE_TOKEN entry, got %v", matches)
+		t.Fatalf("expected exactly one RELAY_BRIDGE_SOCKET entry, got %v", matches)
 	}
-	if matches[0] != "RELAY_SERVICE_TOKEN=relays-real-token" {
+	if matches[0] != "RELAY_BRIDGE_SOCKET=relays-real-value" {
 		t.Errorf("got %q, want the later call's value to win", matches[0])
 	}
 }

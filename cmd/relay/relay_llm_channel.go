@@ -12,14 +12,13 @@ import (
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
-	"github.com/barelyworkingcode/relay/internal/service"
 )
 
-// Owner-only 0600 in a 0700 parent dir; the token is defense-in-depth on top
-// of the FS permissions.
+// Owner-only 0600 in a 0700 parent dir. The path is not a credential: a
+// caller is admitted by a control-plane bearer or by its peer's launch
+// identity (docs/launch-identity.md).
 type Endpoint struct {
 	Socket string
-	Token  string
 }
 
 type FrontendChannel struct {
@@ -31,13 +30,11 @@ type FrontendChannel struct {
 // Re-exported aliases of the canonical names declared in the bridge package
 // so existing call sites keep their import paths stable.
 const (
-	EnvFrontendSocket     = bridge.EnvFrontendSocket
-	EnvFrontendToken      = bridge.EnvFrontendToken
-	EnvBridgeSocket       = bridge.EnvBridgeSocket
-	EnvServiceID          = bridge.EnvServiceID
-	EnvServiceToken       = bridge.EnvServiceToken
-	EnvServiceTokenLegacy = bridge.EnvServiceTokenLegacy
-	EnvMcpCommand         = bridge.EnvMcpCommand
+	EnvFrontendSocket = bridge.EnvFrontendSocket
+	EnvBridgeSocket   = bridge.EnvBridgeSocket
+	EnvServiceID      = bridge.EnvServiceID
+	EnvMcpCommand     = bridge.EnvMcpCommand
+	EnvLaunchFD       = bridge.EnvLaunchFD
 )
 
 func NewFrontendChannel() *FrontendChannel { return &FrontendChannel{} }
@@ -62,14 +59,9 @@ func (c *FrontendChannel) Ensure() (Endpoint, error) {
 	// own graceful exit.
 	pruneStaleFrontendSockets(dir)
 
-	token, err := service.GenerateRandomHex(32)
-	if err != nil {
-		return Endpoint{}, fmt.Errorf("generate frontend token: %w", err)
-	}
 	pid := os.Getpid()
 	c.endpoint = Endpoint{
 		Socket: filepath.Join(dir, fmt.Sprintf("relay-frontend-%d.sock", pid)),
-		Token:  token,
 	}
 	// Best-effort cleanup of a stale socket from a previous orchestrator
 	// instance whose PID happened to be reused.
@@ -94,7 +86,6 @@ func (c *FrontendChannel) Close() {
 func (e Endpoint) FrontendEnv() map[string]string {
 	return map[string]string{
 		EnvFrontendSocket: e.Socket,
-		EnvFrontendToken:  e.Token,
 	}
 }
 

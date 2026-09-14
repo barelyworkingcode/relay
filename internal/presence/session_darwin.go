@@ -4,8 +4,6 @@ package presence
 
 /*
 #cgo LDFLAGS: -lbsm
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <bsm/audit.h>
 #include <bsm/libbsm.h>
 #include <string.h>
@@ -19,12 +17,9 @@ package presence
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-static int relay_peer_graphic_access(int fd, int *graphic) {
+static int relay_token_graphic_access(const unsigned char *raw, int *graphic) {
 	audit_token_t token;
-	socklen_t len = sizeof(token);
-	if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &len) != 0) {
-		return errno;
-	}
+	memcpy(&token, raw, sizeof(token));
 	au_asid_t asid = audit_token_to_asid(token);
 	auditinfo_addr_t info;
 	memset(&info, 0, sizeof(info));
@@ -43,6 +38,9 @@ import "C"
 import (
 	"fmt"
 	"syscall"
+	"unsafe"
+
+	"github.com/barelyworkingcode/relay/internal/peertoken"
 )
 
 // PeerGraphicAccess reports whether the peer connected on fd belongs to a
@@ -57,8 +55,13 @@ import (
 // any part here — this reads a kernel-attested property of the peer, never
 // anything the peer asserts about itself.
 func PeerGraphicAccess(fd int) (bool, error) {
+	tok, err := peertoken.FromFD(fd)
+	if err != nil {
+		return false, fmt.Errorf("presence: determining peer session: %w", err)
+	}
+	raw := tok.Raw()
 	var graphic C.int
-	if errno := C.relay_peer_graphic_access(C.int(fd), &graphic); errno != 0 {
+	if errno := C.relay_token_graphic_access((*C.uchar)(unsafe.Pointer(&raw[0])), &graphic); errno != 0 {
 		return false, fmt.Errorf("presence: determining peer session: %w", syscall.Errno(errno))
 	}
 	return graphic != 0, nil

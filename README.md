@@ -33,7 +33,7 @@ graph TB
         Other["…"]
     end
 
-    Eve -->|RELAY_FRONTEND_TOKEN| Frontend
+    Eve -->|launch identity| Frontend
     Frontend -->|dispatch by manifest route| relayLLM & Scheduler
     relayLLM -->|"relay mcp (project token)"| Bridge
     Bridge --> fsMCP & macMCP & Other
@@ -117,11 +117,13 @@ Relay is the sole broker of credentials in the ecosystem. The model, in brief:
 
 - **Project tokens** scope MCP access per project; the token *is* the boundary.
   Stored as plaintext + SHA-256 hash in `settings.json` (mode 0600).
-- **Service tokens** (`RELAY_SERVICE_TOKEN`) are ephemeral, in-memory, full
-  bridge access — injected into managed services for their own bridge calls,
-  never into a spawned child shell (fail closed).
-- **Frontend channel** — consumers dial `RELAY_FRONTEND_SOCKET` (0600) with
-  `RELAY_FRONTEND_TOKEN`, bearer-checked on every request before dispatch.
+- **Launch identity** — no relay credential is in any managed service's
+  environment. Relay hands each launch a single-use secret on fd 3; the
+  service's bridge `Hello` binds it to the process's kernel audit token, and
+  later requests authenticate by that token (`docs/launch-identity.md`).
+- **Frontend channel** — consumers dial `RELAY_FRONTEND_SOCKET` (0600), admitted
+  by launch identity or a control-plane credential on every request before
+  dispatch.
 - **Enhanced internal sockets** — each enhanced service picks its own socket +
   token and declares both via its manifest; relay strips inbound auth and
   injects the service-declared token when proxying.

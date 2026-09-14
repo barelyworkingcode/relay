@@ -13,7 +13,7 @@ import (
 
 // newHostPtyTestRouter builds a router with one host and one project bound
 // to it, mirroring newPtyTestRouter's shape for the console case.
-func newHostPtyTestRouter(t *testing.T, probe *config.HostProbe) (*appRouter, config.Project, config.Host, string) {
+func newHostPtyTestRouter(t *testing.T, probe *config.HostProbe) (*appRouter, config.Project, config.Host, context.Context) {
 	t.Helper()
 	mkSandboxRelayHome(t)
 
@@ -54,9 +54,8 @@ func newHostPtyTestRouter(t *testing.T, probe *config.HostProbe) (*appRouter, co
 		services: &fakeServiceReloader{},
 		enhanced: NewEnhancedServiceRegistry(nil),
 	}
-	const svcToken = "svc-token-host-pty-test"
-	router.serviceTokens.Register(config.HashToken(svcToken))
-	return router, proj, host, svcToken
+	svcCtx := bindTestServiceIdentity(t, router)
+	return router, proj, host, svcCtx
 }
 
 func TestResolvePtyEnv_HostProject_NoTokenAndHostSpec(t *testing.T) {
@@ -64,12 +63,12 @@ func TestResolvePtyEnv_HostProject_NoTokenAndHostSpec(t *testing.T) {
 		OK: true, OS: "Darwin", Shell: "/bin/zsh",
 		NodePath: "/opt/homebrew/bin/node", ClaudePath: "/opt/homebrew/bin/claude",
 	}
-	router, proj, host, svcToken := newHostPtyTestRouter(t, probe)
+	router, proj, host, svcCtx := newHostPtyTestRouter(t, probe)
 
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)
 	}
@@ -95,12 +94,12 @@ func TestResolvePtyEnv_HostProject_NoTokenAndHostSpec(t *testing.T) {
 
 func TestResolvePtyEnv_HostProject_SubdirAccepted(t *testing.T) {
 	probe := &config.HostProbe{OK: true, ClaudePath: "/opt/homebrew/bin/claude"}
-	router, proj, _, svcToken := newHostPtyTestRouter(t, probe)
+	router, proj, _, svcCtx := newHostPtyTestRouter(t, probe)
 
-	resp, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	resp, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path + "/nested/pkg",
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolvePtyEnv: %v", err)
 	}
@@ -111,12 +110,12 @@ func TestResolvePtyEnv_HostProject_SubdirAccepted(t *testing.T) {
 
 func TestResolvePtyEnv_HostProject_DirectoryOutsideRejected(t *testing.T) {
 	probe := &config.HostProbe{OK: true, ClaudePath: "/opt/homebrew/bin/claude"}
-	router, proj, _, svcToken := newHostPtyTestRouter(t, probe)
+	router, proj, _, svcCtx := newHostPtyTestRouter(t, probe)
 
-	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	_, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: "/some/other/place",
-	}, svcToken)
+	}, "")
 	if err == nil {
 		t.Fatal("expected an error for a directory outside the host project's path")
 	}
@@ -126,13 +125,13 @@ func TestResolvePtyEnv_HostProject_DirectoryOutsideRejected(t *testing.T) {
 }
 
 func TestResolvePtyEnv_HostProject_NoClaudeRefused(t *testing.T) {
-	router, proj, host, svcToken := newHostPtyTestRouter(t, nil) // never probed
+	router, proj, host, svcCtx := newHostPtyTestRouter(t, nil) // never probed
 	_ = host
 
-	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	_, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
-	}, svcToken)
+	}, "")
 	if err == nil {
 		t.Fatal("expected an error: host has never been probed")
 	}
@@ -143,12 +142,12 @@ func TestResolvePtyEnv_HostProject_NoClaudeRefused(t *testing.T) {
 
 func TestResolvePtyEnv_HostProject_ProbeFailedRefused(t *testing.T) {
 	probe := &config.HostProbe{OK: false, Error: "connection refused"}
-	router, proj, _, svcToken := newHostPtyTestRouter(t, probe)
+	router, proj, _, svcCtx := newHostPtyTestRouter(t, probe)
 
-	_, err := router.ResolvePtyEnv(context.Background(), bridge.PtyEnvRequest{
+	_, err := router.ResolvePtyEnv(svcCtx, bridge.PtyEnvRequest{
 		ProjectID: proj.ID,
 		Directory: proj.Path,
-	}, svcToken)
+	}, "")
 	if err == nil {
 		t.Fatal("expected an error: last probe failed, so claude_path is empty")
 	}

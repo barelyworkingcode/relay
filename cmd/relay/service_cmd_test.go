@@ -1,15 +1,16 @@
 package main
 
-import "github.com/barelyworkingcode/relay/internal/config"
-
 // register, unregister and restart are brokered (ADR-017 decision 2), so a
 // test exercising them needs a real bridge server behind a wired ServiceOps
 // — newBrokerRouter + serveBroker give it one, over the same store the
 // assertions read back from afterward.
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/barelyworkingcode/relay/internal/config"
 )
 
 func newCLISandboxStore(t *testing.T) config.SettingsStore {
@@ -22,35 +23,34 @@ func newCLISandboxStore(t *testing.T) config.SettingsStore {
 	return store
 }
 
-func TestServiceRegister_NoFrontendCredsSetsOptOut(t *testing.T) {
+func TestServiceRegister_CapabilityFlagsSetTheCapabilitySet(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	serviceRegister([]string{
-		"--name", "Backend Svc",
+		"--name", "Scheduler",
 		"--command", "/usr/bin/true",
-		"--no-frontend-creds",
+		"--capability", "frontend",
+		"--capability", "manifest",
+		"--capability", "frontend",
 	})
 
 	svcs := store.Get().Services
 	if len(svcs) != 1 {
 		t.Fatalf("want exactly 1 registered service, got %d", len(svcs))
 	}
-	cfg := svcs[0]
-	if cfg.FrontendConsumer == nil || *cfg.FrontendConsumer {
-		t.Errorf("FrontendConsumer = %v, want explicit false (opted out)", cfg.FrontendConsumer)
-	}
-	if cfg.Command != "/usr/bin/true" || cfg.DisplayName != "Backend Svc" {
-		t.Errorf("config not assembled correctly: %+v", cfg)
+	want := []config.ServiceCapability{config.ServiceCapabilityFrontend, config.ServiceCapabilityManifest}
+	if !slices.Equal(svcs[0].Capabilities, want) {
+		t.Errorf("capabilities = %v, want %v", svcs[0].Capabilities, want)
 	}
 }
 
-func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
+func TestServiceRegister_NoCapabilityFlagGrantsNone(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
 
 	serviceRegister([]string{
-		"--name", "Frontend Svc",
+		"--name", "Bare Svc",
 		"--command", "/usr/bin/true",
 		"--autostart",
 		"--url", "http://127.0.0.1:9000",
@@ -61,76 +61,45 @@ func TestServiceRegister_DefaultLeavesFrontendCredsUnset(t *testing.T) {
 		t.Fatalf("want exactly 1 registered service, got %d", len(svcs))
 	}
 	cfg := svcs[0]
-	// Absent flag → nil, so a re-register leaves it untouched and the
-	// default (inject) applies.
-	if cfg.FrontendConsumer != nil {
-		t.Errorf("FrontendConsumer = %v, want nil when --no-frontend-creds absent", *cfg.FrontendConsumer)
+	if cfg.Capabilities == nil || len(cfg.Capabilities) != 0 {
+		t.Errorf("capabilities = %#v, want an explicit empty set", cfg.Capabilities)
 	}
-	if !cfg.Autostart {
-		t.Error("--autostart not applied")
-	}
-	if cfg.URL != "http://127.0.0.1:9000" {
-		t.Errorf("URL = %q, want http://127.0.0.1:9000", cfg.URL)
+	if !cfg.Autostart || cfg.URL != "http://127.0.0.1:9000" {
+		t.Errorf("other flags not applied: %+v", cfg)
 	}
 }
 
-func TestServiceRegister_FrontendCredsSetsExplicitTrue(t *testing.T) {
-	store := newCLISandboxStore(t)
-	serveBroker(t, newBrokerRouter(t, store, nil))
-
-	serviceRegister([]string{
-		"--name", "Explicit Frontend Svc",
-		"--command", "/usr/bin/true",
-		"--frontend-creds",
-	})
-
-	svcs := store.Get().Services
-	if len(svcs) != 1 {
-		t.Fatalf("want exactly 1 registered service, got %d", len(svcs))
-	}
-	cfg := svcs[0]
-	if cfg.FrontendConsumer == nil || !*cfg.FrontendConsumer {
-		t.Errorf("FrontendConsumer = %v, want explicit true", cfg.FrontendConsumer)
-	}
-	if got := cfg.FrontendCredsState(); got != "explicit" {
-		t.Errorf("FrontendCredsState() = %q, want \"explicit\"", got)
-	}
-}
-
-// --frontend-creds and --no-frontend-creds together must be refused before
-// requireService is even reached — the subprocess harness (cli_subprocess_test.go)
-// is what lets this test see exitError's real os.Exit(1) instead of killing
-// the suite.
-func TestServiceRegister_FrontendCredsMutualExclusionRefused(t *testing.T) {
-	dir := mkShortTempDir(t, "relay-refuse-")
-	out, code := runCLISubprocess(t, dir,
-		"service", "register", "--name", "x", "--command", "/bin/true",
-		"--frontend-creds", "--no-frontend-creds",
+// Refused before requireService is reached; the subprocess harness
+// (cli_subprocess_test.go) lets this test see exitError's real os.Exit(1).
+func TestServiceRegister_AnUnknownCapabilityIsRefused(t *testing.T) {
+	out, code := runCLISubprocess(t, mkShortTempDir(t, "relay-refuse-"),
+		"service", "register", "--name", "x", "--command", "/bin/true", "--capability", "admin",
 	)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit, output:\n%s", out)
 	}
-	if !strings.Contains(out, "mutually exclusive") {
-		t.Errorf("refusal does not mention mutual exclusivity: %q", out)
+	if !strings.Contains(out, "unknown capability") {
+		t.Errorf("refusal does not name the unknown capability: %q", out)
 	}
 }
 
-func TestFrontDoorColumn(t *testing.T) {
-	trueVal, falseVal := true, false
-	cases := []struct {
-		name string
-		cfg  config.ServiceConfig
-		want string
-	}{
-		{"implicit", config.ServiceConfig{}, "yes (implicit)"},
-		{"explicit", config.ServiceConfig{FrontendConsumer: &trueVal}, "yes"},
-		{"off", config.ServiceConfig{FrontendConsumer: &falseVal}, "no"},
+// The flags that chose between two fixed identities no longer exist.
+func TestServiceRegister_TheRemovedFrontendCredsFlagsAreRefused(t *testing.T) {
+	for _, flag := range []string{"--frontend-creds", "--no-frontend-creds"} {
+		out, code := runCLISubprocess(t, mkShortTempDir(t, "relay-refuse-"),
+			"service", "register", "--name", "x", "--command", "/bin/true", flag,
+		)
+		if code == 0 {
+			t.Fatalf("%s was accepted, output:\n%s", flag, out)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := frontDoorColumn(&tc.cfg); got != tc.want {
-				t.Errorf("frontDoorColumn() = %q, want %q", got, tc.want)
-			}
-		})
+}
+
+func TestCapabilitiesColumn(t *testing.T) {
+	if got := capabilitiesColumn(nil); got != "none" {
+		t.Errorf("nil = %q, want none", got)
+	}
+	if got := capabilitiesColumn([]config.ServiceCapability{config.ServiceCapabilityFrontend, config.ServiceCapabilityManifest}); got != "frontend,manifest" {
+		t.Errorf("got %q", got)
 	}
 }

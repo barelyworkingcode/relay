@@ -31,9 +31,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
-// accLegacyToken stands in for RELAY_FRONTEND_TOKEN: the value
-// FrontendChannel.Ensure mints and relay injects into Eve and relayScheduler.
-const accLegacyToken = "acc-frontend-token"
+// accLegacyToken is the bearer accNewServer seeds as a read+configure+proxy
+// credential.
+const accLegacyToken = "acc-bearer"
 
 type accServer struct {
 	store    config.SettingsStore
@@ -43,10 +43,9 @@ type accServer struct {
 
 // accNewServer wires the REAL composed stack — real ServiceOps/EnrolmentOps/
 // audit.AuditOps/McpOps, a real 0600 socket, a real loopback TCP listener, and a
-// real credentialAuthorizer over the same store. frontendToken is what the
-// server is told RELAY_FRONTEND_TOKEN is; "" builds a server with no
-// credential of its own, which is the fail-closed case.
-func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string) *accServer {
+// real credentialAuthorizer over the same store. bearer is seeded as a
+// read+configure+proxy credential; "" seeds none, which is the fail-closed case.
+func accNewServer(t *testing.T, store config.SettingsStore, bearer string) *accServer {
 	t.Helper()
 
 	ops := &ServiceOps{Store: store, Registry: &svcRecorder{}, Gate: allowGate(t), Issuance: enabledIssuanceRecorder(t)}
@@ -58,10 +57,10 @@ func accNewServer(t *testing.T, store config.SettingsStore, frontendToken string
 	dir := mkShortTempDir(t, "acc-fe-")
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: filepath.Join(dir, "frontend.sock"), Token: frontendToken},
+		seededEndpoint(t, store, filepath.Join(dir, "frontend.sock"), bearer),
 		NewEnhancedServiceRegistry(nil), nil, nil,
 		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil, nil, nil,
-		NewCredentialAuthorizer(store), nil,
+		NewCredentialAuthorizer(store), nil, nil,
 	)
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()
@@ -198,53 +197,6 @@ func TestACCUnknownAndAbsentBearersAreRefusedIdentically(t *testing.T) {
 		if bodies[i] != bodies[0] {
 			t.Fatalf("refusal bodies differ (%q vs %q); the 401 must not distinguish absent from unknown", bodies[0], bodies[i])
 		}
-	}
-}
-
-// TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports is the
-// upgrade-safety claim of ADR-015 decision 3, checked end to end rather than
-// assumed: Eve and relayScheduler hold RELAY_FRONTEND_TOKEN and nothing else.
-func TestACCLegacyFrontendTokenStillAuthenticatesOverBothTransports(t *testing.T) {
-	store := newCLISandboxStore(t)
-	srv := accNewServer(t, store, accLegacyToken)
-	proj := mkStoreProject(t, store, config.ProjectKindLocal, "acc-proj", t.TempDir())
-
-	var legacy *config.APICredential
-	for i, c := range store.Get().APICredentials {
-		if c.Name == legacyFrontendCredentialName {
-			legacy = &store.Get().APICredentials[i]
-		}
-	}
-	if legacy == nil {
-		t.Fatal("the frontend token was never recorded as a credential; Eve would 401 against its own injected token")
-	}
-	if legacy.Hash != config.HashToken(accLegacyToken) {
-		t.Fatal("the legacy credential's hash is not the frontend token's")
-	}
-	if !legacy.Grants(control.ClassRead) || !legacy.Grants(control.ClassConfigure) {
-		t.Fatalf("legacy classes = %v, want read+configure", legacy.Classes)
-	}
-	if legacy.Grants(control.ClassGrant) || legacy.Grants(control.ClassExecute) {
-		t.Fatalf("legacy classes = %v; the migration must not carry grant or execute", legacy.Classes)
-	}
-
-	for _, tr := range []struct {
-		name string
-		do   func(t *testing.T, method, path, token string, body any) (*http.Response, []byte)
-	}{
-		{"socket", srv.socket},
-		{"tcp", srv.tcp},
-	} {
-		t.Run(tr.name, func(t *testing.T) {
-			resp, body := tr.do(t, "GET", "/api/projects", accLegacyToken, nil)
-			accAssertReached(t, resp, body, "legacy token on read-class GET /api/projects")
-
-			resp, body = tr.do(t, "PUT", "/api/projects/"+proj.ID, accLegacyToken, map[string]any{})
-			accAssertReached(t, resp, body, "legacy token on configure-class PUT /api/projects/{id}")
-
-			resp, body = tr.do(t, "POST", "/api/enrolments", accLegacyToken, map[string]any{"client_id": "acc-enr-" + tr.name})
-			accAssertForbidden(t, resp, body, "legacy token on grant-class POST /api/enrolments")
-		})
 	}
 }
 
@@ -496,14 +448,14 @@ func TestACCMintAndRevokeRefuseTheReservedLegacyName(t *testing.T) {
 
 	_, _, err := mintAPICredential(store, credentialMintRequest{Name: legacyFrontendCredentialName, Classes: []string{"read", "execute"}})
 	if !errors.Is(err, errReservedCredentialName) {
-		t.Fatalf("mint under the reserved name: err = %v, want it refused — the migration rewrites that record's hash on every start", err)
+		t.Fatalf("mint under the reserved name: err = %v, want it refused — relay deletes that record on every start", err)
 	}
 	if len(store.Get().APICredentials) != 0 {
 		t.Fatal("a refused mint still wrote a credential")
 	}
 
 	assertNoErr(t, store.With(func(s *config.Settings) {
-		migrateFrontendTokenToCredential(s, accLegacyToken)
+		addAPICredential(s, config.APICredential{ID: "acc-legacy-id", Name: legacyFrontendCredentialName, Hash: config.HashToken(accLegacyToken), Classes: frontendConsumerClasses})
 	}), "seed the legacy credential")
 	legacyID := store.Get().APICredentials[0].ID
 

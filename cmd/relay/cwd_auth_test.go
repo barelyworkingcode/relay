@@ -187,7 +187,7 @@ func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	if _, err := r.ResolvePtyEnv(ctx, bridge.PtyEnvRequest{ProjectID: "test-project"}, ""); err == nil {
 		t.Fatal("expected ResolvePtyEnv to reject a tokenless caller")
 	}
-	if _, err := r.ListProjects(""); err == nil {
+	if _, err := r.ListProjects(ctx, ""); err == nil {
 		t.Fatal("expected ListProjects to reject a tokenless caller")
 	}
 }

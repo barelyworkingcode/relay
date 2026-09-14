@@ -253,7 +253,7 @@ type AuditEvent struct {
 	// FALSE one: the resting state, the one a read-only profile has. With a
 	// plain bool and omitempty, "the grant was not given" and "nobody
 	// recorded the grant" would be the same absent key — and the second is a
-	// real state (service tokens bypass every check in checkToolAccess, and
+	// real state (a service's launch identity bypasses every check in checkToolAccess, and
 	// list events carry no MCP at all). Nil means not recorded; false means
 	// refused by default.
 	AllowExternal *bool `json:"allow_external,omitempty"`

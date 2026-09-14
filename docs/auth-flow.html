@@ -237,18 +237,11 @@ one gets you a 401 that says nothing about which door you knocked on.</p>
   <td>Plaintext + SHA-256 inline in the project in <code>settings.json</code></td>
 </tr>
 <tr>
-  <td><strong>Service token</strong><br><code>RELAY_SERVICE_TOKEN</code></td>
-  <td>The bridge, unfiltered — broker and admin ops.</td>
-  <td>A spawned enhanced service</td>
-  <td>Relay, per spawn</td>
-  <td>In memory only; never persisted, never given to a child shell</td>
-</tr>
-<tr>
-  <td><strong>Frontend token</strong><br><code>RELAY_FRONTEND_TOKEN</code></td>
-  <td>This API, as a credential — see below.</td>
-  <td>Eve, relayScheduler</td>
-  <td>Relay, fresh per process start</td>
-  <td>SHA-256, as the <code>legacy-frontend-token</code> record</td>
+  <td><strong>Launch identity</strong><br><code>RELAY_LAUNCH_FD</code></td>
+  <td>By capability: <code>frontend</code> reaches this API as <code>read</code>+<code>configure</code>+<code>proxy</code>; <code>manifest</code> and <code>projects</code> reach bridge service operations. See below.</td>
+  <td>A service relay launched — Eve, relayLLM, relayScheduler</td>
+  <td>Relay, per launch: a single-use secret on fd 3, bound at <code>Hello</code> to the process's kernel audit token</td>
+  <td>Not a bearer. The secret's SHA-256 in memory until <code>Hello</code> spends it; nothing persisted, nothing in any environment</td>
 </tr>
 <tr>
   <td><strong>Control-plane credential</strong><br><code>api_credentials</code></td>
@@ -297,7 +290,7 @@ with the hashes cut:</p>
   "api_credentials": [
     {
       "id": "245e087e-7c8f-47e1-9bf8-adf83cc79c45",
-      "name": "legacy-frontend-token",
+      "name": "doc-proxy",
       "hash": "04ae7a030e238742…",
       "classes": ["read", "configure", "proxy"],
       "created": "2026-08-28T23:09:33Z"
@@ -351,7 +344,7 @@ enforcement: a credential stops authenticating the moment it expires, swept or n
 mint will sweep:
 <pre><code>$ relay credential list --include-expired
 ID                                    NAME                   CLASSES               CREATED               EXPIRES
-245e087e-7c8f-47e1-9bf8-adf83cc79c45  legacy-frontend-token  read,configure,proxy  2026-08-28T23:09:33Z  never
+245e087e-7c8f-47e1-9bf8-adf83cc79c45  doc-proxy              read,configure,proxy  2026-08-28T23:09:33Z  never
 9fe92b8e-622b-4a73-8b94-36a1da1f7f80  doc-executor           read,execute          2026-08-28T23:09:46Z  never
 0c49e4b1-c5fb-420b-a473-6685b9403769  doc-readonly           read                  2026-08-28T23:09:46Z  never
 1366dbe3-b5ee-482c-993a-9e02d6822018  doc-shortlived         read                  2026-08-28T23:10:48Z  2026-08-28T23:11:18Z (expired)</code></pre>
@@ -372,35 +365,42 @@ $ curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer 56f2978b4866a7
 401</code></pre></li>
 </ul>
 
-<h3 id="cred-legacy">The frontend token, and the credential it migrates to</h3>
+<h3 id="cred-launch">Launch identity: how relay's own services reach this API</h3>
 
-<p>Consumers relay spawns itself — Eve, relayScheduler — receive
-<code>RELAY_FRONTEND_TOKEN</code> and <code>RELAY_FRONTEND_SOCKET</code> in their
-environment. That token is <em>not</em> a second authentication path. On every start relay
-records it as one control-plane credential named <code>legacy-frontend-token</code>,
-holding exactly <code>read</code> + <code>configure</code> + <code>proxy</code>:</p>
+<p>Services relay launches — Eve, relayScheduler, relayLLM — hold no relay credential in
+their environment, because any process running as the same user can read another's startup
+environment. Relay passes each launch a single-use secret on file descriptor 3; the service
+presents it once in a bridge <code>Hello</code>, and relay binds that launch to the kernel
+audit token of the process that sent it. From then on that exact process is recognised by
+its peer audit token on every connection it opens. The full protocol is
+<a href="launch-identity.md"><code>docs/launch-identity.md</code></a>.</p>
 
-<pre><code>$ relay credential list                     # on a config directory that had never been used
-ID                                    NAME                   CLASSES               CREATED               EXPIRES
-245e087e-7c8f-47e1-9bf8-adf83cc79c45  legacy-frontend-token  read,configure,proxy  2026-08-28T23:09:33Z  never</code></pre>
+<p>What the identity may do is the service record's <code>capabilities</code>. On this API
+only <code>frontend</code> matters: a request on the frontend socket with <em>no</em>
+<code>Authorization</code> header, from a process holding <code>frontend</code>, is admitted
+holding exactly <code>read</code> + <code>configure</code> + <code>proxy</code>, and its
+<code>control_decision</code> records name it <code>launch:service:&lt;id&gt;</code>. Only a
+service holding <code>frontend</code> is told <code>RELAY_FRONTEND_SOCKET</code>.</p>
 
 <p>Three consequences, all of which will bite someone eventually.</p>
 
 <ul>
-<li><strong>The plaintext changes on every relay start</strong> — relay mints a fresh
-32-byte token per process. The migration finds the record <em>by name</em> and overwrites
-its hash in place, so restarting does not accumulate a new legacy credential each time.</li>
-<li><strong>The name is reserved.</strong> You cannot mint or revoke it by hand, because
-the next start would silently clobber whatever you put there:
-<pre><code>$ relay credential mint --name legacy-frontend-token --class read
-error: "legacy-frontend-token" is reserved for the RELAY_FRONTEND_TOKEN migration, which rewrites its hash on every relay start; it cannot be minted or revoked by hand</code></pre></li>
-<li><strong>Its class set is a narrowing, and it is overwritten rather than merged.</strong>
-The legacy token never holds <code>grant</code> or <code>execute</code>. If your consumer
-rotates project tokens, creates enrolments, registers an MCP or writes a service's
-<code>command</code>, it needs a credential of its own — <code>relay credential mint --name
-my-rotator --class grant</code>. Editing a wider class set onto the record by hand does not
-survive the next start.</li>
+<li><strong>There is nothing to copy.</strong> The identity is a property of one process, not
+a value. Anything that is not that process — a script, or a child the service spawned — has
+no identity and must present a credential of its own. A request that carries an
+<code>Authorization</code> header is always judged as a bearer, even from the service.</li>
+<li><strong>It exists only on the socket.</strong> A loopback TCP connection has no peer audit
+token, so no request on the TCP bind is admitted by identity.</li>
+<li><strong>Its class set is a narrowing.</strong> A launch identity never holds
+<code>grant</code> or <code>execute</code>. If your consumer rotates project tokens, creates
+enrolments, registers an MCP or writes a service's <code>command</code>, it needs a credential
+of its own — <code>relay credential mint --name my-rotator --class grant</code>.</li>
 </ul>
+
+<p><code>legacy-frontend-token</code> is a reserved credential name: relay deletes any record
+under it on start, so it can be neither minted nor revoked by hand:</p>
+<pre><code>$ relay credential mint --name legacy-frontend-token --class read
+error: "legacy-frontend-token" is reserved: relay deletes every credential under that name on start; it cannot be minted or revoked by hand</code></pre>
 
 <h3 id="cred-internal">The enhanced-service internal bearer</h3>
 
@@ -545,8 +545,8 @@ listener binds.</p>
 <p><code>proxy</code> is a class of its own rather than <code>execute</code> for a
 different reason: what the catch-all reaches is whatever a manifest declares, which relay
 cannot see and therefore cannot bound. Calling it <code>execute</code> would also hand the
-legacy frontend token <code>POST /api/mcps</code> and <code>PUT /api/services/{id}</code> —
-the two things the migration exists to withhold. Naming it as unclassified is the honest
+<code>frontend</code> launch identity <code>POST /api/mcps</code> and <code>PUT /api/services/{id}</code> —
+the two things its class set exists to withhold. Naming it as unclassified is the honest
 answer until the manifest protocol can describe per-route blast radius.</p>
 
 <h2 id="transport">4. Transport is part of the grant</h2>
@@ -1267,9 +1267,10 @@ indistinguishable on purpose: no header, a malformed one, an unknown token, and 
 credential is there marked <code>(expired)</code>, that is your answer. If it is a browser
 login, run the ceremony again — a reload does that by itself. If the whole list is empty,
 relay is failing closed on an unreadable or missing <code>settings.json</code>; check
-<code>relay.log</code> for <code>no API credentials configured</code>. If your token is a
-<code>RELAY_FRONTEND_TOKEN</code> captured from an earlier process, it is stale — relay mints
-a new one each start.</p>
+<code>relay.log</code> for <code>no API credentials configured</code>. If the caller is a
+service relay launched and sends no header, check that its record holds the
+<code>frontend</code> capability, that it completed <code>Hello</code>, and that the process
+calling is the one that did — see <a href="launch-identity.md"><code>docs/launch-identity.md</code></a>.</p>
 
 <h3 id="f-code">"invalid or expired login code"</h3>
 <p><strong>What you see.</strong> In the page: <code>Registration refused: invalid or
@@ -1296,8 +1297,8 @@ credential does not hold its class.</p>
 <p><strong>What to do.</strong> Read the class off the audit record — it is the authoritative
 answer, not this page's route table — and mint a credential naming it. Remember that classes
 do not nest: <code>relay credential mint --name my-rotator --class grant --class read</code>
-if you need both. If the credential in question is <code>legacy-frontend-token</code>, you
-cannot widen it; mint your own.</p>
+if you need both. If the caller is a service admitted by its launch identity,
+its class set cannot be widened; mint it a credential of its own.</p>
 
 <h3 id="f-405">405 or 404 on the loopback bind</h3>
 <p><strong>What you see.</strong> <code>405 Method Not Allowed</code> with an

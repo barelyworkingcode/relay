@@ -421,17 +421,17 @@ minted credential "eve-view"
 window — only its SHA-256 hash is ever stored. Losing it means revoking and
 minting again.
 
-`legacy-frontend-token` is reserved: the frontend-token migration rewrites
-its hash on every relay start, so both `mint` and `revoke` refuse that name.
+`legacy-frontend-token` is reserved: relay deletes every credential under that
+name on start, so both `mint` and `revoke` refuse that name.
 
 ### `credential list`
 
-Real capture from this machine:
+Example:
 
 ```
 $ relay credential list
-ID                                    NAME                   CLASSES               CREATED               EXPIRES
-bacf762f-6eb1-425b-bd20-20756a97b6c5  legacy-frontend-token  read,configure,proxy  2026-08-28T21:34:57Z  never
+ID                                    NAME      CLASSES         CREATED               EXPIRES
+bacf762f-6eb1-425b-bd20-20756a97b6c5  eve-view  read,configure  2026-08-28T21:34:57Z  never
 ```
 
 `--include-expired` also shows expired records — otherwise they're hidden,
@@ -1023,7 +1023,7 @@ and how to reach it.
 relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
                         [--autostart[=true|false]]
-                        [--frontend-creds | --no-frontend-creds]
+                        [--capability frontend|manifest|projects ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service list
@@ -1038,18 +1038,16 @@ Usage of service register:
     	command arguments (repeatable)
   -autostart
     	start automatically
+  -capability value
+    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held
   -command string
     	command to run (required)
   -env value
     	environment KEY=VALUE (repeatable)
-  -frontend-creds
-    	explicitly inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); this is the default when neither flag is given, but naming it records that the choice was deliberate
   -id string
     	record id (default: slugified --name)
   -name string
     	display name (required)
-  -no-frontend-creds
-    	do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells
   -url string
     	service URL
   -workdir string
@@ -1077,23 +1075,20 @@ encodes the presence bit, so "leave autostart alone" and "set autostart to
 false" are bound to different digests and a prompt answered for one can
 never be redeemed for the other.
 
-**`--no-frontend-creds` / `--frontend-creds` control the frontend socket
-credential, and whichever was last given survives a re-register.** Passing
-`--no-frontend-creds` once on a service that never dials relay's front door
-opts it out of `RELAY_FRONTEND_SOCKET`/`RELAY_FRONTEND_TOKEN` injection, and
-every later `service register` call that doesn't repeat either flag leaves
-that opt-out in place — it is not something a later register accidentally
-resets. `--frontend-creds` is the explicit opt-in counterpart, for a
-frontend consumer that wants its choice on record rather than resting on the
-implicit default; the two are mutually exclusive on one invocation.
-**Passing neither is still accepted** — `FrontendConsumer` stays `nil`,
-which resolves to "inject" (the implicit default, for backward
-compatibility) on a fresh register, or leaves whatever is already stored on
-a re-register — but `service register` prints a one-line warning to stderr
-naming the default and pointing at `--no-frontend-creds`, since a backend
-that never intended to reach the front door but never said so is the exact
-shape of the mistake this default makes easy. `service list`'s `FRONT-DOOR`
-column shows `yes` (explicit), `yes (implicit)`, or `no` for the three cases.
+**`--capability` sets what the service's launch identity may do, and every
+register restates the whole set.** Repeat it once per capability — `frontend`
+(the frontend socket as `read`+`configure`+`proxy`, and `RELAY_FRONTEND_SOCKET`
+in the service's environment), `manifest` (`RegisterManifest` under the
+service's own id), `projects` (`ResolvePtyEnv`, `ResolveProjectTemplate`,
+`ListProjects`, `GetProject`, service-scope `ListTools`/`CallTool`); see
+[`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities).
+An unknown name is refused before anything reaches the tray. Unlike
+`--workdir`, `--url` and `--autostart`, capabilities are not absent-aware: a
+register with no `--capability` sets the **empty set** — the service can
+start and say `Hello` and can do nothing else through relay — and the command
+says so in its output rather than leaving it silent. A relayScheduler-style
+service that both runs work through the front door and serves routes is
+`--capability frontend --capability manifest`.
 
 ### `service unregister`
 
@@ -1142,10 +1137,8 @@ no services registered
 
 (This machine's stack — macMCP, fsMCP — is registered as MCPs, not
 services; nothing is currently registered as a background service.) When a
-service is registered, the table carries a `FRONT-DOOR` column spelling
-`ServiceConfig.FrontendCredsState()`: `yes` for an explicit
-`--frontend-creds`, `yes (implicit)` for the nil default, `no` for
-`--no-frontend-creds`. Needs service: no. Prompts: no. Works over SSH: yes.
+service is registered, the table carries a `CAPABILITIES` column listing the
+record's capabilities, or `none`. Needs service: no. Prompts: no. Works over SSH: yes.
 
 ## `relay mcpExec` (also `relay mcp call`)
 
@@ -1357,10 +1350,10 @@ service, so this is reported without needing relay running for the lookup
 itself (though the actual unregister/restart still needs the service to
 carry it out).
 
-### `"legacy-frontend-token" is reserved for the RELAY_FRONTEND_TOKEN migration...`
+### `"legacy-frontend-token" is reserved: relay deletes every credential under that name on start...`
 
 Attempted `credential mint --name legacy-frontend-token` or
-`credential revoke` against it. That record is rewritten by relay itself on
+`credential revoke` against it. Relay deletes any record under that name on
 every start; pick a different name.
 
 ### `mcpList has been removed. Use: relay mcpExec --token <TOKEN> --list`
