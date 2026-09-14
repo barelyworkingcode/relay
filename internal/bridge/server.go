@@ -189,6 +189,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqGetProject:             {handle: handleGetProject},
 	ReqResolvePtyEnv:          {handle: handleResolvePtyEnv},
 	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
+	ReqDescribeProject:        {handle: handleDescribeProject},
 	ReqRegisterManifest:       {handle: handleRegisterManifest},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
@@ -299,6 +300,18 @@ func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRou
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespPtyEnv, Data: data}
+}
+
+func handleDescribeProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	desc, err := router.DescribeProject(ctx, req.Token)
+	if err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	data, err := json.Marshal(desc)
+	if err != nil {
+		return bridgeError(jsonrpc.CodeInternalError, err.Error())
+	}
+	return BridgeResponse{Type: RespProjectDescription, Data: data}
 }
 
 func handleResolveProjectTemplate(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
