@@ -64,6 +64,9 @@ func (s *stubRouter) ReloadExternalMcp(context.Context, string) error    { retur
 func (s *stubRouter) ReloadService(string) error                         { return nil }
 func (s *stubRouter) ListProjects(string) (json.RawMessage, error)       { return nil, nil }
 func (s *stubRouter) GetProject(string, string) (json.RawMessage, error) { return nil, nil }
+func (s *stubRouter) DescribeProject(context.Context, string) (bridge.ProjectDescription, error) {
+	return bridge.ProjectDescription{}, nil
+}
 func (s *stubRouter) ResolvePtyEnv(context.Context, bridge.PtyEnvRequest, string) (bridge.PtyEnvResponse, error) {
 	return bridge.PtyEnvResponse{}, nil
 }
