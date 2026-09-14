@@ -20,6 +20,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
@@ -680,6 +681,184 @@ func TestProjectOps_MountsIsGated(t *testing.T) {
 	}
 	if len(store.Get().Projects[0].Mounts) != 0 {
 		t.Fatal("mounts was set despite the gate refusing")
+	}
+}
+
+// pgwSeedGrantProject seeds a fully-shaped project directly into the store
+// (bypassing CreateWithTokenKind, the same way TestProjectOps_RegenSkill_
+// RefusesHostedProject and its siblings do), so a narrowing test can start
+// from a project that already holds a wide grant rather than the empty one
+// every ProjectOps.Create call produces.
+func pgwSeedGrantProject(t *testing.T, store config.SettingsStore, kind config.ProjectKind, id string) config.Project {
+	t.Helper()
+	proj := config.Project{
+		ID:            id,
+		Name:          id,
+		Kind:          kind,
+		AllowedMcpIDs: []string{"macmcp", "relaytts"},
+		// "mail_*" stands in for the Settings window's "All tools" state —
+		// a real allowlist, not the literal "*" validateToolPattern refuses
+		// as too broad regardless of what this test is exercising.
+		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
+		Access:        map[string]string{"macmcp": "write"},
+		AllowExternal: map[string]bool{"macmcp": true},
+	}
+	if kind != config.ProjectKindRemote {
+		proj.Path = t.TempDir()
+	}
+	if err := store.With(func(s *config.Settings) {
+		s.Projects = append(s.Projects, proj)
+	}); err != nil {
+		t.Fatalf("seed grant project: %v", err)
+	}
+	return proj
+}
+
+// TestProjectOps_NarrowingAllowedToolsDoesNotPrompt is bug 3's "All tools" →
+// "No tools" report: narrowing an already-granted MCP's tool patterns down
+// to nothing must not reach the gate at all — Deny() proves it the same way
+// TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt does, by making a
+// reached gate fail the test outright rather than merely also succeeding.
+func TestProjectOps_NarrowingAllowedToolsDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := pgwSeedGrantProject(t, store, config.ProjectKindRemote, "p_narrow_tools")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	tools := map[string][]string{"macmcp": {}}
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowedTools: &tools}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("narrowing allowed_tools to none must not reach the gate: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+}
+
+// TestProjectOps_RemovingAnMcpDoesNotPrompt is bug 3's second scenario:
+// dropping a granted MCP from allowed_mcp_ids only shrinks the grant.
+func TestProjectOps_RemovingAnMcpDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := pgwSeedGrantProject(t, store, config.ProjectKindRemote, "p_remove_mcp")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	ids := []string{"macmcp"}
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowedMcpIDs: &ids}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("removing an MCP must not reach the gate: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+}
+
+// TestProjectOps_UnchangedResendDoesNotPrompt is bug 3's third scenario: the
+// Settings window resends the whole record on every save (harvestProjectForm
+// in web/src/app.js), and an unchanged value must not manufacture a change
+// just because the request carries it.
+func TestProjectOps_UnchangedResendDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := pgwSeedGrantProject(t, store, config.ProjectKindRemote, "p_resend")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	kind := proj.Kind
+	ids := append([]string(nil), proj.AllowedMcpIDs...)
+	tools := map[string][]string{"macmcp": {"mail_*"}}
+	access := map[string]string{"macmcp": "write"}
+	external := map[string]bool{"macmcp": true}
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{
+		Kind: &kind, AllowedMcpIDs: &ids, AllowedTools: &tools, Access: &access, AllowExternal: &external,
+	}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("resending the stored grant unchanged must not reach the gate: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+}
+
+// TestProjectOps_AddingAnMcpIsGatedNamingOnlyThatField is bug 3's fourth
+// scenario: adding a new MCP to an already-granted set genuinely widens the
+// grant and must prompt — naming only allowed_mcp_ids, not the other nine
+// fields the request may also carry unchanged.
+func TestProjectOps_AddingAnMcpIsGatedNamingOnlyThatField(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := pgwSeedGrantProject(t, store, config.ProjectKindRemote, "p_add_mcp")
+
+	rec := presencetest.NewRecording(nil)
+	gate, err := presence.NewGate(rec)
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	ids := append(append([]string(nil), proj.AllowedMcpIDs...), "eve")
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowedMcpIDs: &ids}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+	reasons := rec.Reasons()
+	if len(reasons) != 1 {
+		t.Fatalf("expected exactly one presence prompt, got %v", reasons)
+	}
+	if !strings.Contains(reasons[0], "allowed_mcp_ids") {
+		t.Fatalf("reason %q does not name allowed_mcp_ids", reasons[0])
+	}
+	for _, other := range []string{"allowed_tools", "access", "allow_external", "context", "kind", "host_id", "path", "mounts"} {
+		if strings.Contains(reasons[0], other) {
+			t.Fatalf("reason %q names %q, which did not change", reasons[0], other)
+		}
+	}
+}
+
+// TestProjectOps_AccessReadToWriteIsGatedNamingOnlyThatField is bug 3's
+// fifth scenario: switching an already-granted MCP from read to write is a
+// real widening, and it alone.
+func TestProjectOps_AccessReadToWriteIsGatedNamingOnlyThatField(t *testing.T) {
+	_, store := pgwSandbox(t)
+	proj := pgwSeedGrantProject(t, store, config.ProjectKindLocal, "p_read_write")
+	// Start this one MCP explicitly at read so the switch to write is
+	// unambiguous regardless of the local default (write).
+	if err := store.With(func(s *config.Settings) {
+		p, _ := config.FindProjectByID(s, proj.ID)
+		p.Access = map[string]string{"macmcp": "read"}
+	}); err != nil {
+		t.Fatalf("seed read access: %v", err)
+	}
+
+	rec := presencetest.NewRecording(nil)
+	gate, err := presence.NewGate(rec)
+	assertNoErr(t, err, "NewGate")
+	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	access := map[string]string{"macmcp": "write"}
+	_, found, err := ops.Update(context.Background(), proj.ID, project.UpdateFields{Access: &access}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !found {
+		t.Fatal("project not found")
+	}
+	reasons := rec.Reasons()
+	if len(reasons) != 1 {
+		t.Fatalf("expected exactly one presence prompt, got %v", reasons)
+	}
+	if !strings.Contains(reasons[0], "access") {
+		t.Fatalf("reason %q does not name access", reasons[0])
+	}
+	for _, other := range []string{"allowed_mcp_ids", "allowed_tools", "allow_external", "context", "kind", "host_id", "path", "mounts"} {
+		if strings.Contains(reasons[0], other) {
+			t.Fatalf("reason %q names %q, which did not change", reasons[0], other)
+		}
 	}
 }
 

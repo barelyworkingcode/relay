@@ -191,6 +191,32 @@ has `capabilities` keeps them and its `frontend_consumer` is discarded.
 register with no `--capability` sets the empty set and says so. An HTTP or
 Settings-window update that omits `capabilities` keeps the stored set.
 
+### Editing capabilities from the Settings window
+
+The service create/edit dialog carries a checkbox per known capability
+(`frontend`, `manifest`, `projects`); an unknown name is refused server-side
+before anything is written (`config.ServiceConfig.validateCapabilities`),
+the same check a CLI `--capability` typo hits.
+
+Narrowing and widening are judged separately, not by whether the request
+touches `capabilities` at all: dropping a capability only shrinks what the
+launch identity may do and needs no presence prompt, while adding one is new
+reach and always does (ADR-018 decision 1 — obtaining or widening a
+capability is privileged, using or narrowing one is not). This is
+`serviceUpdateNeedsGate` in `cmd/relay/service_ops.go`, alongside the same
+judgment for `command`, `args`, `working_dir`, `url` and `autostart` (which
+have no narrower reading, so any actual change to one of those still gates)
+and a resend that changes nothing at all (the dialog always sends the whole
+record on every save, so a byte-identical resend must not manufacture a
+prompt either).
+
+Capabilities is written by full replacement, the same as the CLI's own
+register semantics: a save that omits the field from the request (there is
+no such door today, the Settings window always sends it) keeps the stored
+set, but a save that sends it, however it's spelled, names every capability
+the service holds after that save — there is no partial "add one, leave the
+rest" shape on the wire.
+
 ### Later kinds
 
 A project session, whose capability is one project's grant, is a new `kind`

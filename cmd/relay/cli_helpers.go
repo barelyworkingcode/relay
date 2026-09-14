@@ -31,6 +31,23 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
+// envValuesToWire lifts a flat --env map into serviceFields.Env's
+// per-key-optional-value shape. The CLI has no masked placeholder to leave
+// untouched -- every --env flag on the command line names an explicit
+// value -- so every entry gets a non-nil pointer; nil (null, "keep the
+// stored value") is a shape only the Settings window's editor produces.
+func envValuesToWire(env map[string]string) map[string]*string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]*string, len(env))
+	for k, v := range env {
+		v := v
+		out[k] = &v
+	}
+	return out
+}
+
 // registerOpts is the flag set `mcp register` and `service register` share.
 // ID is optional: McpOps.Add and ServiceOps.Create/Update derive the id from
 // --name (slugify) when it is empty, matching every other door (HTTP, IPC).

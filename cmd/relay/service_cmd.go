@@ -100,7 +100,7 @@ func serviceRegister(args []string) {
 		DisplayName:  opts.Name,
 		Command:      *command,
 		Args:         []string(opts.Args),
-		Env:          env,
+		Env:          envValuesToWire(env),
 		WorkingDir:   workingDir,
 		Autostart:    autostartSet,
 		URL:          serviceURL,

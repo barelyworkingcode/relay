@@ -1775,9 +1775,9 @@ window.__RELAY_INIT__ = {
     const cm = editing ? esc(editing.command) : "";
     const ar = editing ? esc((editing.args || []).join(" ")) : "";
     const wd = editing ? esc(editing.working_dir || "") : "";
-    const ev = editing ? esc(Object.entries(editing.env || {}).map(([k, v]) => k + "=" + v).join("\n")) : "";
     const as_ = editing ? editing.autostart : false;
     const ur = editing ? esc(editing.url || "") : "";
+    const caps = editing ? editing.capabilities || [] : [];
     let html = "<h2>" + esc(title) + (editing ? ' <span style="color:var(--text-3);font-size:12px;font-weight:400">(id: ' + esc(editing.id) + ")</span>" : "") + "</h2>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Identity</div>';
@@ -1797,8 +1797,20 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Environment</div>';
-    html += '<label for="svcEnv">Environment variables (KEY=VALUE per line)</label>';
-    html += `<textarea id="svcEnv" rows="3" placeholder="API_KEY=abc123&#10;PORT=8080">${ev}</textarea>`;
+    html += '<p class="proj-section-help">Values are sealed at rest and this window never shows a stored one again. Replace a value to change it, or remove a variable entirely.</p>';
+    html += '<div id="svcEnvRows">' + renderServiceEnvRows() + "</div>";
+    html += '<div style="display:flex;gap:6px;margin-top:8px">';
+    html += '<input type="text" id="svcEnvNewKey" placeholder="KEY" style="width:160px" />';
+    html += '<input type="text" id="svcEnvNewValue" placeholder="value" style="flex:1" />';
+    html += '<button type="button" class="btn btn-sm" onclick="svcEnvAddRow()">Add</button>';
+    html += "</div>";
+    html += "</div>";
+    html += '<div class="proj-section">';
+    html += '<div class="proj-section-title">Capabilities</div>';
+    html += `<p class="proj-section-help">What this service's launch identity may do through relay once it says Hello (docs/launch-identity.md). None held is legitimate: the service can start and say Hello and reach nothing else through relay.</p>`;
+    html += serviceCapabilityNames.map(function(cap) {
+      return '<label class="toggle-row" style="padding:4px 0;margin:0;cursor:pointer"><span>' + esc(cap) + '</span><span class="switch"><input type="checkbox" id="svcCap_' + cap + '" aria-label="' + esc(cap) + ' capability" ' + (caps.indexOf(cap) >= 0 ? "checked" : "") + ' /><span class="slider"></span></span></label>';
+    }).join("");
     html += "</div>";
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Options</div>';
@@ -1820,28 +1832,98 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     return html;
   }
+  var serviceCapabilityNames = ["frontend", "manifest", "projects"];
+  function renderServiceEnvRows() {
+    const rows = state.svcEnvDraft || [];
+    let html = "";
+    let shown = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.mode === "removed") continue;
+      shown++;
+      html += '<div class="svc-env-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">';
+      html += '<span class="mono-inline" style="min-width:140px;word-break:break-all" title="' + esc(row.key) + '">' + esc(row.key) + "</span>";
+      if (row.mode === "replace") {
+        html += '<input type="text" value="' + esc(row.value || "") + '" placeholder="new value" style="flex:1" onchange="svcEnvSetValue(' + i + ', this.value)" />';
+      } else {
+        html += '<span class="mono-inline" style="flex:1;color:var(--text-3)">\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>';
+        html += '<button type="button" class="btn btn-sm" ' + bind(svcEnvSetMode, i, "replace") + ">Replace</button>";
+      }
+      html += '<button type="button" class="btn btn-sm btn-danger" ' + bind(svcEnvRemoveRow, i) + ">Remove</button>";
+      html += "</div>";
+    }
+    if (shown === 0) html += '<div class="empty-state">No environment variables.</div>';
+    return html;
+  }
+  function svcEnvSetMode(i, mode) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.mode = mode;
+    if (mode === "replace" && row.value == null) row.value = "";
+    render();
+  }
+  function svcEnvSetValue(i, value) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.value = value;
+  }
+  function svcEnvRemoveRow(i) {
+    const row = (state.svcEnvDraft || [])[i];
+    if (!row) return;
+    row.mode = "removed";
+    render();
+  }
+  function svcEnvAddRow() {
+    const keyEl = document.getElementById("svcEnvNewKey");
+    const valEl = document.getElementById("svcEnvNewValue");
+    if (!keyEl) return;
+    const key = keyEl.value.trim();
+    if (!key) return;
+    if (!state.svcEnvDraft) state.svcEnvDraft = [];
+    const row = { key, mode: "replace", value: valEl ? valEl.value : "" };
+    const existingIdx = state.svcEnvDraft.findIndex(function(r) {
+      return r.key === key;
+    });
+    if (existingIdx >= 0) state.svcEnvDraft[existingIdx] = row;
+    else state.svcEnvDraft.push(row);
+    keyEl.value = "";
+    if (valEl) valEl.value = "";
+    render();
+  }
+  function svcEnvWireValue() {
+    const env = {};
+    for (const row of state.svcEnvDraft || []) {
+      if (row.mode === "removed") continue;
+      env[row.key] = row.mode === "replace" ? row.value : null;
+    }
+    return env;
+  }
+  function svcEnvMergedForDisplay(existingEnv) {
+    const env = {};
+    for (const row of state.svcEnvDraft || []) {
+      if (row.mode === "removed") continue;
+      env[row.key] = row.mode === "replace" ? row.value : (existingEnv || {})[row.key] || "";
+    }
+    return env;
+  }
   function svcFormValues() {
     const displayName = document.getElementById("svcDisplayName").value.trim();
     const command = document.getElementById("svcCommand").value.trim();
     const argsStr = document.getElementById("svcArgs").value.trim();
     const workingDir = document.getElementById("svcWorkingDir").value.trim();
-    const envStr = document.getElementById("svcEnv").value.trim();
     const autostart = document.getElementById("svcAutostart").checked;
     const url = document.getElementById("svcUrl").value.trim();
     const args = argsStr ? argsStr.split(/\s+/) : [];
-    const env = {};
-    if (envStr) {
-      for (const line of envStr.split("\n")) {
-        const eq = line.indexOf("=");
-        if (eq > 0) {
-          env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-        }
-      }
-    }
-    return { displayName, command, args, env, workingDir, autostart, url };
+    const env = svcEnvWireValue();
+    const capabilities = serviceCapabilityNames.filter(function(cap) {
+      const el = document.getElementById("svcCap_" + cap);
+      return !!(el && el.checked);
+    });
+    return { displayName, command, args, env, workingDir, autostart, url, capabilities };
   }
   function newService() {
     state.editingServiceId = "new";
+    state.svcEnvDraft = [];
     render();
   }
   function addService() {
@@ -1856,16 +1938,22 @@ window.__RELAY_INIT__ = {
       env: v.env,
       working_dir: v.workingDir || null,
       autostart: v.autostart,
-      url: v.url || null
+      url: v.url || null,
+      capabilities: v.capabilities
     }));
     render();
   }
   function editService(id) {
     state.editingServiceId = id;
+    const svc = state.services.find((s) => s.id === id);
+    state.svcEnvDraft = Object.keys(svc && svc.env || {}).sort().map(function(k) {
+      return { key: k, mode: "keep", value: "" };
+    });
     render();
   }
   function cancelServiceEdit() {
     state.editingServiceId = null;
+    state.svcEnvDraft = null;
     render();
   }
   function saveServiceEdit() {
@@ -1880,19 +1968,23 @@ window.__RELAY_INIT__ = {
       env: v.env,
       working_dir: v.workingDir || null,
       autostart: v.autostart,
-      url: v.url || null
+      url: v.url || null,
+      capabilities: v.capabilities
     }));
     const svc = state.services.find((s) => s.id === state.editingServiceId);
     if (svc) {
+      const mergedEnv = svcEnvMergedForDisplay(svc.env);
       svc.display_name = v.displayName;
       svc.command = v.command;
       svc.args = v.args;
-      svc.env = v.env;
+      svc.env = mergedEnv;
       svc.working_dir = v.workingDir || null;
       svc.autostart = v.autostart;
       svc.url = v.url || null;
+      svc.capabilities = v.capabilities;
     }
     state.editingServiceId = null;
+    state.svcEnvDraft = null;
     render();
   }
   function removeService(id, name) {
@@ -5819,6 +5911,7 @@ That browser's credential stops authenticating on its next request and it has to
     renderProjToolPicker,
     renderProjectForm,
     renderProjects,
+    renderServiceEnvRows,
     renderServiceForm,
     renderServiceInspector,
     renderServicePanel,
@@ -5840,6 +5933,12 @@ That browser's credential stops authenticating on its next request and it has to
     setProjModelsWildcard,
     setsEqual,
     showPage,
+    svcEnvAddRow,
+    svcEnvMergedForDisplay,
+    svcEnvRemoveRow,
+    svcEnvSetMode,
+    svcEnvSetValue,
+    svcEnvWireValue,
     svcFormValues,
     toggleConfigSection,
     toggleProjTool,
