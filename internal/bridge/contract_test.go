@@ -127,14 +127,18 @@ func (s *stubRouter) ReloadService(id string) error {
 	return s.reloadServiceErr
 }
 
-func (s *stubRouter) ListProjects(token string) (json.RawMessage, error) {
+func (s *stubRouter) Hello(_ context.Context, name, secret string) (HelloResult, error) {
+	return HelloResult{Kind: "service", ServiceID: name, RelayPID: 1}, nil
+}
+
+func (s *stubRouter) ListProjects(_ context.Context, token string) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listProjectsToks = append(s.listProjectsToks, token)
 	return s.listProjectsResp, s.listProjectsErr
 }
 
-func (s *stubRouter) GetProject(id, token string) (json.RawMessage, error) {
+func (s *stubRouter) GetProject(_ context.Context, id, token string) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.getProjectIDs = append(s.getProjectIDs, id)

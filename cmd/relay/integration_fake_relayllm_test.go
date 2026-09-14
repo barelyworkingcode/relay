@@ -16,8 +16,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
-	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 func TestIntegration_FakeRelayLLM_DispatchesEveryDeclaredRoute(t *testing.T) {
@@ -134,7 +134,7 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 	mkSandboxRelayHome(t)
 
 	// Real bridge + real appRouter so RegisterManifest goes through the
-	// production path (service token check, manifest validation, registry
+	// production path (launch identity check, manifest validation, registry
 	// write, onChange fire).
 	enhanced := NewEnhancedServiceRegistry(nil)
 	store := sealedSettingsStoreAt(bridge.ConfigDir())
@@ -146,9 +146,8 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 		tools:    mcpbroker.NewManager(nil),
 		services: &fakeServiceReloader{},
 		enhanced: enhanced,
+		launches: service.NewLaunches(),
 	}
-	const svcTokenPlain = "svc-token-fake-relayllm"
-	router.serviceTokens.Register(config.HashToken(svcTokenPlain))
 
 	srv, err := bridge.NewBridgeServer(context.Background(), router)
 	assertNoErr(t, err, "NewBridgeServer")
@@ -157,7 +156,8 @@ func TestIntegration_FakeRelayLLM_RegistersViaBridge(t *testing.T) {
 	_ = dialUnixWithTimeout(t, bridge.SocketPath(), 2*time.Second).Close()
 
 	fake := NewFakeRelayLLMService(t)
-	client := bridge.NewClient(svcTokenPlain)
+	helloAsLaunchedService(t, router.launches, bridge.SocketPath(), fake.ServiceID(), false)
+	client := bridge.NewClient("")
 	if err := fake.Register(client); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

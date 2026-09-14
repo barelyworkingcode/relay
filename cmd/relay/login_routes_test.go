@@ -81,7 +81,7 @@ func lrNewServer(t *testing.T) *lrServer {
 	extMgr := mcpbroker.NewManager(nil)
 	srv, err := NewFrontendServer(
 		store, extMgr, extMgr, extMgr,
-		Endpoint{Socket: sock, Token: "lr-frontend-token"},
+		seededEndpoint(t, store, sock, "lr-frontend-token"),
 		NewEnhancedServiceRegistry(nil),
 		nil, nil, nil, nil, nil,
 		&McpOps{Store: store, Ctx: context.Background()},
@@ -89,7 +89,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		nil,
 		nil,
 		nil,
-		NewCredentialAuthorizer(store), auditor,
+		NewCredentialAuthorizer(store), auditor, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

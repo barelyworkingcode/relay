@@ -15,7 +15,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/login"
+	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/project"
+	"github.com/barelyworkingcode/relay/internal/service"
 )
 
 // FrontendServer hosts the HTTP API that Eve and relayScheduler consume. It
@@ -113,7 +115,7 @@ func (s *FrontendServer) ListenLoopback(addr string) error {
 
 	s.tcpLn = ln
 	s.tcpServer = &http.Server{
-		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux)))),
+		Handler:           frontendPublicDoor(publicMux, frontendCredentialAuth(s.routeDeps.store, nil, frontendRecover(warnOnUnmatchedTCPRoute(tcpMux)))),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
@@ -319,7 +321,10 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // bare *ProjectOps{Store: store} so every existing caller that does not yet
 // wire one keeps working — ungated, since a nil Gate inside it refuses
 // every gated act rather than allowing one (§6.7's fail-closed rule).
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor) (*FrontendServer, error) {
+//
+// launches resolves a socket peer's launch identity (docs/launch-identity.md);
+// nil admits no caller by identity, only by bearer.
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -358,8 +363,6 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
 	}
 
-	ensureFrontendTokenIsCredential(store, frontend.Token)
-
 	socketMux := http.NewServeMux()
 	registerFrontendRoutes(&control.RouteRegistrar{Mux: socketMux, Transport: control.TransportSocket, Authz: authz, Auditor: auditor, Reserve: deps.enhanced, CredentialID: APICredentialIDFromContext}, deps)
 
@@ -368,10 +371,11 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 	// a socket has no origin, so there is no ceremony to serve here and the
 	// public mux is nil rather than populated. Composing it anyway is what
 	// keeps the two doors' shape identical.
-	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, frontendRecover(withRelayRouteReadDeadline(socketMux))))
+	handler := frontendPublicDoor(nil, frontendCredentialAuth(store, launches, frontendRecover(withRelayRouteReadDeadline(socketMux))))
 
 	srv := &http.Server{
-		Handler: handler,
+		Handler:     handler,
+		ConnContext: withFrontendPeerFromConn,
 		// Streaming sessions run for many minutes; only header/idle timeouts
 		// apply, never write timeout (it would kill in-progress generations).
 		ReadHeaderTimeout: 30 * time.Second,
@@ -391,8 +395,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		return nil, fmt.Errorf("chmod frontend socket: %w", err)
 	}
 
-	slog.Info("frontend server bound",
-		"socket", frontend.Socket, "auth", frontend.Token != "")
+	slog.Info("frontend server bound", "socket", frontend.Socket)
 	return &FrontendServer{
 		socketPath: frontend.Socket,
 		server:     srv,
@@ -438,66 +441,60 @@ func (s *FrontendServer) Shutdown(ctx context.Context) {
 	}
 }
 
-var errFrontendTokenAlreadyCredential = errors.New("frontend token is already recorded as a credential")
+type frontendPeerCtxKey struct{}
 
-// ensureFrontendTokenIsCredential makes RELAY_FRONTEND_TOKEN reach the API
-// the only way anything reaches it: as a credential.
-//
-// This is deliberate, and it looks redundant because trayapp.go runs the same
-// migration before it calls NewFrontendServer. The invariant belongs to the
-// server, not to one caller's ordering: a server that admits a token no
-// credential covers 401s every consumer it just handed that token to, and
-// nothing in the constructor's signature would say so. The pre-check keeps
-// the tray's start from writing settings.json a second time.
-//
-// Not fatal, matching the tray's stance on the same migration: a relay that
-// fails this still starts, and frontendCredentialAuth then refuses the legacy
-// token rather than admitting it unclassed.
-func ensureFrontendTokenIsCredential(store config.SettingsStore, token string) {
-	if store == nil || token == "" {
-		return
+// withFrontendPeerFromConn records the socket peer's audit token once per
+// connection. A peer that cannot be read records nothing, and matches no
+// identity.
+func withFrontendPeerFromConn(ctx context.Context, c net.Conn) context.Context {
+	tok, err := peertoken.FromConn(c)
+	if err != nil {
+		return ctx
 	}
-	if authenticateAPICredential(config.FreshSettings(store), token) != nil {
-		return
-	}
-	// This is subtle: the migration's own bool is the decline. The pre-check
-	// above resolves through freshSettings and the reload inside the write
-	// resolves again, so another process migrating in the gap is the case that
-	// reaches here with nothing left to do — and a save there would rewrite
-	// settings.json for no change on every relay start that lost that race.
-	err := config.WithDeclinable(store, func(s *config.Settings) error {
-		if !migrateFrontendTokenToCredential(s, token) {
-			return errFrontendTokenAlreadyCredential
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errFrontendTokenAlreadyCredential) {
-		slog.Error("frontend: could not migrate the frontend token to a credential", "error", err)
-	}
+	return context.WithValue(ctx, frontendPeerCtxKey{}, tok)
 }
 
-// frontendCredentialAuth admits any bearer that resolves to a credential in
-// Settings.APICredentials (ADR-015 decision 3) and leaves what that credential
-// may then DO to control.RouteRegistrar's per-route class check.
+func frontendPeerFromContext(ctx context.Context) peertoken.Token {
+	tok, _ := ctx.Value(frontendPeerCtxKey{}).(peertoken.Token)
+	return tok
+}
+
+// frontendCredentialAuth answers "is this anyone?" in one of two ways and
+// leaves "may they do this?" to control.RouteRegistrar's per-route class
+// check.
 //
-// This is the ONLY bearer check in front of either mux, deliberately. A second
-// gate here admitting one fixed value would make every other credential
-// unreachable and the class check behind it dead code — the two layers answer
-// "is this anyone?" and "may they do this?", and only the second may narrow.
+// A request with no Authorization header whose connection's peer is bound as
+// a frontend-consumer launch identity is that identity, holding exactly
+// frontendConsumerClasses. It is resolved per request, not per connection,
+// so a connection outliving its launch stops being admitted.
+//
+// Every other request must present a bearer that resolves to a credential in
+// Settings.APICredentials (ADR-015 decision 3). This is the ONLY bearer check
+// in front of either mux, deliberately. A second gate here admitting one
+// fixed value would make every other credential unreachable and the class
+// check behind it dead code.
 //
 // Resolution runs before any handler, so an unauthenticated WS upgrade never
 // allocates a session, and goes through findAPICredentialByHash,
 // which compares in constant time over every credential on the host.
 //
-// An empty credential set fails CLOSED. The frontend channel always mints a
-// token and ensureFrontendTokenIsCredential always records it, so empty means
-// misconfiguration, and serving open would silently expose every proxied
-// service.
+// On the bearer path an empty credential set fails CLOSED: serving open would
+// silently expose every proxied service.
 //
-// Absent, malformed and unknown bearers all get the same 401 with the same
-// body, deliberately — a message that told them apart would be an oracle.
-func frontendCredentialAuth(store config.SettingsStore, next http.Handler) http.Handler {
+// Absent, malformed and unknown bearers, and a headerless caller with no
+// frontend identity, all get the same 401 with the same body, deliberately —
+// a message that told them apart would be an oracle.
+func frontendCredentialAuth(store config.SettingsStore, launches *service.Launches, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, hasHeader := r.Header["Authorization"]; !hasHeader {
+			id, ok := launches.Lookup(frontendPeerFromContext(r.Context()))
+			if !ok || !id.IsFrontendConsumer() {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(withFrontendIdentity(r.Context(), id)))
+			return
+		}
 		var s *config.Settings
 		if store != nil {
 			s = config.FreshSettings(store)

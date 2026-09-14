@@ -58,12 +58,17 @@ func (s *stubRouter) CallTool(ctx context.Context, name string, args json.RawMes
 	}
 	return resp, err
 }
-func (s *stubRouter) ValidateAdmin(string) error                         { return nil }
-func (s *stubRouter) ReconcileExternalMcps(context.Context)              {}
-func (s *stubRouter) ReloadExternalMcp(context.Context, string) error    { return nil }
-func (s *stubRouter) ReloadService(string) error                         { return nil }
-func (s *stubRouter) ListProjects(string) (json.RawMessage, error)       { return nil, nil }
-func (s *stubRouter) GetProject(string, string) (json.RawMessage, error) { return nil, nil }
+func (s *stubRouter) ValidateAdmin(string) error                                    { return nil }
+func (s *stubRouter) ReconcileExternalMcps(context.Context)                         {}
+func (s *stubRouter) ReloadExternalMcp(context.Context, string) error               { return nil }
+func (s *stubRouter) ReloadService(string) error                                    { return nil }
+func (s *stubRouter) ListProjects(context.Context, string) (json.RawMessage, error) { return nil, nil }
+func (s *stubRouter) GetProject(context.Context, string, string) (json.RawMessage, error) {
+	return nil, nil
+}
+func (s *stubRouter) Hello(context.Context, string, string) (bridge.HelloResult, error) {
+	return bridge.HelloResult{}, nil
+}
 func (s *stubRouter) DescribeProject(context.Context, string) (bridge.ProjectDescription, error) {
 	return bridge.ProjectDescription{}, nil
 }

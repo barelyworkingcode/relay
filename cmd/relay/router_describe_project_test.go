@@ -87,15 +87,18 @@ func TestDescribeProject_ToolsMatchListTools(t *testing.T) {
 }
 
 func TestDescribeProject_RefusesCallersWithoutAProjectToken(t *testing.T) {
-	router, _, svcToken := newPtyTestRouter(t)
+	router, _, svcCtx := newPtyTestRouter(t)
 
-	for name, token := range map[string]string{
-		"tokenless":     "",
-		"service token": svcToken,
-		"unknown token": "not-a-real-token",
+	for name, caller := range map[string]struct {
+		ctx   context.Context
+		token string
+	}{
+		"tokenless":               {context.Background(), ""},
+		"bridge service identity": {svcCtx, ""},
+		"unknown token":           {context.Background(), "not-a-real-token"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := router.DescribeProject(context.Background(), token)
+			_, err := router.DescribeProject(caller.ctx, caller.token)
 			if err == nil {
 				t.Fatal("DescribeProject succeeded, want refusal")
 			}

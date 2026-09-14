@@ -19,7 +19,7 @@ func seedShellTemplates(t *testing.T, r *appRouter, projID string, tmpls []confi
 }
 
 func TestResolveProjectTemplate_Found(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 	want := config.ShellTemplate{
 		ID:          "ssh-prod",
 		Name:        "Prod SSH",
@@ -31,10 +31,10 @@ func TestResolveProjectTemplate_Found(t *testing.T) {
 	}
 	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{want})
 
-	resp, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
+	resp, err := router.ResolveProjectTemplate(svcCtx, bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
 		TemplateID: want.ID,
-	}, svcToken)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolveProjectTemplate: %v", err)
 	}
@@ -55,24 +55,24 @@ func TestResolveProjectTemplate_Found(t *testing.T) {
 }
 
 func TestResolveProjectTemplate_UnknownProject(t *testing.T) {
-	router, _, svcToken := newPtyTestRouter(t)
-	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
+	router, _, svcCtx := newPtyTestRouter(t)
+	_, err := router.ResolveProjectTemplate(svcCtx, bridge.ShellTemplateRequest{
 		ProjectID:  "no-such-project",
 		TemplateID: "x",
-	}, svcToken)
+	}, "")
 	if code := codeOf(err); code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("error code = %d, want CodeMethodNotFound (%d)", code, jsonrpc.CodeMethodNotFound)
 	}
 }
 
 func TestResolveProjectTemplate_UnknownTemplate(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 	seedShellTemplates(t, router, proj.ID, []config.ShellTemplate{{ID: "present", Name: "Present", Command: "ssh"}})
 
-	_, err := router.ResolveProjectTemplate(context.Background(), bridge.ShellTemplateRequest{
+	_, err := router.ResolveProjectTemplate(svcCtx, bridge.ShellTemplateRequest{
 		ProjectID:  proj.ID,
 		TemplateID: "missing",
-	}, svcToken)
+	}, "")
 	if code := codeOf(err); code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("error code = %d, want CodeMethodNotFound (%d)", code, jsonrpc.CodeMethodNotFound)
 	}

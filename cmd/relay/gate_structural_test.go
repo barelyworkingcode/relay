@@ -104,7 +104,7 @@ var gateAllowlistedFiles = map[string]string{
 	// exported surface, so every crossing still appears here as a call
 	// site in one of the files below.
 	"internal/project/scope.go":       "defines the updateProject* grant-shape mutators; they are unexported there, so internal/project/apply.go below is the only file that can reach them at all",
-	"cmd/relay/api_credential.go":     "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate",
+	"cmd/relay/api_credential.go":     "defines mintAPICredentialFor, addAPICredential, removeAPICredential, and mintAPICredential/revokeAPICredentialIf (the store.With they run inside), which CredentialOps.Mint/Revoke call after the gate, and retireLegacyFrontendCredentialOnStart's config.WithDeclinable, which deletes a reserved record on start and is not a gated op",
 	"internal/enrolment/enrolment.go": "defines the package's Create/Update/Revoke and calls addEnrolment/removeEnrolment/config.WithDeclinable from inside them",
 	"internal/project/apply.go":       "defines ApplyCreate/ApplyUpdate, the pair ProjectOps calls after the gate; they call the updateProject* grant-shape mutators and the config.Settings UpdateProject* methods as their own sub-mutations",
 
@@ -112,11 +112,10 @@ var gateAllowlistedFiles = map[string]string{
 	// mutator (§6.7's matching is by identifier, not by resolved type):
 	// none of these are project.grant, credential.mint or any other op in
 	// presence.GatedOps.
-	"cmd/relay/project_routes.go":  "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
-	"cmd/relay/ipc_handlers.go":    "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
-	"cmd/relay/trayapp.go":         "the frontend-token migration's one-time store.With call; not a gated op",
-	"cmd/relay/frontend_server.go": "ensureFrontendTokenIsCredential's config.WithDeclinable call: the same frontend-token migration as trayapp.go's, run from NewFrontendServer's own setup path; not a gated op",
-	"cmd/relay/login_routes.go":    "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
+	"cmd/relay/project_routes.go": "DELETE /api/projects is not gated (deleting a project is not in presence.GatedOps); create/update/rotate_token go through ops.Create/Update/RotateToken, not store.With, directly",
+	"cmd/relay/ipc_handlers.go":   "withSettings/withSettingsNotify are the generic IPC mutation helper every ungated IPC handler (autostart toggle, disabled_tools, remote config, ...) shares",
+	"cmd/relay/trayapp.go":        "the OAuth refresh callback's store.With, persisting a token an upstream MCP rotated; not a gated op",
+	"cmd/relay/login_routes.go":   "the WebAuthn ceremony's own mintAPICredentialFor (a signed assertion is a different presence factor from this gate) and config.WithDeclinable (POST /relay/login/verify is unauthenticated by design, ADR-016 decision 5)",
 	"cmd/relay/host_ops.go": "the HostOps core: deliberately UNGATED (docs/ssh-hosts.md) -- a host record names an ssh destination, not a tool-permission grant, " +
 		"and is not one of the acts in presence.GatedOps; the control-plane `configure`/`execute` capability classes checked by the route " +
 		"registrar before either door's handler runs are the boundary this record's mutations sit behind",
@@ -331,7 +330,7 @@ var wantGateAllowlistedFiles = []string{
 	"cmd/relay/credential_ops.go", "cmd/relay/project_ops.go", "cmd/relay/mcp_ops.go", "cmd/relay/service_ops.go",
 	"cmd/relay/enrolment_ops.go", "cmd/relay/login_ops.go",
 	"internal/project/scope.go", "cmd/relay/api_credential.go", "internal/enrolment/enrolment.go", "internal/project/apply.go",
-	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/frontend_server.go", "cmd/relay/login_routes.go",
+	"cmd/relay/project_routes.go", "cmd/relay/ipc_handlers.go", "cmd/relay/trayapp.go", "cmd/relay/login_routes.go",
 	"cmd/relay/host_ops.go", "cmd/relay/eve_enrolment_ops.go", "cmd/relay/eve_passkey_ops.go",
 }
 

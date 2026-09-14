@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -235,62 +236,50 @@ func reapExpiredAPICredentials(s *config.Settings) bool {
 	return len(s.APICredentials) != before
 }
 
-// legacyFrontendCredentialName marks the single credential
-// migrateFrontendTokenToCredential owns, so repeated calls update it in
-// place instead of accumulating one per call.
+// legacyFrontendCredentialName is reserved. A credential under this name held
+// the hash of a bearer relay once put in every frontend consumer's
+// environment, where any same-user process could read it; relay deletes every
+// record under the name on start (retireLegacyFrontendCredential), so an
+// operator-minted credential under it would be deleted too.
 const legacyFrontendCredentialName = "legacy-frontend-token"
 
-// migrateFrontendTokenToCredential mints or refreshes the
-// read+configure+proxy credential that lets an existing frontend consumer
-// (Eve, relayScheduler) keep authenticating with RELAY_FRONTEND_TOKEN
-// unchanged (ADR-015 decision 3, ADR-016 decision 4). It grants
-// exactly control.ClassRead, control.ClassConfigure and control.ClassProxy — never control.ClassGrant or
-// control.ClassExecute — which is a deliberate narrowing: creating an enrolment,
-// registering an MCP, or writing a service's command stops being reachable
-// with the legacy token, and any consumer that needs those must mint its own
-// credential naming them explicitly.
-//
-// control.ClassProxy is what keeps those consumers reaching the proxied surface,
-// which registers under that class. The surface is not control.ClassExecute for the
-// reason ADR-016 decision 4 gives: execute would also hand the legacy token
-// POST /api/mcps and PUT /api/services/{id}.
-//
-// This is deliberate, not merely idiomatic: FrontendChannel.Ensure mints a
-// fresh random frontendToken every process start, so "idempotent" cannot
-// mean "same hash in, same hash out" across restarts. Identifying the
-// managed record by Name and overwriting its Hash in place is what keeps a
-// new relay process from accumulating a fresh legacy credential every time
-// it starts, while still keeping the ONE legacy credential's hash current
-// with whatever token this process just handed its own children.
-func migrateFrontendTokenToCredential(s *config.Settings, frontendToken string) bool {
-	if frontendToken == "" {
-		return false
-	}
-	hash := config.HashToken(frontendToken)
-	classes := []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
-	for i := range s.APICredentials {
-		if s.APICredentials[i].Name != legacyFrontendCredentialName {
-			continue
-		}
-		if s.APICredentials[i].Hash == hash && slices.Equal(s.APICredentials[i].Classes, classes) {
-			return false
-		}
-		// Classes are overwritten, not merged: this record is owned by the
-		// migration, so a wider class set found on it did not come from a
-		// decision made here, and honouring one would let an edited
-		// settings.json hand RELAY_FRONTEND_TOKEN a class ADR-015 refuses it.
-		s.APICredentials[i].Hash = hash
-		s.APICredentials[i].Classes = classes
-		return true
-	}
-	addAPICredential(s, config.APICredential{
-		ID:      uuid.New().String(),
-		Name:    legacyFrontendCredentialName,
-		Hash:    hash,
-		Classes: classes,
-		Created: time.Now().UTC().Format(time.RFC3339),
+// frontendConsumerClasses is what a frontend-consumer launch identity holds
+// on the frontend socket: never control.ClassGrant or control.ClassExecute. A
+// consumer that needs either must be handed a credential naming it.
+// control.ClassProxy is what reaches the proxied surface; it is not
+// control.ClassExecute because execute would also reach POST /api/mcps and
+// PUT /api/services/{id} (ADR-016 decision 4).
+var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
+
+// retireLegacyFrontendCredential deletes every record named
+// legacyFrontendCredentialName and reports whether it deleted any. Does not
+// save; use within config.WithDeclinable.
+func retireLegacyFrontendCredential(s *config.Settings) bool {
+	before := len(s.APICredentials)
+	s.APICredentials = slices.DeleteFunc(s.APICredentials, func(c config.APICredential) bool {
+		return c.Name == legacyFrontendCredentialName
 	})
-	return true
+	return len(s.APICredentials) != before
+}
+
+var errNoLegacyFrontendCredential = errors.New("no legacy frontend credential to retire")
+
+// retireLegacyFrontendCredentialOnStart runs retireLegacyFrontendCredential
+// and writes settings.json only when it deleted something. Not fatal: a relay
+// that cannot write still starts, and says so.
+func retireLegacyFrontendCredentialOnStart(store config.SettingsStore) {
+	err := config.WithDeclinable(store, func(s *config.Settings) error {
+		if !retireLegacyFrontendCredential(s) {
+			return errNoLegacyFrontendCredential
+		}
+		return nil
+	})
+	switch {
+	case err == nil:
+		slog.Info("retired the legacy frontend credential")
+	case !errors.Is(err, errNoLegacyFrontendCredential):
+		slog.Error("could not retire the legacy frontend credential", "error", err)
+	}
 }
 
 // credentialAuthorizer implements control.Authorizer against
@@ -321,6 +310,13 @@ func bearerToken(r *http.Request) (string, bool) {
 // this same install must authenticate on its very next request, the same
 // reasoning RemoteServer.currentSettings applies to enrolments (issue #21).
 func (a *credentialAuthorizer) Authorize(r *http.Request, class control.CapabilityClass) error {
+	if id, ok := frontendIdentityFromContext(r.Context()); ok {
+		*r = *r.WithContext(withAPICredentialID(r.Context(), launchIdentityCredentialID(id)))
+		if !slices.Contains(frontendConsumerClasses, class) {
+			return control.ErrClassNotGranted
+		}
+		return nil
+	}
 	token, ok := bearerToken(r)
 	if !ok {
 		return control.ErrNoCredential
@@ -343,6 +339,26 @@ func (a *credentialAuthorizer) Authorize(r *http.Request, class control.Capabili
 		return control.ErrClassNotGranted
 	}
 	return nil
+}
+
+type frontendIdentityCtxKey struct{}
+
+// withFrontendIdentity is set only by frontendCredentialAuth, after it has
+// resolved the connection's peer to a frontend-consumer launch identity.
+// Nothing a caller sends can put a value under this unexported key.
+func withFrontendIdentity(ctx context.Context, id service.Identity) context.Context {
+	return context.WithValue(ctx, frontendIdentityCtxKey{}, id)
+}
+
+func frontendIdentityFromContext(ctx context.Context) (service.Identity, bool) {
+	id, ok := ctx.Value(frontendIdentityCtxKey{}).(service.Identity)
+	return id, ok
+}
+
+// launchIdentityCredentialID names a launch identity in ControlDecision.CredID.
+// It cannot collide with a credential id, which is always a UUID.
+func launchIdentityCredentialID(id service.Identity) string {
+	return "launch:" + string(id.Kind) + ":" + id.Name
 }
 
 type apiCredentialCtxKey struct{}

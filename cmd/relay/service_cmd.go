@@ -33,8 +33,8 @@ func serviceRegister(args []string) {
 	workdir := fs.String("workdir", "", "working directory")
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
-	frontendCreds := fs.Bool("frontend-creds", false, "explicitly inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); this is the default when neither flag is given, but naming it records that the choice was deliberate")
-	noFrontendCreds := fs.Bool("no-frontend-creds", false, "do not inject relay front-door creds (RELAY_FRONTEND_SOCKET/TOKEN); set for backends that never dial the front door, so the bearer can't leak into spawned shells")
+	frontendCreds := fs.Bool("frontend-creds", false, "explicitly make this service a frontend consumer: it is told RELAY_FRONTEND_SOCKET and its launch identity reaches the frontend socket, not the bridge service operations; this is the default when neither flag is given, but naming it records that the choice was deliberate")
+	noFrontendCreds := fs.Bool("no-frontend-creds", false, "make this service a bridge service: its launch identity reaches the bridge service operations (RegisterManifest, ResolvePtyEnv, ...) and not the frontend socket; set for backends that never dial the front door")
 	fs.Parse(args)
 
 	if opts.Name == "" {
@@ -74,7 +74,7 @@ func serviceRegister(args []string) {
 		frontendConsumer = &t
 	default:
 		fmt.Fprintln(os.Stderr, "relay: neither --frontend-creds nor --no-frontend-creds given — "+
-			"the front-door bearer (RELAY_FRONTEND_SOCKET/TOKEN) will be injected into this service. "+
+			"this service will be a frontend consumer and cannot register a manifest. "+
 			"A backend that never dials the front door should pass --no-frontend-creds.")
 	}
 

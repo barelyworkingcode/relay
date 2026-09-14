@@ -472,26 +472,3 @@ func TestValidateAdmin_EmptySecret(t *testing.T) {
 		t.Fatal("expected error for empty admin secret")
 	}
 }
-
-func TestResolveAuth_ServiceToken(t *testing.T) {
-	s := makeSettings(nil, nil, nil)
-	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
-
-	svcToken := "servicetokenservicetokenservicetokenservicetokenservicetokenservic"
-	svcHash := config.HashToken(svcToken)
-	r.serviceTokens.Register(svcHash)
-
-	stored, _, err := r.resolveAuth(context.Background(), svcToken)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if stored.Name != "service" {
-		t.Errorf("expected service token name, got %q", stored.Name)
-	}
-
-	r.serviceTokens.Remove(svcHash)
-	_, _, err = r.resolveAuth(context.Background(), svcToken)
-	if err == nil {
-		t.Fatal("expected error after service token removal")
-	}
-}

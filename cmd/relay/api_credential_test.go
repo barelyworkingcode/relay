@@ -228,140 +228,6 @@ func TestCredentialAuthorizer_Authorize_EmptyClassesRefusedForEveryClass(t *test
 }
 
 // ---------------------------------------------------------------------------
-// Migration
-// ---------------------------------------------------------------------------
-
-func TestMigrateFrontendTokenToCredential_GrantsExactlyReadConfigureAndProxy(t *testing.T) {
-	s := &config.Settings{}
-	if changed := migrateFrontendTokenToCredential(s, "legacy-plaintext-token"); !changed {
-		t.Fatal("first migration call reported no change")
-	}
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("want exactly 1 migrated credential, got %d", len(s.APICredentials))
-	}
-	cred := s.APICredentials[0]
-	if cred.Grants(control.ClassGrant) || cred.Grants(control.ClassExecute) {
-		t.Fatalf("migrated credential must not hold grant or execute: %+v", cred.Classes)
-	}
-	if !cred.Grants(control.ClassRead) || !cred.Grants(control.ClassConfigure) || !cred.Grants(control.ClassProxy) {
-		t.Fatalf("migrated credential must hold read, configure and proxy: %+v", cred.Classes)
-	}
-	if len(cred.Classes) != 3 {
-		t.Fatalf("migrated credential holds extra classes: %+v", cred.Classes)
-	}
-}
-
-// TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace
-// is the upgrade path a running install takes on its next start after
-// ADR-016 decision 4: settings.json already holds the record ADR-015 wrote,
-// carrying read+configure, and nothing rewrites it except this function
-// noticing the class set moved. Without the upgrade Eve keeps its token and
-// loses the proxied surface.
-func TestMigrateFrontendTokenToCredential_UpgradesAnExistingLegacyRecordInPlace(t *testing.T) {
-	const token = "legacy-token-written-before-adr-016"
-	const id = "legacy-id-from-disk"
-	const created = "2026-01-01T00:00:00Z"
-	s := &config.Settings{APICredentials: []config.APICredential{{
-		ID:      id,
-		Name:    legacyFrontendCredentialName,
-		Hash:    config.HashToken(token),
-		Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure},
-		Created: created,
-	}}}
-
-	if !migrateFrontendTokenToCredential(s, token) {
-		t.Fatal("a stored legacy record holding only read+configure was left alone; Eve would 403 on every proxied route")
-	}
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("the upgrade minted a second record instead of upgrading in place: %+v", s.APICredentials)
-	}
-	got := s.APICredentials[0]
-	if got.ID != id || got.Created != created {
-		t.Fatalf("the upgrade replaced the record's identity rather than its class set: %+v", got)
-	}
-	if !got.Grants(control.ClassProxy) {
-		t.Fatalf("the upgrade did not add proxy: %+v", got.Classes)
-	}
-	if authenticateAPICredential(s, token) == nil {
-		t.Fatal("the token in the upgraded record stopped authenticating")
-	}
-
-	if migrateFrontendTokenToCredential(s, token) {
-		t.Error("the upgrade is not idempotent, so every start rewrites settings.json")
-	}
-}
-
-func TestMigrateFrontendTokenToCredential_IdempotentOnRepeatedCall(t *testing.T) {
-	s := &config.Settings{}
-	migrateFrontendTokenToCredential(s, "legacy-plaintext-token")
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("after first call want 1 credential, got %d", len(s.APICredentials))
-	}
-	first := s.APICredentials[0]
-
-	if changed := migrateFrontendTokenToCredential(s, "legacy-plaintext-token"); changed {
-		t.Fatal("second call with the same token reported a change")
-	}
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("second call minted a second credential: %d total", len(s.APICredentials))
-	}
-	if s.APICredentials[0].ID != first.ID {
-		t.Fatal("second call replaced the credential's identity instead of leaving it alone")
-	}
-}
-
-// FrontendChannel.Ensure mints a brand new random token on every process
-// start, so a realistic multi-restart sequence calls this function with a
-// DIFFERENT token each time. The migration must still converge on one
-// credential rather than accumulating a stale one per restart.
-func TestMigrateFrontendTokenToCredential_UpdatesInPlaceAcrossTokenRotation(t *testing.T) {
-	s := &config.Settings{}
-	migrateFrontendTokenToCredential(s, "token-from-boot-one")
-	firstID := s.APICredentials[0].ID
-
-	changed := migrateFrontendTokenToCredential(s, "token-from-boot-two")
-	if !changed {
-		t.Fatal("migrating a rotated token reported no change")
-	}
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("token rotation across restarts must update in place, not accumulate: %d credentials", len(s.APICredentials))
-	}
-	if s.APICredentials[0].ID != firstID {
-		t.Fatal("token rotation replaced the credential's identity rather than updating its hash")
-	}
-	if authenticateAPICredential(s, "token-from-boot-one") != nil {
-		t.Fatal("the old rotated-out token still authenticates")
-	}
-	if authenticateAPICredential(s, "token-from-boot-two") == nil {
-		t.Fatal("the new token does not authenticate after migration")
-	}
-}
-
-func TestMigrateFrontendTokenToCredential_PreservesTokenValueForExistingConsumer(t *testing.T) {
-	s := &config.Settings{}
-	const frontendToken = "eve-and-scheduler-hold-this-value"
-	migrateFrontendTokenToCredential(s, frontendToken)
-
-	cred := authenticateAPICredential(s, frontendToken)
-	if cred == nil {
-		t.Fatal("the exact frontend token value does not resolve to the migrated credential")
-	}
-	if !cred.Grants(control.ClassRead) || !cred.Grants(control.ClassConfigure) {
-		t.Fatal("the resolved credential does not carry read+configure")
-	}
-}
-
-func TestMigrateFrontendTokenToCredential_EmptyTokenIsNoOp(t *testing.T) {
-	s := &config.Settings{}
-	if changed := migrateFrontendTokenToCredential(s, ""); changed {
-		t.Fatal("migrating an empty token reported a change")
-	}
-	if len(s.APICredentials) != 0 {
-		t.Fatalf("migrating an empty token minted a credential: %+v", s.APICredentials)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Settings round trip
 // ---------------------------------------------------------------------------
 
@@ -431,34 +297,6 @@ func TestAPICredential_AddRemoveFind(t *testing.T) {
 
 	if _, ok := removeAPICredential(s, "does-not-exist"); ok {
 		t.Fatal("removing an unknown id reported success")
-	}
-}
-
-func TestMigrateFrontendTokenToCredential_OverwritesAWidenedClassSet(t *testing.T) {
-	s := &config.Settings{APICredentials: []config.APICredential{{
-		ID:      "hand-written",
-		Name:    legacyFrontendCredentialName,
-		Hash:    config.HashToken("tok"),
-		Classes: []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute},
-	}}}
-
-	if !migrateFrontendTokenToCredential(s, "tok") {
-		t.Fatal("migration reported no change against a record carrying classes it does not own")
-	}
-
-	got := s.APICredentials[0]
-	for _, class := range []control.CapabilityClass{control.ClassGrant, control.ClassExecute} {
-		if got.Grants(class) {
-			t.Errorf("legacy credential still grants %q after migration", class)
-		}
-	}
-	for _, class := range []control.CapabilityClass{control.ClassRead, control.ClassConfigure} {
-		if !got.Grants(class) {
-			t.Errorf("legacy credential lost %q", class)
-		}
-	}
-	if migrateFrontendTokenToCredential(s, "tok") {
-		t.Error("migration is not idempotent once the record is correct")
 	}
 }
 
@@ -650,23 +488,5 @@ func TestReapExpiredAPICredentials_RemovesOnlyTheExpired(t *testing.T) {
 
 	if reapExpiredAPICredentials(s) {
 		t.Fatal("a second reap over a clean set reported a change, which would rewrite settings.json for nothing")
-	}
-}
-
-// The legacy credential carries no expiry, so reaping must never touch it --
-// sweeping it would 401 Eve and relayScheduler until the next relay start.
-func TestReapExpiredAPICredentials_LeavesTheLegacyCredentialAlone(t *testing.T) {
-	s := &config.Settings{}
-	const frontendToken = "reap-legacy-token"
-	migrateFrontendTokenToCredential(s, frontendToken)
-	addAPICredential(s, config.APICredential{ID: "dead", Hash: config.HashToken("x"), Expires: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)})
-
-	reapExpiredAPICredentials(s)
-
-	if authenticateAPICredential(s, frontendToken) == nil {
-		t.Fatal("reaping swept the legacy frontend credential")
-	}
-	if len(s.APICredentials) != 1 {
-		t.Fatalf("want only the legacy credential left, got %+v", s.APICredentials)
 	}
 }

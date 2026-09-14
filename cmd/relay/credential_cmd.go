@@ -33,7 +33,7 @@ func runCredentialCommand(args []string) {
 // surface to show why.
 var capabilityClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassGrant, control.ClassExecute, control.ClassProxy}
 
-var errReservedCredentialName = fmt.Errorf("%q is reserved for the RELAY_FRONTEND_TOKEN migration, which rewrites its hash on every relay start; it cannot be minted or revoked by hand", legacyFrontendCredentialName)
+var errReservedCredentialName = fmt.Errorf("%q is reserved: relay deletes every credential under that name on start; it cannot be minted or revoked by hand", legacyFrontendCredentialName)
 
 func formatClasses[T ~string](classes []T) string {
 	if len(classes) == 0 {

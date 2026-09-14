@@ -13,15 +13,15 @@ import (
 // silently pass by coincidence if the DTO ever gained a differently-named
 // but equally revealing field).
 func TestListProjectsAndGetProject_NeverCarryTokenOrHash(t *testing.T) {
-	router, proj, svcToken := newPtyTestRouter(t)
+	router, proj, svcCtx := newPtyTestRouter(t)
 
-	list, err := router.ListProjects(svcToken)
+	list, err := router.ListProjects(svcCtx, "")
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
 	assertNoTokenFields(t, "ListProjects", list)
 
-	got, err := router.GetProject(proj.ID, svcToken)
+	got, err := router.GetProject(svcCtx, proj.ID, "")
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}

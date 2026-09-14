@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -200,8 +200,12 @@ type appRouter struct {
 	// caps for remote callers (ADR-010 decision 7). The zero value enforces
 	// (see enrolment.Budgets), so there is no way to end up with an
 	// unbudgeted router by omission.
-	budgets       enrolment.Budgets
-	serviceTokens serviceTokenStore
+	budgets enrolment.Budgets
+	// launches is the table the service registry records launches in and
+	// Hello binds (docs/launch-identity.md). Nil means no caller can hold a
+	// launch identity: every Hello is refused and every service operation
+	// with it.
+	launches *service.Launches
 
 	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
 	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
@@ -235,44 +239,26 @@ type appRouter struct {
 	evePasskeyOps *EvePasskeyOps
 }
 
-const serviceTokenName = "service"
+// serviceIdentityName is the Name of the synthetic StoredToken a bridge
+// service identity resolves to. It holds every MCP unfiltered; nothing but
+// resolveServiceIdentity ever builds one.
+const serviceIdentityName = "service"
 
-// serviceTokenStore holds ephemeral in-memory tokens for managed services.
-// Tokens are never persisted -- if relay crashes, both the tokens and the
-// services that use them disappear together.
-type serviceTokenStore struct {
-	mu     sync.Mutex
-	hashes map[string]*config.StoredToken // hash -> synthetic StoredToken with full access
-}
-
-func (s *serviceTokenStore) Register(hash string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.hashes == nil {
-		s.hashes = make(map[string]*config.StoredToken)
+// bridgeServiceIdentity returns the bridge-service identity bound to this
+// request's peer, if there is one. A frontend-consumer identity is not one.
+func (r *appRouter) bridgeServiceIdentity(ctx context.Context) (service.Identity, bool) {
+	id, ok := r.launches.Lookup(bridge.CallerPeerFromContext(ctx))
+	if !ok || !id.IsBridgeService() {
+		return service.Identity{}, false
 	}
-	s.hashes[hash] = &config.StoredToken{
-		Name: serviceTokenName,
-		Hash: hash,
+	return id, true
+}
+
+func (r *appRouter) resolveServiceIdentity(ctx context.Context) *config.StoredToken {
+	if _, ok := r.bridgeServiceIdentity(ctx); !ok {
+		return nil
 	}
-}
-
-func (s *serviceTokenStore) Remove(hash string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.hashes, hash)
-}
-
-func (s *serviceTokenStore) Lookup(hash string) *config.StoredToken {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hashes[hash]
-}
-
-func (s *serviceTokenStore) Len() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.hashes)
+	return &config.StoredToken{Name: serviceIdentityName}
 }
 
 var (
@@ -281,22 +267,22 @@ var (
 	_ ServiceReloader   = (*service.Registry)(nil)
 )
 
-// resolveAuth: with no token, falls back to directory auth (resolveCwdAuth),
-// opt-in per project. A token that is present but wrong is always a hard
-// failure -- the fallback must never rescue a bad credential, only the
-// absence of one.
+// resolveAuth, in order: a present token is a project token or a hard
+// failure; no token from a peer bound as a bridge service is that service;
+// any other tokenless caller falls back to directory auth (resolveCwdAuth),
+// opt-in per project. The fallback must never rescue a bad credential, only
+// the absence of one.
 func (r *appRouter) resolveAuth(ctx context.Context, token string) (*config.StoredToken, *config.Settings, error) {
 	if token == "" {
+		if stored := r.resolveServiceIdentity(ctx); stored != nil {
+			return stored, r.store.Get(), nil
+		}
 		return r.resolveCwdAuth(ctx)
 	}
 
 	s := r.store.Get()
 
 	hash := config.HashToken(token)
-	if tok := r.serviceTokens.Lookup(hash); tok != nil {
-		return tok, s, nil
-	}
-
 	if stored := s.AuthenticateProjectByHash(hash); stored != nil {
 		return stored, s, nil
 	}
@@ -334,11 +320,11 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*config.StoredToken, *c
 // calls on. Logged rather than only withheld, so a name that vanishes from a
 // listing isn't the silent half of the failure; the log fires only for a
 // configuration that is already broken.
-func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Settings, isServiceToken bool) map[string]bool {
+func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Settings, isService bool) map[string]bool {
 	owners := map[string]int{}
 	for _, ext := range s.ExternalMcps {
 		for _, t := range r.tools.Tools(ext.ID) {
-			if isServiceToken || grantRoutesToolTo(stored, ext.ID, t.Name) {
+			if isService || grantRoutesToolTo(stored, ext.ID, t.Name) {
 				owners[t.Name]++
 			}
 		}
@@ -396,16 +382,16 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	}
 	au.setActor(ctx, stored, settings, token)
 
-	isServiceToken := stored.Name == serviceTokenName
+	isService := stored.Name == serviceIdentityName
 	groups := map[string][]mcp.Tool{}
-	ambiguous := r.ambiguousToolNames(stored, settings, isServiceToken)
+	ambiguous := r.ambiguousToolNames(stored, settings, isService)
 	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
+		if !isService && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		view := newScopeView(r, stored, ext.ID, isServiceToken)
+		view := newScopeView(r, stored, ext.ID, isService)
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
+			if !isService && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
 			// project.AppendScopeNote is idempotent, so the two listing paths cannot
@@ -502,10 +488,10 @@ func grantRoutesToolTo(tok *config.StoredToken, mcpID, toolName string) bool {
 // outside the grant. When no owner is granted even at the MCP level, the
 // call is refused here, in terms of the grant's own MCPs -- never by naming
 // an MCP the caller was never granted.
-func resolveToolOwner(stored *config.StoredToken, isServiceToken bool, toolName string, owners []string, granted []string) (string, error) {
+func resolveToolOwner(stored *config.StoredToken, isService bool, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
-		if isServiceToken || grantRoutesToolTo(stored, id, toolName) {
+		if isService || grantRoutesToolTo(stored, id, toolName) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -541,10 +527,10 @@ func noGrantedOwnerError(toolName string, granted []string) error {
 // grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP
 // level -- the set a noGrantedOwnerError refusal is allowed to name, since
 // the caller already knows it holds them.
-func grantedMcpIDsForToken(stored *config.StoredToken, isServiceToken bool, s *config.Settings) []string {
+func grantedMcpIDsForToken(stored *config.StoredToken, isService bool, s *config.Settings) []string {
 	var ids []string
 	for _, ext := range s.ExternalMcps {
-		if isServiceToken || checkToolAccess(stored, ext.ID, "", nil) == nil {
+		if isService || checkToolAccess(stored, ext.ID, "", nil) == nil {
 			ids = append(ids, ext.ID)
 		}
 	}
@@ -567,7 +553,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	}
 	au.setActor(ctx, stored, settings, token)
 
-	isServiceToken := stored.Name == serviceTokenName
+	isService := stored.Name == serviceIdentityName
 
 	owners := r.tools.ToolOwners(name)
 	// An MCP that is connected but absent from settings.ExternalMcps gets no
@@ -587,7 +573,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// the _meta assembly, the scope checks and the audit's mcp_id all take a
 	// single resolved MCP as given, and an ambiguous name has no such thing
 	// to give them.
-	extID, err := resolveToolOwner(stored, isServiceToken, name, owners, grantedMcpIDsForToken(stored, isServiceToken, settings))
+	extID, err := resolveToolOwner(stored, isService, name, owners, grantedMcpIDsForToken(stored, isService, settings))
 	if err != nil {
 		au.done(audit.AuditOutcomeDenied, err)
 		return nil, err
@@ -620,7 +606,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// than from the project, so a `denied` or `throttled` record still shows
 	// which mode and scope the call was judged against, not only a
 	// permitted one.
-	if !isServiceToken {
+	if !isService {
 		au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
 
 		// A declaration relay could not read. Checked before every other
@@ -843,8 +829,8 @@ type scopeView struct {
 	scoped bool
 }
 
-func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string, isServiceToken bool) scopeView {
-	if isServiceToken || stored == nil {
+func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string, isService bool) scopeView {
+	if isService || stored == nil {
 		return scopeView{}
 	}
 	surface := r.tools.McpSurfaceFor(mcpID)
@@ -944,36 +930,50 @@ func (r *appRouter) ReloadService(id string) error {
 	return nil
 }
 
-// requireServiceToken deliberately resolves against a bare context:
-// service-token operations (ResolvePtyEnv, RegisterManifest, project reads)
-// must never be reachable by directory auth, which only ever yields a
-// project-scoped token.
-func (r *appRouter) requireServiceToken(token, op string) error {
-	stored, _, err := r.resolveAuth(context.Background(), token)
+// requireServiceIdentity admits only a tokenless caller whose peer is bound
+// as a bridge service. It deliberately never consults resolveAuth: a present
+// token can only be a project token, and directory auth only ever yields a
+// project, so neither may reach a service operation.
+func (r *appRouter) requireServiceIdentity(ctx context.Context, token, op string) (service.Identity, error) {
+	if token != "" {
+		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires the calling service's launch identity, not a token", op))
+	}
+	id, ok := r.bridgeServiceIdentity(ctx)
+	if !ok {
+		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires a bridge service launch identity", op))
+	}
+	return id, nil
+}
+
+// Hello binds a launch secret to the caller's peer audit token. The result
+// recognises the caller and carries no credential.
+func (r *appRouter) Hello(ctx context.Context, name, secret string) (bridge.HelloResult, error) {
+	if r.launches == nil {
+		return bridge.HelloResult{}, fmt.Errorf("%w: no launch table", service.ErrHelloRefused)
+	}
+	id, err := r.launches.Bind(name, secret, bridge.CallerPeerFromContext(ctx))
 	if err != nil {
-		return err
+		return bridge.HelloResult{}, err
 	}
-	if stored.Name != serviceTokenName {
-		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires a service token", op))
-	}
-	return nil
+	slog.Info("launch identity bound", "kind", id.Kind, "name", id.Name, "pid", id.Process.PID, "frontend_consumer", id.FrontendConsumer)
+	return bridge.HelloResult{Kind: string(id.Kind), ServiceID: id.Name, RelayPID: os.Getpid()}, nil
 }
 
 // ListProjects and GetProject answer through projectToView/projectsToView —
 // the same allow-list the eve-facing HTTP routes project through
 // (project_dto.go) — rather than marshalling the raw Project. Marshalling
-// Project directly would hand any service-token holder every project's
+// Project directly would hand any bridge service every project's
 // plaintext token: ResolvePtyEnv below is the sole plaintext-token egress
 // over the bridge, and no other bridge response may carry one.
-func (r *appRouter) ListProjects(token string) (json.RawMessage, error) {
-	if err := r.requireServiceToken(token, "ListProjects"); err != nil {
+func (r *appRouter) ListProjects(ctx context.Context, token string) (json.RawMessage, error) {
+	if _, err := r.requireServiceIdentity(ctx, token, "ListProjects"); err != nil {
 		return nil, err
 	}
 	return json.Marshal(projectsToView(r.store.Get().Projects))
 }
 
-func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error) {
-	if err := r.requireServiceToken(token, "GetProject"); err != nil {
+func (r *appRouter) GetProject(ctx context.Context, id string, token string) (json.RawMessage, error) {
+	if _, err := r.requireServiceIdentity(ctx, token, "GetProject"); err != nil {
 		return nil, err
 	}
 	proj, _ := config.FindProjectByID(r.store.Get(), id)
@@ -986,7 +986,7 @@ func (r *appRouter) GetProject(id string, token string) (json.RawMessage, error)
 // DescribeProject lets a process launched holding only RELAY_PROJECT_TOKEN
 // configure itself from the grant relay enforces, rather than from a second
 // copy of it on disk. A tokenless caller is refused rather than resolved by
-// directory auth, and so is a service token, which names no project.
+// directory auth or by launch identity, since a service names no project.
 func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.ProjectDescription, error) {
 	if token == "" {
 		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
@@ -995,7 +995,7 @@ func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.P
 	if err != nil {
 		return bridge.ProjectDescription{}, err
 	}
-	if stored.Name == serviceTokenName || stored.ProjectID == "" {
+	if stored.Name == serviceIdentityName || stored.ProjectID == "" {
 		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
 	}
 	proj, _ := config.FindProjectByID(settings, stored.ProjectID)
@@ -1040,18 +1040,18 @@ type mcpListing struct {
 // settings order. DescribeProject reads the same grouping, so the tools a
 // description names can never differ from the tools ListTools lists.
 func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *config.Settings) []mcpListing {
-	isServiceToken := stored.Name == serviceTokenName
-	ambiguous := r.ambiguousToolNames(stored, settings, isServiceToken)
+	isService := stored.Name == serviceIdentityName
+	ambiguous := r.ambiguousToolNames(stored, settings, isService)
 
 	var out []mcpListing
 	for _, ext := range settings.ExternalMcps {
-		if !isServiceToken && checkToolAccess(stored, ext.ID, "", nil) != nil {
+		if !isService && checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		view := newScopeView(r, stored, ext.ID, isServiceToken)
+		view := newScopeView(r, stored, ext.ID, isService)
 		listing := mcpListing{mcpID: ext.ID}
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isServiceToken && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
+			if !isService && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
 			if !view.listable(t.Name) {
@@ -1074,7 +1074,7 @@ func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *con
 // never expose it in argv, files, or logs. Remote projects are refused
 // outright -- see refuseRemotePty.
 func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
-	if err := r.requireServiceToken(token, "ResolvePtyEnv"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, "ResolvePtyEnv"); err != nil {
 		return bridge.PtyEnvResponse{}, err
 	}
 
@@ -1128,7 +1128,7 @@ func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest,
 // that surface. Do not be tempted to reuse GetProject here -- that marshals
 // the raw Project including its plaintext token.
 func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.ShellTemplateRequest, token string) (bridge.ShellTemplateResponse, error) {
-	if err := r.requireServiceToken(token, "ResolveProjectTemplate"); err != nil {
+	if _, err := r.requireServiceIdentity(ctx, token, "ResolveProjectTemplate"); err != nil {
 		return bridge.ShellTemplateResponse{}, err
 	}
 
@@ -1261,13 +1261,21 @@ func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
 	return nil
 }
 
-// RegisterManifest authenticates the service token then forwards the full
-// record to the enhanced-services registry. The registry handles conflict
-// detection and triggers an onChange notification so the front-door
-// dispatcher rebuilds its routing table.
-func (r *appRouter) RegisterManifest(_ context.Context, req bridge.RegisterManifestRequest, token string) error {
-	if err := r.requireServiceToken(token, bridge.ReqRegisterManifest); err != nil {
+// RegisterManifest authenticates the caller's bridge service identity then
+// forwards the full record to the enhanced-services registry. The registry
+// handles conflict detection and triggers an onChange notification so the
+// front-door dispatcher rebuilds its routing table.
+//
+// A service registers only under its own launch name. The registry forgets a
+// manifest by the id of the launch that exited, so a manifest under any other
+// id would outlive the process that serves it.
+func (r *appRouter) RegisterManifest(ctx context.Context, req bridge.RegisterManifestRequest, token string) error {
+	id, err := r.requireServiceIdentity(ctx, token, bridge.ReqRegisterManifest)
+	if err != nil {
 		return err
+	}
+	if req.ServiceID != id.Name {
+		return jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s: service %q may not register a manifest for %q", bridge.ReqRegisterManifest, id.Name, req.ServiceID))
 	}
 	if err := r.enhanced.RegisterManifest(req.ServiceID, req.InternalSocket, req.InternalToken, req.Manifest); err != nil {
 		return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, err)

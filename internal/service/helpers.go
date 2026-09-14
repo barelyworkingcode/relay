@@ -8,10 +8,27 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 )
 
+// ScrubEnv removes every entry for each of names from cmd's environment.
+func ScrubEnv(cmd *exec.Cmd, names ...string) {
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[n] = true
+	}
+	base := cmd.Environ()
+	kept := make([]string, 0, len(base))
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if !drop[key] {
+			kept = append(kept, kv)
+		}
+	}
+	cmd.Env = kept
+}
+
 // MergeEnv adds environment variables to a command, replacing rather than
 // duplicating any existing entry for the same key. Registry.Start calls this
 // several times per spawn — once for the operator's cfg.Env, then again for
-// relay's own RELAY_* injections (service token, frontend creds, bridge
+// relay's own RELAY_* injections (bridge socket, launch fd, frontend
 // socket) — and a later call must always win: a duplicate key in a child's
 // envp is otherwise implementation-defined (which one getenv returns depends
 // on the runtime reading it), which is not a fact relay's own credentials
