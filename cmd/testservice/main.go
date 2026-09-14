@@ -27,6 +27,7 @@ import (
 func main() {
 	register := flag.Bool("register", false, "send RegisterManifest before serving")
 	statusAfter := flag.Duration("status-after", 0, "exit after this duration (0 = block on signal)")
+	exitCode := flag.Int("exit-code", 0, "exit with this code when --status-after elapses (simulates a crash, e.g. 78 for EX_CONFIG)")
 	dumpEnv := flag.String("dump-env", "", "write os.Environ() (one VAR=value per line) to this file, then continue")
 	flag.Parse()
 
@@ -125,8 +126,11 @@ func main() {
 
 	if *statusAfter > 0 {
 		time.Sleep(*statusAfter)
-		log.Printf("testservice %s exiting after %s", serviceID, *statusAfter)
-		return
+		log.Printf("testservice %s exiting after %s with code %d", serviceID, *statusAfter, *exitCode)
+		// os.Exit rather than return: a supervision test needs the exact
+		// exit code relay's reaper will see (a crashed real service does
+		// not run its own deferred cleanup either), including 0.
+		os.Exit(*exitCode)
 	}
 
 	sigs := make(chan os.Signal, 1)

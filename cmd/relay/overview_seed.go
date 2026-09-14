@@ -89,6 +89,38 @@ func serviceRuntimeToNativeView(rt map[string]service.ServiceRuntime) map[string
 // services started in the same second onto the same displayed time.
 const rfc3339Milli = "2006-01-02T15:04:05.000Z07:00"
 
+// nativeServiceSupervisionView is service.SupervisionStatus projected for the
+// WebView: NextAttempt as RFC3339 (empty when not restarting) rather than Go's
+// zero-time encoding, matching serviceRuntimeToNativeView's timestamp above.
+// An id absent from the map relay is not supervising -- never started this
+// session, or the operator stopped it -- and reads as plain running/stopped
+// from running_ids/runtime exactly as it always has; no UI file needs to
+// change to keep working, this is purely additive.
+type nativeServiceSupervisionView struct {
+	Phase        string `json:"phase"`
+	Attempt      int    `json:"attempt"`
+	NextAttempt  string `json:"next_attempt,omitempty"`
+	LastExitCode int    `json:"last_exit_code,omitempty"`
+	HasExitCode  bool   `json:"has_exit_code,omitempty"`
+}
+
+func serviceSupervisionToNativeView(statuses map[string]service.SupervisionStatus) map[string]nativeServiceSupervisionView {
+	out := make(map[string]nativeServiceSupervisionView, len(statuses))
+	for id, st := range statuses {
+		v := nativeServiceSupervisionView{
+			Phase:        string(st.Phase),
+			Attempt:      st.Attempt,
+			LastExitCode: st.LastExitCode,
+			HasExitCode:  st.HasExitCode,
+		}
+		if !st.NextAttempt.IsZero() {
+			v.NextAttempt = st.NextAttempt.UTC().Format(rfc3339Milli)
+		}
+		out[id] = v
+	}
+	return out
+}
+
 // pathsView is the Overview footer's "Reveal" targets: relay's config
 // directory (settings.json, ca.crt, ca.key.sealed) and its log directory
 // (relay's own log, the audit log, and every managed service's).

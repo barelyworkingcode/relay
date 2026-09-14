@@ -106,7 +106,10 @@ peertoken/               Reads a Unix-socket peer's kernel audit token (LOCAL_PE
                          package, so presence/ (audit session) and bridge/ (launch identity) share
                          one reader.
 service/                 Background service supervision: process lifecycle and the launch fd
-                         (service_registry.go), the launch-identity table Hello binds and every
+                         (service_registry.go), restart-on-crash policy and state
+                         (supervision.go, docs/service-manifest.md#restart-supervision) with an
+                         injectable Clock for its backoff sleep (clock.go, real in production, a
+                         FakeClock in tests), the launch-identity table Hello binds and every
                          identity lookup reads (launch_identity.go, docs/launch-identity.md),
                          pidfiles under run/ for orphan reclaim after
                          a force-quit (service_pidfile.go), generic per-service status polling and
@@ -486,6 +489,13 @@ service's internal socket using its declared token; WS upgrades share the same
 handler. The protocol is intentionally minimal — no version, no capability
 declarations, no service-ID hardcoding anywhere in relay. Full spec:
 [`docs/service-manifest.md`](docs/service-manifest.md).
+
+Every service relay started this session (autostart or an explicit `Start`)
+is supervised: an exit relay did not request is restarted through a fresh
+`Start` (new secret, new Hello) with exponential backoff, and marked failed
+with its last exit code after `ServiceRestartMaxAttempts` consecutive
+failures — never a service the operator stopped. Restart supervision:
+[`docs/service-manifest.md#restart-supervision`](docs/service-manifest.md#restart-supervision).
 
 ## Security
 

@@ -74,13 +74,15 @@ func (a *App) pushServiceStatus() {
 }
 
 // serviceStatusEventPayload is onServiceStatus's shared shape: running_ids
-// carries whatever it always has, and runtime rides along so the Services
-// tab's "pid 21093 · up 2h 14m" line updates on the same event a start/stop
-// already fires, instead of waiting for the next full onSettingsReloaded.
+// and runtime carry whatever they always have, and supervision rides along
+// the same way -- keyed by id, present only for a service relay is actively
+// supervising the restart campaign of, so a Settings build that doesn't
+// render it yet is unaffected.
 func serviceStatusEventPayload(reg service.Manager) map[string]interface{} {
 	return map[string]interface{}{
 		"running_ids": reg.RunningIDs(),
 		"runtime":     serviceRuntimeToNativeView(reg.Runtime()),
+		"supervision": serviceSupervisionToNativeView(reg.SupervisionStatuses()),
 	}
 }
 
