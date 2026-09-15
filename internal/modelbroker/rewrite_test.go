@@ -188,3 +188,33 @@ func TestRewriteMultipartModel_NoModelFieldStillCopiesFile(t *testing.T) {
 		t.Fatal("file part did not survive a body with no model field")
 	}
 }
+
+// TestRewriteJSONModel_PreservesBigNumbersByteForByte is the UseNumber nit's
+// forwarding half (relay#116 re-review): RewriteJSONModel decodes into
+// map[string]json.RawMessage, which never parses a field's value at all —
+// only "model" itself is ever replaced — so a number literal outside
+// float64's safe range must survive rewriting exactly as the caller wrote
+// it, not as whatever float64 would round-trip it to.
+func TestRewriteJSONModel_PreservesBigNumbersByteForByte(t *testing.T) {
+	const thirtyDigitInt = "123456789012345678901234567890"
+	const hugeExponent = "1e400"
+	body := []byte(`{"model":"llama/x","big_int":` + thirtyDigitInt + `,"big_exp":` + hugeExponent + `}`)
+
+	out, err := RewriteJSONModel(body, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got["big_int"]) != thirtyDigitInt {
+		t.Fatalf("big_int = %s, want byte-identical %s", got["big_int"], thirtyDigitInt)
+	}
+	if string(got["big_exp"]) != hugeExponent {
+		t.Fatalf("big_exp = %s, want byte-identical %s", got["big_exp"], hugeExponent)
+	}
+	if string(got["model"]) != `"x"` {
+		t.Fatalf("model = %s, want \"x\"", got["model"])
+	}
+}
