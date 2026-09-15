@@ -50,6 +50,54 @@ func TestServiceOps_Create_RefusesUnsafeIDBeforePersisting(t *testing.T) {
 	}
 }
 
+// TestServiceOps_Create_RefusesTheBuiltinRelaySessionsID pins R-S9: relay
+// service register --capability sessions is refused, whichever id it names.
+// Naming any OTHER id already fails ServiceConfig.Validate's own capability
+// check (config.RelaySessionsServiceID is the only record allowed to hold
+// ServiceCapabilitySessions); this closes the one id that check lets
+// through, since relay-sessions is built in and never user-registered
+// (spec-session-host.md §2.1) regardless of what capability is requested.
+func TestServiceOps_Create_RefusesTheBuiltinRelaySessionsID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+	sessionsCaps := []config.ServiceCapability{config.ServiceCapabilitySessions}
+
+	_, err := r.serviceOps.Create(context.Background(), serviceFields{
+		ID:           config.RelaySessionsServiceID,
+		DisplayName:  "Evil Session Host",
+		Command:      "/tmp/evil-relay-sessions",
+		Capabilities: &sessionsCaps,
+	}, auditViaCLI, "")
+	if err == nil {
+		t.Fatal("expected registering the reserved relaysessions id to be refused")
+	}
+	if len(store.Get().Services) != 0 {
+		t.Fatalf("no service should have been persisted, got %+v", store.Get().Services)
+	}
+}
+
+// TestServiceOps_Create_CapabilitySessionsRefusedForAnyOtherID is the other
+// half: naming ANY id but the reserved one and asking for the sessions
+// capability is refused too (ServiceConfig.Validate, exercised here through
+// the same door an operator actually uses).
+func TestServiceOps_Create_CapabilitySessionsRefusedForAnyOtherID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+	sessionsCaps := []config.ServiceCapability{config.ServiceCapabilitySessions}
+
+	_, err := r.serviceOps.Create(context.Background(), serviceFields{
+		DisplayName:  "Not The Session Host",
+		Command:      "/bin/true",
+		Capabilities: &sessionsCaps,
+	}, auditViaCLI, "")
+	if err == nil {
+		t.Fatal("expected the sessions capability to be refused for a non-built-in id")
+	}
+	if len(store.Get().Services) != 0 {
+		t.Fatalf("no service should have been persisted, got %+v", store.Get().Services)
+	}
+}
+
 func TestServiceOps_Update_RefusesRelayPrefixedEnvBeforePersisting(t *testing.T) {
 	store := newCLISandboxStore(t)
 	r := newBrokerRouter(t, store, nil)

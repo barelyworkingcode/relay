@@ -230,6 +230,15 @@ func runTrayApp() {
 		slog.Error("failed to initialize settings", "error", err)
 		os.Exit(1)
 	}
+	// C8: this build carries the session host and model broker, so the
+	// model_endpoint block's own "absent means disabled" default (which
+	// predates both) is turned on the first time such a build starts --
+	// once written, an operator's own choice (including clearing it back
+	// to disabled) is never touched again. Best-effort: a degraded store
+	// simply cannot write yet, same as every other write on one.
+	if err := store.With(func(s *config.Settings) { config.EnsureDefaultModelEndpoint(s) }); err != nil {
+		slog.Warn("could not write the default model_endpoint block", "error", err)
+	}
 	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
 		// §5.6: the read half works in full from here on — relay grant,
@@ -502,6 +511,21 @@ func runTrayApp() {
 	registry.Launches = launches
 	router.launches = launches
 
+	// SP3/R-S9: relay-sessions is the one service whose code identity is
+	// pinned, both before it is spawned and again at its own Hello. Only a
+	// build carrying an embedded helper cdhash (build.sh's Helpers step) can
+	// construct the real verifier; a plain `go build` leaves both nil and
+	// simply does not gate this service any more strictly than any other --
+	// exactly this repo's own hermetic test suite and a developer checkout.
+	if HelperCDHash != "" {
+		if v, err := service.NewDarwinHelperVerifier(HelperTeam, HelperCDHash); err != nil {
+			slog.Error("relay-sessions helper verifier could not be constructed; the built-in session host will not start", "error", err)
+		} else {
+			registry.HelperVerifier = v
+			launches.SetHelperVerifier(v)
+		}
+	}
+
 	// The model endpoint's own tables: at most one live upstream, and the
 	// model keys minted for it (docs/model-endpoint.md). Wired onto the
 	// router so RegisterModelHost can reach modelHosts under the same launch
@@ -619,6 +643,13 @@ func runTrayApp() {
 	// Runs after StartAll (MCP handshakes have completed) so tool lists are
 	// populated; best-effort — errors are logged inside regenProjectSkills.
 	router.regenProjectSkills(ctx, settings)
+	// The built-in relay-sessions record (SH §2.1): synthesized here, every
+	// start, never read from settings.json beyond the autostart bit --
+	// internal/config's sanitizeIfBuiltin already stripped any stored
+	// Command, this is what puts the real one in. settings is store.Get()'s
+	// own clone, so mutating it here never touches the file.
+	settings.Services = service.EnsureBuiltinRelaySessionsService(settings.Services, resolveRelayBin(), configDir)
+
 	// Reclaim orphans from a previous tray session that was killed before
 	// the reaper could SIGTERM its children. Without this, autostart of any
 	// port-binding service (scheduler, kokoro, whisper, comfy) fails with
