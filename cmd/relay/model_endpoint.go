@@ -668,7 +668,7 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	if !ok {
 		eb := modelbroker.ModelNotFoundError(route.Shape, reason)
 		m.writeError(w, eb)
-		m.audit(m.auditFor(caller, transport, r, eb.Status, reason, start, requested, ""))
+		m.audit(m.auditFor(caller, transport, r, eb.Status, reason, start, requested, canonical))
 		return
 	}
 
