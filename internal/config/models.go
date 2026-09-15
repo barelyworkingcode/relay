@@ -227,7 +227,10 @@ type ServiceConfig struct {
 type ServiceCapability string
 
 const (
-	// ServiceCapabilityFrontend is the frontend socket as read+configure+proxy.
+	// ServiceCapabilityFrontend is the frontend socket as
+	// read+configure+proxy+execute (never grant); see
+	// cmd/relay/api_credential.go's frontendConsumerClasses for what execute
+	// does and doesn't gate on this socket.
 	ServiceCapabilityFrontend ServiceCapability = "frontend"
 	// ServiceCapabilityManifest is RegisterManifest under the service's own id.
 	ServiceCapabilityManifest ServiceCapability = "manifest"

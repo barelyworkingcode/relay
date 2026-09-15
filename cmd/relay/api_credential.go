@@ -251,15 +251,27 @@ const legacyFrontendCredentialName = "legacy-frontend-token"
 // (plan-broker-and-sessions.md, "Decisions on this plan"): eve's frontend
 // launch identity gets execute so it can reach the session-host launch
 // routes (POST /api/terminals, POST /api/sessions, POST /api/sessions/{id}/
-// resume — sessionRouteClasses below) once R-S4b registers them. This is
-// safe now, and was not safe before F1 landed: execute on the frontend
-// socket also reaches POST /api/mcps and PUT /api/services/{id}
-// (ADR-016 decision 4), and those are exactly the routes F1 required to be
-// presence-gated first (`mcp.register`, `service.register`) — done — plus
-// PUT /api/remote, gated by relay#113 before this unit started. With every
-// execute route on this socket gated or (for the session routes) properly
-// scoped to a launch, there is no longer an ungated route for holding this
-// class to reach.
+// resume — sessionRouteClasses below) once R-S4b registers them. Every
+// execute route that can make relay execute a new command is unconditionally
+// presence-gated: POST /api/mcps (`mcp.register`), POST /api/services and
+// PUT /api/services/{id}'s command-setting fields (`service.register`), and
+// PUT /api/remote (relay#113).
+//
+// This is NOT the same as "no ungated execute route remains" — it is not
+// true, and F1's approval assumed it would be. Two conditionally-gated
+// narrowing/rename paths on this same socket have no prompt at all:
+// PUT /api/services/{id} renaming DisplayName or dropping a service's own
+// capabilities/allowed_models (serviceUpdateNeedsGate never inspects
+// DisplayName and treats narrowing as safe-by-default), and PUT /api/remote
+// with {"remove": true} or turning a listener off (remoteConfigChangedFields
+// only fires on turning one on). Both predate this change and were designed
+// for an operator-minted execute credential, not a background service
+// holding it by default; they are integrity/availability exposure (a
+// frontend-capable service can rename a sibling service or wipe the remote
+// config with no human prompt), not privilege escalation, since every
+// command-setting path stays gated. Flagged to the user as an open question
+// rather than silently tightened or silently accepted — see
+// STATUS-relay-security.md.
 var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy, control.ClassExecute}
 
 // sessionRouteClasses is plan-broker-and-sessions.md §2 C1's "Route classes

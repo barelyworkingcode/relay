@@ -210,11 +210,16 @@ document's *Fixtures* section so they cannot drift.
 | `POST /api/hosts/{id}/probe` | Configure | → `hostView` with fresh `probe`; 30 s cap |
 | `POST /api/hosts/{id}/disconnect` | Configure | `ssh -O exit`; → `hostView` |
 
-Probe and disconnect are Configure, not Execute, on purpose: they only
-rewrite the host record's own `probe` field and the local control socket,
-and eve's frontend credential carries `read`, `configure` and `proxy` but
-never `execute`, so an Execute class would make the dialog's *Test
-connection* button dead from the browser.
+Probe and disconnect are Configure, not Execute: they only rewrite the host
+record's own `probe` field and the local control socket. This choice was
+originally also justified by eve's frontend credential never holding
+`execute` — that premise changed under plan-broker-and-sessions.md's F1
+decision (eve's frontend launch identity now holds `execute`, for the
+session-host launch routes), so an Execute class would no longer make the
+dialog's *Test connection* button dead from the browser the way it once
+would have. The classification itself is unchanged here and needs a fresh
+look against the current premise, not assumed still correct because it once
+was — see STATUS-relay-security.md.
 
 `hostView` is the record above plus two derived, read-only fields:
 
