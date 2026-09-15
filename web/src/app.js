@@ -14,6 +14,10 @@ const PROJECTS_INIT = window.__RELAY_INIT__.projects;
 // (docs/ssh-hosts.md). Seeded like projects: the list is small, and both the
 // Hosts tab and the project form's Where control need it on the first paint.
 const HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
+// Terminal launch templates (internal/config/templates.go). Seeded like
+// Hosts: the list is small (five built-ins plus any override) and this tab
+// is read-only, so there is no form to protect from a push-sourced repaint.
+const TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
 const MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
 // What each MCP declares as narrowable: its scope: "restrict" fields, already
 // projected by Go (ScopeFieldView) so the rule that an absent `source` means
@@ -149,6 +153,9 @@ let state = {
     hostProbePending: {},     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
     hostError: null,
 
+    // Templates tab: read-only, no form/error state to track.
+    templates: TEMPLATES_INIT,
+
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
     // fetched when an operator opens the control and cached for the life of
@@ -232,7 +239,7 @@ function showPage(page) {
     state.page = page;
     // Positional against the sidebar items in web/shell.html — adding one
     // there without adding it here highlights the wrong row.
-    const pages = ['overview', 'services', 'mcps', 'projects', 'hosts', 'remote', 'passkeys', 'inspector', 'audit'];
+    const pages = ['overview', 'services', 'mcps', 'projects', 'hosts', 'templates', 'remote', 'passkeys', 'inspector', 'audit'];
     document.querySelectorAll('.sidebar-item').forEach((el, i) => {
         const selected = pages[i] === page;
         el.classList.toggle('active', selected);
@@ -248,7 +255,15 @@ function showPage(page) {
     // network peer can change the table while the operator is on another tab.
     // The Overview tab's "Needs attention" list counts them too.
     if (page === 'remote' || page === 'overview') listEnrolmentRequests();
+    // Templates has no mutation route to push a fresh list after (read-only
+    // in this unit), so the tab re-fetches on every visit instead — cheap,
+    // and it picks up a hand-edited settings.json without a restart.
+    if (page === 'templates') listTemplates();
     render();
+}
+
+function listTemplates() {
+    ipc(JSON.stringify({ type: 'list_templates' }));
 }
 
 const JSON_PLACEHOLDER = JSON.stringify({"my-server": {"command": "npx", "args": ["-y", "@example/server"], "env": {"API_KEY": "..."}}}, null, 2);
@@ -299,6 +314,9 @@ function render(source) {
         if (fromPush && state.editingHostId) return;
         state._actBind = [];
         el.innerHTML = renderHosts();
+    } else if (state.page === 'templates') {
+        state._actBind = [];
+        el.innerHTML = renderTemplates();
     } else if (state.page === 'remote') {
         // Skip a push-sourced repaint while the create form is open or the
         // listener block has uncommitted edits, for the same reason the
@@ -3925,6 +3943,49 @@ function renderHostProbeSummary(h) {
         : '<span class="pill muted">claude missing</span>';
     return html;
 }
+
+// ---------------------------------------------------------------------------
+// Templates tab (internal/config/templates.go)
+// ---------------------------------------------------------------------------
+//
+// Read-only: built-ins are seeded in Go, and the only override points
+// (Settings.TerminalTemplates, a project's ShellTemplates) have no editor
+// yet, so there is nothing here to create, edit or remove.
+
+function templateCommandLine(t) {
+    const parts = [t.command || '(default shell)'].concat(t.args || []);
+    return parts.map(esc).join(' ');
+}
+
+function renderTemplates() {
+    let html = '<div class="page-header"><h2>Templates</h2></div>';
+    html += '<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project\'s own Shell Templates override them.</p>';
+
+    if ((state.templates || []).length === 0) {
+        html += '<div class="empty-state">No templates.</div>';
+        return html;
+    }
+
+    for (const t of state.templates) {
+        html += '<div class="proj-card">';
+        html += '<div class="proj-card-header">';
+        html += '<div style="display:flex;align-items:center;gap:8px">';
+        html += '<span class="proj-card-name">' + esc(t.name) + '</span>';
+        if (t.builtIn) html += '<span class="pill muted">built-in</span>';
+        if (t.sandbox) html += '<span class="pill ok">sandboxed</span>';
+        if (t.model_key) html += '<span class="pill ok">model key</span>';
+        html += '</div></div>';
+        html += '<div class="proj-card-path">' + templateCommandLine(t) + '</div>';
+        if (t.description) html += '<div class="proj-card-meta"><span>' + esc(t.description) + '</span></div>';
+        html += '</div>';
+    }
+    return html;
+}
+
+window.onTemplatesListed = function(templates) {
+    state.templates = templates || [];
+    render('push');
+};
 
 function blankHostForm() {
     return { id: null, name: '', target: '', port: '', identity_file: '' };

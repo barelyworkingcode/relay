@@ -654,6 +654,7 @@ input.proj-field-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('mcps')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>MCP Servers</button>
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('projects')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</button>
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('hosts')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="4" width="20" height="8" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>Hosts</button>
+    <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('templates')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="18" rx="2"/><polyline points="7 9 10 12 7 15"/><line x1="12" y1="15" x2="16" y2="15"/></svg>Templates</button>
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('remote')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5"/></svg>Remote Clients</button>
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('passkeys')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v4"/><path d="M21 12v3"/></svg>Passkeys</button>
     <button type="button" class="sidebar-item" role="tab" aria-selected="false" onclick="showPage('inspector')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Service Inspector</button>
@@ -674,6 +675,7 @@ window.__RELAY_INIT__ = {
   runningIds: __RUNNING_IDS_JSON__,
   projects: __PROJECTS_JSON__,
   hosts: __HOSTS_JSON__,
+  templates: __TEMPLATES_JSON__,
   mcpToolCache: __MCP_TOOL_CACHE_JSON__,
   mcpScopeFields: __MCP_SCOPE_FIELDS_JSON__,
   enrolments: __ENROLMENTS_JSON__,
@@ -899,6 +901,7 @@ window.__RELAY_INIT__ = {
   var RUNNING_IDS_INIT = window.__RELAY_INIT__.runningIds;
   var PROJECTS_INIT = window.__RELAY_INIT__.projects;
   var HOSTS_INIT = window.__RELAY_INIT__.hosts || [];
+  var TEMPLATES_INIT = window.__RELAY_INIT__.templates || [];
   var MCP_TOOL_CACHE_INIT = window.__RELAY_INIT__.mcpToolCache;
   var MCP_SCOPE_FIELDS_INIT = window.__RELAY_INIT__.mcpScopeFields || {};
   var ENROLMENTS_INIT = window.__RELAY_INIT__.enrolments || [];
@@ -1015,6 +1018,8 @@ window.__RELAY_INIT__ = {
     hostProbePending: {},
     // id -> true while a probe/create/re-probe is in flight ('new' for the add form)
     hostError: null,
+    // Templates tab: read-only, no form/error state to track.
+    templates: TEMPLATES_INIT,
     // The enumeration picker (ADR-011 decision 6). Enumeration is a LIVE call
     // into another process, so none of this is populated by a paint: a list is
     // fetched when an operator opens the control and cached for the life of
@@ -1108,7 +1113,7 @@ window.__RELAY_INIT__ = {
   var AUDIT_MAX_ROWS = 500;
   function showPage(page) {
     state.page = page;
-    const pages = ["overview", "services", "mcps", "projects", "hosts", "remote", "passkeys", "inspector", "audit"];
+    const pages = ["overview", "services", "mcps", "projects", "hosts", "templates", "remote", "passkeys", "inspector", "audit"];
     document.querySelectorAll(".sidebar-item").forEach((el, i) => {
       const selected = pages[i] === page;
       el.classList.toggle("active", selected);
@@ -1116,7 +1121,11 @@ window.__RELAY_INIT__ = {
     });
     if ((page === "audit" || page === "overview") && !state.auditLoaded) queryAudit();
     if (page === "remote" || page === "overview") listEnrolmentRequests();
+    if (page === "templates") listTemplates();
     render();
+  }
+  function listTemplates() {
+    ipc(JSON.stringify({ type: "list_templates" }));
   }
   var JSON_PLACEHOLDER = JSON.stringify({ "my-server": { "command": "npx", "args": ["-y", "@example/server"], "env": { "API_KEY": "..." } } }, null, 2);
   function render(source) {
@@ -1144,6 +1153,9 @@ window.__RELAY_INIT__ = {
       if (fromPush && state.editingHostId) return;
       state._actBind = [];
       el.innerHTML = renderHosts();
+    } else if (state.page === "templates") {
+      state._actBind = [];
+      el.innerHTML = renderTemplates();
     } else if (state.page === "remote") {
       if (fromPush && (state.enrolForm || state.remoteDirty)) return;
       state._actBind = [];
@@ -3677,6 +3689,36 @@ window.__RELAY_INIT__ = {
     html += p.claude_path ? '<span class="pill ok">claude ' + esc(p.claude_version || "") + "</span>" : '<span class="pill muted">claude missing</span>';
     return html;
   }
+  function templateCommandLine(t) {
+    const parts = [t.command || "(default shell)"].concat(t.args || []);
+    return parts.map(esc).join(" ");
+  }
+  function renderTemplates() {
+    let html = '<div class="page-header"><h2>Templates</h2></div>';
+    html += `<p class="page-intro">Launch configs for project terminals: argv, env passthrough and the sandbox/model-key defaults a session inherits unless a project's own Shell Templates override them.</p>`;
+    if ((state.templates || []).length === 0) {
+      html += '<div class="empty-state">No templates.</div>';
+      return html;
+    }
+    for (const t of state.templates) {
+      html += '<div class="proj-card">';
+      html += '<div class="proj-card-header">';
+      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<span class="proj-card-name">' + esc(t.name) + "</span>";
+      if (t.builtIn) html += '<span class="pill muted">built-in</span>';
+      if (t.sandbox) html += '<span class="pill ok">sandboxed</span>';
+      if (t.model_key) html += '<span class="pill ok">model key</span>';
+      html += "</div></div>";
+      html += '<div class="proj-card-path">' + templateCommandLine(t) + "</div>";
+      if (t.description) html += '<div class="proj-card-meta"><span>' + esc(t.description) + "</span></div>";
+      html += "</div>";
+    }
+    return html;
+  }
+  window.onTemplatesListed = function(templates) {
+    state.templates = templates || [];
+    render("push");
+  };
   function blankHostForm() {
     return { id: null, name: "", target: "", port: "", identity_file: "" };
   }
