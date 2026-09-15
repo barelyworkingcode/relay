@@ -57,13 +57,15 @@ func TestLaunchCapabilities_EachSetReachesExactlyItsOperations(t *testing.T) {
 
 			// plan-broker-and-sessions.md §2 C1 deletes OpServiceTools: no
 			// capability set ever grants a service's launch identity a
-			// tokenless ListTools/CallTool path anymore.
+			// tokenless ListTools/CallTool path anymore. C3's step 2 refuses
+			// it as the identity it is, rather than letting it continue to
+			// the membership step beside it.
 			resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools})
 			if resp.Type == bridge.RespTools {
 				t.Errorf("tokenless ListTools listed tools for capabilities %v: %s", tc.caps, line)
 			}
-			if !strings.Contains(resp.Message, "token") {
-				t.Errorf("tokenless ListTools must fall to directory auth regardless of capabilities, got %q", resp.Message)
+			if resp.Code != jsonrpc.CodeUnauthorized || !strings.Contains(resp.Message, "launch identity") {
+				t.Errorf("tokenless ListTools for capabilities %v: got %q, want an unauthorized naming the launch identity", tc.caps, line)
 			}
 			if manifestHeld := slices.Contains(tc.caps, config.ServiceCapabilityManifest); (b.enhanced.Get(launch) != nil) != manifestHeld {
 				t.Errorf("manifest registered = %v, want %v", b.enhanced.Get(launch) != nil, manifestHeld)

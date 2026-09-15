@@ -177,7 +177,12 @@ const (
 )
 
 const (
-	AuditAuthToken   = "token"
+	AuditAuthToken = "token"
+	// Cwd named directory auth, which is retired (plan-broker-and-sessions.md
+	// §2 C3): relay no longer writes it. This is deliberate — it stays as the
+	// name for a value that exists in audit files already on disk, which
+	// `relay audit` still reads. Nothing may write it again; session
+	// membership is what replaced it.
 	AuditAuthCwd     = "cwd"
 	AuditAuthService = "service"
 	AuditAuthMTLS    = "mtls"
@@ -190,14 +195,17 @@ const (
 	AuditAuthModelKey = "model_key"
 
 	// Session is plan-broker-and-sessions.md §2 C1/C2's session-host
-	// authentication kind, reserved alongside AuditActorProjectSession.
-	// Nothing in this repo authenticates a caller this way yet.
+	// authentication kind, recorded alongside AuditActorProjectSession for a
+	// caller admitted as a session's root process or a kernel-verified
+	// descendant of one (C3).
 	AuditAuthSession = "session"
 )
 
-// Every field is derived from relay's own resolution or the kernel — never
-// from a value the caller supplied, except Cwd, which is caller-asserted and
-// only present for directory auth.
+// Every field is derived from relay's own resolution or the kernel, never
+// from a value the caller supplied. Cwd is the one exception and is no
+// longer written at all: it carried the caller-asserted working directory
+// of the retired directory auth, and remains only to read records that
+// already hold one (see AuditAuthCwd).
 type AuditActor struct {
 	Kind        string `json:"kind"`
 	ProjectID   string `json:"project_id,omitempty"`
@@ -223,6 +231,13 @@ type AuditActor struct {
 	// never the token or its hash — control.ControlDecision has no such field to
 	// leak, and this must stay that way.
 	CredID string `json:"cred_id,omitempty"`
+
+	// SessionID names the project_session that vouched for a caller
+	// (plan-broker-and-sessions.md §2 C3/C4): the session whose root process
+	// made the call, or whose descendant the kernel placed the caller in.
+	// Never a secret — a session id is relay-minted, held by the session's
+	// own processes, and load-bearing for reading an audit trail.
+	SessionID string `json:"session_id,omitempty"`
 
 	// ServiceID names a service actor's launch identity id on a model
 	// endpoint call (docs/model-endpoint.md). A tool-call service actor is

@@ -365,25 +365,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// AuthenticateByPath always returns nil: allow_cwd_auth is retired
-// (plan-broker-and-sessions.md §2 C3's "a cwd sent by a client is
-// ignored") — a caller's asserted working directory can no longer
-// identify a project by itself.
+// DirWithin reports whether dir is equal to or nested under projectPath,
+// seeing through symlinks and case-insensitive volumes.
 //
-// This is deliberate: router.go's resolveCwdAuth (cmd/relay, R-S2a's
-// exclusive file this wave) still calls this function by the same
-// signature. Gutting the body here — rather than deleting the function and
-// its call site together — retires the behavior without touching a file
-// this unit must not edit. R-S2a replaces resolveCwdAuth's caller-cwd path
-// with the C3 membership check and removes this call (and this stub)
-// entirely when it does.
-func AuthenticateByPath(s *config.Settings, dir string) *config.StoredToken {
-	return nil
-}
-
-// DirWithin reports whether dir is equal to or nested under
-// projectPath. An empty dir means "no directory to validate" and returns
-// true -- the LLM-provider path may send a project id with no cwd.
+// This is subtle, and it fails OPEN: an empty dir means "no directory to
+// validate" and returns TRUE. A caller that might not have a directory must
+// decide what an absent one means BEFORE asking — this function answers a
+// containment question, and "nothing to contain" is not a refusal it can
+// make on the caller's behalf.
 func DirWithin(dir, projectPath string) bool {
 	if dir == "" {
 		return true

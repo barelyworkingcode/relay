@@ -16,7 +16,6 @@ type stubRouter struct {
 	mu sync.Mutex
 
 	listToolsTokens   []string
-	listToolsCwds     []string
 	listToolsResponse json.RawMessage
 	listToolsErr      error
 
@@ -59,7 +58,6 @@ func (s *stubRouter) ListTools(ctx context.Context, token string) (json.RawMessa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listToolsTokens = append(s.listToolsTokens, token)
-	s.listToolsCwds = append(s.listToolsCwds, CallerCwdFromContext(ctx))
 	return s.listToolsResponse, s.listToolsErr
 }
 
@@ -208,49 +206,14 @@ func TestContract_ListTools(t *testing.T) {
 	}
 }
 
-// TestContract_TokenlessNeverSendsCwd is C3's client-side half
-// (plan-broker-and-sessions.md §2, "allow_cwd_auth is removed"): relay no
-// longer resolves a project from a caller-asserted working directory, so
-// the client has nothing to gain by sending one and does not.
-func TestContract_TokenlessNeverSendsCwd(t *testing.T) {
-	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock}
-
-	if _, err := c.ListTools(); err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	if got := router.listToolsCwds[0]; got != "" {
-		t.Fatalf("cwd sent to router; got %q, want none", got)
-	}
-	if got := router.listToolsTokens[0]; got != "" {
-		t.Fatalf("expected an empty token, got %q", got)
-	}
-}
-
-// NewClient never populates BridgeRequest.Cwd, tokened or not: the field
-// still exists on the wire (a stray sender may still set it, which the
-// server ignores per C3), but this client is not one — regardless of
-// whether a token is present.
-func TestNewClient_NeverPopulatesCwd(t *testing.T) {
-	if c := NewClient(""); c.sockPath == "" {
-		t.Fatal("NewClient did not set a socket path")
-	}
-	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
-	sock := startTestBridge(t, router)
-	for _, token := range []string{"", "some-token"} {
-		c := NewClient(token)
-		c.sockPath = sock
-		if _, err := c.ListTools(); err != nil {
-			t.Fatalf("ListTools (token=%q): %v", token, err)
-		}
-	}
-	for i, got := range router.listToolsCwds {
-		if got != "" {
-			t.Errorf("call %d: cwd sent to router; got %q, want none", i, got)
-		}
-	}
-}
+// A cwd is never part of the Client/ToolRouter contract any more
+// (plan-broker-and-sessions.md §2 C3, "allow_cwd_auth is removed"): the
+// Client type carries no cwd field, NewClient never captures one, and
+// ToolRouter's methods take no cwd parameter for anything to travel
+// through. There is nothing left to construct a client-side test around —
+// the wire-level guarantee (a hand-crafted BridgeRequest.Cwd is ignored
+// server-side) is asserted end to end in cmd/relay's
+// TestMembershipAuth_AClientAssertedCwdIsIgnored.
 
 func TestContract_CallTool(t *testing.T) {
 	router := &stubRouter{callToolResp: json.RawMessage(`{"ok":true}`)}
