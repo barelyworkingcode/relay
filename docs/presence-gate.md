@@ -88,13 +88,25 @@ what runs.** Concretely:
   see "What is not gated, and why removal is not escalation" below.
   `service.register`'s update path applies decision 1 to one field within
   itself: `command`, `args`, `working_dir`, `url` and `autostart` have no
-  narrower reading (any actual change to what runs, or how, gates), but a
-  service's launch-identity `capabilities` does — dropping one only narrows
-  what the identity may do and does not gate, adding one is new reach and
-  always does (`serviceUpdateNeedsGate`, `cmd/relay/service_ops.go`), and a
+  narrower reading (any actual change to what runs, or how, gates), and a
   request that changes nothing at all (the Settings window resends the whole
-  record on every save) needs no gate either. docs/launch-identity.md's
-  "Editing capabilities from the Settings window" has the detail.
+  record on every save) needs no gate either
+  (`serviceUpdateNeedsGate`, `cmd/relay/service_ops.go`). `display_name`,
+  `capabilities` and `allowed_models` gate on ANY actual change, in either
+  direction — an earlier revision treated dropping a capability or a model
+  id as narrow-safe and never inspected `display_name` at all, correct while
+  only an operator-minted credential could reach this route; since eve's
+  frontend launch identity was granted `execute` (F1/SP8, below), any
+  frontend-capable service can reach this route for ANY service's record,
+  not just its own, so a silent rename or a silent capability/model
+  narrowing became a real integrity/availability exposure and both now gate
+  (`STATUS-relay-security.md`; `setEqual`, `serviceCapabilitiesChanged`,
+  `serviceAllowedModelsChanged`, `cmd/relay/service_ops.go`). The one
+  exception: if both the stored and requested `allowed_models` already hold
+  the wildcard `"*"`, nothing else listed alongside it changes what's
+  reachable, so that comparison alone does not gate.
+  docs/launch-identity.md's "Editing capabilities from the Settings window"
+  has the detail.
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
 - **Widening a project's grant shape** (`project.grant`) — see below.
@@ -106,17 +118,21 @@ what runs.** Concretely:
   strength of `POST /api/mcps`, `POST /api/services` and
   `PUT /api/services/{id}` alone; `PUT /api/remote` carried the same class
   but no gate at its core, the one `execute` route a caller holding only
-  that class could reach with nothing standing in front of it. Applies
-  decision 1's per-field judgment the way `service.register`'s update path
-  does: `enabled` and `enrolment_requests` gate only when a request turns
-  them ON (off only closes a listener that was already reachable, and
-  closing one is never gated), while `listen` and `enrolment_listen` gate on
-  any actual change in either direction — there is no generic rule for when
-  one bind address is "narrower" than another the way there is for a
-  boolean's on/off axis (`remoteConfigChangedFields`,
-  `cmd/relay/enrolment_ops.go`). `Remove` (clearing the block entirely) is
-  strictly narrower than any state it could replace and never gates, and a
-  resend of the exact stored record needs no gate either. Deliberately **not**
+  that class could reach with nothing standing in front of it. `listen` and
+  `enrolment_listen` gate on any actual change in either direction — there
+  is no generic rule for when one bind address is "narrower" than another
+  (`remoteConfigChangedFields`, `cmd/relay/enrolment_ops.go`). `enabled` and
+  `enrolment_requests`, and `Remove` (clearing the block entirely), now gate
+  on ANY change, turning off and removing included — an earlier revision
+  read "off only closes a listener that was already reachable" and "Remove
+  is strictly narrower than any state it could replace" as never needing a
+  gate, correct while only an operator-minted credential could reach this
+  route; since eve's frontend launch identity was granted `execute` (F1/SP8,
+  below), any frontend-capable service can silently disable or wipe relay's
+  remote configuration, so both now gate too (`removePresenceDigest`,
+  `STATUS-relay-security.md`). Removing an already-absent block, and a
+  resend of the exact stored record, still need no gate either — neither
+  changes anything. Deliberately **not**
   behind `requireIssuanceAuditor`, unlike every other entry on this list: the
   remote listener already has its own, separate audit rule (ADR-010) that
   gates whether it actually *serves* traffic, checked later by

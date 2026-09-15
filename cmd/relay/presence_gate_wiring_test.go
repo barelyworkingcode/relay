@@ -1238,6 +1238,31 @@ func TestRemoteConfigFields_DigestBindsAllFourFields(t *testing.T) {
 	}
 }
 
+// TestRemoteConfigFields_RemovePresenceDigestNeverMatchesAnUpdateDigest:
+// removePresenceDigest is deliberately constant (a Remove request carries no
+// field values worth binding), which only holds up if it can never collide
+// with a real presenceDigest -- a grant answered for "remove everything"
+// must never be redeemable for an update, or vice versa, whatever fields
+// that update happens to carry.
+func TestRemoteConfigFields_RemovePresenceDigestNeverMatchesAnUpdateDigest(t *testing.T) {
+	removeDigest := remoteConfigFields{}.removePresenceDigest()
+
+	variants := []remoteConfigFields{
+		{},
+		{Enabled: true, Listen: "127.0.0.1:9910"},
+		{Enabled: false, Listen: "", EnrolmentRequests: false, EnrolmentListen: ""},
+		{EnrolmentRequests: true, EnrolmentListen: "127.0.0.1:9911"},
+	}
+	for i, v := range variants {
+		if v.presenceDigest(v.Listen, v.EnrolmentListen) == removeDigest {
+			t.Errorf("variant %d (%+v)'s update digest collided with the Remove digest", i, v)
+		}
+	}
+	if (remoteConfigFields{Remove: true}).removePresenceDigest() != (remoteConfigFields{}).removePresenceDigest() {
+		t.Fatal("removePresenceDigest is not deterministic (it should ignore every field but Remove's meaning)")
+	}
+}
+
 // TestEnrolmentOps_SetRemoteConfig_GatesEvenWithIssuanceAuditingOff is
 // remote.configure's own version of the property
 // TestGate_IssuanceAuditingOffRefusesBeforeThePrompt proves for every other

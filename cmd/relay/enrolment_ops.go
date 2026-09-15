@@ -886,6 +886,13 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		}
 	}
 
+	// existing is read outside the store lock purely to decide whether this
+	// request needs the gate at all, the same read-outside/mutate-inside
+	// split ServiceOps.Update documents and accepts: a block created between
+	// this read and the write below would let a concurrent Remove through
+	// ungated. Narrow (it needs a second caller racing a create against this
+	// Remove) and not new to this change -- the field-level Update path had
+	// the identical shape before Remove was gated too.
 	existing := o.Store.Get().Remote
 	var changed []string
 	// needGate, digest and reason are computed for either shape (Remove or a
@@ -899,11 +906,16 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 	switch {
 	case f.Remove:
 		// Removing an already-absent block changes nothing, same as a resend
-		// of the exact stored record for an Update -- no gate either.
+		// of the exact stored record for an Update -- no gate either. When it
+		// does change something, name it in the audit log the same way an
+		// Update's changed fields are: without this, a gated Remove and an
+		// unchanged resend would both audit an identical empty field list,
+		// distinguishable only by the presence of a presence_id.
 		if existing != nil {
 			needGate = true
 			digest = f.removePresenceDigest()
 			reason = "remove relay's remote configuration entirely"
+			changed = []string{"remove"}
 		}
 	default:
 		changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
