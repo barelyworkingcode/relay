@@ -371,46 +371,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// AuthenticateByPath returns nil when dir is empty, matches nothing,
-// or matches only projects that have NOT opted into AllowCwdAuth — every
-// failure mode is "no access", never "all access". The scope granted is
-// identical to the project's token: opting in changes how a caller is
-// *identified*, never what the project is allowed to reach.
+// DirWithin reports whether dir is equal to or nested under projectPath,
+// seeing through symlinks and case-insensitive volumes.
 //
-// Nested projects resolve to the most specific match (longest project path
-// containing dir), so a project nested inside another wins for its own
-// subtree.
-func AuthenticateByPath(s *config.Settings, dir string) *config.StoredToken {
-	if dir == "" {
-		return nil
-	}
-	var best *config.Project
-	bestLen := -1
-	for i := range s.Projects {
-		p := &s.Projects[i]
-		// Check the opt-in first: a project that hasn't enabled directory
-		// auth must not even participate in the longest-match race, or it
-		// could shadow an opted-in parent and turn a valid grant into a
-		// denial.
-		if !p.AllowCwdAuth || p.Path == "" {
-			continue
-		}
-		if !DirWithin(dir, p.Path) {
-			continue
-		}
-		if n := len(realpathBestEffort(p.Path)); n > bestLen {
-			best, bestLen = p, n
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return config.StoredTokenForProject(s, best, best.TokenHash)
-}
-
-// DirWithin reports whether dir is equal to or nested under
-// projectPath. An empty dir means "no directory to validate" and returns
-// true -- the LLM-provider path may send a project id with no cwd.
+// This is subtle, and it fails OPEN: an empty dir means "no directory to
+// validate" and returns TRUE. A caller that might not have a directory must
+// decide what an absent one means BEFORE asking — this function answers a
+// containment question, and "nothing to contain" is not a refusal it can
+// make on the caller's behalf.
 func DirWithin(dir, projectPath string) bool {
 	if dir == "" {
 		return true

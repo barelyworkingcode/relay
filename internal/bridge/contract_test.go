@@ -16,7 +16,6 @@ type stubRouter struct {
 	mu sync.Mutex
 
 	listToolsTokens   []string
-	listToolsCwds     []string
 	listToolsResponse json.RawMessage
 	listToolsErr      error
 
@@ -59,7 +58,6 @@ func (s *stubRouter) ListTools(ctx context.Context, token string) (json.RawMessa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listToolsTokens = append(s.listToolsTokens, token)
-	s.listToolsCwds = append(s.listToolsCwds, CallerCwdFromContext(ctx))
 	return s.listToolsResponse, s.listToolsErr
 }
 
@@ -208,35 +206,28 @@ func TestContract_ListTools(t *testing.T) {
 	}
 }
 
-func TestContract_TokenlessSendsCwd(t *testing.T) {
-	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, cwd: "/Users/you/projects/acme/sub"}
-
-	if _, err := c.ListTools(); err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	if got := router.listToolsCwds[0]; got != "/Users/you/projects/acme/sub" {
-		t.Fatalf("cwd not delivered to router; got %q", got)
-	}
-	if got := router.listToolsTokens[0]; got != "" {
-		t.Fatalf("expected an empty token, got %q", got)
-	}
-}
-
-// A directory must never be able to re-scope an authenticated call.
-func TestContract_TokenSuppressesCwd(t *testing.T) {
+// A cwd on the wire is inert (plan-broker-and-sessions.md §2 C3): the field
+// still decodes, so a client built before directory auth was retired keeps
+// working, and the request reaches the router carrying exactly what it would
+// have carried without it. There is no longer any context key, ToolRouter
+// parameter or audit field a cwd could travel through — that absence is the
+// guarantee, and the authorization half of it (a cwd naming a real project's
+// directory buys nothing) is asserted end to end in cmd/relay's
+// TestMembershipAuth_AClientAssertedCwdIsIgnored.
+func TestContract_ACwdOnTheWireIsInert(t *testing.T) {
 	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
 	sock := startTestBridge(t, router)
 
-	// NewClient wouldn't populate cwd alongside a token; set both by hand so
-	// this asserts the SERVER-side rule, not just the client's restraint.
-	c := &Client{sockPath: sock, token: "proj-token", cwd: "/Users/you/projects/acme"}
-	if _, err := c.ListTools(); err != nil {
-		t.Fatalf("ListTools: %v", err)
+	for _, c := range []*Client{
+		{sockPath: sock, cwd: "/Users/you/projects/acme/sub"},
+		{sockPath: sock, token: "proj-token", cwd: "/Users/you/projects/acme"},
+	} {
+		if _, err := c.ListTools(); err != nil {
+			t.Fatalf("ListTools (token %q): %v", c.token, err)
+		}
 	}
-	if got := router.listToolsCwds[0]; got != "" {
-		t.Fatalf("cwd leaked into an authenticated call: %q", got)
+	if got := router.listToolsTokens; len(got) != 2 || got[0] != "" || got[1] != "proj-token" {
+		t.Fatalf("tokens forwarded = %q; a cwd must not change what the router is told", got)
 	}
 }
 
