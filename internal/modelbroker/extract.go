@@ -10,10 +10,19 @@ import (
 	"strings"
 )
 
-// JSONBodyCap is the router's own body ceiling (relayLLM router.go's
-// maxProxyBodyBytes), reused here so the broker refuses a request before
-// relayLLM would ever see it.
-const JSONBodyCap = 64 << 20
+// JSONBodyCap bounds a non-audio route's request body. This is deliberately
+// smaller than relayLLM's own maxProxyBodyBytes (64 MiB): extracting and
+// rewriting a JSON body's "model" field (ExtractJSONModel, RewriteJSONModel)
+// together amplify a body's size several-fold in live allocations — a
+// pathologically nested but otherwise ordinary near-cap body measured at
+// roughly 11x at 64 MiB, i.e. hundreds of MiB of GC pressure per request
+// from a single caller (relay#116 re-review, S6). Every route this cap
+// applies to (chat/completions, responses, messages, embeddings) carries
+// text, not binary payloads, so 16 MiB is generous headroom over any real
+// conversation history while keeping worst-case amplification in the tens
+// of MiB, not hundreds. See docs/model-endpoint.md's Limits section for the
+// combined bound with bodyBudget (model_endpoint.go).
+const JSONBodyCap = 16 << 20
 
 // AudioMultipartCap matches relayLLM's maxTranscriptionBytes: audio uploads
 // are bounded far tighter than the general JSON cap.
@@ -54,6 +63,13 @@ var (
 	// grant decision is made against while the full, different value is
 	// what actually reaches the upstream.
 	ErrModelFieldTooLong = errors.New("modelbroker: model field exceeds the length limit")
+	// ErrTrailingData means the body decoded a complete top-level JSON
+	// object but had further non-whitespace bytes after its closing brace.
+	// Caught here rather than left for RewriteJSONModel's own
+	// json.Unmarshal (which also rejects trailing data) so the caller gets
+	// this package's own shape-appropriate 400, not that later call's
+	// generic decode error.
+	ErrTrailingData = errors.New("modelbroker: trailing data after the JSON object")
 )
 
 // foldsToModel reports whether key matches "model" under the same
@@ -94,17 +110,14 @@ func (c *capReader) Read(p []byte) (int, error) {
 // reading lazily from the wire would stop as soon as the JSON value closes
 // and would never notice trailing bytes past the cap, so the cap has to be
 // enforced by an eager, bounded read rather than by however far the decoder
-// happens to look. The buffer is then walked with a token-by-token decode so
-// no field's value other than "model" is ever assembled into a Go value the
-// caller could retain or log — a canary planted anywhere else in the body (a
-// message, a tool result) never reaches the return value.
+// happens to look.
 //
-// The WHOLE object is walked, never returned early on the first match: a
-// second key that case-folds to "model" is a request built to disagree with
-// itself about what model it names, refused via ErrDuplicateModelKey rather
-// than resolved by picking a side (see that error's own comment for why).
-// The caller must not forward the original bytes even when there is exactly
-// one match — see RewriteJSONModel.
+// A caller that has already read and size-capped the body itself (as
+// model_endpoint.go does, needing the raw bytes again afterward for
+// RewriteJSONModel) should call ExtractJSONModelFromBytes directly instead
+// — going through a Reader here would make a second full copy of bytes the
+// caller already holds, doubling exactly the allocation this function's own
+// cap exists to bound (relay#116 re-review, S6).
 func ExtractJSONModel(r io.Reader, maxBytes int64) (string, error) {
 	body, err := io.ReadAll(&capReader{r: r, limit: maxBytes + 1})
 	if err != nil {
@@ -113,8 +126,38 @@ func ExtractJSONModel(r io.Reader, maxBytes int64) (string, error) {
 	if int64(len(body)) > maxBytes {
 		return "", ErrBodyTooLarge
 	}
+	return extractJSONModelBytes(body)
+}
 
+// ExtractJSONModelFromBytes is ExtractJSONModel's entry point for a caller
+// that already holds the whole, size-capped body as a []byte. See
+// ExtractJSONModel's doc for why this skips a redundant copy.
+func ExtractJSONModelFromBytes(body []byte) (string, error) {
+	return extractJSONModelBytes(body)
+}
+
+// extractJSONModelBytes is walked with a token-by-token decode so no field's
+// value other than "model" is ever assembled into a Go value the caller
+// could retain or log — a canary planted anywhere else in the body (a
+// message, a tool result) never reaches the return value.
+//
+// The WHOLE object is walked, never returned early on the first match: a
+// second key that case-folds to "model" is a request built to disagree with
+// itself about what model it names, refused via ErrDuplicateModelKey rather
+// than resolved by picking a side (see that error's own comment for why).
+// The caller must not forward the original bytes even when there is exactly
+// one match — see RewriteJSONModel.
+func extractJSONModelBytes(body []byte) (string, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
+	// This is subtle: without UseNumber, the decoder converts every number
+	// literal it walks past — including ones nowhere near "model" — to
+	// float64 via strconv.ParseFloat, which errors on a value out of
+	// float64's range (a bare "1e400" is valid JSON but not a valid
+	// float64). skipJSONValue would surface that as a refusal for a field
+	// this function never even looks at, rejecting a body relayLLM's own
+	// (untyped) decode would accept. UseNumber makes Token() hand back the
+	// literal's text as json.Number instead, which never fails to parse.
+	dec.UseNumber()
 
 	tok, err := dec.Token()
 	if err != nil {
@@ -157,6 +200,25 @@ func ExtractJSONModel(r io.Reader, maxBytes int64) (string, error) {
 	}
 	if !found {
 		return "", ErrModelFieldMissing
+	}
+
+	// The closing '}': dec.More() returned false the instant it saw it
+	// without consuming it, so it must be read explicitly before checking
+	// for trailing data.
+	if _, err := dec.Token(); err != nil {
+		return "", wrapReadErr(err)
+	}
+	// This is deliberate: a value after the object closes is refused here,
+	// before the grant check, rather than left for RewriteJSONModel's own
+	// json.Unmarshal to reject later — that call's error currently has no
+	// caller-facing shape and was surfacing as a bare 500. Nothing past the
+	// object was ever inspected above, so this is the first point simple
+	// enough to check.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return "", ErrTrailingData
+		}
+		return "", wrapReadErr(err)
 	}
 	return model, nil
 }

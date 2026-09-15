@@ -143,6 +143,120 @@ func TestExtractJSONModel_LongModelValueRefused(t *testing.T) {
 	}
 }
 
+// TestExtractJSONModel_OutOfRangeNumberElsewhereInBodyIsAccepted is the
+// UseNumber nit's proof (relay#116 re-review): without UseNumber, the
+// decoder's Token() call converts every number literal it walks past to
+// float64, which strconv.ParseFloat refuses for a value outside float64's
+// range. A field relay never even looks at must not be able to make relay
+// refuse a body relayLLM's own (untyped) decode would accept.
+func TestExtractJSONModel_OutOfRangeNumberElsewhereInBodyIsAccepted(t *testing.T) {
+	cases := map[string]string{
+		"huge exponent":    `{"model":"vCode","big":1e400}`,
+		"30-digit integer": `{"model":"vCode","big":123456789012345678901234567890}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			model, err := ExtractJSONModel(strings.NewReader(body), JSONBodyCap)
+			if err != nil {
+				t.Fatalf("ExtractJSONModel: %v", err)
+			}
+			if model != "vCode" {
+				t.Fatalf("got %q, want vCode", model)
+			}
+		})
+	}
+}
+
+// TestExtractJSONModel_TrailingDataRefused proves the trailing-value nit's
+// fix: a body with a complete, valid top-level object followed by further
+// bytes forming another well-formed JSON value is refused at extraction
+// time with ErrTrailingData, not left to surface later as RewriteJSONModel's
+// own json.Unmarshal error (which the endpoint used to turn into a bare
+// 500).
+func TestExtractJSONModel_TrailingDataRefused(t *testing.T) {
+	cases := map[string]string{
+		"second object":   `{"model":"vCode"}{"model":"vCode"}`,
+		"trailing number": `{"model":"vCode"} 1`,
+		"trailing string": `{"model":"vCode"} "s"`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ExtractJSONModel(strings.NewReader(body), JSONBodyCap)
+			if !errors.Is(err, ErrTrailingData) {
+				t.Fatalf("%s: got %v, want ErrTrailingData", name, err)
+			}
+		})
+	}
+}
+
+// TestExtractJSONModel_TrailingGarbageRefused is the malformed-syntax
+// sibling of the case above: bytes after the object that are not even
+// well-formed JSON on their own (so dec.Token() itself errors rather than
+// returning a token) must still refuse rather than accept — the exact error
+// need not be ErrTrailingData (it's a decode error at that point, not a
+// clean "found another value" case), but it must not be nil.
+func TestExtractJSONModel_TrailingGarbageRefused(t *testing.T) {
+	cases := map[string]string{
+		"trailing bareword": `{"model":"vCode"} extra`,
+		"trailing comma":    `{"model":"vCode"},1`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			model, err := ExtractJSONModel(strings.NewReader(body), JSONBodyCap)
+			if err == nil {
+				t.Fatalf("%s: got model=%q, err=nil, want a refusal", name, model)
+			}
+		})
+	}
+}
+
+// TestExtractJSONModel_TrailingWhitespaceAccepted is the negative case:
+// whitespace after the closing brace is not "trailing data".
+func TestExtractJSONModel_TrailingWhitespaceAccepted(t *testing.T) {
+	model, err := ExtractJSONModel(strings.NewReader("{\"model\":\"vCode\"}\n  \t"), JSONBodyCap)
+	if err != nil {
+		t.Fatalf("ExtractJSONModel: %v", err)
+	}
+	if model != "vCode" {
+		t.Fatalf("got %q, want vCode", model)
+	}
+}
+
+// TestExtractJSONModelFromBytes_SameBehaviourAsReaderPath proves the
+// bytes-based fast path (model_endpoint.go's own entry point, added to
+// avoid a redundant full copy of a body it already holds — relay#116
+// re-review, S6) agrees with ExtractJSONModel on every case above.
+func TestExtractJSONModelFromBytes_SameBehaviourAsReaderPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr error
+	}{
+		{"basic", `{"model":"foo"}`, nil},
+		{"duplicate", `{"model":"a","model":"b"}`, ErrDuplicateModelKey},
+		{"missing", `{"other":1}`, ErrModelFieldMissing},
+		{"trailing", `{"model":"foo"} 1`, ErrTrailingData},
+		{"not object", `[1,2]`, ErrNotJSONObject},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, err := ExtractJSONModelFromBytes([]byte(tc.body))
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("got err %v, want nil", err)
+				}
+				if model != "foo" {
+					t.Fatalf("got %q, want foo", model)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("got %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // buildMultipart writes a multipart/form-data body with a "model" field, an
 // arbitrary set of other fields, and one "file" part carrying arbitrary
 // bytes (standing in for an audio upload).

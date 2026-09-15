@@ -11,6 +11,7 @@ func TestErrorBodies_AreValidJSON(t *testing.T) {
 		RouteNotFoundError,
 		RemoteProjectError,
 		HostUnavailableError,
+		TooManyRequestsError,
 	}
 	for _, ctor := range ctors {
 		for _, shape := range []Shape{ShapeOpenAI, ShapeAnthropic} {

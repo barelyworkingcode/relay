@@ -34,10 +34,10 @@ arbitrate.
 
 ## API surface
 
-The explicit route allowlist, request/response shapes, the 64 MiB JSON body
-cap and the 25 MB audio cap are `internal/modelbroker/routes.go` and
-`extract.go` — this package does not restate them. Anything not on that
-allowlist (`/api/*` passthrough, `/<name>/` passthroughs, `/models/load`,
+The explicit route allowlist and request/response shapes are
+`internal/modelbroker/routes.go` and `extract.go` — this package does not
+restate them; body size limits are their own section below. Anything not on
+that allowlist (`/api/*` passthrough, `/<name>/` passthroughs, `/models/load`,
 `/models/unload`) 404s as "route not found" before authentication even has a
 chance to matter, though authentication is still checked first (§ Auth
 order) so a probe against an unbrokered path costs nothing extra to a caller
@@ -175,6 +175,72 @@ disconnects mid-stream cancels the outbound request to the upstream via the
 shared request context, the same propagation `net/http` gives any reverse
 proxy.
 
+## Limits
+
+R-M1b2 (`plan-broker-and-sessions.md`'s relay#116 re-review row) is required
+hardening before the TCP listener above is ever turned on or any client
+migrates to this endpoint — none of it changes the API surface, only what
+relay is willing to spend memory on to serve it.
+
+- **`JSONBodyCap` is 16 MiB** (`internal/modelbroker/extract.go`), down from
+  64 MiB (which mirrored relayLLM's own `maxProxyBodyBytes`; relayLLM still
+  enforces that independently, so a body relay now refuses at 16 MiB was
+  never guaranteed to reach relayLLM's larger limit in the first place).
+  Every route this cap applies to — `chat/completions`, `responses`,
+  `messages`, `embeddings` — carries text, not binary payloads, so 16 MiB is
+  generous headroom over any real conversation history. The reason for the
+  cut is memory, not abuse: extracting and rewriting a JSON body's "model"
+  field (`ExtractJSONModel`/`ExtractJSONModelFromBytes`, `RewriteJSONModel`)
+  amplifies a body's size several-fold in live allocations while doing it —
+  a near-cap body at the old 64 MiB ceiling measured at roughly 11-13x
+  (`internal/modelbroker/memory_test.go`'s regression guard asserts a loose
+  ceiling on this at the current cap), i.e. hundreds of MiB of GC pressure
+  from a single caller's single request.
+- **`AudioMultipartCap` stays 25 MiB**, unchanged, matching relayLLM's own
+  `maxTranscriptionBytes`: `RewriteMultipartModel` re-streams every other
+  part (in particular the audio file) through unread rather than decoding it
+  into a Go value, so a multipart body's amplification is close to 2x, not
+  10x+ — the JSON path is where the cut matters.
+- **A shared `BodyBudget` (`internal/modelbroker/bodybudget.go`) bounds total
+  in-flight body-processing bytes across every concurrent call, both
+  listeners, at 64 MiB** (`maxInFlightBodyBytes`, `cmd/relay/model_endpoint.go`).
+  This is the piece that actually bounds the *worst case*: a smaller
+  per-request cap alone still lets memory scale linearly with however many
+  callers connect at once (a same-uid process or a key holder opening many
+  connections), which was the re-review's actual complaint (S6) — a handful
+  of concurrent near-cap requests pushing relay into memory pressure. A
+  request is admitted for a weight equal to its *route's cap*, never its
+  actual or declared size: relay reads up to that cap regardless of what a
+  caller claims up front (`readCapped` enforces it independent of
+  `Content-Length`), so accounting by anything smaller would let a caller
+  under-report size to buy extra concurrency the cap exists to rule out.
+  With the ~11x measured amplification and a 64 MiB admission ceiling, the
+  endpoint's documented worst case for body-processing memory is **~700
+  MiB, independent of how many callers are connected** — down from
+  unbounded (N concurrent near-cap callers previously scaled linearly with
+  no ceiling at all). 64 MiB is comfortably above `AudioMultipartCap` so a
+  single audio call is always admissible on its own. A blocked admission
+  waits up to `bodyBudgetWaitTimeout` (5s) before the endpoint gives up and
+  answers 429 (`rate_limited`) rather than queuing indefinitely. The budget
+  is held only across the amplifying work — reading, extracting, rewriting —
+  and released before the single, already-final rewritten body is handed to
+  the reverse proxy, so it does not throttle overall proxy concurrency for
+  calls that have already cleared that phase (including slow or streamed
+  upstream responses).
+- **A trailing value after the top-level JSON object is refused at
+  extraction time** with the endpoint's normal shape-appropriate 400
+  (`ErrTrailingData`), not left to surface later as `RewriteJSONModel`'s own
+  `json.Unmarshal` error, which the endpoint used to turn into a bare 500.
+- **The JSON extractor uses `json.Decoder.UseNumber()`**, so a number literal
+  outside float64's safe range in a field the extractor merely skips past
+  (never one it inspects) is not itself refused — `dec.Token()` would
+  otherwise convert every number it walks to float64 and error on one out of
+  range, refusing a body relayLLM's own untyped decode would accept.
+  `RewriteJSONModel` already preserved every field's raw bytes exactly via
+  `json.RawMessage` regardless of this setting; `UseNumber` is what lets
+  extraction *reach* that point for such a body instead of refusing it
+  first.
+
 ## Audit
 
 `ModelCallAudit` (`model_endpoint.go`) is the single, clearly named hook
@@ -186,6 +252,34 @@ the wiring into `internal.audit.AuditRecorder` are `plan-broker-and-sessions.md`
 unit R-M1c. `AuditHook`'s zero value is a no-op, so wiring a real recorder
 in later is a pure addition at the call site (`trayapp.go`), not a change to
 this file.
+
+Outcome is one of: `ok`, `denied`, `not_found` (`modelbroker.ReasonDenied`/
+`ReasonNotFound`, the audit-only distinction behind the identical 404 body —
+see Scoping above), `unauthorized`, `remote_project`, `route_not_found`,
+`host_unavailable`, `bad_request`, `body_too_large`, `trailing_data` (the
+last three from `requestErrorBody`, one per way `ExtractJSONModel`/
+`ExtractMultipartModel` can refuse a request body), `error`, `client_abort`,
+`rate_limited` (new in R-M1b2, a `BodyBudget` admission that never got a
+slot within its wait timeout — see Limits above). Two outcomes got more
+precise in R-M1b2, both from the re-review of relay#116's proxy
+recover/completion logic (`cmd/relay/model_endpoint.go`'s `proxy`):
+
+- **`client_abort` is audited only for a recovered `http.ErrAbortHandler`.**
+  `proxy`'s recover used to label every panic `client_abort`, which would
+  hide a genuine bug in the proxy stack behind a client-fault outcome. Any
+  other recovered value is audited `error` and still re-panics — a panic
+  through a handler must still reach the server to do its job regardless of
+  outcome; only re-labelling was ever wrong, not the propagation.
+- **A completed call is audited `ok` even if the caller's context reports
+  done by the time `proxy` checks it, provided the response body was copied
+  to EOF first.** A client that disconnects the instant after receiving
+  every byte of a complete response still cancels the request context —
+  checking only `r.Context().Err()` after `rp.ServeHTTP` returns would
+  misreport that fully successful call as `client_abort` with no usage
+  recorded. `countingReader.eof`, set only once the upstream response body
+  has been read to its own natural end, is what `proxy` consults first; the
+  context is checked for the abort verdict only when the copy actually
+  stopped short of that.
 
 ## What is not brokered
 
