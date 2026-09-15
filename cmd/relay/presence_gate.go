@@ -5,10 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
 )
+
+// presenceWaitReadDeadline is what requireGate re-arms the connection's read
+// deadline to (via readDeadlineExtenderFromContext) for the span of
+// gate.Require's blocking wait on a human. 0 clears the deadline outright:
+// frontendRouteReadDeadline's job (per its own doc comment) is bounding how
+// long relay waits to receive a request BODY, and by the time a gated core
+// reaches requireGate the body is already decoded — the wait left is a
+// LocalAuthentication prompt, which is a human-timescale wait that deadline
+// was never meant to bound. Restoring frontendRouteReadDeadline immediately
+// after (success, refusal, or real cancellation) means a genuinely dead
+// connection is still bounded for whatever the handler does next.
+//
+// A var, not a const, for the same reason frontendRouteReadDeadline is one:
+// a test needs to shorten frontendRouteReadDeadline and still prove this
+// wait survives crossing it.
+var presenceWaitReadDeadline = time.Duration(0)
 
 // errPresenceGateNotWired is what every gated core method returns when its
 // Gate field is nil.
@@ -21,10 +38,27 @@ import (
 var errPresenceGateNotWired = errors.New("presence gate is not wired for this operation")
 
 // requireGate is Gate.Require with the nil-gate-refuses branch every gated
-// core needs (ADR-017 implementation spec §6.7).
+// core needs (ADR-017 implementation spec §6.7), plus the read-deadline
+// suspension a frontend HTTP caller needs (see presenceWaitReadDeadline):
+// when ctx carries a readDeadlineExtender — only true for a request that
+// arrived through withRelayRouteReadDeadline / warnOnUnmatchedTCPRoute —
+// this widens the connection's read deadline before the blocking wait and
+// puts it back immediately after, on every exit path. An IPC or CLI caller's
+// ctx carries no such value, so gate.Require runs exactly as before for
+// them.
+//
+// This does not defeat the connection-close case the deadline also used to
+// catch incidentally: clearing the deadline does not stop the server's own
+// background detection of a real close, it only removes the artificial
+// timer racing it. ctx still cancels, and gate.Require still returns
+// ctx.Err(), the moment the client actually goes away.
 func requireGate(gate *presence.Gate, ctx context.Context, op string, d presence.Digest, reason string) (presence.Grant, error) {
 	if gate == nil {
 		return presence.Grant{}, errPresenceGateNotWired
+	}
+	if extend, ok := readDeadlineExtenderFromContext(ctx); ok {
+		extend(presenceWaitReadDeadline)
+		defer extend(frontendRouteReadDeadline)
 	}
 	return gate.Require(ctx, op, d, reason)
 }
