@@ -118,9 +118,9 @@ func (f serviceFields) toConfig(id string) config.ServiceConfig {
 	// trimModelIDs runs here, the one place every door's AllowedModels
 	// funnels through on its way into a config.ServiceConfig, so a stray
 	// leading/trailing space from any caller never reaches storage.
-	// serviceWidensAllowedModels applies the same trim before comparing, so
+	// serviceAllowedModelsChanged applies the same trim before comparing, so
 	// an untrimmed resend of an already-stored id reads as "unchanged," not
-	// "added." config.ServiceConfig.Validate independently refuses what
+	// "changed." config.ServiceConfig.Validate independently refuses what
 	// trimming reduces to empty, so a whitespace-only entry is caught rather
 	// than silently dropped.
 	var allowedModels []string
@@ -213,11 +213,21 @@ func serviceEnvChanges(existing map[string]config.Secret, requested map[string]*
 	return false
 }
 
-// setEqual reports whether a and b hold the same elements, ignoring order.
+// setEqual reports whether a and b hold the same elements in the same
+// multiplicity, ignoring order (multiset equality, which implies set
+// equality: two genuinely different sets can never compare equal here, only
+// a duplicate-heavy resend of an identical set can compare unequal to
+// itself reordered -- the safe direction for a presence-gate decision).
 // Used to decide "did this field actually change" for fields whose stored
 // and requested representations may list the same members in a different
 // order (capabilities, allowed_models) -- a reorder alone must never read as
 // a change and reach the gate needlessly.
+//
+// Constrained to cmp.Ordered for slices.Sort's sake; every instantiation
+// today is a string-kinded type (config.ServiceCapability, string), so
+// float64's NaN-breaks-sort-and-equality edge never applies -- if a future
+// caller ever instantiates this with a float type, that guarantee would
+// need re-checking.
 func setEqual[T cmp.Ordered](a, b []T) bool {
 	if len(a) != len(b) {
 		return false
@@ -253,7 +263,7 @@ const modelAllowedWildcard = "*"
 
 // trimModelIDs trims every entry. The one funnel every door's AllowedModels
 // passes through on the way into a config.ServiceConfig (serviceFields.
-// toConfig) and the one this package's own widen check re-derives from
+// toConfig) and the one this package's own change check re-derives from
 // before comparing, so a caller's stray leading/trailing space never reads
 // as a different model id than the trimmed one already on record.
 func trimModelIDs(ids []string) []string {
@@ -518,6 +528,21 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 	// disappears between this read and the lock either way ends in
 	// errServiceNotFound, gated needlessly or not -- allowGate-equipped
 	// tests aside, that path never reaches a real prompt.
+	//
+	// A request with an empty display_name reaches the same fate a step
+	// later, inside WithDeclinable's cfg.Validate() call: it is refused
+	// either way, just after a presence prompt if serviceUpdateNeedsGate
+	// already fires on some other field. Hoisting that check up here to
+	// save the prompt was considered and reverted: it would have to be
+	// conditioned on this pre-read actually finding a record, since
+	// errServiceNotFound must keep winning over a validation complaint for
+	// a request naming an id that was never there to begin with
+	// (TestOpsThatFindNothingWriteNothing) or one whose record a concurrent
+	// Remove takes out from under this exact race window
+	// (TestServiceOpsRace_UpdateLosesToConcurrentRemove, whose fixture also
+	// omits display_name) -- and conditioning it on a pre-read that is
+	// explicitly documented one line up as racy is the wrong place to add a
+	// second meaning to that variable.
 	var existing config.ServiceConfig
 	if e, _ := config.FindServiceByID(o.Store.Get(), id); e != nil {
 		existing = *e

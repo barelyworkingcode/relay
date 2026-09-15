@@ -249,10 +249,11 @@ func TestServiceOps_SwitchingToWildcardIsGated(t *testing.T) {
 	}
 }
 
-// TestServiceOps_ExistingWildcardNeverGatesFurtherAdditions covers the other
-// edge of serviceWidensAllowedModels: once a service already holds the
-// wildcard, it already reaches every model, so no further addition (another
-// id, or a resent "*") can widen it further.
+// TestServiceOps_ExistingWildcardNeverGatesFurtherAdditions covers
+// serviceAllowedModelsChanged's one carve-out from "any change gates": once
+// a service already holds the wildcard, it already reaches every model, so
+// nothing else listed alongside it (another id, or a resent "*") changes
+// what's actually reachable, and that comparison alone must not gate.
 func TestServiceOps_ExistingWildcardNeverGatesFurtherAdditions(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedModelsService(t, store, []string{"*"})
@@ -266,6 +267,33 @@ func TestServiceOps_ExistingWildcardNeverGatesFurtherAdditions(t *testing.T) {
 		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &stillEverything,
 	}, auditViaCLI, ""); err != nil {
 		t.Fatalf("an addition already covered by an existing wildcard must not reach the gate: %v", err)
+	}
+}
+
+// TestServiceOps_DroppingTheWildcardIsGated is the wildcard carve-out's
+// mirror case: scoping a service down FROM the wildcard TO a specific set is
+// a real narrowing of what's reachable (not "nothing changed", the way
+// listing extra ids alongside a resent "*" is), so it must gate like any
+// other allowed_models change now does.
+func TestServiceOps_DroppingTheWildcardIsGated(t *testing.T) {
+	store := newCLISandboxStore(t)
+	seedModelsService(t, store, []string{"*"})
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
+
+	scoped := []string{"vCode"}
+	_, err = ops.Update(context.Background(), "tts", serviceFields{
+		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &scoped,
+	}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("dropping the wildcard: err = %v, want presence.ErrRefused", err)
+	}
+
+	svc, _ := config.FindServiceByID(store.Get(), "tts")
+	if svc == nil || !slices.Equal(svc.AllowedModels, []string{"*"}) {
+		t.Fatalf("a refused update must not persist: allowed models = %+v", svc)
 	}
 }
 
