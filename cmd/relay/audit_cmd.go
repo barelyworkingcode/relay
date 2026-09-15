@@ -27,8 +27,8 @@ func runAuditCommand(args []string) {
 	outcome := fs.String("outcome", "", "filter by outcome: ok, error, tool_error, denied, unauthorized, throttled, pending. "+
 		"'scope_violation' is also accepted here even though it is a FIELD, not an outcome (ADR-011 decision 7) — "+
 		"it selects tool_error records the MCP marked as a resource-scope refusal")
-	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, operator, unknown")
-	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision, credential_issued, credential_revoked")
+	kind := fs.String("kind", "", "filter by actor kind: project, service, remote, relay, control, operator, project_session, unknown")
+	event := fs.String("event", "", "filter by event kind: call_tool, list_tools, list_skills, mcp_down, mcp_up, control_decision, credential_issued, credential_revoked, model_call, model_list")
 	text := fs.String("grep", "", "substring match over tool, MCP, error, project / access profile, caller, args, "+
 		"and an issuance record's credential kind, identifier, name and grants")
 	asJSON := fs.Bool("json", false, "emit raw JSONL instead of a table")
@@ -134,6 +134,13 @@ func auditCallerLabel(a audit.AuditActor) string {
 	if a.CredID != "" {
 		return a.CredID
 	}
+	// A model-endpoint service actor carries no pid/proc (ServiceID is what
+	// names it there — audit.go's own doc comment on the field explains
+	// why); without this branch every such row would show a dash in the
+	// column that is supposed to say who called.
+	if a.ServiceID != "" {
+		return a.ServiceID
+	}
 	switch {
 	case a.Parent != "" && a.Proc != "":
 		return a.Parent + "→" + a.Proc
@@ -178,6 +185,13 @@ func auditBaseDetail(ev audit.AuditEvent) string {
 	if ev.Credential != "" {
 		return auditIssuanceDetail(ev)
 	}
+	// A model_call/model_list row also carries Method/Path (the route), but
+	// rendering it through the control_decision branch below would print an
+	// always-empty class= and bury the fields a reviewer actually wants —
+	// checked first so a model row reads as one.
+	if ev.Event == audit.AuditEventModelCall || ev.Event == audit.AuditEventModelList {
+		return auditModelDetail(ev)
+	}
 	// A control_decision row (ADR-015) names no MCP or tool, so the
 	// method/path/class/transport it carries instead is the detail — every
 	// other kind of event leaves Method and Path empty.
@@ -221,6 +235,38 @@ func auditIssuanceDetail(ev audit.AuditEvent) string {
 	}
 	if ev.IssuanceTruncated {
 		parts = append(parts, "(truncated)")
+	}
+	return strings.Join(parts, "  ")
+}
+
+// auditModelDetail renders a model_call / model_list row: the route, the
+// model requested through to whatever actually served it, token usage and
+// byte counts, and the reason on a refusal — the fields
+// docs/model-endpoint.md's Audit section and spec-model-broker.md §7 name as
+// the ones worth a reviewer's first glance, in that order.
+func auditModelDetail(ev audit.AuditEvent) string {
+	parts := []string{fmt.Sprintf("%s %s", ev.Method, ev.Path)}
+	if ev.Model != "" {
+		chain := ev.Model
+		if ev.ModelCanonical != "" && ev.ModelCanonical != ev.Model {
+			chain += " -> " + ev.ModelCanonical
+		}
+		if ev.ModelTarget != "" {
+			chain += " -> " + ev.ModelTarget
+		}
+		parts = append(parts, chain)
+	}
+	if ev.PromptTokens > 0 || ev.CompletionTokens > 0 {
+		parts = append(parts, fmt.Sprintf("tokens=%d/%d", ev.PromptTokens, ev.CompletionTokens))
+	}
+	if ev.RequestBytes > 0 || ev.ResponseBytes > 0 {
+		parts = append(parts, fmt.Sprintf("bytes=%d/%d", ev.RequestBytes, ev.ResponseBytes))
+	}
+	if ev.ModelKeyLabel != "" {
+		parts = append(parts, "key="+ev.ModelKeyLabel)
+	}
+	if ev.Error != "" {
+		parts = append(parts, collapseWhitespace(ev.Error))
 	}
 	return strings.Join(parts, "  ")
 }

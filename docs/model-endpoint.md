@@ -247,11 +247,27 @@ relay is willing to spend memory on to serve it.
 every finished call or listing is offered to — caller kind/name, auth kind,
 model key label (never the key), requested and canonical model, the
 upstream's target, byte counts, parsed token usage, status and outcome.
-Nothing is written to the audit file by this unit: the event constants and
-the wiring into `internal.audit.AuditRecorder` are `plan-broker-and-sessions.md`
-unit R-M1c. `AuditHook`'s zero value is a no-op, so wiring a real recorder
-in later is a pure addition at the call site (`trayapp.go`), not a change to
-this file.
+`AuditHook`'s zero value is still a no-op (a caller that constructs a
+`*ModelEndpointServer` without wiring one, a test say, behaves exactly as
+before), but in the running tray it is wired in `trayapp.go` to
+`recordModelCall` (`cmd/relay/audit_model.go`, `plan-broker-and-sessions.md`
+unit R-M1c), which turns one of these into a real `audit.AuditEvent` and
+hands it to `internal/audit.AuditRecorder` on the ordinary fail-open path
+(`Record`, never `RecordDurable`) — a model call is never delayed by, or
+refused because of, a full or broken audit sink.
+
+Two event kinds: `model_call` per finished call, `model_list` per
+`GET /v1/models` listing — the latter gated by `log_lists`, exactly as
+`list_tools`/`list_skills` are, since a caller lists far more often than it
+calls. The full field list, the actor mapping (a project's own token vs. an
+`rmk_` model key vs. a service's launch identity vs. an unresolved,
+`unknown`-kind caller that still names what auth it attempted), the outcome
+vocabulary, and worked CLI examples (`relay audit --event model_call`,
+`--kind project_session`, ...) are documented once, in
+[`docs/audit-log.md`](audit-log.md#the-model-endpoint) rather than restated
+here. **Never recorded:** the model key or a project token (plaintext or
+hash), or any request/response content — no prompt, message, instruction,
+tool definition, audio, or completion text.
 
 Outcome is one of: `ok`, `denied`, `not_found` (`modelbroker.ReasonDenied`/
 `ReasonNotFound`, the audit-only distinction behind the identical 404 body —
