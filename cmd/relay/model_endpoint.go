@@ -25,10 +25,21 @@ import (
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
-// EnvModelListen overrides the model endpoint's TCP listen address for
-// tests only (plan-broker-and-sessions.md decision b) — production
-// configuration is settings.json's model_endpoint.listen.
-const EnvModelListen = "RELAY_MODEL_LISTEN"
+// modelListenOverrideForTest, when non-empty, replaces settings.json's
+// model_endpoint.listen in targetAddr (plan-broker-and-sessions.md decision
+// b: a test-only override). Unsynchronized: set it before any concurrent
+// Reconcile call, the same discipline bridge.SetConfigDirForTest documents.
+// Deliberately not an environment variable — an env var is reachable from a
+// production process's own environment, which is exactly what decision (b)
+// restricts this to test code only for; a package-level Go seam that only
+// this package's own tests can call is not.
+var modelListenOverrideForTest string
+
+// SetModelListenOverrideForTest sets the test-only override. Pass "" to
+// clear it.
+func SetModelListenOverrideForTest(addr string) {
+	modelListenOverrideForTest = addr
+}
 
 const (
 	transportSocket = "socket"
@@ -140,6 +151,16 @@ func dialVerifiedUnix(ctx context.Context, socketPath string, want peertoken.Pro
 // cached, so a host that re-registers under a new launch is picked up
 // immediately and one whose launch just ended is refused rather than dialed
 // stale.
+//
+// This is deliberate: DisableKeepAlives is set, so every call gets a fresh
+// Transport AND a fresh connection that is closed as soon as its one
+// response is read, rather than pooled for IdleConnTimeout. A per-call
+// Transport with keep-alives on would otherwise each hold their own idle
+// connection open for up to 90s with nothing left referencing the
+// Transport that could ever reuse it — measured as unbounded fd growth in
+// both relay and relayLLM under sustained traffic. The peer-verification
+// dial is cheap (one getsockopt beyond the connect itself), so paying it
+// on every call is the trade that keeps the fd count flat.
 func (m *ModelEndpointServer) upstreamTransport() (*http.Transport, error) {
 	_, socketPath, process, ok := m.hosts.Current()
 	if !ok {
@@ -149,7 +170,7 @@ func (m *ModelEndpointServer) upstreamTransport() (*http.Transport, error) {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialVerifiedUnix(ctx, socketPath, process)
 		},
-		IdleConnTimeout: 90 * time.Second,
+		DisableKeepAlives: true,
 	}, nil
 }
 
@@ -210,32 +231,51 @@ func stripBearerPrefix(v string) (string, bool) {
 	return "", false
 }
 
-// resolveBearerHeaders implements spec §3.1's header handling: Authorization
-// and x-api-key name the same credential when both are present, and 401 when
-// they name different ones — this is checked BEFORE either is looked up
-// against anything, so a caller cannot use a valid credential in one header
-// to smuggle a second, different assertion past the other.
-func resolveBearerHeaders(r *http.Request) (bearer string, conflict bool) {
-	rawAuth := r.Header.Get("Authorization")
-	rawKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+// resolveBearerHeaders implements spec §3.1's header handling. present is
+// true the instant either header was sent AT ALL — checked via
+// http.Header.Values, not Get, so a header sent with an empty or
+// whitespace-only value is still "present" and never silently read as
+// absent (which would otherwise fall through to identity auth: §3.1 says a
+// present header is judged as a bearer, never as the identity beside it).
+// Multiple values of either header, and two present headers naming
+// different credentials, both come back as present with an empty bearer —
+// the caller must refuse both exactly like a blank header, never resolve
+// "the first one" or "the last one".
+func resolveBearerHeaders(r *http.Request) (bearer string, present bool) {
+	authValues := r.Header.Values("Authorization")
+	keyValues := r.Header.Values("x-api-key")
+	if len(authValues) == 0 && len(keyValues) == 0 {
+		return "", false
+	}
+	if len(authValues) > 1 || len(keyValues) > 1 {
+		return "", true
+	}
+
 	var fromAuth string
-	if rawAuth != "" {
-		if v, ok := stripBearerPrefix(rawAuth); ok {
-			fromAuth = v
+	haveAuth := len(authValues) == 1
+	if haveAuth {
+		if v, ok := stripBearerPrefix(authValues[0]); ok {
+			fromAuth = strings.TrimSpace(v)
 		} else {
-			fromAuth = rawAuth
+			fromAuth = strings.TrimSpace(authValues[0])
 		}
 	}
+	var fromKey string
+	haveKey := len(keyValues) == 1
+	if haveKey {
+		fromKey = strings.TrimSpace(keyValues[0])
+	}
+
 	switch {
-	case rawAuth != "" && rawKey != "":
-		if fromAuth != rawKey {
+	case haveAuth && haveKey:
+		if fromAuth != fromKey {
 			return "", true
 		}
-		return rawKey, false
-	case rawAuth != "":
-		return fromAuth, false
+		return fromAuth, true
+	case haveAuth:
+		return fromAuth, true
 	default:
-		return rawKey, false
+		return fromKey, true
 	}
 }
 
@@ -245,12 +285,11 @@ func resolveBearerHeaders(r *http.Request) (bearer string, conflict bool) {
 func (m *ModelEndpointServer) resolveCaller(r *http.Request, transport string) (modelCaller, *modelbroker.ErrorBody) {
 	shape := shapeForPath(r.URL.Path)
 
-	bearer, conflict := resolveBearerHeaders(r)
-	if conflict {
-		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{}, &errBody
-	}
-	if bearer != "" {
+	if bearer, present := resolveBearerHeaders(r); present {
+		if bearer == "" {
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{}, &errBody
+		}
 		return m.resolveBearer(bearer, shape)
 	}
 	if transport == transportTCP {
@@ -516,21 +555,31 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	forwardBody := bodyBytes
+	// Always re-encoded, never the original bytes even when canonical
+	// equals requested (B1 of the security review): ExtractJSONModel and
+	// ExtractMultipartModel guarantee there is exactly one model-ish key or
+	// part in bodyBytes by the time we get here, but relayLLM's own decode
+	// (json.Unmarshal into a struct, or its multipart reader) is
+	// case-insensitive and last-wins, which is a DIFFERENT rule than "there
+	// is exactly one" if the caller's bytes ever disagreed with themselves
+	// in a way extraction's fold check didn't anticipate. Forwarding relay's
+	// own single-key rendering, not a copy of the caller's body, is what
+	// makes the ALLOW decision and the forwarded call agree by construction
+	// rather than by the extractor and relayLLM happening to parse the same
+	// way.
+	var forwardBody []byte
 	var forwardContentType string
-	if canonical != requested {
-		switch route.Source {
-		case modelbroker.ModelSourceJSONBody:
-			forwardBody, err = modelbroker.RewriteJSONModel(bodyBytes, canonical)
-		case modelbroker.ModelSourceMultipart:
-			forwardBody, forwardContentType, err = modelbroker.RewriteMultipartModel(bytes.NewReader(bodyBytes), boundary, canonical)
-		}
-		if err != nil {
-			eb := errorBodyFor(route.Shape, http.StatusInternalServerError, "internal error", "error")
-			m.writeError(w, eb)
-			m.audit(m.auditFor(caller, transport, r, eb.Status, "error", start, requested, canonical))
-			return
-		}
+	switch route.Source {
+	case modelbroker.ModelSourceJSONBody:
+		forwardBody, err = modelbroker.RewriteJSONModel(bodyBytes, canonical)
+	case modelbroker.ModelSourceMultipart:
+		forwardBody, forwardContentType, err = modelbroker.RewriteMultipartModel(bytes.NewReader(bodyBytes), boundary, canonical)
+	}
+	if err != nil {
+		eb := errorBodyFor(route.Shape, http.StatusInternalServerError, "internal error", "error")
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "error", start, requested, canonical))
+		return
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
@@ -645,7 +694,16 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	}
 	rp.ModifyResponse = func(resp *http.Response) error {
 		target = resp.Header.Get("X-Relay-Model-Target")
-		resp.Header.Del("X-Relay-Model-Target")
+		// Every x-relay-* response header is relay/relayLLM's own internal
+		// signalling, never the caller's business — X-Relay-Model-Target is
+		// the only one with a defined meaning today, but stripping by
+		// prefix rather than by name means a header relayLLM adds later
+		// doesn't leak to the caller by default.
+		for k := range resp.Header {
+			if strings.HasPrefix(strings.ToLower(k), "x-relay-") {
+				resp.Header.Del(k)
+			}
+		}
 		streamed = strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 
 		counter = &countingReader{r: resp.Body}
@@ -674,9 +732,42 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	}
 
 	sw := &statusCapturingWriter{ResponseWriter: w, status: http.StatusOK}
-	rp.ServeHTTP(sw, r)
+
+	// A mid-stream client abort after headers are already flushed doesn't
+	// reach ErrorHandler (that only fires for a RoundTrip failure, before
+	// any response is written) — net/http instead either returns from
+	// ServeHTTP having merely stopped copying, or panics with
+	// http.ErrAbortHandler to abort the response without logging a stack
+	// trace. Both must still produce an audit record instead of silently
+	// falling through to the "ok" case below: the recover catches the
+	// panic path (and re-panics after auditing, since ErrAbortHandler must
+	// still reach the server to do its job), and the r.Context().Err()
+	// check after a normal return catches the non-panic path.
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				ev := m.auditFor(caller, transport, r, sw.status, "client_abort", start, requested, canonical)
+				ev.Target = target
+				ev.Stream = streamed
+				m.audit(ev)
+				panic(rec)
+			}
+		}()
+		rp.ServeHTTP(sw, r)
+	}()
 
 	if upstreamErr != nil {
+		return
+	}
+
+	if r.Context().Err() != nil {
+		ev := m.auditFor(caller, transport, r, sw.status, "client_abort", start, requested, canonical)
+		ev.Target = target
+		ev.Stream = streamed
+		if counter != nil {
+			ev.ResponseBytes = counter.n
+		}
+		m.audit(ev)
 		return
 	}
 
@@ -718,7 +809,8 @@ func (m *ModelEndpointServer) ListenSocket() error {
 	}
 	m.sockLn = ln
 	m.sockSrv = &http.Server{
-		Handler: m.Handler(transportSocket),
+		Handler:           m.Handler(transportSocket),
+		ReadHeaderTimeout: 30 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if tok, err := peertoken.FromConn(c); err == nil {
 				ctx = bridge.WithCallerPeer(ctx, tok)
@@ -741,8 +833,8 @@ func (m *ModelEndpointServer) ServeSocket() error {
 }
 
 func (m *ModelEndpointServer) targetAddr() string {
-	if v := os.Getenv(EnvModelListen); v != "" {
-		return v
+	if modelListenOverrideForTest != "" {
+		return modelListenOverrideForTest
 	}
 	s := m.store.Get()
 	if s.ModelEndpoint == nil {

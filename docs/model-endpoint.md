@@ -17,11 +17,20 @@ surface), `cmd/relay/model_host_registry.go`, `cmd/relay/model_keys.go`,
 | `model.sock` | `bridge.ConfigDir()/model.sock`, mode 0600 | Always served, whether or not a model host has ever registered — "no host" is a 503 on each call, not an absent socket. |
 | TCP | `settings.json`'s `model_endpoint.listen` | Absent block → **off**. A non-loopback address is refused (logged loudly) and never bound. A failed bind is logged loudly and retried on the next settings poll or reconcile call, the same convergence discipline `RemoteSupervisor` uses for the mTLS listener. |
 
-`RELAY_MODEL_LISTEN` overrides the TCP address for tests only — production
-configuration is exclusively the `model_endpoint` block. `ModelEndpointServer.Reconcile()`
-runs once at startup and on every settings-poll tick (`trayapp.go`), so an
-out-of-process edit (a hand-edited `settings.json`, a future CLI) takes
-effect without a restart.
+`cmd/relay.SetModelListenOverrideForTest` is a package-level Go seam this
+package's own tests use instead of the `model_endpoint` block — deliberately
+not an environment variable: an env var is reachable from a production
+process's own environment, which is exactly what "test-only" needs to rule
+out. `ModelEndpointServer.Reconcile()` runs once at startup and on every
+settings-poll tick (`trayapp.go`), so an out-of-process edit (a hand-edited
+`settings.json`, a future CLI) takes effect without a restart.
+
+`ListenSocket` unconditionally removes any file already at `model.sock`
+before binding, the same as `bridge.NewBridgeServer` does for `relay.sock`
+— see relay's own second-tray-app-instance warning (`CLAUDE.md`) for why a
+second relay process racing this against the first is a state to avoid
+running into in the first place, not something this unlink call is meant to
+arbitrate.
 
 ## API surface
 
@@ -100,12 +109,16 @@ the model endpoint's one upstream, tokenless, exactly the same shape
 `RegisterManifest` uses for the manifest capability:
 
 ```json
-{"type": "RegisterModelHost", "arguments": {"serviceId": "relayllm", "routerSocket": "/path/to/router.sock"}}
+{"type": "RegisterModelHost", "arguments": {"service_id": "relayllm", "router_socket": "/path/to/router.sock"}}
 ```
 
-- **Own id only.** `serviceId` must equal the calling identity's own launch
+- **Own id only.** `service_id` must equal the calling identity's own launch
   name, refused otherwise (`router_model_host.go`, mirroring
   `RegisterManifest`'s rule).
+- **`router_socket` must be an absolute path**, refused at `Validate()`
+  otherwise — it is dialed straight from relay's own working directory
+  (`dialVerifiedUnix`), and a relative path would resolve against relay's,
+  never the registering service's.
 - **At most one live host.** A second registration — from the same service
   id or a different one — is refused while the current registration's
   launch is still live (`ModelHostRegistry`, `model_host_registry.go`).
@@ -114,7 +127,7 @@ the model endpoint's one upstream, tokenless, exactly the same shape
   instant its launch ends, with no separate teardown call needed. A
   replacement is accepted only once the prior launch has ended.
 - **Verified on every dial, not just at registration.** When relay actually
-  connects to `routerSocket` — to fetch `/v1/models` for the catalog cache,
+  connects to `router_socket` — to fetch `/v1/models` for the catalog cache,
   or to forward a call — it reads the *server* peer's kernel audit token
   (`LOCAL_PEERTOKEN`) off that connection and refuses (503) unless it equals
   the process that registered the host. This is the mirror image of

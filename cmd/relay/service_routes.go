@@ -10,14 +10,14 @@ import (
 )
 
 type serviceView struct {
-	ID           string                     `json:"id"`
-	DisplayName  string                     `json:"display_name"`
-	Command      string                     `json:"command"`
-	Args         []string                   `json:"args"`
-	Env          map[string]string          `json:"env"`
-	WorkingDir   string                     `json:"working_dir,omitempty"`
-	Autostart    bool                       `json:"autostart"`
-	URL          string                     `json:"url,omitempty"`
+	ID            string                     `json:"id"`
+	DisplayName   string                     `json:"display_name"`
+	Command       string                     `json:"command"`
+	Args          []string                   `json:"args"`
+	Env           map[string]string          `json:"env"`
+	WorkingDir    string                     `json:"working_dir,omitempty"`
+	Autostart     bool                       `json:"autostart"`
+	URL           string                     `json:"url,omitempty"`
 	Capabilities  []config.ServiceCapability `json:"capabilities"`
 	AllowedModels []string                   `json:"allowed_models,omitempty"`
 	Running       bool                       `json:"running"`
