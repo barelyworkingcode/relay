@@ -299,7 +299,12 @@ func TestGate_AllowlistNamesOnlyRealFiles(t *testing.T) {
 // shrink" rule, most pointedly for RemoveExternalMcp and RemoveService: a
 // retired op's mutator stays listed, because the mutation-containment
 // property this file proves does not depend on whether the op that reaches
-// it still needs a prompt). A count floor is not enough here — dropping any
+// it still needs a prompt). SetProjectAllowCwdAuth is the same case in a
+// stronger form: the Go symbol itself no longer exists (allow_cwd_auth is
+// retired, plan-broker-and-sessions.md §2 C3) — it stays pinned as a bare
+// string that now matches nothing in the AST scan, deliberately, not
+// because of a case typo (this file's usual failure mode for a name that
+// matches nothing). A count floor is not enough here — dropping any
 // ONE entry still leaves the set well above a loose minimum, and produces
 // zero violations from TestGate_NoDoorReachesAGatedMutationOutsideItsCore
 // today, since nothing outside the allowlisted cores currently calls any

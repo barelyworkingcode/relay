@@ -3152,7 +3152,7 @@ window.__RELAY_INIT__ = {
       }
       html += '<p class="proj-section-help">' + (hosted ? "Absolute path on " + esc(hostNameFor(f.host_id)) + ". Relay never checks whether it exists \u2014 the host does that when a session or terminal opens it." : "Absolute path. Filesystem MCPs are auto-scoped to this directory.") + "</p>";
     } else {
-      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
+      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += "</div>";
     if (isHostedForm(f)) {

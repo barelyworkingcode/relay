@@ -3169,7 +3169,7 @@ function renderProjectForm() {
             ? 'Absolute path on ' + esc(hostNameFor(f.host_id)) + '. Relay never checks whether it exists — the host does that when a session or terminal opens it.'
             : 'Absolute path. Filesystem MCPs are auto-scoped to this directory.') + '</p>';
     } else {
-        html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
+        html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, skills, shell templates and models do not apply — what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += '</div>';
 
@@ -3338,10 +3338,10 @@ function renderProjectForm() {
     }
 
     // ---- Permission policy ----
-    // Absent for an access profile, for the same reason the skill toggle and
-    // directory auth are: the model refuses it now, so a control here would be
-    // one whose only outcome is a refusal on Save. A profile that still
-    // carries a policy is told, because saving clears it.
+    // Absent for an access profile, for the same reason the skill toggle is:
+    // the model refuses it now, so a control here would be one whose only
+    // outcome is a refusal on Save. A profile that still carries a policy is
+    // told, because saving clears it.
     const pol = f.permission_policy;
     if (isRemote) {
         if (!isPolicyEmpty(pol)) {

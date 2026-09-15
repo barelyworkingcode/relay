@@ -186,10 +186,13 @@ type BridgeRequest struct {
 	// same as a wrong secret.
 	Kind string `json:"kind,omitempty"`
 
-	// Cwd is sent ONLY when no token is set, and ignored whenever a token is
-	// present, so it can never widen an authenticated call's scope. Advisory,
-	// not attested — anything able to lie here can already read every token
-	// out of the 0600 settings.json.
+	// Cwd is never sent by relay's own Go client (allow_cwd_auth, the
+	// feature this field existed for, is retired — plan-broker-and-
+	// sessions.md's C3 decision). The wire field itself stays defined:
+	// server.go still reads it into the request context for a hand-crafted
+	// caller, but it is never authenticated on, whether or not a caller
+	// sends one — it was always an unattested, caller-asserted value, never
+	// a credential.
 	Cwd string `json:"cwd,omitempty"`
 }
 

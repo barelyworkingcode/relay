@@ -174,6 +174,58 @@ func TestIPCCreateProject_AppliesGenerateSkillAndDisabledTools(t *testing.T) {
 	}
 }
 
+// TestIPCUpdateProject_GenerateSkillPointerSemantics re-points a property
+// the deleted TestIPCProject_AllowCwdAuthRoundTrips used to pin onto the one
+// *bool remaining in project.UpdateFields: an explicit false actually
+// persists (so the toggle is revocable from the UI, not just settable), and
+// an unrelated patch leaves it alone (the whole point of it being a pointer
+// rather than a plain bool — an absent field means "unchanged", not
+// "false").
+func TestIPCUpdateProject_GenerateSkillPointerSemantics(t *testing.T) {
+	ipc, store, ui, _ := newProjectsIPC(t)
+	raw := mustRaw(t, map[string]interface{}{
+		"name":            "Alpha",
+		"path":            t.TempDir(),
+		"allowed_mcp_ids": []string{"fsmcp"},
+		"generate_skill":  true,
+	})
+
+	ipcCreateProject(ipc, raw)
+	args, ok := findEvent(ui, "onProjectAdded")
+	if !ok {
+		t.Fatalf("expected onProjectAdded; got events=%+v", ui.events)
+	}
+	var added config.Project
+	_ = json.Unmarshal(args[0].(json.RawMessage), &added)
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); !persisted.GenerateSkill {
+		t.Fatalf("generate_skill not persisted on create")
+	}
+
+	off := false
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{GenerateSkill: &off},
+	}))
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); persisted.GenerateSkill {
+		t.Errorf("generate_skill still set after patching it off")
+	}
+
+	// An unrelated patch leaves the flag alone (pointer semantics).
+	on := true
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{GenerateSkill: &on},
+	}))
+	newName := "Bravo"
+	ipcUpdateProject(ipc, mustRaw(t, ipcUpdateProjectMsg{
+		ID:           added.ID,
+		UpdateFields: project.UpdateFields{Name: &newName},
+	}))
+	if persisted, _ := config.FindProjectByID(store.Get(), added.ID); !persisted.GenerateSkill {
+		t.Errorf("generate_skill cleared by an unrelated patch")
+	}
+}
+
 func TestIPCCreateProject_BadPermissionPolicyEmitsErrorAndRollsBack(t *testing.T) {
 	ipc, store, ui, _ := newProjectsIPC(t)
 	raw := mustRaw(t, map[string]interface{}{
