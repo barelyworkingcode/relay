@@ -9,9 +9,11 @@ import (
 )
 
 var (
-	capFrontend = config.ServiceCapabilityFrontend
-	capManifest = config.ServiceCapabilityManifest
-	capProjects = config.ServiceCapabilityProjects
+	capFrontend  = config.ServiceCapabilityFrontend
+	capManifest  = config.ServiceCapabilityManifest
+	capProjects  = config.ServiceCapabilityProjects
+	capModels    = config.ServiceCapabilityModels
+	capModelHost = config.ServiceCapabilityModelHost
 )
 
 // capsFor maps the two shapes the launch-table tests need onto capability
@@ -26,9 +28,11 @@ func capsFor(frontend bool) []config.ServiceCapability {
 // The table restated independently of serviceOperationCapability, so a change
 // to one without the other fails here.
 var wantOperations = map[config.ServiceCapability][]Operation{
-	capFrontend: {OpFrontendSocket},
-	capManifest: {OpRegisterManifest},
-	capProjects: {OpResolvePtyEnv, OpResolveProjectTemplate, OpListProjects, OpGetProject, OpServiceTools},
+	capFrontend:  {OpFrontendSocket},
+	capManifest:  {OpRegisterManifest},
+	capProjects:  {OpResolvePtyEnv, OpResolveProjectTemplate, OpListProjects, OpGetProject, OpServiceTools},
+	capModels:    {OpModelCall, OpModelList},
+	capModelHost: {OpRegisterModelHost},
 }
 
 func TestAllowed_EachCapabilityGrantsExactlyItsOperations(t *testing.T) {

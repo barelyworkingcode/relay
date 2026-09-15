@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"strings"
 )
 
 // JSONBodyCap is the router's own body ceiling (relayLLM router.go's
@@ -34,7 +35,35 @@ var (
 	// ErrNotJSONObject means the body's top level isn't a JSON object, so
 	// there is no "model" key to find.
 	ErrNotJSONObject = errors.New("modelbroker: body is not a JSON object")
+	// ErrDuplicateModelKey means more than one top-level JSON key case-folds
+	// to "model". This is deliberate, not overcautious: encoding/json's own
+	// field matching is case-insensitive and takes the LAST matching key it
+	// sees, so relayLLM's decode of {"model":"a","Model":"b"} resolves to
+	// "b" while a check run against only the first "model" key would have
+	// approved "a" — refusing outright is the only answer that can't be
+	// smuggled past by a caller picking whichever spelling relay checks and
+	// whichever the checked-and-forwarded body decodes to.
+	ErrDuplicateModelKey = errors.New("modelbroker: more than one key names \"model\"")
+	// ErrDuplicateModelPart is ErrDuplicateModelKey's multipart counterpart:
+	// more than one form part's name case-folds to "model".
+	ErrDuplicateModelPart = errors.New("modelbroker: more than one part names \"model\"")
+	// ErrModelFieldTooLong means the model value itself, not the body as a
+	// whole, exceeds maxModelFieldBytes. Refused outright rather than
+	// silently checked-and-forwarded truncated: a truncated value that
+	// happens to match an allowed model's prefix must never be the value a
+	// grant decision is made against while the full, different value is
+	// what actually reaches the upstream.
+	ErrModelFieldTooLong = errors.New("modelbroker: model field exceeds the length limit")
 )
+
+// foldsToModel reports whether key matches "model" under the same
+// case-insensitive comparison encoding/json's own field matching uses
+// (Unicode simple case folding — strings.EqualFold implements the same
+// rule for the ASCII-and-simple-fold cases every real "model" spelling
+// falls into).
+func foldsToModel(key string) bool {
+	return strings.EqualFold(key, "model")
+}
 
 // capReader wraps r so a read attempted once limit bytes have already been
 // delivered fails with ErrBodyTooLarge, rather than silently truncating or
@@ -68,8 +97,14 @@ func (c *capReader) Read(p []byte) (int, error) {
 // happens to look. The buffer is then walked with a token-by-token decode so
 // no field's value other than "model" is ever assembled into a Go value the
 // caller could retain or log — a canary planted anywhere else in the body (a
-// message, a tool result) never reaches the return value. Forwarding the
-// request upstream is the caller's job with the same bytes.
+// message, a tool result) never reaches the return value.
+//
+// The WHOLE object is walked, never returned early on the first match: a
+// second key that case-folds to "model" is a request built to disagree with
+// itself about what model it names, refused via ErrDuplicateModelKey rather
+// than resolved by picking a side (see that error's own comment for why).
+// The caller must not forward the original bytes even when there is exactly
+// one match — see RewriteJSONModel.
 func ExtractJSONModel(r io.Reader, maxBytes int64) (string, error) {
 	body, err := io.ReadAll(&capReader{r: r, limit: maxBytes + 1})
 	if err != nil {
@@ -90,32 +125,40 @@ func ExtractJSONModel(r io.Reader, maxBytes int64) (string, error) {
 		return "", ErrNotJSONObject
 	}
 
+	model, found := "", false
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
 			return "", wrapReadErr(err)
 		}
 		key, _ := keyTok.(string)
-		if key != "model" {
+		if !foldsToModel(key) {
 			if err := skipJSONValue(dec); err != nil {
 				return "", wrapReadErr(err)
 			}
 			continue
 		}
-		var model string
-		if err := dec.Decode(&model); err != nil {
+		// This is subtle: a second key that folds to "model" is refused
+		// rather than resolved by "first wins" or "last wins" — see
+		// ErrDuplicateModelKey. The whole object is still walked (not
+		// returned early) so a duplicate anywhere in the body is caught
+		// regardless of which occurrence relay would otherwise have used.
+		if found {
+			return "", ErrDuplicateModelKey
+		}
+		var v string
+		if err := dec.Decode(&v); err != nil {
 			return "", wrapReadErr(err)
 		}
-		// This is deliberate: return the instant "model" is found rather
-		// than draining the rest of the object. Everything after it —
-		// messages, tool defs, attachments — is exactly the content this
-		// function must never touch.
-		if len(model) > maxModelFieldBytes {
-			model = model[:maxModelFieldBytes]
+		if len(v) > maxModelFieldBytes {
+			return "", ErrModelFieldTooLong
 		}
-		return model, nil
+		model, found = v, true
 	}
-	return "", ErrModelFieldMissing
+	if !found {
+		return "", ErrModelFieldMissing
+	}
+	return model, nil
 }
 
 // skipJSONValue consumes exactly one JSON value from dec without retaining
@@ -163,6 +206,12 @@ func wrapReadErr(err error) error {
 // particular the audio file itself — is never read into memory: NextPart
 // discards an unread part's remaining bytes before returning the next one,
 // so this function's only allocation for those parts is the part header.
+//
+// A second part whose name case-folds to "model" is refused
+// (ErrDuplicateModelPart), the multipart mirror of ExtractJSONModel's
+// ErrDuplicateModelKey: relayLLM's own multipart parsing keeps the LAST
+// same-named part, so a check run against only the first would approve a
+// value the upstream never actually uses.
 func ExtractMultipartModel(r io.Reader, boundary string, maxBytes int64) (string, error) {
 	cr := &capReader{r: r, limit: maxBytes + 1}
 	mr := multipart.NewReader(cr, boundary)
@@ -176,21 +225,28 @@ func ExtractMultipartModel(r io.Reader, boundary string, maxBytes int64) (string
 		if err != nil {
 			return "", wrapReadErr(err)
 		}
-		if found || part.FormName() != "model" || part.FileName() != "" {
-			// This is deliberate: keep draining to EOF even after "model" is
-			// found, rather than returning early. NextPart discards an
-			// unread part's remaining bytes itself — the file part's
-			// content never reaches a variable here either way — but only
-			// draining every part enforces maxBytes over the whole body
-			// regardless of which part "model" happens to be, matching the
-			// JSON extractor's cap on the request as a whole.
+		if !foldsToModel(part.FormName()) || part.FileName() != "" {
+			// This is deliberate: keep draining to EOF regardless, rather
+			// than returning early. NextPart discards an unread part's
+			// remaining bytes itself — the file part's content never
+			// reaches a variable here either way — but only draining every
+			// part enforces maxBytes over the whole body regardless of
+			// which part "model" happens to be, matching the JSON
+			// extractor's cap on the request as a whole.
 			part.Close()
 			continue
 		}
-		b, err := io.ReadAll(io.LimitReader(part, maxModelFieldBytes))
+		if found {
+			part.Close()
+			return "", ErrDuplicateModelPart
+		}
+		b, err := io.ReadAll(io.LimitReader(part, maxModelFieldBytes+1))
 		part.Close()
 		if err != nil {
 			return "", wrapReadErr(err)
+		}
+		if int64(len(b)) > maxModelFieldBytes {
+			return "", ErrModelFieldTooLong
 		}
 		model, found = string(b), true
 	}

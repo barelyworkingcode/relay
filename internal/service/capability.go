@@ -21,12 +21,25 @@ const (
 	// OpServiceTools is ListTools and CallTool with no token: every MCP,
 	// unfiltered by any project's grant.
 	OpServiceTools Operation = "ServiceTools"
+	// OpRegisterModelHost is RegisterModelHost: registering this service's
+	// router socket as the model endpoint's upstream, under its own id only.
+	OpRegisterModelHost Operation = "RegisterModelHost"
+	// OpModelCall is a model-endpoint call (model.sock, no header) made by a
+	// service's launch identity rather than a project grant. The endpoint
+	// itself further limits it to the identity's config.ServiceConfig.AllowedModels.
+	OpModelCall Operation = "ModelCall"
+	// OpModelList is GET /v1/models on the model endpoint, made by a service's
+	// launch identity. Granted by ServiceCapabilityModels here; a future
+	// `sessions` capability grants the unfiltered list too (plan-broker-and-
+	// sessions.md §2 C1) but that capability does not exist yet in this repo.
+	OpModelList Operation = "ModelList"
 )
 
 // Operations is every Operation Allowed decides.
 var Operations = []Operation{
 	OpHello, OpFrontendSocket, OpRegisterManifest, OpResolvePtyEnv,
 	OpResolveProjectTemplate, OpListProjects, OpGetProject, OpServiceTools,
+	OpRegisterModelHost, OpModelCall, OpModelList,
 }
 
 // serviceOperationCapability names the one capability each service
@@ -39,6 +52,9 @@ var serviceOperationCapability = map[Operation]config.ServiceCapability{
 	OpListProjects:           config.ServiceCapabilityProjects,
 	OpGetProject:             config.ServiceCapabilityProjects,
 	OpServiceTools:           config.ServiceCapabilityProjects,
+	OpRegisterModelHost:      config.ServiceCapabilityModelHost,
+	OpModelCall:              config.ServiceCapabilityModels,
+	OpModelList:              config.ServiceCapabilityModels,
 }
 
 // Allowed is relay's one capability decision for a launch identity: whether

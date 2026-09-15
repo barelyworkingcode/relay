@@ -177,6 +177,10 @@ func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestReq
 	return s.registerErr
 }
 
+func (s *stubRouter) RegisterModelHost(_ context.Context, _ RegisterModelHostRequest, _ string) error {
+	return nil
+}
+
 func (s *stubRouter) AdminOp(_ context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

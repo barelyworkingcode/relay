@@ -156,6 +156,8 @@ record's `capabilities` — a set, fixed when the launch begins:
 | `frontend` | The frontend socket, with no `Authorization` header, holding exactly `read`, `configure` and `proxy` (never `grant` or `execute`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. |
 | `manifest` | `RegisterManifest`, only for a `serviceId` equal to the launch name. |
 | `projects` | `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across every MCP. |
+| `models` | Model-endpoint calls on `model.sock` with no header, limited by the service record's own `allowed_models` (empty means none, `["*"]` means every model — the opposite of a project's own default), and `GET /v1/models`. See [`docs/model-endpoint.md`](model-endpoint.md). |
+| `model_host` | `RegisterModelHost`: registering this service's router socket as the model endpoint's one upstream, under its own id only. See [`docs/model-endpoint.md`](model-endpoint.md). |
 
 `Hello` needs no capability: every launched service may say it. A service
 with an empty set can start and say `Hello` and can do nothing else through
@@ -176,9 +178,9 @@ else, and a capability name relay does not know grants nothing.
 ```
 
 Every record relay writes carries `capabilities`, an empty set as `[]`. A
-record whose `capabilities` names anything other than `frontend`, `manifest`
-or `projects` fails validation: relay logs it on load, keeps it in
-`settings.json` untouched, and refuses to start it.
+record whose `capabilities` names anything other than `frontend`, `manifest`,
+`projects`, `models` or `model_host` fails validation: relay logs it on load,
+keeps it in `settings.json` untouched, and refuses to start it.
 
 A record written before capabilities existed has no `capabilities` key
 (`null` reads the same) and may carry `frontend_consumer`. It is migrated once,
