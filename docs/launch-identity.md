@@ -200,17 +200,23 @@ The service create/edit dialog carries a checkbox per known capability
 before anything is written (`config.ServiceConfig.validateCapabilities`),
 the same check a CLI `--capability` typo hits.
 
-Narrowing and widening are judged separately, not by whether the request
-touches `capabilities` at all: dropping a capability only shrinks what the
-launch identity may do and needs no presence prompt, while adding one is new
-reach and always does (ADR-018 decision 1 — obtaining or widening a
-capability is privileged, using or narrowing one is not). This is
-`serviceUpdateNeedsGate` in `cmd/relay/service_ops.go`, alongside the same
-judgment for `command`, `args`, `working_dir`, `url` and `autostart` (which
-have no narrower reading, so any actual change to one of those still gates)
-and a resend that changes nothing at all (the dialog always sends the whole
-record on every save, so a byte-identical resend must not manufacture a
-prompt either).
+`command`, `args`, `working_dir`, `url` and `autostart` have no narrower
+reading, so any actual change to one of those gates, and a resend that
+changes nothing at all (the dialog always sends the whole record on every
+save, so a byte-identical resend must not manufacture a prompt either)
+needs no gate. `display_name`, `capabilities` and `allowed_models` gate on
+ANY actual change, in either direction — an earlier revision of
+`serviceUpdateNeedsGate` (`cmd/relay/service_ops.go`) read ADR-018 decision
+1 (obtaining or widening a capability is privileged, using or narrowing one
+is not) as meaning dropping a capability or model id needed no prompt, and
+never inspected `display_name` at all; that was correct only while an
+operator-minted credential was the sole way to reach this route. Since
+eve's frontend launch identity was granted `execute`
+(plan-broker-and-sessions.md's F1/SP8 decision), any frontend-capable
+service can reach this route for ANY service's record, not just its own, so
+a silent rename or a silent capability/model narrowing became a real
+integrity/availability exposure and both now gate too
+(`STATUS-relay-security.md`).
 
 Capabilities is written by full replacement, the same as the CLI's own
 register semantics: a save that omits the field from the request (there is
