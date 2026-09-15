@@ -19,6 +19,7 @@ func (s *Settings) Clone() *Settings {
 	cp.Enrolments = cloneEnrolments(s.Enrolments)
 	cp.Audit = cloneAuditConfig(s.Audit)
 	cp.Remote = cloneRemoteConfig(s.Remote)
+	cp.ModelEndpoint = cloneModelEndpointConfig(s.ModelEndpoint)
 	cp.APICredentials = cloneAPICredentials(s.APICredentials)
 	cp.LoginBootstrap = cloneLoginBootstrap(s.LoginBootstrap)
 	cp.Passkeys = clonePasskeys(s.Passkeys)
@@ -116,6 +117,7 @@ func cloneServiceConfig(c ServiceConfig) ServiceConfig {
 	c.Env = cloneMap(c.Env)
 	c.Capabilities = cloneSlice(c.Capabilities)
 	c.LegacyFrontendConsumer = cloneBoolPtr(c.LegacyFrontendConsumer)
+	c.AllowedModels = cloneSlice(c.AllowedModels)
 	return c
 }
 
@@ -243,6 +245,14 @@ func cloneRemoteConfig(c *RemoteConfig) *RemoteConfig {
 	cp := *c
 	cp.Enabled = cloneBoolPtr(c.Enabled)
 	cp.EnrolmentRequests = cloneBoolPtr(c.EnrolmentRequests)
+	return &cp
+}
+
+func cloneModelEndpointConfig(c *ModelEndpointConfig) *ModelEndpointConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
 	return &cp
 }
 

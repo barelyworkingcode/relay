@@ -57,6 +57,11 @@ type Settings struct {
 	// block must never open a network socket.
 	Remote *RemoteConfig `json:"remote,omitempty"`
 
+	// ModelEndpoint configures the model endpoint's loopback TCP listener
+	// (docs/model-endpoint.md). Absent means no TCP listener — model.sock is
+	// unaffected either way. Same "absent means closed" default as Remote.
+	ModelEndpoint *ModelEndpointConfig `json:"model_endpoint,omitempty"`
+
 	// APICredentials are the bearer credentials the control-plane API
 	// accepts, each naming its own capability classes (ADR-015 decision 3).
 	// omitempty, like Enrolments and Audit: an install that never mints one
