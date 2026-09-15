@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -414,9 +415,18 @@ func callerForProject(proj config.Project, auth, label string) modelCaller {
 // checked for a listing request so a service holding only `models` still
 // reaches GET /v1/models, exactly as OpModelCall requires the same
 // capability for everything else (service.Allowed, both operations map to
-// ServiceCapabilityModels in this unit — the `sessions` capability's wider,
-// unfiltered list is a later unit's addition, plan-broker-and-sessions.md §2
-// C1).
+// ServiceCapabilityModels for that path).
+//
+// A ServiceCapabilitySessions identity's listing grant is the unfiltered
+// catalog, never scoped by AllowedModels (plan-broker-and-sessions.md §2 C1:
+// "sessions gets the unfiltered list and no calls"), checked ahead of the
+// ordinary AllowedModels lookup so it wins regardless of what else the
+// record holds. This can only ever be reached for a listing request:
+// service.Allowed never grants OpModelCall for `sessions` alone, so a call
+// attempt is refused above, before this function decides anything about
+// scope. Only the built-in RelaySessionsServiceID record may ever hold
+// `sessions` (config.ServiceConfig.validateCapabilities), so this branch is
+// inherently scoped to that one record.
 func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
 	peer := bridge.CallerPeerFromContext(r.Context())
 	id, ok := m.launches.Lookup(peer)
@@ -431,6 +441,9 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 	if !id.Allows(op) {
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{auth: "identity"}, &errBody
+	}
+	if op == service.OpModelList && slices.Contains(id.Capabilities, config.ServiceCapabilitySessions) {
+		return modelCaller{kind: "service", name: id.Name, grant: []string{"*"}, auth: "identity"}, nil
 	}
 	svc, _ := config.FindServiceByID(m.store.Get(), id.Name)
 	var allowed []string

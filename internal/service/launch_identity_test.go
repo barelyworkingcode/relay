@@ -560,6 +560,69 @@ func TestBindKind_ProjectSession_WrongSecretDoesNotSpend(t *testing.T) {
 // drift the TTL-expiry test above wouldn't catch (that test uses its own
 // literal 30*time.Second so it stays meaningful even if this constant were
 // ever wrong).
+// TestBegin_ProjectSessionGetsTheTTLAutomatically pins the fix for a real
+// footgun: a caller reaching for plain Begin (not BeginWithTTL) for a
+// project_session identity must still get ProjectSessionLaunchTTL, not a
+// launch that waits unbound forever.
+func TestBegin_ProjectSessionGetsTheTTLAutomatically(t *testing.T) {
+	table := newProjectSessionTable(t, fakeRootSource{}, &fakeWatcher{})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	table.SetClockForTest(func() time.Time { return now })
+
+	secret, _, err := table.Begin(Identity{Kind: IdentityKindProjectSession, Name: "sess-auto-ttl", ProjectID: "proj-x", ParentLaunch: "relaysessions"})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	now = start.Add(ProjectSessionLaunchTTL) // not before the deadline: expired
+	if _, err := table.Bind("sess-auto-ttl", secret, peertoken.ForProcessForTest(3100, 1)); !errors.Is(err, ErrHelloRefused) {
+		t.Fatalf("Bind after the automatic TTL elapsed: err = %v, want refused", err)
+	}
+}
+
+// TestBegin_ProjectSessionGetsNoAutomaticTTLForAServiceIdentity is the
+// companion check: the automatic TTL is project_session-specific, not a
+// change to Begin's behavior for the service kind every existing launch
+// depends on.
+func TestBegin_ProjectSessionGetsNoAutomaticTTLForAServiceIdentity(t *testing.T) {
+	table := NewLaunches()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	table.SetClockForTest(func() time.Time { return now })
+
+	secret, _, err := table.Begin(Identity{Kind: IdentityKindService, Name: "svc-no-ttl"})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	now = start.Add(ProjectSessionLaunchTTL + time.Hour)
+	if _, err := table.Bind("svc-no-ttl", secret, peertoken.ForProcessForTest(3101, 1)); err != nil {
+		t.Fatalf("a service launch expired: %v", err)
+	}
+}
+
+// TestBegin_ProjectSessionDefaultsSessionIDToName pins the fix for a
+// fail-open trap: RootByPID reads Identity.SessionID, not Name, and a
+// caller that sets Name but forgets SessionID must not leave RootByPID
+// (and, downstream, C3's membership walk) resolving a member into an empty
+// session id.
+func TestBegin_ProjectSessionDefaultsSessionIDToName(t *testing.T) {
+	table := newProjectSessionTable(t, fakeRootSource{3110: {PID: 3110, StartSec: 1}}, &fakeWatcher{})
+	secret, l, err := table.Begin(Identity{Kind: IdentityKindProjectSession, Name: "sess-no-explicit-id", ProjectID: "proj-y", ParentLaunch: "relaysessions"})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if l.id.SessionID != "sess-no-explicit-id" {
+		t.Fatalf("SessionID = %q, want it defaulted to Name", l.id.SessionID)
+	}
+	if _, err := table.BindKind("sess-no-explicit-id", secret, peertoken.ForProcessForTest(3110, 1), IdentityKindProjectSession); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	root, ok := table.RootByPID(3110)
+	if !ok || root.SessionID != "sess-no-explicit-id" {
+		t.Fatalf("RootByPID = %+v, ok=%v, want SessionID defaulted to the launch name, never empty", root, ok)
+	}
+}
+
 func TestProjectSessionLaunchTTL_Is30Seconds(t *testing.T) {
 	if ProjectSessionLaunchTTL != 30*time.Second {
 		t.Fatalf("ProjectSessionLaunchTTL = %v, want 30s", ProjectSessionLaunchTTL)

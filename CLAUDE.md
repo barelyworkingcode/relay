@@ -271,10 +271,9 @@ independently refuses to derive any `source: "project_path"` field for one
 regardless, since an MCP's schema is discovered at runtime and could gain
 such a field after a grant was already validated. `appRouter.CallTool`
 re-checks scope presence against the MCP's *live* schema, which is the only
-one of the three defences that catches that upgrade. Sessions (`refuseRemoteSession`) and PTY
-launches (`refuseRemotePty`) are refused at the point of use too, not just
-at validation — see ADR-009 for why each of these is defended twice rather
-than once.
+one of the three defences that catches that upgrade. Chat sessions
+(`refuseRemoteSession`) are refused at the point of use too, not just at
+validation — see ADR-009 for why this is defended twice rather than once.
 
 See ADR-009 (a remote project is a capability grant to a client on another machine, not a directory) for the full reasoning.
 

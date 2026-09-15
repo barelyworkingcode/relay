@@ -81,7 +81,7 @@ const fixtureExternalMcps = `[
 ]`
 
 const fixtureServices = `[
-  {"id":"relay-llm","display_name":"Relay LLM","command":"/Users/you/source/relayLLM/relayllm","args":["--router-port","8180"],"env":{},"autostart":true,"capabilities":["manifest","projects"]},
+  {"id":"relay-llm","display_name":"Relay LLM","command":"/Users/you/source/relayLLM/relayllm","args":["--router-port","8180"],"env":{},"autostart":true,"capabilities":["manifest","model_host"]},
   {"id":"relaytts-daemon","display_name":"relaytts-daemon","command":"/Users/you/source/relayTTS/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true,"capabilities":["manifest"]},
   {"id":"stt-daemon","display_name":"STT Daemon","command":"/Users/you/source/whisper/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":true,"capabilities":["frontend"]},
   {"id":"relaycomfy","display_name":"relaycomfy","command":"/Users/you/source/relayComfy/daemon/daemon_wrapper.sh","args":[],"env":{},"autostart":false,"url":"http://localhost:8188"}

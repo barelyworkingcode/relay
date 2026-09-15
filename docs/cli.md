@@ -1023,7 +1023,7 @@ and how to reach it.
 relay service register --name NAME [--id ID] --command CMD [--args ARG...]
                         [--env K=V...] [--workdir DIR] [--url URL]
                         [--autostart[=true|false]]
-                        [--capability frontend|manifest|projects ...]
+                        [--capability frontend|manifest|models|model_host ...]
 relay service unregister --id ID | --name NAME
 relay service restart --id ID | --name NAME
 relay service list
@@ -1039,7 +1039,7 @@ Usage of service register:
   -autostart
     	start automatically
   -capability value
-    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held
+    	grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy+execute), manifest (RegisterManifest), models (model-endpoint calls, limited by --allowed-model), model_host (RegisterModelHost); sessions (SessionExited, the unfiltered model list) is refused on any service but the built-in relaysessions one; none given means none held
   -command string
     	command to run (required)
   -env value
@@ -1077,10 +1077,12 @@ never be redeemed for the other.
 
 **`--capability` sets what the service's launch identity may do, and every
 register restates the whole set.** Repeat it once per capability — `frontend`
-(the frontend socket as `read`+`configure`+`proxy`, and `RELAY_FRONTEND_SOCKET`
-in the service's environment), `manifest` (`RegisterManifest` under the
-service's own id), `projects` (`ResolvePtyEnv`, `ResolveProjectTemplate`,
-`ListProjects`, `GetProject`, service-scope `ListTools`/`CallTool`); see
+(the frontend socket as `read`+`configure`+`proxy`+`execute`, and
+`RELAY_FRONTEND_SOCKET` in the service's environment), `manifest`
+(`RegisterManifest` under the service's own id), `models` (model-endpoint
+calls, limited by `--allowed-model`), `model_host` (`RegisterModelHost`);
+`sessions` (`SessionExited`, the unfiltered model list, no calls) is refused
+on any service but the built-in `relaysessions` one; see
 [`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities).
 An unknown name is refused before anything reaches the tray. Unlike
 `--workdir`, `--url` and `--autostart`, capabilities are not absent-aware: a

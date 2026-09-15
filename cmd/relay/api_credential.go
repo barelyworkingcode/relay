@@ -243,13 +243,24 @@ func reapExpiredAPICredentials(s *config.Settings) bool {
 // operator-minted credential under it would be deleted too.
 const legacyFrontendCredentialName = "legacy-frontend-token"
 
-// frontendConsumerClasses is what a launch identity holding the frontend capability holds
-// on the frontend socket: never control.ClassGrant or control.ClassExecute. A
-// consumer that needs either must be handed a credential naming it.
-// control.ClassProxy is what reaches the proxied surface; it is not
-// control.ClassExecute because execute would also reach POST /api/mcps and
-// PUT /api/services/{id} (ADR-016 decision 4).
-var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
+// frontendConsumerClasses is what a launch identity holding the frontend
+// capability holds on the frontend socket: never control.ClassGrant. A
+// consumer that needs it must be handed a credential naming it.
+//
+// control.ClassExecute is included per the approved F1/SP8 decision
+// (plan-broker-and-sessions.md, "Decisions on this plan"): eve's frontend
+// launch identity gets execute so it can reach the session-host launch
+// routes (POST /api/terminals, POST /api/sessions, POST /api/sessions/{id}/
+// resume — sessionRouteClasses below) once R-S4b registers them. This is
+// safe now, and was not safe before F1 landed: execute on the frontend
+// socket also reaches POST /api/mcps and PUT /api/services/{id}
+// (ADR-016 decision 4), and those are exactly the routes F1 required to be
+// presence-gated first (`mcp.register`, `service.register`) — done — plus
+// PUT /api/remote, gated by relay#113 before this unit started. With every
+// execute route on this socket gated or (for the session routes) properly
+// scoped to a launch, there is no longer an ungated route for holding this
+// class to reach.
+var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy, control.ClassExecute}
 
 // sessionRouteClasses is plan-broker-and-sessions.md §2 C1's "Route classes
 // (socket-only)" table for the session-host routes: it exists before the

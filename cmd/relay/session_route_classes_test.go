@@ -2,11 +2,12 @@ package main
 
 // plan-broker-and-sessions.md §2 C1, "Route classes (socket-only)": these
 // routes do not exist yet (R-S3 and R-S4b register the actual handlers), so
-// this asserts the class-to-route mapping sessionRouteClasses pins, and that
-// a frontend launch identity — which reaches every OTHER class the frontend
-// socket serves (control.ClassRead, ClassConfigure, ClassProxy;
-// TestFrontendCapability_HoldsExactlyReadConfigureAndProxy) — never reaches
-// an execute-class route, hermetically, with no live route to hit.
+// this asserts the class-to-route mapping sessionRouteClasses pins, and
+// that a frontend launch identity — which per the approved F1/SP8 decision
+// now holds control.ClassExecute alongside ClassRead/ClassConfigure/
+// ClassProxy (TestFrontendCapability_HoldsExactlyReadConfigureProxyAndExecute)
+// — DOES reach every route this table names, execute-class ones included,
+// hermetically, with no live route to hit yet.
 
 import (
 	"net/http/httptest"
@@ -52,27 +53,34 @@ func splitRouteKey(route string) (method, path string) {
 	return route, ""
 }
 
-// TestSessionRouteClasses_FrontendIdentityNeverReachesAnExecuteClassRoute is
+// TestSessionRouteClasses_FrontendIdentityReachesEveryClassThisTableNames is
 // the required hermetic proof that a frontend launch identity — the identity
-// eve and relayScheduler hold on the frontend socket — cannot reach any
-// route this table marks execute-class, while it does reach the read- and
-// proxy-class ones, exactly mirroring frontendConsumerClasses (control.ClassRead,
-// ClassConfigure, ClassProxy; never ClassGrant or ClassExecute). No live
-// route exists yet to call this against — R-S3/R-S4b's registration is what
-// makes that live — so this asks control.Authorizer.Authorize directly, the
-// same chokepoint every frontend-socket route (present or future) must pass
-// through.
-func TestSessionRouteClasses_FrontendIdentityNeverReachesAnExecuteClassRoute(t *testing.T) {
+// eve and relayScheduler hold on the frontend socket — reaches every route
+// this table names, per the approved F1/SP8 decision
+// (plan-broker-and-sessions.md, "Decisions on this plan"): eve's frontend
+// identity gets control.ClassExecute so it can launch terminals and
+// sessions once R-S4b registers these routes. control.ClassGrant remains
+// refused — nothing on the frontend socket ever grants that to a launch
+// identity, only to a bearer credential naming it — which is the boundary
+// that actually matters here, not execute. No live route exists yet to call
+// this against — R-S3/R-S4b's registration is what makes that live — so
+// this asks control.Authorizer.Authorize directly, the same chokepoint
+// every frontend-socket route (present or future) must pass through.
+func TestSessionRouteClasses_FrontendIdentityReachesEveryClassThisTableNames(t *testing.T) {
 	authz := NewCredentialAuthorizer(newCLISandboxStore(t))
 	id := service.Identity{Kind: service.IdentityKindService, Name: "eve-like", Capabilities: []config.ServiceCapability{config.ServiceCapabilityFrontend}}
 
 	for route, class := range sessionRouteClasses {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r = r.WithContext(withFrontendIdentity(r.Context(), id))
-		err := authz.Authorize(r, class)
-		wantGranted := class != control.ClassExecute
-		if granted := err == nil; granted != wantGranted {
-			t.Errorf("%s (class %s): granted = %v, want %v (err=%v)", route, class, granted, wantGranted, err)
+		if err := authz.Authorize(r, class); err != nil {
+			t.Errorf("%s (class %s): frontend identity was refused: %v", route, class, err)
 		}
+	}
+
+	r := httptest.NewRequest("GET", "/x", nil)
+	r = r.WithContext(withFrontendIdentity(r.Context(), id))
+	if err := authz.Authorize(r, control.ClassGrant); err == nil {
+		t.Error("a frontend identity reached control.ClassGrant")
 	}
 }

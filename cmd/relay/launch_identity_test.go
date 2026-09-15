@@ -475,15 +475,21 @@ func TestFrontend_AConsumerIdentityReachesTheProxiedSurfaceOverTheSocketOnly(t *
 	}
 }
 
-func TestFrontendCapability_HoldsExactlyReadConfigureAndProxy(t *testing.T) {
+// TestFrontendCapability_HoldsExactlyReadConfigureProxyAndExecute pins the
+// approved F1/SP8 decision (plan-broker-and-sessions.md, "Decisions on this
+// plan"): a frontend launch identity now holds control.ClassExecute too, so
+// eve can reach the session-host launch routes once R-S4b registers them.
+// control.ClassGrant remains refused — nothing on the frontend socket ever
+// grants that to a launch identity, only to a bearer credential naming it.
+func TestFrontendCapability_HoldsExactlyReadConfigureProxyAndExecute(t *testing.T) {
 	authz := NewCredentialAuthorizer(newCLISandboxStore(t))
 	id := service.Identity{Kind: service.IdentityKindService, Name: "eve-like", Capabilities: capsFrontend}
 	for class, want := range map[control.CapabilityClass]error{
 		control.ClassRead:      nil,
 		control.ClassConfigure: nil,
 		control.ClassProxy:     nil,
+		control.ClassExecute:   nil,
 		control.ClassGrant:     control.ErrClassNotGranted,
-		control.ClassExecute:   control.ErrClassNotGranted,
 	} {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r = r.WithContext(withFrontendIdentity(r.Context(), id))
