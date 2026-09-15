@@ -103,17 +103,17 @@ func TestResolveAuth_ValidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
-	stored, settings, err := r.resolveAuth(context.Background(), testToken)
+	auth, err := r.resolveAuth(context.Background(), testToken, service.OpProjectTools)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if stored == nil {
+	if auth.stored == nil {
 		t.Fatal("expected non-nil StoredToken")
 	}
-	if !strings.HasPrefix(stored.Name, "project:") {
-		t.Errorf("expected project token name, got %q", stored.Name)
+	if !strings.HasPrefix(auth.stored.Name, "project:") {
+		t.Errorf("expected project token name, got %q", auth.stored.Name)
 	}
-	if settings == nil {
+	if auth.settings == nil {
 		t.Fatal("expected non-nil Settings")
 	}
 }
@@ -122,7 +122,7 @@ func TestResolveAuth_InvalidToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
-	_, _, err := r.resolveAuth(context.Background(), "completely-wrong-token")
+	_, err := r.resolveAuth(context.Background(), "completely-wrong-token", service.OpProjectTools)
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}
@@ -132,7 +132,7 @@ func TestResolveAuth_EmptyToken(t *testing.T) {
 	s := makeSettings(nil, nil, nil)
 	r := newTestRouter(t, s, mcpbroker.NewManager(nil))
 
-	_, _, err := r.resolveAuth(context.Background(), "")
+	_, err := r.resolveAuth(context.Background(), "", service.OpProjectTools)
 	if err == nil {
 		t.Fatal("expected error for empty token")
 	}

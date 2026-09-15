@@ -87,7 +87,13 @@ type ModelCallAudit struct {
 	// hook's unauthenticated case reads this the same way
 	// cmd/relay/audit_call.go's setUnauthenticated reads a tool call's
 	// presented-but-invalid token.
-	Auth           string
+	Auth string
+	// SessionID is set when the caller was admitted as a project_session —
+	// its root process, or a C3 member of it (plan-broker-and-sessions.md §2
+	// C3/C4). CallerKind stays "project" for such a caller: the grant it
+	// acts under IS the project's, and the audit hook is what turns the two
+	// facts into one actor row.
+	SessionID      string
 	ModelKeyLabel  string
 	Method         string
 	Path           string
@@ -128,6 +134,10 @@ type modelCaller struct {
 	// resolve" apart, the same distinction that precedent draws.
 	auth          string
 	modelKeyLabel string
+	// sessionID is set only on the tokenless session paths (a project_session
+	// root's own launch identity, or a C3 member of one). Audit only: the
+	// scope this caller gets is the project's, identical to its bearer's.
+	sessionID string
 }
 
 // ModelEndpointServer is relay's model broker (docs/model-endpoint.md):
@@ -139,6 +149,11 @@ type ModelEndpointServer struct {
 	modelKeys *ModelKeyTable
 	hosts     *ModelHostRegistry
 	catalog   *modelbroker.Cache
+
+	// membership answers C3 for a tokenless model.sock caller holding no
+	// launch identity of its own (plan-broker-and-sessions.md §2 C3, C8's
+	// auth order step 2). nil refuses every such caller.
+	membership bridge.MembershipResolver
 
 	// bodyBudget bounds total in-flight body-processing bytes across every
 	// concurrent call, both listeners (relay#116 re-review, S6; see
@@ -172,9 +187,20 @@ const bodyBudgetWaitTimeout = 5 * time.Second
 
 func NewModelEndpointServer(store config.SettingsStore, launches *service.Launches, modelKeys *ModelKeyTable, hosts *ModelHostRegistry) *ModelEndpointServer {
 	m := &ModelEndpointServer{store: store, launches: launches, modelKeys: modelKeys, hosts: hosts}
+	// Built from the same launch table the identity lookup uses, so
+	// model.sock and relay.sock can never disagree about which sessions are
+	// live. A test overrides it with SetMembershipResolverForTest.
+	m.membership = newMembershipAuth(launches)
 	m.catalog = modelbroker.NewCache(m.fetchCatalog)
 	m.bodyBudget = modelbroker.NewBodyBudget(maxInFlightBodyBytes)
 	return m
+}
+
+// SetMembershipResolverForTest overrides how THIS endpoint answers C3, so a
+// test can present a controlled session table instead of a real process
+// ancestry. Production wires newMembershipAuth over the live launch table.
+func (m *ModelEndpointServer) SetMembershipResolverForTest(mr bridge.MembershipResolver) {
+	m.membership = mr
 }
 
 var errModelHostUnavailable = errors.New("model host unavailable")
@@ -429,18 +455,35 @@ func callerForProject(proj config.Project, auth, label string) modelCaller {
 // inherently scoped to that one record.
 func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
 	peer := bridge.CallerPeerFromContext(r.Context())
-	id, ok := m.launches.Lookup(peer)
-	if !ok {
-		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{auth: "identity"}, &errBody
-	}
 	op := service.OpModelCall
 	if isModelListRequest(r) {
 		op = service.OpModelList
 	}
+
+	id, ok := m.launches.Lookup(peer)
+	if !ok {
+		// C8 step 2's last branch, and C3's step 3 for this listener: no
+		// bearer, no launch identity of its own, but a kernel-verified
+		// descendant of a live session's root gets that session's project —
+		// the same scope the project's token would have given it.
+		member, isMember := bridge.ConnMembershipFromContext(r.Context()).Session()
+		if !isMember || !service.Allowed(service.IdentityKindProjectSession, nil, op) {
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{auth: "identity"}, &errBody
+		}
+		return m.callerForSession(member.ProjectID, member.SessionID, shape)
+	}
 	if !id.Allows(op) {
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{auth: "identity"}, &errBody
+	}
+	if id.Kind == service.IdentityKindProjectSession {
+		// The session's own root process, holding the identity it bound at
+		// Hello. Identical authority to a member of it (C1's project_session
+		// table gives root and member the same row) — and reached here
+		// rather than through the membership walk, because a root is not its
+		// own descendant.
+		return m.callerForSession(id.ProjectID, id.SessionID, shape)
 	}
 	if op == service.OpModelList && slices.Contains(id.Capabilities, config.ServiceCapabilitySessions) {
 		return modelCaller{kind: "service", name: id.Name, grant: []string{"*"}, auth: "identity"}, nil
@@ -451,6 +494,22 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 		allowed = svc.AllowedModels
 	}
 	return modelCaller{kind: "service", name: id.Name, grant: allowed, auth: "identity"}, nil
+}
+
+// callerForSession scopes a session caller to its project's live grant. The
+// project is re-read here rather than trusted from the identity record: a
+// project deleted after the session started must not keep answering for it,
+// and `allowed_models` is read live for every call by the same rule that
+// governs a project bearer.
+func (m *ModelEndpointServer) callerForSession(projectID, sessionID string, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
+	proj, _ := config.FindProjectByID(m.store.Get(), projectID)
+	if proj == nil {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{auth: "session", sessionID: sessionID}, &errBody
+	}
+	caller := callerForProject(*proj, "session", "")
+	caller.sessionID = sessionID
+	return caller, nil
 }
 
 func (m *ModelEndpointServer) writeError(w http.ResponseWriter, e modelbroker.ErrorBody) {
@@ -469,6 +528,7 @@ func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *
 	return ModelCallAudit{
 		Transport:         transport,
 		Auth:              caller.auth,
+		SessionID:         caller.sessionID,
 		CallerKind:        caller.kind,
 		CallerName:        caller.name,
 		CallerProjectName: caller.projectName,
@@ -990,10 +1050,17 @@ func (m *ModelEndpointServer) ListenSocket() error {
 		Handler:           m.Handler(transportSocket),
 		ReadHeaderTimeout: 30 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			// http.Server calls this on the accept loop, before it serves
+			// anything on c, so this is the same "as early as possible"
+			// accept time the bridge takes immediately after Accept — the
+			// bound C3's walk refuses a peer that started after.
+			acceptedAt := time.Now()
+			var peer peertoken.Token
 			if tok, err := peertoken.FromConn(c); err == nil {
+				peer = tok
 				ctx = bridge.WithCallerPeer(ctx, tok)
 			}
-			return ctx
+			return bridge.WithConnMembership(ctx, bridge.NewConnMembership(m.membership, peer, acceptedAt))
 		},
 	}
 	return nil

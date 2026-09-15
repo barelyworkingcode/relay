@@ -186,13 +186,13 @@ type BridgeRequest struct {
 	// same as a wrong secret.
 	Kind string `json:"kind,omitempty"`
 
-	// Cwd is never sent by relay's own Go client (allow_cwd_auth, the
-	// feature this field existed for, is retired — plan-broker-and-
-	// sessions.md's C3 decision). The wire field itself stays defined:
-	// server.go still reads it into the request context for a hand-crafted
-	// caller, but it is never authenticated on, whether or not a caller
-	// sends one — it was always an unattested, caller-asserted value, never
-	// a credential.
+	// Cwd is accepted on the wire and ignored entirely. Directory auth is
+	// retired (plan-broker-and-sessions.md §2 C3): a working directory is
+	// asserted by the caller, not attested by the kernel, and relay now
+	// identifies a tokenless caller by its audit token and process ancestry
+	// instead. The field remains only so a request from a client built
+	// before the retirement still decodes; nothing server-side authenticates
+	// on it, whether or not a caller sends one.
 	Cwd string `json:"cwd,omitempty"`
 }
 
@@ -242,22 +242,6 @@ func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
 func ProgressFromContext(ctx context.Context) ProgressFunc {
 	fn, _ := ctx.Value(progressCtxKey{}).(ProgressFunc)
 	return fn
-}
-
-type callerCwdCtxKey struct{}
-
-// WithCallerCwd carries BridgeRequest.Cwd in context rather than a
-// ToolRouter parameter, so the cross-repo interface stays unchanged.
-func WithCallerCwd(ctx context.Context, dir string) context.Context {
-	if dir == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, callerCwdCtxKey{}, dir)
-}
-
-func CallerCwdFromContext(ctx context.Context) string {
-	dir, _ := ctx.Value(callerCwdCtxKey{}).(string)
-	return dir
 }
 
 type callerPIDCtxKey struct{}

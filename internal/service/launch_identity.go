@@ -351,6 +351,17 @@ func (t *Launches) BindKind(name, secret string, peer peertoken.Token, wantKind 
 		}
 		c, err := t.watchRoot(int(proc.PID), info, func() { l.End() })
 		if err != nil {
+			if errors.Is(err, membership.ErrExited) {
+				// This is deliberate: ErrExited is not "the watch failed", it
+				// is "the process this launch is for is already gone" — the
+				// pid died mid-Hello, or was recycled between the start-time
+				// read above and the registration. Refusing the Hello alone
+				// would leave the launch live and unbound for the rest of its
+				// TTL, with a secret that is still spendable by whoever else
+				// holds it. There is no session left to protect, so the
+				// launch ends here rather than waiting to expire.
+				t.endLocked(l)
+			}
 			return Identity{}, fmt.Errorf("%w: root process ancestry watch: %v", ErrHelloRefused, err)
 		}
 		cancel = c
