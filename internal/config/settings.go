@@ -100,6 +100,14 @@ type Settings struct {
 	// later report (decisions 9 and 12). omitempty, for the same reason as
 	// EvePasskeys.
 	EvePasskeyRevocations []EvePasskeyRevocation `json:"eve_passkey_revocations,omitempty"`
+
+	// TerminalTemplates holds only a user's added or customized terminal
+	// launch templates (templates.go); the five built-ins are seeded in
+	// code by BuiltinTerminalTemplates and never appear here unless an
+	// entry overrides one by id. omitempty, like Enrolments and Passkeys:
+	// an install that never customizes a template keeps settings.json
+	// byte-identical to one written before this feature existed.
+	TerminalTemplates []TerminalTemplate `json:"terminal_templates,omitempty"`
 }
 
 func (s *Settings) AddExternalMcp(mcp ExternalMcp) {
