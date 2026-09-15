@@ -153,41 +153,51 @@ record's `capabilities` — a set, fixed when the launch begins:
 
 | capability | operations it grants |
 |---|---|
-| `frontend` | The frontend socket, with no `Authorization` header, holding exactly `read`, `configure` and `proxy` (never `grant` or `execute`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. |
+| `frontend` | The frontend socket, with no `Authorization` header, holding `read`, `configure`, `proxy` and `execute` (never `grant`). Attributed in `control_decision` records as `launch:service:<id>`. Relay sets `RELAY_FRONTEND_SOCKET` exactly when this capability is held. `execute` was added by the approved F1/SP8 decision (plan-broker-and-sessions.md), once every other `execute`-class route on this socket was presence-gated or scoped to a launch — it is what lets eve reach the session-host launch routes (`POST /api/terminals`, `POST /api/sessions`, `POST /api/sessions/{id}/resume`). |
 | `manifest` | `RegisterManifest`, only for a `serviceId` equal to the launch name. |
-| `projects` | `ResolvePtyEnv`, `ResolveProjectTemplate`, `ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across every MCP. |
 | `models` | Model-endpoint calls on `model.sock` with no header, limited by the service record's own `allowed_models` (empty means none, `["*"]` means every model — the opposite of a project's own default), and `GET /v1/models`. See [`docs/model-endpoint.md`](model-endpoint.md). |
 | `model_host` | `RegisterModelHost`: registering this service's router socket as the model endpoint's one upstream, under its own id only. See [`docs/model-endpoint.md`](model-endpoint.md). |
+| `sessions` | `SessionExited`, and `GET /v1/models` unfiltered (never a model call). Only the built-in `relaysessions` service record may hold this — any other record naming it fails validation. |
 
 `Hello` needs no capability: every launched service may say it. A service
 with an empty set can start and say `Hello` and can do nothing else through
 relay. The set grants the union of its capabilities' operations and nothing
 else, and a capability name relay does not know grants nothing.
 
+The retired `projects` capability (`ResolvePtyEnv`, `ResolveProjectTemplate`,
+`ListProjects`, `GetProject`, and tokenless `ListTools`/`CallTool` across
+every MCP) no longer exists: those operations were deleted outright
+(plan-broker-and-sessions.md §2 C1) in favor of the `project_session` kind
+below. A stored record naming `projects` is not refused — the name is
+silently dropped on load, logged at info, and persists without it on the
+next write, so an existing install keeps starting across the upgrade.
+
 | service | capabilities |
 |---|---|
 | eve, relaySTT | `frontend` |
-| relayLLM | `manifest`, `projects` |
-| relayTTS | `manifest` (a migrated record starts with `manifest`, `projects`; narrow it with `relay service register --capability manifest`) |
+| relayLLM | `manifest`, `model_host` |
+| relayTTS | `manifest`, `models` |
 | relayScheduler | `frontend`, `manifest` |
 
 ### The service record
 
 ```json
-{"id": "relayllm", "command": "…", "capabilities": ["manifest", "projects"]}
+{"id": "relayllm", "command": "…", "capabilities": ["manifest", "model_host"]}
 ```
 
 Every record relay writes carries `capabilities`, an empty set as `[]`. A
 record whose `capabilities` names anything other than `frontend`, `manifest`,
-`projects`, `models` or `model_host` fails validation: relay logs it on load,
-keeps it in `settings.json` untouched, and refuses to start it.
+`models`, `model_host` or `sessions` fails validation: relay logs it on load,
+keeps it in `settings.json` untouched, and refuses to start it. `sessions` is
+additionally refused on any record but the built-in `relaysessions` one.
 
 A record written before capabilities existed has no `capabilities` key
 (`null` reads the same) and may carry `frontend_consumer`. It is migrated once,
 in memory, on load — `frontend_consumer` unset or `true` becomes
-`["frontend"]`, `false` becomes `["manifest", "projects"]` — and the next write
+`["frontend"]`, `false` becomes `["manifest"]` — and the next write
 persists `capabilities` and drops `frontend_consumer`. A record that already
-has `capabilities` keeps them and its `frontend_consumer` is discarded.
+has `capabilities` keeps them (minus a retired `projects` entry, dropped the
+same way) and its `frontend_consumer` is discarded.
 
 `relay service register --capability NAME` (repeatable) sets the set; a
 register with no `--capability` sets the empty set and says so. An HTTP or
@@ -195,10 +205,13 @@ Settings-window update that omits `capabilities` keeps the stored set.
 
 ### Editing capabilities from the Settings window
 
-The service create/edit dialog carries a checkbox per known capability
-(`frontend`, `manifest`, `projects`); an unknown name is refused server-side
-before anything is written (`config.ServiceConfig.validateCapabilities`),
-the same check a CLI `--capability` typo hits.
+The service create/edit dialog carries a checkbox per known capability a
+user may register for their own service (`frontend`, `manifest`, `models`,
+`model_host`; `sessions` is deliberately not offered here, since only the
+built-in `relaysessions` record may ever hold it); an unknown name is
+refused server-side before anything is written
+(`config.ServiceConfig.validateCapabilities`), the same check a CLI
+`--capability` typo hits.
 
 Narrowing and widening are judged separately, not by whether the request
 touches `capabilities` at all: dropping a capability only shrinks what the
@@ -221,10 +234,20 @@ rest" shape on the wire.
 
 ### Later kinds
 
-A project session, whose capability is one project's grant, is a new `kind`
-value and a new table in `service.Allowed`, bound by this same launch fd,
-Hello and audit-token check. `RELAY_PROJECT_TOKEN` is still injected into
-project shells today; it is not governed by this document yet.
+`project_session` is the second `kind` value, bound by this same launch fd,
+Hello and audit-token check. Unlike `service`, its authority is not a fixed
+capability set but the named project's own live grant — `service.Allowed`
+grants it a fixed operation set (`ListTools`/`CallTool`, `DescribeProject`,
+`ListSkillBuckets`, model-endpoint calls, all scoped by the project itself,
+never a service capability). `Bind` additionally pins the root process's
+exact kernel start time and registers an ancestry-exit watch
+(`internal/membership`) so the identity ends when its root process does.
+Root-vs-descendant membership (a caller reaching a `project_session`'s grant
+by being a process tree descendant of its root, never by presenting a
+secret) is not implemented yet — that is `resolveAuth`'s job in
+`cmd/relay/router.go`, still to land. `RELAY_PROJECT_TOKEN` is still
+injected into project shells today; that path is unaffected by this kind's
+existence so far.
 
 Code: `internal/service/launch_identity.go` (the table and `Identity`),
 `internal/peertoken` (the audit token), `internal/bridge/launch.go` (the Go

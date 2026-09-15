@@ -439,19 +439,18 @@ func TestCheckToolAccess_ADenylistStillNarrowsWhereverItCameFrom(t *testing.T) {
 	}
 }
 
-func TestCheckToolAccess_ServiceIdentityIsUnaffected(t *testing.T) {
-	// Assert through the router, not checkToolAccess — that's where the
-	// service-identity bypass lives.
+// TestCheckToolAccess_ServiceIdentityNoLongerReachesToolsAtAll pins C1's
+// deletion: OpServiceTools (tokenless ListTools/CallTool, unfiltered across
+// every project) no longer exists, so a bound service identity presenting no
+// token falls all the way to directory auth like any other tokenless caller
+// with no cwd — it never sees any tool, whatever its capabilities.
+func TestCheckToolAccess_ServiceIdentityNoLongerReachesToolsAtAll(t *testing.T) {
 	r := newProfileRouter(t, profileOpts{kind: config.ProjectKindRemote})
 	svcCtx := bindTestServiceIdentity(t, r)
-	raw, err := r.ListTools(svcCtx, "")
-	if err != nil {
-		t.Fatalf("ListTools as service: %v", err)
+	if _, err := r.ListTools(svcCtx, ""); err == nil {
+		t.Fatal("a bound service identity reached tokenless ListTools")
 	}
-	if got := len(unmarshalTools(t, raw)); got != len(macmcpToolSurface()) {
-		t.Fatalf("service identity saw %d tools, want all %d", got, len(macmcpToolSurface()))
-	}
-	if _, err := r.CallTool(svcCtx, "messages_send", json.RawMessage(`{}`), ""); err != nil {
-		t.Fatalf("service identity was refused a tool: %v", err)
+	if _, err := r.CallTool(svcCtx, "messages_send", json.RawMessage(`{}`), ""); err == nil {
+		t.Fatal("a bound service identity reached tokenless CallTool")
 	}
 }

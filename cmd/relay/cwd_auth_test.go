@@ -183,12 +183,13 @@ func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	dir := t.TempDir()
 	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
 
+	// Directory auth identifies a PROJECT, never a service's launch identity
+	// — a tokenless caller satisfying it by cwd must still be refused any
+	// operation that requires the latter.
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
-	if _, err := r.ResolvePtyEnv(ctx, bridge.PtyEnvRequest{ProjectID: "test-project"}, ""); err == nil {
-		t.Fatal("expected ResolvePtyEnv to reject a tokenless caller")
-	}
-	if _, err := r.ListProjects(ctx, ""); err == nil {
-		t.Fatal("expected ListProjects to reject a tokenless caller")
+	req := bridge.RegisterManifestRequest{ServiceID: "svc", InternalSocket: "/tmp/x.sock", InternalToken: "t", Manifest: bridge.Manifest{Routes: []string{"/api/svc/"}}}
+	if err := r.RegisterManifest(ctx, req, ""); err == nil {
+		t.Fatal("expected RegisterManifest to reject a tokenless cwd-auth caller")
 	}
 }
 

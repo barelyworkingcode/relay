@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"slices"
 	"strings"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
-	"github.com/barelyworkingcode/relay/internal/sshhost"
 )
 
 type ToolProvider interface {
@@ -244,12 +242,6 @@ type appRouter struct {
 	evePasskeyOps *EvePasskeyOps
 }
 
-// serviceIdentityName is the Name of the synthetic StoredToken a launch
-// identity holding the projects capability resolves to for ListTools and
-// CallTool. It holds every MCP unfiltered; nothing but resolveServiceIdentity
-// ever builds one.
-const serviceIdentityName = "service"
-
 // identityAllowed returns the launch identity bound to this request's peer
 // if that identity may perform op.
 func (r *appRouter) identityAllowed(ctx context.Context, op service.Operation) (service.Identity, bool) {
@@ -260,13 +252,6 @@ func (r *appRouter) identityAllowed(ctx context.Context, op service.Operation) (
 	return id, true
 }
 
-func (r *appRouter) resolveServiceIdentity(ctx context.Context) *config.StoredToken {
-	if _, ok := r.identityAllowed(ctx, service.OpServiceTools); !ok {
-		return nil
-	}
-	return &config.StoredToken{Name: serviceIdentityName}
-}
-
 var (
 	_ bridge.ToolRouter = (*appRouter)(nil)
 	_ ToolManager       = (*mcpbroker.Manager)(nil)
@@ -274,16 +259,18 @@ var (
 )
 
 // resolveAuth, in order: a present token is a project token or a hard
-// failure; no token from a peer whose identity holds the projects capability
-// is that service;
-// any other tokenless caller falls back to directory auth (resolveCwdAuth),
-// opt-in per project. The fallback must never rescue a bad credential, only
-// the absence of one.
+// failure; any tokenless caller falls back to directory auth
+// (resolveCwdAuth), opt-in per project. The fallback must never rescue a bad
+// credential, only the absence of one.
+//
+// This is deliberate: a service's launch identity no longer resolves to a
+// tool-calling actor here at all (plan-broker-and-sessions.md §2 C1 deletes
+// OpServiceTools — tokenless ListTools/CallTool unfiltered across every
+// project). R-S2a adds the replacement: a tokenless caller who is a C3
+// member of a live project_session resolves to THAT project's own grant,
+// inserted as a new step between the two here.
 func (r *appRouter) resolveAuth(ctx context.Context, token string) (*config.StoredToken, *config.Settings, error) {
 	if token == "" {
-		if stored := r.resolveServiceIdentity(ctx); stored != nil {
-			return stored, r.store.Get(), nil
-		}
 		return r.resolveCwdAuth(ctx)
 	}
 
@@ -327,11 +314,11 @@ func (r *appRouter) resolveCwdAuth(ctx context.Context) (*config.StoredToken, *c
 // calls on. Logged rather than only withheld, so a name that vanishes from a
 // listing isn't the silent half of the failure; the log fires only for a
 // configuration that is already broken.
-func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Settings, isService bool) map[string]bool {
+func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Settings) map[string]bool {
 	owners := map[string]int{}
 	for _, ext := range s.ExternalMcps {
 		for _, t := range r.tools.Tools(ext.ID) {
-			if isService || grantRoutesToolTo(stored, ext.ID, t.Name) {
+			if grantRoutesToolTo(stored, ext.ID, t.Name) {
 				owners[t.Name]++
 			}
 		}
@@ -389,16 +376,15 @@ func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]Skill
 	}
 	au.setActor(ctx, stored, settings, token)
 
-	isService := stored.Name == serviceIdentityName
 	groups := map[string][]mcp.Tool{}
-	ambiguous := r.ambiguousToolNames(stored, settings, isService)
+	ambiguous := r.ambiguousToolNames(stored, settings)
 	for _, ext := range settings.ExternalMcps {
-		if !isService && checkToolAccess(stored, ext.ID, "", nil) != nil {
+		if checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		view := newScopeView(r, stored, ext.ID, isService)
+		view := newScopeView(r, stored, ext.ID)
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isService && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
+			if checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
 			// project.AppendScopeNote is idempotent, so the two listing paths cannot
@@ -495,10 +481,10 @@ func grantRoutesToolTo(tok *config.StoredToken, mcpID, toolName string) bool {
 // outside the grant. When no owner is granted even at the MCP level, the
 // call is refused here, in terms of the grant's own MCPs -- never by naming
 // an MCP the caller was never granted.
-func resolveToolOwner(stored *config.StoredToken, isService bool, toolName string, owners []string, granted []string) (string, error) {
+func resolveToolOwner(stored *config.StoredToken, toolName string, owners []string, granted []string) (string, error) {
 	var candidates []string
 	for _, id := range owners {
-		if isService || grantRoutesToolTo(stored, id, toolName) {
+		if grantRoutesToolTo(stored, id, toolName) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -534,10 +520,10 @@ func noGrantedOwnerError(toolName string, granted []string) error {
 // grantedMcpIDsForToken lists, sorted, the MCPs this grant admits at the MCP
 // level -- the set a noGrantedOwnerError refusal is allowed to name, since
 // the caller already knows it holds them.
-func grantedMcpIDsForToken(stored *config.StoredToken, isService bool, s *config.Settings) []string {
+func grantedMcpIDsForToken(stored *config.StoredToken, s *config.Settings) []string {
 	var ids []string
 	for _, ext := range s.ExternalMcps {
-		if isService || checkToolAccess(stored, ext.ID, "", nil) == nil {
+		if checkToolAccess(stored, ext.ID, "", nil) == nil {
 			ids = append(ids, ext.ID)
 		}
 	}
@@ -560,8 +546,6 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	}
 	au.setActor(ctx, stored, settings, token)
 
-	isService := stored.Name == serviceIdentityName
-
 	owners := r.tools.ToolOwners(name)
 	// An MCP that is connected but absent from settings.ExternalMcps gets no
 	// PermOff entry and would read as GRANTED to every token -- the deny-set
@@ -580,7 +564,7 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// the _meta assembly, the scope checks and the audit's mcp_id all take a
 	// single resolved MCP as given, and an ambiguous name has no such thing
 	// to give them.
-	extID, err := resolveToolOwner(stored, isService, name, owners, grantedMcpIDsForToken(stored, isService, settings))
+	extID, err := resolveToolOwner(stored, name, owners, grantedMcpIDsForToken(stored, settings))
 	if err != nil {
 		au.done(audit.AuditOutcomeDenied, err)
 		return nil, err
@@ -613,72 +597,70 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	// than from the project, so a `denied` or `throttled` record still shows
 	// which mode and scope the call was judged against, not only a
 	// permitted one.
-	if !isService {
-		au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
+	au.setAuthority(stored.AccessMode(extID), stored.ExternalAllowed(extID), scopeFromMeta(schema, meta))
 
-		// A declaration relay could not read. Checked before every other
-		// layer: a fragment that would not decode may have been the
-		// restrict field governing this very tool, so "nothing governs it"
-		// is not a finding, it is the absence of one.
-		if !schema.Usable() {
-			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
-				"access denied: MCP '%s' publishes a context schema relay cannot read, so no grant on it can be enforced (%s)",
-				extID, schema.MalformedReason()))
-			au.done(audit.AuditOutcomeDenied, err)
-			return nil, err
-		}
+	// A declaration relay could not read. Checked before every other
+	// layer: a fragment that would not decode may have been the
+	// restrict field governing this very tool, so "nothing governs it"
+	// is not a finding, it is the absence of one.
+	if !schema.Usable() {
+		err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: MCP '%s' publishes a context schema relay cannot read, so no grant on it can be enforced (%s)",
+			extID, schema.MalformedReason()))
+		au.done(audit.AuditOutcomeDenied, err)
+		return nil, err
+	}
 
-		// A scope the OPERATOR wrote that relay cannot place in the MCP's
-		// live schema. Checked immediately after Usable() as the same
-		// finding from the other end -- there, relay cannot read what the
-		// MCP declared; here, it cannot place what the operator declared --
-		// and both get the same answer: nothing is handed over. Ahead of
-		// the tool check because this is the layer that decides whether
-		// relay is in a position to make statements about this MCP's
-		// boundaries at all.
-		if unplaced := project.UnplaceableContextFields(schema, project.ContextValues(stored.Context[extID])); len(unplaced) > 0 {
-			au.setUnplacedScope(unplaced)
-			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
-				"access denied: this grant scopes MCP '%s' by %s, which '%s' does not declare in its live context schema — relay cannot enforce a scope it cannot place, so no call to this MCP is dispatched under this grant",
-				extID, project.QuoteNames(unplaced), extID))
-			au.done(audit.AuditOutcomeDenied, err)
-			return nil, err
-		}
+	// A scope the OPERATOR wrote that relay cannot place in the MCP's
+	// live schema. Checked immediately after Usable() as the same
+	// finding from the other end -- there, relay cannot read what the
+	// MCP declared; here, it cannot place what the operator declared --
+	// and both get the same answer: nothing is handed over. Ahead of
+	// the tool check because this is the layer that decides whether
+	// relay is in a position to make statements about this MCP's
+	// boundaries at all.
+	if unplaced := project.UnplaceableContextFields(schema, project.ContextValues(stored.Context[extID])); len(unplaced) > 0 {
+		au.setUnplacedScope(unplaced)
+		err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: this grant scopes MCP '%s' by %s, which '%s' does not declare in its live context schema — relay cannot enforce a scope it cannot place, so no call to this MCP is dispatched under this grant",
+			extID, project.QuoteNames(unplaced), extID))
+		au.done(audit.AuditOutcomeDenied, err)
+		return nil, err
+	}
 
-		if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
-			au.done(audit.AuditOutcomeDenied, err)
-			return nil, err
-		}
-		// Presence re-check, ahead of the budget check: a call with no
-		// scope is not a legitimate call whose pattern of use was refused,
-		// it is a call the grant does not cover.
-		//
-		// NOT remote-only, deliberately: decision 2's asymmetric default
-		// (remote reads, local writes) is not extended to scope, because a
-		// MODE has a defensible default in each direction and a SCOPE does
-		// not -- there is no answer to "which mailbox" relay could pick and
-		// be right about. So a local project granted an MCP with an
-		// operator-set restrict field must set a value or lose the tools
-		// that field governs.
-		//
-		// A scope this record's KIND can never supply (ADR-011 decision 5)
-		// is checked first, as a different finding with a different answer:
-		// not "set a value" but "this grant can never hold one". Refusing
-		// rather than stripping: for a v1 filesystem-scoped MCP an ABSENT
-		// allowed_dirs is what fsMCP reads as unrestricted, so removing the
-		// value and letting the call through would turn a forged
-		// confinement into no confinement.
-		if f, unsatisfiable := project.UnsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
-			err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
-				"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
-				extID, name, f.Name))
-			au.done(audit.AuditOutcomeDenied, err)
-			return nil, err
-		}
-		if err := checkScopePresence(schema, project.ContextValues(stored.Context[extID]), extID, name); err != nil {
-			au.done(audit.AuditOutcomeDenied, err)
-			return nil, err
-		}
+	if err := checkToolAccess(stored, extID, name, findTool(r.tools.Tools(extID), name)); err != nil {
+		au.done(audit.AuditOutcomeDenied, err)
+		return nil, err
+	}
+	// Presence re-check, ahead of the budget check: a call with no
+	// scope is not a legitimate call whose pattern of use was refused,
+	// it is a call the grant does not cover.
+	//
+	// NOT remote-only, deliberately: decision 2's asymmetric default
+	// (remote reads, local writes) is not extended to scope, because a
+	// MODE has a defensible default in each direction and a SCOPE does
+	// not -- there is no answer to "which mailbox" relay could pick and
+	// be right about. So a local project granted an MCP with an
+	// operator-set restrict field must set a value or lose the tools
+	// that field governs.
+	//
+	// A scope this record's KIND can never supply (ADR-011 decision 5)
+	// is checked first, as a different finding with a different answer:
+	// not "set a value" but "this grant can never hold one". Refusing
+	// rather than stripping: for a v1 filesystem-scoped MCP an ABSENT
+	// allowed_dirs is what fsMCP reads as unrestricted, so removing the
+	// value and letting the call through would turn a forged
+	// confinement into no confinement.
+	if f, unsatisfiable := project.UnsatisfiableScopeField(schema, stored.IsRemote(), name); unsatisfiable {
+		err := jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"access denied: MCP '%s' scopes tool '%s' by %q, which relay derives from a project's directory — an access profile has none, so no value for it can be authentic and this tool can never be called under this grant",
+			extID, name, f.Name))
+		au.done(audit.AuditOutcomeDenied, err)
+		return nil, err
+	}
+	if err := checkScopePresence(schema, project.ContextValues(stored.Context[extID]), extID, name); err != nil {
+		au.done(audit.AuditOutcomeDenied, err)
+		return nil, err
 	}
 
 	// Per-enrolment budgets (ADR-010 decision 7): a local caller carries no
@@ -836,8 +818,8 @@ type scopeView struct {
 	scoped bool
 }
 
-func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string, isService bool) scopeView {
-	if isService || stored == nil {
+func newScopeView(r *appRouter, stored *config.StoredToken, mcpID string) scopeView {
+	if stored == nil {
 		return scopeView{}
 	}
 	surface := r.tools.McpSurfaceFor(mcpID)
@@ -952,42 +934,20 @@ func (r *appRouter) requireServiceIdentity(ctx context.Context, token string, op
 	return id, nil
 }
 
-// Hello binds a launch secret to the caller's peer audit token. The result
-// recognises the caller and carries no credential.
-func (r *appRouter) Hello(ctx context.Context, name, secret string) (bridge.HelloResult, error) {
+// Hello binds a launch secret to the caller's peer audit token. kind is
+// optional (plan-broker-and-sessions.md §2 C2): present and mismatched
+// against what Begin recorded, it refuses the same as a wrong secret. The
+// result recognises the caller and carries no credential.
+func (r *appRouter) Hello(ctx context.Context, name, secret, kind string) (bridge.HelloResult, error) {
 	if r.launches == nil {
 		return bridge.HelloResult{}, fmt.Errorf("%w: no launch table", service.ErrHelloRefused)
 	}
-	id, err := r.launches.Bind(name, secret, bridge.CallerPeerFromContext(ctx))
+	id, err := r.launches.BindKind(name, secret, bridge.CallerPeerFromContext(ctx), service.IdentityKind(kind))
 	if err != nil {
 		return bridge.HelloResult{}, err
 	}
 	slog.Info("launch identity bound", "kind", id.Kind, "name", id.Name, "pid", id.Process.PID, "capabilities", id.Capabilities)
-	return bridge.HelloResult{Kind: string(id.Kind), ServiceID: id.Name, RelayPID: os.Getpid()}, nil
-}
-
-// ListProjects and GetProject answer through projectToView/projectsToView —
-// the same allow-list the eve-facing HTTP routes project through
-// (project_dto.go) — rather than marshalling the raw Project. Marshalling
-// Project directly would hand any service holding the projects capability every project's
-// plaintext token: ResolvePtyEnv below is the sole plaintext-token egress
-// over the bridge, and no other bridge response may carry one.
-func (r *appRouter) ListProjects(ctx context.Context, token string) (json.RawMessage, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, service.OpListProjects); err != nil {
-		return nil, err
-	}
-	return json.Marshal(projectsToView(r.store.Get().Projects))
-}
-
-func (r *appRouter) GetProject(ctx context.Context, id string, token string) (json.RawMessage, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, service.OpGetProject); err != nil {
-		return nil, err
-	}
-	proj, _ := config.FindProjectByID(r.store.Get(), id)
-	if proj == nil {
-		return nil, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: %s", id))
-	}
-	return json.Marshal(projectToView(*proj))
+	return bridge.HelloResult{Kind: string(id.Kind), ServiceID: id.Name, RelayPID: os.Getpid(), ProjectID: id.ProjectID}, nil
 }
 
 // DescribeProject lets a process launched holding only RELAY_PROJECT_TOKEN
@@ -1002,7 +962,7 @@ func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.P
 	if err != nil {
 		return bridge.ProjectDescription{}, err
 	}
-	if stored.Name == serviceIdentityName || stored.ProjectID == "" {
+	if stored.ProjectID == "" {
 		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
 	}
 	proj, _ := config.FindProjectByID(settings, stored.ProjectID)
@@ -1047,18 +1007,17 @@ type mcpListing struct {
 // settings order. DescribeProject reads the same grouping, so the tools a
 // description names can never differ from the tools ListTools lists.
 func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *config.Settings) []mcpListing {
-	isService := stored.Name == serviceIdentityName
-	ambiguous := r.ambiguousToolNames(stored, settings, isService)
+	ambiguous := r.ambiguousToolNames(stored, settings)
 
 	var out []mcpListing
 	for _, ext := range settings.ExternalMcps {
-		if !isService && checkToolAccess(stored, ext.ID, "", nil) != nil {
+		if checkToolAccess(stored, ext.ID, "", nil) != nil {
 			continue
 		}
-		view := newScopeView(r, stored, ext.ID, isService)
+		view := newScopeView(r, stored, ext.ID)
 		listing := mcpListing{mcpID: ext.ID}
 		for _, t := range r.tools.Tools(ext.ID) {
-			if !isService && checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
+			if checkToolAccess(stored, ext.ID, t.Name, &t) != nil {
 				continue
 			}
 			if !view.listable(t.Name) {
@@ -1073,184 +1032,6 @@ func (r *appRouter) listableToolsByMcp(stored *config.StoredToken, settings *con
 		out = append(out, listing)
 	}
 	return out
-}
-
-// ResolvePtyEnv returns the env bundle (project-scoped token + working dir)
-// for spawning a project-scoped PTY. RelayToken is the project's plaintext
-// token; the caller (relayLLM) must inject it as RELAY_PROJECT_TOKEN and
-// never expose it in argv, files, or logs. Remote projects are refused
-// outright -- see refuseRemotePty.
-func (r *appRouter) ResolvePtyEnv(ctx context.Context, req bridge.PtyEnvRequest, token string) (bridge.PtyEnvResponse, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, service.OpResolvePtyEnv); err != nil {
-		return bridge.PtyEnvResponse{}, err
-	}
-
-	s := r.store.Get()
-	var proj *config.Project
-	if req.ProjectID != "" {
-		// Validating that the requested directory belongs to the project
-		// matters: without it a service could bind an arbitrary cwd
-		// to another project's token (confused deputy).
-		proj, _ = config.FindProjectByID(s, req.ProjectID)
-		if proj == nil {
-			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
-		}
-		if err := refuseRemotePty(proj); err != nil {
-			return bridge.PtyEnvResponse{}, err
-		}
-		if proj.IsHosted() {
-			return resolveHostedPtyEnv(s, proj, req.Directory)
-		}
-		if !project.DirWithin(req.Directory, proj.Path) {
-			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", req.Directory, proj.ID))
-		}
-	} else {
-		proj = findProjectForPty(s, req.Project, req.Directory)
-		if proj == nil {
-			return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project=%q directory=%q", req.Project, req.Directory))
-		}
-		if err := refuseRemotePty(proj); err != nil {
-			return bridge.PtyEnvResponse{}, err
-		}
-		if proj.IsHosted() {
-			return resolveHostedPtyEnv(s, proj, req.Directory)
-		}
-	}
-
-	relayToken, ok := proj.Token.Reveal()
-	if !ok {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError,
-			fmt.Errorf("project %q has no token: the sealed store may be unavailable", proj.ID))
-	}
-
-	return bridge.PtyEnvResponse{
-		RelayToken: relayToken,
-		WorkingDir: proj.Path,
-	}, nil
-}
-
-// ResolveProjectTemplate returns ONLY the template definition fields
-// (command/args/env/...), never the project token: ResolvePtyEnv is the
-// sole plaintext-token egress over the bridge and this call must not widen
-// that surface. Do not be tempted to reuse GetProject here -- that marshals
-// the raw Project including its plaintext token.
-func (r *appRouter) ResolveProjectTemplate(ctx context.Context, req bridge.ShellTemplateRequest, token string) (bridge.ShellTemplateResponse, error) {
-	if _, err := r.requireServiceIdentity(ctx, token, service.OpResolveProjectTemplate); err != nil {
-		return bridge.ShellTemplateResponse{}, err
-	}
-
-	proj, _ := config.FindProjectByID(r.store.Get(), req.ProjectID)
-	if proj == nil {
-		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("project not found: project_id=%q", req.ProjectID))
-	}
-	// Refused explicitly rather than relying on ShellTemplates being empty on
-	// a remote project: a Project constructed directly (a migration, a
-	// hand-edited settings.json) could carry templates from a former life as
-	// a local project, and resolving one would hand a host launch command to
-	// a caller acting for another machine.
-	if proj.IsRemote() {
-		return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
-			fmt.Errorf("project %q is a remote project: shell templates launch a host terminal", proj.ID))
-	}
-	for _, t := range proj.ShellTemplates {
-		if t.ID == req.TemplateID {
-			return bridge.ShellTemplateResponse{
-				ID:          t.ID,
-				Name:        t.Name,
-				Command:     t.Command,
-				Args:        t.Args,
-				Env:         t.Env,
-				Description: t.Description,
-				Icon:        t.Icon,
-			}, nil
-		}
-	}
-	return bridge.ShellTemplateResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeMethodNotFound, fmt.Errorf("shell template not found: project_id=%q template_id=%q", req.ProjectID, req.TemplateID))
-}
-
-// resolveHostedPtyEnv is ResolvePtyEnv's host-project branch (docs/ssh-hosts.md):
-// no project token at all (decision 6 — a host session gets no relay-brokered
-// tools to hold one for), the project's path as WorkingDir (it is real, it
-// just isn't on this machine), and a HostSpec carrying the ssh argv prefix
-// and the absolute tool paths the last probe discovered.
-func resolveHostedPtyEnv(s *config.Settings, proj *config.Project, directory string) (bridge.PtyEnvResponse, error) {
-	if !hostDirWithin(directory, proj.Path) {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("directory %q is not within project %q", directory, proj.ID))
-	}
-	host, _ := config.FindHostByID(s, proj.HostID)
-	if host == nil {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("project %q names host %q, which no longer exists", proj.ID, proj.HostID))
-	}
-	if host.Probe == nil || host.Probe.ClaudePath == "" {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams, fmt.Errorf("host %q has no claude: run a probe", host.Name))
-	}
-	controlDir, err := sshhost.ControlDir()
-	if err != nil {
-		return bridge.PtyEnvResponse{}, jsonrpc.NewCodedError(jsonrpc.CodeInternalError, fmt.Errorf("ssh control dir: %w", err))
-	}
-	return bridge.PtyEnvResponse{
-		RelayToken: "",
-		WorkingDir: proj.Path,
-		Host: &bridge.HostSpec{
-			ID:         host.ID,
-			Name:       host.Name,
-			SSHArgv:    sshhost.SSHArgv(*host, controlDir),
-			NodePath:   host.Probe.NodePath,
-			ClaudePath: host.Probe.ClaudePath,
-			Shell:      host.Probe.Shell,
-			OS:         host.Probe.OS,
-		},
-	}, nil
-}
-
-// hostDirWithin is project.DirWithin's lexical-only cousin for a host
-// project (docs/ssh-hosts.md): the directory names a path on the HOST, so
-// relay cannot os.Stat, EvalSymlinks or os.SameFile it the way DirWithin
-// does for a console path — path.Clean and a prefix compare is the only
-// check that makes sense for a filesystem this process cannot see. An empty
-// dir means "no directory to validate", matching DirWithin.
-func hostDirWithin(dir, projectPath string) bool {
-	if dir == "" {
-		return true
-	}
-	if projectPath == "" {
-		return false
-	}
-	clean := path.Clean(dir)
-	cleanProj := path.Clean(projectPath)
-	return clean == cleanProj || strings.HasPrefix(clean, cleanProj+"/")
-}
-
-// refuseRemotePty rejects a PTY launch bound to a remote project. Without
-// it the request would succeed: project.DirWithin("", "") returns true (the
-// empty-dir branch short-circuits before the empty-project-path branch), so
-// the caller would receive the project's plaintext token with
-// WorkingDir: "", and Go's exec.Cmd treats an empty Dir as the PARENT
-// process's working directory -- a host shell coming up holding a remote
-// project's credential. Refusing here rather than teaching project.DirWithin
-// about kinds keeps that helper a pure containment predicate.
-func refuseRemotePty(proj *config.Project) error {
-	if !proj.IsRemote() {
-		return nil
-	}
-	return jsonrpc.NewCodedError(jsonrpc.CodeInvalidParams,
-		fmt.Errorf("project %q is a remote project: it has no host directory to launch a terminal in", proj.ID))
-}
-
-// findProjectForPty accepts either an explicit project identifier (ID or
-// name) or a directory match against Project.Path, since a terminal_create
-// request may carry only the working directory.
-func findProjectForPty(s *config.Settings, projectRef, directory string) *config.Project {
-	for i := range s.Projects {
-		p := &s.Projects[i]
-		if projectRef != "" && (p.ID == projectRef || p.Name == projectRef) {
-			return p
-		}
-		if projectRef == "" && directory != "" && p.Path == directory {
-			return p
-		}
-	}
-	return nil
 }
 
 func (r *appRouter) ReloadExternalMcp(ctx context.Context, id string) error {
