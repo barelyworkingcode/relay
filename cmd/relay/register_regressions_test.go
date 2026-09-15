@@ -165,6 +165,15 @@ func TestServiceRegister_ReregisterWithSameIDUpdatesRecordInPlace(t *testing.T) 
 // wiped --workdir, --url, --autostart and --env back to their zero values. A
 // flag left off the second call must leave the stored value alone. --capability
 // is the deliberate exception: a register always restates the whole set.
+//
+// The second register below omits --capability, which now narrows manifest
+// to none and gates (serviceCapabilitiesChanged, STATUS-relay-security.md's
+// execute-class narrowing fix) -- this test only passes because
+// newBrokerRouter wires an allowGate, standing in for a console approving
+// the prompt. A real headless re-register with a narrower --capability list
+// than what's stored now needs a console session, where it previously
+// applied silently; that's the accepted trade-off, not a bug this test
+// should paper over.
 func TestServiceRegister_RepeatingOnlyCommandPreservesEverythingElse(t *testing.T) {
 	store := newCLISandboxStore(t)
 	serveBroker(t, newBrokerRouter(t, store, nil))
