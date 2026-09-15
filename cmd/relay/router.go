@@ -205,6 +205,12 @@ type appRouter struct {
 	// with it.
 	launches *service.Launches
 
+	// membership overrides how this router answers C3 (membership_auth.go).
+	// Nil in production and in every router built by trayapp.go: the
+	// resolver is derived from launches on each use, so there is nothing to
+	// keep in sync. A test sets it to inject a process-ancestry table.
+	membership *membershipAuth
+
 	// modelHosts holds the model endpoint's at-most-one live upstream
 	// registration (docs/model-endpoint.md). Nil means RegisterModelHost is
 	// refused outright, the same fail-closed shape a nil launches gives Hello.
@@ -258,52 +264,92 @@ var (
 	_ ServiceReloader   = (*service.Registry)(nil)
 )
 
-// resolveAuth, in order: a present token is a project token or a hard
-// failure; any tokenless caller falls back to directory auth
-// (resolveCwdAuth), opt-in per project. The fallback must never rescue a bad
-// credential, only the absence of one.
-//
-// This is deliberate: a service's launch identity no longer resolves to a
-// tool-calling actor here at all (plan-broker-and-sessions.md §2 C1 deletes
-// OpServiceTools — tokenless ListTools/CallTool unfiltered across every
-// project). R-S2a adds the replacement: a tokenless caller who is a C3
-// member of a live project_session resolves to THAT project's own grant,
-// inserted as a new step between the two here.
-func (r *appRouter) resolveAuth(ctx context.Context, token string) (*config.StoredToken, *config.Settings, error) {
-	if token == "" {
-		return r.resolveCwdAuth(ctx)
-	}
-
-	s := r.store.Get()
-
-	hash := config.HashToken(token)
-	if stored := s.AuthenticateProjectByHash(hash); stored != nil {
-		return stored, s, nil
-	}
-
-	return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrInvalidToken)
+// callerAuth is one resolved caller: the grant it acts under, the settings
+// that grant was read from, and — for a session caller — which session
+// vouched for it. Carried as one value so the audit record and the
+// authorization decision can never be built from different answers.
+type callerAuth struct {
+	stored   *config.StoredToken
+	settings *config.Settings
+	// sessionID names the project_session that admitted this caller: its own
+	// root process, or a kernel-verified descendant of it. Empty for a
+	// project bearer, which is exactly what tells the two apart for audit.
+	sessionID string
 }
 
-// resolveCwdAuth authenticates a tokenless caller by the working directory it
-// asserted over the bridge. The resulting scope is exactly the project's
-// token scope -- this identifies a caller, it does not widen one. Grants are
-// logged: directory auth has no deliberate hand-off to point at afterwards,
-// so the log is the audit trail.
-func (r *appRouter) resolveCwdAuth(ctx context.Context) (*config.StoredToken, *config.Settings, error) {
-	cwd := bridge.CallerCwdFromContext(ctx)
-	if cwd == "" {
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrNoToken)
+// resolveAuth is plan-broker-and-sessions.md §2 C3's order, and nothing else:
+//
+//  1. a token is present → project bearer. An invalid token is a hard
+//     failure here and NEVER falls through to a tokenless step. A credential
+//     that did not resolve is a refusal; only the absence of one is a
+//     question the later steps get to answer.
+//  2. no token, the peer holds a bound launch identity → that identity's C1
+//     row. A service identity reaches no project operation at all
+//     (OpServiceTools is deleted), and is refused here rather than being
+//     allowed to continue to step 3: relay already knows exactly what that
+//     process is, and it is not a session descendant.
+//  3. no token, no identity, the peer is a C3 member of a live
+//     project_session → that session's project, with the project's own live
+//     grant. This is the whole replacement for directory auth.
+//  4. otherwise → unauthorized.
+//
+// Directory auth is gone (decision SH-3): there is no step that reads a
+// working directory, and a Cwd a client sends is dropped at the transport
+// (internal/bridge/server.go) before anything here could see it.
+//
+// op is the operation being attempted, checked against the project_session
+// row for steps 2 and 3. A bearer is not checked against it: a project token
+// carries the project's whole grant by definition, and the per-tool layers
+// below decide the rest.
+func (r *appRouter) resolveAuth(ctx context.Context, token string, op service.Operation) (callerAuth, error) {
+	if token != "" {
+		s := r.store.Get()
+		if stored := s.AuthenticateProjectByHash(config.HashToken(token)); stored != nil {
+			return callerAuth{stored: stored, settings: s}, nil
+		}
+		return callerAuth{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrInvalidToken)
 	}
 
-	s := r.store.Get()
-	stored := project.AuthenticateByPath(s, cwd)
-	if stored == nil {
-		slog.Debug("cwd auth rejected", "cwd", cwd)
-		return nil, nil, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized,
-			fmt.Errorf("no token supplied and working directory %q is not inside a project with directory auth enabled", cwd))
+	if id, ok := r.launches.Lookup(bridge.CallerPeerFromContext(ctx)); ok {
+		if id.Kind != service.IdentityKindProjectSession || !id.Allows(op) {
+			return callerAuth{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+				"launch identity %q may not %s", id.Name, op))
+		}
+		return r.sessionScope(id.SessionID, id.ProjectID)
 	}
-	slog.Info("cwd auth granted", "cwd", cwd, "project", stored.ProjectID, "name", stored.Name)
-	return stored, s, nil
+
+	if member, ok := bridge.ConnMembershipFromContext(ctx).Session(); ok {
+		if !service.Allowed(service.IdentityKindProjectSession, nil, op) {
+			return callerAuth{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+				"a session member may not %s", op))
+		}
+		return r.sessionScope(member.SessionID, member.ProjectID)
+	}
+
+	return callerAuth{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, config.ErrNoToken)
+}
+
+// sessionScope is the grant a session caller acts under: the project's own
+// scope, read live, identical to what that project's token resolves to. A
+// session identifies a caller; it never widens one.
+//
+// A project that no longer exists refuses rather than resolving to an empty
+// grant — deleting a project ends its sessions' identities (EndByProject),
+// so reaching this is a race between a delete and an in-flight request, and
+// the delete wins.
+func (r *appRouter) sessionScope(sessionID, projectID string) (callerAuth, error) {
+	s := r.store.Get()
+	proj, _ := config.FindProjectByID(s, projectID)
+	if proj == nil {
+		slog.Debug("session auth rejected: project is gone", "session_id", sessionID, "project", projectID)
+		return callerAuth{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf(
+			"session %s names project %q, which no longer exists", sessionID, projectID))
+	}
+	return callerAuth{
+		stored:    config.StoredTokenForProject(s, proj, proj.TokenHash),
+		settings:  s,
+		sessionID: sessionID,
+	}, nil
 }
 
 // ambiguousToolNames returns the tool names this grant admits on more than
@@ -342,13 +388,14 @@ func (r *appRouter) ambiguousToolNames(stored *config.StoredToken, s *config.Set
 func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
 	au := r.beginAudit(ctx, audit.AuditEventListTools)
 
-	stored, settings, err := r.resolveAuth(ctx, token)
+	auth, err := r.resolveAuth(ctx, token, service.OpProjectTools)
 	if err != nil {
-		au.setUnauthenticated(ctx, token)
+		au.setUnauthenticated(token)
 		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
-	au.setActor(ctx, stored, settings, token)
+	au.setActor(auth)
+	stored, settings := auth.stored, auth.settings
 
 	tools := make([]mcp.Tool, 0)
 	for _, listing := range r.listableToolsByMcp(stored, settings) {
@@ -368,13 +415,14 @@ func (r *appRouter) ListTools(ctx context.Context, token string) (json.RawMessag
 func (r *appRouter) ListSkillBuckets(ctx context.Context, token string) ([]SkillBucket, error) {
 	au := r.beginAudit(ctx, audit.AuditEventListSkills)
 
-	stored, settings, err := r.resolveAuth(ctx, token)
+	auth, err := r.resolveAuth(ctx, token, service.OpProjectListSkills)
 	if err != nil {
-		au.setUnauthenticated(ctx, token)
+		au.setUnauthenticated(token)
 		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
-	au.setActor(ctx, stored, settings, token)
+	au.setActor(auth)
+	stored, settings := auth.stored, auth.settings
 
 	groups := map[string][]mcp.Tool{}
 	ambiguous := r.ambiguousToolNames(stored, settings)
@@ -538,13 +586,14 @@ func (r *appRouter) CallTool(ctx context.Context, name string, args json.RawMess
 	au := r.beginAudit(ctx, audit.AuditEventCallTool)
 	au.setTool(name, args)
 
-	stored, settings, err := r.resolveAuth(ctx, token)
+	auth, err := r.resolveAuth(ctx, token, service.OpProjectTools)
 	if err != nil {
-		au.setUnauthenticated(ctx, token)
+		au.setUnauthenticated(token)
 		au.done(audit.AuditOutcomeUnauthorized, err)
 		return nil, err
 	}
-	au.setActor(ctx, stored, settings, token)
+	au.setActor(auth)
+	stored, settings := auth.stored, auth.settings
 
 	owners := r.tools.ToolOwners(name)
 	// An MCP that is connected but absent from settings.ExternalMcps gets no
@@ -920,9 +969,9 @@ func (r *appRouter) ReloadService(id string) error {
 }
 
 // requireServiceIdentity admits only a tokenless caller whose peer's launch
-// identity may perform op. It deliberately never consults resolveAuth: a
-// present token can only be a project token, and directory auth only ever
-// yields a project, so neither may reach a service operation.
+// identity may perform op. It deliberately never consults resolveAuth: every
+// step there resolves to a PROJECT — a bearer, a session's own root, or a
+// session member — and a project never reaches a service operation.
 func (r *appRouter) requireServiceIdentity(ctx context.Context, token string, op service.Operation) (service.Identity, error) {
 	if token != "" {
 		return service.Identity{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("%s requires the calling service's launch identity, not a token", op))
@@ -950,20 +999,22 @@ func (r *appRouter) Hello(ctx context.Context, name, secret, kind string) (bridg
 	return bridge.HelloResult{Kind: string(id.Kind), ServiceID: id.Name, RelayPID: os.Getpid(), ProjectID: id.ProjectID}, nil
 }
 
-// DescribeProject lets a process launched holding only RELAY_PROJECT_TOKEN
-// configure itself from the grant relay enforces, rather than from a second
-// copy of it on disk. A tokenless caller is refused rather than resolved by
-// directory auth or by launch identity, since a service names no project.
+// DescribeProject lets a process configure itself from the grant relay
+// enforces, rather than from a second copy of it on disk.
+//
+// Two callers reach it (plan-broker-and-sessions.md §2 C1's project_session
+// row and C3's note on this operation): a project bearer, and a session —
+// its root process or a kernel-verified member of it — which names a project
+// the same way a token does. A service's launch identity names no project
+// and is refused by resolveAuth's own op check, not by a second rule here.
 func (r *appRouter) DescribeProject(ctx context.Context, token string) (bridge.ProjectDescription, error) {
-	if token == "" {
-		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
-	}
-	stored, settings, err := r.resolveAuth(ctx, token)
+	auth, err := r.resolveAuth(ctx, token, service.OpProjectDescribe)
 	if err != nil {
 		return bridge.ProjectDescription{}, err
 	}
+	stored, settings := auth.stored, auth.settings
 	if stored.ProjectID == "" {
-		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token"))
+		return bridge.ProjectDescription{}, jsonrpc.NewCodedError(jsonrpc.CodeUnauthorized, fmt.Errorf("DescribeProject requires a project token or a session"))
 	}
 	proj, _ := config.FindProjectByID(settings, stored.ProjectID)
 	if proj == nil {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
@@ -36,6 +37,11 @@ type BridgeServer struct {
 	// PeerCallerSession itself rather than requiring every call site to
 	// know about this field. Production code never overrides it.
 	callerSession func(net.Conn) presence.CallerSession
+
+	// membership answers C3 for a tokenless peer holding no launch identity
+	// (plan-broker-and-sessions.md §2 C3). nil means no caller can ever be a
+	// member: every tokenless request that reaches step 3 is unauthorized.
+	membership MembershipResolver
 }
 
 // SetCallerSessionResolverForTest overrides how THIS server resolves a
@@ -69,19 +75,47 @@ func NewBridgeServer(ctx context.Context, router ToolRouter) (*BridgeServer, err
 
 	ctx, cancel := context.WithCancel(ctx)
 
-	return &BridgeServer{
+	s := &BridgeServer{
 		router:        router,
 		listener:      listener,
 		sockPath:      sockPath,
 		ctx:           ctx,
 		cancel:        cancel,
 		callerSession: PeerCallerSession,
-	}, nil
+	}
+	// This is deliberate: the membership resolver is taken from the router
+	// by optional interface rather than passed in, so there is no wiring
+	// step a call site can forget. Forgetting one would not fail loudly —
+	// it would silently refuse every legitimate session member, which is
+	// safe but indistinguishable from the feature being broken. A router
+	// that does not implement it (every fake ToolRouter in this repo's
+	// tests) leaves membership nil and refuses, which is the same
+	// fail-closed answer those routers give today. cmd/relay asserts at
+	// compile time that its real router implements it.
+	if mr, ok := router.(MembershipResolver); ok {
+		s.membership = mr
+	}
+	return s, nil
+}
+
+// SetMembershipResolverForTest overrides how THIS server answers C3, for a
+// test that needs a controlled session table without building a real
+// appRouter. Production never calls this: NewBridgeServer's own lookup is
+// the only resolver a shipped relay uses.
+func (s *BridgeServer) SetMembershipResolverForTest(mr MembershipResolver) {
+	s.membership = mr
 }
 
 func (s *BridgeServer) Serve() error {
 	for {
 		conn, err := s.listener.Accept()
+		// This is subtle: taken before the error check, before trackConn,
+		// before anything. acceptedAt bounds the connect→accept pid-reuse
+		// window in C3's walk (the peer must have started before it) — every
+		// microsecond spent between Accept returning and this line is a
+		// microsecond a just-freed peer pid could be reused inside, so
+		// nothing goes above it.
+		acceptedAt := time.Now()
 		if err != nil {
 			return err
 		}
@@ -89,7 +123,7 @@ func (s *BridgeServer) Serve() error {
 			_ = conn.Close()
 			return net.ErrClosed
 		}
-		go s.handleConn(conn)
+		go s.handleConn(conn, acceptedAt)
 	}
 }
 
@@ -128,7 +162,7 @@ func bridgeError(code int, msg string) BridgeResponse {
 	return ErrorResponse(code, msg)
 }
 
-func (s *BridgeServer) handleConn(conn net.Conn) {
+func (s *BridgeServer) handleConn(conn net.Conn, acceptedAt time.Time) {
 	defer s.wg.Done()
 	defer func() { _ = conn.Close() }()
 	defer func() {
@@ -144,9 +178,19 @@ func (s *BridgeServer) handleConn(conn net.Conn) {
 	// life of the socket, and the getsockopt is pure overhead on every
 	// subsequent frame. Audit attribution only.
 	ctx = WithCallerPID(ctx, PeerPID(conn))
+	var peer peertoken.Token
 	if tok, err := peertoken.FromConn(conn); err == nil {
+		peer = tok
 		ctx = WithCallerPeer(ctx, tok)
 	}
+
+	// Resolved once per connection like the two above, but LAZILY: the
+	// object is built here, and the ancestry walk behind it runs only if a
+	// request actually reaches C3's step 3 (no token, no launch identity).
+	// The peer captured above and acceptedAt are the walk's two inputs, and
+	// both are fixed at accept — nothing a later request carries can change
+	// which process this connection belongs to.
+	ctx = WithConnMembership(ctx, NewConnMembership(s.membership, peer, acceptedAt))
 
 	// Resolved once per connection too, beside PeerPID, and for the same
 	// reason: it can't change for the socket's lifetime. Unlike PeerPID this
@@ -221,12 +265,15 @@ func (s *BridgeServer) handleRequest(ctx context.Context, line string) BridgeRes
 		}
 	}
 
-	// Directory auth is a fallback for a tokenless caller; every handler that
-	// doesn't authenticate a project ignores it. Hello's token field is the
-	// launch secret, never absent in a valid Hello, and never a project token.
-	if req.Token == "" && req.Type != ReqHello {
-		ctx = WithCallerCwd(ctx, req.Cwd)
-	}
+	// This is deliberate: BridgeRequest.Cwd is decoded and then dropped on
+	// the floor. Directory auth is retired (plan-broker-and-sessions.md §2
+	// C3): a working directory is something a caller ASSERTS about itself,
+	// and relay now identifies a tokenless caller only by what the kernel
+	// says about it — its audit token, and its ancestry from there. The
+	// field stays on the wire type so an older client's request still parses
+	// rather than erroring, and it reaches no authorization or audit path at
+	// all. Nothing here may put it on the context: the value being
+	// unreachable is the guarantee.
 
 	return h.handle(ctx, &req, s.router)
 }

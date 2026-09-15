@@ -186,10 +186,12 @@ type BridgeRequest struct {
 	// same as a wrong secret.
 	Kind string `json:"kind,omitempty"`
 
-	// Cwd is sent ONLY when no token is set, and ignored whenever a token is
-	// present, so it can never widen an authenticated call's scope. Advisory,
-	// not attested — anything able to lie here can already read every token
-	// out of the 0600 settings.json.
+	// Cwd is accepted on the wire and ignored entirely. Directory auth is
+	// retired (plan-broker-and-sessions.md §2 C3): a working directory is
+	// asserted by the caller, not attested by the kernel, and relay now
+	// identifies a tokenless caller by its audit token and process ancestry
+	// instead. The field remains only so a request from a client built
+	// before the retirement still decodes; no server path reads it.
 	Cwd string `json:"cwd,omitempty"`
 }
 
@@ -239,22 +241,6 @@ func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
 func ProgressFromContext(ctx context.Context) ProgressFunc {
 	fn, _ := ctx.Value(progressCtxKey{}).(ProgressFunc)
 	return fn
-}
-
-type callerCwdCtxKey struct{}
-
-// WithCallerCwd carries BridgeRequest.Cwd in context rather than a
-// ToolRouter parameter, so the cross-repo interface stays unchanged.
-func WithCallerCwd(ctx context.Context, dir string) context.Context {
-	if dir == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, callerCwdCtxKey{}, dir)
-}
-
-func CallerCwdFromContext(ctx context.Context) string {
-	dir, _ := ctx.Value(callerCwdCtxKey{}).(string)
-	return dir
 }
 
 type callerPIDCtxKey struct{}

@@ -277,10 +277,13 @@ func TestBridge_ATokenlessRequestFromAnUnboundPeerIsNotAService(t *testing.T) {
 		t.Fatal("an unbound peer registered a manifest")
 	}
 
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools, Cwd: t.TempDir()})
+	// A tokenless caller that is neither a bound identity nor a session
+	// member is refused outright. The Cwd is sent deliberately: it must buy
+	// nothing, and must not appear in the refusal either.
+	resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools, Cwd: t.TempDir()})
 	assertBridgeUnauthorized(t, resp, "tokenless ListTools")
-	if !strings.Contains(resp.Message, "working directory") {
-		t.Fatalf("a tokenless unbound caller must fall to directory auth; got %q", resp.Message)
+	if strings.Contains(resp.Message, "working directory") || strings.Contains(line, "cwd") {
+		t.Fatalf("the refusal still reasons about a caller-asserted directory: %q", line)
 	}
 }
 
@@ -345,23 +348,23 @@ func TestBridge_TheIdentityIsClearedWhenTheLaunchEnds(t *testing.T) {
 
 // TestResolveAuth_BridgeServiceIdentity pins the C1 deletion directly: a
 // service's launch identity no longer resolves to a tool-calling actor over
-// the bridge at all (OpServiceTools is gone) — a bound identity with no
-// token falls all the way to directory auth, same as any other tokenless
-// caller with no cwd.
+// the bridge at all (OpServiceTools is gone). C3's step 2 refuses it by name
+// — a service identity is a known principal holding no project authority,
+// and it never continues to the membership step beside it.
 func TestResolveAuth_BridgeServiceIdentity(t *testing.T) {
 	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
 
 	svcCtx := bindTestServiceIdentity(t, r)
-	if stored, _, err := r.resolveAuth(svcCtx, ""); err == nil {
-		t.Fatalf("a bound service identity reached tokenless tool auth as %+v; that path was retired with OpServiceTools", stored)
+	if auth, err := r.resolveAuth(svcCtx, "", service.OpProjectTools); err == nil {
+		t.Fatalf("a bound service identity reached tokenless tool auth as %+v; that path was retired with OpServiceTools", auth.stored)
 	}
-	if _, _, err := r.resolveAuth(svcCtx, "not-a-project-token"); err == nil {
+	if _, err := r.resolveAuth(svcCtx, "not-a-project-token", service.OpProjectTools); err == nil {
 		t.Fatal("a token beside a bound identity must be judged as a token")
 	}
 
 	feCtx := bindTestIdentity(t, r, "eve-like", capsFrontend)
-	if stored, _, err := r.resolveAuth(feCtx, ""); err == nil {
-		t.Fatalf("a frontend-only service authenticated on the bridge as %q", stored.Name)
+	if auth, err := r.resolveAuth(feCtx, "", service.OpProjectTools); err == nil {
+		t.Fatalf("a frontend-only service authenticated on the bridge as %q", auth.stored.Name)
 	}
 }
 

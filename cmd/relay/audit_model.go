@@ -83,10 +83,19 @@ func modelAuditEvent(event string, ev ModelCallAudit) audit.AuditEvent {
 func modelAuditActor(ev ModelCallAudit) audit.AuditActor {
 	switch ev.CallerKind {
 	case "project":
+		// A session caller acts under the project's grant but is not the
+		// project's bearer: C4 records it as its own actor kind, carrying
+		// the session that vouched for it, so an audit reader can tell a
+		// call made from inside a session from one made with the token.
+		kind := audit.AuditActorProject
+		if ev.SessionID != "" {
+			kind = audit.AuditActorProjectSession
+		}
 		return audit.AuditActor{
-			Kind:        audit.AuditActorProject,
+			Kind:        kind,
 			ProjectID:   ev.CallerName,
 			ProjectName: ev.CallerProjectName,
+			SessionID:   ev.SessionID,
 			Auth:        modelAuditAuth(ev.Auth),
 		}
 	case "service":
@@ -101,11 +110,13 @@ func modelAuditActor(ev ModelCallAudit) audit.AuditActor {
 }
 
 // modelAuditAuth translates ModelCallAudit.Auth's vocabulary ("token",
-// "model_key", "identity", or "" for nothing attempted) to audit.go's
-// AuditAuth* constants. "identity" becomes AuditAuthService: a model.sock
-// caller with no bearer header authenticates by launch identity exactly the
-// way a tool-call service actor does (audit_call.go's setActor), so this is
-// the same fact under the model endpoint's own name for it.
+// "model_key", "identity", "session", or "" for nothing attempted) to
+// audit.go's AuditAuth* constants. "identity" becomes AuditAuthService: a
+// model.sock caller with no bearer header authenticates by launch identity
+// exactly the way a tool-call service actor does (audit_call.go's setActor),
+// so this is the same fact under the model endpoint's own name for it.
+// "session" is the project_session path — a session's root process or a C3
+// member of it — and is the same AuditAuthSession a tool call records.
 func modelAuditAuth(auth string) string {
 	switch auth {
 	case "token":
@@ -114,6 +125,8 @@ func modelAuditAuth(auth string) string {
 		return audit.AuditAuthModelKey
 	case "identity":
 		return audit.AuditAuthService
+	case "session":
+		return audit.AuditAuthSession
 	default:
 		return audit.AuditAuthNone
 	}
