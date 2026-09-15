@@ -207,6 +207,11 @@ type appRouter struct {
 	// with it.
 	launches *service.Launches
 
+	// modelHosts holds the model endpoint's at-most-one live upstream
+	// registration (docs/model-endpoint.md). Nil means RegisterModelHost is
+	// refused outright, the same fail-closed shape a nil launches gives Hello.
+	modelHosts *ModelHostRegistry
+
 	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
 	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold
 	// (trayapp.go constructs each once and wires it here too), so a mutation
