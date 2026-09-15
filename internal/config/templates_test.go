@@ -93,6 +93,41 @@ func TestValidateTerminalTemplate_RequiresIDAndName(t *testing.T) {
 	}
 }
 
+func TestValidateTerminalTemplate_RefusesRelayTokenInCommand(t *testing.T) {
+	tmpl := TerminalTemplate{ID: "x", Name: "X", Command: "/bin/echo-${RELAY_TOKEN}"}
+	err := ValidateTerminalTemplate(tmpl)
+	if err == nil {
+		t.Fatal("expected refusal, got nil")
+	}
+	if !errors.Is(err, ErrRelayTokenSubstitution) {
+		t.Fatalf("expected ErrRelayTokenSubstitution, got %v", err)
+	}
+}
+
+func TestValidateTerminalTemplate_RefusesRelayPrefixedEnvPassthrough(t *testing.T) {
+	for _, name := range []string{"RELAY_PROJECT_TOKEN", "RELAY_TOKEN", "RELAY_LLM_HOOK_TOKEN"} {
+		tmpl := TerminalTemplate{ID: "x", Name: "X", EnvPassthrough: []string{name}}
+		err := ValidateTerminalTemplate(tmpl)
+		if err == nil {
+			t.Fatalf("%s: expected refusal, got nil", name)
+		}
+		if !errors.Is(err, ErrRelayEnvPassthrough) {
+			t.Fatalf("%s: expected ErrRelayEnvPassthrough, got %v", name, err)
+		}
+	}
+}
+
+func TestValidateTerminalTemplate_AllowsNonRelayEnvPassthrough(t *testing.T) {
+	tmpl := TerminalTemplate{
+		ID:             "x",
+		Name:           "X",
+		EnvPassthrough: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"},
+	}
+	if err := ValidateTerminalTemplate(tmpl); err != nil {
+		t.Fatalf("unexpected refusal: %v", err)
+	}
+}
+
 func TestExpandTemplateVars_OnlyProjectPathAndProjectIDExpand(t *testing.T) {
 	in := "${PROJECT_PATH}/${PROJECT_ID}/${RELAY_TOKEN}/${SOMETHING_ELSE}"
 	got := ExpandTemplateVars(in, "/Users/me/proj", "p1")
@@ -210,6 +245,66 @@ func TestEffectiveTerminalTemplatesForProject_ShellTemplatesOverride(t *testing.
 	// Every other global built-in must still be present, untouched.
 	if _, ok := byID["claude-code"]; !ok {
 		t.Fatal("expected claude-code to still be present via the global set")
+	}
+}
+
+// A project ShellTemplate reusing a built-in's id (e.g. "rh") must not be
+// able to silently clear Sandbox: ShellTemplate has no Sandbox field of its
+// own, so the zero value would otherwise reset a sandboxed built-in to
+// unsandboxed. The shadowed entry's Sandbox always wins.
+func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinKeepsSandbox(t *testing.T) {
+	s := &Settings{}
+	proj := &Project{
+		ID: "p1",
+		ShellTemplates: []ShellTemplate{
+			{ID: "rh", Name: "Custom rh", Command: "/opt/rh/rh"},
+		},
+	}
+
+	got := EffectiveTerminalTemplatesForProject(s, proj)
+
+	rh, ok := TerminalTemplate{}, false
+	for _, tmpl := range got {
+		if tmpl.ID == "rh" {
+			rh, ok = tmpl, true
+		}
+	}
+	if !ok {
+		t.Fatal("expected rh template to resolve")
+	}
+	if rh.Command != "/opt/rh/rh" {
+		t.Fatalf("expected the project override's command to take effect, got %q", rh.Command)
+	}
+	if !rh.Sandbox {
+		t.Fatal("expected the built-in rh template's Sandbox: true to survive a project override that has no Sandbox field to set")
+	}
+}
+
+// A project ShellTemplate must never inherit ModelKey from a shadowed
+// entry: unlike Sandbox, that would let a project override widen a
+// template's authority rather than only narrow/preserve it.
+func TestEffectiveTerminalTemplatesForProject_ShadowedBuiltinDoesNotInheritModelKey(t *testing.T) {
+	s := &Settings{}
+	proj := &Project{
+		ID: "p1",
+		ShellTemplates: []ShellTemplate{
+			{ID: "pi", Name: "Custom pi", Command: "/opt/pi/pi"},
+		},
+	}
+
+	got := EffectiveTerminalTemplatesForProject(s, proj)
+
+	pi, ok := TerminalTemplate{}, false
+	for _, tmpl := range got {
+		if tmpl.ID == "pi" {
+			pi, ok = tmpl, true
+		}
+	}
+	if !ok {
+		t.Fatal("expected pi template to resolve")
+	}
+	if pi.ModelKey {
+		t.Fatal("a project override must not inherit ModelKey from the shadowed built-in it shares an id with")
 	}
 }
 

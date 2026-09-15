@@ -121,13 +121,29 @@ func BuiltinTerminalTemplates() []TerminalTemplate {
 // import (ImportLegacyPTYTemplates).
 var ErrRelayTokenSubstitution = errors.New("template references ${RELAY_TOKEN}, which relay refuses to expand")
 
+// ErrRelayEnvPassthrough is refused at validation: EnvPassthrough names a
+// host environment variable to copy verbatim into the spawned child, and a
+// name starting with "RELAY_" reaches relay's own bearer credentials
+// (RELAY_PROJECT_TOKEN, its legacy alias RELAY_TOKEN, RELAY_LLM_HOOK_TOKEN)
+// the same way relayLLM's ChildBaseEnv() strip-list is defeated by the
+// analogous mechanism in internal/terminal/terminal_session.go — a template
+// doesn't set the value here, it only names which host-process variable to
+// copy, so refusing the whole RELAY_ prefix is the only check that can't be
+// bypassed by picking a name the strip-list doesn't yet know about. None of
+// relay's own env injections are things a template legitimately wants to
+// "pass through" from the host — they're set at spawn time, not read from
+// the parent's environment — so there is no legitimate RELAY_-prefixed name
+// to carve out of this check.
+var ErrRelayEnvPassthrough = errors.New("template passes through a RELAY_-prefixed environment variable")
+
 const relayTokenMarker = "${RELAY_TOKEN}"
 
 // ValidateTerminalTemplate refuses a template whose argv or env contains
-// the literal substring ${RELAY_TOKEN}. This is the one security-relevant
-// check in this file — see the package doc on TerminalTemplate for why: a
-// bearer credential must never reach a spawned child's environment or
-// argv, and ExpandTemplateVars only ever substitutes ${PROJECT_PATH} and
+// the literal substring ${RELAY_TOKEN}, or whose EnvPassthrough names a
+// RELAY_-prefixed variable. This is the one security-relevant check in this
+// file — see the package doc on TerminalTemplate for why: a bearer
+// credential must never reach a spawned child's environment or argv, and
+// ExpandTemplateVars only ever substitutes ${PROJECT_PATH} and
 // ${PROJECT_ID}, so a template that depends on RELAY_TOKEN expansion can
 // never actually get it — it must be refused up front instead of launching
 // with the literal text still in place.
@@ -138,6 +154,9 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 	if strings.TrimSpace(t.Name) == "" {
 		return fmt.Errorf("terminal template %q: name is required", t.ID)
 	}
+	if strings.Contains(t.Command, relayTokenMarker) {
+		return fmt.Errorf("terminal template %q: %w (in command)", t.ID, ErrRelayTokenSubstitution)
+	}
 	for _, a := range t.Args {
 		if strings.Contains(a, relayTokenMarker) {
 			return fmt.Errorf("terminal template %q: %w (in args)", t.ID, ErrRelayTokenSubstitution)
@@ -146,6 +165,11 @@ func ValidateTerminalTemplate(t TerminalTemplate) error {
 	for k, v := range t.Env {
 		if strings.Contains(v, relayTokenMarker) {
 			return fmt.Errorf("terminal template %q: %w (in env %q)", t.ID, ErrRelayTokenSubstitution, k)
+		}
+	}
+	for _, name := range t.EnvPassthrough {
+		if strings.HasPrefix(name, "RELAY_") {
+			return fmt.Errorf("terminal template %q: %w (%q)", t.ID, ErrRelayEnvPassthrough, name)
 		}
 	}
 	return nil
@@ -229,6 +253,18 @@ func EffectiveTerminalTemplatesForProject(s *Settings, proj *Project) []Terminal
 			Env:         st.Env,
 			Description: st.Description,
 			Icon:        st.Icon,
+		}
+		// ShellTemplate has no Sandbox field of its own (see its doc
+		// comment), so an override sharing a shadowed entry's id would
+		// otherwise silently reset Sandbox to false via the zero value.
+		// Carry the shadowed entry's Sandbox forward -- it always wins, an
+		// operator has no way to clear it through a project override.
+		// Deliberately NOT done for ModelKey: inheriting it here would let
+		// a project override widen a template's authority (grant a model
+		// key the shadowed entry didn't have), the opposite of what this
+		// carries-forward is for.
+		if base, ok := byID[st.ID]; ok {
+			t.Sandbox = base.Sandbox
 		}
 		if err := ValidateTerminalTemplate(t); err != nil {
 			slog.Warn("project shell template refused at resolution", "project", proj.ID, "id", st.ID, "error", err)
