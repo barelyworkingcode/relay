@@ -251,6 +251,38 @@ const legacyFrontendCredentialName = "legacy-frontend-token"
 // PUT /api/services/{id} (ADR-016 decision 4).
 var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
 
+// sessionRouteClasses is plan-broker-and-sessions.md §2 C1's "Route classes
+// (socket-only)" table for the session-host routes: it exists before the
+// routes themselves do (R-S3 and R-S4b register the actual handlers), so
+// that which class a session route requires is decided once, here, rather
+// than left to whichever later unit happens to wire up the handler. A
+// pattern key is METHOD + " " + the exact path or path prefix the plan
+// names; R-S3/R-S4b's registration must ask this table rather than pick a
+// class inline.
+//
+// GET /api/terminals and GET /api/sessions are "proxy, forwarded to
+// relaysessions by service id" (SP6) — a route class alone does not capture
+// the forwarding rule, so that half of the contract is left to R-S4b, which
+// has the enhanced-service registry this table does not.
+var sessionRouteClasses = map[string]control.CapabilityClass{
+	"POST /api/terminals":              control.ClassExecute,
+	"POST /api/sessions":               control.ClassExecute,
+	"POST /api/sessions/{id}/resume":   control.ClassExecute,
+	"GET /api/terminal/templates":      control.ClassRead,
+	"GET /api/terminal/templates/{id}": control.ClassRead,
+	"GET /api/terminals":               control.ClassProxy,
+	"GET /api/sessions":                control.ClassProxy,
+}
+
+// sessionRouteClass looks up sessionRouteClasses by "METHOD path", and
+// reports whether the route is one C1 names at all — the hermetic test this
+// unit adds asks this rather than hitting a live route, since the routes
+// themselves do not exist in this repo yet.
+func sessionRouteClass(method, path string) (control.CapabilityClass, bool) {
+	class, ok := sessionRouteClasses[method+" "+path]
+	return class, ok
+}
+
 // retireLegacyFrontendCredential deletes every record named
 // legacyFrontendCredentialName and reports whether it deleted any. Does not
 // save; use within config.WithDeclinable.

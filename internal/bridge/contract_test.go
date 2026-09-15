@@ -39,28 +39,11 @@ type stubRouter struct {
 	reloadServiceIDs []string
 	reloadServiceErr error
 
-	listProjectsToks []string
-	listProjectsResp json.RawMessage
-	listProjectsErr  error
-
-	getProjectIDs  []string
-	getProjectToks []string
-	getProjectResp json.RawMessage
-	getProjectErr  error
-
 	describeProjectToks []string
 	describeProjectResp ProjectDescription
 	describeProjectErr  error
 
-	resolvePtyReqs []PtyEnvRequest
-	resolvePtyToks []string
-	resolvePtyResp PtyEnvResponse
-	resolvePtyErr  error
-
-	resolveTemplateReqs []ShellTemplateRequest
-	resolveTemplateToks []string
-	resolveTemplateResp ShellTemplateResponse
-	resolveTemplateErr  error
+	helloKinds []string
 
 	registerReqs []RegisterManifestRequest
 	registerToks []string
@@ -127,23 +110,11 @@ func (s *stubRouter) ReloadService(id string) error {
 	return s.reloadServiceErr
 }
 
-func (s *stubRouter) Hello(_ context.Context, name, secret string) (HelloResult, error) {
+func (s *stubRouter) Hello(_ context.Context, name, secret, kind string) (HelloResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.helloKinds = append(s.helloKinds, kind)
 	return HelloResult{Kind: "service", ServiceID: name, RelayPID: 1}, nil
-}
-
-func (s *stubRouter) ListProjects(_ context.Context, token string) (json.RawMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.listProjectsToks = append(s.listProjectsToks, token)
-	return s.listProjectsResp, s.listProjectsErr
-}
-
-func (s *stubRouter) GetProject(_ context.Context, id, token string) (json.RawMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.getProjectIDs = append(s.getProjectIDs, id)
-	s.getProjectToks = append(s.getProjectToks, token)
-	return s.getProjectResp, s.getProjectErr
 }
 
 func (s *stubRouter) DescribeProject(_ context.Context, token string) (ProjectDescription, error) {
@@ -151,22 +122,6 @@ func (s *stubRouter) DescribeProject(_ context.Context, token string) (ProjectDe
 	defer s.mu.Unlock()
 	s.describeProjectToks = append(s.describeProjectToks, token)
 	return s.describeProjectResp, s.describeProjectErr
-}
-
-func (s *stubRouter) ResolvePtyEnv(_ context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.resolvePtyReqs = append(s.resolvePtyReqs, req)
-	s.resolvePtyToks = append(s.resolvePtyToks, token)
-	return s.resolvePtyResp, s.resolvePtyErr
-}
-
-func (s *stubRouter) ResolveProjectTemplate(_ context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.resolveTemplateReqs = append(s.resolveTemplateReqs, req)
-	s.resolveTemplateToks = append(s.resolveTemplateToks, token)
-	return s.resolveTemplateResp, s.resolveTemplateErr
 }
 
 func (s *stubRouter) RegisterManifest(_ context.Context, req RegisterManifestRequest, token string) error {
@@ -393,111 +348,29 @@ func TestContract_RegisterManifest_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
-func TestContract_ListProjects(t *testing.T) {
-	router := &stubRouter{listProjectsResp: json.RawMessage(`[{"id":"p1"}]`)}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, token: "svc"}
-
-	data, err := c.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if string(data) != `[{"id":"p1"}]` {
-		t.Fatalf("payload: %s", data)
-	}
-}
-
-func TestContract_GetProject(t *testing.T) {
-	router := &stubRouter{getProjectResp: json.RawMessage(`{"id":"acme"}`)}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, token: "svc"}
-
-	data, err := c.GetProject("acme")
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if string(data) != `{"id":"acme"}` {
-		t.Fatalf("payload: %s", data)
-	}
-	if router.getProjectIDs[0] != "acme" {
-		t.Fatalf("id not forwarded: %v", router.getProjectIDs)
-	}
-}
-
-func TestContract_ResolvePtyEnv(t *testing.T) {
-	router := &stubRouter{
-		resolvePtyResp: PtyEnvResponse{
-			RelayToken: "scoped-tok",
-			WorkingDir: "/tmp/proj",
-		},
-	}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, token: "svc"}
-
-	resp, err := c.ResolvePtyEnv(PtyEnvRequest{
-		Project:   "acme",
-		Directory: "/tmp/proj",
-	})
-	if err != nil {
-		t.Fatalf("ResolvePtyEnv: %v", err)
-	}
-	if resp.RelayToken != "scoped-tok" || resp.WorkingDir != "/tmp/proj" {
-		t.Fatalf("response mangled: %+v", resp)
-	}
-	if router.resolvePtyReqs[0].Project != "acme" {
-		t.Fatalf("request not forwarded: %+v", router.resolvePtyReqs[0])
-	}
-}
-
-func TestContract_ResolveProjectTemplate(t *testing.T) {
-	router := &stubRouter{
-		resolveTemplateResp: ShellTemplateResponse{
-			ID:      "ssh-box",
-			Name:    "Box SSH",
-			Command: "ssh",
-			Args:    []string{"me@box"},
-			Env:     map[string]string{"TERM": "xterm"},
-		},
-	}
-	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, token: "svc"}
-
-	resp, err := c.ResolveProjectTemplate(ShellTemplateRequest{
-		ProjectID:  "proj-1",
-		TemplateID: "ssh-box",
-	})
-	if err != nil {
-		t.Fatalf("ResolveProjectTemplate: %v", err)
-	}
-	if resp.Command != "ssh" || resp.Name != "Box SSH" || len(resp.Args) != 1 || resp.Args[0] != "me@box" {
-		t.Fatalf("response mangled over the wire: %+v", resp)
-	}
-	if resp.Env["TERM"] != "xterm" {
-		t.Fatalf("env not carried over the wire: %+v", resp.Env)
-	}
-	if len(router.resolveTemplateReqs) != 1 ||
-		router.resolveTemplateReqs[0].ProjectID != "proj-1" ||
-		router.resolveTemplateReqs[0].TemplateID != "ssh-box" {
-		t.Fatalf("request ids not forwarded: %+v", router.resolveTemplateReqs)
-	}
-	if router.resolveTemplateToks[0] != "svc" {
-		t.Fatalf("token not forwarded: %v", router.resolveTemplateToks)
-	}
-}
-
-func TestContract_ResolveProjectTemplate_MissingArguments(t *testing.T) {
+// TestContract_Hello_KindTravelsToTheRouter proves BridgeRequest.Kind reaches
+// ToolRouter.Hello verbatim over the wire — the C2 wire contract this unit
+// adds. What a kind mismatch DOES (refuses before the secret is spent) is
+// internal/service's job to prove; this only proves the bridge plumbs the
+// field through.
+func TestContract_Hello_KindTravelsToTheRouter(t *testing.T) {
 	router := &stubRouter{}
 	sock := startTestBridge(t, router)
 
-	resp := sendRaw(t, sock, BridgeRequest{
-		Type:  ReqResolveProjectTemplate,
-		Token: "svc",
-	})
-	if resp.Type != RespError {
-		t.Fatalf("expected error response for missing arguments; got %+v", resp)
+	resp := sendRaw(t, sock, BridgeRequest{Type: ReqHello, Name: "sess-1", Token: strings.Repeat("a", 64), Kind: "project_session"})
+	if resp.Type != RespOK {
+		t.Fatalf("Hello: %+v", resp)
 	}
-	if len(router.resolveTemplateReqs) != 0 {
-		t.Fatalf("router must not be invoked when arguments are missing; got %+v", router.resolveTemplateReqs)
+	if len(router.helloKinds) != 1 || router.helloKinds[0] != "project_session" {
+		t.Fatalf("kind not forwarded: %v", router.helloKinds)
+	}
+
+	resp = sendRaw(t, sock, BridgeRequest{Type: ReqHello, Name: "svc", Token: strings.Repeat("a", 64)})
+	if resp.Type != RespOK {
+		t.Fatalf("Hello with no kind: %+v", resp)
+	}
+	if len(router.helloKinds) != 2 || router.helloKinds[1] != "" {
+		t.Fatalf("an absent kind must forward as empty: %v", router.helloKinds)
 	}
 }
 
@@ -582,6 +455,31 @@ func TestContract_RejectsUnknownRequestType(t *testing.T) {
 	}
 	if !strings.Contains(resp.Message, "unknown request type") {
 		t.Fatalf("error message should explain unknown type; got %q", resp.Message)
+	}
+}
+
+// TestContract_RemovedRequestTypesHitTheUnknownRequestPath pins C1's
+// "Deleted" row precisely: ResolvePtyEnv, ResolveProjectTemplate,
+// ListProjects and GetProject are not merely refused, they are UNKNOWN — the
+// exact path an arbitrary made-up type hits, not a retired type getting its
+// own special-cased error. bridgeHandlers no longer has entries for any of
+// them, so this also serves as a regression guard: re-adding one by mistake
+// changes this test's outcome for that type from "unknown" to something else.
+func TestContract_RemovedRequestTypesHitTheUnknownRequestPath(t *testing.T) {
+	router := &stubRouter{}
+	sock := startTestBridge(t, router)
+
+	for _, removed := range []string{
+		"ResolvePtyEnv", "ResolveProjectTemplate", "ListProjects", "GetProject", "ServiceTools",
+	} {
+		resp := sendRaw(t, sock, BridgeRequest{Type: removed, Token: "svc"})
+		if resp.Type != RespError {
+			t.Errorf("%s: expected an error response, got %+v", removed, resp)
+			continue
+		}
+		if !strings.Contains(resp.Message, "unknown request type: "+removed) {
+			t.Errorf("%s: message = %q, want it to name the type as unknown", removed, resp.Message)
+		}
 	}
 }
 

@@ -134,7 +134,7 @@ func serviceRegister(args []string) {
 	fmt.Printf("registered service %q (%s)\n", view.DisplayName, view.ID)
 	fmt.Printf("  capabilities: %s\n", capabilitiesColumn(view.Capabilities))
 	if len(view.Capabilities) == 0 {
-		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|projects to grant one")
+		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|models|model_host to grant one")
 	}
 	if slices.Contains(view.Capabilities, config.ServiceCapabilityModels) {
 		if len(view.AllowedModels) == 0 {

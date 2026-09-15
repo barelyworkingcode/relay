@@ -184,19 +184,15 @@ type bridgeHandler struct {
 }
 
 var bridgeHandlers = map[string]bridgeHandler{
-	ReqListTools:              {handle: handleListTools},
-	ReqCallTool:               {handle: handleCallTool},
-	ReqReconcileExternalMcps:  {requireAdmin: true, handle: handleReconcile},
-	ReqReloadExternalMcp:      {requireAdmin: true, handle: handleReloadMcp},
-	ReqReloadService:          {requireAdmin: true, handle: handleReloadService},
-	ReqListProjects:           {handle: handleListProjects},
-	ReqGetProject:             {handle: handleGetProject},
-	ReqResolvePtyEnv:          {handle: handleResolvePtyEnv},
-	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
-	ReqDescribeProject:        {handle: handleDescribeProject},
-	ReqRegisterManifest:       {handle: handleRegisterManifest},
-	ReqRegisterModelHost:      {handle: handleRegisterModelHost},
-	ReqHello:                  {handle: handleHello},
+	ReqListTools:             {handle: handleListTools},
+	ReqCallTool:              {handle: handleCallTool},
+	ReqReconcileExternalMcps: {requireAdmin: true, handle: handleReconcile},
+	ReqReloadExternalMcp:     {requireAdmin: true, handle: handleReloadMcp},
+	ReqReloadService:         {requireAdmin: true, handle: handleReloadService},
+	ReqDescribeProject:       {handle: handleDescribeProject},
+	ReqRegisterManifest:      {handle: handleRegisterManifest},
+	ReqRegisterModelHost:     {handle: handleRegisterModelHost},
+	ReqHello:                 {handle: handleHello},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
@@ -278,7 +274,7 @@ func handleReloadService(_ context.Context, req *BridgeRequest, router ToolRoute
 // error names the reason for relay's log, and a caller must learn neither
 // that reason nor, ever, the secret it sent.
 func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	result, err := router.Hello(ctx, req.Name, req.Token)
+	result, err := router.Hello(ctx, req.Name, req.Token, req.Kind)
 	if err != nil {
 		slog.Warn("bridge: hello refused", "name", req.Name, "peer_pid", CallerPIDFromContext(ctx), "reason", err)
 		return bridgeError(jsonrpc.CodeUnauthorized, "hello refused")
@@ -288,41 +284,6 @@ func handleHello(ctx context.Context, req *BridgeRequest, router ToolRouter) Bri
 		return bridgeError(jsonrpc.CodeInternalError, "hello: encode result")
 	}
 	return BridgeResponse{Type: RespOK, Data: data}
-}
-
-func handleListProjects(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.ListProjects(ctx, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	return BridgeResponse{Type: RespProjects, Data: data}
-}
-
-func handleGetProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	data, err := router.GetProject(ctx, req.ProjectID, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	return BridgeResponse{Type: RespProject, Data: data}
-}
-
-func handleResolvePtyEnv(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	if len(req.Arguments) == 0 {
-		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_pty_env: missing arguments")
-	}
-	var p PtyEnvRequest
-	if err := json.Unmarshal(req.Arguments, &p); err != nil {
-		return bridgeError(jsonrpc.CodeParseError, "resolve_pty_env: "+err.Error())
-	}
-	resp, err := router.ResolvePtyEnv(ctx, p, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
-	}
-	return BridgeResponse{Type: RespPtyEnv, Data: data}
 }
 
 func handleDescribeProject(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
@@ -335,25 +296,6 @@ func handleDescribeProject(ctx context.Context, req *BridgeRequest, router ToolR
 		return bridgeError(jsonrpc.CodeInternalError, err.Error())
 	}
 	return BridgeResponse{Type: RespProjectDescription, Data: data}
-}
-
-func handleResolveProjectTemplate(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
-	if len(req.Arguments) == 0 {
-		return bridgeError(jsonrpc.CodeInvalidParams, "resolve_project_template: missing arguments")
-	}
-	var p ShellTemplateRequest
-	if err := json.Unmarshal(req.Arguments, &p); err != nil {
-		return bridgeError(jsonrpc.CodeParseError, "resolve_project_template: "+err.Error())
-	}
-	resp, err := router.ResolveProjectTemplate(ctx, p, req.Token)
-	if err != nil {
-		return bridgeError(classifyErrorCode(err), err.Error())
-	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return bridgeError(jsonrpc.CodeInternalError, err.Error())
-	}
-	return BridgeResponse{Type: RespProjectTemplate, Data: data}
 }
 
 func handleAdminOp(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {

@@ -183,14 +183,14 @@ func serviceOperationRequests(t *testing.T, serviceID string) map[string]bridge.
 		Manifest:       bridge.Manifest{Routes: []string{"/api/" + serviceID}},
 	})
 	assertNoErr(t, err, "marshal manifest")
-	pty, _ := json.Marshal(bridge.PtyEnvRequest{ProjectID: "no-such-project"})
-	tpl, _ := json.Marshal(bridge.ShellTemplateRequest{ProjectID: "no-such-project", TemplateID: "t"})
+	modelHost, err := json.Marshal(bridge.RegisterModelHostRequest{
+		ServiceID:    serviceID,
+		RouterSocket: "/tmp/launch-identity-test-router.sock",
+	})
+	assertNoErr(t, err, "marshal model host")
 	return map[string]bridge.BridgeRequest{
-		bridge.ReqRegisterManifest:       {Type: bridge.ReqRegisterManifest, Arguments: manifest},
-		bridge.ReqResolvePtyEnv:          {Type: bridge.ReqResolvePtyEnv, Arguments: pty},
-		bridge.ReqResolveProjectTemplate: {Type: bridge.ReqResolveProjectTemplate, Arguments: tpl},
-		bridge.ReqListProjects:           {Type: bridge.ReqListProjects},
-		bridge.ReqGetProject:             {Type: bridge.ReqGetProject, ProjectID: "no-such-project"},
+		bridge.ReqRegisterManifest:  {Type: bridge.ReqRegisterManifest, Arguments: manifest},
+		bridge.ReqRegisterModelHost: {Type: bridge.ReqRegisterModelHost, Arguments: modelHost},
 	}
 }
 
@@ -240,8 +240,9 @@ func TestHello_AForgedSecretIsRefusedAndBindsNothing(t *testing.T) {
 	if _, ok := b.launches.Lookup(selfPeerToken(t)); ok {
 		t.Fatal("a forged Hello bound an identity")
 	}
-	resp, _ = b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects})
-	assertBridgeUnauthorized(t, resp, "ListProjects after a forged Hello")
+	reqs := serviceOperationRequests(t, "svc-forged")
+	resp, _ = b.send(t, reqs[bridge.ReqRegisterManifest])
+	assertBridgeUnauthorized(t, resp, "RegisterManifest after a forged Hello")
 
 	resp, _ = b.hello(t, "no-such-launch", secret)
 	assertBridgeUnauthorized(t, resp, "Hello naming a launch that does not exist")
@@ -306,19 +307,18 @@ func TestBridge_ABridgeServiceIdentityAuthenticatesLaterTokenlessConnections(t *
 		t.Fatalf("Hello: %s", line)
 	}
 
-	if resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects}); resp.Type != bridge.RespProjects {
-		t.Fatalf("ListProjects by identity on a new connection: %s", line)
-	}
 	reqs := serviceOperationRequests(t, "llm-like")
 	if resp, line := b.send(t, reqs[bridge.ReqRegisterManifest]); resp.Type != bridge.RespOK {
-		t.Fatalf("RegisterManifest by identity: %s", line)
+		t.Fatalf("RegisterManifest by identity on a new connection: %s", line)
 	}
 	if b.enhanced.Get("llm-like") == nil {
 		t.Fatal("the manifest never reached the registry")
 	}
 
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects, Token: "not-an-identity"})
-	assertBridgeUnauthorized(t, resp, "ListProjects presenting a token")
+	withToken := reqs[bridge.ReqRegisterManifest]
+	withToken.Token = "not-an-identity"
+	resp, _ := b.send(t, withToken)
+	assertBridgeUnauthorized(t, resp, "RegisterManifest presenting a token")
 
 	someoneElse := serviceOperationRequests(t, "someone-else")[bridge.ReqRegisterManifest]
 	resp, _ = b.send(t, someoneElse)
@@ -334,21 +334,26 @@ func TestBridge_TheIdentityIsClearedWhenTheLaunchEnds(t *testing.T) {
 	if resp, line := b.hello(t, "svc-ends", secret); resp.Type != bridge.RespOK {
 		t.Fatalf("Hello: %s", line)
 	}
-	if resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects}); resp.Type != bridge.RespProjects {
-		t.Fatalf("ListProjects while live: %s", line)
+	reqs := serviceOperationRequests(t, "svc-ends")
+	if resp, line := b.send(t, reqs[bridge.ReqRegisterManifest]); resp.Type != bridge.RespOK {
+		t.Fatalf("RegisterManifest while live: %s", line)
 	}
 	launch.End()
-	resp, _ := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListProjects})
-	assertBridgeUnauthorized(t, resp, "ListProjects after the launch ended")
+	resp, _ := b.send(t, reqs[bridge.ReqRegisterManifest])
+	assertBridgeUnauthorized(t, resp, "RegisterManifest after the launch ended")
 }
 
+// TestResolveAuth_BridgeServiceIdentity pins the C1 deletion directly: a
+// service's launch identity no longer resolves to a tool-calling actor over
+// the bridge at all (OpServiceTools is gone) — a bound identity with no
+// token falls all the way to directory auth, same as any other tokenless
+// caller with no cwd.
 func TestResolveAuth_BridgeServiceIdentity(t *testing.T) {
 	r := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
 
 	svcCtx := bindTestServiceIdentity(t, r)
-	stored, _, err := r.resolveAuth(svcCtx, "")
-	if err != nil || stored.Name != serviceIdentityName {
-		t.Fatalf("a bound manifest+projects service resolved to %+v, %v", stored, err)
+	if stored, _, err := r.resolveAuth(svcCtx, ""); err == nil {
+		t.Fatalf("a bound service identity reached tokenless tool auth as %+v; that path was retired with OpServiceTools", stored)
 	}
 	if _, _, err := r.resolveAuth(svcCtx, "not-a-project-token"); err == nil {
 		t.Fatal("a token beside a bound identity must be judged as a token")

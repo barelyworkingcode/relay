@@ -15,16 +15,12 @@ import (
 const MaxMessageSize = 10 * 1024 * 1024
 
 const (
-	ReqListTools              = "ListTools"
-	ReqCallTool               = "CallTool"
-	ReqReconcileExternalMcps  = "ReconcileExternalMcps"
-	ReqReloadExternalMcp      = "ReloadExternalMcp"
-	ReqReloadService          = "ReloadService"
-	ReqListProjects           = "ListProjects"
-	ReqGetProject             = "GetProject"
-	ReqResolvePtyEnv          = "ResolvePtyEnv"
-	ReqResolveProjectTemplate = "ResolveProjectTemplate"
-	ReqRegisterManifest       = "RegisterManifest"
+	ReqListTools             = "ListTools"
+	ReqCallTool              = "CallTool"
+	ReqReconcileExternalMcps = "ReconcileExternalMcps"
+	ReqReloadExternalMcp     = "ReloadExternalMcp"
+	ReqReloadService         = "ReloadService"
+	ReqRegisterManifest      = "RegisterManifest"
 
 	// ReqRegisterModelHost registers a service's router socket as the model
 	// endpoint's upstream (docs/model-endpoint.md). Tokenless: authenticated
@@ -68,15 +64,11 @@ const (
 )
 
 const (
-	RespTools           = "Tools"
-	RespResult          = "Result"
-	RespError           = "Error"
-	RespOK              = "OK"
-	RespProjects        = "Projects"
-	RespProject         = "Project"
-	RespPtyEnv          = "PtyEnv"
-	RespProjectTemplate = "ProjectTemplate"
-	RespProgress        = "Progress"
+	RespTools    = "Tools"
+	RespResult   = "Result"
+	RespError    = "Error"
+	RespOK       = "OK"
+	RespProgress = "Progress"
 
 	RespProjectDescription = "ProjectDescription"
 )
@@ -122,62 +114,9 @@ type HelloResult struct {
 	Kind      string `json:"kind"`
 	ServiceID string `json:"service_id"`
 	RelayPID  int    `json:"relay_pid"`
-}
-
-// PtyEnvRequest resolves a project-scoped token + working dir. A bridge
-// service identity is required. ProjectID is authoritative; when Directory is
-// also set, relay validates it lies within the project's path so a service
-// can't bind an arbitrary cwd to another project's token.
-type PtyEnvRequest struct {
+	// ProjectID is set only for a project_session identity
+	// (plan-broker-and-sessions.md §2 C2); absent for every other kind.
 	ProjectID string `json:"project_id,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Directory string `json:"directory,omitempty"`
-}
-
-// PtyEnvResponse.RelayToken is plaintext — env-var only, never argv or files.
-type PtyEnvResponse struct {
-	RelayToken string `json:"relay_token"`
-	WorkingDir string `json:"working_dir"`
-	// Host is set only for a project whose directory lives on another
-	// machine (docs/ssh-hosts.md): RelayToken is then always "" (decision 6
-	// — no relay-brokered tools on a host in v1) and WorkingDir names the
-	// directory on the HOST, not the console.
-	Host *HostSpec `json:"host,omitempty"`
-}
-
-// HostSpec is what a caller needs to launch a process on a host: the ssh
-// argv prefix (internal/sshhost.SSHArgv) plus the absolute tool paths and
-// shell a probe already discovered. It never carries a credential — ssh
-// authenticates with the operator's own identity (key/agent), not a bearer
-// relay hands out.
-type HostSpec struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	SSHArgv    []string `json:"ssh_argv"`
-	NodePath   string   `json:"node_path"`
-	ClaudePath string   `json:"claude_path"`
-	Shell      string   `json:"shell"`
-	OS         string   `json:"os"`
-}
-
-// ShellTemplateRequest resolves a project-scoped shell launch template by
-// (ProjectID, TemplateID), so relayLLM can spawn a private shell whose
-// command lives in relay's project record rather than its own global pty map.
-type ShellTemplateRequest struct {
-	ProjectID  string `json:"project_id"`
-	TemplateID string `json:"template_id"`
-}
-
-// ShellTemplateResponse carries NO credential — keeping ResolvePtyEnv the
-// single plaintext-token egress over the bridge (ADR-007).
-type ShellTemplateResponse struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Icon        string            `json:"icon,omitempty"`
 }
 
 // RegisterModelHostRequest is the Arguments payload for a
@@ -239,6 +178,13 @@ type BridgeRequest struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Token     string          `json:"token,omitempty"`
 	ProjectID string          `json:"project_id,omitempty"`
+
+	// Kind is Hello-only and optional: the IdentityKind the caller expects to
+	// bind (plan-broker-and-sessions.md §2 C2). Absent means "don't care" —
+	// every Hello sender that predates this field keeps working unchanged.
+	// Present and wrong refuses the Hello before the secret is spent, the
+	// same as a wrong secret.
+	Kind string `json:"kind,omitempty"`
 
 	// Cwd is sent ONLY when no token is set, and ignored whenever a token is
 	// present, so it can never widen an authenticated call's scope. Advisory,
@@ -354,15 +300,11 @@ type ToolRouter interface {
 	ReconcileExternalMcps(ctx context.Context)
 	ReloadExternalMcp(ctx context.Context, id string) error
 	ReloadService(id string) error
-	// Hello binds a launch secret to the caller's peer audit token.
-	Hello(ctx context.Context, name, secret string) (HelloResult, error)
-	ListProjects(ctx context.Context, token string) (json.RawMessage, error)
-	GetProject(ctx context.Context, id string, token string) (json.RawMessage, error)
+	// Hello binds a launch secret to the caller's peer audit token. kind is
+	// BridgeRequest.Kind verbatim — empty when the caller doesn't assert one.
+	Hello(ctx context.Context, name, secret, kind string) (HelloResult, error)
 	// Project token only; answers for that token's own project.
 	DescribeProject(ctx context.Context, token string) (ProjectDescription, error)
-	ResolvePtyEnv(ctx context.Context, req PtyEnvRequest, token string) (PtyEnvResponse, error)
-	// Never returns the project token.
-	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
 	// Re-registration with the same ServiceID replaces the prior record.
 	RegisterManifest(ctx context.Context, req RegisterManifestRequest, token string) error
 	// RegisterModelHost registers a service's router socket as the model
