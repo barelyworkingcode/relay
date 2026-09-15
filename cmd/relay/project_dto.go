@@ -39,7 +39,6 @@ type projectView struct {
 	AllowExternal    map[string]bool            `json:"allow_external,omitempty"`
 	PermissionPolicy *config.PermissionPolicy   `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                       `json:"generate_skill,omitempty"`
-	AllowCwdAuth     bool                       `json:"allow_cwd_auth,omitempty"`
 	SessionFolders   []string                   `json:"session_folders,omitempty"`
 	Mounts           []config.MountGrant        `json:"mounts,omitempty"`
 }
@@ -63,7 +62,6 @@ func projectToView(p config.Project) projectView {
 		AllowExternal:    p.AllowExternal,
 		PermissionPolicy: p.PermissionPolicy,
 		GenerateSkill:    p.GenerateSkill,
-		AllowCwdAuth:     p.AllowCwdAuth,
 		SessionFolders:   p.SessionFolders,
 		Mounts:           p.Mounts,
 	}

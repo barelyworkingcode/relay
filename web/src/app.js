@@ -1982,9 +1982,6 @@ function renderProjects() {
                 html += '<span>Skill: <strong>' + esc(skillState) + '</strong></span>';
             }
             html += '<span>Policy: <strong>' + esc(policy) + '</strong></span>';
-            // Only shown when on: directory auth is the exception, and a row of
-            // "off" labels would bury the projects where it's actually enabled.
-            if (p.allow_cwd_auth) html += '<span>Dir auth: <strong>on</strong></span>';
             html += '</div>';
             if (regen) {
                 const cls = regen.ok ? 'proj-ok' : 'proj-error';
@@ -2034,7 +2031,6 @@ function blankProjectForm() {
         chat_templates: [],
         permission_policy: { default_mode: '', allowed_tools: [], denied_tools: [] },
         generate_skill: false,
-        allow_cwd_auth: false,                   // token-less auth by working directory
         disabled_tools: {},                      // mcpID -> [toolName, ...]
         // The ADR-011 permission set. access and allowed_tools are what relay
         // enforces at its own chokepoint; context is what it injects and
@@ -2082,7 +2078,6 @@ function projectFormFromExisting(p) {
             denied_tools: (policy.denied_tools || []).slice(),
         },
         generate_skill: !!p.generate_skill,
-        allow_cwd_auth: !!p.allow_cwd_auth,
         disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
         access: JSON.parse(JSON.stringify(p.access || {})),
         allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
@@ -2173,8 +2168,7 @@ function copyToClipboard(text) {
 //
 // A remote-kind record is an ACCESS PROFILE (ADR-011 decision 1): a capability
 // grant to an agent on another machine, not a host directory. It carries no
-// path, can't use allow_cwd_auth or generate_skill (both are
-// directory-flavored), can't use
+// path, can't use generate_skill (directory-flavored), can't use
 // the "*" MCP wildcard (a remote grant must be an explicit enumeration —
 // see validateProjectShape in project_apply.go), and always sends an empty
 // allowed_models. Kind is chosen at create time only; the edit form shows it
@@ -2208,7 +2202,6 @@ function setProjWhere(hostId) {
     if (f.host_id) {
         f.allowed_mcp_ids = [];
         f.generate_skill = false;
-        f.allow_cwd_auth = false;
     }
     render();
 }
@@ -3398,20 +3391,6 @@ function renderProjectForm() {
         html += '</div>';
     }
 
-    // ---- Directory auth ----
-    // Compares a caller's cwd against Path; a remote project has no Path, so
-    // the toggle is absent rather than disabled (see validateProjectShape).
-    if (!isRemote && !isHostedForm(f)) {
-        html += '<div class="proj-section">';
-        html += '<div class="proj-section-title">Directory Auth</div>';
-        html += '<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project\'s path, granting exactly this project\'s tools. <strong>Any process running as you</strong> gets them by being in the directory — including agents you started for something else. Leave off unless you want that trade.</p>';
-        html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-        html += '<span>Allow token-less access from this project\'s directory</span>';
-        html += '<label class="switch"><input type="checkbox" aria-label="Allow token-less access from this project\'s directory" ' + (f.allow_cwd_auth ? 'checked' : '') + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
-        html += '</div>';
-        html += '</div>';
-    }
-
     // ---- Token (edit only) ----
     if (!isNew) {
         const visible = !!state.projectTokenVisible[f.id];
@@ -3542,11 +3521,10 @@ function harvestProjectForm() {
         allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
         allowed_models: allowedModels,
         permission_policy: policy,
-        // Both are directory-flavored and meaningless without a console
-        // path; force them off for remote AND for a hosted project
-        // regardless of stale form state.
+        // Directory-flavored and meaningless without a console path; force
+        // it off for remote AND for a hosted project regardless of stale
+        // form state.
         generate_skill: (isRemote || hosted) ? false : f.generate_skill,
-        allow_cwd_auth: (isRemote || hosted) ? false : f.allow_cwd_auth,
         disabled_tools: f.disabled_tools,
         // Local-project mounts must not be sent even if a stray row survived
         // a kind switch on a still-open new-project form — ValidateMounts
