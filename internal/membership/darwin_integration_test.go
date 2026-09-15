@@ -3,6 +3,8 @@
 package membership
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -130,6 +133,11 @@ func TestDarwin_ChildAndGrandchildAreMembers(t *testing.T) {
 
 	childPID := readPID(t, childPidfile)
 	grandchildPID := readPID(t, grandchildPidfile)
+	// killAndWait only signals the direct child (cmd.Process); the
+	// grandchild is a separate process the child spawned and is never
+	// waited on by anyone once the child dies, so it must be signalled here
+	// too or it leaks past the test.
+	t.Cleanup(func() { _ = syscall.Kill(grandchildPID, syscall.SIGTERM) })
 
 	acceptedAt := time.Now().Add(time.Second)
 
@@ -251,4 +259,155 @@ func TestDarwin_WatchExitRefusesStartMismatch(t *testing.T) {
 		}
 		t.Fatal("WatchExit succeeded with a mismatched start time; want an error")
 	}
+	if !errors.Is(err, ErrExited) {
+		t.Fatalf("WatchExit(mismatched start): err = %v; want errors.Is(err, ErrExited)", err)
+	}
+}
+
+func TestDarwin_WatchExitAlreadyExited(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "watched.pid")
+
+	cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pid := readPID(t, pidfile)
+	src := NewSource()
+	want, ok := src.Info(pid)
+	if !ok {
+		t.Fatal("Info(watched) failed")
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		if _, isExit := err.(*exec.ExitError); !isExit {
+			t.Fatalf("wait: %v", err)
+		}
+	}
+
+	cancel, err := WatchExit(pid, want, func() {})
+	if cancel != nil {
+		cancel()
+	}
+	// Either the kqueue registration itself refuses a dead pid (ESRCH), or
+	// (if the kernel already recycled the number) the post-registration
+	// recheck catches the mismatch — both map to ErrExited.
+	if !errors.Is(err, ErrExited) {
+		t.Fatalf("WatchExit on an already-exited pid: err = %v; want errors.Is(err, ErrExited)", err)
+	}
+}
+
+func TestDarwin_WatchExitCancelThenExitNeverFires(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "watched.pid")
+
+	cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	pid := readPID(t, pidfile)
+	src := NewSource()
+	want, ok := src.Info(pid)
+	if !ok {
+		t.Fatal("Info(watched) failed")
+	}
+
+	var fired atomic.Bool
+	cancel, err := WatchExit(pid, want, func() { fired.Store(true) })
+	if err != nil {
+		t.Fatalf("WatchExit: %v", err)
+	}
+	cancel() // must not return until the watch has fully stopped
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal watched process: %v", err)
+	}
+	_ = cmd.Wait()
+
+	// Give a buggy implementation a window to fire spuriously; cancel()
+	// having already returned is the actual guarantee under test.
+	time.Sleep(200 * time.Millisecond)
+	if fired.Load() {
+		t.Fatal("onExit fired after cancel(); want it to never fire")
+	}
+}
+
+// TestDarwin_WatchExitConcurrentCancelChurn hammers WatchExit/cancel across
+// many independent kqueues concurrently. It targets the class of bug where
+// cancel() closes its kq while its watcher goroutine might still call
+// kevent() on it (e.g. after an EINTR retry): the freed fd number can be
+// handed to a different, concurrently-opened kqueue, letting a cancelled
+// watch steal another watch's exit event (firing the wrong onExit, or
+// silencing the real one). -race won't see the fd-reuse mistake itself, but
+// it will catch any data race in the fix, and running it with -count>1
+// gives the fd-churn timing many chances to line up badly if the fix
+// regresses.
+func TestDarwin_WatchExitConcurrentCancelChurn(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+
+	const n = 40
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			dir, err := os.MkdirTemp("", fmt.Sprintf("watch-churn-%d-", i))
+			if err != nil {
+				t.Errorf("mkdtemp %d: %v", i, err)
+				return
+			}
+			defer func() { _ = os.RemoveAll(dir) }()
+			pidfile := filepath.Join(dir, "watched.pid")
+
+			cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+			if err := cmd.Start(); err != nil {
+				t.Errorf("start %d: %v", i, err)
+				return
+			}
+			defer func() { _ = cmd.Wait() }()
+
+			pid := readPID(t, pidfile)
+			want, ok := NewSource().Info(pid)
+			if !ok {
+				t.Errorf("Info(%d) failed", i)
+				_ = cmd.Process.Kill()
+				return
+			}
+
+			fired := make(chan struct{})
+			cancel, err := WatchExit(pid, want, func() { close(fired) })
+			if err != nil {
+				t.Errorf("WatchExit %d: %v", i, err)
+				_ = cmd.Process.Kill()
+				return
+			}
+
+			if i%2 == 0 {
+				// Cancel immediately: this is the fd-churn case — kq opens
+				// and closes as fast as possible while every other
+				// goroutine in this test is doing the same.
+				cancel()
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+			} else {
+				// Let it fire for real, racing every other goroutine's
+				// cancel() calls for the same kind of kq churn.
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+				select {
+				case <-fired:
+				case <-time.After(5 * time.Second):
+					t.Errorf("watch %d: onExit did not fire", i)
+				}
+				cancel()
+			}
+		}(i)
+	}
+	wg.Wait()
 }

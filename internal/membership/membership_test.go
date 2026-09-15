@@ -11,6 +11,7 @@ import (
 // and the ones that don't (the recheck-changed case) queue two.
 type fakeSource struct {
 	queues map[int][]ProcInfo
+	vanish map[int]int // pid -> call count after which Info reports !ok
 	calls  []int
 }
 
@@ -21,8 +22,22 @@ func (f *fakeSource) set(pid int, infos ...ProcInfo) *fakeSource {
 	return f
 }
 
+// vanishAfter makes Info report !ok for pid once it has been queried more
+// than n times — for a "there, then gone" pid, as opposed to set's
+// "there, then differently" queue.
+func (f *fakeSource) vanishAfter(pid, n int) *fakeSource {
+	if f.vanish == nil {
+		f.vanish = map[int]int{}
+	}
+	f.vanish[pid] = n
+	return f
+}
+
 func (f *fakeSource) Info(pid int) (ProcInfo, bool) {
 	f.calls = append(f.calls, pid)
+	if n, limited := f.vanish[pid]; limited && f.callCount(pid) > n {
+		return ProcInfo{}, false
+	}
 	q, ok := f.queues[pid]
 	if !ok || len(q) == 0 {
 		return ProcInfo{}, false
@@ -32,6 +47,16 @@ func (f *fakeSource) Info(pid int) (ProcInfo, bool) {
 		f.queues[pid] = q[1:]
 	}
 	return info, true
+}
+
+func (f *fakeSource) callCount(pid int) int {
+	n := 0
+	for _, p := range f.calls {
+		if p == pid {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeSource) sawPID(pid int) bool {
@@ -161,33 +186,89 @@ func TestResolve_StartTimeTieAccepted(t *testing.T) {
 }
 
 func TestResolve_PeerStartedAfterAccept(t *testing.T) {
-	const peer = 100
-	src := newFakeSource().set(peer, atInfo(peer, acceptedAt.Add(time.Second)))
-	roots := newFakeRoots(999)
+	// The peer has a real, reachable root as its parent: if the acceptedAt
+	// check were skipped or broken, Resolve would wrongly accept. Refusal
+	// here can only come from the "peer existed before accept" check.
+	const peer, root = 100, 200
+	rootStart := acceptedAt.Add(-time.Hour)
+	roots := newFakeRoots(999).add(Root{
+		SessionID: "sessA", PID: root,
+		StartSec: rootStart.Unix(), StartUsec: int32(rootStart.Nanosecond() / 1000),
+	})
 
-	id, ok := Resolve(src, roots, peer, acceptedAt)
-	if ok {
-		t.Fatalf("Resolve() = %q, true; want not-a-member (peer started after accept)", id)
+	cases := []struct {
+		name  string
+		start time.Time
+	}{
+		{"after accept", acceptedAt.Add(time.Second)},
+		{"exactly at accept", acceptedAt}, // boundary: strict less-than, not less-or-equal
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := newFakeSource().
+				set(peer, withPPID(atInfo(peer, c.start), root)).
+				set(root, atInfo(root, rootStart))
+
+			id, ok := Resolve(src, roots, peer, acceptedAt)
+			if ok {
+				t.Fatalf("Resolve() = %q, true; want not-a-member (peer start %s)", id, c.name)
+			}
+		})
 	}
 }
 
-func TestResolve_DepthCap(t *testing.T) {
-	src := newFakeSource()
-	// Build a chain of 66 pids (peerPID=1000..1065), each older than the
-	// last but none matching any root and never reaching pid<=1 or the
-	// host, so only the depth cap can stop the walk.
-	start := acceptedAt.Add(-time.Hour)
-	for i := 0; i < 66; i++ {
-		pid := 1000 + i
-		next := 1000 + i + 1
-		src.set(pid, withPPID(atInfo(pid, start.Add(-time.Duration(i)*time.Second)), next))
+// buildChain builds a fake ancestry of n pids, each older than the last,
+// pids[0] the peer and pids[n-1] the oldest (top) ancestor. It sets no root
+// and leaves pids[n-1]'s ppid at zero; callers add whatever root they need.
+func buildChain(n int, newest time.Time) (src *fakeSource, pids []int) {
+	src = newFakeSource()
+	pids = make([]int, n)
+	for i := range pids {
+		pids[i] = 5000 + i
 	}
-	roots := newFakeRoots(999999)
+	for i, pid := range pids {
+		start := newest.Add(-time.Duration(i) * time.Second)
+		info := atInfo(pid, start)
+		if i < n-1 {
+			info = withPPID(info, pids[i+1])
+		}
+		src.set(pid, info)
+	}
+	return src, pids
+}
 
-	id, ok := Resolve(src, roots, 1000, acceptedAt)
-	if ok {
-		t.Fatalf("Resolve() = %q, true; want not-a-member (depth cap)", id)
-	}
+func TestResolve_DepthCap(t *testing.T) {
+	newest := acceptedAt.Add(-time.Hour)
+
+	t.Run("root at depth 64 accepted", func(t *testing.T) {
+		const n = 64
+		src, pids := buildChain(n, newest)
+		rootStart := newest.Add(-time.Duration(n-1) * time.Second)
+		roots := newFakeRoots(999999).add(Root{
+			SessionID: "sessDeep", PID: pids[n-1],
+			StartSec: rootStart.Unix(), StartUsec: int32(rootStart.Nanosecond() / 1000),
+		})
+
+		id, ok := Resolve(src, roots, pids[0], acceptedAt)
+		if !ok || id != "sessDeep" {
+			t.Fatalf("Resolve() = %q, %v; want sessDeep, true (a root at exactly depth 64 must be reachable)", id, ok)
+		}
+	})
+
+	t.Run("root at depth 65 refused", func(t *testing.T) {
+		const n = 65
+		src, pids := buildChain(n, newest)
+		rootStart := newest.Add(-time.Duration(n-1) * time.Second)
+		roots := newFakeRoots(999999).add(Root{
+			SessionID: "sessTooDeep", PID: pids[n-1],
+			StartSec: rootStart.Unix(), StartUsec: int32(rootStart.Nanosecond() / 1000),
+		})
+
+		id, ok := Resolve(src, roots, pids[0], acceptedAt)
+		if ok {
+			t.Fatalf("Resolve() = %q, true; want not-a-member (root sits one hop past the depth cap)", id)
+		}
+	})
 }
 
 func TestResolve_InfoFailureMidWalk(t *testing.T) {
@@ -216,6 +297,66 @@ func TestResolve_PeerStartChangedOnRecheck(t *testing.T) {
 	id, ok := Resolve(src, roots, peer, acceptedAt)
 	if ok {
 		t.Fatalf("Resolve() = %q, true; want not-a-member (peer start changed on recheck)", id)
+	}
+}
+
+func TestResolve_NonMatchingRootPIDContinuesWalk(t *testing.T) {
+	// midStale sits at a pid that a (now-dead) root once used, but its
+	// actual, current start time doesn't match that stale root record. A
+	// pid-only match must not short-circuit the walk here — it has to keep
+	// climbing and find the real, currently-live root above it.
+	const peer, midStale, realRoot = 100, 150, 200
+	realRootStart := acceptedAt.Add(-time.Hour)
+	staleRootStart := acceptedAt.Add(-3 * time.Hour)
+	src := newFakeSource().
+		set(peer, withPPID(atInfo(peer, acceptedAt.Add(-time.Minute)), midStale)).
+		set(midStale, withPPID(atInfo(midStale, acceptedAt.Add(-2*time.Minute)), realRoot)).
+		set(realRoot, atInfo(realRoot, realRootStart))
+	roots := newFakeRoots(999).
+		add(Root{SessionID: "stale", PID: midStale, StartSec: staleRootStart.Unix()}).
+		add(Root{SessionID: "sessReal", PID: realRoot, StartSec: realRootStart.Unix(), StartUsec: int32(realRootStart.Nanosecond() / 1000)})
+
+	id, ok := Resolve(src, roots, peer, acceptedAt)
+	if !ok || id != "sessReal" {
+		t.Fatalf("Resolve() = %q, %v; want sessReal, true (a pid match with the wrong start must not stop the walk)", id, ok)
+	}
+}
+
+func TestResolve_RecheckPeerGone(t *testing.T) {
+	const peer, root = 100, 200
+	rootStart := acceptedAt.Add(-time.Hour)
+	src := newFakeSource().
+		set(peer, withPPID(atInfo(peer, acceptedAt.Add(-time.Minute)), root)).
+		set(root, atInfo(root, rootStart)).
+		// The main walk's read of peer succeeds; the post-match recheck
+		// read (the 2nd) finds it gone entirely, not merely different.
+		vanishAfter(peer, 1)
+	roots := newFakeRoots(999).add(Root{SessionID: "sessA", PID: root, StartSec: rootStart.Unix()})
+
+	id, ok := Resolve(src, roots, peer, acceptedAt)
+	if ok {
+		t.Fatalf("Resolve() = %q, true; want not-a-member (peer vanished before the recheck)", id)
+	}
+}
+
+func TestResolve_PeerStartChangedOnRecheck_DepthGreaterThanOne(t *testing.T) {
+	// The existing depth-1 version of this case has the peer match a root
+	// directly, so its single Info(peer) read at depth 1 and its recheck
+	// read are the only two ever made for that pid. This variant matches at
+	// depth 2, proving the recheck still fires when the peer isn't the pid
+	// that matched.
+	const peer, root = 100, 200
+	original := atInfo(peer, acceptedAt.Add(-time.Minute))
+	changed := atInfo(peer, acceptedAt.Add(-30*time.Second))
+	rootStart := acceptedAt.Add(-time.Hour)
+	src := newFakeSource().
+		set(peer, withPPID(original, root), withPPID(changed, root)).
+		set(root, atInfo(root, rootStart))
+	roots := newFakeRoots(999).add(Root{SessionID: "sessA", PID: root, StartSec: rootStart.Unix()})
+
+	id, ok := Resolve(src, roots, peer, acceptedAt)
+	if ok {
+		t.Fatalf("Resolve() = %q, true; want not-a-member (peer start changed on recheck, depth 2 match)", id)
 	}
 }
 

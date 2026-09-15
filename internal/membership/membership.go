@@ -9,9 +9,17 @@
 package membership
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 )
+
+// ErrExited signals that the process a caller asked WatchExit to watch is
+// already gone, or was never the process the caller meant (its pid was
+// recycled between the caller's read and the call). Both cases mean the
+// same thing to a caller: treat them exactly like an exit and end the
+// session, rather than as an infrastructure failure worth retrying.
+var ErrExited = errors.New("membership: process already exited")
 
 // ProcInfo is one process's ancestry-relevant state, read from the kernel.
 type ProcInfo struct {
@@ -60,6 +68,12 @@ type procTime struct {
 func startOf(info ProcInfo) procTime { return procTime{info.StartSec, info.StartUsec} }
 
 func timeOf(t time.Time) procTime {
+	// This is subtle: both sides of every comparison Resolve makes against
+	// acceptedTime go through t.Unix(), i.e. wall clock — proc_pidinfo has
+	// no monotonic reading to compare against, so using time.Time's
+	// monotonic component here would compare incompatible clocks. A wall
+	// clock step during the walk is the same risk C3 already accepts for
+	// start-time comparisons in general.
 	return procTime{t.Unix(), int32(t.Nanosecond() / 1000)}
 }
 
@@ -127,7 +141,12 @@ func Resolve(src Source, roots Roots, peerPID int, acceptedAt time.Time) (sessio
 			return "", false
 		}
 
-		if p == peerPID {
+		if depth == 1 {
+			// Keyed on the loop's own first-iteration invariant rather than
+			// p == peerPID: p is derived from ppid lookups as the walk
+			// climbs, and pinning this to "the first thing we looked at"
+			// keeps it correct even if a pathological chain ever revisited
+			// peerPID's number higher up.
 			if !cur.less(acceptedTime) {
 				reject("peer-too-new", peerPID, p, "")
 				return "", false
