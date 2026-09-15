@@ -187,17 +187,24 @@ type ShellTemplateResponse struct {
 // endpoint authenticates the socket itself by the kernel peer audit token of
 // whoever answers on RouterSocket, not by a bearer the service declares.
 type RegisterModelHostRequest struct {
-	ServiceID    string `json:"serviceId"`
-	RouterSocket string `json:"routerSocket"`
+	ServiceID    string `json:"service_id"`
+	RouterSocket string `json:"router_socket"`
 }
 
-// Validate covers only the request in isolation.
+// Validate covers only the request in isolation. RouterSocket must be an
+// absolute path: it is passed straight to net.Dial("unix", ...) on every
+// model-endpoint call (model_endpoint.go's dialVerifiedUnix), and a
+// relative path would resolve against relay's own working directory rather
+// than anything the registering service actually meant.
 func (r *RegisterModelHostRequest) Validate() error {
 	if r.ServiceID == "" {
-		return fmt.Errorf("register_model_host: serviceId is empty")
+		return fmt.Errorf("register_model_host: service_id is empty")
 	}
 	if r.RouterSocket == "" {
-		return fmt.Errorf("register_model_host: routerSocket is empty")
+		return fmt.Errorf("register_model_host: router_socket is empty")
+	}
+	if !filepath.IsAbs(r.RouterSocket) {
+		return fmt.Errorf("register_model_host: router_socket must be an absolute path")
 	}
 	return nil
 }
