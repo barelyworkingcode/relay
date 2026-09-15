@@ -2,11 +2,11 @@ package main
 
 // JS-module-logic coverage for the service Edit dialog's Allowed Models
 // editor (R-M1d): the capabilities vocabulary now includes models/model_host,
-// the row editor appears only alongside the models capability, add/remove
-// rows harvest into the right payload, and a form that never shows the
-// section omits allowed_models entirely so an update leaves the stored grant
-// alone. Same goja-against-the-real-bundle pattern as
-// settings_service_form_ui_test.go.
+// the row editor appears only alongside the models capability (live in the
+// open form, not just on a stored record), add/remove rows harvest into the
+// right payload, and a form that never shows the section omits
+// allowed_models entirely so an update leaves the stored grant alone. Same
+// goja-against-the-real-bundle pattern as settings_service_form_ui_test.go.
 
 import (
 	"strings"
@@ -160,6 +160,152 @@ func TestServiceForm_AllowedModelsBlankEntryIgnored(t *testing.T) {
 	got := evalString(t, vm, script)
 	if !strings.Contains(got, `"count":0`) {
 		t.Errorf("blank entry should not add a row: %s", got)
+	}
+}
+
+// TestServiceForm_AllowedModelsShowsLiveOnTick is the fix for the
+// two-save gap: ticking the models checkbox in an open form must show the
+// Allowed Models section immediately, without a save/reopen round trip.
+func TestServiceForm_AllowedModelsShowsLiveOnTick(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.services = [
+			{id:'plain', display_name:'Plain', command:'/bin/x', args:[], env:{}, capabilities:[]}
+		];
+		window.editService('plain');
+		var before = window.renderServiceForm();
+
+		// The DOM shim does not wire inline onchange="..." handlers to a real
+		// event (settings_service_form_ui_test.go's capabilities test notes
+		// the same limitation), so the test sets the box the browser would
+		// have already set before firing the handler, then calls it.
+		document.getElementById('svcCap_models').checked = true;
+		window.svcModelsCapChanged();
+		var after = window.renderServiceForm();
+
+		return JSON.stringify({
+			hiddenBefore: before.indexOf('Allowed Models') < 0,
+			shownAfter: after.indexOf('Allowed Models') >= 0,
+			emptyRuleAfter: after.indexOf('NO models') >= 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"hiddenBefore":true`, `"shownAfter":true`, `"emptyRuleAfter":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("live tick: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestServiceForm_AllowedModelsUntickHidesAndOmitsPayload covers the other
+// half: unticking hides the section again and the payload drops
+// allowed_models entirely (relay#117's "omitted means keep stored" rule),
+// even though a row was typed in this form session first.
+func TestServiceForm_AllowedModelsUntickHidesAndOmitsPayload(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.services = [
+			{id:'plain', display_name:'Plain', command:'/bin/x', args:[], env:{}, capabilities:[]}
+		];
+		window.editService('plain');
+		document.getElementById('svcCap_models').checked = true;
+		window.svcModelsCapChanged();
+		document.getElementById('svcModelNewId').value = 'omlx/Chat';
+		window.svcModelAddRow();
+
+		document.getElementById('svcCap_models').checked = false;
+		window.svcModelsCapChanged();
+		var afterUntick = window.renderServiceForm();
+		var payload = window.svcFormValues();
+
+		return JSON.stringify({
+			hidden: afterUntick.indexOf('Allowed Models') < 0,
+			payloadOmits: !('allowedModels' in payload)
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"hidden":true`, `"payloadOmits":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("untick: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestServiceForm_AllowedModelsRetickKeepsTypedRow is the row-survival half
+// of the same requirement: untick then retick, before ever saving, must
+// still show the row the operator typed while the section was up the first
+// time -- toggling the checkbox must not reach into svcModelsDraft.
+func TestServiceForm_AllowedModelsRetickKeepsTypedRow(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.services = [
+			{id:'plain', display_name:'Plain', command:'/bin/x', args:[], env:{}, capabilities:[]}
+		];
+		window.editService('plain');
+		document.getElementById('svcCap_models').checked = true;
+		window.svcModelsCapChanged();
+		document.getElementById('svcModelNewId').value = 'omlx/Chat';
+		window.svcModelAddRow();
+
+		document.getElementById('svcCap_models').checked = false;
+		window.svcModelsCapChanged();
+		document.getElementById('svcCap_models').checked = true;
+		window.svcModelsCapChanged();
+		var afterRetick = window.renderServiceForm();
+		var payload = window.svcFormValues();
+
+		return JSON.stringify({
+			rowStillShown: afterRetick.indexOf('value="omlx/Chat"') >= 0,
+			payloadIncludesRow: JSON.stringify(payload.allowedModels) === '["omlx/Chat"]'
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"rowStillShown":true`, `"payloadIncludesRow":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("retick: missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestServiceForm_AllowedModelsShownOnOpenForNewOrExistingModelsService
+// covers both form entry points unchanged: a brand-new service form starts
+// with the section hidden (nothing ticked yet, matching
+// TestServiceForm_AllowedModelsShownOnlyWithModelsCapability's freshForm
+// case), and opening an EXISTING record that already holds models still
+// shows the section immediately, with no tick required.
+func TestServiceForm_AllowedModelsShownOnOpenForNewOrExistingModelsService(t *testing.T) {
+	vm := newAppVM(t)
+
+	script := `(function(){
+		window.state.services = [
+			{id:'tts', display_name:'TTS', command:'/bin/tts', args:[], env:{},
+			 capabilities:['models'], allowed_models:['vCode']}
+		];
+
+		window.newService();
+		var newForm = window.renderServiceForm();
+
+		window.editService('tts');
+		var existingForm = window.renderServiceForm();
+
+		return JSON.stringify({
+			newHidden: newForm.indexOf('Allowed Models') < 0,
+			existingShown: existingForm.indexOf('Allowed Models') >= 0,
+			existingShowsStoredId: existingForm.indexOf('value="vCode"') >= 0
+		});
+	})()`
+
+	got := evalString(t, vm, script)
+	for _, want := range []string{`"newHidden":true`, `"existingShown":true`, `"existingShowsStoredId":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("open-form visibility: missing %s in %s", want, got)
+		}
 	}
 }
 
