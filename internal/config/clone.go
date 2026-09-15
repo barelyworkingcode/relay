@@ -26,6 +26,7 @@ func (s *Settings) Clone() *Settings {
 	cp.EveEnrolment = cloneEveEnrolmentWindow(s.EveEnrolment)
 	cp.EvePasskeys = cloneSlice(s.EvePasskeys)
 	cp.EvePasskeyRevocations = cloneSlice(s.EvePasskeyRevocations)
+	cp.TerminalTemplates = cloneTerminalTemplates(s.TerminalTemplates)
 	return &cp
 }
 
@@ -146,6 +147,24 @@ func cloneShellTemplate(t ShellTemplate) ShellTemplate {
 	t.Args = cloneSlice(t.Args)
 	t.Env = cloneMap(t.Env)
 	return t
+}
+
+func cloneTerminalTemplate(t TerminalTemplate) TerminalTemplate {
+	t.Args = cloneSlice(t.Args)
+	t.Env = cloneMap(t.Env)
+	t.EnvPassthrough = cloneSlice(t.EnvPassthrough)
+	return t
+}
+
+func cloneTerminalTemplates(s []TerminalTemplate) []TerminalTemplate {
+	if s == nil {
+		return nil
+	}
+	out := make([]TerminalTemplate, len(s))
+	for i, t := range s {
+		out[i] = cloneTerminalTemplate(t)
+	}
+	return out
 }
 
 func cloneShellTemplates(s []ShellTemplate) []ShellTemplate {
