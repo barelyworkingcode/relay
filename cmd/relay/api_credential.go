@@ -243,13 +243,68 @@ func reapExpiredAPICredentials(s *config.Settings) bool {
 // operator-minted credential under it would be deleted too.
 const legacyFrontendCredentialName = "legacy-frontend-token"
 
-// frontendConsumerClasses is what a launch identity holding the frontend capability holds
-// on the frontend socket: never control.ClassGrant or control.ClassExecute. A
-// consumer that needs either must be handed a credential naming it.
-// control.ClassProxy is what reaches the proxied surface; it is not
-// control.ClassExecute because execute would also reach POST /api/mcps and
-// PUT /api/services/{id} (ADR-016 decision 4).
-var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy}
+// frontendConsumerClasses is what a launch identity holding the frontend
+// capability holds on the frontend socket: never control.ClassGrant. A
+// consumer that needs it must be handed a credential naming it.
+//
+// control.ClassExecute is included per the approved F1/SP8 decision
+// (plan-broker-and-sessions.md, "Decisions on this plan"): eve's frontend
+// launch identity gets execute so it can reach the session-host launch
+// routes (POST /api/terminals, POST /api/sessions, POST /api/sessions/{id}/
+// resume — sessionRouteClasses below) once R-S4b registers them. Every
+// execute route that can make relay execute a new command is unconditionally
+// presence-gated: POST /api/mcps (`mcp.register`), POST /api/services and
+// PUT /api/services/{id}'s command-setting fields (`service.register`), and
+// PUT /api/remote (relay#113).
+//
+// This is NOT the same as "no ungated execute route remains" — it is not
+// true, and F1's approval assumed it would be. Two conditionally-gated
+// narrowing/rename paths on this same socket have no prompt at all:
+// PUT /api/services/{id} renaming DisplayName or dropping a service's own
+// capabilities/allowed_models (serviceUpdateNeedsGate never inspects
+// DisplayName and treats narrowing as safe-by-default), and PUT /api/remote
+// with {"remove": true} or turning a listener off (remoteConfigChangedFields
+// only fires on turning one on). Both predate this change and were designed
+// for an operator-minted execute credential, not a background service
+// holding it by default; they are integrity/availability exposure (a
+// frontend-capable service can rename a sibling service or wipe the remote
+// config with no human prompt), not privilege escalation, since every
+// command-setting path stays gated. Flagged to the user as an open question
+// rather than silently tightened or silently accepted — see
+// STATUS-relay-security.md.
+var frontendConsumerClasses = []control.CapabilityClass{control.ClassRead, control.ClassConfigure, control.ClassProxy, control.ClassExecute}
+
+// sessionRouteClasses is plan-broker-and-sessions.md §2 C1's "Route classes
+// (socket-only)" table for the session-host routes: it exists before the
+// routes themselves do (R-S3 and R-S4b register the actual handlers), so
+// that which class a session route requires is decided once, here, rather
+// than left to whichever later unit happens to wire up the handler. A
+// pattern key is METHOD + " " + the exact path or path prefix the plan
+// names; R-S3/R-S4b's registration must ask this table rather than pick a
+// class inline.
+//
+// GET /api/terminals and GET /api/sessions are "proxy, forwarded to
+// relaysessions by service id" (SP6) — a route class alone does not capture
+// the forwarding rule, so that half of the contract is left to R-S4b, which
+// has the enhanced-service registry this table does not.
+var sessionRouteClasses = map[string]control.CapabilityClass{
+	"POST /api/terminals":              control.ClassExecute,
+	"POST /api/sessions":               control.ClassExecute,
+	"POST /api/sessions/{id}/resume":   control.ClassExecute,
+	"GET /api/terminal/templates":      control.ClassRead,
+	"GET /api/terminal/templates/{id}": control.ClassRead,
+	"GET /api/terminals":               control.ClassProxy,
+	"GET /api/sessions":                control.ClassProxy,
+}
+
+// sessionRouteClass looks up sessionRouteClasses by "METHOD path", and
+// reports whether the route is one C1 names at all — the hermetic test this
+// unit adds asks this rather than hitting a live route, since the routes
+// themselves do not exist in this repo yet.
+func sessionRouteClass(method, path string) (control.CapabilityClass, bool) {
+	class, ok := sessionRouteClasses[method+" "+path]
+	return class, ok
+}
 
 // retireLegacyFrontendCredential deletes every record named
 // legacyFrontendCredentialName and reports whether it deleted any. Does not

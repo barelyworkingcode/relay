@@ -10,6 +10,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcp"
+	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 )
 
 func TestDescribeProject_DescribesOwnProjectAndGrant(t *testing.T) {
@@ -87,7 +88,8 @@ func TestDescribeProject_ToolsMatchListTools(t *testing.T) {
 }
 
 func TestDescribeProject_RefusesCallersWithoutAProjectToken(t *testing.T) {
-	router, _, svcCtx := newPtyTestRouter(t)
+	router := newTestRouter(t, makeSettings(nil, nil, nil), mcpbroker.NewManager(nil))
+	svcCtx := bindTestServiceIdentity(t, router)
 
 	for name, caller := range map[string]struct {
 		ctx   context.Context

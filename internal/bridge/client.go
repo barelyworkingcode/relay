@@ -75,35 +75,6 @@ func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress
 	return resp.Result, nil
 }
 
-func (c *Client) ListProjects() (json.RawMessage, error) {
-	resp, err := c.send(BridgeRequest{
-		Type:  ReqListProjects,
-		Token: c.token,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list projects: %w", err)
-	}
-	if err := checkError(resp); err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
-func (c *Client) GetProject(id string) (json.RawMessage, error) {
-	resp, err := c.send(BridgeRequest{
-		Type:      ReqGetProject,
-		ProjectID: id,
-		Token:     c.token,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get project %q: %w", id, err)
-	}
-	if err := checkError(resp); err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
 // DescribeProject requires a project token and answers for that token's own
 // project only.
 func (c *Client) DescribeProject() (ProjectDescription, error) {
@@ -120,58 +91,6 @@ func (c *Client) DescribeProject() (ProjectDescription, error) {
 	var out ProjectDescription
 	if err := json.Unmarshal(resp.Data, &out); err != nil {
 		return ProjectDescription{}, fmt.Errorf("parse response: %w", err)
-	}
-	return out, nil
-}
-
-// ResolvePtyEnv requires a launch identity holding the projects capability,
-// so the client carries no token. Skill generation is
-// owned by relay and is not driven by this call.
-func (c *Client) ResolvePtyEnv(req PtyEnvRequest) (PtyEnvResponse, error) {
-	args, err := json.Marshal(req)
-	if err != nil {
-		return PtyEnvResponse{}, fmt.Errorf("marshal request: %w", err)
-	}
-	resp, err := c.send(BridgeRequest{
-		Type:      ReqResolvePtyEnv,
-		Arguments: args,
-		Token:     c.token,
-	})
-	if err != nil {
-		return PtyEnvResponse{}, fmt.Errorf("resolve pty env: %w", err)
-	}
-	if err := checkError(resp); err != nil {
-		return PtyEnvResponse{}, err
-	}
-	var out PtyEnvResponse
-	if err := json.Unmarshal(resp.Data, &out); err != nil {
-		return PtyEnvResponse{}, fmt.Errorf("parse response: %w", err)
-	}
-	return out, nil
-}
-
-// ResolveProjectTemplate requires a launch identity holding the projects
-// capability, so the client carries no token. The response
-// carries only the template definition — never a token.
-func (c *Client) ResolveProjectTemplate(req ShellTemplateRequest) (ShellTemplateResponse, error) {
-	args, err := json.Marshal(req)
-	if err != nil {
-		return ShellTemplateResponse{}, fmt.Errorf("marshal request: %w", err)
-	}
-	resp, err := c.send(BridgeRequest{
-		Type:      ReqResolveProjectTemplate,
-		Arguments: args,
-		Token:     c.token,
-	})
-	if err != nil {
-		return ShellTemplateResponse{}, fmt.Errorf("resolve project template: %w", err)
-	}
-	if err := checkError(resp); err != nil {
-		return ShellTemplateResponse{}, err
-	}
-	var out ShellTemplateResponse
-	if err := json.Unmarshal(resp.Data, &out); err != nil {
-		return ShellTemplateResponse{}, fmt.Errorf("parse response: %w", err)
 	}
 	return out, nil
 }

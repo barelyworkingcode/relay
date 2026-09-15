@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path"
 	"slices"
 	"strings"
@@ -226,13 +227,13 @@ type ServiceConfig struct {
 type ServiceCapability string
 
 const (
-	// ServiceCapabilityFrontend is the frontend socket as read+configure+proxy.
+	// ServiceCapabilityFrontend is the frontend socket as
+	// read+configure+proxy+execute (never grant); see
+	// cmd/relay/api_credential.go's frontendConsumerClasses for what execute
+	// does and doesn't gate on this socket.
 	ServiceCapabilityFrontend ServiceCapability = "frontend"
 	// ServiceCapabilityManifest is RegisterManifest under the service's own id.
 	ServiceCapabilityManifest ServiceCapability = "manifest"
-	// ServiceCapabilityProjects is ResolvePtyEnv, ResolveProjectTemplate,
-	// ListProjects, GetProject and service-scope ListTools/CallTool.
-	ServiceCapabilityProjects ServiceCapability = "projects"
 	// ServiceCapabilityModels grants model-endpoint calls (OpModelCall) and
 	// the unfiltered model list (OpModelList), limited by AllowedModels.
 	ServiceCapabilityModels ServiceCapability = "models"
@@ -240,13 +241,34 @@ const (
 	// service's router socket as the model endpoint's upstream. At most one
 	// host may be live at a time (docs/model-endpoint.md).
 	ServiceCapabilityModelHost ServiceCapability = "model_host"
+	// ServiceCapabilitySessions grants SessionExited and the unfiltered model
+	// list only (plan-broker-and-sessions.md §2 C1) — no model calls, no
+	// project authority. Only the built-in RelaySessionsServiceID record may
+	// ever hold it (validateCapabilities); a user-authored or registered
+	// record naming it fails validation.
+	ServiceCapabilitySessions ServiceCapability = "sessions"
+
+	// retiredServiceCapabilityProjects named ResolvePtyEnv, ResolveProjectTemplate,
+	// ListProjects, GetProject and tokenless service-scope ListTools/CallTool
+	// (plan-broker-and-sessions.md §2 C1, "Deleted"). Those operations no
+	// longer exist, so the name is never valid to write or register — a
+	// record loaded holding it has the name silently dropped
+	// (dropRetiredCapabilities), never refused, so an existing install keeps
+	// starting across the upgrade.
+	retiredServiceCapabilityProjects ServiceCapability = "projects"
 )
 
 // ServiceCapabilities is every capability relay knows.
 var ServiceCapabilities = []ServiceCapability{
-	ServiceCapabilityFrontend, ServiceCapabilityManifest, ServiceCapabilityProjects,
-	ServiceCapabilityModels, ServiceCapabilityModelHost,
+	ServiceCapabilityFrontend, ServiceCapabilityManifest,
+	ServiceCapabilityModels, ServiceCapabilityModelHost, ServiceCapabilitySessions,
 }
+
+// RelaySessionsServiceID is the one service record allowed to hold
+// ServiceCapabilitySessions (plan-broker-and-sessions.md §2 C1). This unit
+// does not create that record — R-S9 does — it only enforces the rule that
+// nothing else may ever be granted the capability.
+const RelaySessionsServiceID = "relaysessions"
 
 // HasCapability reports whether the record grants want.
 func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
@@ -255,26 +277,50 @@ func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
 
 // migrateCapabilities converts a record that predates Capabilities, once, on
 // load: frontend_consumer unset or true becomes [frontend], false becomes
-// [manifest, projects], the set each kind of service held before capabilities
-// were named. A record that already carries capabilities keeps them, and the
-// legacy field is dropped either way so it is never written back.
+// [manifest], the set each kind of service held before capabilities were
+// named minus the now-retired projects capability (dropRetiredCapabilities
+// handles a record that already spells it out explicitly). A record that
+// already carries capabilities keeps them, and the legacy field is dropped
+// either way so it is never written back.
 func (c *ServiceConfig) migrateCapabilities() {
 	if c.Capabilities == nil {
 		if c.LegacyFrontendConsumer != nil && !*c.LegacyFrontendConsumer {
-			c.Capabilities = []ServiceCapability{ServiceCapabilityManifest, ServiceCapabilityProjects}
+			c.Capabilities = []ServiceCapability{ServiceCapabilityManifest}
 		} else {
 			c.Capabilities = []ServiceCapability{ServiceCapabilityFrontend}
 		}
 	}
 	c.LegacyFrontendConsumer = nil
+	c.dropRetiredCapabilities()
 }
 
-// validateCapabilities refuses a capability name relay does not know. A record
-// that fails it fails Validate, so relay will not start it.
+// dropRetiredCapabilities silently removes a capability name relay no longer
+// recognises as valid to hold from a record loaded off disk, logs the drop
+// at info, and leaves the record to persist without it on the next write —
+// never a hard error, since refusing to start an existing install over a
+// capability whose operations were deleted out from under it would be a
+// self-inflicted outage.
+func (c *ServiceConfig) dropRetiredCapabilities() {
+	before := len(c.Capabilities)
+	c.Capabilities = slices.DeleteFunc(c.Capabilities, func(cap ServiceCapability) bool {
+		return cap == retiredServiceCapabilityProjects
+	})
+	if len(c.Capabilities) != before {
+		slog.Info("dropped retired service capability", "service", c.ID, "capability", retiredServiceCapabilityProjects)
+	}
+}
+
+// validateCapabilities refuses a capability name relay does not know, and
+// refuses ServiceCapabilitySessions on any record but the built-in
+// RelaySessionsServiceID one. A record that fails it fails Validate, so
+// relay will not start it.
 func (c *ServiceConfig) validateCapabilities() error {
 	for _, capability := range c.Capabilities {
 		if !slices.Contains(ServiceCapabilities, capability) {
-			return fmt.Errorf("service capability %q is unknown: use frontend, manifest, projects, models or model_host", capability)
+			return fmt.Errorf("service capability %q is unknown: use frontend, manifest, models, model_host or sessions", capability)
+		}
+		if capability == ServiceCapabilitySessions && c.ID != RelaySessionsServiceID {
+			return fmt.Errorf("service capability %q may only be held by the built-in %q service", capability, RelaySessionsServiceID)
 		}
 	}
 	return nil
