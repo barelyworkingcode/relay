@@ -277,18 +277,26 @@ func ipcUpdateRemoteConfig(ctx *IPCContext, raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	view, err := ctx.EnrolmentOps.SetRemoteConfig(remoteConfigFields{
+	fields := remoteConfigFields{
 		Remove:            msg.Remove,
 		Enabled:           msg.Enabled,
 		Listen:            msg.Listen,
 		EnrolmentRequests: msg.EnrolmentRequests,
 		EnrolmentListen:   msg.EnrolmentListen,
-	})
-	if err != nil {
-		ctx.UI.EmitEvent("onRemoteConfigError", err.Error())
-		return
 	}
-	ctx.UI.EmitEvent("onRemoteConfigUpdated", marshalForUI(view))
+	// Off the main thread: EnrolmentOps.SetRemoteConfig is gated
+	// (remote.configure) when the request actually widens what a remote
+	// client can reach, and Gate.Require blocks on LocalAuthentication's
+	// async completion handler -- the same deadlock ipcCreateEnrolment's
+	// comment above describes.
+	ctx.GoFunc(func() {
+		view, err := ctx.EnrolmentOps.SetRemoteConfig(ctx.Ctx, fields, auditViaIPC, "")
+		if err != nil {
+			dispatchEmit(ctx, "onRemoteConfigError", err.Error())
+			return
+		}
+		dispatchEmit(ctx, "onRemoteConfigUpdated", marshalForUI(view))
+	})
 }
 
 // emitPendingEnrolmentRequests is the one place that reads

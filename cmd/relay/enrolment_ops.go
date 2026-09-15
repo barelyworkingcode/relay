@@ -748,7 +748,101 @@ func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
 	return remoteConfigViewOf(o.Store.Get(), o.auditEnabled())
 }
 
-func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, error) {
+// remoteConfigChangedFields names, in a fixed order, every field whose
+// requested value genuinely differs from what is stored -- judged like
+// serviceUpdateNeedsGate (service_ops.go), field by field, rather than
+// gating the whole request unconditionally. Enabled and EnrolmentRequests
+// are the two fields with an obvious narrow/widen reading: turning either
+// OFF only closes a listener that was already reachable (decision 1's
+// "removal is not escalation"), so those two name themselves here only when
+// the request turns them ON. Listen and EnrolmentListen have no such
+// reading -- a bind address is exactly "the caller chooses what reaches the
+// host" (presence-gate.md's `configure`-subset argument), and there is no
+// generic rule for when one host:port string is narrower than another -- so
+// either address names itself on ANY actual change, in either direction.
+// f.Remove is not a field this function looks at: SetRemoteConfig never
+// calls it when Remove is set, because clearing the whole block is
+// strictly narrower than any state it could have replaced.
+func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListen string, f remoteConfigFields) []string {
+	var existingListen, existingEnrolListen string
+	var existingEnabled, existingEnrolRequests bool
+	if existing != nil {
+		existingListen = existing.Listen
+		existingEnrolListen = existing.EnrolmentListen
+		existingEnabled = boolOr(existing.Enabled, false)
+		existingEnrolRequests = boolOr(existing.EnrolmentRequests, false)
+	}
+	var out []string
+	if listen != existingListen {
+		out = append(out, "listen")
+	}
+	if f.Enabled && !existingEnabled {
+		out = append(out, "enabled")
+	}
+	if enrolListen != existingEnrolListen {
+		out = append(out, "enrolment_listen")
+	}
+	if f.EnrolmentRequests && !existingEnrolRequests {
+		out = append(out, "enrolment_requests")
+	}
+	return out
+}
+
+// remoteConfigFieldPhrase is remoteConfigReason's vocabulary: one clause per
+// name remoteConfigChangedFields can produce.
+var remoteConfigFieldPhrase = map[string]string{
+	"listen":             "the remote listener's bind address",
+	"enabled":            "enabling the remote listener",
+	"enrolment_listen":   "the enrolment-request listener's bind address",
+	"enrolment_requests": "enabling the enrolment-request listener",
+}
+
+// remoteConfigReason names only the fields remoteConfigChangedFields found
+// to actually change (§6.5.2's "name only the field or fields that
+// genuinely widen", project_ops.go's projectGrantUpdateReason applying the
+// same rule to project.grant).
+func remoteConfigReason(changed []string) string {
+	phrases := make([]string, 0, len(changed))
+	for _, f := range changed {
+		phrases = append(phrases, remoteConfigFieldPhrase[f])
+	}
+	return fmt.Sprintf("change relay's remote configuration (%s)", joinWithAnd(phrases))
+}
+
+// remoteConfigDigest binds a remote.configure grant to the request's whole
+// shape, not just the fields that triggered it: like project.grant's digest
+// (TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields's own
+// comment), a grant answered for one combination of address/enabled values
+// must never be redeemable for a different one just because both happen to
+// change the same single field.
+func (f remoteConfigFields) presenceDigest(listen, enrolListen string) presence.Digest {
+	return presence.NewDigestBuilder("remote.configure").
+		BoolField("enabled", true, f.Enabled).
+		StringField("listen", true, listen).
+		BoolField("enrolment_requests", true, f.EnrolmentRequests).
+		StringField("enrolment_listen", true, enrolListen).
+		Build()
+}
+
+// SetRemoteConfig is the one core the HTTP door (PUT /api/remote) and the
+// Settings-window IPC door (update_remote_config) both call: gating it here
+// gates both, and any future CLI path to the same operation for free.
+//
+// This is deliberate: unlike every other gated core, SetRemoteConfig never
+// calls requireIssuanceAuditor. requireIssuanceAuditor's own doc comment
+// (audit_issuance.go) names the reason -- the remote listener already has
+// ADR-010's rule that auditing gates it, enforced separately and later, at
+// serve time (remoteAuditingLive, checked by RemoteSupervisor's reconcile),
+// not at the moment the setting is saved. An operator must still be able to
+// PERSIST enabled:true (and see the block read back as configured) while
+// auditing is off; TestRemoteConfigView_ReportsAuditAsTheGateOnRemoteAccess
+// pins exactly that "saved as enabled, never actually serves" pair. Adding
+// requireIssuanceAuditor here would collapse two independent controls into
+// one and turn a benign save into a refusal with no obvious cause. Only
+// requireGate runs, and only when remoteConfigChangedFields finds a field
+// that actually needs it; a resend of the exact stored record, and Remove
+// (a pure narrowing to nothing), reach neither check.
+func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields, via, credID string) (remoteConfigView, error) {
 	listen := strings.TrimSpace(f.Listen)
 	enrolListen := strings.TrimSpace(f.EnrolmentListen)
 	if !f.Remove {
@@ -761,6 +855,20 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 			if err := validateRemoteListen(enrolListen); err != nil {
 				return remoteConfigView{}, enrolment.Invalid(err.Error())
 			}
+		}
+	}
+
+	existing := o.Store.Get().Remote
+	var changed []string
+	var presenceID string
+	if !f.Remove {
+		changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
+		if len(changed) > 0 {
+			grant, err := requireGate(o.Gate, ctx, "remote.configure", f.presenceDigest(listen, enrolListen), remoteConfigReason(changed))
+			if err != nil {
+				return remoteConfigView{}, err
+			}
+			presenceID = grant.ID()
 		}
 	}
 
@@ -800,6 +908,10 @@ func (o *EnrolmentOps) SetRemoteConfig(f remoteConfigFields) (remoteConfigView, 
 		}
 	}); err != nil {
 		return remoteConfigView{}, fmt.Errorf("save remote config: %w", err)
+	}
+
+	if auditErr := recordConfigChange(o.auditor(), auditCredentialRemote, "remote", changed, via, credID, presenceID); auditErr != nil {
+		slog.Error("remote config updated but not recorded in the audit log", "error", auditErr)
 	}
 
 	o.notify()
