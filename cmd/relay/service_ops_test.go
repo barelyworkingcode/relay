@@ -226,7 +226,7 @@ func TestServiceOps_RemovingACapabilityIsNowGated(t *testing.T) {
 	}
 
 	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
-	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}) {
+	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels}) {
 		t.Fatalf("a refused update must not persist: capabilities = %+v", svc)
 	}
 }
