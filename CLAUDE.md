@@ -244,11 +244,16 @@ what relay shows the operator** — Settings → Projects, `relay grant`,
 unconditionally. The classification is a question about the *value*, never
 about the field name; ADR-011 decision 3's no-registry rule is intact.
 
-`allow_cwd_auth` (default false, per project) opts into a token-less fallback:
-a caller with no token whose working directory is inside the project path
-authenticates as that project via `project.AuthenticateByPath`, with identical
-scope. A present-but-invalid token never falls back. See
-[`docs/tokens.md`](docs/tokens.md#directory-auth-allow_cwd_auth).
+`allow_cwd_auth`, the project field that used to opt into a token-less
+working-directory-based fallback, is retired (plan-broker-and-sessions.md's
+C3 decision) — a caller's asserted cwd is never authenticated, whether or
+not it sends one. The retired mechanism is being replaced with kernel-
+verified process ancestry (C3's membership check): a tokenless caller
+authenticates only by *being* a real, provable descendant of a live
+project session's root process, never by presenting or asserting anything.
+A present-but-invalid token still never falls back to any tokenless path.
+See [`docs/tokens.md`](docs/tokens.md) and
+[`plan-broker-and-sessions.md`](../plan-broker-and-sessions.md) §2 C3.
 
 ### Project kind: local vs. remote
 
@@ -261,7 +266,7 @@ every project written before this field existed round-trips unaffected, and
 an equality check invites a future bug where an unset field reads as remote.
 
 A remote project has no `Path` and cannot have anything that presumes a host
-directory — `AllowCwdAuth`, `GenerateSkill`, `ShellTemplates`, and the
+directory — `GenerateSkill`, `ShellTemplates`, and the
 `allowed_mcp_ids: ["*"]` wildcard are all refused by `project.ValidateShape`,
 as is a non-empty `allowed_models` (an empty allowlist is the
 only value `modelAllowedForProject` won't misread as "unrestricted"). A
