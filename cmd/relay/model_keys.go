@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -61,35 +60,38 @@ func (t *ModelKeyTable) Mint(projectID, label string) (string, error) {
 	return plaintext, nil
 }
 
-// Revoke removes every key minted under label. Safe to call for a label that
-// was never minted or already revoked.
-func (t *ModelKeyTable) Revoke(label string) {
+// Revoke removes the key minted under (projectID, label). Scoped to both,
+// not label alone: a label is the minting caller's own convention (e.g.
+// "session:<id>"), not a value relay guarantees unique across projects, so
+// scoping by project too is what stops one project's revoke call from
+// reaching a same-labelled key that happens to belong to another. Safe to
+// call for a (projectID, label) pair that was never minted or already
+// revoked.
+func (t *ModelKeyTable) Revoke(projectID, label string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for hash, rec := range t.byID {
-		if rec.label == label {
+		if rec.projectID == projectID && rec.label == label {
 			delete(t.byID, hash)
 		}
 	}
 }
 
 // Lookup reports the project a presented rmk_ bearer is scoped to, and its
-// label for audit. ok is false for a key that was never minted, was
-// revoked, or does not have the rmk_ shape at all — callers should still
-// check the prefix themselves before spending a lookup, since Lookup treats
-// an unrecognised shape identically to a revoked key (both are "not this
-// key"), which is the same fail-closed non-distinction §2.4 asks of a
-// disallowed vs. unknown model.
+// label for audit. ok is false for a key that was never minted or was
+// revoked. A direct map lookup by hash, not a scan: the hash itself is not
+// a secret Lookup is trying to keep a scan-timing side channel away from
+// (that concern applies to comparing a caller-controlled value against a
+// stored secret, e.g. the admin token check elsewhere in this codebase —
+// here the caller already had to know the plaintext to produce this exact
+// hash, so map-bucket timing reveals nothing a successful Mint didn't
+// already hand them).
 func (t *ModelKeyTable) Lookup(bearer string) (projectID, label string, ok bool) {
 	hash := hashModelKey(bearer)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for storedHash, rec := range t.byID {
-		if subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash)) == 1 {
-			return rec.projectID, rec.label, true
-		}
-	}
-	return "", "", false
+	rec, ok := t.byID[hash]
+	return rec.projectID, rec.label, ok
 }
 
 // HasPrefix reports whether bearer has the rmk_ shape, the auth resolver's

@@ -18,9 +18,32 @@ func TestModelKeyTable_MintLookupRevoke(t *testing.T) {
 		t.Fatalf("Lookup = %q, %q, %v; want proj-1, session:abc, true", projectID, label, ok)
 	}
 
-	table.Revoke("session:abc")
+	table.Revoke("proj-1", "session:abc")
 	if _, _, ok := table.Lookup(plaintext); ok {
 		t.Fatal("a revoked key still resolves")
+	}
+}
+
+// TestModelKeyTable_RevokeIsScopedToProject proves Revoke needs BOTH the
+// project id and the label to match: two different projects using the same
+// label convention (e.g. "session:abc") must not be able to revoke each
+// other's key.
+func TestModelKeyTable_RevokeIsScopedToProject(t *testing.T) {
+	table := NewModelKeyTable()
+	a, err := table.Mint("proj-a", "session:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := table.Mint("proj-b", "session:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.Revoke("proj-a", "session:abc")
+	if _, _, ok := table.Lookup(a); ok {
+		t.Fatal("proj-a's key survived its own revoke")
+	}
+	if _, _, ok := table.Lookup(b); !ok {
+		t.Fatal("revoking proj-a's key also revoked proj-b's same-labelled key")
 	}
 }
 
@@ -44,7 +67,7 @@ func TestModelKeyTable_TwoMintsAreDistinct(t *testing.T) {
 	if a == b {
 		t.Fatal("two mints produced the same plaintext")
 	}
-	table.Revoke("l1")
+	table.Revoke("p", "l1")
 	if _, _, ok := table.Lookup(a); ok {
 		t.Fatal("revoking l1 left it resolvable")
 	}

@@ -56,7 +56,7 @@ type App struct {
 	// when settings.json's model_endpoint block configures one
 	// (docs/model-endpoint.md). Reconciled on the same poll tick as remote.
 	modelEndpoint *ModelEndpointServer
-	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
+	ipcCtx        *IPCContext // pre-built once, reused on every IPC call
 	// audit is the tool-call recorder. Nil when auditing is disabled or failed
 	// to start; every method on it is nil-safe.
 	audit *audit.AuditRecorder
@@ -654,8 +654,8 @@ func runTrayApp() {
 		}
 	})
 	// The TCP listener stays off unless settings.json's model_endpoint block
-	// (or RELAY_MODEL_LISTEN, tests only) names an address; Reconcile is a
-	// no-op either way when nothing changed. statusPoller re-converges it on
+	// names an address; Reconcile is a no-op either way when nothing
+	// changed. statusPoller re-converges it on
 	// the same tick as the remote listener, for the same reason: a settings
 	// change made by another process (the CLI, a hand edit) must take effect
 	// without a restart.

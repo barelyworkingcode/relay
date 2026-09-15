@@ -825,8 +825,10 @@ type RemoteConfig struct {
 // means no TCP listener at all — model.sock is always served regardless —
 // the same "absent means closed" default RemoteConfig uses, and for the
 // same reason: opening a network door is something the operator's settings
-// say, never something a fresh install infers. RELAY_MODEL_LISTEN overrides
-// this for tests only; it is not read from here.
+// say, never something a fresh install infers. A test-only Go seam
+// (cmd/relay's SetModelListenOverrideForTest) can override this value;
+// deliberately not an environment variable, which a production process's
+// own environment could also reach.
 type ModelEndpointConfig struct {
 	Listen string `json:"listen,omitempty"`
 }
