@@ -177,24 +177,44 @@ func (t *Launches) SetRootWatcherForTest(watch func(pid int, want membership.Pro
 // Begin records a new launch named id.Name and returns its single-use secret.
 // A launch already recorded under that name is ended first: a name has at
 // most one live launch, so a restart can never leave the previous process's
-// identity standing beside the new one's. Equivalent to BeginWithTTL with no
-// deadline: an unbound launch waits forever, the behavior every existing
-// service launch depends on.
+// identity standing beside the new one's.
+//
+// For a project_session identity this applies ProjectSessionLaunchTTL
+// automatically (C2's 30s default) — a caller has no deadline to remember.
+// Every other kind gets BeginWithTTL's no-deadline behavior: an unbound
+// launch waits forever, what every existing service launch depends on. A
+// caller that genuinely needs a different project_session deadline (a test,
+// or a future policy) calls BeginWithTTL directly instead.
 func (t *Launches) Begin(id Identity) (string, *Launch, error) {
-	return t.BeginWithTTL(id, 0)
+	var ttl time.Duration
+	if id.Kind == IdentityKindProjectSession {
+		ttl = ProjectSessionLaunchTTL
+	}
+	return t.BeginWithTTL(id, ttl)
 }
 
-// BeginWithTTL is Begin plus an expiry: once ttl has passed with the launch
-// still unbound, it is treated as never having existed — Bind, Lookup and
-// Bound all refuse it, the same as after End. ttl <= 0 means no deadline
-// (Begin's behavior). A launch that DID bind before its deadline never
-// expires: the deadline only ever governs the window before Hello.
+// BeginWithTTL is Begin plus an explicit expiry: once ttl has passed with
+// the launch still unbound, it is treated as never having existed — Bind,
+// Lookup and Bound all refuse it, the same as after End. ttl <= 0 means no
+// deadline. A launch that DID bind before its deadline never expires: the
+// deadline only ever governs the window before Hello.
 func (t *Launches) BeginWithTTL(id Identity, ttl time.Duration) (string, *Launch, error) {
 	if id.Name == "" {
 		return "", nil, errors.New("launch identity: empty name")
 	}
 	if id.Kind == "" {
 		return "", nil, errors.New("launch identity: empty kind")
+	}
+	// This is subtle: SessionID always equals Name for a project_session
+	// identity (Hello's OK data reuses Name as "service_id" — see Identity's
+	// doc comment), but RootByPID reads SessionID specifically, not Name. A
+	// caller that sets Name and forgets SessionID would otherwise leave
+	// RootByPID returning a live root under an empty session id — fail-OPEN
+	// into a nonsense identifier, not fail-closed, once C3's membership walk
+	// (R-S2a) starts trusting that value. Defaulting it here, once, removes
+	// the chance to forget it at any Begin call site.
+	if id.Kind == IdentityKindProjectSession && id.SessionID == "" {
+		id.SessionID = id.Name
 	}
 	secret, err := GenerateRandomHex(LaunchSecretHexLen / 2)
 	if err != nil {
