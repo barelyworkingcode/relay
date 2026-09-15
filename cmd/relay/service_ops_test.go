@@ -188,12 +188,21 @@ func TestServiceOps_CreateEnv_RefusesSerializedObjectArtifact(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Bug 1: capability gating. Removing a capability only narrows what a
-// service's launch identity may do and must not prompt; adding one is new
-// reach and always must.
+// Capability gating. Both directions now gate: an earlier revision treated
+// dropping a capability as narrow-safe and never prompted for it, which was
+// correct while only an operator-minted credential could reach this route.
+// Since eve's frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), this route is reachable by
+// any frontend-capable service for ANY service's record, not just its own —
+// a frontend service silently narrowing another service's own capabilities
+// (e.g. stripping relay-llm's model_host capability) is a real availability
+// exposure that widening a background service's reach introduced. Gating
+// narrowing again is the user's own explicit call once that trade-off was
+// raised (STATUS-relay-security.md), accepted deliberately over the
+// operator-convenience cost the narrow-doesn't-gate rule existed to avoid.
 // ---------------------------------------------------------------------------
 
-func TestServiceOps_RemovingACapabilityDoesNotPrompt(t *testing.T) {
+func TestServiceOps_RemovingACapabilityIsNowGated(t *testing.T) {
 	store := newCLISandboxStore(t)
 	if err := store.With(func(s *config.Settings) {
 		s.UpsertService(config.ServiceConfig{
@@ -212,13 +221,13 @@ func TestServiceOps_RemovingACapabilityDoesNotPrompt(t *testing.T) {
 	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
 		DisplayName: "relayTTS", Command: "/bin/tts", Capabilities: &caps,
 	}, auditViaCLI, "")
-	if err != nil {
-		t.Fatalf("narrowing a service's capabilities must not reach the gate: %v", err)
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("narrowing a service's capabilities: err = %v, want presence.ErrRefused", err)
 	}
 
 	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
-	if svc == nil || !slices.Equal(svc.Capabilities, caps) {
-		t.Fatalf("capabilities = %+v, want %v", svc, caps)
+	if svc == nil || !slices.Equal(svc.Capabilities, []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}) {
+		t.Fatalf("a refused update must not persist: capabilities = %+v", svc)
 	}
 }
 
@@ -281,5 +290,39 @@ func TestServiceOps_UnchangedUpdateDoesNotPrompt(t *testing.T) {
 	}, auditViaIPC, "")
 	if err != nil {
 		t.Fatalf("an unchanged resend must not reach the gate: %v", err)
+	}
+}
+
+// TestServiceOps_RenamingAServiceIsGated closes the gap the F1/SP8 execute
+// grant opened: serviceUpdateNeedsGate never inspected display_name at all,
+// so any frontend-capable service (not just an operator) could silently
+// rename another service's record -- an operator-facing spoofing primitive
+// in the tray menu and `service list` output. See
+// STATUS-relay-security.md and serviceCapabilitiesChanged's comment for the
+// full reasoning.
+func TestServiceOps_RenamingAServiceIsGated(t *testing.T) {
+	store := newCLISandboxStore(t)
+	if err := store.With(func(s *config.Settings) {
+		s.UpsertService(config.ServiceConfig{
+			ID: "relaytts", DisplayName: "relayTTS", Command: "/bin/tts",
+		})
+	}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
+
+	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
+		DisplayName: "Definitely Not Malicious", Command: "/bin/tts",
+	}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("renaming a service: err = %v, want presence.ErrRefused", err)
+	}
+
+	svc, _ := config.FindServiceByID(store.Get(), "relaytts")
+	if svc == nil || svc.DisplayName != "relayTTS" {
+		t.Fatalf("a refused rename must not persist: display_name = %+v", svc)
 	}
 }
