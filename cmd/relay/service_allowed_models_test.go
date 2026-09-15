@@ -128,10 +128,17 @@ func TestServiceOps_Update_AllowedModelsChangeIsPersisted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Gating: adding a model id, or switching to the wildcard, widens what a
-// service holding models may reach and must go through the presence gate,
-// the same addition-only reading serviceAddsCapability gives capabilities.
-// Removing ids, or resending the exact set, never gates.
+// Gating: adding a model id, switching to the wildcard, or dropping one
+// (any actual change to the set) goes through the presence gate. Resending
+// the exact set never gates. An earlier revision of this file only gated
+// widening, on the theory that a service's own operator narrowing its own
+// grant needs no prompt -- correct while only an operator-minted credential
+// could reach this route. Since eve's frontend launch identity was granted
+// execute (plan-broker-and-sessions.md's F1 decision), this route is
+// reachable by any frontend-capable service for ANY service's record, so
+// narrowing is now gated too (STATUS-relay-security.md; see
+// serviceAllowedModelsChanged's and serviceCapabilitiesChanged's comments
+// in service_ops.go for the full reasoning).
 // ---------------------------------------------------------------------------
 
 func seedModelsService(t *testing.T, store config.SettingsStore, allowed []string) {
@@ -147,7 +154,7 @@ func seedModelsService(t *testing.T, store config.SettingsStore, allowed []strin
 	}
 }
 
-func TestServiceOps_RemovingAllowedModelsDoesNotPrompt(t *testing.T) {
+func TestServiceOps_RemovingAllowedModelsIsNowGated(t *testing.T) {
 	store := newCLISandboxStore(t)
 	seedModelsService(t, store, []string{"vCode", "omlx/Chat"})
 
@@ -158,13 +165,13 @@ func TestServiceOps_RemovingAllowedModelsDoesNotPrompt(t *testing.T) {
 	narrowed := []string{"vCode"}
 	if _, err := ops.Update(context.Background(), "tts", serviceFields{
 		DisplayName: "TTS", Command: "/bin/tts", AllowedModels: &narrowed,
-	}, auditViaCLI, ""); err != nil {
-		t.Fatalf("dropping a model id must not reach the gate: %v", err)
+	}, auditViaCLI, ""); !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("dropping a model id: err = %v, want presence.ErrRefused", err)
 	}
 
 	svc, _ := config.FindServiceByID(store.Get(), "tts")
-	if svc == nil || !slices.Equal(svc.AllowedModels, narrowed) {
-		t.Fatalf("allowed models = %+v, want %v", svc, narrowed)
+	if svc == nil || !slices.Equal(svc.AllowedModels, []string{"vCode", "omlx/Chat"}) {
+		t.Fatalf("a refused update must not persist: allowed models = %+v", svc)
 	}
 }
 

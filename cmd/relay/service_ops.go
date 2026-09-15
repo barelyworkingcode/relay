@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -212,17 +213,35 @@ func serviceEnvChanges(existing map[string]config.Secret, requested map[string]*
 	return false
 }
 
-// serviceAddsCapability reports whether requested holds any capability
-// existing does not -- addition is the only direction that widens what a
-// service's launch identity may do (docs/launch-identity.md); dropping one
-// only narrows it (ADR-018 decision 1).
-func serviceAddsCapability(existing, requested []config.ServiceCapability) bool {
-	for _, c := range requested {
-		if !slices.Contains(existing, c) {
-			return true
-		}
+// setEqual reports whether a and b hold the same elements, ignoring order.
+// Used to decide "did this field actually change" for fields whose stored
+// and requested representations may list the same members in a different
+// order (capabilities, allowed_models) -- a reorder alone must never read as
+// a change and reach the gate needlessly.
+func setEqual[T cmp.Ordered](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return false
+	a2, b2 := slices.Clone(a), slices.Clone(b)
+	slices.Sort(a2)
+	slices.Sort(b2)
+	return slices.Equal(a2, b2)
+}
+
+// serviceCapabilitiesChanged reports whether requested's capability set
+// differs from existing's at all, added or dropped. An earlier revision of
+// this function (serviceAddsCapability, addition-only: dropping one only
+// narrows what a service's launch identity may do, ADR-018 decision 1) was
+// correct while only an operator-minted credential could reach this route.
+// Since eve's frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), any frontend-capable service
+// can call Update for ANY service, not just itself, so a narrowing that used
+// to be self-inflicted operator convenience is now a same-uid service able
+// to silently strip a sibling service's own capabilities -- an availability
+// exposure, gated now on the user's own explicit call
+// (STATUS-relay-security.md).
+func serviceCapabilitiesChanged(existing, requested []config.ServiceCapability) bool {
+	return !setEqual(existing, requested)
 }
 
 // modelAllowedWildcard is the literal that means "every model" in an
@@ -248,28 +267,26 @@ func trimModelIDs(ids []string) []string {
 	return out
 }
 
-// serviceWidensAllowedModels reports whether requested reaches any model
-// existing does not already grant, trimming both first so whitespace alone
-// never counts as a change. A wildcard entry anywhere in existing already
-// grants every model (the same "any occurrence, not just a sole element"
-// reading internal/modelbroker.Allowed gives the grant list), so nothing
-// requested can widen past it. Otherwise, requested widens if it adds the
-// wildcard (the literal switch to "every model") or any id existing did not
-// already list. Dropping ids, reordering them, or resending the identical
-// set is never a widen -- the same addition-only reading serviceAddsCapability
-// gives capabilities.
-func serviceWidensAllowedModels(existing, requested []string) bool {
+// serviceAllowedModelsChanged reports whether requested's model grant
+// differs from existing's in what it actually reaches, trimming both first
+// so whitespace alone never counts as a change. If both already hold the
+// wildcard, nothing else listed alongside it changes what's reachable
+// (every model, either way), so a raw list difference there is not
+// gate-worthy -- the one case a plain set-equality check would wrongly gate
+// on (TestServiceOps_ExistingWildcardNeverGatesFurtherAdditions). Every
+// other change -- adding an id, adding the wildcard, dropping an id, or
+// dropping the wildcard down to a scoped set -- gates. An earlier revision
+// (serviceWidensAllowedModels, addition-only) did not gate a narrowing; see
+// serviceCapabilitiesChanged's comment for why that's no longer the read
+// this route can afford now that a frontend-capable service, not only an
+// operator, can reach it for any service's record.
+func serviceAllowedModelsChanged(existing, requested []string) bool {
 	existing = trimModelIDs(existing)
 	requested = trimModelIDs(requested)
-	if slices.Contains(existing, modelAllowedWildcard) {
+	if slices.Contains(existing, modelAllowedWildcard) && slices.Contains(requested, modelAllowedWildcard) {
 		return false
 	}
-	for _, m := range requested {
-		if !slices.Contains(existing, m) {
-			return true
-		}
-	}
-	return false
+	return !setEqual(existing, requested)
 }
 
 // serviceUpdateNeedsGate decides whether an Update actually needs the
@@ -277,13 +294,26 @@ func serviceWidensAllowedModels(existing, requested []string) bool {
 // gating unconditionally the way every prior Update did. command, args,
 // working_dir, url and autostart have no narrower reading -- any actual
 // change to what the service runs or how is "the caller chooses what runs"
-// regardless of direction, so those gate on simple inequality. Capabilities
-// is the one field with a real narrow/widen axis: dropping one only shrinks
-// what the launched identity may do and must not prompt (bug: an operator
-// could not narrow relayTTS from manifest+projects to manifest without
-// this), while adding one is new reach and always gates. A request that
-// changes nothing at all -- a resend of the exact stored record, which the
-// Settings window's save button always sends -- needs no gate either.
+// regardless of direction, so those gate on simple inequality. A request
+// that changes nothing at all -- a resend of the exact stored record, which
+// the Settings window's save button always sends -- needs no gate either.
+//
+// display_name, capabilities and allowed_models now ALL gate on any actual
+// change, in either direction. This file's earlier revision treated
+// capabilities/allowed_models as narrow-safe (dropping one only shrinks what
+// the launched identity may do) and never looked at display_name at all --
+// correct while only an operator-minted credential could reach this route.
+// Since eve's frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), any frontend-capable service
+// can call this route for ANY service, not just itself: a frontend service
+// silently renaming a sibling service (an operator-facing spoofing
+// primitive in the tray menu and `service list`) or silently narrowing
+// another service's own capabilities (an availability primitive: it could
+// strip relay-llm's model_host capability with no prompt) are both real
+// exposure that widening a background service's reach introduced. Gating
+// narrowing again reintroduces the original operator-convenience cost this
+// file's history already paid to avoid -- accepted deliberately, as the
+// user's own explicit call once the trade-off was raised, not overlooked.
 func serviceUpdateNeedsGate(existing config.ServiceConfig, f serviceFields) bool {
 	if f.Command != existing.Command {
 		return true
@@ -300,18 +330,16 @@ func serviceUpdateNeedsGate(existing config.ServiceConfig, f serviceFields) bool
 	if f.Autostart != nil && *f.Autostart != existing.Autostart {
 		return true
 	}
+	if f.DisplayName != existing.DisplayName {
+		return true
+	}
 	if serviceEnvChanges(existing.Env, f.Env) {
 		return true
 	}
-	if f.Capabilities != nil && serviceAddsCapability(existing.Capabilities, *f.Capabilities) {
+	if f.Capabilities != nil && serviceCapabilitiesChanged(existing.Capabilities, *f.Capabilities) {
 		return true
 	}
-	// AllowedModels shares Capabilities' narrow/widen axis: adding a model
-	// id, or switching to the wildcard, is new reach and gates; dropping
-	// ids, or resending the exact set (the Settings window's Save button
-	// when the Allowed Models section was never opened), narrows or changes
-	// nothing and must not prompt.
-	if f.AllowedModels != nil && serviceWidensAllowedModels(existing.AllowedModels, *f.AllowedModels) {
+	if f.AllowedModels != nil && serviceAllowedModelsChanged(existing.AllowedModels, *f.AllowedModels) {
 		return true
 	}
 	return false
