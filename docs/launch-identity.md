@@ -118,8 +118,10 @@ predecessor's identity is gone before it exists.
 - `RELAY_LAUNCH_FD` unset: the process was not launched by relay and runs its
   own standalone mode.
 - A tokenless bridge request from a peer whose identity does not hold the
-  operation's capability is not a service: it falls to directory auth (`allow_cwd_auth`), which can only ever
-  yield a project, and never reaches a service operation.
+  operation's capability is not a service: it falls to membership auth
+  (plan-broker-and-sessions.md §2 C3), which can only ever yield a project's
+  scope via a live session's verified process ancestry, and never reaches a
+  service operation.
 - A peer whose audit token cannot be read matches no identity.
 
 ## Environment

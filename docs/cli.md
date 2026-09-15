@@ -1169,18 +1169,21 @@ spelling.
 
 | Flag | Meaning |
 |---|---|
-| `--token` | Project token. Prefer setting `RELAY_PROJECT_TOKEN` in the environment instead (the legacy name `RELAY_TOKEN` is still accepted, for one release). |
+| `--token` | Project token. Prefer setting `RELAY_PROJECT_TOKEN` in the environment instead (the legacy `RELAY_TOKEN` name is no longer accepted). |
 | `--list` | List available tools. |
 | `--schema` | With `--list`, emit full JSON including each tool's input schema — what a SKILL.md generator consumes. |
 | `--tool` | Tool name to call. |
 | `--args` | Tool arguments as a JSON string. |
 | `--args-file` | Read arguments JSON from a file, or `-` for stdin — the shell-quoting-safe path for arguments containing quotes, apostrophes, or parentheses. |
 
-An empty token is not automatically fatal: relay falls back to directory
-auth (`allow_cwd_auth`) for any project that opted in from the calling
-directory. Needs service: yes (it dials the bridge socket). Prompts: no —
-this is an ordinary, unfiltered tool call inside a grant that already
-exists, not an act that widens one. Works over SSH: yes.
+An empty token is not automatically fatal: relay falls back to membership
+auth (plan-broker-and-sessions.md §2 C3) when the calling process is a
+verified descendant of a live project session's root — never to an
+asserted working directory, which is never authenticated. Needs service:
+yes (it dials the bridge socket). Prompts: no — this is an ordinary,
+unfiltered tool call inside a grant that already exists, not an act that
+widens one. Works over SSH: yes, when the SSH session is itself a member of
+a live project session; otherwise it needs `--token`/`RELAY_PROJECT_TOKEN`.
 
 Illustrative output, shaped like this machine's Hermes Files v3 profile
 (`fs_*` tools) — a live project token is required and none was retrieved to

@@ -10,20 +10,17 @@ import (
 // the non-remote branch (a host project is kind: local in shape). Returns
 // nil immediately for a console project.
 //
-// Relay-brokered tools, mounts, cwd auth and the skill generator all
-// presume a console directory relay itself can reach — a host project's
-// directory is reachable only over ssh (docs/ssh-hosts.md decision 6), so
-// each of these reads as a feature that would silently no-op rather than a
-// boundary, and is refused outright instead.
+// Relay-brokered tools, mounts and the skill generator all presume a
+// console directory relay itself can reach — a host project's directory is
+// reachable only over ssh (docs/ssh-hosts.md decision 6), so each of these
+// reads as a feature that would silently no-op rather than a boundary, and
+// is refused outright instead.
 func validateHostShape(proj *config.Project) error {
 	if !proj.IsHosted() {
 		return nil
 	}
 	if len(proj.AllowedMcpIDs) > 0 {
 		return fmt.Errorf("host project must not set allowed_mcp_ids: relay-brokered tools live on the console only — a host session gets Claude Code's built-in tools (docs/ssh-hosts.md)")
-	}
-	if proj.AllowCwdAuth {
-		return fmt.Errorf("host project must not enable allow_cwd_auth: a caller's cwd is checked against the console filesystem, and a host project's directory is not on it")
 	}
 	if proj.GenerateSkill {
 		return fmt.Errorf("host project must not enable generate_skill: skills are written under <path>/.claude/skills on the console filesystem, and a host project's path is not there")

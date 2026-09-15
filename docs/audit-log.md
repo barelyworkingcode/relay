@@ -68,12 +68,13 @@ from anything the caller asserted:
 - `project_id` / `project_name` are taken from the authenticated `StoredToken`,
   the same value relay injects into `_meta.project_id`.
 - `auth` is how the caller was identified: `token` (a project token was
-  presented), `cwd` ([directory auth](tokens.md#directory-auth-allow_cwd_auth)),
-  `service` (a launch identity holding the `projects` capability; the record
-  carries the kernel `pid`, not the service id), or `mtls` (a client certificate on
-  the remote listener).
-- `cwd` appears only for directory auth. That grant has no deliberate credential
-  hand-off to point at afterwards, so the log is its audit trail.
+  presented), `service` (a launch identity holding the `projects` capability;
+  the record carries the kernel `pid`, not the service id), or `mtls` (a
+  client certificate on the remote listener). The retired token-less
+  directory-auth mechanism (`cwd`, keyed on a caller-asserted working
+  directory) is gone; its replacement, kernel-verified process-ancestry
+  membership (plan-broker-and-sessions.md §2 C3), adds its own `session`
+  auth value and a `session_id` field once that lands.
 - `pid` is read off the bridge socket with `getsockopt(LOCAL_PEERPID)`, so it
   cannot be forged by the caller. `proc` and `parent` are resolved from it via
   `proc_pidinfo`.
