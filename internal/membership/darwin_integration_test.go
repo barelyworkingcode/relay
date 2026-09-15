@@ -411,3 +411,123 @@ func TestDarwin_WatchExitConcurrentCancelChurn(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestDarwin_CancelAfterFireDoesNotStealAnotherWatch reproduces a security
+// review finding against this package: watch A fires and closes its kq,
+// watch B opens immediately afterward (on this platform, very reliably
+// reusing A's just-freed fd number), and a stale cancelA() call — made
+// after A already fired — must not touch B's kqueue even though the fd
+// number was handed straight back out. Before the kqMu fix, that trigger
+// reached B's kqueue instead (every watch shares the same EVFILT_USER
+// wakeIdent), and B silently stopped without ever seeing its own exit; this
+// test failed 5/5 runs against that code (go test -run
+// TestDarwin_CancelAfterFireDoesNotStealAnotherWatch -count=5) and the
+// existing concurrent-churn test above did not catch it, since it never
+// exercises a watch firing to completion before a stale cancel of it runs.
+func TestDarwin_CancelAfterFireDoesNotStealAnotherWatch(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+
+	spawn := func(name string) (int, *exec.Cmd) {
+		dir := t.TempDir()
+		pidfile := filepath.Join(dir, name+".pid")
+		cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		return readPID(t, pidfile), cmd
+	}
+
+	pidA, cmdA := spawn("a")
+	wantA, ok := NewSource().Info(pidA)
+	if !ok {
+		t.Fatal("Info(A) failed")
+	}
+	firedA := make(chan struct{})
+	cancelA, err := WatchExit(pidA, wantA, func() { close(firedA) })
+	if err != nil {
+		t.Fatalf("WatchExit(A): %v", err)
+	}
+	if err := cmdA.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal A: %v", err)
+	}
+	select {
+	case <-firedA:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A did not fire")
+	}
+	_ = cmdA.Wait()
+
+	// B opens right after A's kq closes, while that fd number is freshest.
+	pidB, cmdB := spawn("b")
+	t.Cleanup(func() { killAndWait(t, cmdB) })
+	wantB, ok := NewSource().Info(pidB)
+	if !ok {
+		t.Fatal("Info(B) failed")
+	}
+	firedB := make(chan struct{})
+	cancelB, err := WatchExit(pidB, wantB, func() { close(firedB) })
+	if err != nil {
+		t.Fatalf("WatchExit(B): %v", err)
+	}
+	defer cancelB()
+
+	// The stale call under test: A is done, but nothing stops a caller from
+	// calling its cancel func anyway (e.g. a defer that always runs).
+	cancelA()
+
+	if err := cmdB.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal B: %v", err)
+	}
+	select {
+	case <-firedB:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B did not fire: a stale cancelA() after A's own exit stole B's watch")
+	}
+}
+
+func TestDarwin_WatchExitCancelFromInsideOnExit(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "watched.pid")
+
+	cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	pid := readPID(t, pidfile)
+	want, ok := NewSource().Info(pid)
+	if !ok {
+		t.Fatal("Info(watched) failed")
+	}
+
+	done := make(chan struct{})
+	// cancelCh hands the cancel func to onExit safely across goroutines: a
+	// channel send/receive is a happens-before edge, and a bare closure
+	// variable assigned after WatchExit returns is not — the watcher
+	// goroutine that runs onExit is already alive at that point, since
+	// WatchExit starts it before returning.
+	cancelCh := make(chan func(), 1)
+	cancel, err := WatchExit(pid, want, func() {
+		// A reentrant cancel() must return without deadlocking on its own
+		// completion — stopped can't close until this call returns.
+		(<-cancelCh)()
+		close(done)
+	})
+	if err != nil {
+		t.Fatalf("WatchExit: %v", err)
+	}
+	cancelCh <- cancel
+	defer cancel()
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal watched process: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onExit calling cancel() reentrantly deadlocked")
+	}
+}

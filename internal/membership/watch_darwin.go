@@ -12,7 +12,11 @@ import (
 
 // wakeIdent is the EVFILT_USER identifier cancel() triggers to wake the
 // watcher goroutine. It only needs to be unique within one kq — each
-// WatchExit call owns its own kqueue — so a constant is fine.
+// WatchExit call owns its own kqueue — so a constant is fine, but that also
+// means every watch's wake trigger looks identical to every other watch's:
+// nothing about the trigger itself names which kq it was meant for. Only
+// sending it to the right fd number, and never to a closed or reused one,
+// keeps that safe (see kqMu below).
 const wakeIdent = 1
 
 // WatchExit watches pid for exit and calls onExit exactly once when it does.
@@ -25,11 +29,11 @@ const wakeIdent = 1
 // ErrExited) distinguishes that case from an infrastructure failure (kqueue
 // itself unavailable), which is not the same as the process having exited.
 //
-// cancel stops the watch. It blocks until the watch goroutine has fully
-// stopped, which guarantees onExit never fires after cancel returns; do not
-// call cancel from inside onExit itself; onExit runs on the watch goroutine
-// and cancel waits for that same goroutine to finish, cancel is safe to call
-// more than once and after onExit has already fired.
+// cancel stops the watch and blocks until it has fully stopped, so onExit
+// never fires after cancel returns — except when cancel is called from
+// inside onExit itself, which cannot block on its own completion; that call
+// returns immediately once the cancellation is recorded. cancel is
+// idempotent: later calls, from any goroutine, are no-ops.
 func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
@@ -75,22 +79,44 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 		return nil, fmt.Errorf("membership: pid %d no longer matches the watched process: %w", pid, ErrExited)
 	}
 
+	// This is deliberate: kq's lifetime is owned jointly by the watcher
+	// goroutine and cancel(), and kqMu is what makes that safe. Closing kq
+	// and sending it a wake trigger must never happen concurrently — a
+	// trigger sent to an fd number that was *just* closed can land on a
+	// completely different, concurrently-opened WatchExit's kqueue instead
+	// (every watch shares the same wakeIdent), silently cancelling the
+	// wrong watch. Holding kqMu across both "am I already closed" and the
+	// actual close, or the actual trigger send, means whichever happens
+	// first is what the other observes: the goroutine's close always either
+	// fully precedes or fully follows any given trigger attempt, never
+	// interleaves with it.
+	var kqMu sync.Mutex
+	kqClosed := false
+
+	closeKQ := func() {
+		kqMu.Lock()
+		defer kqMu.Unlock()
+		if kqClosed {
+			return
+		}
+		kqClosed = true
+		_ = unix.Close(kq)
+	}
+
 	var cancelled atomic.Bool
+	var firing atomic.Bool
 	var fireOnce sync.Once
 	stopped := make(chan struct{})
 
+	fire := func() {
+		firing.Store(true)
+		fireOnce.Do(onExit)
+		firing.Store(false)
+	}
+
 	go func() {
-		// This is deliberate: only this goroutine ever closes kq, and only
-		// as its last act. cancel() cannot close it directly — a close
-		// racing this goroutine's own blocked kevent() call (which retries
-		// on EINTR, and Go's preemption signal delivers plenty of those)
-		// would free the fd number for reuse by a totally unrelated
-		// concurrent WatchExit while this goroutine is still using it,
-		// letting it steal that watch's exit event or hand its own exit
-		// event to nobody. Waking this goroutine via EVFILT_USER and letting
-		// it close its own fd removes that race entirely.
 		defer close(stopped)
-		defer func() { _ = unix.Close(kq) }()
+		defer closeKQ()
 
 		events := make([]unix.Kevent_t, 1)
 		for {
@@ -99,6 +125,12 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 				if kerr == unix.EINTR {
 					continue
 				}
+				// This is deliberate: an unexpected kqueue error leaves no
+				// way to tell whether pid is still alive. Firing onExit
+				// fails closed — the caller ends the session — rather than
+				// leaving a watch that has silently stopped monitoring
+				// anything, which would be worse than ending it early.
+				fire()
 				return
 			}
 			if n == 0 {
@@ -117,7 +149,7 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 				return
 			}
 			if ev.Ident == uint64(pid) && (ev.Flags&unix.EV_ERROR != 0 || ev.Fflags&unix.NOTE_EXIT != 0) {
-				fireOnce.Do(onExit)
+				fire()
 				return
 			}
 			// Any other event is unexpected given what this kq registers;
@@ -125,18 +157,37 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 		}
 	}()
 
+	var cancelOnce sync.Once
 	cancel = func() {
-		cancelled.Store(true)
-		trigger := []unix.Kevent_t{{
-			Ident:  wakeIdent,
-			Filter: unix.EVFILT_USER,
-			Fflags: unix.NOTE_TRIGGER,
-		}}
-		// A failure here (e.g. the watch already stopped and closed kq)
-		// just means there is nothing left to wake; <-stopped below still
-		// returns immediately in that case.
-		_, _ = unix.Kevent(kq, trigger, nil, nil)
-		<-stopped
+		cancelOnce.Do(func() {
+			cancelled.Store(true)
+
+			kqMu.Lock()
+			if !kqClosed {
+				trigger := []unix.Kevent_t{{
+					Ident:  wakeIdent,
+					Filter: unix.EVFILT_USER,
+					Fflags: unix.NOTE_TRIGGER,
+				}}
+				for {
+					_, terr := unix.Kevent(kq, trigger, nil, nil)
+					if terr == unix.EINTR {
+						continue
+					}
+					break
+				}
+			}
+			kqMu.Unlock()
+
+			if firing.Load() {
+				// Reentrant: onExit (running on the watcher goroutine)
+				// called cancel(). stopped won't close until onExit
+				// returns, and onExit hasn't returned yet — we're inside
+				// it — so waiting here would deadlock forever.
+				return
+			}
+			<-stopped
+		})
 	}
 	return cancel, nil
 }

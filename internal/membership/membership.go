@@ -68,12 +68,13 @@ type procTime struct {
 func startOf(info ProcInfo) procTime { return procTime{info.StartSec, info.StartUsec} }
 
 func timeOf(t time.Time) procTime {
-	// This is subtle: both sides of every comparison Resolve makes against
-	// acceptedTime go through t.Unix(), i.e. wall clock — proc_pidinfo has
-	// no monotonic reading to compare against, so using time.Time's
-	// monotonic component here would compare incompatible clocks. A wall
-	// clock step during the walk is the same risk C3 already accepts for
-	// start-time comparisons in general.
+	// This is subtle: acceptedAt is the only side of these comparisons that
+	// ever holds a time.Time, and t.Unix()/t.Nanosecond() here deliberately
+	// drop its monotonic reading. The process side (ProcInfo.StartSec/
+	// StartUsec) never touches time.Time at all — it's the kernel's raw
+	// pbi_start_tvsec/pbi_start_tvusec, wall clock by construction — so
+	// comparing it against acceptedAt's monotonic component would compare
+	// two things that were never the same clock to begin with.
 	return procTime{t.Unix(), int32(t.Nanosecond() / 1000)}
 }
 
