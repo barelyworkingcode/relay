@@ -1070,7 +1070,15 @@ func TestEnrolmentOps_SetRemoteConfig_UnchangedResendDoesNotPrompt(t *testing.T)
 // "removal is not escalation" applied to the remote listener's own on/off
 // axis: turning Enabled off only closes a door that was already reachable,
 // so it must not prompt even under a denying gate.
-func TestEnrolmentOps_SetRemoteConfig_DisablingDoesNotPrompt(t *testing.T) {
+// TestEnrolmentOps_SetRemoteConfig_DisablingIsNowGated: an earlier revision
+// treated turning a listener off as pure narrowing and never prompted for
+// it -- correct while only an operator-minted credential could reach this
+// route. Since eve's frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), PUT /api/remote is reachable
+// by any frontend-capable service, and a service silently disabling relay's
+// remote listener is an availability exposure -- gated now on the user's
+// own explicit call (STATUS-relay-security.md).
+func TestEnrolmentOps_SetRemoteConfig_DisablingIsNowGated(t *testing.T) {
 	_, store := pgwSandbox(t)
 	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
 
@@ -1078,32 +1086,54 @@ func TestEnrolmentOps_SetRemoteConfig_DisablingDoesNotPrompt(t *testing.T) {
 	assertNoErr(t, err, "NewGate")
 	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
-	view, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: false, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
-	if err != nil {
-		t.Fatalf("turning the listener off must not reach the gate: %v", err)
+	_, err = ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: false, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("turning the listener off: err = %v, want presence.ErrRefused", err)
 	}
-	if view.Enabled {
-		t.Fatal("listener still reports enabled after being turned off")
+	if cfg := store.Get().Remote; cfg == nil || cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("a refused disable must not persist: remote config = %+v", cfg)
 	}
 }
 
-// TestEnrolmentOps_SetRemoteConfig_RemoveDoesNotPrompt: clearing the whole
-// block is strictly narrower than any state it could replace (it also
-// disables the enrolment-request listener resolveRemoteEnrolment would
-// otherwise need enabled:true to serve), so Remove never reaches the gate.
-func TestEnrolmentOps_SetRemoteConfig_RemoveDoesNotPrompt(t *testing.T) {
+// TestEnrolmentOps_SetRemoteConfig_RemoveIsNowGated: an earlier revision
+// treated clearing the whole block as strictly narrower than any state it
+// could replace and let it bypass the gate entirely -- correct while only
+// an operator-minted credential could reach this route. Since eve's
+// frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), any frontend-capable service
+// can wipe relay's whole remote configuration with no prompt -- gated now
+// on the user's own explicit call (STATUS-relay-security.md).
+func TestEnrolmentOps_SetRemoteConfig_RemoveIsNowGated(t *testing.T) {
 	_, store := pgwSandbox(t)
 	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	if _, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Remove: true}, auditViaCLI, ""); !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("Remove: err = %v, want presence.ErrRefused", err)
+	}
+	if store.Get().Remote == nil {
+		t.Fatal("a refused Remove must not clear the stored config")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_RemoveOfAnAbsentBlockDoesNotPrompt: like
+// an Update that resends the exact stored record, removing a block that was
+// never configured changes nothing and must not reach the gate.
+func TestEnrolmentOps_SetRemoteConfig_RemoveOfAnAbsentBlockDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
 
 	gate, err := presence.NewGate(presencetest.Deny())
 	assertNoErr(t, err, "NewGate")
 	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
 
 	if _, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Remove: true}, auditViaCLI, ""); err != nil {
-		t.Fatalf("Remove must not reach the gate: %v", err)
+		t.Fatalf("removing an already-absent block must not reach the gate: %v", err)
 	}
 	if store.Get().Remote != nil {
-		t.Fatal("remote config was not cleared")
+		t.Fatal("remote config should still be absent")
 	}
 }
 
