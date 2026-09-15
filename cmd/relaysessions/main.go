@@ -12,6 +12,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -93,9 +95,28 @@ func runService(args []string) int {
 		shimBinary = self
 	}
 
+	// F1 (security review): the internal bearer must never be an argv
+	// value — any same-uid process, including a sandboxed session target,
+	// can read another process's argv via ps(1). It is generated here, in
+	// memory, and handed to hostapi.Config directly; it never touches a
+	// flag, an environment variable, or a log line. Handing this bearer to
+	// relay belongs in a RegisterManifest call's InternalToken field (the
+	// same mechanism cmd/testservice's own sendRegisterManifest uses) —
+	// deferred here because bridge.Manifest.Validate rejects an empty
+	// Routes list, and this unit has no real manifest route to declare yet
+	// (only /launch and /terminate, which relay's manifest validation
+	// refuses to accept as routes at all, C5). Whichever unit adds
+	// relay-sessions' first real route (R-S9/R-S4b) should thread this
+	// generated bearer through as InternalToken instead of ever adding it
+	// back as a flag.
+	internalBearer, err := generateBearer()
+	if err != nil {
+		log.Fatalf("relay-sessions: generate internal bearer: %v", err)
+	}
+
 	srv := hostapi.New(hostapi.Config{
 		InternalSocket: cfg.internalSocket,
-		InternalBearer: cfg.internalBearer,
+		InternalBearer: internalBearer,
 		RelayPID:       relayPID,
 		HookSocket:     cfg.hookSocket,
 		ShimBinary:     shimBinary,
@@ -126,7 +147,6 @@ func runService(args []string) int {
 
 type serviceConfig struct {
 	internalSocket   string
-	internalBearer   string
 	hookSocket       string
 	bridgeSocket     string
 	shimBinary       string
@@ -137,7 +157,6 @@ type serviceConfig struct {
 func parseServiceArgs(args []string) (serviceConfig, error) {
 	fs := flag.NewFlagSet("service", flag.ContinueOnError)
 	internalSocket := fs.String("internal-socket", "", "Unix socket path relay dials for /launch and /terminate")
-	internalBearer := fs.String("internal-bearer", "", "bearer relay must present on the internal socket")
 	hookSocket := fs.String("hook-socket", "", "Unix socket path `relay-sessions hook` dials for /permission")
 	bridgeSocket := fs.String("bridge-socket", "", "override RELAY_BRIDGE_SOCKET for this process's own Hello")
 	shimBinary := fs.String("shim-binary", "", "override the exec-mode binary path (default: this binary's own path)")
@@ -146,16 +165,27 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return serviceConfig{}, err
 	}
-	if *internalSocket == "" || *internalBearer == "" || *hookSocket == "" {
-		return serviceConfig{}, fmt.Errorf("-internal-socket, -internal-bearer and -hook-socket are required")
+	if *internalSocket == "" || *hookSocket == "" {
+		return serviceConfig{}, fmt.Errorf("-internal-socket and -hook-socket are required")
 	}
 	return serviceConfig{
 		internalSocket:   *internalSocket,
-		internalBearer:   *internalBearer,
 		hookSocket:       *hookSocket,
 		bridgeSocket:     *bridgeSocket,
 		shimBinary:       *shimBinary,
 		serviceName:      *serviceName,
 		relayPIDOverride: *relayPID,
 	}, nil
+}
+
+// generateBearer mints a fresh 64-lowercase-hex bearer, matching this
+// codebase's launch-secret format (internal/bridge's isLaunchSecret shape)
+// even though nothing currently validates it against that exact grammar —
+// consistency with the rest of the system's secrets, not a requirement.
+func generateBearer() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

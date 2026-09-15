@@ -3,11 +3,17 @@
 // terminal or provider session. It reads an optional launch secret off fd 3,
 // optionally becomes a PTY session leader, optionally proves its identity to
 // relay over the bridge socket, then spawns the real target (shell, claude,
-// pi, …) as its own child — never execing into it, so the shim's pid keeps
-// meaning "this session's root" for C3's ancestry walk (SH §4.2) — forwards
-// signals to the target's process group, and reports each step on fd 4 as
-// newline-delimited JSON so the host never has to guess what happened from
-// the exit code alone.
+// pi, …) as its own child, forwards signals to the target's process group,
+// and reports each step on fd 4 as newline-delimited JSON so the host never
+// has to guess what happened from the exit code alone.
+//
+// The shim's own pid — not the target's — is this session's root (SH §4.2):
+// it is what relay's own launch identity binds to (whoever said Hello, C6
+// step 3, is the shim), so internal/sessions/hostapi records the shim's pid
+// as a session's root_pid, and C3's ancestry walk for that session starts
+// looking for members at the target (the shim's child) and up from there.
+// The shim never execs into the target specifically so its own pid survives
+// unchanged across the target's entire lifetime for that to hold.
 package shim
 
 import (
@@ -91,6 +97,9 @@ func ParseArgs(args []string) (Config, error) {
 	if *sandboxProfile != "" && !isAbs(*sandboxProfile) {
 		return Config{}, fmt.Errorf("--sandbox-profile must be an absolute path, got %q", *sandboxProfile)
 	}
+	if *identity && *statusFD == identityFD {
+		return Config{}, fmt.Errorf("--status-fd cannot be %d: that fd is the identity secret pipe when --identity is set", identityFD)
+	}
 	argv := fs.Args()
 	if len(argv) == 0 {
 		return Config{}, errors.New("no target argv given (expected `-- <argv...>`)")
@@ -127,21 +136,18 @@ func runConfig(cfg Config) int {
 	}
 	defer status.close()
 
+	// Step order below follows C6's own numbering exactly: read the secret
+	// (1) before becoming a PTY session leader (2) before Hello (3) before
+	// the status event (4) — a caller matching C6 step-by-step (this
+	// package's own tests included) depends on this order, not just the
+	// end result.
+	var secret string
 	if cfg.Identity {
-		secret, ok := readIdentitySecret()
+		var ok bool
+		secret, ok = readIdentitySecret()
 		_ = os.Unsetenv(envLaunchFD)
 		if !ok {
 			status.emit(StatusEvent{Event: "bad_secret"})
-			return ExitIdentityFailure
-		}
-
-		bridgeSock := os.Getenv(envBridgeSocket)
-		if bridgeSock == "" {
-			status.emit(StatusEvent{Event: "hello_refused"})
-			return ExitIdentityFailure
-		}
-		if _, err := sendProjectSessionHello(bridgeSock, cfg.SessionID, secret); err != nil {
-			status.emit(StatusEvent{Event: "hello_refused"})
 			return ExitIdentityFailure
 		}
 	}
@@ -158,6 +164,15 @@ func runConfig(cfg Config) int {
 	}
 
 	if cfg.Identity {
+		bridgeSock := os.Getenv(envBridgeSocket)
+		if bridgeSock == "" {
+			status.emit(StatusEvent{Event: "hello_refused"})
+			return ExitIdentityFailure
+		}
+		if _, err := sendProjectSessionHello(bridgeSock, cfg.SessionID, secret); err != nil {
+			status.emit(StatusEvent{Event: "hello_refused"})
+			return ExitIdentityFailure
+		}
 		status.emit(StatusEvent{Event: "hello_ok", PID: os.Getpid()})
 	} else {
 		status.emit(StatusEvent{Event: "no_identity", PID: os.Getpid()})
@@ -221,6 +236,14 @@ func runConfig(cfg Config) int {
 		}
 	}()
 
+	// This is deliberate, not an oversight: a signal already delivered into
+	// sigCh's buffer before cmd.Wait() returns can still be forwarded by the
+	// goroutine below after the target is reaped, to a pgid the kernel may
+	// already have reused for an unrelated process. Stopping delivery before
+	// Wait() would mean not forwarding signals while the target is still
+	// genuinely running, which is worse; closing this window fully needs a
+	// primitive (pidfd or equivalent) darwin doesn't offer. Accepted,
+	// narrow, same spirit as C3's own documented residual pid-reuse windows.
 	waitErr := cmd.Wait()
 	signal.Stop(sigCh)
 	close(sigCh)

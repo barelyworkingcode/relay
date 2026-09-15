@@ -12,6 +12,13 @@
 // (not RELAY_LLM_SESSION_ID), and there is no bearer token — the host admits
 // the call by C3 process-ancestry membership against the session's root
 // instead (see internal/sessions/hostapi's HookServer).
+//
+// One piece of relayLLM's hook is deliberately not ported yet:
+// RELAY_LLM_HEADLESS=true's auto-approve branch (no human in the loop,
+// every tool call allowed without a round trip). C6 says this package's
+// stdout contract must stay identical to today's cmd/hook, which includes
+// that branch — whichever unit adds real headless sessions (R-S7b) must
+// re-add it here, or headless sessions will silently stop auto-approving.
 package hook
 
 import (

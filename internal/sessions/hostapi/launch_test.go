@@ -131,13 +131,19 @@ func TestLaunch_FullPath_Succeeds(t *testing.T) {
 		t.Fatalf("read marker: %v", err)
 	}
 	var info struct {
-		PID int `json:"pid"`
+		PID  int `json:"pid"`
+		PPID int `json:"ppid"`
 	}
 	if err := json.Unmarshal(raw, &info); err != nil {
 		t.Fatalf("parse marker: %v", err)
 	}
-	if info.PID != out.RootPID {
-		t.Fatalf("marker pid %d != response root_pid %d", info.PID, out.RootPID)
+	// root_pid is the shim's own pid (SH §4.2), never the target's: the
+	// target is the shim's child, so its recorded ppid is what must match.
+	if info.PPID != out.RootPID {
+		t.Fatalf("target's ppid %d != response root_pid %d (root_pid must be the shim, not the target)", info.PPID, out.RootPID)
+	}
+	if info.PID == out.RootPID {
+		t.Fatalf("target pid %d must not equal root_pid %d (they are different processes)", info.PID, out.RootPID)
 	}
 }
 

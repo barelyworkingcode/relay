@@ -4,9 +4,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
+
+// maxHelloResponseLine bounds how much a Hello response can make this
+// process read before giving up. A real response is a few hundred bytes; a
+// hostile or misbehaving peer on the other end of the bridge socket must
+// not be able to hold this connection open streaming unbounded data for the
+// full 10s deadline below.
+const maxHelloResponseLine = 64 * 1024
 
 // helloWireRequest is a hand-rolled copy of the bridge's Hello wire shape
 // (internal/bridge/types.go's BridgeRequest, internal/bridge/launch.go's
@@ -67,7 +75,7 @@ func sendProjectSessionHello(sockPath, sessionID, secret string) (helloWireData,
 		return helloWireData{}, fmt.Errorf("write hello: %w", err)
 	}
 
-	line, err := bufio.NewReader(conn).ReadString('\n')
+	line, err := bufio.NewReader(io.LimitReader(conn, maxHelloResponseLine)).ReadString('\n')
 	if err != nil {
 		return helloWireData{}, fmt.Errorf("read hello response: %w", err)
 	}
