@@ -90,6 +90,28 @@ of those aliases is rewritten to the bare id before the request reaches
 `router.sock` — forwarding the caller's original spelling unchanged would
 have the router itself 400 it as an unknown model.
 
+## Granting a service models, in Settings
+
+Settings' service editor (`web/src/app.js`'s `renderServiceForm`) shows an
+**Allowed Models** section once the `models` capability checkbox is on: a
+list of model ids, add/remove rows, a lone `*` row meaning every model — the
+same spelling `ServiceConfig.AllowedModels` and a project's own
+`allowed_models` both use. The section states the empty-means-no-models rule
+explicitly, since it is the opposite of a project's default. Leaving the
+section untouched (the `models` capability off, or never opened at all) omits
+`allowed_models` from the save entirely, the same "absent means leave it
+alone" rule the capabilities and env editors already follow — a save that
+never shows the grant can never clear it.
+
+A model id round-trips through `ipc_services.go`'s `add_service`/
+`update_service` messages and the `POST`/`PUT /api/services` HTTP routes as a
+plain JSON string list. Server-side, an empty or whitespace-only id is
+refused before anything persists, and every id is trimmed. **Adding** an id,
+or switching the list to `*`, is new reach and goes through the presence gate
+exactly like adding a capability does; removing ids, reordering them, or
+resending the stored list unchanged narrows or changes nothing and is never
+gated (`cmd/relay/service_ops.go`'s `serviceWidensAllowedModels`).
+
 ## Model keys
 
 Format `rmk_` + 64 lowercase hex, held in relay's memory only as a SHA-256

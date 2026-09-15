@@ -25,6 +25,10 @@ func (msg *ipcServiceMsg) fields() serviceFields {
 		// nil when the window sends none: Create then grants none and Update
 		// keeps what is stored.
 		Capabilities: msg.Capabilities,
+		// Same nil-preserves-existing shape: absent exactly when the form's
+		// Allowed Models section was never rendered (models capability off),
+		// see web/src/app.js's svcFormValues.
+		AllowedModels: msg.AllowedModels,
 	}
 }
 
