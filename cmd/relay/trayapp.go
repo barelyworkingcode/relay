@@ -511,12 +511,7 @@ func runTrayApp() {
 	modelKeys := NewModelKeyTable()
 	app.modelEndpoint = NewModelEndpointServer(store, launches, modelKeys, modelHosts)
 	app.modelEndpoint.AuditHook = func(ev ModelCallAudit) {
-		// R-M1c wires this into the real audit recorder and event constants;
-		// for now the only record is relay's own log, so a model call is at
-		// least observable while that unit lands.
-		slog.Debug("model_call", "auth", ev.Auth, "caller_kind", ev.CallerKind,
-			"caller", ev.CallerName, "model", ev.RequestedModel, "canonical", ev.CanonicalModel,
-			"target", ev.Target, "status", ev.Status, "outcome", ev.Outcome, "duration_ms", ev.DurationMS)
+		recordModelCall(rec, ev)
 	}
 
 	frontendChannel := NewFrontendChannel()

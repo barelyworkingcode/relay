@@ -73,6 +73,25 @@ const (
 	// datum, the same choice ADR-011's per-call Scope makes for structured
 	// per-event detail relay does not otherwise need to query on.
 	AuditEventHostProbe = "host.probe"
+
+	// ModelCall and ModelList are the model endpoint's two event kinds
+	// (docs/model-endpoint.md, spec-model-broker.md §7): one per finished
+	// call to a model route, and one per GET /v1/models listing (recorded
+	// only when LogLists is on, the same gate list_tools/list_skills use).
+	// R-M1c (plan-broker-and-sessions.md §2 C4) is the unit that wires these
+	// into cmd/relay/model_endpoint.go's AuditHook; both are emitted by it.
+	AuditEventModelCall = "model_call"
+	AuditEventModelList = "model_list"
+
+	// SessionLaunch, SessionBound, SessionEnd and SessionResume are
+	// plan-broker-and-sessions.md §2 C4's session-host event kinds. Added
+	// here, up front, so the later unit that emits them (a session-host root
+	// process, `relay-sessions`) never has to edit this file again — nothing
+	// in this repo constructs one of these yet.
+	AuditEventSessionLaunch = "session_launch"
+	AuditEventSessionBound  = "session_bound"
+	AuditEventSessionEnd    = "session_end"
+	AuditEventSessionResume = "session_resume"
 )
 
 // Denied means a known credential was refused a tool it may not use;
@@ -100,6 +119,17 @@ const (
 	AuditOutcomeUnauthorized = "unauthorized"
 	AuditOutcomeThrottled    = "throttled"
 	AuditOutcomePending      = "pending"
+
+	// NotFound and ClientAbort are the model endpoint's additions to this
+	// vocabulary (plan-broker-and-sessions.md §2 C4). NotFound is the
+	// audit-only half of the identical-404 pair the model endpoint returns
+	// for a model outside the caller's grant (Denied) versus one absent from
+	// the catalog entirely (NotFound) — the wire response never lets a
+	// caller tell the two apart, this field does. ClientAbort mirrors
+	// Error/ToolError's split for tool calls: the caller went away rather
+	// than the call failing.
+	AuditOutcomeNotFound    = "not_found"
+	AuditOutcomeClientAbort = "client_abort"
 )
 
 // A local call is one record and carries no phase at all, keeping every line
@@ -136,6 +166,14 @@ const (
 	// to name — the authorization is ownership of the config dir — and
 	// distinct from Relay because relay is not acting on its own behalf.
 	AuditActorOperator = "operator"
+
+	// ProjectSession is plan-broker-and-sessions.md §2 C1/C2's session-host
+	// identity kind — a session-host root process or one of its descendants,
+	// acting for its own project. Reserved here so R-M1c's constant addition
+	// covers it up front; nothing in this repo resolves this identity kind
+	// yet (docs/model-endpoint.md's "What is not brokered" names the same
+	// gap for the model endpoint specifically).
+	AuditActorProjectSession = "project_session"
 )
 
 const (
@@ -144,6 +182,17 @@ const (
 	AuditAuthService = "service"
 	AuditAuthMTLS    = "mtls"
 	AuditAuthNone    = "none"
+
+	// ModelKey is a caller authenticated by an rmk_-prefixed model key
+	// (docs/model-endpoint.md's Model keys section) rather than a project's
+	// own token — a real distinction because a key is revocable independently
+	// of the project token it was minted under.
+	AuditAuthModelKey = "model_key"
+
+	// Session is plan-broker-and-sessions.md §2 C1/C2's session-host
+	// authentication kind, reserved alongside AuditActorProjectSession.
+	// Nothing in this repo authenticates a caller this way yet.
+	AuditAuthSession = "session"
 )
 
 // Every field is derived from relay's own resolution or the kernel — never
@@ -174,6 +223,14 @@ type AuditActor struct {
 	// never the token or its hash — control.ControlDecision has no such field to
 	// leak, and this must stay that way.
 	CredID string `json:"cred_id,omitempty"`
+
+	// ServiceID names a service actor's launch identity id on a model
+	// endpoint call (docs/model-endpoint.md). A tool-call service actor is
+	// identified by PID/Proc instead; the model endpoint's own audit hook
+	// (cmd/relay/model_endpoint.go's ModelCallAudit) does not thread the
+	// socket peer's pid through, so the launch identity's own id is what
+	// names the caller there.
+	ServiceID string `json:"service_id,omitempty"`
 }
 
 // Field names are the on-disk contract: external tooling greps this file.
@@ -332,6 +389,47 @@ type AuditEvent struct {
 	// a matching presence event — the absence of one is the signal ADR-017
 	// exists to make detectable. Empty for an ungated record.
 	PresenceID string `json:"presence_id,omitempty"`
+
+	// Set only on model_call / model_list events (spec-model-broker.md §7,
+	// docs/model-endpoint.md's Audit section). ModelKeyLabel names the rmk_
+	// key's label the caller authenticated with, never the key itself —
+	// ModelCallAudit's own doc comment makes the same promise, and there is
+	// no field here that could carry the key, a project token, or either
+	// one's hash.
+	//
+	// Model, ModelCanonical and ModelTarget are three distinct facts, not
+	// one field read three ways: Model is what the caller asked for, before
+	// any grant check; ModelCanonical is what relay resolved it to against
+	// its own catalog (spec-model-broker.md's normalisation); ModelTarget is
+	// relayLLM's own account of which managed alias, endpoint or resolved
+	// virtual candidate actually served the call, read from its
+	// X-Relay-Model-Target response header. A call relay refused before
+	// reaching relayLLM carries the first two and never the third.
+	ModelKeyLabel  string `json:"model_key_label,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ModelCanonical string `json:"model_canonical,omitempty"`
+	ModelTarget    string `json:"model_target,omitempty"`
+	Stream         bool   `json:"stream,omitempty"`
+
+	// RequestBytes and ResponseBytes are counted in relay, not asserted by
+	// either endpoint of the proxied call. Separate names from ArgsBytes/
+	// ResultBytes rather than reusing them: those two are tool-call-shaped
+	// (redacted argument bytes, a result's size) and a model call has
+	// neither redaction nor a result value to size.
+	RequestBytes  int64 `json:"request_bytes,omitempty"`
+	ResponseBytes int64 `json:"response_bytes,omitempty"`
+
+	// PromptTokens and CompletionTokens are parsed from the upstream
+	// response by internal/modelbroker/usage.go, when present — never the
+	// response content itself, which this file must never carry
+	// (spec-model-broker.md §7's "never recorded" list).
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
+
+	// Status is the HTTP status relay answered the caller with. Set only on
+	// model_call / model_list; every other event kind's status is implied by
+	// Outcome instead.
+	Status int `json:"status,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
