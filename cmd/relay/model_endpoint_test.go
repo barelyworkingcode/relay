@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/modelbroker"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
@@ -949,4 +952,364 @@ func TestModelEndpoint_UnknownCapabilityStillRefused(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 for an identity with only an unknown capability", w.Code)
 	}
+}
+
+// ---- relay#116 re-review (R-M1b2): S6 memory bound ----
+
+// buildJSONBodyOfSize builds `{"model":"<model>","padding":"aaa..."}` at
+// exactly totalSize bytes, for tests that need to sit precisely on either
+// side of a byte cap.
+func buildJSONBodyOfSize(t *testing.T, totalSize int, model string) string {
+	t.Helper()
+	prefix := fmt.Sprintf(`{"model":%q,"padding":"`, model)
+	const suffix = `"}`
+	padLen := totalSize - len(prefix) - len(suffix)
+	if padLen < 0 {
+		t.Fatalf("totalSize %d too small for prefix+suffix of %d bytes", totalSize, len(prefix)+len(suffix))
+	}
+	body := prefix + strings.Repeat("a", padLen) + suffix
+	if len(body) != totalSize {
+		t.Fatalf("built %d bytes, want %d", len(body), totalSize)
+	}
+	return body
+}
+
+// TestModelEndpoint_BodyJustUnderCapForwardsIntact is the positive half of
+// S6's cap change: a body one byte under the (now smaller) JSONBodyCap must
+// still forward to the upstream completely intact, not truncated or mangled
+// by the tighter limit.
+func TestModelEndpoint_BodyJustUnderCapForwardsIntact(t *testing.T) {
+	var received []byte
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	body := buildJSONBodyOfSize(t, modelbroker.JSONBodyCap-1, "vCode")
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var sent, got map[string]json.RawMessage
+	assertNoErr(t, json.Unmarshal([]byte(body), &sent), "decode what the test sent")
+	assertNoErr(t, json.Unmarshal(received, &got), "decode what the upstream received")
+	if string(got["padding"]) != string(sent["padding"]) {
+		t.Fatal("padding did not survive forwarding a body just under the cap byte-for-byte")
+	}
+	if string(got["model"]) != `"vCode"` {
+		t.Fatalf("upstream model = %s, want \"vCode\"", got["model"])
+	}
+}
+
+// TestModelEndpoint_BodyOverCapRefused413 is the negative half: a body over
+// JSONBodyCap is refused (never forwarded), and the body budget it briefly
+// held is released even on this error path.
+func TestModelEndpoint_BodyOverCapRefused413(t *testing.T) {
+	var calls int
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	body := buildJSONBodyOfSize(t, modelbroker.JSONBodyCap+1, "vCode")
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", w.Code, w.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("an oversize body reached the upstream %d time(s)", calls)
+	}
+	if got := m.bodyBudget.InFlight(); got != 0 {
+		t.Fatalf("InFlight after a refused oversize body = %d, want 0 (the budget must still release on this error path)", got)
+	}
+}
+
+// TestModelEndpoint_S6_BodyBudgetLimitsConcurrentAdmission fires more
+// concurrent requests than the (shrunk, for test speed) body budget can
+// admit at once, and proves — by counting real simultaneous holders via
+// bodyBudgetHeldHookForTest, never by elapsed wall time — that admission
+// never exceeds the budget's slot count, and that everything eventually
+// completes once earlier holders release. Weight is accounted by the
+// route's cap regardless of the tiny actual body each goroutine sends here
+// (docs/model-endpoint.md; BodyBudget's own doc), which is exactly what
+// makes a cheap test of this able to stand in for "M concurrent near-cap
+// requests".
+func TestModelEndpoint_S6_BodyBudgetLimitsConcurrentAdmission(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	const slots = 2
+	m.bodyBudget = modelbroker.NewBodyBudget(int64(modelbroker.JSONBodyCap) * slots)
+
+	const goroutines = 5
+	started := make(chan struct{}, goroutines)
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	current, peak := 0, 0
+
+	bodyBudgetHeldHookForTest = func() {
+		mu.Lock()
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-gate
+		mu.Lock()
+		current--
+		mu.Unlock()
+	}
+	t.Cleanup(func() { bodyBudgetHeldHookForTest = nil })
+
+	server := httptest.NewServer(m.Handler(transportSocket))
+	defer server.Close()
+
+	results := make(chan int, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"vCode"}`))
+			if err != nil {
+				results <- -1
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+tok)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				results <- -1
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			results <- resp.StatusCode
+		}()
+	}
+
+	for i := 0; i < slots; i++ {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d of %d expected simultaneous admissions were observed", i, slots)
+		}
+	}
+	// A bounded grace window checking for the ABSENCE of a third admission
+	// while both slots are held — not a pass/fail on how long anything took.
+	select {
+	case <-started:
+		t.Fatal("a third request was admitted while the budget's two slots were both already held")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(gate)
+
+	for i := 0; i < goroutines-slots; i++ {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the remaining requests were never admitted after the held ones released")
+		}
+	}
+	for i := 0; i < goroutines; i++ {
+		select {
+		case code := <-results:
+			if code != http.StatusOK {
+				t.Fatalf("a request finished with status %d, want 200", code)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("a request never finished")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > slots {
+		t.Fatalf("peak concurrent admissions = %d, want <= %d (the budget's own capacity/weight)", peak, slots)
+	}
+}
+
+// ---- relay#116 re-review (R-M1b2): S7, panic outcomes ----
+
+// TestModelEndpoint_S7_NonAbortPanicIsErrorAndRepanics proves the fix: a
+// panic recovered inside proxy() that is NOT http.ErrAbortHandler is
+// audited "error" (never mislabelled "client_abort", which would hide a
+// real bug behind a client-fault outcome) and still reaches the caller —
+// swallowing it would hide the bug from whatever would otherwise crash or
+// log it.
+func TestModelEndpoint_S7_NonAbortPanicIsErrorAndRepanics(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, nil))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	var auditEv ModelCallAudit
+	var auditFired bool
+	m.AuditHook = func(ev ModelCallAudit) { auditEv, auditFired = ev, true }
+
+	synthetic := errors.New("synthetic bug, not a client abort")
+	proxyPanicForTest = synthetic
+	t.Cleanup(func() { proxyPanicForTest = nil })
+
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			t.Fatal("the panic must reach the caller, not be swallowed")
+		}
+		if rec != error(synthetic) {
+			t.Fatalf("recovered %v, want the original synthetic value unchanged", rec)
+		}
+		if !auditFired {
+			t.Fatal("no audit record was produced for the panic")
+		}
+		if auditEv.Outcome != "error" {
+			t.Fatalf("audit outcome = %q, want error", auditEv.Outcome)
+		}
+	}()
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"vCode"}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	m.Handler(transportSocket).ServeHTTP(w, r)
+	t.Fatal("ServeHTTP returned normally; the synthetic panic should have propagated")
+}
+
+// TestModelEndpoint_S7_ErrAbortHandlerPanicIsClientAbort is the positive
+// case, via the same seam: only http.ErrAbortHandler itself is audited
+// client_abort.
+func TestModelEndpoint_S7_ErrAbortHandlerPanicIsClientAbort(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, nil))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	var auditEv ModelCallAudit
+	m.AuditHook = func(ev ModelCallAudit) { auditEv = ev }
+
+	proxyPanicForTest = http.ErrAbortHandler
+	t.Cleanup(func() { proxyPanicForTest = nil })
+
+	defer func() {
+		rec := recover()
+		if rec != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler unchanged", rec)
+		}
+		if auditEv.Outcome != "client_abort" {
+			t.Fatalf("audit outcome = %q, want client_abort", auditEv.Outcome)
+		}
+	}()
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"vCode"}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	m.Handler(transportSocket).ServeHTTP(w, r)
+	t.Fatal("ServeHTTP returned normally; http.ErrAbortHandler should have propagated")
+}
+
+// ---- relay#116 re-review (R-M1b2): S8, completed-call false client_abort ----
+
+// TestModelEndpoint_S8_CompletedCallWithLateDisconnectIsOK proves the fix:
+// a call whose response body was copied all the way to EOF is audited "ok"
+// with usage, even if the caller's context reports done by the time proxy()
+// checks it — the same race a client disconnecting the instant after
+// receiving every byte produces in production.
+func TestModelEndpoint_S8_CompletedCallWithLateDisconnectIsOK(t *testing.T) {
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":6}}`))
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	postServeHookForTest = cancel
+	t.Cleanup(func() { postServeHookForTest = nil })
+
+	var auditEv ModelCallAudit
+	m.AuditHook = func(ev ModelCallAudit) { auditEv = ev }
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"vCode"}`)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	m.Handler(transportSocket).ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if auditEv.Outcome != "ok" {
+		t.Fatalf("outcome = %q, want ok (a fully copied response must not be misreported because the caller's context was cancelled right after)", auditEv.Outcome)
+	}
+	if auditEv.Usage.PromptTokens != 5 || auditEv.Usage.CompletionTokens != 6 {
+		t.Fatalf("usage = %+v, want it recorded despite the late cancellation", auditEv.Usage)
+	}
+}
+
+// ---- relay#116 re-review (R-M1b2): UseNumber and trailing-value nits ----
+
+// TestModelEndpoint_BigNumbersForwardedByteForByte is the endpoint-level
+// proof of the UseNumber fix: a body carrying a number outside float64's
+// safe range in a field relay never looks at is neither refused nor
+// mangled — the upstream receives it exactly as sent.
+func TestModelEndpoint_BigNumbersForwardedByteForByte(t *testing.T) {
+	var received []byte
+	m, store, launches, hosts := newModelEndpointTestServer(t)
+	sock := newFakeRouterSocket(t, fakeRouterMux(t, func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	registerFakeHost(t, hosts, launches, "relayllm", sock, selfPeerToken(t).Process())
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	const thirtyDigitInt = "123456789012345678901234567890"
+	const hugeExponent = "1e400"
+	body := fmt.Sprintf(`{"model":"vCode","big_int":%s,"big_exp":%s}`, thirtyDigitInt, hugeExponent)
+
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (an out-of-range number elsewhere in the body must not be refused); body=%s", w.Code, w.Body.String())
+	}
+
+	var got map[string]json.RawMessage
+	assertNoErr(t, json.Unmarshal(received, &got), "decode what the upstream received")
+	if string(got["big_int"]) != thirtyDigitInt {
+		t.Fatalf("upstream big_int = %s, want byte-identical %s", got["big_int"], thirtyDigitInt)
+	}
+	if string(got["big_exp"]) != hugeExponent {
+		t.Fatalf("upstream big_exp = %s, want byte-identical %s", got["big_exp"], hugeExponent)
+	}
+}
+
+// TestModelEndpoint_TrailingValueReturns400NotInternalError proves the
+// trailing-value nit's fix at the full handler level: before the fix, this
+// body's trailing object surfaced only inside RewriteJSONModel's own
+// json.Unmarshal, which the endpoint turned into a bare 500. It must now be
+// caught at extraction time and answered in the endpoint's normal
+// shape-appropriate 400.
+func TestModelEndpoint_TrailingValueReturns400NotInternalError(t *testing.T) {
+	m, store, _, _ := newModelEndpointTestServer(t)
+	tok := addModelProject(t, store, "p1", nil, false)
+
+	body := `{"model":"vCode"} {"unexpected":"trailer"}`
+	w := doHandlerRequest(t, m.Handler(transportSocket), http.MethodPost, "/v1/chat/completions", tok, nil, body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (not 500) for a body with trailing data; body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	assertNoErr(t, json.Unmarshal(w.Body.Bytes(), &got), "error body must be valid JSON in the endpoint's normal shape")
 }

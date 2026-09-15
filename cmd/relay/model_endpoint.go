@@ -41,6 +41,27 @@ func SetModelListenOverrideForTest(addr string) {
 	modelListenOverrideForTest = addr
 }
 
+// bodyBudgetHeldHookForTest is declared here, next to this file's other
+// test-only package-level seams, and used by serveModelRoute; see its call
+// site for what it is for.
+var bodyBudgetHeldHookForTest func()
+
+// proxyPanicForTest, when non-nil, is panicked synchronously from inside
+// proxy()'s Director callback — a test-only seam (relay#116 re-review's S7
+// test) for synthesizing an ordinary bug's panic. http.ErrAbortHandler
+// itself is producible only by racing a real client disconnect against
+// net/http's own internals (see TestModelEndpoint_MidStreamAbortStillAudits);
+// every other panic value needs a seam like this one to test deterministically.
+var proxyPanicForTest any
+
+// postServeHookForTest, when non-nil, runs immediately after rp.ServeHTTP
+// returns inside proxy(), before the outcome is decided — a test-only seam
+// (relay#116 re-review's S8 test) for cancelling the request context at
+// exactly the moment a real disconnect racing a just-completed copy would:
+// after the response body has already been read to EOF, but before proxy's
+// own check of that runs.
+var postServeHookForTest func()
+
 const (
 	transportSocket = "socket"
 	transportTCP    = "tcp"
@@ -71,7 +92,8 @@ type ModelCallAudit struct {
 	Usage         modelbroker.Usage
 	Status        int
 	// Outcome is one of: ok, denied, not_found, unauthorized, remote_project,
-	// route_not_found, host_unavailable, error, client_abort.
+	// route_not_found, host_unavailable, error, client_abort, rate_limited
+	// (docs/model-endpoint.md's Limits and Audit sections).
 	Outcome    string
 	DurationMS int64
 }
@@ -100,6 +122,11 @@ type ModelEndpointServer struct {
 	hosts     *ModelHostRegistry
 	catalog   *modelbroker.Cache
 
+	// bodyBudget bounds total in-flight body-processing bytes across every
+	// concurrent call, both listeners (relay#116 re-review, S6; see
+	// serveModelRoute and docs/model-endpoint.md's Limits section).
+	bodyBudget *modelbroker.BodyBudget
+
 	// AuditHook receives one ModelCallAudit per finished call or list. Never
 	// blocks a response on it; nil is a no-op.
 	AuditHook func(ModelCallAudit)
@@ -113,9 +140,22 @@ type ModelEndpointServer struct {
 	tcpAddr string // the address currently bound; "" when none
 }
 
+// maxInFlightBodyBytes is bodyBudget's total capacity: comfortably above
+// AudioMultipartCap (25 MiB) so a single audio call is always admissible on
+// its own, while still bounding the endpoint's documented worst case
+// (docs/model-endpoint.md's Limits section) to a small constant regardless
+// of how many callers connect at once.
+const maxInFlightBodyBytes = 64 << 20
+
+// bodyBudgetWaitTimeout bounds how long a request blocks for admission
+// before the endpoint gives up and answers 429 rather than queuing
+// indefinitely.
+const bodyBudgetWaitTimeout = 5 * time.Second
+
 func NewModelEndpointServer(store config.SettingsStore, launches *service.Launches, modelKeys *ModelKeyTable, hosts *ModelHostRegistry) *ModelEndpointServer {
 	m := &ModelEndpointServer{store: store, launches: launches, modelKeys: modelKeys, hosts: hosts}
 	m.catalog = modelbroker.NewCache(m.fetchCatalog)
+	m.bodyBudget = modelbroker.NewBodyBudget(maxInFlightBodyBytes)
 	return m
 }
 
@@ -485,6 +525,9 @@ func requestErrorBody(shape modelbroker.Shape, err error) modelbroker.ErrorBody 
 	if errors.Is(err, modelbroker.ErrBodyTooLarge) {
 		return errorBodyFor(shape, http.StatusRequestEntityTooLarge, "request body too large", "body_too_large")
 	}
+	if errors.Is(err, modelbroker.ErrTrailingData) {
+		return errorBodyFor(shape, http.StatusBadRequest, "request body is not a single JSON value", "trailing_data")
+	}
 	return errorBodyFor(shape, http.StatusBadRequest, "request does not name a model", "bad_request")
 }
 
@@ -506,6 +549,53 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 		bodyCap = modelbroker.AudioMultipartCap
 	}
 
+	// Admission is weighted by bodyCap, the route's worst case, never by
+	// this request's actual or declared size — relay reads up to bodyCap
+	// regardless of what the caller claims, so accounting by anything
+	// smaller would let a caller under-report size to buy extra
+	// concurrency the cap exists to rule out (S6 of the relay#116
+	// re-review; BodyBudget's own doc has the full reasoning). Released via
+	// the deferred call on every early-return path below (a request refused
+	// before forwarding never needed the memory for long); the success path
+	// releases explicitly, right after the amplifying work — extraction and
+	// rewrite — is done and before proxy() hands the single, already-final
+	// forwardBody to the reverse proxy.
+	budgetCtx, cancel := context.WithTimeout(r.Context(), bodyBudgetWaitTimeout)
+	admitted := m.bodyBudget.Acquire(budgetCtx, bodyCap)
+	cancel()
+	if !admitted {
+		outcome := "rate_limited"
+		eb := modelbroker.TooManyRequestsError(route.Shape)
+		if r.Context().Err() != nil {
+			// The caller went away while waiting for admission, not the
+			// endpoint refusing it — the same distinction the recover in
+			// proxy() draws between client_abort and every other outcome.
+			outcome = "client_abort"
+		}
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, outcome, start, "", ""))
+		return
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			m.bodyBudget.Release(bodyCap)
+		}
+	}
+	defer release()
+
+	// bodyBudgetHeldHookForTest, when non-nil, runs once per request right
+	// after admission, before any body is read. A test-only seam
+	// (relay#116 re-review's S6 concurrency test): the extract-and-rewrite
+	// work this budget bounds is normally CPU-bound and far too fast to
+	// force real overlap between goroutines deterministically, so a test
+	// wanting to observe BodyBudget's own admission limit rather than guess
+	// at timing holds a request here until it says otherwise.
+	if bodyBudgetHeldHookForTest != nil {
+		bodyBudgetHeldHookForTest()
+	}
+
 	var (
 		requested string
 		boundary  string
@@ -517,7 +607,7 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 	case modelbroker.ModelSourceJSONBody:
 		bodyBytes, err = readCapped(r.Body, bodyCap)
 		if err == nil {
-			requested, err = modelbroker.ExtractJSONModel(bytes.NewReader(bodyBytes), bodyCap)
+			requested, err = modelbroker.ExtractJSONModelFromBytes(bodyBytes)
 		}
 	case modelbroker.ModelSourceMultipart:
 		var params map[string]string
@@ -581,6 +671,14 @@ func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Req
 		m.audit(m.auditFor(caller, transport, r, eb.Status, "error", start, requested, canonical))
 		return
 	}
+	// The amplifying work is done: forwardBody is the single, final byte
+	// slice that reaches proxy(), no longer alongside the raw bytes it was
+	// built from. Dropping the reference and releasing the budget here,
+	// rather than via the deferred release at function return, keeps both
+	// from being held for the (potentially long, streamed) duration of the
+	// upstream call that follows.
+	bodyBytes = nil
+	release()
 
 	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
 	r.ContentLength = int64(len(forwardBody))
@@ -642,11 +740,23 @@ func (s *statusCapturingWriter) Flush() {
 type countingReader struct {
 	r io.Reader
 	n int64
+	// eof is set once Read reports io.EOF: the upstream response body was
+	// copied through to its natural end, as opposed to the copy stopping
+	// early because the client's connection broke mid-stream (S8 of the
+	// relay#116 re-review). proxy() uses this, not r.Context().Err() alone,
+	// to decide whether a completed call's audit outcome is "ok" or
+	// "client_abort" — a client that disconnects the instant after
+	// receiving every byte still cancels the request context, and without
+	// this distinction that race would misreport a fully successful call.
+	eof bool
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
+	if errors.Is(err, io.EOF) {
+		c.eof = true
+	}
 	return n, err
 }
 
@@ -684,6 +794,9 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	originalDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		originalDirector(req)
+		if proxyPanicForTest != nil {
+			panic(proxyPanicForTest)
+		}
 		req.Header.Del("Authorization")
 		req.Header.Del("x-api-key")
 		for k := range req.Header {
@@ -736,19 +849,32 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 	// A mid-stream client abort after headers are already flushed doesn't
 	// reach ErrorHandler (that only fires for a RoundTrip failure, before
 	// any response is written) — net/http instead either returns from
-	// ServeHTTP having merely stopped copying, or panics with
-	// http.ErrAbortHandler to abort the response without logging a stack
-	// trace. Both must still produce an audit record instead of silently
-	// falling through to the "ok" case below: the recover catches the
-	// panic path (and re-panics after auditing, since ErrAbortHandler must
-	// still reach the server to do its job), and the r.Context().Err()
-	// check after a normal return catches the non-panic path.
+	// ServeHTTP having merely stopped copying, or panics to abort the
+	// response without logging a stack trace. Both must still produce an
+	// audit record instead of silently falling through to the "ok" case
+	// below: the recover catches the panic path (and re-panics after
+	// auditing — a panic through a handler must still reach the server to
+	// do its job, whatever its outcome; only http.ErrAbortHandler itself is
+	// the documented "the client went away" signal, so it is the only
+	// recovered value audited as client_abort. Anything else is a genuine
+	// bug in this handler or the proxy stack and is audited "error", never
+	// silently relabelled as if the client were at fault), and the
+	// r.Context().Err() check after a normal return catches the non-panic
+	// path (refined further below for S8: a completed copy racing a
+	// disconnect must not be misreported as an abort).
 	func() {
 		defer func() {
 			if rec := recover(); rec != nil {
-				ev := m.auditFor(caller, transport, r, sw.status, "client_abort", start, requested, canonical)
+				outcome := "error"
+				if rec == http.ErrAbortHandler {
+					outcome = "client_abort"
+				}
+				ev := m.auditFor(caller, transport, r, sw.status, outcome, start, requested, canonical)
 				ev.Target = target
 				ev.Stream = streamed
+				if counter != nil {
+					ev.ResponseBytes = counter.n
+				}
 				m.audit(ev)
 				panic(rec)
 			}
@@ -760,7 +886,19 @@ func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, call
 		return
 	}
 
-	if r.Context().Err() != nil {
+	if postServeHookForTest != nil {
+		postServeHookForTest()
+	}
+
+	// This is subtle: a client that disconnects the instant after receiving
+	// every byte of a complete response still cancels r.Context() — checking
+	// only r.Context().Err() here would misreport that fully successful call
+	// as client_abort. counter.eof is set only once the upstream response
+	// body has been read to its own natural end (S8 of the relay#116
+	// re-review), so the context is consulted for the abort verdict only
+	// when the copy actually stopped short of that.
+	copied := counter != nil && counter.eof
+	if !copied && r.Context().Err() != nil {
 		ev := m.auditFor(caller, transport, r, sw.status, "client_abort", start, requested, canonical)
 		ev.Target = target
 		ev.Stream = streamed
