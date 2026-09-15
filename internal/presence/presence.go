@@ -59,6 +59,7 @@ var GatedOps = []string{
 	"service.register",
 	"project.rotate_token",
 	"project.grant",
+	"remote.configure",
 	"sealed.reset",
 	"eve.enrolment.open",
 	"eve.passkey.revoke",

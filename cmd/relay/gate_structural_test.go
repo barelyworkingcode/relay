@@ -87,7 +87,7 @@ var gateAllowlistedFiles = map[string]string{
 	"cmd/relay/service_ops.go": "the ServiceOps core: Gate.Require runs before Create/Update touch the store; Remove is deliberately " +
 		"ungated (ADR-018 step 3 -- removal narrows, and stopping a running service is already ungated configure via " +
 		"POST /api/services/{id}/stop) and still calls requireIssuanceAuditor",
-	"cmd/relay/enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is a separate, ungated op",
+	"cmd/relay/enrolment_ops.go": "the EnrolmentOps core: Gate.Require runs before Create/Update/Revoke touch the store; SetRemoteConfig's own With is also gated (remote.configure) whenever the request actually widens what a remote client reaches",
 	"cmd/relay/login_ops.go":     "the LoginOps core: Gate.Require runs before MintBootstrap/RevokePasskey touch the store",
 	"cmd/relay/eve_enrolment_ops.go": "the EveEnrolmentOps core: Gate.Require runs before Open touches the store; Consume is deliberately " +
 		"UNGATED (docs/eve-passkey-enrolment.md decision 2 -- consuming a window the operator already opened narrows it rather " +
@@ -404,6 +404,7 @@ var wantGatedOps = []string{
 	"service.register",
 	"project.rotate_token",
 	"project.grant",
+	"remote.configure",
 	"sealed.reset",
 	"eve.enrolment.open",
 	"eve.passkey.revoke",
@@ -446,6 +447,7 @@ var wantGateCallSites = map[string][]string{
 	"service.register":     {"ServiceOps.Create", "ServiceOps.Update"},
 	"project.rotate_token": {"ProjectOps.RotateToken"},
 	"project.grant":        {"ProjectOps.Create", "ProjectOps.Update"},
+	"remote.configure":     {"EnrolmentOps.SetRemoteConfig"},
 	"sealed.reset":         {"resetSealedStore"},
 	"eve.enrolment.open":   {"EveEnrolmentOps.Open"},
 	"eve.passkey.revoke":   {"EvePasskeyOps.Revoke"},

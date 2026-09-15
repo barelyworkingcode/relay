@@ -184,6 +184,15 @@ func pgwCases(t *testing.T) []pgwCase {
 			_, err := ops.Create(context.Background(), project.CreateFields{Name: "pgw-grant", Path: t.TempDir()}, nil, auditViaCLI, "")
 			return err
 		}},
+		{"remote.configure", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
+			ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: issuance}
+			// Enabling from the unconfigured (nil Remote) state is the
+			// minimal legal call that reaches requireGate at all -- see
+			// remoteConfigChangedFields's doc comment for why Enabled
+			// turning on is one of the two fields with a widen reading.
+			_, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: true, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
+			return err
+		}},
 		{"eve.enrolment.open", noSeed, func(t *testing.T, store config.SettingsStore, gate *presence.Gate, issuance IssuanceAuditor) error {
 			ops := &EveEnrolmentOps{Store: store, Gate: gate, Audit: pgwAuditRecorderFor(t, issuance)}
 			_, err := ops.Open(context.Background(), auditViaCLI)
@@ -334,6 +343,16 @@ type pgwAuditingCase struct {
 func pgwAllAuditingCases(t *testing.T) []pgwAuditingCase {
 	var out []pgwAuditingCase
 	for _, tc := range pgwCases(t) {
+		// remote.configure is excluded here, not skipped inside the loop
+		// body: TestGate_EveryIssuanceAuditorCallSiteHasACase's own doc
+		// comment names the reason (ADR-010's separate, later audit rule
+		// on whether the listener serves) and asserts the absence
+		// structurally; TestEnrolmentOps_SetRemoteConfig_
+		// GatesEvenWithIssuanceAuditingOff below is this op's own version
+		// of the property this table proves for every other row.
+		if tc.op == "remote.configure" {
+			continue
+		}
 		out = append(out, pgwAuditingCase{label: tc.op, seed: tc.seed, run: tc.run})
 	}
 	for _, tc := range pgwUngatedCases(t) {
@@ -463,13 +482,19 @@ func TestGate_RetiredOpsStillWriteConfigChange(t *testing.T) {
 // without landing in either table goes unnoticed by neither
 // TestGate_IssuanceAuditingOffRefusesBeforeThePrompt nor this one.
 //
-// Two exemptions, both named rather than silently absorbed:
+// Three exemptions, all named rather than silently absorbed:
 //
 //   - resetSealedStore (sealed.reset) calls requireGate but never
 //     requireIssuanceAuditor — it is the tray-only break-glass recovery for a
 //     degraded sealed store (ADR-017 §5.6 clause 5), and the record its own
 //     act would need to write may itself be part of what is degraded. It is
 //     excluded from the "want" side entirely.
+//   - EnrolmentOps.SetRemoteConfig (remote.configure) calls requireGate but
+//     never requireIssuanceAuditor — the remote listener already has its own,
+//     separate audit rule (ADR-010: auditing gates whether the listener
+//     SERVES, checked later by RemoteSupervisor, not whether the setting can
+//     be saved), named in requireIssuanceAuditor's own doc comment
+//     (audit_issuance.go). Also excluded from "want" entirely.
 //   - ProjectOps.NarrowForEnrolment calls requireIssuanceAuditor and never
 //     requireGate but has no row in either table — see pgwUngatedCases' doc
 //     comment for why. It is added to "want" by name.
@@ -484,7 +509,7 @@ func TestGate_EveryIssuanceAuditorCallSiteHasACase(t *testing.T) {
 
 	want := map[string]bool{}
 	for op, methods := range wantGateCallSites {
-		if op == "sealed.reset" {
+		if op == "sealed.reset" || op == "remote.configure" {
 			continue
 		}
 		for _, m := range methods {
@@ -1003,5 +1028,212 @@ func TestServiceFields_DigestDistinguishesAbsentFromExplicitZeroValue(t *testing
 
 	if absent.presenceDigest("svc") == explicitFalse.presenceDigest("svc") {
 		t.Fatal("autostart absent and autostart=false explicit produced the same digest")
+	}
+}
+
+// pgwSeedRemoteConfig writes a Remote block directly, bypassing
+// SetRemoteConfig, so a narrowing test can start from an already-enabled
+// listener without going through the very gate it is proving does not fire.
+func pgwSeedRemoteConfig(t *testing.T, store config.SettingsStore, enabled bool, listen string) {
+	t.Helper()
+	if err := store.With(func(s *config.Settings) {
+		s.Remote = &config.RemoteConfig{Listen: listen}
+		if enabled {
+			s.Remote.Enabled = boolPtr(true)
+		}
+	}); err != nil {
+		t.Fatalf("seed remote config: %v", err)
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_UnchangedResendDoesNotPrompt is
+// TestProjectOps_UnchangedResendDoesNotPrompt's argument applied to the
+// remote listener: the Settings window resends the whole record on every
+// save, and a request that changes nothing must not reach the gate at all.
+// Deny() proves the point harder than Allow() would: a reached gate fails
+// this test outright rather than merely also succeeding.
+func TestEnrolmentOps_SetRemoteConfig_UnchangedResendDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	_, err = ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: true, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("resending the stored config unchanged must not reach the gate: %v", err)
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_DisablingDoesNotPrompt is decision 1's
+// "removal is not escalation" applied to the remote listener's own on/off
+// axis: turning Enabled off only closes a door that was already reachable,
+// so it must not prompt even under a denying gate.
+func TestEnrolmentOps_SetRemoteConfig_DisablingDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	view, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: false, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("turning the listener off must not reach the gate: %v", err)
+	}
+	if view.Enabled {
+		t.Fatal("listener still reports enabled after being turned off")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_RemoveDoesNotPrompt: clearing the whole
+// block is strictly narrower than any state it could replace (it also
+// disables the enrolment-request listener resolveRemoteEnrolment would
+// otherwise need enabled:true to serve), so Remove never reaches the gate.
+func TestEnrolmentOps_SetRemoteConfig_RemoveDoesNotPrompt(t *testing.T) {
+	_, store := pgwSandbox(t)
+	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	if _, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Remove: true}, auditViaCLI, ""); err != nil {
+		t.Fatalf("Remove must not reach the gate: %v", err)
+	}
+	if store.Get().Remote != nil {
+		t.Fatal("remote config was not cleared")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_EnablingIsGated is the positive control
+// for the two narrowing tests above: turning the listener ON from off (or
+// unconfigured) is exactly the widening act remote.configure exists to
+// prompt for, and a denying gate must refuse it and leave the store
+// untouched.
+func TestEnrolmentOps_SetRemoteConfig_EnablingIsGated(t *testing.T) {
+	_, store := pgwSandbox(t)
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	_, err = ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: true, Listen: "127.0.0.1:9910"}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("enabling the remote listener: err = %v, want presence.ErrRefused", err)
+	}
+	if store.Get().Remote != nil {
+		t.Fatal("remote config was written despite the gate refusing")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_ListenChangeIsGated: presence-gate.md's
+// "configure subset" argument applied to the remote listener's bind
+// address — there is no generic narrower/wider reading for one host:port
+// string versus another, so any actual change gates regardless of
+// direction, even while Enabled itself does not change.
+func TestEnrolmentOps_SetRemoteConfig_ListenChangeIsGated(t *testing.T) {
+	_, store := pgwSandbox(t)
+	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	gate, err := presence.NewGate(presencetest.Deny())
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	_, err = ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: true, Listen: "0.0.0.0:9910"}, auditViaCLI, "")
+	if !errors.Is(err, presence.ErrRefused) {
+		t.Fatalf("changing the bind address: err = %v, want presence.ErrRefused", err)
+	}
+	if store.Get().Remote.Listen != "127.0.0.1:9910" {
+		t.Fatal("listen address was changed despite the gate refusing")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_ReasonNamesOnlyTheChangedField mirrors
+// TestProjectOps_AddingAnMcpIsGatedNamingOnlyThatField: enabling the
+// enrolment-request listener alone must name only that field, not the
+// tool-plane listener's own (unchanged) enabled/listen fields.
+func TestEnrolmentOps_SetRemoteConfig_ReasonNamesOnlyTheChangedField(t *testing.T) {
+	_, store := pgwSandbox(t)
+	pgwSeedRemoteConfig(t, store, true, "127.0.0.1:9910")
+
+	rec := presencetest.NewRecording(nil)
+	gate, err := presence.NewGate(rec)
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
+
+	_, err = ops.SetRemoteConfig(context.Background(), remoteConfigFields{
+		Enabled: true, Listen: "127.0.0.1:9910", EnrolmentRequests: true,
+	}, auditViaCLI, "")
+	if err != nil {
+		t.Fatalf("SetRemoteConfig: %v", err)
+	}
+	reasons := rec.Reasons()
+	if len(reasons) != 1 {
+		t.Fatalf("expected exactly one presence prompt, got %v", reasons)
+	}
+	if !strings.Contains(reasons[0], "enrolment-request listener") {
+		t.Fatalf("reason %q does not name the enrolment-request listener", reasons[0])
+	}
+	for _, other := range []string{"bind address"} {
+		if strings.Contains(reasons[0], other) {
+			t.Fatalf("reason %q names %q, which did not change", reasons[0], other)
+		}
+	}
+}
+
+// TestRemoteConfigFields_DigestBindsAllFourFields is
+// TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields's argument for
+// remote.configure: the digest binds the whole requested shape, not just
+// whichever field triggered the gate, so a grant answered for one
+// combination can never be redeemed for a different one.
+func TestRemoteConfigFields_DigestBindsAllFourFields(t *testing.T) {
+	base := remoteConfigFields{Enabled: true, Listen: "127.0.0.1:9910", EnrolmentRequests: true, EnrolmentListen: "127.0.0.1:9911"}
+	baseDigest := base.presenceDigest(base.Listen, base.EnrolmentListen)
+
+	variants := []remoteConfigFields{
+		{Enabled: false, Listen: base.Listen, EnrolmentRequests: base.EnrolmentRequests, EnrolmentListen: base.EnrolmentListen},
+		{Enabled: base.Enabled, Listen: "127.0.0.1:9920", EnrolmentRequests: base.EnrolmentRequests, EnrolmentListen: base.EnrolmentListen},
+		{Enabled: base.Enabled, Listen: base.Listen, EnrolmentRequests: false, EnrolmentListen: base.EnrolmentListen},
+		{Enabled: base.Enabled, Listen: base.Listen, EnrolmentRequests: base.EnrolmentRequests, EnrolmentListen: "127.0.0.1:9921"},
+	}
+	for i, v := range variants {
+		if v.presenceDigest(v.Listen, v.EnrolmentListen) == baseDigest {
+			t.Errorf("variant %d (%+v) produced the same digest as the base request", i, v)
+		}
+	}
+	if base.presenceDigest(base.Listen, base.EnrolmentListen) != base.presenceDigest(base.Listen, base.EnrolmentListen) { //nolint:staticcheck // deliberate: same input twice checks the digest is deterministic, not a copy-paste
+		t.Fatal("presenceDigest is not deterministic over the same request")
+	}
+}
+
+// TestEnrolmentOps_SetRemoteConfig_GatesEvenWithIssuanceAuditingOff is
+// remote.configure's own version of the property
+// TestGate_IssuanceAuditingOffRefusesBeforeThePrompt proves for every other
+// gated op — except here the answer is deliberately the opposite: this op
+// has no requireIssuanceAuditor call at all (TestGate_
+// EveryIssuanceAuditorCallSiteHasACase's exemption, SetRemoteConfig's own
+// doc comment), so a widening change must still reach the presence provider,
+// and must still succeed, with issuance nil. This is the regression test for
+// the exemption itself — if a future edit added requireIssuanceAuditor back
+// in, this would start failing (refused, provider never called) rather than
+// silently losing coverage.
+func TestEnrolmentOps_SetRemoteConfig_GatesEvenWithIssuanceAuditingOff(t *testing.T) {
+	_, store := pgwSandbox(t)
+
+	recording := presencetest.NewRecording(nil)
+	gate, err := presence.NewGate(recording)
+	assertNoErr(t, err, "NewGate")
+	ops := &EnrolmentOps{Store: store, Gate: gate}
+
+	if _, err := ops.SetRemoteConfig(context.Background(), remoteConfigFields{Enabled: true, Listen: "127.0.0.1:9910"}, auditViaCLI, ""); err != nil {
+		t.Fatalf("enabling the remote listener with issuance auditing off: %v", err)
+	}
+	if recording.Calls() != 1 {
+		t.Fatalf("presence provider called %d time(s), want exactly 1", recording.Calls())
+	}
+	if cfg := store.Get().Remote; cfg == nil || cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("remote config not persisted: %+v", cfg)
 	}
 }
