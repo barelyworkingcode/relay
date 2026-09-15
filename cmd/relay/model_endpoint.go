@@ -1,0 +1,811 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/modelbroker"
+	"github.com/barelyworkingcode/relay/internal/peertoken"
+	"github.com/barelyworkingcode/relay/internal/service"
+)
+
+// EnvModelListen overrides the model endpoint's TCP listen address for
+// tests only (plan-broker-and-sessions.md decision b) — production
+// configuration is settings.json's model_endpoint.listen.
+const EnvModelListen = "RELAY_MODEL_LISTEN"
+
+const (
+	transportSocket = "socket"
+	transportTCP    = "tcp"
+)
+
+// ModelCallAudit is the single, clearly named hook every model-endpoint
+// call's result is offered to (plan-broker-and-sessions.md §2 C4/C8 item 8).
+// The audit event constants themselves are unit R-M1c; this unit emits
+// nothing to the audit file — AuditHook's zero value is nil, and a nil hook
+// is a no-op, so wiring it to a real recorder later is a pure addition here.
+type ModelCallAudit struct {
+	Transport      string // "socket" | "tcp"
+	Auth           string // "token" | "model_key" | "identity"
+	CallerKind     string // "project" | "service"
+	CallerName     string // project id or service id
+	ModelKeyLabel  string
+	Method         string
+	Path           string
+	RequestedModel string
+	CanonicalModel string
+	// Target is relayLLM's X-Relay-Model-Target response header: a managed
+	// alias, "ep/id", or a resolved virtual candidate. Empty when the route
+	// carried no such header (a listing, health, or an upstream error).
+	Target        string
+	Stream        bool
+	RequestBytes  int64
+	ResponseBytes int64
+	Usage         modelbroker.Usage
+	Status        int
+	// Outcome is one of: ok, denied, not_found, unauthorized, remote_project,
+	// route_not_found, host_unavailable, error, client_abort.
+	Outcome    string
+	DurationMS int64
+}
+
+// modelCaller is what the auth resolver hands the rest of the handler: the
+// caller's grant, already translated to modelbroker.Allowed's convention
+// (an empty grant means nothing, a literal "*" entry means everything) so
+// the handler never has to know a project's and a service's opposite
+// empty-list defaults (spec-model-broker.md decision 4).
+type modelCaller struct {
+	kind          string // "project" | "service"
+	name          string // project id or service id
+	grant         []string
+	remote        bool
+	auth          string // "token" | "model_key" | "identity"
+	modelKeyLabel string
+}
+
+// ModelEndpointServer is relay's model broker (docs/model-endpoint.md):
+// model.sock always, a loopback TCP listener when configured, auth and
+// scoping in front of a reverse proxy to the registered model host.
+type ModelEndpointServer struct {
+	store     config.SettingsStore
+	launches  *service.Launches
+	modelKeys *ModelKeyTable
+	hosts     *ModelHostRegistry
+	catalog   *modelbroker.Cache
+
+	// AuditHook receives one ModelCallAudit per finished call or list. Never
+	// blocks a response on it; nil is a no-op.
+	AuditHook func(ModelCallAudit)
+
+	sockLn  net.Listener
+	sockSrv *http.Server
+
+	mu      sync.Mutex
+	tcpLn   net.Listener
+	tcpSrv  *http.Server
+	tcpAddr string // the address currently bound; "" when none
+}
+
+func NewModelEndpointServer(store config.SettingsStore, launches *service.Launches, modelKeys *ModelKeyTable, hosts *ModelHostRegistry) *ModelEndpointServer {
+	m := &ModelEndpointServer{store: store, launches: launches, modelKeys: modelKeys, hosts: hosts}
+	m.catalog = modelbroker.NewCache(m.fetchCatalog)
+	return m
+}
+
+var errModelHostUnavailable = errors.New("model host unavailable")
+
+// dialVerifiedUnix dials socketPath and refuses the connection unless the
+// server peer's kernel audit token equals want — relay's half of the mutual
+// check plan-broker-and-sessions.md §2 C8 describes; relayLLM performs the
+// mirror image on its own Hello dial (spike SP1). This is what makes a
+// registration meaningless to anything other than the exact process that
+// registered it: even a process that somehow learns RouterSocket cannot
+// answer for it, because LOCAL_PEERTOKEN is the kernel's account of who is
+// actually on the other end, not a value either side asserts.
+func dialVerifiedUnix(ctx context.Context, socketPath string, want peertoken.Process) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errModelHostUnavailable, err)
+	}
+	tok, err := peertoken.FromConn(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: read peer audit token: %v", errModelHostUnavailable, err)
+	}
+	if tok.Process() != want {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: router socket peer does not match the registered launch", errModelHostUnavailable)
+	}
+	return conn, nil
+}
+
+// upstreamTransport pins DialContext to the currently registered host,
+// verifying the server peer on every dial. Looked up fresh per call, never
+// cached, so a host that re-registers under a new launch is picked up
+// immediately and one whose launch just ended is refused rather than dialed
+// stale.
+func (m *ModelEndpointServer) upstreamTransport() (*http.Transport, error) {
+	_, socketPath, process, ok := m.hosts.Current()
+	if !ok {
+		return nil, errModelHostUnavailable
+	}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialVerifiedUnix(ctx, socketPath, process)
+		},
+		IdleConnTimeout: 90 * time.Second,
+	}, nil
+}
+
+func (m *ModelEndpointServer) fetchCatalog(ctx context.Context) ([]modelbroker.Row, error) {
+	transport, err := m.upstreamTransport()
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, service.InternalUnixHostURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errModelHostUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: GET /v1/models returned %d", errModelHostUnavailable, resp.StatusCode)
+	}
+	var body struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+			Target  string `json:"target,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, modelbroker.JSONBodyCap)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("model host: decode /v1/models: %w", err)
+	}
+	rows := make([]modelbroker.Row, 0, len(body.Data))
+	for _, d := range body.Data {
+		rows = append(rows, modelbroker.Row{ID: d.ID, OwnedBy: d.OwnedBy, Target: d.Target})
+	}
+	return rows, nil
+}
+
+func shapeForPath(path string) modelbroker.Shape {
+	if path == "/v1/messages" || path == "/v1/messages/count_tokens" {
+		return modelbroker.ShapeAnthropic
+	}
+	return modelbroker.ShapeOpenAI
+}
+
+func isModelListRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/models")
+}
+
+// stripBearerPrefix reports the token named by an Authorization header's
+// "Bearer " scheme, case-insensitively on the scheme name (RFC 6750 leaves
+// the scheme name case-insensitive; the token itself is returned verbatim).
+func stripBearerPrefix(v string) (string, bool) {
+	const prefix = "Bearer "
+	if len(v) > len(prefix) && strings.EqualFold(v[:len(prefix)], prefix) {
+		return v[len(prefix):], true
+	}
+	return "", false
+}
+
+// resolveBearerHeaders implements spec §3.1's header handling: Authorization
+// and x-api-key name the same credential when both are present, and 401 when
+// they name different ones — this is checked BEFORE either is looked up
+// against anything, so a caller cannot use a valid credential in one header
+// to smuggle a second, different assertion past the other.
+func resolveBearerHeaders(r *http.Request) (bearer string, conflict bool) {
+	rawAuth := r.Header.Get("Authorization")
+	rawKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+	var fromAuth string
+	if rawAuth != "" {
+		if v, ok := stripBearerPrefix(rawAuth); ok {
+			fromAuth = v
+		} else {
+			fromAuth = rawAuth
+		}
+	}
+	switch {
+	case rawAuth != "" && rawKey != "":
+		if fromAuth != rawKey {
+			return "", true
+		}
+		return rawKey, false
+	case rawAuth != "":
+		return fromAuth, false
+	default:
+		return rawKey, false
+	}
+}
+
+// resolveCaller is the model endpoint's auth resolver (spec §3.1): a bearer
+// header on either listener, else a launch identity on the socket, else 401
+// (always, on TCP).
+func (m *ModelEndpointServer) resolveCaller(r *http.Request, transport string) (modelCaller, *modelbroker.ErrorBody) {
+	shape := shapeForPath(r.URL.Path)
+
+	bearer, conflict := resolveBearerHeaders(r)
+	if conflict {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	if bearer != "" {
+		return m.resolveBearer(bearer, shape)
+	}
+	if transport == transportTCP {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	return m.resolveIdentity(r, shape)
+}
+
+func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
+	if HasModelKeyPrefix(bearer) {
+		projectID, label, ok := m.modelKeys.Lookup(bearer)
+		if !ok {
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{}, &errBody
+		}
+		proj, _ := config.FindProjectByID(m.store.Get(), projectID)
+		if proj == nil {
+			// The project was deleted after the key was minted: fail closed
+			// rather than serve a key that has nothing left to scope it to.
+			errBody := modelbroker.UnauthorizedError(shape)
+			return modelCaller{}, &errBody
+		}
+		return callerForProject(*proj, "model_key", label), nil
+	}
+
+	hash := config.HashToken(bearer)
+	stored := m.store.Get().AuthenticateProjectByHash(hash)
+	if stored == nil || stored.ProjectID == "" {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	proj, _ := config.FindProjectByID(m.store.Get(), stored.ProjectID)
+	if proj == nil {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	return callerForProject(*proj, "token", ""), nil
+}
+
+// callerForProject translates a project's own empty-means-any AllowedModels
+// convention into modelbroker.Allowed's empty-means-nothing convention
+// (spec-model-broker.md decision 4): a project's unrestricted grant is
+// spelled as the literal wildcard entry, never as an empty slice, so this
+// function is the one place that translation happens.
+func callerForProject(proj config.Project, auth, label string) modelCaller {
+	grant := proj.AllowedModels
+	if len(grant) == 0 || config.IsWildcard(grant) {
+		grant = []string{"*"}
+	}
+	return modelCaller{
+		kind: "project", name: proj.ID, grant: grant,
+		remote: proj.IsRemote(), auth: auth, modelKeyLabel: label,
+	}
+}
+
+// resolveIdentity is the tokenless path: a launch identity on model.sock,
+// looked up by the connection's peer audit token (never reached on TCP —
+// resolveCaller refuses tokenless TCP before this is called). OpModelList is
+// checked for a listing request so a service holding only `models` still
+// reaches GET /v1/models, exactly as OpModelCall requires the same
+// capability for everything else (service.Allowed, both operations map to
+// ServiceCapabilityModels in this unit — the `sessions` capability's wider,
+// unfiltered list is a later unit's addition, plan-broker-and-sessions.md §2
+// C1).
+func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker.Shape) (modelCaller, *modelbroker.ErrorBody) {
+	peer := bridge.CallerPeerFromContext(r.Context())
+	id, ok := m.launches.Lookup(peer)
+	if !ok {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	op := service.OpModelCall
+	if isModelListRequest(r) {
+		op = service.OpModelList
+	}
+	if !id.Allows(op) {
+		errBody := modelbroker.UnauthorizedError(shape)
+		return modelCaller{}, &errBody
+	}
+	svc, _ := config.FindServiceByID(m.store.Get(), id.Name)
+	var allowed []string
+	if svc != nil {
+		allowed = svc.AllowedModels
+	}
+	return modelCaller{kind: "service", name: id.Name, grant: allowed, auth: "identity"}, nil
+}
+
+func (m *ModelEndpointServer) writeError(w http.ResponseWriter, e modelbroker.ErrorBody) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(e.Status)
+	_, _ = w.Write(e.Body)
+}
+
+func (m *ModelEndpointServer) audit(ev ModelCallAudit) {
+	if m.AuditHook != nil {
+		m.AuditHook(ev)
+	}
+}
+
+func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *http.Request, status int, outcome string, start time.Time, requested, canonical string) ModelCallAudit {
+	return ModelCallAudit{
+		Transport:      transport,
+		Auth:           caller.auth,
+		CallerKind:     caller.kind,
+		CallerName:     caller.name,
+		ModelKeyLabel:  caller.modelKeyLabel,
+		Method:         r.Method,
+		Path:           r.URL.Path,
+		RequestedModel: requested,
+		CanonicalModel: canonical,
+		Status:         status,
+		Outcome:        outcome,
+		DurationMS:     time.Since(start).Milliseconds(),
+	}
+}
+
+// Handler builds the endpoint's http.Handler for one transport. Exported for
+// tests that want to drive it directly over httptest, without a real socket.
+func (m *ModelEndpointServer) Handler(transport string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		caller, errBody := m.resolveCaller(r, transport)
+		if errBody != nil {
+			m.writeError(w, *errBody)
+			m.audit(m.auditFor(modelCaller{}, transport, r, errBody.Status, "unauthorized", start, "", ""))
+			return
+		}
+
+		shape := shapeForPath(r.URL.Path)
+
+		if caller.remote {
+			eb := modelbroker.RemoteProjectError(shape)
+			m.writeError(w, eb)
+			m.audit(m.auditFor(caller, transport, r, eb.Status, "remote_project", start, "", ""))
+			return
+		}
+
+		route, ok := modelbroker.MatchRoute(r.Method, r.URL.Path)
+		if !ok {
+			eb := modelbroker.RouteNotFoundError(shape)
+			m.writeError(w, eb)
+			m.audit(m.auditFor(caller, transport, r, eb.Status, "route_not_found", start, "", ""))
+			return
+		}
+
+		if route.Source == modelbroker.ModelSourceNone {
+			m.serveNoModelRoute(w, r, caller, transport, route, start)
+			return
+		}
+		m.serveModelRoute(w, r, caller, transport, route, start)
+	})
+}
+
+func (m *ModelEndpointServer) serveNoModelRoute(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) {
+	if isModelListRequest(r) {
+		rows, err := m.catalog.Snapshot(r.Context())
+		if err != nil {
+			eb := modelbroker.HostUnavailableError(route.Shape)
+			m.writeError(w, eb)
+			m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, "", ""))
+			return
+		}
+		filtered := modelbroker.Filter(rows, caller.grant)
+		m.writeModelList(w, filtered)
+		m.audit(m.auditFor(caller, transport, r, http.StatusOK, "ok", start, "", ""))
+		return
+	}
+	// /health: proxied upstream, no model to check.
+	m.proxy(w, r, caller, transport, route, "", "", start)
+}
+
+func (m *ModelEndpointServer) writeModelList(w http.ResponseWriter, rows []modelbroker.Row) {
+	type modelObj struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
+	data := make([]modelObj, 0, len(rows))
+	for _, row := range rows {
+		data = append(data, modelObj{ID: row.ID, Object: "model", OwnedBy: row.OwnedBy})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+}
+
+// requestErrorBody maps an extraction failure (ExtractJSONModel/
+// ExtractMultipartModel) to a wire error. These are the caller's own
+// malformed request, not an allow/deny decision, so they get their own
+// shape-appropriate 4xx rather than borrowing ModelNotFoundError's body.
+func requestErrorBody(shape modelbroker.Shape, err error) modelbroker.ErrorBody {
+	if errors.Is(err, modelbroker.ErrBodyTooLarge) {
+		return errorBodyFor(shape, http.StatusRequestEntityTooLarge, "request body too large", "body_too_large")
+	}
+	return errorBodyFor(shape, http.StatusBadRequest, "request does not name a model", "bad_request")
+}
+
+func errorBodyFor(shape modelbroker.Shape, status int, message, reason string) modelbroker.ErrorBody {
+	var body []byte
+	if shape == modelbroker.ShapeAnthropic {
+		b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]string{"type": "invalid_request_error", "message": message}})
+		body = b
+	} else {
+		b, _ := json.Marshal(map[string]any{"error": map[string]string{"message": message, "type": "invalid_request_error"}})
+		body = b
+	}
+	return modelbroker.ErrorBody{Status: status, Body: body, Reason: reason}
+}
+
+func (m *ModelEndpointServer) serveModelRoute(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, start time.Time) {
+	bodyCap := int64(modelbroker.JSONBodyCap)
+	if route.Path == "/v1/audio/transcriptions" {
+		bodyCap = modelbroker.AudioMultipartCap
+	}
+
+	var (
+		requested string
+		boundary  string
+		bodyBytes []byte
+		err       error
+	)
+
+	switch route.Source {
+	case modelbroker.ModelSourceJSONBody:
+		bodyBytes, err = readCapped(r.Body, bodyCap)
+		if err == nil {
+			requested, err = modelbroker.ExtractJSONModel(bytes.NewReader(bodyBytes), bodyCap)
+		}
+	case modelbroker.ModelSourceMultipart:
+		var params map[string]string
+		_, params, err = mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err == nil {
+			boundary = params["boundary"]
+			bodyBytes, err = readCapped(r.Body, bodyCap)
+			if err == nil {
+				requested, err = modelbroker.ExtractMultipartModel(bytes.NewReader(bodyBytes), boundary, bodyCap)
+			}
+		}
+	}
+	_ = r.Body.Close()
+
+	if err != nil {
+		eb := requestErrorBody(route.Shape, err)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, eb.Reason, start, requested, ""))
+		return
+	}
+
+	rows, err := m.catalog.Resolve(r.Context(), requested)
+	if err != nil {
+		eb := modelbroker.HostUnavailableError(route.Shape)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, requested, ""))
+		return
+	}
+
+	canonical, ok, reason := modelbroker.Allowed(requested, caller.grant, rows)
+	if !ok {
+		eb := modelbroker.ModelNotFoundError(route.Shape, reason)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, reason, start, requested, ""))
+		return
+	}
+
+	forwardBody := bodyBytes
+	var forwardContentType string
+	if canonical != requested {
+		switch route.Source {
+		case modelbroker.ModelSourceJSONBody:
+			forwardBody, err = modelbroker.RewriteJSONModel(bodyBytes, canonical)
+		case modelbroker.ModelSourceMultipart:
+			forwardBody, forwardContentType, err = modelbroker.RewriteMultipartModel(bytes.NewReader(bodyBytes), boundary, canonical)
+		}
+		if err != nil {
+			eb := errorBodyFor(route.Shape, http.StatusInternalServerError, "internal error", "error")
+			m.writeError(w, eb)
+			m.audit(m.auditFor(caller, transport, r, eb.Status, "error", start, requested, canonical))
+			return
+		}
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
+	if forwardContentType != "" {
+		r.Header.Set("Content-Type", forwardContentType)
+	}
+
+	m.proxy(w, r, caller, transport, route, requested, canonical, start)
+}
+
+func readCapped(r io.Reader, capBytes int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, capBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > capBytes {
+		return nil, modelbroker.ErrBodyTooLarge
+	}
+	return b, nil
+}
+
+var modelUpstreamURL, _ = url.Parse(service.InternalUnixHostURL)
+
+// statusCapturingWriter records the status a handler actually sent, and
+// stays a valid http.Flusher so httputil.ReverseProxy's FlushInterval: -1
+// streaming (checked directly against the ResponseWriter it was given, via
+// a type assertion) keeps working through this wrapper.
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusCapturingWriter) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status = code
+		s.wroteHeader = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusCapturingWriter) Write(p []byte) (int, error) {
+	if !s.wroteHeader {
+		s.status = http.StatusOK
+		s.wroteHeader = true
+	}
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *statusCapturingWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// countingReader counts bytes read through it. Not safe for concurrent use;
+// the proxy path below only ever reads it from the single goroutine that
+// called ServeHTTP.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+type teeReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// proxy reverse-proxies to the registered model host, stripping inbound
+// credential headers, reading and removing X-Relay-Model-Target, and
+// teeing the response through a usage scanner (streamed responses) or a
+// bounded buffer (non-streamed) for the audit record — never retaining
+// anything else of the body (docs/model-endpoint.md; spec §2.3, §7).
+func (m *ModelEndpointServer) proxy(w http.ResponseWriter, r *http.Request, caller modelCaller, transport string, route modelbroker.Route, requested, canonical string, start time.Time) {
+	transportRT, err := m.upstreamTransport()
+	if err != nil {
+		eb := modelbroker.HostUnavailableError(route.Shape)
+		m.writeError(w, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, "host_unavailable", start, requested, canonical))
+		return
+	}
+
+	var (
+		target       string
+		streamed     bool
+		usageScanner = modelbroker.NewSSEUsageScanner(route.Shape)
+		buffered     bytes.Buffer
+		counter      *countingReader
+		upstreamErr  error
+	)
+
+	rp := httputil.NewSingleHostReverseProxy(modelUpstreamURL)
+	rp.Transport = transportRT
+	rp.FlushInterval = -1
+	originalDirector := rp.Director
+	rp.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Header.Del("Authorization")
+		req.Header.Del("x-api-key")
+		for k := range req.Header {
+			if strings.HasPrefix(strings.ToLower(k), "x-relay-") {
+				req.Header.Del(k)
+			}
+		}
+	}
+	rp.ModifyResponse = func(resp *http.Response) error {
+		target = resp.Header.Get("X-Relay-Model-Target")
+		resp.Header.Del("X-Relay-Model-Target")
+		streamed = strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+
+		counter = &countingReader{r: resp.Body}
+		var sink io.Writer = &buffered
+		if streamed {
+			sink = usageScanner
+		}
+		resp.Body = teeReadCloser{Reader: io.TeeReader(counter, sink), Closer: resp.Body}
+		return nil
+	}
+	rp.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
+		upstreamErr = err
+		outcome := "error"
+		if errors.Is(err, errModelHostUnavailable) || errors.Is(err, context.DeadlineExceeded) {
+			outcome = "host_unavailable"
+		}
+		if errors.Is(err, context.Canceled) {
+			outcome = "client_abort"
+		}
+		eb := modelbroker.HostUnavailableError(route.Shape)
+		if outcome == "error" {
+			eb = errorBodyFor(route.Shape, http.StatusBadGateway, "upstream error", "error")
+		}
+		m.writeError(rw, eb)
+		m.audit(m.auditFor(caller, transport, r, eb.Status, outcome, start, requested, canonical))
+	}
+
+	sw := &statusCapturingWriter{ResponseWriter: w, status: http.StatusOK}
+	rp.ServeHTTP(sw, r)
+
+	if upstreamErr != nil {
+		return
+	}
+
+	usage, have := usageScanner.Usage()
+	if !have {
+		if u, ok := modelbroker.ParseOpenAIUsage(buffered.Bytes()); ok {
+			usage = u
+		} else if u, ok := modelbroker.ParseAnthropicUsage(buffered.Bytes()); ok {
+			usage = u
+		}
+	}
+
+	var respBytes int64
+	if counter != nil {
+		respBytes = counter.n
+	}
+
+	ev := m.auditFor(caller, transport, r, sw.status, "ok", start, requested, canonical)
+	ev.Target = target
+	ev.Stream = streamed
+	ev.RequestBytes = r.ContentLength
+	ev.ResponseBytes = respBytes
+	ev.Usage = usage
+	m.audit(ev)
+}
+
+// ListenSocket binds model.sock (0600), replacing any stale file left by a
+// prior process the way bridge.NewBridgeServer does for relay.sock.
+func (m *ModelEndpointServer) ListenSocket() error {
+	path := bridge.ModelSocketPath()
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	m.sockLn = ln
+	m.sockSrv = &http.Server{
+		Handler: m.Handler(transportSocket),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if tok, err := peertoken.FromConn(c); err == nil {
+				ctx = bridge.WithCallerPeer(ctx, tok)
+			}
+			return ctx
+		},
+	}
+	return nil
+}
+
+// ServeSocket blocks until Close. No-op when ListenSocket was not called.
+func (m *ModelEndpointServer) ServeSocket() error {
+	if m.sockLn == nil {
+		return nil
+	}
+	if err := m.sockSrv.Serve(m.sockLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func (m *ModelEndpointServer) targetAddr() string {
+	if v := os.Getenv(EnvModelListen); v != "" {
+		return v
+	}
+	s := m.store.Get()
+	if s.ModelEndpoint == nil {
+		return ""
+	}
+	return s.ModelEndpoint.Listen
+}
+
+// Reconcile converges the TCP listener on the configured address: binds,
+// rebinds or closes it as needed. Safe to call repeatedly — a settings poll
+// tick, startup — and a no-op when the target address matches what is
+// already bound. A refused non-loopback address or a failed bind is logged
+// loudly and left for the next call to retry (docs/model-endpoint.md), the
+// same convergence discipline RemoteSupervisor uses for the mTLS listener.
+func (m *ModelEndpointServer) Reconcile() {
+	target := m.targetAddr()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if target == m.tcpAddr {
+		return
+	}
+	if m.tcpSrv != nil {
+		_ = m.tcpSrv.Close()
+		m.tcpLn = nil
+		m.tcpSrv = nil
+		m.tcpAddr = ""
+	}
+	if target == "" {
+		return
+	}
+	if err := loopbackOnly(target); err != nil {
+		slog.Error("model endpoint: refusing a non-loopback listen address", "addr", target, "error", err)
+		return
+	}
+	ln, err := net.Listen("tcp", target)
+	if err != nil {
+		slog.Error("model endpoint: failed to bind TCP listener; will retry", "addr", target, "error", err)
+		return
+	}
+	srv := &http.Server{Handler: m.Handler(transportTCP), ReadHeaderTimeout: 30 * time.Second}
+	m.tcpLn = ln
+	m.tcpSrv = srv
+	m.tcpAddr = target
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("model endpoint: TCP listener stopped", "error", err)
+		}
+	}()
+}
+
+// Close shuts down both listeners. Safe to call more than once.
+func (m *ModelEndpointServer) Close() {
+	if m.sockSrv != nil {
+		_ = m.sockSrv.Close()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tcpSrv != nil {
+		_ = m.tcpSrv.Close()
+		m.tcpLn = nil
+		m.tcpSrv = nil
+		m.tcpAddr = ""
+	}
+}

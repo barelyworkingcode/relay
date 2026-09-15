@@ -52,6 +52,10 @@ type App struct {
 	// common case; every method on it is nil-safe so nothing branches here.
 	remote         *RemoteSupervisor
 	frontendServer *FrontendServer
+	// modelEndpoint serves model.sock always and a loopback TCP listener
+	// when settings.json's model_endpoint block configures one
+	// (docs/model-endpoint.md). Reconciled on the same poll tick as remote.
+	modelEndpoint *ModelEndpointServer
 	ipcCtx         *IPCContext // pre-built once, reused on every IPC call
 	// audit is the tool-call recorder. Nil when auditing is disabled or failed
 	// to start; every method on it is nil-safe.
@@ -498,6 +502,23 @@ func runTrayApp() {
 	registry.Launches = launches
 	router.launches = launches
 
+	// The model endpoint's own tables: at most one live upstream, and the
+	// model keys minted for it (docs/model-endpoint.md). Wired onto the
+	// router so RegisterModelHost can reach modelHosts under the same launch
+	// identity check every other service operation uses.
+	modelHosts := NewModelHostRegistry(launches)
+	router.modelHosts = modelHosts
+	modelKeys := NewModelKeyTable()
+	app.modelEndpoint = NewModelEndpointServer(store, launches, modelKeys, modelHosts)
+	app.modelEndpoint.AuditHook = func(ev ModelCallAudit) {
+		// R-M1c wires this into the real audit recorder and event constants;
+		// for now the only record is relay's own log, so a model call is at
+		// least observable while that unit lands.
+		slog.Debug("model_call", "auth", ev.Auth, "caller_kind", ev.CallerKind,
+			"caller", ev.CallerName, "model", ev.RequestedModel, "canonical", ev.CanonicalModel,
+			"target", ev.Target, "status", ev.Status, "outcome", ev.Outcome, "duration_ms", ev.DurationMS)
+	}
+
 	frontendChannel := NewFrontendChannel()
 	app.frontendChannel = frontendChannel
 	registry.FrontendEnv = func() (map[string]string, error) {
@@ -616,6 +637,30 @@ func runTrayApp() {
 		}
 	})
 	slog.Info("bridge server started")
+
+	// model.sock is always served, beside relay.sock, whether or not a model
+	// host has ever registered (docs/model-endpoint.md): "no host" is a 503
+	// on each call, not an absent listener. A bind failure here is fatal to
+	// relay in the same way a bridge-server bind failure is — the socket is
+	// as core to the process as the bridge itself, unlike the optional TCP
+	// listener below.
+	if err := app.modelEndpoint.ListenSocket(); err != nil {
+		slog.Error("failed to bind model endpoint socket", "error", err)
+		os.Exit(1)
+	}
+	app.goFunc(func() {
+		if err := app.modelEndpoint.ServeSocket(); err != nil {
+			slog.Error("model endpoint socket server stopped serving", "error", err)
+		}
+	})
+	// The TCP listener stays off unless settings.json's model_endpoint block
+	// (or RELAY_MODEL_LISTEN, tests only) names an address; Reconcile is a
+	// no-op either way when nothing changed. statusPoller re-converges it on
+	// the same tick as the remote listener, for the same reason: a settings
+	// change made by another process (the CLI, a hand edit) must take effect
+	// without a restart.
+	app.modelEndpoint.Reconcile()
+	slog.Info("model endpoint socket started")
 
 	// The remote listener sits BESIDE the bridge, never in front of it: the
 	// Unix socket keeps its ten request types, and this one has two. A
@@ -747,6 +792,11 @@ func (a *App) statusPoller() {
 		// only writer. Cheap and silent when nothing changed; see
 		// RemoteSupervisor.Reconcile for what "nothing changed" means.
 		_ = a.remote.Reconcile() // logs its own failure; a listener is never fatal to the tray
+		// Same convergence discipline for the model endpoint's TCP listener
+		// (docs/model-endpoint.md): cheap and silent when settings.json's
+		// model_endpoint block hasn't changed, and this is the path that
+		// picks up an out-of-process edit without a restart.
+		a.modelEndpoint.Reconcile()
 
 		a.platform.DispatchToMain(func() {
 			// store.Get() deep-copies, so prefer the already-loaded snapshot
@@ -1155,6 +1205,9 @@ func (a *App) cleanup() {
 			a.bridgeServer.StopAccepting()
 		}
 		a.remote.StopAccepting()
+		if a.modelEndpoint != nil {
+			a.modelEndpoint.Close()
+		}
 		a.extMgr.StopAll()
 		if a.bridgeServer != nil {
 			a.bridgeServer.Close()
