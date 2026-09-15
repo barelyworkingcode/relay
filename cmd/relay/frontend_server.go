@@ -547,7 +547,7 @@ func warnOnUnmatchedTCPRoute(mux *http.ServeMux) http.Handler {
 			slog.Warn(unmatchedRouteWarning,
 				"method", r.Method, "path", r.URL.Path, "transport", string(control.TransportTCP))
 		} else {
-			setFrontendRouteReadDeadline(w, r)
+			r = setFrontendRouteReadDeadline(w, r)
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -567,10 +567,56 @@ const unmatchedRouteWarning = "frontend: no route registered for this request"
 // for the real 10s (the same accommodation MCPRequestTimeout makes).
 var frontendRouteReadDeadline = 10 * time.Second
 
-func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) {
-	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+// readDeadlineExtenderKey is unexported so the only way to reach the value
+// it names is readDeadlineExtenderFromContext below — the same
+// context-carries-a-capability shape presence.CallerSessionFromContext
+// already uses.
+type readDeadlineExtenderKey struct{}
+
+// readDeadlineExtender re-arms the read deadline on the connection a
+// request arrived on. d == 0 clears it outright (no artificial bound); d >
+// 0 sets it to time.Now().Add(d). It exists so a presence-gated handler can
+// suspend frontendRouteReadDeadline for the human-timescale wait a prompt
+// takes, then restore it once that wait is over — see requireGate.
+type readDeadlineExtender func(d time.Duration)
+
+func withReadDeadlineExtender(ctx context.Context, extend readDeadlineExtender) context.Context {
+	return context.WithValue(ctx, readDeadlineExtenderKey{}, extend)
+}
+
+// readDeadlineExtenderFromContext is presence_gate.go's hook back into the
+// connection a gated request arrived on. It is absent for every caller of
+// requireGate that isn't a frontend HTTP route (IPC, CLI) — requireGate's
+// ok check treats that as "nothing to extend around", not an error, since
+// neither of those doors sets this deadline in the first place.
+func readDeadlineExtenderFromContext(ctx context.Context) (readDeadlineExtender, bool) {
+	extend, ok := ctx.Value(readDeadlineExtenderKey{}).(readDeadlineExtender)
+	return extend, ok
+}
+
+// setFrontendRouteReadDeadline arms frontendRouteReadDeadline on r's
+// connection and returns r carrying a readDeadlineExtender bound to that
+// same connection, for requireGate to reach for later. Every caller must
+// serve the returned request, not the one it was given — the extender is
+// only reachable through the context on the new value.
+func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) *http.Request {
+	rc := http.NewResponseController(w)
+	extend := func(d time.Duration) {
+		var deadline time.Time
+		if d > 0 {
+			deadline = time.Now().Add(d)
+		}
+		// Best-effort: a client that already dropped the connection makes
+		// this fail in some ordinary, non-actionable way (not
+		// http.ErrNotSupported), and there is nothing a handler already
+		// past the presence gate can do about that but proceed and let its
+		// own write fail where it fails.
+		_ = rc.SetReadDeadline(deadline)
+	}
+	if err := rc.SetReadDeadline(time.Now().Add(frontendRouteReadDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		slog.Warn("frontend: could not set read deadline", "error", err, "path", r.URL.Path)
 	}
+	return r.WithContext(withReadDeadlineExtender(r.Context(), extend))
 }
 
 // withRelayRouteReadDeadline sets frontendRouteReadDeadline before serving
@@ -588,7 +634,7 @@ func setFrontendRouteReadDeadline(w http.ResponseWriter, r *http.Request) {
 func withRelayRouteReadDeadline(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := mux.Handler(r); pattern != "" && pattern != "/" {
-			setFrontendRouteReadDeadline(w, r)
+			r = setFrontendRouteReadDeadline(w, r)
 		}
 		mux.ServeHTTP(w, r)
 	})
