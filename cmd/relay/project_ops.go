@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
@@ -19,7 +18,7 @@ import (
 // `configure` subset names: creating a project or widening its grant shape
 // needs the same presence check minting a credential does, because a
 // project's token is a security boundary and allowed_mcp_ids, allowed_tools,
-// access, context, allow_external and allow_cwd_auth ARE what that boundary
+// access, context and allow_external ARE what that boundary
 // reaches. allow_external is ADR-011 decision 2c's second axis of the same
 // permission set: an agent holding a project token whose project it can
 // edit does not need to mint anything to reach outbound — it widens the
@@ -82,7 +81,6 @@ func projectCreateDigest(f project.CreateFields) presence.Digest {
 		StringMapField("access", true, f.Access).
 		RawJSONMapField("context", true, rawJSONMapOf(f.Context)).
 		BoolMapField("allow_external", true, f.AllowExternal).
-		BoolField("allow_cwd_auth", true, f.AllowCwdAuth).
 		StringField("kind", true, string(f.Kind)).
 		StringField("host_id", true, f.HostID).
 		StringField("path", true, f.Path).
@@ -94,16 +92,16 @@ func projectCreateDigest(f project.CreateFields) presence.Digest {
 // update touches, absent-aware (§6.4): a grant answered for one field must
 // not be spendable on a request that also, or instead, touches another.
 //
-// This is deliberate: keep binding all eight fields below even after a
-// future change narrows project.grant's GATE to fire only on
-// allow_cwd_auth (ADR-018, blocked on the local cli-admin identity binding
-// — see docs/decisions/018-configuration-is-a-capability-of-an-identity.md).
-// The prompt authorises the request, not the reason the request was
-// privileged, so shrinking this digest to the field that triggers the gate
-// would let a grant answered for "turn on directory auth" redeem against
-// "turn on directory auth AND set allowed_tools to * AND repoint path at
-// /". Narrowing what gates and narrowing what the digest binds are two
-// different questions; only the first one changes.
+// This is deliberate: keep binding every field below even after a future
+// change narrows project.grant's GATE to fire on fewer of them (ADR-018,
+// blocked on the local cli-admin identity binding — see
+// docs/decisions/018-configuration-is-a-capability-of-an-identity.md). The
+// prompt authorises the request, not the reason the request was
+// privileged, so shrinking this digest to only the field that triggers the
+// gate would let a grant answered for "widen allowed_tools" redeem against
+// "widen allowed_tools AND repoint path at /". Narrowing what gates and
+// narrowing what the digest binds are two different questions; only the
+// first one changes.
 func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 	b := presence.NewDigestBuilder("project.grant").StringField("project_id", true, id)
 	if f.AllowedMcpIDs != nil {
@@ -130,11 +128,6 @@ func projectUpdateDigest(id string, f project.UpdateFields) presence.Digest {
 		b.BoolMapField("allow_external", true, *f.AllowExternal)
 	} else {
 		b.BoolMapField("allow_external", false, nil)
-	}
-	if f.AllowCwdAuth != nil {
-		b.BoolField("allow_cwd_auth", true, *f.AllowCwdAuth)
-	} else {
-		b.BoolField("allow_cwd_auth", false, false)
 	}
 	if f.Kind != nil {
 		b.StringField("kind", true, string(*f.Kind))
@@ -179,9 +172,6 @@ func projectCreateGrantFieldNames(f project.CreateFields) []string {
 	if len(f.AllowExternal) > 0 {
 		names = append(names, "allow_external")
 	}
-	if f.AllowCwdAuth {
-		names = append(names, "allow_cwd_auth")
-	}
 	if len(f.Mounts) > 0 {
 		names = append(names, "mounts")
 	}
@@ -190,15 +180,9 @@ func projectCreateGrantFieldNames(f project.CreateFields) []string {
 
 // projectGrantUpdateReason names the actual act (§6.5.2), naming only the
 // fields project.UpdateWidensGrant found to actually widen the grant — a
-// request that also resends nine unchanged or narrowed fields must not read
-// as widening all nine. allow_cwd_auth gets its own sentence when it is the
-// field being turned on: the ADR singles it out because turning it on hands
-// the project's whole tool set to any process standing in the directory,
-// with no token at all.
-func projectGrantUpdateReason(id string, widened []string, cwdAuthTurningOn bool) string {
-	if cwdAuthTurningOn {
-		return fmt.Sprintf("turn on directory authentication for the project %q", id)
-	}
+// request that also resends several unchanged or narrowed fields must not
+// read as widening all of them.
+func projectGrantUpdateReason(id string, widened []string) string {
 	return fmt.Sprintf("widen the grant for the project %q (%s)", id, strings.Join(widened, ", "))
 }
 
@@ -264,9 +248,8 @@ func (o *ProjectOps) Update(ctx context.Context, id string, f project.UpdateFiel
 		if err := requireIssuanceAuditor(o.Issuance); err != nil {
 			return config.Project{}, false, err
 		}
-		cwdAuthTurningOn := slices.Contains(widened, "allow_cwd_auth")
 		grant, err := requireGate(o.Gate, ctx, "project.grant", projectUpdateDigest(id, f),
-			projectGrantUpdateReason(id, widened, cwdAuthTurningOn))
+			projectGrantUpdateReason(id, widened))
 		if err != nil {
 			return config.Project{}, false, err
 		}

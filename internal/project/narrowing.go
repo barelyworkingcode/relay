@@ -17,10 +17,10 @@ import (
 )
 
 // NarrowFields is the entire configuration surface a remote holds.
-// Note what is not here: no path, no kind, no allow_cwd_auth, no
-// disabled_tools, no context, no name, no id. Decoding is strict, so a
-// client sending allow_cwd_auth gets a decode error at the door rather than
-// a field silently ignored.
+// Note what is not here: no path, no kind, no disabled_tools, no context,
+// no name, no id. Decoding is strict, so a client sending an unlisted field
+// (e.g. the retired allow_cwd_auth) gets a decode error at the door rather
+// than a field silently ignored.
 type NarrowFields struct {
 	AllowedMcpIDs *[]string            `json:"allowed_mcp_ids,omitempty"`
 	AllowedTools  *map[string][]string `json:"allowed_tools,omitempty"`

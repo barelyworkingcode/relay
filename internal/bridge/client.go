@@ -4,30 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"time"
 )
 
 type Client struct {
 	sockPath string
 	token    string
-	cwd      string // sent only when token is empty; see BridgeRequest.Cwd
 }
 
-// NewClient falls back to directory auth when token is empty: it sends its
-// working directory, which relay resolves against projects that opted in via
-// AllowCwdAuth. The cwd is captured once here (the process doesn't chdir
-// between calls) and is never sent alongside a token, so an authenticated
-// call can't be re-scoped by the directory it happens to run from.
+// NewClient never populates BridgeRequest.Cwd: allow_cwd_auth is retired
+// (plan-broker-and-sessions.md §2 C3), so relay no longer resolves a
+// project from a caller-asserted working directory. Sending one anyway
+// would cost this process's cwd — arguably sensitive on its own — for a
+// server-side check that no longer exists; a tokenless caller instead
+// relies entirely on C3 membership, which the bridge resolves from the
+// connection's own peer credentials, not from anything this client says.
 func NewClient(token string) *Client {
-	c := &Client{
+	return &Client{
 		sockPath: SocketPath(),
 		token:    token,
 	}
-	if token == "" {
-		c.cwd, _ = os.Getwd()
-	}
-	return c
 }
 
 func checkError(resp *BridgeResponse) error {
@@ -41,7 +37,6 @@ func (c *Client) ListTools() (json.RawMessage, error) {
 	resp, err := c.send(BridgeRequest{
 		Type:  ReqListTools,
 		Token: c.token,
-		Cwd:   c.cwd,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
@@ -64,7 +59,6 @@ func (c *Client) CallToolStreaming(name string, args json.RawMessage, onProgress
 		Name:      name,
 		Arguments: args,
 		Token:     c.token,
-		Cwd:       c.cwd,
 	}, onProgress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call tool %q: %w", name, err)

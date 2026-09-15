@@ -206,39 +206,14 @@ func TestContract_ListTools(t *testing.T) {
 	}
 }
 
-// A cwd on the wire is inert (plan-broker-and-sessions.md §2 C3): the field
-// still decodes, so a client built before directory auth was retired keeps
-// working, and the request reaches the router carrying exactly what it would
-// have carried without it. There is no longer any context key, ToolRouter
-// parameter or audit field a cwd could travel through — that absence is the
-// guarantee, and the authorization half of it (a cwd naming a real project's
-// directory buys nothing) is asserted end to end in cmd/relay's
+// A cwd is never part of the Client/ToolRouter contract any more
+// (plan-broker-and-sessions.md §2 C3, "allow_cwd_auth is removed"): the
+// Client type carries no cwd field, NewClient never captures one, and
+// ToolRouter's methods take no cwd parameter for anything to travel
+// through. There is nothing left to construct a client-side test around —
+// the wire-level guarantee (a hand-crafted BridgeRequest.Cwd is ignored
+// server-side) is asserted end to end in cmd/relay's
 // TestMembershipAuth_AClientAssertedCwdIsIgnored.
-func TestContract_ACwdOnTheWireIsInert(t *testing.T) {
-	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
-	sock := startTestBridge(t, router)
-
-	for _, c := range []*Client{
-		{sockPath: sock, cwd: "/Users/you/projects/acme/sub"},
-		{sockPath: sock, token: "proj-token", cwd: "/Users/you/projects/acme"},
-	} {
-		if _, err := c.ListTools(); err != nil {
-			t.Fatalf("ListTools (token %q): %v", c.token, err)
-		}
-	}
-	if got := router.listToolsTokens; len(got) != 2 || got[0] != "" || got[1] != "proj-token" {
-		t.Fatalf("tokens forwarded = %q; a cwd must not change what the router is told", got)
-	}
-}
-
-func TestNewClient_CwdOnlyWhenTokenless(t *testing.T) {
-	if c := NewClient(""); c.cwd == "" {
-		t.Error("tokenless client should capture its working directory")
-	}
-	if c := NewClient("some-token"); c.cwd != "" {
-		t.Errorf("tokened client should not capture a working directory, got %q", c.cwd)
-	}
-}
 
 func TestContract_CallTool(t *testing.T) {
 	router := &stubRouter{callToolResp: json.RawMessage(`{"ok":true}`)}

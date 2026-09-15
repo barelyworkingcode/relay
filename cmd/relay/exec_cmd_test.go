@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+// relay mcp / relay mcp call must read RELAY_PROJECT_TOKEN but never the
+// retired legacy alias RELAY_TOKEN (docs/tokens.md; C12 skill text).
+func TestResolveMcpToken_ReadsProjectTokenNotLegacyAlias(t *testing.T) {
+	t.Setenv("RELAY_PROJECT_TOKEN", "")
+	t.Setenv("RELAY_TOKEN", "")
+
+	if got := resolveMcpToken("flag-token"); got != "flag-token" {
+		t.Errorf("explicit --token should win over any env var, got %q", got)
+	}
+
+	t.Setenv("RELAY_PROJECT_TOKEN", "proj-token-value")
+	if got := resolveMcpToken(""); got != "proj-token-value" {
+		t.Errorf("expected RELAY_PROJECT_TOKEN to be read, got %q", got)
+	}
+
+	t.Setenv("RELAY_PROJECT_TOKEN", "")
+	t.Setenv("RELAY_TOKEN", "legacy-token-value")
+	if got := resolveMcpToken(""); got != "" {
+		t.Errorf("RELAY_TOKEN (legacy alias) must not be read; got %q", got)
+	}
+}
+
 func TestResolveToolArgs_InlineArgs(t *testing.T) {
 	got, err := resolveToolArgs("", `{"a":1}`, nil)
 	if err != nil {

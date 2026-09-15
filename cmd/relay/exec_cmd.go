@@ -12,6 +12,19 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcp"
 )
 
+// resolveMcpToken is the one place `relay mcp` and `relay mcp call` decide
+// the project token to present to the bridge: an explicit --token flag,
+// else RELAY_PROJECT_TOKEN. RELAY_TOKEN — the pre-migration legacy alias —
+// is deliberately not read here: it was a transitional accommodation for an
+// un-migrated spawner, and every spawner has long since moved to
+// RELAY_PROJECT_TOKEN (docs/tokens.md).
+func resolveMcpToken(flagToken string) string {
+	if flagToken != "" {
+		return flagToken
+	}
+	return os.Getenv(bridge.EnvProjectToken)
+}
+
 func runMcpExec(args []string) {
 	fs := flag.NewFlagSet("mcpExec", flag.ExitOnError)
 	token := fs.String("token", "", "auth token (prefer RELAY_PROJECT_TOKEN env)")
@@ -22,16 +35,11 @@ func runMcpExec(args []string) {
 	argsFile := fs.String("args-file", "", "read tool arguments JSON from a file, or '-' for stdin (avoids shell-quoting issues with quotes/apostrophes/parens)")
 	fs.Parse(args)
 
-	if *token == "" {
-		*token = os.Getenv(bridge.EnvProjectToken)
-	}
-	if *token == "" {
-		// Transition: accept the legacy env name from an un-migrated spawner.
-		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
-	}
-	// An empty token is not fatal: the bridge falls back to directory auth for
-	// projects that opted in. The CLI can't know which projects opted in, so
-	// it defers to the bridge and reports whatever it says (tokenlessHint
+	*token = resolveMcpToken(*token)
+	// An empty token is not fatal: a tokenless caller may still be a C3
+	// member of a live project_session (plan-broker-and-sessions.md §2 C3).
+	// The CLI can't know whether the bridge will recognise it as one, so it
+	// defers to the bridge and reports whatever it says (tokenlessHint
 	// expands the denial).
 	if !*list && *tool == "" {
 		fmt.Fprintln(os.Stderr, "error: must specify --list or --tool")
@@ -120,14 +128,14 @@ func runMcpExec(args []string) {
 
 // tokenlessHint only fires after a failure on a run that supplied no token at
 // all — a bad-token failure is a different problem and shouldn't be answered
-// with directory-auth advice.
+// with this advice.
 func tokenlessHint(tokenless bool) {
 	if !tokenless {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "\nNo token was supplied. Either:")
 	fmt.Fprintln(os.Stderr, "  export RELAY_PROJECT_TOKEN=<project-token>   # Settings UI → Projects → Bearer Token")
-	fmt.Fprintln(os.Stderr, "  or enable Settings UI → Projects → Directory Auth for the project containing this directory")
+	fmt.Fprintln(os.Stderr, "  or run inside a relay session launched for this project")
 }
 
 // resolveToolArgs: the --args-file/stdin form exists because it's the
