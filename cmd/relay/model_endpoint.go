@@ -69,14 +69,24 @@ const (
 
 // ModelCallAudit is the single, clearly named hook every model-endpoint
 // call's result is offered to (plan-broker-and-sessions.md §2 C4/C8 item 8).
-// The audit event constants themselves are unit R-M1c; this unit emits
-// nothing to the audit file — AuditHook's zero value is nil, and a nil hook
-// is a no-op, so wiring it to a real recorder later is a pure addition here.
+// cmd/relay/audit_model.go's recordModelCall (wired as AuditHook in
+// trayapp.go, R-M1c) is what turns one of these into a real audit.AuditEvent;
+// AuditHook's zero value is still nil, and a nil hook is still a no-op, so a
+// caller that constructs a *ModelEndpointServer without wiring one (a test,
+// say) behaves exactly as before this unit.
 type ModelCallAudit struct {
-	Transport      string // "socket" | "tcp"
-	Auth           string // "token" | "model_key" | "identity"
-	CallerKind     string // "project" | "service"
-	CallerName     string // project id or service id
+	Transport  string // "socket" | "tcp"
+	CallerKind string // "project" | "service"
+	CallerName string // project id or service id
+	// CallerProjectName is set only when CallerKind is "project".
+	CallerProjectName string
+	// Auth is set even when resolution FAILED, naming what was attempted
+	// rather than left blank: "token" | "model_key" | "identity", or ""
+	// when nothing was presented at all (no header, on TCP). The audit
+	// hook's unauthenticated case reads this the same way
+	// cmd/relay/audit_call.go's setUnauthenticated reads a tool call's
+	// presented-but-invalid token.
+	Auth           string
 	ModelKeyLabel  string
 	Method         string
 	Path           string
@@ -104,11 +114,18 @@ type ModelCallAudit struct {
 // the handler never has to know a project's and a service's opposite
 // empty-list defaults (spec-model-broker.md decision 4).
 type modelCaller struct {
-	kind          string // "project" | "service"
-	name          string // project id or service id
-	grant         []string
-	remote        bool
-	auth          string // "token" | "model_key" | "identity"
+	kind        string // "project" | "service"
+	name        string // project id or service id
+	projectName string // set only for kind "project" (R-M1c's audit record)
+	grant       []string
+	remote      bool
+	// auth is set even on a failed resolution, naming what was ATTEMPTED
+	// ("token", "model_key" or "identity") rather than left empty — the
+	// audit hook's unauthenticated-actor case (docs/audit-log.md's
+	// setUnauthenticated precedent) needs to tell "no credential was
+	// presented at all" (empty) from "one was presented and didn't
+	// resolve" apart, the same distinction that precedent draws.
+	auth          string
 	modelKeyLabel string
 }
 
@@ -327,12 +344,17 @@ func (m *ModelEndpointServer) resolveCaller(r *http.Request, transport string) (
 
 	if bearer, present := resolveBearerHeaders(r); present {
 		if bearer == "" {
+			// Present but blank/conflicting (resolveBearerHeaders' own
+			// contract): a credential of some kind was attempted, even
+			// though there is no value to classify further.
 			errBody := modelbroker.UnauthorizedError(shape)
-			return modelCaller{}, &errBody
+			return modelCaller{auth: "token"}, &errBody
 		}
 		return m.resolveBearer(bearer, shape)
 	}
 	if transport == transportTCP {
+		// Nothing was attempted at all: no header, and TCP has no identity
+		// to fall back to.
 		errBody := modelbroker.UnauthorizedError(shape)
 		return modelCaller{}, &errBody
 	}
@@ -344,14 +366,14 @@ func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Sha
 		projectID, label, ok := m.modelKeys.Lookup(bearer)
 		if !ok {
 			errBody := modelbroker.UnauthorizedError(shape)
-			return modelCaller{}, &errBody
+			return modelCaller{auth: "model_key"}, &errBody
 		}
 		proj, _ := config.FindProjectByID(m.store.Get(), projectID)
 		if proj == nil {
 			// The project was deleted after the key was minted: fail closed
 			// rather than serve a key that has nothing left to scope it to.
 			errBody := modelbroker.UnauthorizedError(shape)
-			return modelCaller{}, &errBody
+			return modelCaller{auth: "model_key"}, &errBody
 		}
 		return callerForProject(*proj, "model_key", label), nil
 	}
@@ -360,12 +382,12 @@ func (m *ModelEndpointServer) resolveBearer(bearer string, shape modelbroker.Sha
 	stored := m.store.Get().AuthenticateProjectByHash(hash)
 	if stored == nil || stored.ProjectID == "" {
 		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{}, &errBody
+		return modelCaller{auth: "token"}, &errBody
 	}
 	proj, _ := config.FindProjectByID(m.store.Get(), stored.ProjectID)
 	if proj == nil {
 		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{}, &errBody
+		return modelCaller{auth: "token"}, &errBody
 	}
 	return callerForProject(*proj, "token", ""), nil
 }
@@ -381,7 +403,7 @@ func callerForProject(proj config.Project, auth, label string) modelCaller {
 		grant = []string{"*"}
 	}
 	return modelCaller{
-		kind: "project", name: proj.ID, grant: grant,
+		kind: "project", name: proj.ID, projectName: proj.Name, grant: grant,
 		remote: proj.IsRemote(), auth: auth, modelKeyLabel: label,
 	}
 }
@@ -400,7 +422,7 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 	id, ok := m.launches.Lookup(peer)
 	if !ok {
 		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{}, &errBody
+		return modelCaller{auth: "identity"}, &errBody
 	}
 	op := service.OpModelCall
 	if isModelListRequest(r) {
@@ -408,7 +430,7 @@ func (m *ModelEndpointServer) resolveIdentity(r *http.Request, shape modelbroker
 	}
 	if !id.Allows(op) {
 		errBody := modelbroker.UnauthorizedError(shape)
-		return modelCaller{}, &errBody
+		return modelCaller{auth: "identity"}, &errBody
 	}
 	svc, _ := config.FindServiceByID(m.store.Get(), id.Name)
 	var allowed []string
@@ -432,18 +454,19 @@ func (m *ModelEndpointServer) audit(ev ModelCallAudit) {
 
 func (m *ModelEndpointServer) auditFor(caller modelCaller, transport string, r *http.Request, status int, outcome string, start time.Time, requested, canonical string) ModelCallAudit {
 	return ModelCallAudit{
-		Transport:      transport,
-		Auth:           caller.auth,
-		CallerKind:     caller.kind,
-		CallerName:     caller.name,
-		ModelKeyLabel:  caller.modelKeyLabel,
-		Method:         r.Method,
-		Path:           r.URL.Path,
-		RequestedModel: requested,
-		CanonicalModel: canonical,
-		Status:         status,
-		Outcome:        outcome,
-		DurationMS:     time.Since(start).Milliseconds(),
+		Transport:         transport,
+		Auth:              caller.auth,
+		CallerKind:        caller.kind,
+		CallerName:        caller.name,
+		CallerProjectName: caller.projectName,
+		ModelKeyLabel:     caller.modelKeyLabel,
+		Method:            r.Method,
+		Path:              r.URL.Path,
+		RequestedModel:    requested,
+		CanonicalModel:    canonical,
+		Status:            status,
+		Outcome:           outcome,
+		DurationMS:        time.Since(start).Milliseconds(),
 	}
 }
 
@@ -456,7 +479,11 @@ func (m *ModelEndpointServer) Handler(transport string) http.Handler {
 		caller, errBody := m.resolveCaller(r, transport)
 		if errBody != nil {
 			m.writeError(w, *errBody)
-			m.audit(m.auditFor(modelCaller{}, transport, r, errBody.Status, "unauthorized", start, "", ""))
+			// caller, not a fresh modelCaller{}: a failed resolution still
+			// carries what auth was ATTEMPTED (resolveCaller/resolveBearer/
+			// resolveIdentity's own doc comments), which the audit hook's
+			// unauthenticated-actor case needs.
+			m.audit(m.auditFor(caller, transport, r, errBody.Status, "unauthorized", start, "", ""))
 			return
 		}
 

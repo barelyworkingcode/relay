@@ -25,8 +25,9 @@ interesting event:
 
 Event kinds are `call_tool`, `list_tools`, `list_skills`, `control_decision`
 (see [below](#control-plane-authorization-decisions)), `credential_issued` /
-`credential_revoked` (see [below](#issuance-and-revocation)), and — for records
-relay writes about itself rather than about a caller — `mcp_down` / `mcp_up`
+`credential_revoked` (see [below](#issuance-and-revocation)), `model_call` /
+`model_list` (see [below](#the-model-endpoint)), and — for records relay
+writes about itself rather than about a caller — `mcp_down` / `mcp_up`
 (see below).
 
 `throttled` is deliberately distinct from `denied` and `tool_error`: it is the
@@ -484,6 +485,86 @@ A `control_decision` and an issuance record are both written for the routes
 that issue, and neither replaces the other: one says the caller was allowed
 through the door, the other says what came out of it. See
 [Issuance and revocation](#issuance-and-revocation).
+
+## The model endpoint
+
+`model_call` records one finished call to a model route
+([`docs/model-endpoint.md`](model-endpoint.md)); `model_list` records one
+`GET /v1/models` listing, gated by `log_lists` exactly as `list_tools` and
+`list_skills` are — a caller lists far more often than it calls, and logging
+every listing by default would bury the calls that matter. Both go through
+the ordinary fail-open path (`Record`, not `RecordDurable`): a model call is
+never delayed by, or refused because of, a full or broken audit sink, the
+same policy tool calls get.
+
+```json
+{"id":"…","ts":"…","dur_ms":238,"event":"model_call",
+ "actor":{"kind":"project","project_id":"proj_7f2a","project_name":"relay","auth":"token"},
+ "transport":"socket","method":"POST","path":"/v1/chat/completions",
+ "model":"vCode","model_canonical":"vCode","model_target":"ep/gpt-x",
+ "request_bytes":812,"response_bytes":4096,
+ "prompt_tokens":120,"completion_tokens":340,
+ "status":200,"outcome":"ok"}
+```
+
+- **`actor.kind`** is `project` for a caller authenticated by its own project
+  token or by an `rmk_`-prefixed model key minted for it — `actor.auth` is
+  `token` or `model_key` respectively, and `model_key_label` (below) names
+  the key's label when it was one. It is `service` for a launch identity on
+  `model.sock` with no bearer header, the tokenless path
+  (`docs/model-endpoint.md`'s Auth order §2) — `actor.service_id` names the
+  identity there, since a model-endpoint call carries no comparable per-call
+  pid the way a tool call does. `project_session` (`actor.auth: session`) is
+  reserved for a later unit (a session-host root or one of its descendants
+  acting for its own project, `plan-broker-and-sessions.md` §2 C1/C2) —
+  nothing in this repo emits it yet, but `relay audit --kind project_session`
+  already selects it mechanically the day something does.
+  A caller that never resolved at all — a bad bearer, or no credential
+  presented on a listener that requires one — is `actor.kind: unknown`
+  rather than a caller-shaped guess, the same rule a tool call's unresolved
+  credential gets. `actor.auth` still names what was *attempted* (`token`,
+  `model_key`, or the identity path), or is absent when nothing was
+  presented at all (no header, on TCP).
+- **`model_key_label`** names the `rmk_` key's label the caller authenticated
+  with. **Never the key itself** — there is no field on this record able to
+  carry it, a project token's plaintext, or either one's hash.
+- **`model`**, **`model_canonical`** and **`model_target`** are three
+  distinct facts, not one field read three ways: `model` is what the caller
+  asked for; `model_canonical` is what relay resolved it to against its own
+  catalog (`docs/model-endpoint.md`'s normalisation); `model_target` is
+  relayLLM's own account of which managed alias, endpoint or resolved
+  virtual candidate actually served the call, read from its
+  `X-Relay-Model-Target` response header. A call relay refused before ever
+  reaching relayLLM carries the first two and never the third.
+  `request_bytes` / `response_bytes` are counted in relay, and
+  `prompt_tokens` / `completion_tokens` are parsed from the upstream
+  response when present (`internal/modelbroker/usage.go`) — **never the
+  request or response content itself**: no prompt, message, instruction,
+  tool definition, audio, or completion text is ever in this record.
+- **`outcome`** extends the existing vocabulary with two values
+  (`not_found`, `client_abort`) and otherwise carries the model endpoint's
+  own reason strings verbatim (`ok`, `denied`, `unauthorized`,
+  `remote_project`, `route_not_found`, `host_unavailable`, `bad_request`,
+  `body_too_large`, `trailing_data`, `error`, `rate_limited` —
+  `docs/model-endpoint.md`'s Audit section has the full list and what
+  triggers each). `denied` (outside the caller's grant) and `not_found`
+  (absent from the catalog entirely) answer the byte-identical 404 on the
+  wire — a caller must not be able to enumerate models outside its grant by
+  the shape of the error — and this field is the only place the two are
+  told apart.
+
+```
+relay audit --event model_call                    # every finished model call
+relay audit --event model_list                     # every /v1/models listing (needs log_lists on)
+relay audit --event model_call --outcome denied     # refused by grant, as opposed to not_found
+relay audit --kind service --event model_call       # what a service identity (TTS, STT, ...) called
+```
+
+Four more event kinds — `session_launch`, `session_bound`, `session_end` and
+`session_resume` — are reserved constants for a later unit
+(`plan-broker-and-sessions.md` §2 C4's session host). Nothing in this repo
+constructs one yet; they are added here up front so that unit never has to
+edit `internal/audit/audit.go` again.
 
 ## Issuance and revocation
 
