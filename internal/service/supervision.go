@@ -271,23 +271,37 @@ func (r *Registry) scheduleRestart(sup *serviceSupervisor, exitCode int, ranFor 
 	}
 
 	delay := serviceRestartDelay(attempt)
+	// This is subtle: the timer is armed here, before nextAttempt is
+	// published, rather than inside the goroutine below. A FakeClock's
+	// Advance only wakes waiters already registered when it runs; arming
+	// the timer after publishing nextAttempt would let a test observe
+	// SupervisionRestarting and call Advance before the goroutine reached
+	// clk.After, registering a waiter whose deadline that Advance had
+	// already passed -- a wakeup that then never comes until some later,
+	// unrelated Advance. Arming synchronously, before the unlock below
+	// makes nextAttempt visible, guarantees the waiter exists by the time
+	// any observer can act on the status that promises a restart is due.
+	clk := r.clock()
+	timer := clk.After(delay)
+
 	sup.mu.Lock()
 	sup.phase = SupervisionRestarting
-	sup.nextAttempt = r.clock().Now().Add(delay)
+	sup.nextAttempt = clk.Now().Add(delay)
 	sup.mu.Unlock()
 
 	slog.Warn("service exited unexpectedly; restart scheduled",
 		"id", sup.id, "attempt", attempt, "exit_code", exitCode, "delay", delay)
 
-	go r.restartAfterBackoff(sup, cfg, delay)
+	go r.restartAfterBackoff(sup, cfg, timer)
 }
 
-// restartAfterBackoff sleeps off delay on the registry's clock, cancellable
-// by sup.ctx, then relaunches -- re-checking that sup is still of record
-// right before it spawns, so a Stop/Reload/StopAll landing anywhere in this
-// window, including after the sleep already completed, wins.
-func (r *Registry) restartAfterBackoff(sup *serviceSupervisor, cfg config.ServiceConfig, delay time.Duration) {
-	if !sleepClock(sup.ctx, r.clock(), delay) {
+// restartAfterBackoff waits on timer, already armed by scheduleRestart,
+// cancellable by sup.ctx, then relaunches -- re-checking that sup is still
+// of record right before it spawns, so a Stop/Reload/StopAll landing
+// anywhere in this window, including after the wait already completed,
+// wins.
+func (r *Registry) restartAfterBackoff(sup *serviceSupervisor, cfg config.ServiceConfig, timer <-chan time.Time) {
+	if !sleepClock(sup.ctx, timer) {
 		return
 	}
 
@@ -314,14 +328,15 @@ func (r *Registry) restartAfterBackoff(sup *serviceSupervisor, cfg config.Servic
 	slog.Info("service restarted", "id", sup.id, "pid", proc.cmd.Process.Pid)
 }
 
-func sleepClock(ctx context.Context, clk Clock, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
+// sleepClock waits for timer to fire or ctx to be cancelled, whichever
+// comes first. timer is already armed by the caller (Clock.After fires
+// immediately for a zero or negative duration on both realClock and
+// FakeClock, so there is no separate d <= 0 case to handle here).
+func sleepClock(ctx context.Context, timer <-chan time.Time) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-clk.After(d):
+	case <-timer:
 		return true
 	}
 }
