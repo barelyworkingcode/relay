@@ -44,21 +44,27 @@ func TestPermission_Member_Accepted(t *testing.T) {
 	}
 }
 
-// TestPermission_NonMember_Refused: the peer (this test process) is not a
-// descendant of the registered root. pid 1 is used as the root precisely
-// because membership.Resolve's walk stops at pid<=1 as a hard boundary
-// before ever consulting Roots for it (internal/membership/membership.go),
-// so this is guaranteed never to match, deterministically, without needing
-// to spawn and manage an unrelated real process tree.
+// TestPermission_NonMember_Refused: the peer is a genuine, separate process
+// (a curl child, like TestPermission_Member_Accepted's peer) that is NOT a
+// descendant of the registered root, so the real membership.Resolve walk
+// must actually run — from curl, up to its parent (this test binary, the
+// host — membership.go's pid<=1/HostPID stop) — and correctly fail, rather
+// than being dismissed for free at depth 1 the way a self-dialing test
+// process would be (that was this test's original, dead-code-hiding bug:
+// with the test process as its own peer, HostPID() equals the peer's own
+// pid, so Resolve rejects before RootByPID is ever consulted, and whatever
+// RegisterSessionForTest set up here is never actually exercised). pid 1 is
+// used as the (unrelated) root precisely because Resolve's walk stops at
+// pid<=1 as a hard boundary before ever consulting Roots for it, so it is
+// guaranteed never to match anything, deterministically.
 func TestPermission_NonMember_Refused(t *testing.T) {
 	srv, hookSock := startServerForPermission(t)
 	srv.RegisterSessionForTest("s1", 1)
 
-	client := unixClient(hookSock)
-	resp := postJSON(t, client, "http://h/permission", "", permissionBody("s1"))
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	_, wait := postAsChildProcess(t, hookSock, "/permission", permissionBody("s1"))
+	status := wait()
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
 	}
 }
 
@@ -82,13 +88,15 @@ func TestPermission_WrongSession_Refused(t *testing.T) {
 
 // TestPermission_UnknownSession_Refused: naming a session id nothing
 // registered must be refused the same way, not treated as an error class of
-// its own (C3's own rule: any failure resolves to "not a member").
+// its own (C3's own rule: any failure resolves to "not a member"). The peer
+// is again a genuine child process — see TestPermission_NonMember_Refused's
+// comment for why a self-dialing test process would make this pass for the
+// wrong reason.
 func TestPermission_UnknownSession_Refused(t *testing.T) {
 	_, hookSock := startServerForPermission(t)
-	client := unixClient(hookSock)
-	resp := postJSON(t, client, "http://h/permission", "", permissionBody("no-such-session"))
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	_, wait := postAsChildProcess(t, hookSock, "/permission", permissionBody("no-such-session"))
+	status := wait()
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
 	}
 }

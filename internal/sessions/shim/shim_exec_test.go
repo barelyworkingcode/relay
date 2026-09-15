@@ -227,19 +227,21 @@ func exitCodeOf(t *testing.T, err error) int {
 // Hello, the target must see fd 3 as EBADF, never an open, readable pipe.
 func TestExec_FD3ClosedInTarget(t *testing.T) {
 	_, testTargetBin := buildBinaries(t)
-	bridgeSock := startFakeBridge(t, fakeBridgeOK)
+	bridgeSock, received := startFakeBridge(t, fakeBridgeOK)
 	dir := mkShortTempDir(t, "fd3-")
 	fd3CheckFile := filepath.Join(dir, "fd3.txt")
+	secret := strings.Repeat("a", 64)
 
 	h := startExec(t, execOpts{
 		sessionID:    "sess-fd3",
 		identity:     true,
-		secret:       strings.Repeat("a", 64),
+		secret:       secret,
 		bridgeSocket: bridgeSock,
 		targetArgv:   []string{testTargetBin, "-fd3-check", fd3CheckFile, "-sleep", "5ms", "-exit-code", "0"},
 	})
 	h.waitForEvent("exit", 10*time.Second)
 	_ = h.wait()
+	wantHello(t, <-received, "sess-fd3", secret)
 
 	got, err := os.ReadFile(fd3CheckFile)
 	if err != nil {
@@ -252,9 +254,18 @@ func TestExec_FD3ClosedInTarget(t *testing.T) {
 
 // TestExec_BadSecret_Exit78 covers C6 step 1: anything but exactly 64
 // lowercase hex on fd 3 must exit 78 and the target must never start at all
-// (proved by the marker file it would otherwise create being absent).
+// (proved by the marker file it would otherwise create being absent). A
+// real, working fake bridge is deliberately present and listening on
+// RELAY_BRIDGE_SOCKET for every case: without one, this test would also
+// pass via the unrelated "no bridge socket" failure path (C6 step 3) even
+// if step 1's own hex validation were deleted entirely, since both paths
+// share the same exit code. Asserting the specific bad_secret status event
+// — which only step 1 ever emits — closes that gap, and the bridge must
+// never even see a connection (checked via the received channel staying
+// empty), since a bad secret must fail before step 3 dials anything.
 func TestExec_BadSecret_Exit78(t *testing.T) {
 	_, testTargetBin := buildBinaries(t)
+	bridgeSock, received := startFakeBridge(t, fakeBridgeOK)
 	dir := mkShortTempDir(t, "badsecret-")
 	marker := filepath.Join(dir, "marker.json")
 
@@ -270,17 +281,27 @@ func TestExec_BadSecret_Exit78(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_ = os.Remove(marker)
 			h := startExec(t, execOpts{
-				sessionID:  "sess-badsecret-" + name,
-				identity:   true,
-				secret:     secret,
-				targetArgv: []string{testTargetBin, "-marker", marker},
+				sessionID:    "sess-badsecret-" + name,
+				identity:     true,
+				secret:       secret,
+				bridgeSocket: bridgeSock,
+				targetArgv:   []string{testTargetBin, "-marker", marker},
 			})
+			ev := h.waitForEvent("bad_secret", 10*time.Second)
+			if ev.Event != "bad_secret" {
+				t.Fatalf("got event %q, want bad_secret", ev.Event)
+			}
 			code := h.wait()
 			if code != shim.ExitIdentityFailure {
 				t.Fatalf("exit code = %d, want %d", code, shim.ExitIdentityFailure)
 			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatalf("target ran and wrote a marker despite a bad secret")
+			}
+			select {
+			case got := <-received:
+				t.Fatalf("bridge received a Hello (%+v) despite a bad secret", got)
+			default:
 			}
 		})
 	}
@@ -291,14 +312,15 @@ func TestExec_BadSecret_Exit78(t *testing.T) {
 // target never started.
 func TestExec_HelloRefused_Exit78(t *testing.T) {
 	_, testTargetBin := buildBinaries(t)
-	bridgeSock := startFakeBridge(t, fakeBridgeRefuse)
+	bridgeSock, received := startFakeBridge(t, fakeBridgeRefuse)
 	dir := mkShortTempDir(t, "refused-")
 	marker := filepath.Join(dir, "marker.json")
+	secret := strings.Repeat("b", 64)
 
 	h := startExec(t, execOpts{
 		sessionID:    "sess-refused",
 		identity:     true,
-		secret:       strings.Repeat("b", 64),
+		secret:       secret,
 		bridgeSocket: bridgeSock,
 		targetArgv:   []string{testTargetBin, "-marker", marker},
 	})
@@ -313,6 +335,7 @@ func TestExec_HelloRefused_Exit78(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("target ran despite a refused Hello")
 	}
+	wantHello(t, <-received, "sess-refused", secret)
 }
 
 // TestExec_HelloRefused_NoBridgeSocket covers the same failure path when
@@ -338,17 +361,19 @@ func TestExec_HelloRefused_NoBridgeSocket(t *testing.T) {
 // step by step matches C6: hello_ok, started, exit.
 func TestExec_StatusEventOrder_WithIdentity(t *testing.T) {
 	_, testTargetBin := buildBinaries(t)
-	bridgeSock := startFakeBridge(t, fakeBridgeOK)
+	bridgeSock, received := startFakeBridge(t, fakeBridgeOK)
+	secret := strings.Repeat("d", 64)
 
 	h := startExec(t, execOpts{
 		sessionID:    "sess-order-id",
 		identity:     true,
-		secret:       strings.Repeat("d", 64),
+		secret:       secret,
 		bridgeSocket: bridgeSock,
 		targetArgv:   []string{testTargetBin, "-sleep", "5ms", "-exit-code", "0"},
 	})
 	evs := h.allEvents(10 * time.Second)
 	h.wait()
+	wantHello(t, <-received, "sess-order-id", secret)
 	got := eventNames(evs)
 	want := []string{"hello_ok", "started", "exit"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {

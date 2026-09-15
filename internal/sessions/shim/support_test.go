@@ -82,13 +82,28 @@ const (
 	fakeBridgeRefuse
 )
 
+// capturedHello is exactly what the fake bridge decoded off the wire, so a
+// test can assert on the request the shim actually sent rather than only on
+// its own answer. A shim that sent "token":"" (or the wrong kind, or the
+// wrong name) must fail these assertions even though the fake bridge would
+// otherwise have no opinion about it.
+type capturedHello struct {
+	Type  string `json:"type"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
 // startFakeBridge serves exactly the Hello wire shape C6 step 3 sends:
 // {"type":"Hello","kind":"project_session","name":"<id>","token":"<secret>"}
 // answered with either an OK carrying {kind,service_id,relay_pid} or an
 // error type. It is deliberately as small as this file's own hello.go
 // counterpart — a real bridge speaks much more, but the shim only ever
-// sends this one request over this connection.
-func startFakeBridge(t *testing.T, mode fakeBridgeMode) (sockPath string) {
+// sends this one request over this connection. The returned channel
+// receives one capturedHello per accepted connection (buffered generously;
+// tests that don't drain it are still fine, it just never blocks the
+// server goroutine because it's never read past capacity in practice).
+func startFakeBridge(t *testing.T, mode fakeBridgeMode) (sockPath string, received chan capturedHello) {
 	t.Helper()
 	dir := mkShortTempDir(t, "fb-")
 	sockPath = filepath.Join(dir, "bridge.sock")
@@ -97,6 +112,7 @@ func startFakeBridge(t *testing.T, mode fakeBridgeMode) (sockPath string) {
 		t.Fatalf("fake bridge listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
+	received = make(chan capturedHello, 8)
 
 	go func() {
 		for {
@@ -104,27 +120,23 @@ func startFakeBridge(t *testing.T, mode fakeBridgeMode) (sockPath string) {
 			if err != nil {
 				return
 			}
-			go serveFakeBridgeConn(conn, mode)
+			go serveFakeBridgeConn(conn, mode, received)
 		}
 	}()
-	return sockPath
+	return sockPath, received
 }
 
-func serveFakeBridgeConn(conn net.Conn, mode fakeBridgeMode) {
+func serveFakeBridgeConn(conn net.Conn, mode fakeBridgeMode, received chan capturedHello) {
 	defer func() { _ = conn.Close() }()
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		return
 	}
-	var req struct {
-		Type  string `json:"type"`
-		Kind  string `json:"kind"`
-		Name  string `json:"name"`
-		Token string `json:"token"`
-	}
+	var req capturedHello
 	if err := json.Unmarshal([]byte(line), &req); err != nil {
 		return
 	}
+	received <- req
 
 	var resp map[string]any
 	switch mode {
@@ -143,4 +155,22 @@ func serveFakeBridgeConn(conn net.Conn, mode fakeBridgeMode) {
 	b, _ := json.Marshal(resp)
 	b = append(b, '\n')
 	_, _ = conn.Write(b)
+}
+
+// wantHello fatals unless got matches the exact wire shape C6 step 3
+// requires: type Hello, kind project_session, and the given name/token.
+func wantHello(t *testing.T, got capturedHello, wantName, wantToken string) {
+	t.Helper()
+	if got.Type != "Hello" {
+		t.Fatalf("hello type = %q, want %q", got.Type, "Hello")
+	}
+	if got.Kind != "project_session" {
+		t.Fatalf("hello kind = %q, want %q", got.Kind, "project_session")
+	}
+	if got.Name != wantName {
+		t.Fatalf("hello name = %q, want %q", got.Name, wantName)
+	}
+	if got.Token != wantToken {
+		t.Fatalf("hello token = %q, want %q", got.Token, wantToken)
+	}
 }

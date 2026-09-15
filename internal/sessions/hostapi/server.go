@@ -146,21 +146,6 @@ func (s *Server) ServeHook() error {
 	return nil
 }
 
-// RegisterSessionForTest inserts a live session root directly, bypassing
-// POST /launch entirely. Test-only seam (production code only ever
-// populates the table from handleLaunch/watchRoot): it exists so a
-// /permission test can exercise the real C3 membership.Resolve walk against
-// a known root without needing a full shim+target process tree for every
-// case, the same way the shim's own tests build fake process trees rather
-// than driving relay's entire launch path.
-func (s *Server) RegisterSessionForTest(id string, rootPID int) {
-	info, ok := membership.NewSource().Info(rootPID)
-	if !ok {
-		info = membership.ProcInfo{}
-	}
-	s.table.put(&sessionEntry{id: id, state: stateLive, rootPID: rootPID, rootStart: info})
-}
-
 // Close shuts down both sockets. Safe to call even if only one was listened
 // on.
 func (s *Server) Close() {
@@ -251,25 +236,36 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !outcome.started || outcome.spawnFailed {
+		// F5: giving up here must not leave an orphaned shim behind — a
+		// caller that gave up waiting has no other way to learn this shim
+		// exists, and a spawn that "succeeds after relay already gave up"
+		// would otherwise run a target nothing ever asked for anymore.
+		_ = cmd.Process.Kill()
 		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, fmt.Sprintf("target spawn failed (errno=%d)", outcome.spawnErrno))
 		return
 	}
 
-	s.table.mu.Lock()
-	if e, ok := s.table.byID[req.SessionID]; ok {
-		e.state = stateLive
-		e.shimPID = shimPID
-		e.rootPID = outcome.rootPID
+	// SH §4.2: the shim itself is this session's root, matching what
+	// relay's own launch identity binds to (whoever said Hello). Read the
+	// shim's start time and record it as the session's live root in one
+	// critical section (sessionTable.setLive) so no /permission call can
+	// ever observe stateLive with a not-yet-populated rootStart.
+	rootInfo, ok := membership.NewSource().Info(shimPID)
+	if !ok {
+		// The shim already exited in the brief window since Start() —
+		// nothing left to record as a live root.
+		_ = cmd.Process.Kill()
+		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, "shim exited before its start time could be read")
+		return
 	}
-	s.table.mu.Unlock()
-	go s.watchRoot(req.SessionID, outcome.rootPID)
+	s.table.setLive(req.SessionID, shimPID, outcome.targetPID, rootInfo)
 
 	body, _ := json.Marshal(map[string]any{"session_id": req.SessionID, "kind": req.Kind})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(LaunchResponse{
 		SessionID: req.SessionID,
-		RootPID:   outcome.rootPID,
+		RootPID:   shimPID,
 		Body:      body,
 	})
 }
@@ -287,11 +283,17 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	var req TerminateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 		if e, ok := s.table.get(req.SessionID); ok && e.shimPID != 0 {
-			terminateShim(e.shimPID)
+			terminateShim(e.shimPID, e.targetPID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// maxPermissionBodyBytes bounds a /permission body. A real tool_input is
+// small (a shell command, an edit's arguments); this is generous headroom,
+// not a tuned limit — a later unit can tighten it once real tool payloads
+// are observed.
+const maxPermissionBodyBytes = 1 << 20 // 1 MiB
 
 // handlePermission implements C6's `relay-sessions hook` subsection, host
 // side: admit the call iff the peer is a C3 member of the named session's
@@ -303,6 +305,15 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 // table)"). What is NOT real yet is the policy decision itself: no
 // PermissionManager is wired in (that needs a live provider session,
 // R-S7b/R-S7c), so an admitted call gets a fixed placeholder decision.
+//
+// Membership is resolved before the body is ever read: the peer pid and
+// accept time needed for Resolve both come from the connection itself
+// (connInfo), not the request body, so a caller that fails the membership
+// check is refused without this handler decoding a single byte it sent —
+// hook.sock is 0600 but reachable by any same-uid process, including the
+// sandboxed session target, so an unauthenticated caller must not be able
+// to drive unbounded JSON-decode allocation here the way it could if the
+// body were decoded first.
 func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -313,14 +324,20 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+
+	resolvedID, memberOK := membership.Resolve(membership.NewSource(), rootsAdapter{s.table}, int(info.peer.PID()), info.acceptedAt)
+	if !memberOK {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxPermissionBodyBytes)
 	var body permissionRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SessionID == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	resolvedID, memberOK := membership.Resolve(membership.NewSource(), rootsAdapter{s.table}, int(info.peer.PID()), info.acceptedAt)
-	if !memberOK || resolvedID != body.SessionID {
+	if resolvedID != body.SessionID {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}

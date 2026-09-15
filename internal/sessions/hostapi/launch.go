@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 )
 
@@ -31,7 +30,7 @@ type launchOutcome struct {
 	spawnFailed     bool
 	spawnErrno      int
 	started         bool
-	rootPID         int
+	targetPID       int // the shim's own child's pid (the "started" event) — never the session root; see sessionEntry's doc comment
 }
 
 // spawnShim implements C5's host-side half of a launch: build the shim's
@@ -138,67 +137,49 @@ func readShimStatus(f *os.File) (*launchOutcome, error) {
 			return out, nil
 		case "started":
 			out.started = true
-			out.rootPID = ev.PID
+			out.targetPID = ev.PID
 			return out, nil
 		}
 	}
 	return out, sc.Err()
 }
 
-// watchRoot registers a C3 membership root for a just-started target: the
-// pid the "started" event named, pinned to its own start time so a later
-// pid reuse can never be mistaken for the same process. Session cleanup
-// (markEnded) runs from here on a real exit, and separately from the shim
-// reaper on wait() — whichever observes the end first wins; markEnded is
-// idempotent.
-func (s *Server) watchRoot(sessionID string, rootPID int) {
-	info, ok := membership.NewSource().Info(rootPID)
-	if !ok {
-		// Already gone by the time we looked: nothing to watch, and nothing
-		// this session's root could ever authorize past this point.
-		s.table.markEnded(sessionID)
-		return
-	}
-	entry, ok := s.table.get(sessionID)
-	if !ok {
-		return
-	}
-	cancel, err := membership.WatchExit(rootPID, info, func() { s.table.markEnded(sessionID) })
-	if err != nil {
-		// membership.ErrExited or an infrastructure failure: treat exactly
-		// like an immediate exit (membership.WatchExit's own contract).
-		s.table.markEnded(sessionID)
-		return
-	}
-	s.table.mu.Lock()
-	entry.rootStart = info
-	entry.cancelWatch = cancel
-	s.table.mu.Unlock()
-}
-
 // reapShim waits for a spawned shim to exit so it never becomes a zombie,
-// then marks its session ended if nothing already did.
+// then marks its session ended. Since a session's root is the shim itself
+// (sessionEntry's doc comment) and this host is the shim's real OS parent,
+// wait(2) is authoritative for "is this session over" — no separate
+// membership.WatchExit/kqueue watch of a grandchild is needed here, unlike
+// a hook peer's own ancestry walk, which does have to reach past processes
+// this host never directly parented.
 func (s *Server) reapShim(sessionID string, cmd *exec.Cmd) {
 	_ = cmd.Wait()
-	s.table.mu.Lock()
-	if e, ok := s.table.byID[sessionID]; ok && e.cancelWatch != nil {
-		e.cancelWatch()
-	}
-	s.table.mu.Unlock()
 	s.table.markEnded(sessionID)
 }
 
 // terminateShim implements C5's POST /terminate: SIGTERM the shim (which
 // forwards, per C6 step 7, to the target's own process group), then SIGKILL
-// after terminateGrace if it hasn't exited.
-func terminateShim(shimPID int) {
+// after terminateGrace if it hasn't exited. It also signals the target's
+// own process group directly, belt-and-suspenders: a target that ignores
+// SIGTERM must not be able to outlive a shim that a SIGKILL then removes
+// before the shim's own forwarding (already best-effort, not guaranteed —
+// see internal/sessions/shim's own documented signal-forwarding race) had a
+// chance to matter. targetPID of 0 (not yet known, e.g. terminate racing a
+// launch still in flight) skips the direct signal; the shim SIGTERM/SIGKILL
+// still applies either way.
+func terminateShim(shimPID, targetPID int) {
 	_ = syscall.Kill(shimPID, syscall.SIGTERM)
+	if targetPID > 0 {
+		_ = syscall.Kill(-targetPID, syscall.SIGTERM)
+	}
 	go func() {
 		time.Sleep(terminateGrace)
 		// Signal 0 probes for existence without actually signalling —
 		// ESRCH means it (and any zombie) is already gone, nothing to kill.
 		if err := syscall.Kill(shimPID, 0); err == nil {
 			_ = syscall.Kill(shimPID, syscall.SIGKILL)
+		}
+		if targetPID > 0 {
+			_ = syscall.Kill(-targetPID, syscall.SIGKILL)
 		}
 	}()
 }
