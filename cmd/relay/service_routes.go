@@ -18,8 +18,9 @@ type serviceView struct {
 	WorkingDir   string                     `json:"working_dir,omitempty"`
 	Autostart    bool                       `json:"autostart"`
 	URL          string                     `json:"url,omitempty"`
-	Capabilities []config.ServiceCapability `json:"capabilities"`
-	Running      bool                       `json:"running"`
+	Capabilities  []config.ServiceCapability `json:"capabilities"`
+	AllowedModels []string                   `json:"allowed_models,omitempty"`
+	Running       bool                       `json:"running"`
 	// Set when the record was written but starting or restarting the process
 	// failed. The mutation still succeeded, so this rides on a 2xx.
 	ProcessError string `json:"process_error,omitempty"`
@@ -27,16 +28,17 @@ type serviceView struct {
 
 func serviceViewOf(c config.ServiceConfig, running bool) serviceView {
 	return serviceView{
-		ID:           c.ID,
-		DisplayName:  c.DisplayName,
-		Command:      c.Command,
-		Args:         c.Args,
-		Env:          revealEnvForUI(c.Env),
-		WorkingDir:   c.WorkingDir,
-		Autostart:    c.Autostart,
-		URL:          c.URL,
-		Capabilities: c.Capabilities,
-		Running:      running,
+		ID:            c.ID,
+		DisplayName:   c.DisplayName,
+		Command:       c.Command,
+		Args:          c.Args,
+		Env:           revealEnvForUI(c.Env),
+		WorkingDir:    c.WorkingDir,
+		Autostart:     c.Autostart,
+		URL:           c.URL,
+		Capabilities:  c.Capabilities,
+		AllowedModels: c.AllowedModels,
+		Running:       running,
 	}
 }
 
