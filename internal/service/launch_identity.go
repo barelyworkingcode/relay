@@ -112,6 +112,13 @@ type Launches struct {
 	clock      func() time.Time
 	rootSource membership.Source
 	watchRoot  func(pid int, want membership.ProcInfo, onExit func()) (cancel func(), err error)
+
+	// helperVerifier is SP3/R-S9's code-identity gate on a "service" launch
+	// named config.RelaySessionsServiceID: nil (NewLaunches' default) skips
+	// the check for every launch, service and project_session alike — main
+	// wires the real darwin implementation once codesign_darwin's build-time
+	// cdhash exists; a test wires a stub. See SetHelperVerifier.
+	helperVerifier HelperVerifier
 }
 
 // Launch is one launch's record. Its handle is what ends it.
@@ -172,6 +179,21 @@ func (t *Launches) SetRootWatcherForTest(watch func(pid int, want membership.Pro
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.watchRoot = watch
+}
+
+// SetHelperVerifier installs the code-identity check BindKind applies to a
+// "service" launch named config.RelaySessionsServiceID once it binds (SP3,
+// R-S9's runtime half): the presenting process already proved it holds
+// relay's launch secret; this additionally proves its code identity really
+// is the signed relay-sessions helper, not merely a process that obtained
+// the secret some other way. nil (NewLaunches' default) skips the check.
+// Unlike the SetXxxForTest seams above, production calls this too — there
+// is no sensible always-on default, since the real check needs a
+// build-time cdhash that only exists on a signed build.
+func (t *Launches) SetHelperVerifier(v HelperVerifier) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.helperVerifier = v
 }
 
 // Begin records a new launch named id.Name and returns its single-use secret.
@@ -342,6 +364,17 @@ func (t *Launches) BindKind(name, secret string, peer peertoken.Token, wantKind 
 	if other := t.bound[proc]; other != nil {
 		return Identity{}, fmt.Errorf("%w: process %d already holds identity %q", ErrHelloRefused, proc.PID, other.id.Name)
 	}
+	if t.helperVerifier != nil && l.id.Kind == IdentityKindService && l.id.Name == config.RelaySessionsServiceID {
+		// This is deliberate: refused here, before l.spent is set, exactly
+		// like a wrong secret above — a process that presented the right
+		// secret but fails its code-identity check is not a benign retry
+		// case, but burning the secret would still be the wrong response:
+		// there is no legitimate holder left who could present it correctly
+		// a second time.
+		if err := t.helperVerifier.VerifyGuest(peer); err != nil {
+			return Identity{}, fmt.Errorf("%w: helper code identity: %v", ErrHelloRefused, err)
+		}
+	}
 
 	var cancel func()
 	if l.id.Kind == IdentityKindProjectSession {
@@ -428,6 +461,27 @@ func (t *Launches) EndByParent(name string) int {
 	return t.endWhereLocked(func(l *Launch) bool {
 		return l.id.Kind == IdentityKindProjectSession && l.id.ParentLaunch == name
 	})
+}
+
+// RootPIDsByParent reports the root pid of every live, bound project_session
+// launch whose ParentLaunch is name. internal/service's registry (R-S9)
+// reads this immediately before calling EndByParent, so it knows exactly
+// which process groups to SIGKILL once the identities themselves are gone —
+// see EndByParent's own doc comment for why the killing itself does not
+// happen here.
+func (t *Launches) RootPIDsByParent(name string) []int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var pids []int32
+	for _, l := range t.byName {
+		if l.ended || l.id.Kind != IdentityKindProjectSession || l.id.ParentLaunch != name {
+			continue
+		}
+		if l.spent && l.id.Process.PID != 0 {
+			pids = append(pids, l.id.Process.PID)
+		}
+	}
+	return pids
 }
 
 // EndByProject ends every live project_session launch bound to projectID,
