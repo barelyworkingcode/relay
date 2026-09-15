@@ -23,7 +23,6 @@ type CreateFields struct {
 	ShellTemplates   []config.ShellTemplate   `json:"shell_templates"`
 	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
 	GenerateSkill    bool                     `json:"generate_skill,omitempty"`
-	AllowCwdAuth     bool                     `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    map[string][]string      `json:"disabled_tools,omitempty"`
 	SessionFolders   []string                 `json:"session_folders,omitempty"`
 	// AllowedTools, Access and Context are the permission set an operator can
@@ -38,7 +37,7 @@ type CreateFields struct {
 	AllowExternal map[string]bool `json:"allow_external,omitempty"`
 	// Mounts is the mount-plane grant (see config.Project.Mounts):
 	// ValidateShape refuses it on a kind:local project the same way it
-	// refuses AllowCwdAuth's remote-only cousins the other way around.
+	// refuses GenerateSkill's remote-only cousins the other way around.
 	Mounts []config.MountGrant `json:"mounts,omitempty"`
 }
 
@@ -58,7 +57,6 @@ type UpdateFields struct {
 	ShellTemplates   *[]config.ShellTemplate  `json:"shell_templates,omitempty"`
 	PermissionPolicy *config.PermissionPolicy `json:"permission_policy,omitempty"`
 	GenerateSkill    *bool                    `json:"generate_skill,omitempty"`
-	AllowCwdAuth     *bool                    `json:"allow_cwd_auth,omitempty"`
 	DisabledTools    *map[string][]string     `json:"disabled_tools,omitempty"`
 	SessionFolders   *[]string                `json:"session_folders,omitempty"`
 	// Pointers for the same nil-means-no-change reason as everything above:
@@ -79,7 +77,7 @@ type UpdateFields struct {
 // rolled back. Returns the fully-resolved project (re-read after the
 // sub-mutations).
 func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (config.Project, error) {
-	// GenerateSkill, AllowCwdAuth, ShellTemplates, PermissionPolicy,
+	// GenerateSkill, ShellTemplates, PermissionPolicy,
 	// ChatTemplates and the permission-set fields are not parameters of
 	// CreateWithTokenKind — they are applied by sub-mutations below,
 	// after the project already exists. They still have to be on this
@@ -96,7 +94,6 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 		AllowedModels:    f.AllowedModels,
 		ShellTemplates:   f.ShellTemplates,
 		GenerateSkill:    f.GenerateSkill,
-		AllowCwdAuth:     f.AllowCwdAuth,
 		DisabledTools:    f.DisabledTools,
 		AllowedTools:     f.AllowedTools,
 		Access:           f.Access,
@@ -136,9 +133,6 @@ func ApplyCreate(s *config.Settings, f CreateFields, surfaces McpSurfaces) (conf
 	}
 	if f.GenerateSkill {
 		s.SetProjectGenerateSkill(created.ID, true)
-	}
-	if f.AllowCwdAuth {
-		s.SetProjectAllowCwdAuth(created.ID, true)
 	}
 	if len(f.SessionFolders) > 0 {
 		s.UpdateProjectSessionFolders(created.ID, f.SessionFolders)
@@ -186,7 +180,7 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 
 	// Validate the FINAL shape the patch would produce, not the touched
-	// fields in isolation: a request that only flips AllowCwdAuth on an
+	// fields in isolation: a request that only flips GenerateSkill on an
 	// already-remote project must still be refused, and one that only clears
 	// Path on an already-remote project (a legal no-op) must still succeed.
 	candidate := *proj
@@ -210,9 +204,6 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.GenerateSkill != nil {
 		candidate.GenerateSkill = *f.GenerateSkill
-	}
-	if f.AllowCwdAuth != nil {
-		candidate.AllowCwdAuth = *f.AllowCwdAuth
 	}
 	if f.DisabledTools != nil {
 		candidate.DisabledTools = *f.DisabledTools
@@ -324,9 +315,6 @@ func ApplyUpdate(s *config.Settings, id string, f UpdateFields, surfaces func() 
 	}
 	if f.GenerateSkill != nil {
 		s.SetProjectGenerateSkill(id, *f.GenerateSkill)
-	}
-	if f.AllowCwdAuth != nil {
-		s.SetProjectAllowCwdAuth(id, *f.AllowCwdAuth)
 	}
 	if f.SessionFolders != nil {
 		s.UpdateProjectSessionFolders(id, *f.SessionFolders)

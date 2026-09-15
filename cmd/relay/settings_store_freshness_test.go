@@ -246,14 +246,14 @@ func TestSSFWithPersistsSettingsThatWereNeverOnDisk(t *testing.T) {
 		if len(s.Projects) == 0 {
 			t.Fatal("With emptied settings that were never written to disk; a file that was never created is not a deleted file")
 		}
-		s.Projects[0].AllowCwdAuth = true
+		s.Projects[0].GenerateSkill = true
 	}), "With over a store whose settings are not on disk yet")
 
 	proj, _ := config.FindProjectByID(sealedSettingsStoreAt(dir).Get(), "ssf-p")
 	if proj == nil {
 		t.Fatal("the project never reached disk")
 	}
-	if !proj.AllowCwdAuth {
+	if !proj.GenerateSkill {
 		t.Fatal("the mutation never reached disk")
 	}
 }
@@ -337,7 +337,7 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 			return
 		}
 		seen = true
-		p.AllowCwdAuth = true
+		p.GenerateSkill = true
 	}), "the tray's update to its own project")
 	if !seen {
 		t.Fatal("the project this store created was not visible to its own With callback after the reload")
@@ -348,7 +348,7 @@ func TestSSFOwnMutationIsWrittenCorrectlyAfterAReload(t *testing.T) {
 	if updated == nil {
 		t.Fatal("the project is gone from settings.json")
 	}
-	if !updated.AllowCwdAuth {
+	if !updated.GenerateSkill {
 		t.Error("the tray's update to its own project did not reach disk")
 	}
 	if updated.TokenHash != proj.TokenHash {

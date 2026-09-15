@@ -44,9 +44,6 @@ func UpdateWidensGrant(stored config.Project, f UpdateFields) []string {
 	if f.AllowExternal != nil && allowExternalWidens(stored.AllowExternal, *f.AllowExternal) {
 		out = append(out, "allow_external")
 	}
-	if f.AllowCwdAuth != nil && *f.AllowCwdAuth && !stored.AllowCwdAuth {
-		out = append(out, "allow_cwd_auth")
-	}
 	if f.Kind != nil && normalizeKind(*f.Kind) != normalizeKind(stored.Kind) {
 		out = append(out, "kind")
 	}

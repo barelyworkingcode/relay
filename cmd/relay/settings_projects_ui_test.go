@@ -188,7 +188,7 @@ func TestHarvestProjectFormPayloadShape(t *testing.T) {
 			id: 'p1', name: 'Proj', path: '/tmp/proj',
 			allowed_mcp_ids: ['a', 'b'], allowed_models: ['*'],
 			disabled_tools: { a: ['x'] },
-			generate_skill: true, allow_cwd_auth: true,
+			generate_skill: true,
 			chat_templates: [{id:'t1', name:'T', model:'claude-sonnet'}]
 		}];
 		window.editProject('p1');
@@ -199,7 +199,6 @@ func TestHarvestProjectFormPayloadShape(t *testing.T) {
 			allowedMcpIds: payload.allowed_mcp_ids,
 			allowedModels: payload.allowed_models,
 			generateSkill: payload.generate_skill,
-			allowCwdAuth: payload.allow_cwd_auth,
 			disabledTools: payload.disabled_tools,
 			omitsChatTemplates: !('chat_templates' in payload)
 		});
@@ -207,7 +206,7 @@ func TestHarvestProjectFormPayloadShape(t *testing.T) {
 	got := evalString(t, vm, script)
 	for _, want := range []string{
 		`"name":"Proj"`, `"path":"/tmp/proj"`, `"allowedMcpIds":["a","b"]`,
-		`"allowedModels":["*"]`, `"generateSkill":true`, `"allowCwdAuth":true`,
+		`"allowedModels":["*"]`, `"generateSkill":true`,
 		`"disabledTools":{"a":["x"]}`, `"omitsChatTemplates":true`,
 	} {
 		if !strings.Contains(got, want) {
@@ -270,7 +269,7 @@ func TestRemoteProjectZeroMcpHarvest(t *testing.T) {
 		window.state.projects = [{
 			id: 'p2', name: 'Remote Zero', kind: 'remote', path: '',
 			allowed_mcp_ids: [], allowed_models: [], disabled_tools: {},
-			generate_skill: false, allow_cwd_auth: false
+			generate_skill: false
 		}];
 		window.editProject('p2');
 		var payload = window.harvestProjectForm();
@@ -284,14 +283,13 @@ func TestRemoteProjectZeroMcpHarvest(t *testing.T) {
 			allowedModels: payload.allowed_models,
 			allowedMcpIds: payload.allowed_mcp_ids,
 			generateSkill: payload.generate_skill,
-			allowCwdAuth: payload.allow_cwd_auth,
 			formErrorAfterSave: window.state.projectFormError
 		});
 	})()`
 	got := evalString(t, vm, script)
 	for _, want := range []string{
 		`"kind":"remote"`, `"hasPathKey":false`, `"allowedModels":[]`, `"allowedMcpIds":[]`,
-		`"generateSkill":false`, `"allowCwdAuth":false`, `"formErrorAfterSave":null`,
+		`"generateSkill":false`, `"formErrorAfterSave":null`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("remote zero-MCP harvest: missing %s in %s", want, got)
@@ -333,7 +331,7 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 			id: 'p1', name: 'Local One', path: '/tmp/local', kind: 'local',
 			allowed_mcp_ids: ['*'], allowed_models: ['*'], disabled_tools: {},
 			chat_templates: [], permission_policy: { default_mode: '', allowed_tools: [], denied_tools: [] },
-			generate_skill: false, allow_cwd_auth: false
+			generate_skill: false
 		}];
 		window.editProject('p1');
 		var editHtml = window.renderProjectForm();
@@ -350,7 +348,6 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 			editHasChatTemplates: editHtml.indexOf('Chat Templates') >= 0,
 			editHasPermissionPolicy: editHtml.indexOf('Permission Policy') >= 0,
 			editHasSkillSection: editHtml.indexOf('Skill (CLAUDE.md') >= 0,
-			editHasDirAuthSection: editHtml.indexOf('Directory Auth') >= 0,
 			editHasTokenSection: editHtml.indexOf('Bearer Token') >= 0,
 			editHasKindLabel: editHtml.indexOf('Local') >= 0,
 			editNoRemoteNote: editHtml.indexOf('no host directory') < 0,
@@ -359,7 +356,6 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 			newHasMcpWildcard: newHtml.indexOf('Allow all registered MCPs') >= 0,
 			newHasModelsWildcard: newHtml.indexOf('Allow all models') >= 0,
 			newHasSkillSection: newHtml.indexOf('Skill (CLAUDE.md') >= 0,
-			newHasDirAuthSection: newHtml.indexOf('Directory Auth') >= 0,
 			newHasKindSelector: newHtml.indexOf("setProjKind('local')") >= 0 && newHtml.indexOf("setProjKind('remote')") >= 0
 		});
 	})()`
@@ -367,10 +363,10 @@ func TestLocalProjectFormUnchanged(t *testing.T) {
 	for _, want := range []string{
 		`"editHasPathInput":true`, `"editHasMcpWildcard":true`, `"editHasModelsSection":true`,
 		`"editHasModelsWildcard":true`, `"editHasChatTemplates":true`, `"editHasPermissionPolicy":true`,
-		`"editHasSkillSection":true`, `"editHasDirAuthSection":true`, `"editHasTokenSection":true`,
+		`"editHasSkillSection":true`, `"editHasTokenSection":true`,
 		`"editHasKindLabel":true`, `"editNoRemoteNote":true`,
 		`"newFormDefaultsLocal":true`, `"newHasPathInput":true`, `"newHasMcpWildcard":true`,
-		`"newHasModelsWildcard":true`, `"newHasSkillSection":true`, `"newHasDirAuthSection":true`,
+		`"newHasModelsWildcard":true`, `"newHasSkillSection":true`,
 		`"newHasKindSelector":true`,
 	} {
 		if !strings.Contains(got, want) {

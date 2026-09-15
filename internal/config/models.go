@@ -525,19 +525,6 @@ type Project struct {
 	// independent of this flag.
 	GenerateSkill bool `json:"generate_skill,omitempty"`
 
-	// AllowCwdAuth opts this project into token-less bridge auth for a
-	// caller whose working directory is inside Path (see
-	// AuthenticateProjectByPath). Default false.
-	//
-	// This trades an explicit grant for convenience. With a token, a process
-	// holds this project's tool surface because something deliberately
-	// handed it the credential; with this flag, any process running as the
-	// user gets that surface by standing in the directory — a stray agent in
-	// a subdirectory included. It is not a privilege escalation across users
-	// (settings.json is 0600 and already holds every token in plaintext),
-	// but it does erase the deliberate hand-off, so it stays opt-in.
-	AllowCwdAuth bool `json:"allow_cwd_auth,omitempty"`
-
 	// Mounts is the mount-plane grant: each entry exposes one host directory to
 	// a remote client as a real POSIX filesystem mount, kernel-contained,
 	// instead of through fsMCP's curated tool surface. Refused on a

@@ -37,7 +37,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	if models == nil {
 		models = []string{}
 	}
-	// GenerateSkill/AllowCwdAuth/ShellTemplates aren't parameters here — they
+	// GenerateSkill/ShellTemplates aren't parameters here — they
 	// are applied by later mutators in ApplyCreate — so this candidate
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
@@ -105,7 +105,7 @@ func validateProjectPath(path string) error {
 }
 
 // ValidateShape is the single point that decides whether a given
-// combination of Kind, Path, AllowCwdAuth, GenerateSkill, ShellTemplates,
+// combination of Kind, Path, GenerateSkill, ShellTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
 // and update paths so a project can never reach settings.json in a
 // self-contradictory shape.
@@ -143,12 +143,6 @@ func ValidateShape(proj *config.Project) error {
 	}
 	if proj.Path != "" {
 		return fmt.Errorf("remote project must not have a path: %q", proj.Path)
-	}
-	// A remote caller's cwd is on a different machine; relay cannot compare
-	// it against a host path, and a collision would grant a remote client
-	// the tool surface of an unrelated local project via a directory guess.
-	if proj.AllowCwdAuth {
-		return fmt.Errorf("remote project must not enable allow_cwd_auth: directory auth compares a caller's cwd against Path, which a remote project doesn't have")
 	}
 	// regenProjectSkills silently skips pathless projects, so leaving this
 	// flag on would make it an inert toggle that lies about what it does.
@@ -371,41 +365,20 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// AuthenticateByPath returns nil when dir is empty, matches nothing,
-// or matches only projects that have NOT opted into AllowCwdAuth — every
-// failure mode is "no access", never "all access". The scope granted is
-// identical to the project's token: opting in changes how a caller is
-// *identified*, never what the project is allowed to reach.
+// AuthenticateByPath always returns nil: allow_cwd_auth is retired
+// (plan-broker-and-sessions.md §2 C3's "a cwd sent by a client is
+// ignored") — a caller's asserted working directory can no longer
+// identify a project by itself.
 //
-// Nested projects resolve to the most specific match (longest project path
-// containing dir), so a project nested inside another wins for its own
-// subtree.
+// This is deliberate: router.go's resolveCwdAuth (cmd/relay, R-S2a's
+// exclusive file this wave) still calls this function by the same
+// signature. Gutting the body here — rather than deleting the function and
+// its call site together — retires the behavior without touching a file
+// this unit must not edit. R-S2a replaces resolveCwdAuth's caller-cwd path
+// with the C3 membership check and removes this call (and this stub)
+// entirely when it does.
 func AuthenticateByPath(s *config.Settings, dir string) *config.StoredToken {
-	if dir == "" {
-		return nil
-	}
-	var best *config.Project
-	bestLen := -1
-	for i := range s.Projects {
-		p := &s.Projects[i]
-		// Check the opt-in first: a project that hasn't enabled directory
-		// auth must not even participate in the longest-match race, or it
-		// could shadow an opted-in parent and turn a valid grant into a
-		// denial.
-		if !p.AllowCwdAuth || p.Path == "" {
-			continue
-		}
-		if !DirWithin(dir, p.Path) {
-			continue
-		}
-		if n := len(realpathBestEffort(p.Path)); n > bestLen {
-			best, bestLen = p, n
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return config.StoredTokenForProject(s, best, best.TokenHash)
+	return nil
 }
 
 // DirWithin reports whether dir is equal to or nested under

@@ -19,7 +19,6 @@ func TestRemoteProjectPayloadFromSettingsUI(t *testing.T) {
 		"allowed_models":[],
 		"permission_policy":{"default_mode":"","allowed_tools":[],"denied_tools":[]},
 		"generate_skill":false,
-		"allow_cwd_auth":false,
 		"disabled_tools":{}
 	}`)
 	var f project.CreateFields

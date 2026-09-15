@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,152 +15,38 @@ import (
 	"github.com/barelyworkingcode/relay/internal/project"
 )
 
-func cwdProject(t *testing.T, path string, allowCwd bool) *config.Settings {
+func cwdProject(t *testing.T, path string) *config.Settings {
 	t.Helper()
 	s := makeSettings(nil, nil, nil)
 	s.Projects[0].Path = path
-	s.Projects[0].AllowCwdAuth = allowCwd
 	return s
 }
 
-func TestAuthenticateProjectByPath_OptedIn(t *testing.T) {
+// allow_cwd_auth is retired (plan-broker-and-sessions.md §2 C3): the field
+// is gone from config.Project, and project.AuthenticateByPath is kept only
+// as an always-nil stub so router.go's resolveCwdAuth (R-S2a's exclusive
+// file this wave) keeps compiling unchanged. These tests pin that a caller
+// asserting a matching cwd never resolves a project, regardless of the
+// directory relationship that used to grant it.
+func TestAuthenticateByPath_AlwaysNil(t *testing.T) {
 	dir := t.TempDir()
-	s := cwdProject(t, dir, true)
+	s := cwdProject(t, dir)
 
-	for _, cwd := range []string{dir, filepath.Join(dir, "sub", "deeper")} {
-		stored := project.AuthenticateByPath(s, cwd)
-		if stored == nil {
-			t.Fatalf("cwd %q: expected a StoredToken", cwd)
-		}
-		if stored.ProjectID != "test-project" {
-			t.Errorf("cwd %q: project id = %q, want test-project", cwd, stored.ProjectID)
-		}
-	}
-}
-
-func TestAuthenticateProjectByPath_RequiresOptIn(t *testing.T) {
-	dir := t.TempDir()
-	s := cwdProject(t, dir, false)
-
-	if stored := project.AuthenticateByPath(s, dir); stored != nil {
-		t.Fatalf("expected nil for a project that did not opt in, got %+v", stored)
-	}
-}
-
-func TestAuthenticateProjectByPath_NoMatch(t *testing.T) {
-	s := cwdProject(t, t.TempDir(), true)
-
-	cases := map[string]string{
-		"empty cwd":       "",
-		"unrelated dir":   t.TempDir(),
-		"parent of proj":  filepath.Dir(s.Projects[0].Path),
-		"sibling prefix":  s.Projects[0].Path + "-other",
-		"escaping suffix": filepath.Join(s.Projects[0].Path, "..", "elsewhere"),
-	}
-	for name, cwd := range cases {
+	for _, cwd := range []string{"", dir, filepath.Join(dir, "sub", "deeper")} {
 		if stored := project.AuthenticateByPath(s, cwd); stored != nil {
-			t.Errorf("%s (%q): expected nil, got project %q", name, cwd, stored.ProjectID)
+			t.Errorf("cwd %q: expected nil, got %+v", cwd, stored)
 		}
 	}
 }
 
-func TestAuthenticateProjectByPath_NestedLongestMatch(t *testing.T) {
-	outer := t.TempDir()
-	inner := filepath.Join(outer, "packages", "inner")
-	if err := os.MkdirAll(inner, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	s := cwdProject(t, outer, true)
-	s.Projects = append(s.Projects, config.Project{
-		ID:            "inner-project",
-		Name:          "inner",
-		Path:          inner,
-		AllowedMcpIDs: []string{"*"},
-		AllowCwdAuth:  true,
-	})
-
-	if got := project.AuthenticateByPath(s, inner); got == nil || got.ProjectID != "inner-project" {
-		t.Errorf("inner dir resolved to %v, want inner-project", got)
-	}
-	if got := project.AuthenticateByPath(s, filepath.Join(outer, "docs")); got == nil || got.ProjectID != "test-project" {
-		t.Errorf("outer dir resolved to %v, want test-project", got)
-	}
-}
-
-// The longest match is computed only among opted-in participants, so a
-// nested project that did NOT opt in cannot shadow an opted-in parent by
-// virtue of its longer path.
-func TestAuthenticateProjectByPath_NestedOptOutDoesNotShadow(t *testing.T) {
-	outer := t.TempDir()
-	inner := filepath.Join(outer, "vendored")
-	if err := os.MkdirAll(inner, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	s := cwdProject(t, outer, true)
-	s.Projects = append(s.Projects, config.Project{
-		ID:            "inner-project",
-		Name:          "inner",
-		Path:          inner,
-		AllowedMcpIDs: []string{"*"},
-		AllowCwdAuth:  false,
-	})
-
-	got := project.AuthenticateByPath(s, inner)
-	if got == nil || got.ProjectID != "test-project" {
-		t.Fatalf("resolved to %v, want the opted-in parent test-project", got)
-	}
-}
-
-func TestAuthenticateProjectByPath_ScopeMatchesTokenAuth(t *testing.T) {
+func TestResolveAuth_CwdNeverGrantsAccess(t *testing.T) {
 	dir := t.TempDir()
-	s := makeSettings(
-		map[string]config.Permission{"fsmcp": config.PermOn, "macmcp": config.PermOff},
-		map[string][]string{"fsmcp": {"write_file"}},
-		map[string]json.RawMessage{"fsmcp": json.RawMessage(`{"allowed_dirs":["/x"]}`)},
-	)
-	s.Projects[0].Path = dir
-	s.Projects[0].AllowCwdAuth = true
-
-	byToken := s.AuthenticateProjectByHash(config.HashToken(testToken))
-	byPath := project.AuthenticateByPath(s, filepath.Join(dir, "sub"))
-	if byToken == nil || byPath == nil {
-		t.Fatal("both auth paths must resolve")
-	}
-
-	wantJSON, _ := json.Marshal(byToken)
-	gotJSON, _ := json.Marshal(byPath)
-	if string(wantJSON) != string(gotJSON) {
-		t.Errorf("scope differs between auth paths:\n token: %s\n  path: %s", wantJSON, gotJSON)
-	}
-}
-
-func TestResolveAuth_CwdFallback(t *testing.T) {
-	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), filepath.Join(dir, "nested"))
-	stored, settings, err := r.resolveAuth(ctx, "")
-	if err != nil {
-		t.Fatalf("expected cwd auth to succeed, got %v", err)
-	}
-	if stored.ProjectID != "test-project" {
-		t.Errorf("project id = %q, want test-project", stored.ProjectID)
-	}
-	if settings == nil {
-		t.Fatal("expected non-nil Settings")
-	}
-}
-
-func TestResolveAuth_CwdFallbackDeniedWithoutOptIn(t *testing.T) {
-	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, false), mcpbroker.NewManager(nil))
-
-	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	_, _, err := r.resolveAuth(ctx, "")
 	if err == nil {
-		t.Fatal("expected denial for a project without allow_cwd_auth")
+		t.Fatal("expected a tokenless caller asserting only a cwd to be refused")
 	}
 	var coded *jsonrpc.CodedError
 	if !errors.As(err, &coded) || coded.RPCCode != jsonrpc.CodeUnauthorized {
@@ -171,7 +56,7 @@ func TestResolveAuth_CwdFallbackDeniedWithoutOptIn(t *testing.T) {
 
 func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir), mcpbroker.NewManager(nil))
 
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	if _, _, err := r.resolveAuth(ctx, "not-the-right-token"); err == nil {
@@ -181,19 +66,18 @@ func TestResolveAuth_BadTokenNotRescuedByCwd(t *testing.T) {
 
 func TestResolveCwdAuth_CannotSatisfyServiceOps(t *testing.T) {
 	dir := t.TempDir()
-	r := newTestRouter(t, cwdProject(t, dir, true), mcpbroker.NewManager(nil))
+	r := newTestRouter(t, cwdProject(t, dir), mcpbroker.NewManager(nil))
 
-	// Directory auth identifies a PROJECT, never a service's launch identity
-	// — a tokenless caller satisfying it by cwd must still be refused any
-	// operation that requires the latter.
+	// A tokenless caller asserting only a cwd must still be refused any
+	// operation that requires a service's launch identity.
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
 	req := bridge.RegisterManifestRequest{ServiceID: "svc", InternalSocket: "/tmp/x.sock", InternalToken: "t", Manifest: bridge.Manifest{Routes: []string{"/api/svc/"}}}
 	if err := r.RegisterManifest(ctx, req, ""); err == nil {
-		t.Fatal("expected RegisterManifest to reject a tokenless cwd-auth caller")
+		t.Fatal("expected RegisterManifest to reject a tokenless cwd-asserting caller")
 	}
 }
 
-func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
+func TestListTools_CwdAloneIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	mock := newMockConn("fsmcp", simpleTools("read_file", "write_file"), nil)
 	r := setupRouter(t,
@@ -204,27 +88,15 @@ func TestListTools_CwdAuthMatchesTokenSurface(t *testing.T) {
 	)
 	if err := r.store.With(func(s *config.Settings) {
 		s.Projects[0].Path = dir
-		s.Projects[0].AllowCwdAuth = true
 	}); err != nil {
 		t.Fatalf("settings mutation: %v", err)
 	}
 
-	byToken, err := r.ListTools(context.Background(), testToken)
-	if err != nil {
+	if _, err := r.ListTools(context.Background(), testToken); err != nil {
 		t.Fatalf("token ListTools: %v", err)
 	}
-	byCwd, err := r.ListTools(bridge.WithCallerCwd(context.Background(), dir), "")
-	if err != nil {
-		t.Fatalf("cwd ListTools: %v", err)
-	}
-	if string(byToken) != string(byCwd) {
-		t.Errorf("tool surface differs:\n token: %s\n   cwd: %s", byToken, byCwd)
-	}
-	// The disabled tool must be absent from both — a sanity check that the
-	// comparison above isn't comparing two empty lists.
-	tools := unmarshalTools(t, byCwd)
-	if len(tools) != 1 || tools[0].Name != "read_file" {
-		t.Errorf("expected only read_file, got %+v", tools)
+	if _, err := r.ListTools(bridge.WithCallerCwd(context.Background(), dir), ""); err == nil {
+		t.Fatal("expected a tokenless cwd-only ListTools to be refused")
 	}
 }
 

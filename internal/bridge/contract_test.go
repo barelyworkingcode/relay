@@ -208,44 +208,47 @@ func TestContract_ListTools(t *testing.T) {
 	}
 }
 
-func TestContract_TokenlessSendsCwd(t *testing.T) {
+// TestContract_TokenlessNeverSendsCwd is C3's client-side half
+// (plan-broker-and-sessions.md §2, "allow_cwd_auth is removed"): relay no
+// longer resolves a project from a caller-asserted working directory, so
+// the client has nothing to gain by sending one and does not.
+func TestContract_TokenlessNeverSendsCwd(t *testing.T) {
 	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
 	sock := startTestBridge(t, router)
-	c := &Client{sockPath: sock, cwd: "/Users/you/projects/acme/sub"}
+	c := &Client{sockPath: sock}
 
 	if _, err := c.ListTools(); err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if got := router.listToolsCwds[0]; got != "/Users/you/projects/acme/sub" {
-		t.Fatalf("cwd not delivered to router; got %q", got)
+	if got := router.listToolsCwds[0]; got != "" {
+		t.Fatalf("cwd sent to router; got %q, want none", got)
 	}
 	if got := router.listToolsTokens[0]; got != "" {
 		t.Fatalf("expected an empty token, got %q", got)
 	}
 }
 
-// A directory must never be able to re-scope an authenticated call.
-func TestContract_TokenSuppressesCwd(t *testing.T) {
+// NewClient never populates BridgeRequest.Cwd, tokened or not: the field
+// still exists on the wire (a stray sender may still set it, which the
+// server ignores per C3), but this client is not one — regardless of
+// whether a token is present.
+func TestNewClient_NeverPopulatesCwd(t *testing.T) {
+	if c := NewClient(""); c.sockPath == "" {
+		t.Fatal("NewClient did not set a socket path")
+	}
 	router := &stubRouter{listToolsResponse: json.RawMessage(`[]`)}
 	sock := startTestBridge(t, router)
-
-	// NewClient wouldn't populate cwd alongside a token; set both by hand so
-	// this asserts the SERVER-side rule, not just the client's restraint.
-	c := &Client{sockPath: sock, token: "proj-token", cwd: "/Users/you/projects/acme"}
-	if _, err := c.ListTools(); err != nil {
-		t.Fatalf("ListTools: %v", err)
+	for _, token := range []string{"", "some-token"} {
+		c := NewClient(token)
+		c.sockPath = sock
+		if _, err := c.ListTools(); err != nil {
+			t.Fatalf("ListTools (token=%q): %v", token, err)
+		}
 	}
-	if got := router.listToolsCwds[0]; got != "" {
-		t.Fatalf("cwd leaked into an authenticated call: %q", got)
-	}
-}
-
-func TestNewClient_CwdOnlyWhenTokenless(t *testing.T) {
-	if c := NewClient(""); c.cwd == "" {
-		t.Error("tokenless client should capture its working directory")
-	}
-	if c := NewClient("some-token"); c.cwd != "" {
-		t.Errorf("tokened client should not capture a working directory, got %q", c.cwd)
+	for i, got := range router.listToolsCwds {
+		if got != "" {
+			t.Errorf("call %d: cwd sent to router; got %q, want none", i, got)
+		}
 	}
 }
 
