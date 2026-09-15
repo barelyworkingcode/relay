@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,6 +25,11 @@ const (
 	ReqResolvePtyEnv          = "ResolvePtyEnv"
 	ReqResolveProjectTemplate = "ResolveProjectTemplate"
 	ReqRegisterManifest       = "RegisterManifest"
+
+	// ReqRegisterModelHost registers a service's router socket as the model
+	// endpoint's upstream (docs/model-endpoint.md). Tokenless: authenticated
+	// by the caller's launch identity, which must hold model_host.
+	ReqRegisterModelHost = "RegisterModelHost"
 
 	// ReqHello binds a launch secret to the calling process's audit token
 	// (docs/launch-identity.md). Name is the launch name, Token the secret.
@@ -172,6 +178,28 @@ type ShellTemplateResponse struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+}
+
+// RegisterModelHostRequest is the Arguments payload for a
+// ReqRegisterModelHost call. RouterSocket is the service's own internal Unix
+// socket serving relayLLM's router mux (docs/model-endpoint.md); unlike
+// RegisterManifestRequest there is no internal token, because the model
+// endpoint authenticates the socket itself by the kernel peer audit token of
+// whoever answers on RouterSocket, not by a bearer the service declares.
+type RegisterModelHostRequest struct {
+	ServiceID    string `json:"serviceId"`
+	RouterSocket string `json:"routerSocket"`
+}
+
+// Validate covers only the request in isolation.
+func (r *RegisterModelHostRequest) Validate() error {
+	if r.ServiceID == "" {
+		return fmt.Errorf("register_model_host: serviceId is empty")
+	}
+	if r.RouterSocket == "" {
+		return fmt.Errorf("register_model_host: routerSocket is empty")
+	}
+	return nil
 }
 
 // ProjectDescription is DescribeProject's answer: the caller's own project
@@ -330,6 +358,10 @@ type ToolRouter interface {
 	ResolveProjectTemplate(ctx context.Context, req ShellTemplateRequest, token string) (ShellTemplateResponse, error)
 	// Re-registration with the same ServiceID replaces the prior record.
 	RegisterManifest(ctx context.Context, req RegisterManifestRequest, token string) error
+	// RegisterModelHost registers a service's router socket as the model
+	// endpoint's upstream. Requires the model_host capability, under the
+	// caller's own service id only.
+	RegisterModelHost(ctx context.Context, req RegisterModelHostRequest, token string) error
 	// AdminOp dispatches one brokered admin operation by name. name and args
 	// are opaque to the transport; the implementation resolves name against
 	// its own inner table and decides whether it exists at all.
@@ -368,4 +400,12 @@ func SocketPath() string {
 	dir := ConfigDir()
 	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, "relay.sock")
+}
+
+// ModelSocketPath is the model endpoint's Unix socket (docs/model-endpoint.md),
+// beside relay.sock in the same directory and chmod'd 0600 the same way.
+func ModelSocketPath() string {
+	dir := ConfigDir()
+	_ = os.MkdirAll(dir, 0o700)
+	return filepath.Join(dir, "model.sock")
 }

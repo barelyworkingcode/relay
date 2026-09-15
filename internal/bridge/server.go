@@ -195,6 +195,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqResolveProjectTemplate: {handle: handleResolveProjectTemplate},
 	ReqDescribeProject:        {handle: handleDescribeProject},
 	ReqRegisterManifest:       {handle: handleRegisterManifest},
+	ReqRegisterModelHost:      {handle: handleRegisterModelHost},
 	ReqHello:                  {handle: handleHello},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
@@ -361,6 +362,23 @@ func handleAdminOp(ctx context.Context, req *BridgeRequest, router ToolRouter) B
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespResult, Result: result}
+}
+
+func handleRegisterModelHost(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "register_model_host: missing arguments")
+	}
+	var r RegisterModelHostRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "register_model_host: "+err.Error())
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.RegisterModelHost(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
 }
 
 func handleRegisterManifest(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
