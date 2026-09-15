@@ -5,7 +5,6 @@ package membership
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,9 +18,26 @@ import (
 // keeps that safe (see kqMu below).
 const wakeIdent = 1
 
-// WatchExit watches pid for exit and calls onExit exactly once when it does.
-// want pins the exact process instance being watched — the caller already
-// read it via Resolve or an Info call.
+// testHookBeforeFireGate and testHookBeforeOnExit are unexported seams the
+// tests use to force an exact interleaving against a concurrent cancel();
+// both are nil in production and cost nothing when unset.
+//
+// testHookBeforeFireGate runs on the watcher goroutine right after it
+// decides an event warrants firing (a real exit, EV_ERROR, or the
+// fail-closed kevent-error path) but before it takes fireMu to check
+// cancellation.
+//
+// testHookBeforeOnExit runs after that check has already committed to
+// firing — started is set, fireMu released — but before onExit is actually
+// called.
+var (
+	testHookBeforeFireGate func()
+	testHookBeforeOnExit   func()
+)
+
+// WatchExit watches pid for exit and calls onExit at most once when it
+// does. want pins the exact process instance being watched — the caller
+// already read it via Resolve or an Info call.
 //
 // An error return means the process is already gone, or is not the one the
 // caller meant (pid was recycled between the caller's read and this call):
@@ -29,11 +45,11 @@ const wakeIdent = 1
 // ErrExited) distinguishes that case from an infrastructure failure (kqueue
 // itself unavailable), which is not the same as the process having exited.
 //
-// cancel stops the watch and blocks until it has fully stopped, so onExit
-// never fires after cancel returns — except when cancel is called from
-// inside onExit itself, which cannot block on its own completion; that call
-// returns immediately once the cancellation is recorded. cancel is
-// idempotent: later calls, from any goroutine, are no-ops.
+// cancel stops the watch. After cancel returns, onExit will not start. If
+// onExit had already started before cancel was called, it may still be
+// running when cancel returns — cancel does not wait for it. cancel never
+// blocks, may be called from inside onExit, from any other goroutine, and
+// any number of times.
 func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
@@ -103,19 +119,41 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 		_ = unix.Close(kq)
 	}
 
-	var cancelled atomic.Bool
-	var firing atomic.Bool
-	var fireOnce sync.Once
-	stopped := make(chan struct{})
+	// This is deliberate: cancelled and started are two plain fields behind
+	// one mutex, not independent atomics. The earlier design used separate
+	// atomic flags (cancelled, firing) that cancel() and the fire path each
+	// read and wrote without a shared critical section — which left a real
+	// gap between "an exit event passed the cancelled check" and "firing
+	// was actually recorded," during which cancel() could see firing=false,
+	// commit to waiting for a stop signal that would now never come (the
+	// fire path was about to run onExit, not return), and deadlock against
+	// a reentrant cancel() call from inside that very onExit. Serializing
+	// both fields through fireMu removes the gap entirely: whichever side
+	// reaches the critical section first fully determines the outcome, and
+	// cancel() never has to wait on anything to stay correct.
+	var fireMu sync.Mutex
+	cancelled := false
+	started := false
 
 	fire := func() {
-		firing.Store(true)
-		fireOnce.Do(onExit)
-		firing.Store(false)
+		if testHookBeforeFireGate != nil {
+			testHookBeforeFireGate()
+		}
+		fireMu.Lock()
+		if cancelled || started {
+			fireMu.Unlock()
+			return
+		}
+		started = true
+		fireMu.Unlock()
+
+		if testHookBeforeOnExit != nil {
+			testHookBeforeOnExit()
+		}
+		onExit()
 	}
 
 	go func() {
-		defer close(stopped)
 		defer closeKQ()
 
 		events := make([]unix.Kevent_t, 1)
@@ -129,7 +167,9 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 				// way to tell whether pid is still alive. Firing onExit
 				// fails closed — the caller ends the session — rather than
 				// leaving a watch that has silently stopped monitoring
-				// anything, which would be worse than ending it early.
+				// anything, which would be worse than ending it early. It
+				// goes through the same fire() gate as a real exit, so a
+				// concurrent cancel() still wins if it got there first.
 				fire()
 				return
 			}
@@ -140,13 +180,6 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 
 			if ev.Ident == wakeIdent && ev.Filter == unix.EVFILT_USER {
 				return // cancelled; no exit observed
-			}
-			if cancelled.Load() {
-				// A real exit event arrived at essentially the same moment
-				// as cancellation; cancel() already committed to "onExit
-				// will not fire" by the time it observes this goroutine
-				// stopping, so honor that rather than firing late.
-				return
 			}
 			if ev.Ident == uint64(pid) && (ev.Flags&unix.EV_ERROR != 0 || ev.Fflags&unix.NOTE_EXIT != 0) {
 				fire()
@@ -160,7 +193,9 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 	var cancelOnce sync.Once
 	cancel = func() {
 		cancelOnce.Do(func() {
-			cancelled.Store(true)
+			fireMu.Lock()
+			cancelled = true
+			fireMu.Unlock()
 
 			kqMu.Lock()
 			if !kqClosed {
@@ -178,15 +213,13 @@ func WatchExit(pid int, want ProcInfo, onExit func()) (cancel func(), err error)
 				}
 			}
 			kqMu.Unlock()
-
-			if firing.Load() {
-				// Reentrant: onExit (running on the watcher goroutine)
-				// called cancel(). stopped won't close until onExit
-				// returns, and onExit hasn't returned yet — we're inside
-				// it — so waiting here would deadlock forever.
-				return
-			}
-			<-stopped
+			// Deliberately no wait here: blocking until the watcher
+			// goroutine stops is exactly what let a reentrant cancel() from
+			// inside onExit deadlock against an external caller's cancel()
+			// holding this same sync.Once. Once cancelled is recorded above,
+			// any fire() that hasn't already committed (started) will see
+			// it and refuse to run; one that already committed is allowed
+			// to keep running, per the doc comment.
 		})
 	}
 	return cancel, nil

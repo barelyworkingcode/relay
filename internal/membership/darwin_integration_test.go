@@ -510,8 +510,7 @@ func TestDarwin_WatchExitCancelFromInsideOnExit(t *testing.T) {
 	// WatchExit starts it before returning.
 	cancelCh := make(chan func(), 1)
 	cancel, err := WatchExit(pid, want, func() {
-		// A reentrant cancel() must return without deadlocking on its own
-		// completion — stopped can't close until this call returns.
+		// A reentrant cancel() must return without deadlocking.
 		(<-cancelCh)()
 		close(done)
 	})
@@ -529,5 +528,171 @@ func TestDarwin_WatchExitCancelFromInsideOnExit(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("onExit calling cancel() reentrantly deadlocked")
+	}
+}
+
+// TestDarwin_CancelWinsBeforeFireGate reproduces a second security-review
+// finding against this package: the watcher goroutine's fire path, on
+// seeing an exit event, used to record "firing" in a step separate from
+// (and after) checking "cancelled," using two independent atomics rather
+// than one critical section. A concurrent cancel() landing in that gap
+// would see cancelled=true but firing=false, commit to waiting for the
+// watch to stop, and then deadlock forever if onExit — which was about to
+// run regardless — called cancel() reentrantly: the external caller's
+// cancel() was already inside the guarding sync.Once, so the reentrant call
+// blocked waiting for it, which was itself blocked waiting for onExit (and
+// hence the reentrant call) to return.
+//
+// testHookBeforeFireGate pauses the watcher goroutine at exactly that
+// gap, deterministically forcing the ordering: this test hung (timed out)
+// against the pre-fireMu implementation and now must both return promptly
+// and observe onExit never actually run, since cancel's write of cancelled
+// happens fully before the fire gate's read of it.
+func TestDarwin_CancelWinsBeforeFireGate(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "watched.pid")
+
+	cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	pid := readPID(t, pidfile)
+	want, ok := NewSource().Info(pid)
+	if !ok {
+		t.Fatal("Info(watched) failed")
+	}
+
+	var seq atomic.Int64
+	var cancelReturnedSeq, onExitStartedSeq atomic.Int64
+
+	reachedGate := make(chan struct{})
+	releaseGate := make(chan struct{})
+	testHookBeforeFireGate = func() {
+		close(reachedGate)
+		<-releaseGate
+	}
+	defer func() { testHookBeforeFireGate = nil }()
+
+	cancel, err := WatchExit(pid, want, func() {
+		onExitStartedSeq.Store(seq.Add(1))
+	})
+	if err != nil {
+		t.Fatalf("WatchExit: %v", err)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	select {
+	case <-reachedGate:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher goroutine never reached the fire gate")
+	}
+
+	// The watcher goroutine is now parked immediately before it would take
+	// fireMu. cancel() must return promptly here — this is exactly the
+	// window the old firing-flag design could deadlock in, since onExit
+	// (which the goroutine is about to call, unless cancelled wins) itself
+	// calls cancel() again.
+	cancelDone := make(chan struct{})
+	go func() {
+		cancel()
+		cancelReturnedSeq.Store(seq.Add(1))
+		close(cancelDone)
+	}()
+
+	select {
+	case <-cancelDone:
+	case <-time.After(5 * time.Second):
+		close(releaseGate) // let the parked goroutine finish so the run doesn't hang
+		t.Fatal("cancel() did not return promptly (deadlock)")
+	}
+
+	close(releaseGate)
+
+	// Give the watcher goroutine a moment to act on cancelled having
+	// already been set before asserting onExit never ran.
+	time.Sleep(200 * time.Millisecond)
+
+	if s := onExitStartedSeq.Load(); s != 0 {
+		t.Fatalf("onExit ran (seq %d, cancel returned at seq %d); cancel's cancelled=true was committed before the fire gate ran, so onExit must never have started", s, cancelReturnedSeq.Load())
+	}
+}
+
+// TestDarwin_CancelDuringOnExitReturnsPromptly confirms the documented
+// allowance: once the fire gate has already committed to running onExit
+// (started is set) before cancel() is even called, cancel() must still
+// return immediately rather than waiting for onExit — which may be slow or
+// itself blocked — to finish. testHookBeforeOnExit pins the watcher
+// goroutine exactly after that commit and before the onExit call, so
+// cancel() is deterministically invoked in the window the doc comment
+// carves out ("if onExit had already started... it may still be running
+// when cancel returns").
+func TestDarwin_CancelDuringOnExitReturnsPromptly(t *testing.T) {
+	bin := buildTestMembershipBinary(t)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "watched.pid")
+
+	cmd := exec.Command(bin, "-mode=chain", "-pidfiles="+pidfile)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	pid := readPID(t, pidfile)
+	want, ok := NewSource().Info(pid)
+	if !ok {
+		t.Fatal("Info(watched) failed")
+	}
+
+	reachedOnExit := make(chan struct{})
+	releaseOnExit := make(chan struct{})
+	testHookBeforeOnExit = func() {
+		close(reachedOnExit)
+		<-releaseOnExit
+	}
+	defer func() { testHookBeforeOnExit = nil }()
+
+	onExitRan := make(chan struct{})
+	cancel, err := WatchExit(pid, want, func() { close(onExitRan) })
+	if err != nil {
+		t.Fatalf("WatchExit: %v", err)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	select {
+	case <-reachedOnExit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher goroutine never reached onExit")
+	}
+
+	// started is already committed true; onExit is parked just before
+	// running. cancel() must not wait for it.
+	cancelDone := make(chan struct{})
+	go func() {
+		cancel()
+		close(cancelDone)
+	}()
+
+	select {
+	case <-cancelDone:
+	case <-time.After(2 * time.Second):
+		close(releaseOnExit)
+		t.Fatal("cancel() blocked on an onExit that had already started")
+	}
+
+	close(releaseOnExit)
+
+	select {
+	case <-onExitRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onExit, already committed to running, never actually ran")
 	}
 }
