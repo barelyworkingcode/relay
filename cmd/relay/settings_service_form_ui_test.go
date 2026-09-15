@@ -21,7 +21,7 @@ func TestServiceForm_CapabilitiesEditor(t *testing.T) {
 	script := `(function(){
 		window.state.services = [
 			{id:'relaytts', display_name:'relayTTS', command:'/bin/tts', args:[], env:{},
-			 capabilities:['manifest','projects']}
+			 capabilities:['manifest','models']}
 		];
 		window.editService('relaytts');
 		var html = window.renderServiceForm();
@@ -33,7 +33,7 @@ func TestServiceForm_CapabilitiesEditor(t *testing.T) {
 		// checkbox is set explicitly to the state under test rather than
 		// assumed to start from what render() produced.
 		document.getElementById('svcCap_manifest').checked = true;
-		document.getElementById('svcCap_projects').checked = false;
+		document.getElementById('svcCap_models').checked = false;
 		document.getElementById('svcCap_frontend').checked = false;
 		var narrowed = window.svcFormValues();
 
@@ -44,22 +44,22 @@ func TestServiceForm_CapabilitiesEditor(t *testing.T) {
 		// relayTTS above has to be reset by hand to match what a freshly
 		// opened, untouched New Service form's regex-verified HTML shows.
 		document.getElementById('svcCap_manifest').checked = false;
-		document.getElementById('svcCap_projects').checked = false;
+		document.getElementById('svcCap_models').checked = false;
 		document.getElementById('svcCap_frontend').checked = false;
 		var newDefaults = window.svcFormValues();
 
 		document.getElementById('svcCap_manifest').checked = true;
-		document.getElementById('svcCap_projects').checked = true;
+		document.getElementById('svcCap_models').checked = true;
 		document.getElementById('svcCap_frontend').checked = true;
 		var widened = window.svcFormValues();
 
 		return JSON.stringify({
 			showsSection: html.indexOf('Capabilities') >= 0,
 			manifestChecked: /id="svcCap_manifest"[^>]*checked/.test(html),
-			projectsChecked: /id="svcCap_projects"[^>]*checked/.test(html),
+			modelsChecked: /id="svcCap_models"[^>]*checked/.test(html),
 			frontendUnchecked: !/id="svcCap_frontend"[^>]*checked/.test(html),
 			narrowed: JSON.stringify(narrowed.capabilities),
-			newHasNoneChecked: !/svcCap_[a-z]+"[^>]*checked/.test(newHtml),
+			newHasNoneChecked: !/svcCap_[a-z_]+"[^>]*checked/.test(newHtml),
 			newDefaultsEmpty: newDefaults.capabilities.length === 0,
 			widened: JSON.stringify(widened.capabilities)
 		});
@@ -67,10 +67,10 @@ func TestServiceForm_CapabilitiesEditor(t *testing.T) {
 
 	got := evalString(t, vm, script)
 	for _, want := range []string{
-		`"showsSection":true`, `"manifestChecked":true`, `"projectsChecked":true`,
+		`"showsSection":true`, `"manifestChecked":true`, `"modelsChecked":true`,
 		`"frontendUnchecked":true`, `"narrowed":"[\"manifest\"]"`,
 		`"newHasNoneChecked":true`, `"newDefaultsEmpty":true`,
-		`"widened":"[\"frontend\",\"manifest\",\"projects\"]"`,
+		`"widened":"[\"frontend\",\"manifest\",\"models\"]"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("capabilities editor: missing %s in %s", want, got)

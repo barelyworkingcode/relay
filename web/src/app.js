@@ -1162,7 +1162,7 @@ function renderServiceForm() {
 // protocol change, so it is hand-kept in sync with that list rather than
 // fetched, the same way the CLI's own --capability flag help text names
 // them by hand too.
-const serviceCapabilityNames = ['frontend', 'manifest', 'projects', 'models', 'model_host'];
+const serviceCapabilityNames = ['frontend', 'manifest', 'models', 'model_host'];
 
 // renderServiceEnvRows renders state.svcEnvDraft, the edit session's own env
 // draft (seeded by editService/newService, never derived from `editing`
