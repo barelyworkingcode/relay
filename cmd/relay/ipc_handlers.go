@@ -336,6 +336,11 @@ type ipcServiceMsg struct {
 	Autostart    bool                        `json:"autostart"`
 	URL          string                      `json:"url,omitempty"`
 	Capabilities *[]config.ServiceCapability `json:"capabilities,omitempty"`
+	// AllowedModels is a pointer for the same reason Capabilities is: the
+	// Settings window omits this key entirely when the Allowed Models
+	// section was never shown (the models capability off), and an absent
+	// key must leave the stored grant alone rather than clear it.
+	AllowedModels *[]string `json:"allowed_models,omitempty"`
 }
 
 type ipcUpdateServiceAutostartMsg struct {

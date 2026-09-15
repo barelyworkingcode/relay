@@ -1107,6 +1107,18 @@ function renderServiceForm() {
     }).join('');
     html += '</div>';
 
+    if (caps.indexOf('models') >= 0) {
+        html += '<div class="proj-section">';
+        html += '<div class="proj-section-title">Allowed Models</div>';
+        html += '<p class="proj-section-help">Which models this service may reach through relay\'s model endpoint (docs/model-endpoint.md). An <strong>empty list means NO models</strong> -- the opposite of a project\'s own default, since a service like TTS or STT is normally meant to reach exactly one model, not everything relayLLM serves. A single <code>*</code> entry means every model.</p>';
+        html += '<div id="svcModelsRows">' + renderServiceModelRows() + '</div>';
+        html += '<div style="display:flex;gap:6px;margin-top:8px">';
+        html += '<input type="text" id="svcModelNewId" placeholder="model id, or * for every model" style="flex:1" />';
+        html += '<button type="button" class="btn btn-sm" onclick="svcModelAddRow()">Add</button>';
+        html += '</div>';
+        html += '</div>';
+    }
+
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Options</div>';
     html += `<div class="toggle-row" style="padding:4px 0;margin:0">
@@ -1129,11 +1141,15 @@ function renderServiceForm() {
     return html;
 }
 
-// serviceCapabilityNames is the whole vocabulary (docs/launch-identity.md,
-// config.ServiceCapabilities on the Go side) — hardcoded here the same way
-// the CLI's own --capability flag help text names them, since a fourth
-// capability is a rare, deliberate protocol change, not routine config.
-const serviceCapabilityNames = ['frontend', 'manifest', 'projects'];
+// serviceCapabilityNames is the whole vocabulary (docs/launch-identity.md)
+// and the ONE place this form spells it: the checkbox loop below and
+// svcFormValues' harvest both read this same array, never a second literal.
+// Its mirror on the Go side is config.ServiceCapabilities
+// (internal/config/models.go) — a new capability is a rare, deliberate
+// protocol change, so it is hand-kept in sync with that list rather than
+// fetched, the same way the CLI's own --capability flag help text names
+// them by hand too.
+const serviceCapabilityNames = ['frontend', 'manifest', 'projects', 'models', 'model_host'];
 
 // renderServiceEnvRows renders state.svcEnvDraft, the edit session's own env
 // draft (seeded by editService/newService, never derived from `editing`
@@ -1240,6 +1256,47 @@ function svcEnvMergedForDisplay(existingEnv) {
     return env;
 }
 
+// renderServiceModelRows renders state.svcModelsDraft, the edit session's own
+// allowed-models draft (seeded by editService/newService from the stored
+// record's allowed_models, unlike svcEnvDraft there is no masking concern —
+// a model id is not a secret — so each row is just the string itself.
+function renderServiceModelRows() {
+    const rows = state.svcModelsDraft || [];
+    let html = '';
+    for (let i = 0; i < rows.length; i++) {
+        html += '<div class="svc-env-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">';
+        html += '<input type="text" value="' + esc(rows[i]) + '" style="flex:1" onchange="svcModelSetValue(' + i + ', this.value)" />';
+        html += '<button type="button" class="btn btn-sm btn-danger" ' + bind(svcModelRemoveRow, i) + '>Remove</button>';
+        html += '</div>';
+    }
+    if (rows.length === 0) html += '<div class="empty-state">No models: this service holds the models capability but can reach none until at least one model id (or *) is added.</div>';
+    return html;
+}
+
+function svcModelSetValue(i, value) {
+    const rows = state.svcModelsDraft || [];
+    if (i < 0 || i >= rows.length) return;
+    rows[i] = value;
+}
+
+function svcModelRemoveRow(i) {
+    const rows = state.svcModelsDraft || [];
+    if (i < 0 || i >= rows.length) return;
+    rows.splice(i, 1);
+    render();
+}
+
+function svcModelAddRow() {
+    const idEl = document.getElementById('svcModelNewId');
+    if (!idEl) return;
+    const id = idEl.value.trim();
+    if (!id) return;
+    if (!state.svcModelsDraft) state.svcModelsDraft = [];
+    state.svcModelsDraft.push(id);
+    idEl.value = '';
+    render();
+}
+
 function svcFormValues() {
     const displayName = document.getElementById('svcDisplayName').value.trim();
     const command = document.getElementById('svcCommand').value.trim();
@@ -1255,12 +1312,24 @@ function svcFormValues() {
         return !!(el && el.checked);
     });
 
-    return { displayName, command, args, env, workingDir, autostart, url, capabilities };
+    const result = { displayName, command, args, env, workingDir, autostart, url, capabilities };
+    // allowedModels rides along only when the form is actually claiming the
+    // models capability -- the Allowed Models section does not even exist in
+    // the DOM otherwise (see renderServiceForm), and leaving the key off the
+    // returned object entirely (rather than an empty array) is what lets
+    // JSON.stringify drop it from the wire payload, so an update that never
+    // touches this capability leaves the stored grant alone (serviceFields.
+    // AllowedModels nil-preserves-existing, the same rule Capabilities uses).
+    if (capabilities.indexOf('models') >= 0) {
+        result.allowedModels = (state.svcModelsDraft || []).slice();
+    }
+    return result;
 }
 
 function newService() {
     state.editingServiceId = 'new';
     state.svcEnvDraft = [];
+    state.svcModelsDraft = [];
     render();
 }
 
@@ -1279,6 +1348,7 @@ function addService() {
         autostart: v.autostart,
         url: v.url || null,
         capabilities: v.capabilities,
+        allowed_models: v.allowedModels,
     }));
     // Form stays open until onServiceAdded confirms — that handler clears
     // editingServiceId. If the add fails (onSettingsError), the form stays
@@ -1294,12 +1364,14 @@ function editService(id) {
     state.svcEnvDraft = Object.keys((svc && svc.env) || {}).sort().map(function(k) {
         return { key: k, mode: 'keep', value: '' };
     });
+    state.svcModelsDraft = ((svc && svc.allowed_models) || []).slice();
     render();
 }
 
 function cancelServiceEdit() {
     state.editingServiceId = null;
     state.svcEnvDraft = null;
+    state.svcModelsDraft = null;
     render();
 }
 
@@ -1318,6 +1390,7 @@ function saveServiceEdit() {
         autostart: v.autostart,
         url: v.url || null,
         capabilities: v.capabilities,
+        allowed_models: v.allowedModels,
     }));
 
     const svc = state.services.find(s => s.id === state.editingServiceId);
@@ -1331,9 +1404,15 @@ function saveServiceEdit() {
         svc.autostart = v.autostart;
         svc.url = v.url || null;
         svc.capabilities = v.capabilities;
+        // v.allowedModels is undefined exactly when this save left the grant
+        // untouched (see svcFormValues) -- an unconditional assignment here
+        // would optimistically show "no models" for a service whose stored
+        // grant this save never mentioned.
+        if (v.allowedModels !== undefined) svc.allowed_models = v.allowedModels;
     }
     state.editingServiceId = null;
     state.svcEnvDraft = null;
+    state.svcModelsDraft = null;
     render();
 }
 
@@ -6619,5 +6698,5 @@ Object.assign(window, {
     addProjMount, removeProjMount, setProjMountAccess,
     blankHostForm, cancelHostEdit, captureHostFormInputs, disconnectHost, editHost, harvestHostForm, hostFormFromExisting, hostNameFor, isHostedForm, newHost, probeHost, removeHost, renderHostForm, renderHostProbeCard, renderHostProbeSummary, renderHostStatus, renderHosts, saveHostForm, setProjWhere, testHostConnection,
     mcpHealthPillFor, toggleMcpToolsDisclosure, renderMcpToolsDisclosure, formatUptime, serviceStatusLineHTML,
-    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
+    addExternalMcp, addExternalMcpFromJson, addExternalMcpHttp, addService, authenticateMcp, blankProjectForm, cancelMcpEdit, cancelProjectEdit, cancelServiceEdit, confirmBroadScope, cfgArrayAdd, cfgArrayRemove, cfgBind, cfgChevron, cfgDirty, cfgEdit, cfgEditJson, cfgExpandKey, cfgFieldAt, cfgFirstMissingRequired, cfgGetDraft, cfgHasBadJson, cfgIsExpanded, cfgKvAdd, cfgKvRemove, cfgKvRename, cfgKvSetVal, cfgKvState, cfgMapAdd, cfgMapRemove, cfgMapRename, cfgNodeLabel, cfgRefreshChrome, cfgRerender, cfgSetExpanded, cfgToggleExpand, copyToClipboard, dispatchConfigOp, dispatchServiceAction, editProject, editService, harvestProjectForm, ipc, isAnyActionPending, isProjMcpWildcard, isProjModelsWildcard, isRemoteForm, isRemoteProject, newMcp, newProject, newService, projMcpState, projectFormFromExisting, pruneStaleDisabledTool, regenProjectSkill, removeExternalMcp, removeProject, removeService, render, renderActionButton, renderArrayBlock, renderConfigArray, renderConfigItem, renderConfigKeyValue, renderConfigLeaf, renderConfigMap, renderConfigNode, renderConfigObject, renderConfigSection, renderMcpForm, renderMcpPush, renderMcpServers, renderObjectFields, renderProjToolPicker, renderProjectForm, renderProjects, renderServiceEnvRows, renderServiceForm, renderServiceInspector, renderServicePanel, renderServiceStatus, renderServices, renderStatusPayload, resetMcpPermissions, revertConfig, rotateProjectToken, saveConfig, saveProjectForm, saveServiceEdit, serviceBadgeHTML, setMcpAddMode, setMcpTransport, setProjKind, setProjMcpState, setProjMcpWildcard, setProjModelsWildcard, setsEqual, showPage, svcEnvAddRow, svcEnvMergedForDisplay, svcEnvRemoveRow, svcEnvSetMode, svcEnvSetValue, svcEnvWireValue, svcFormValues, svcModelAddRow, svcModelRemoveRow, svcModelSetValue, renderServiceModelRows, toggleConfigSection, toggleProjTool, toggleProjectTokenVisible, toggleServiceRunning, updateServiceAutostart, updateServiceStatusDOM});
 window.state = state;
