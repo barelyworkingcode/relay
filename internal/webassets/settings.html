@@ -2399,7 +2399,6 @@ window.__RELAY_INIT__ = {
           html += "<span>Skill: <strong>" + esc(skillState) + "</strong></span>";
         }
         html += "<span>Policy: <strong>" + esc(policy) + "</strong></span>";
-        if (p.allow_cwd_auth) html += "<span>Dir auth: <strong>on</strong></span>";
         html += "</div>";
         if (regen) {
           const cls = regen.ok ? "proj-ok" : "proj-error";
@@ -2444,8 +2443,6 @@ window.__RELAY_INIT__ = {
       chat_templates: [],
       permission_policy: { default_mode: "", allowed_tools: [], denied_tools: [] },
       generate_skill: false,
-      allow_cwd_auth: false,
-      // token-less auth by working directory
       disabled_tools: {},
       // mcpID -> [toolName, ...]
       // The ADR-011 permission set. access and allowed_tools are what relay
@@ -2498,7 +2495,6 @@ window.__RELAY_INIT__ = {
         denied_tools: (policy.denied_tools || []).slice()
       },
       generate_skill: !!p.generate_skill,
-      allow_cwd_auth: !!p.allow_cwd_auth,
       disabled_tools: JSON.parse(JSON.stringify(p.disabled_tools || {})),
       access: JSON.parse(JSON.stringify(p.access || {})),
       allowed_tools: JSON.parse(JSON.stringify(p.allowed_tools || {})),
@@ -2587,7 +2583,6 @@ window.__RELAY_INIT__ = {
     if (f.host_id) {
       f.allowed_mcp_ids = [];
       f.generate_skill = false;
-      f.allow_cwd_auth = false;
     }
     render();
   }
@@ -3157,7 +3152,7 @@ window.__RELAY_INIT__ = {
       }
       html += '<p class="proj-section-help">' + (hosted ? "Absolute path on " + esc(hostNameFor(f.host_id)) + ". Relay never checks whether it exists \u2014 the host does that when a session or terminal opens it." : "Absolute path. Filesystem MCPs are auto-scoped to this directory.") + "</p>";
     } else {
-      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, directory auth, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
+      html += '<p class="proj-section-help">An access profile is a capability grant to an agent on another machine. It has no host directory, so path, skills, shell templates and models do not apply \u2014 what it carries is which MCPs, which tools, which operations, whether it may reach outside this Mac, and which resources.</p>';
     }
     html += "</div>";
     if (isHostedForm(f)) {
@@ -3327,16 +3322,6 @@ window.__RELAY_INIT__ = {
       }
       html += "</div>";
     }
-    if (!isRemote && !isHostedForm(f)) {
-      html += '<div class="proj-section">';
-      html += '<div class="proj-section-title">Directory Auth</div>';
-      html += `<p class="proj-section-help">Lets <code>relay mcp</code> / <code>relay mcp call</code> run with no token when the working directory is inside this project's path, granting exactly this project's tools. <strong>Any process running as you</strong> gets them by being in the directory \u2014 including agents you started for something else. Leave off unless you want that trade.</p>`;
-      html += '<div class="toggle-row" style="padding:4px 0;margin:0">';
-      html += "<span>Allow token-less access from this project's directory</span>";
-      html += `<label class="switch"><input type="checkbox" aria-label="Allow token-less access from this project's directory" ` + (f.allow_cwd_auth ? "checked" : "") + ' onchange="state.projectForm.allow_cwd_auth = this.checked" /><span class="slider"></span></label>';
-      html += "</div>";
-      html += "</div>";
-    }
     if (!isNew) {
       const visible = !!state.projectTokenVisible[f.id];
       const fresh = state.projectFreshToken[f.id];
@@ -3442,11 +3427,10 @@ window.__RELAY_INIT__ = {
       allowed_mcp_ids: hosted ? [] : f.allowed_mcp_ids,
       allowed_models: allowedModels,
       permission_policy: policy,
-      // Both are directory-flavored and meaningless without a console
-      // path; force them off for remote AND for a hosted project
-      // regardless of stale form state.
+      // Directory-flavored and meaningless without a console path; force
+      // it off for remote AND for a hosted project regardless of stale
+      // form state.
       generate_skill: isRemote || hosted ? false : f.generate_skill,
-      allow_cwd_auth: isRemote || hosted ? false : f.allow_cwd_auth,
       disabled_tools: f.disabled_tools,
       // Local-project mounts must not be sent even if a stray row survived
       // a kind switch on a still-open new-project form — ValidateMounts

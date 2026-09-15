@@ -191,7 +191,8 @@ type BridgeRequest struct {
 	// asserted by the caller, not attested by the kernel, and relay now
 	// identifies a tokenless caller by its audit token and process ancestry
 	// instead. The field remains only so a request from a client built
-	// before the retirement still decodes; no server path reads it.
+	// before the retirement still decodes; nothing server-side authenticates
+	// on it, whether or not a caller sends one.
 	Cwd string `json:"cwd,omitempty"`
 }
 

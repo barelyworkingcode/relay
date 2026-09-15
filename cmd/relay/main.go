@@ -109,16 +109,11 @@ func runMcpOrServer(args []string) {
 	token := fs.String("token", "", "auth token")
 	fs.Parse(args)
 
-	if *token == "" {
-		*token = os.Getenv(bridge.EnvProjectToken)
-	}
-	if *token == "" {
-		// Transition: accept the legacy env name from an un-migrated spawner.
-		*token = os.Getenv(bridge.EnvProjectTokenLegacy)
-	}
-	// An empty token is not fatal: the bridge falls back to directory auth,
-	// which relay honors only for projects that opted in (AllowCwdAuth).
-	// Failing here would deny that path before relay can decide.
+	*token = resolveMcpToken(*token)
+	// An empty token is not fatal: a tokenless caller may still be a C3
+	// member of a live project_session (plan-broker-and-sessions.md §2 C3),
+	// which the bridge resolves on its own. Failing here would deny that
+	// path before relay can decide.
 	if err := mcp.RunMCPServer(*token); err != nil {
 		exitError("mcp server error: %v", err)
 	}

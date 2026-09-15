@@ -842,9 +842,7 @@ It can never:
   surface, let alone sent; `--mcp-ids` and `--tools` can still name something
   wider than the stored grant, and relay's own check refuses that, naming the
   field and the offending value;
-- touch another enrolment's profile, register anything, mint a credential, or
-  flip `allow_cwd_auth` (structurally absent from the wire request, and
-  refused on a remote profile even if it were sent).
+- touch another enrolment's profile, register anything, or mint a credential.
 
 So `cli-admin` is a **sandbox on a sandbox**: the certificate can shrink what
 it already holds, on its own, and cannot grow it or reach anything else.

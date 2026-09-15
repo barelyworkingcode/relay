@@ -37,7 +37,7 @@ func CreateWithTokenKind(s *config.Settings, kind config.ProjectKind, name, path
 	if models == nil {
 		models = []string{}
 	}
-	// GenerateSkill/AllowCwdAuth/ShellTemplates aren't parameters here — they
+	// GenerateSkill/ShellTemplates aren't parameters here — they
 	// are applied by later mutators in ApplyCreate — so this candidate
 	// only carries what this function actually knows about; a direct caller
 	// relying solely on this function (as every pre-remote test does) still
@@ -105,7 +105,7 @@ func validateProjectPath(path string) error {
 }
 
 // ValidateShape is the single point that decides whether a given
-// combination of Kind, Path, AllowCwdAuth, GenerateSkill, ShellTemplates,
+// combination of Kind, Path, GenerateSkill, ShellTemplates,
 // AllowedMcpIDs and AllowedModels is coherent — called from both the create
 // and update paths so a project can never reach settings.json in a
 // self-contradictory shape.
@@ -143,12 +143,6 @@ func ValidateShape(proj *config.Project) error {
 	}
 	if proj.Path != "" {
 		return fmt.Errorf("remote project must not have a path: %q", proj.Path)
-	}
-	// A remote caller's cwd is on a different machine; relay cannot compare
-	// it against a host path, and a collision would grant a remote client
-	// the tool surface of an unrelated local project via a directory guess.
-	if proj.AllowCwdAuth {
-		return fmt.Errorf("remote project must not enable allow_cwd_auth: directory auth compares a caller's cwd against Path, which a remote project doesn't have")
 	}
 	// regenProjectSkills silently skips pathless projects, so leaving this
 	// flag on would make it an inert toggle that lies about what it does.

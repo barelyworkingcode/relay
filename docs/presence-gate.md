@@ -141,23 +141,26 @@ what runs.** Concretely:
   as configured) while auditing is off, exactly as before this operation was
   gated.
 
-**The `configure` subset, and why `allow_cwd_auth` and `allow_external` are in
-it.** `PUT /api/projects/{id}` is classed `configure` under ADR-015, which
+**The `configure` subset, and why `allow_external` is in it.**
+`PUT /api/projects/{id}` is classed `configure` under ADR-015, which
 measures blast radius by HTTP verb and route. But an agent holding a token for
 a project it can also edit does not need to mint anything new: it can simply
 widen the grant it already has by editing `allowed_mcp_ids`, `allowed_tools`,
-`access`, the resource scope, `allow_external`, or `allow_cwd_auth`. Editing a
+`access`, the resource scope, or `allow_external`. Editing a
 grant has the blast radius of the grant it edits, not the blast radius of a
 generic `configure` call, so this narrow slice of `configure` is gated on the
-same footing as `grant` and `execute`. `allow_cwd_auth` is named on its own
-because turning it on hands the project's entire tool set to any process
-merely standing in the project's directory, with no token check at all.
+same footing as `grant` and `execute`.
 `allow_external` is ADR-011's second axis of the same permission set — an
 agent that can turn on outbound access for an MCP it already reaches does not
 need a mint either, and is gated identically to `allowed_tools`. A rename, a
 chat-template edit, or any other field outside that named set does not widen
 what the project's token reaches, and does not prompt — `disabled_tools` in
 particular is a denylist that can only narrow, and narrowing is never gated.
+(The retired `allow_cwd_auth` field used to be named on its own here, for the
+same reason: turning it on handed the project's entire tool set to any
+process merely standing in the project's directory, with no token check at
+all. plan-broker-and-sessions.md §2 C3 removes the field and the mechanism
+entirely rather than continuing to gate it.)
 
 ## Why `proxy` is not gated
 
@@ -230,10 +233,7 @@ unchanged by this: it still binds all ten fields' presence exactly as
 before (see `TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields`'s
 own comment for why shrinking the digest to the gating subset would be
 wrong), so a grant answered for one shape still cannot be redeemed for a
-different one. Narrowing the *field set* itself to fire only on
-`allow_cwd_auth` is a separate, larger change, still blocked on a local
-identity binding for `cli-admin` that does not exist yet (ADR-018's Open
-questions); it is not part of this step.
+different one.
 
 ## The nonce model: single-use, operation-and-argument-bound, 120 seconds
 
