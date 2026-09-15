@@ -41,6 +41,19 @@ func KillProcessGroup(cmd *exec.Cmd) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
+// KillProcessGroupPID sends SIGKILL straight to the process group led by
+// pid. Unlike KillProcessGroup, there is no SIGTERM/wait grace period: R-S9
+// calls this only for a root process a relaysessions launch owned once
+// that launch has already ended (crash, restart, or an explicit stop), so
+// there is no clean shutdown left to request — the only job left is making
+// sure nothing orphaned keeps running (spec-session-host.md §4.4, §6).
+func KillProcessGroupPID(pid int32) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-int(pid), syscall.SIGKILL)
+}
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

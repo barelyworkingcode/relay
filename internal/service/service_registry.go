@@ -115,6 +115,13 @@ type Registry struct {
 	// without waiting out real backoff delays.
 	Clock Clock
 
+	// HelperVerifier gates config.RelaySessionsServiceID's own on-disk
+	// binary before it is ever spawned (SP3, R-S9): startLocked refuses to
+	// start that one id if VerifyStatic fails, and starts every other
+	// service exactly as before. nil skips the check -- main wires the real
+	// darwin implementation; a hermetic test wires a stub.
+	HelperVerifier HelperVerifier
+
 	svMu        sync.Mutex
 	supervisors map[string]*serviceSupervisor
 }
@@ -165,6 +172,18 @@ func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor
 	cmd, err := BuildCommand(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build command for %q: %w", cfg.ID, err)
+	}
+
+	// SP3/R-S9: the one service whose on-disk binary must be proven to be
+	// exactly the one relay shipped before it is ever spawned -- it is the
+	// one process that receives project-session secrets. Every other
+	// service starts exactly as before HelperVerifier existed.
+	if cfg.ID == config.RelaySessionsServiceID && r.HelperVerifier != nil {
+		if err := r.HelperVerifier.VerifyStatic(cfg.Command); err != nil {
+			slog.Error("relay-sessions helper failed its static code-identity check; refusing to start it",
+				"id", cfg.ID, "command", cfg.Command, "error", err)
+			return nil, fmt.Errorf("helper code identity: %w", err)
+		}
 	}
 
 	// Relay's own environment is what the child inherits, so a relay started
@@ -269,6 +288,15 @@ func (r *Registry) startLocked(cfg *config.ServiceConfig, sup *serviceSupervisor
 		defer func() { _ = logFile.Close() }()
 		defer removePidFile(serviceID)
 		defer proc.launch.End()
+		if serviceID == config.RelaySessionsServiceID {
+			// SH §4.4, §6: every project_session identity relaysessions
+			// parented dies with it, on ANY exit of this process -- a
+			// crash-restart, an operator Stop, Reload's Stop half, or
+			// StopAll -- not only the supervised-restart case, since a
+			// clean stop leaves exactly the same orphan risk if nothing
+			// signals the process groups those sessions' shims led.
+			defer r.endSessionsUnderParent(serviceID)
+		}
 		if r.Enhanced != nil {
 			defer r.Enhanced.Forget(serviceID)
 		}
@@ -314,6 +342,31 @@ func (r *Registry) beginLaunch(cfg *config.ServiceConfig) (*Launch, *os.File, er
 		return nil, nil, fmt.Errorf("write launch secret for %q: %w", cfg.ID, errors.Join(writeErr, closeErr))
 	}
 	return launch, read, nil
+}
+
+// endSessionsUnderParent is R-S9's cleanup for a relaysessions launch that
+// just ended, whatever caused the exit: every project_session identity it
+// parented is gone the instant its own launch ends (EndByParent), but the
+// shim and target processes those launches named have no way to learn
+// that on their own -- SIGKILL to each root's process group is what stops
+// them from running on, orphaned, believed-dead by relay (spec-session-
+// host.md §4.4, §6). Reads the root pids before ending the identities:
+// EndByParent's own doc comment is explicit that Launches keeps no
+// process-group bookkeeping, so this registry is where that pairing
+// happens.
+func (r *Registry) endSessionsUnderParent(name string) {
+	if r.Launches == nil {
+		return
+	}
+	pids := r.Launches.RootPIDsByParent(name)
+	ended := r.Launches.EndByParent(name)
+	if ended > 0 {
+		slog.Info("relaysessions launch ended; ending its project sessions and killing their process groups",
+			"parent", name, "sessions", ended, "roots", len(pids))
+	}
+	for _, pid := range pids {
+		KillProcessGroupPID(pid)
+	}
 }
 
 // GenerateRandomHex returns a random hex string, or an error rather than a
