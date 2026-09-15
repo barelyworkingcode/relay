@@ -392,6 +392,9 @@ const (
 	MsgRevealConfigDir  = "reveal_config_dir"
 	MsgRevealLogsDir    = "reveal_logs_dir"
 	MsgRevealServiceLog = "reveal_service_log"
+
+	// Templates (ipc_templates.go)
+	MsgListTemplates = "list_templates"
 )
 
 // ---------------------------------------------------------------------------
@@ -459,6 +462,9 @@ var ipcHandlers = map[string]func(*IPCContext, json.RawMessage){
 	MsgRevealConfigDir:  ipcRevealConfigDir,
 	MsgRevealLogsDir:    ipcRevealLogsDir,
 	MsgRevealServiceLog: ipcRevealServiceLog,
+
+	// Templates (ipc_templates.go)
+	MsgListTemplates: ipcListTemplates,
 }
 
 // onSettingsIpc is called from the WKWebView IPC handler.

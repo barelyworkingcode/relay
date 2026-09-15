@@ -210,6 +210,7 @@ type frontendRouteDeps struct {
 // class, not a call site here, decides what lands on TCP.
 func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) {
 	RegisterProjectRoutes(rr, deps.store, deps.projectOps, deps.mcps, deps.tools, deps.enum, deps.skillLister, deps.onProjectsChanged)
+	RegisterTemplateRoutes(rr, deps.store)
 	if deps.auditOps != nil {
 		RegisterAuditRoutes(rr, deps.auditOps)
 	}

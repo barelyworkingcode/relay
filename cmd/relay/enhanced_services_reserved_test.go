@@ -79,8 +79,25 @@ func TestReservedRoutes_LegitimateServicesStillRegister(t *testing.T) {
 	if err := reg.RegisterManifest("relayScheduler", "/tmp/sched.sock", "tok", newManifest("/api/tasks/", "/api/tasks")); err != nil {
 		t.Fatalf("relayScheduler's routes were refused: %v", err)
 	}
-	if err := reg.RegisterManifest("relayLLM", "/tmp/llm.sock", "tok", loadManifestFixture(t, "relayllm.json")); err != nil {
-		t.Fatalf("relayLLM's manifest was refused: %v", err)
+}
+
+// This is deliberate, not a regression: relayllm.json's committed manifest
+// still claims the broad "/api/terminal/" prefix (relayLLM/internal/relay/manifest.go),
+// which now overlaps GET /api/terminal/templates[/{id}] — R-S3 moved those
+// two routes to relay itself (plan-broker-and-sessions.md §2 C1). Registering
+// relayLLM's *current* manifest is therefore correctly refused until
+// relayLLM's own retirement unit (L-S1) narrows "/api/terminal/" away from
+// the routes relay now serves; this test pins that the refusal names the
+// real overlapping route rather than silently swallowing it.
+func TestReservedRoutes_RelayLLMManifestOverlapsTemplateRoutesUntilLS1(t *testing.T) {
+	reg := esrRegistryFromRealRoutes(t)
+
+	err := reg.RegisterManifest("relayLLM", "/tmp/llm.sock", "tok", loadManifestFixture(t, "relayllm.json"))
+	if err == nil {
+		t.Fatal("relayLLM's manifest was accepted despite claiming /api/terminal/, which relay now serves under it")
+	}
+	if !strings.Contains(err.Error(), "/api/terminal/") {
+		t.Fatalf("refusal does not name the overlapping route: %v", err)
 	}
 }
 
