@@ -11,8 +11,7 @@ package main
 // (AC-16b), issuance auditing being off refuses before the provider is ever
 // called (§7.4, AC-26/AC-26b), and the digest genuinely binds the arguments
 // §6.4 lists for each operation — a project update touching only its name
-// must not prompt, and one that turns on allow_cwd_auth or widens
-// allowed_tools must (AC-16c).
+// must not prompt, and one that widens allowed_tools must (AC-16c).
 
 import (
 	"context"
@@ -628,24 +627,6 @@ func TestProjectOps_UpdateTouchingOnlyNameDoesNotPrompt(t *testing.T) {
 	}
 }
 
-func TestProjectOps_AllowCwdAuthTurningOnIsGated(t *testing.T) {
-	_, store := pgwSandbox(t)
-	proj := mkStoreProject(t, store, config.ProjectKindLocal, "cwd-project", t.TempDir())
-
-	gate, err := presence.NewGate(presencetest.Deny())
-	assertNoErr(t, err, "NewGate")
-	ops := &ProjectOps{Store: store, Gate: gate, Issuance: pgwWithIssuance(t)}
-
-	on := true
-	_, _, err = ops.Update(context.Background(), proj.ID, project.UpdateFields{AllowCwdAuth: &on}, func() project.McpSurfaces { return nil }, auditViaCLI, "")
-	if !errors.Is(err, presence.ErrRefused) {
-		t.Fatalf("turning on allow_cwd_auth: err = %v, want presence.ErrRefused", err)
-	}
-	if store.Get().Projects[0].AllowCwdAuth {
-		t.Fatal("allow_cwd_auth was set despite the gate refusing")
-	}
-}
-
 func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 	_, store := pgwSandbox(t)
 	proj := mkStoreProject(t, store, config.ProjectKindLocal, "tools-project", t.TempDir())
@@ -663,7 +644,7 @@ func TestProjectOps_WideningAllowedToolsIsGated(t *testing.T) {
 
 // TestProjectOps_AllowExternalTurningOnIsGated is AC-16c's argument
 // extended to allow_external (ADR-011 decision 2c): it is the same
-// widening act as allowed_tools or allow_cwd_auth turning on — an agent
+// widening act as widening allowed_tools — an agent
 // holding a project token whose project it can edit does not need to mint
 // anything to reach outbound, it just widens the grant it already has —
 // so it must be refused the same way.
@@ -724,7 +705,7 @@ func pgwSeedGrantProject(t *testing.T, store config.SettingsStore, kind config.P
 		// "mail_*" stands in for the Settings window's "All tools" state —
 		// a real allowlist, not the literal "*" validateToolPattern refuses
 		// as too broad regardless of what this test is exercising.
-		AllowedTools: map[string][]string{"macmcp": {"mail_*"}},
+		AllowedTools:  map[string][]string{"macmcp": {"mail_*"}},
 		Access:        map[string]string{"macmcp": "write"},
 		AllowExternal: map[string]bool{"macmcp": true},
 	}
@@ -911,24 +892,23 @@ func TestCredentialOps_DigestBindsNameClassesAndTTL(t *testing.T) {
 
 const hourTTL = 3600_000_000_000 // one hour, in time.Duration's nanosecond units
 
-// TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields is AC-9,
+// TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields is AC-9,
 // standing guard over §2.4's trap: projectUpdateDigest must
-// keep binding all nine grant-shape fields even though a future narrowing
-// of project.grant's GATE to fire only on allow_cwd_auth (ADR-018, blocked
+// keep binding every grant-shape field even though a future narrowing
+// of project.grant's GATE to fire on fewer of them (ADR-018, blocked
 // on the local cli-admin identity binding) will make it look natural to
-// shrink the digest to match. Changing any one of the nine, holding the
+// shrink the digest to match. Changing any one of the eight, holding the
 // rest fixed, must move the digest — the prompt authorises the request,
-// not the reason the request was privileged. mounts joined the other eight
+// not the reason the request was privileged. mounts joined the other seven
 // when the mount plane's operator write path was wired up; it is exactly
 // as grant-widening as allowed_tools, so it is bound on the same footing.
-func TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields(t *testing.T) {
+func TestProjectUpdateFields_DigestBindsAllEightGrantShapeFields(t *testing.T) {
 	base := project.UpdateFields{
 		AllowedMcpIDs: ptr([]string{"macmcp"}),
 		AllowedTools:  ptr(map[string][]string{"macmcp": {"mail_*"}}),
 		Access:        ptr(map[string]string{"macmcp": "read"}),
 		Context:       ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":1}`)}),
 		AllowExternal: ptr(map[string]bool{"macmcp": false}),
-		AllowCwdAuth:  ptr(false),
 		Kind:          ptr(config.ProjectKindLocal),
 		Path:          ptr("/tmp/base"),
 		Mounts:        ptr([]config.MountGrant{{ID: "src", Path: "/tmp/a", Access: "read"}}),
@@ -946,7 +926,6 @@ func TestProjectUpdateFields_DigestBindsAllNineGrantShapeFields(t *testing.T) {
 			f.Context = ptr(map[string]json.RawMessage{"macmcp": json.RawMessage(`{"a":2}`)})
 		}},
 		{"allow_external", func(f *project.UpdateFields) { f.AllowExternal = ptr(map[string]bool{"macmcp": true}) }},
-		{"allow_cwd_auth", func(f *project.UpdateFields) { f.AllowCwdAuth = ptr(true) }},
 		{"kind", func(f *project.UpdateFields) { f.Kind = ptr(config.ProjectKindRemote) }},
 		{"path", func(f *project.UpdateFields) { f.Path = ptr("/tmp/other") }},
 		{"mounts", func(f *project.UpdateFields) {

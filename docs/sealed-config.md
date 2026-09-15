@@ -47,7 +47,7 @@ or structure an operator needs to read to understand what is configured:
 `token_hash`, every credential's `hash`, `login_bootstrap.hash`, a passkey's
 public key coordinates, an enrolment's fingerprint, every project name and
 path, every MCP's command and argv, `allowed_mcp_ids`, `allowed_tools`,
-`access`, the resource scope, `allow_cwd_auth`, env **keys** (as opposed to
+`access`, the resource scope, env **keys** (as opposed to
 their values), the audit and remote blocks.
 
 ## The trap the field list exists to avoid

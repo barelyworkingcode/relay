@@ -169,14 +169,16 @@ func TestAudit_RecordsUnknownTool(t *testing.T) {
 	}
 }
 
-func TestAudit_RecordsDirectoryAuth(t *testing.T) {
+// allow_cwd_auth is retired (plan-broker-and-sessions.md §2 C3): a
+// caller-asserted working directory can no longer identify a project, so a
+// tokenless call is refused as unauthorized — regardless of whether the
+// project's directory matches the asserted cwd — and audited the same way
+// any other unauthenticated call is, never attributed to a project.
+func TestAudit_TokenlessCwdIsUnauthorized(t *testing.T) {
 	dir := t.TempDir()
 
-	// The store hands out settings by value, so the project must be opted
-	// into directory auth before the router is built from it.
 	settings := makeSettings(map[string]config.Permission{"fsmcp": config.PermOn}, nil, nil)
 	settings.Projects[0].Path = dir
-	settings.Projects[0].AllowCwdAuth = true
 
 	mgr := mcpbroker.NewManager(nil)
 	addMockConn(mgr, "fsmcp", newMockConn("fsmcp", simpleTools("read_file"), okHandler(`{}`)))
@@ -185,19 +187,22 @@ func TestAudit_RecordsDirectoryAuth(t *testing.T) {
 	r.audit = rec
 
 	ctx := bridge.WithCallerCwd(context.Background(), dir)
-	if _, err := r.CallTool(ctx, "read_file", json.RawMessage(`{}`), ""); err != nil {
-		t.Fatalf("CallTool with directory auth: %v", err)
+	if _, err := r.CallTool(ctx, "read_file", json.RawMessage(`{}`), ""); err == nil {
+		t.Fatal("expected a tokenless call asserting only a cwd to be refused")
 	}
 
 	ev := onlyEvent(t, readLoggedEvents(t, rec))
-	if ev.Actor.Auth != audit.AuditAuthCwd {
-		t.Errorf("actor auth = %q, want cwd", ev.Actor.Auth)
+	if ev.Outcome != audit.AuditOutcomeUnauthorized {
+		t.Errorf("outcome = %q, want unauthorized", ev.Outcome)
 	}
-	if ev.Actor.Cwd != dir {
-		t.Errorf("actor cwd = %q, want %q", ev.Actor.Cwd, dir)
+	if ev.Actor.Kind != audit.AuditActorUnknown {
+		t.Errorf("actor kind = %q, want unknown", ev.Actor.Kind)
 	}
-	if ev.Actor.ProjectID != "test-project" {
-		t.Errorf("actor project = %q, want test-project", ev.Actor.ProjectID)
+	if ev.Actor.Auth != audit.AuditAuthNone {
+		t.Errorf("actor auth = %q, want none", ev.Actor.Auth)
+	}
+	if ev.Actor.ProjectID != "" {
+		t.Errorf("unauthenticated call attributed to project %q", ev.Actor.ProjectID)
 	}
 }
 

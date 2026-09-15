@@ -141,7 +141,7 @@ Rules, enforced in `internal/project.ValidateShape` and a new
   references is refused with the list of project names.
 - A host project's `path` must be absolute (lexically: begins with `/`). It is
   **never** stat'd, realpath'd or created on the console.
-- A host project may not carry `allowed_mcp_ids`, `mounts`, `allow_cwd_auth`
+- A host project may not carry `allowed_mcp_ids`, `mounts`,
   or `generate_skill` (decision 6; and the skill generator writes into the
   project directory, which is not here). `chat_templates`,
   `shell_templates`, `allowed_models`, `permission_policy` and
