@@ -37,6 +37,10 @@ const (
 	auditCredentialExternalMcp  = "external_mcp"
 	auditCredentialService      = "service"
 	auditCredentialProjectGrant = "project_grant"
+	// auditCredentialRemote covers a remote.configure config_change: relay's
+	// remote-listener block is a singleton, so every record's subject is the
+	// literal "remote" rather than an id (enrolment_ops.go's SetRemoteConfig).
+	auditCredentialRemote = "remote"
 )
 
 // How an act was initiated. A separate axis from the actor kind: `cli` and

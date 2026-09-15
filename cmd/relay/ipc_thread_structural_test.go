@@ -50,7 +50,7 @@ import (
 // handler that starts calling one directly is caught too. A method absent here because it is
 // genuinely ungated (ServiceOps.Start/Stop/SetAutostart/Remove,
 // McpOps.Remove, LoginOps.Passkeys/Sessions/SignOut,
-// EnrolmentOps.SetRemoteConfig, McpOps.ResetPermissions, ...) must stay
+// McpOps.ResetPermissions, ...) must stay
 // absent: adding an ungated method would just make the test ignore real
 // synchronous calls without proving anything. McpOps.Remove and
 // ServiceOps.Remove left this map when they left presence.GatedOps
@@ -66,7 +66,7 @@ var gatedIPCMethods = map[string]map[string]bool{
 	"ProjectOps":   {"Create": true, "Update": true, "RotateToken": true},
 	"McpOps":       {"Add": true, "StartOAuth": true},
 	"Ops":          {"Create": true, "Update": true}, // ServiceOps
-	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true, "Sign": true, "Approve": true},
+	"EnrolmentOps": {"Create": true, "Update": true, "Revoke": true, "Sign": true, "Approve": true, "SetRemoteConfig": true},
 	"LoginOps":     {"RevokePasskey": true, "MintBootstrap": true},
 }
 

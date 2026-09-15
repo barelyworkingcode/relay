@@ -98,6 +98,32 @@ what runs.** Concretely:
 - **Rotating a project token** (`project.rotate_token`) — issues the security
   boundary itself.
 - **Widening a project's grant shape** (`project.grant`) — see below.
+- **Changing relay's remote-listener configuration** (`remote.configure`,
+  `PUT /api/remote` / IPC `update_remote_config`, both onto
+  `EnrolmentOps.SetRemoteConfig`) — the caller chooses what reaches the host:
+  the bind address either listener answers on, and whether either is
+  reachable at all. `execute` was classed at the route (ADR-015) on the
+  strength of `POST /api/mcps`, `POST /api/services` and
+  `PUT /api/services/{id}` alone; `PUT /api/remote` carried the same class
+  but no gate at its core, the one `execute` route a caller holding only
+  that class could reach with nothing standing in front of it. Applies
+  decision 1's per-field judgment the way `service.register`'s update path
+  does: `enabled` and `enrolment_requests` gate only when a request turns
+  them ON (off only closes a listener that was already reachable, and
+  closing one is never gated), while `listen` and `enrolment_listen` gate on
+  any actual change in either direction — there is no generic rule for when
+  one bind address is "narrower" than another the way there is for a
+  boolean's on/off axis (`remoteConfigChangedFields`,
+  `cmd/relay/enrolment_ops.go`). `Remove` (clearing the block entirely) is
+  strictly narrower than any state it could replace and never gates, and a
+  resend of the exact stored record needs no gate either. Deliberately **not**
+  behind `requireIssuanceAuditor`, unlike every other entry on this list: the
+  remote listener already has its own, separate audit rule (ADR-010) that
+  gates whether it actually *serves* traffic, checked later by
+  `RemoteSupervisor` at reconcile time, not whether the setting can be saved
+  — an operator must be able to persist `enabled: true` (and see it read back
+  as configured) while auditing is off, exactly as before this operation was
+  gated.
 
 **The `configure` subset, and why `allow_cwd_auth` and `allow_external` are in
 it.** `PUT /api/projects/{id}` is classed `configure` under ADR-015, which

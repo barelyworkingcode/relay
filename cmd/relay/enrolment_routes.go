@@ -136,14 +136,16 @@ func RegisterEnrolmentRoutes(rr *control.RouteRegistrar, ops *EnrolmentOps) {
 	// relay exposes (ADR-015 decision 1). Still one route, one class: the
 	// enrolment fields ride remoteConfigFields unchanged, so this handler
 	// gains no new surface, only two more fields on the body it already
-	// decodes.
+	// decodes. SetRemoteConfig itself is now gated (remote.configure) when
+	// the request actually widens what a remote client reaches — this
+	// route was ClassExecute's one ungated member (F1); it no longer is.
 	rr.Handle(control.ClassExecute, "PUT /api/remote", func(w http.ResponseWriter, r *http.Request) {
 		var body remoteConfigFields
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		view, err := ops.SetRemoteConfig(body)
+		view, err := ops.SetRemoteConfig(r.Context(), body, auditViaHTTP, credIDOf(r))
 		if err != nil {
 			writeEnrolmentError(w, err)
 			return
