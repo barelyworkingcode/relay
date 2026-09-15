@@ -22,6 +22,8 @@ const (
 	anthropicRemoteProject   = `{"type":"error","error":{"type":"permission_error","message":"permission denied"}}`
 	openAIHostUnavailable    = `{"error":{"message":"model host unavailable","type":"server_error"}}`
 	anthropicHostUnavailable = `{"type":"error","error":{"type":"api_error","message":"model host unavailable"}}`
+	openAITooManyRequests    = `{"error":{"message":"too many concurrent requests","type":"rate_limit_error"}}`
+	anthropicTooManyRequests = `{"type":"error","error":{"type":"rate_limit_error","message":"too many concurrent requests"}}`
 )
 
 // UnauthorizedError is the 401 for a missing or unrecognised credential, and
@@ -77,4 +79,17 @@ func HostUnavailableError(shape Shape) ErrorBody {
 		body = anthropicHostUnavailable
 	}
 	return ErrorBody{Status: 503, Body: []byte(body), Reason: "host_unavailable"}
+}
+
+// TooManyRequestsError is the 429 for a body-processing slot the endpoint's
+// BodyBudget could not admit within its wait timeout (relay#116 re-review,
+// S6): the caller's own credential and grant may be perfectly valid, but
+// relay is already holding as much in-flight body-processing memory as it
+// will commit to at once.
+func TooManyRequestsError(shape Shape) ErrorBody {
+	body := openAITooManyRequests
+	if shape == ShapeAnthropic {
+		body = anthropicTooManyRequests
+	}
+	return ErrorBody{Status: 429, Body: []byte(body), Reason: "rate_limited"}
 }
