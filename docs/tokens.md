@@ -73,6 +73,14 @@ and could not be reached.
 An absent or empty class set grants **nothing** — never "everything", never
 "read". A credential minted by a tool that predates the class model is inert.
 
+**Every `execute` route is also presence-gated**, at the operation core each
+one shares with its CLI/IPC doors, not only here: `mcp.register`,
+`service.register` and `remote.configure` in
+[`docs/presence-gate.md`](presence-gate.md). The class check above answers
+"does this caller's credential reach `execute` at all"; the gate separately
+answers "did a human standing at this machine approve this exact call" —
+holding the class is necessary but never sufficient.
+
 **`execute` is socket-only.** Those four routes are not registered on the
 loopback TCP mux at all, so a caller there gets the mux's own refusal however
 its credential is classed (ADR-015 decision 2). The class still exists on the

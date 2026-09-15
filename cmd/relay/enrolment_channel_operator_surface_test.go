@@ -38,7 +38,11 @@ func newOperatorSurfaceFixture(t *testing.T) (*remoteFixture, *RemoteSupervisor,
 	t.Helper()
 	f := newRemoteFixture(t, remoteFixtureOpts{skipServe: true})
 	sup := f.supervise()
-	ops := &EnrolmentOps{Store: f.store, Audit: f.audit}
+	// Gate: allowGate(t) -- both doors below toggle enabled/enrolment_requests
+	// on, which is exactly what remote.configure gates (enrolment_ops.go's
+	// remoteConfigChangedFields); a nil Gate would refuse before either ever
+	// reaches the supervisor this file is actually testing.
+	ops := &EnrolmentOps{Store: f.store, Audit: f.audit, Gate: allowGate(t)}
 	return f, sup, ops
 }
 
@@ -51,7 +55,10 @@ func newOperatorSurfaceFixture(t *testing.T) (*remoteFixture, *RemoteSupervisor,
 func TestIPCUpdateRemoteConfig_TogglingEnrolmentRequestsOpensAndClosesTheListener(t *testing.T) {
 	_, sup, ops := newOperatorSurfaceFixture(t)
 	ui := &recordingUI{}
-	ctx := &IPCContext{Ctx: context.Background(), EnrolmentOps: ops, UI: ui}
+	// GoFunc runs synchronously: ipcUpdateRemoteConfig now hops off the main
+	// thread before calling the (possibly gated) core, the same deadlock
+	// precaution ipcCreateEnrolment already takes.
+	ctx := &IPCContext{Ctx: context.Background(), EnrolmentOps: ops, UI: ui, Platform: stubPlatform{}, GoFunc: func(fn func()) { fn() }}
 
 	handler, ok := ipcHandlers[MsgUpdateRemoteConfig]
 	if !ok {
