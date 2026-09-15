@@ -14,17 +14,14 @@ import (
 
 var (
 	capsFrontend = []config.ServiceCapability{config.ServiceCapabilityFrontend}
-	capsBridge   = []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}
+	capsBridge   = []config.ServiceCapability{config.ServiceCapabilityManifest}
 )
 
 // bridgeOpCapability restates docs/launch-identity.md's table for the bridge
 // operations, independently of service.Allowed.
 var bridgeOpCapability = map[string]config.ServiceCapability{
-	bridge.ReqRegisterManifest:       config.ServiceCapabilityManifest,
-	bridge.ReqResolvePtyEnv:          config.ServiceCapabilityProjects,
-	bridge.ReqResolveProjectTemplate: config.ServiceCapabilityProjects,
-	bridge.ReqListProjects:           config.ServiceCapabilityProjects,
-	bridge.ReqGetProject:             config.ServiceCapabilityProjects,
+	bridge.ReqRegisterManifest:  config.ServiceCapabilityManifest,
+	bridge.ReqRegisterModelHost: config.ServiceCapabilityModelHost,
 }
 
 // Every capability set is exercised through relay's real bridge socket and
@@ -38,7 +35,7 @@ func TestLaunchCapabilities_EachSetReachesExactlyItsOperations(t *testing.T) {
 	}{
 		{"frontend", capsFrontend},
 		{"manifest", []config.ServiceCapability{config.ServiceCapabilityManifest}},
-		{"projects", []config.ServiceCapability{config.ServiceCapabilityProjects}},
+		{"model_host", []config.ServiceCapability{config.ServiceCapabilityModelHost}},
 		{"frontend+manifest (scheduler)", []config.ServiceCapability{config.ServiceCapabilityFrontend, config.ServiceCapabilityManifest}},
 		{"none", []config.ServiceCapability{}},
 	} {
@@ -58,13 +55,15 @@ func TestLaunchCapabilities_EachSetReachesExactlyItsOperations(t *testing.T) {
 				}
 			}
 
+			// plan-broker-and-sessions.md §2 C1 deletes OpServiceTools: no
+			// capability set ever grants a service's launch identity a
+			// tokenless ListTools/CallTool path anymore.
 			resp, line := b.send(t, bridge.BridgeRequest{Type: bridge.ReqListTools})
-			wantTools := slices.Contains(tc.caps, config.ServiceCapabilityProjects)
-			if got := resp.Type == bridge.RespTools; got != wantTools {
-				t.Errorf("tokenless ListTools as a service: listed = %v, want %v (%s)", got, wantTools, line)
+			if resp.Type == bridge.RespTools {
+				t.Errorf("tokenless ListTools listed tools for capabilities %v: %s", tc.caps, line)
 			}
-			if !wantTools && !strings.Contains(resp.Message, "token") {
-				t.Errorf("without projects a tokenless ListTools must fall to directory auth, got %q", resp.Message)
+			if !strings.Contains(resp.Message, "token") {
+				t.Errorf("tokenless ListTools must fall to directory auth regardless of capabilities, got %q", resp.Message)
 			}
 			if manifestHeld := slices.Contains(tc.caps, config.ServiceCapabilityManifest); (b.enhanced.Get(launch) != nil) != manifestHeld {
 				t.Errorf("manifest registered = %v, want %v", b.enhanced.Get(launch) != nil, manifestHeld)

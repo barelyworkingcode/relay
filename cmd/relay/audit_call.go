@@ -116,9 +116,6 @@ func (a *auditCall) setActor(ctx context.Context, stored *config.StoredToken, se
 		return
 	}
 	switch {
-	case stored.Name == serviceIdentityName:
-		a.ev.Actor.Kind = audit.AuditActorService
-		a.ev.Actor.Auth = audit.AuditAuthService
 	case token == "":
 		a.ev.Actor.Kind = audit.AuditActorProject
 		a.ev.Actor.Auth = audit.AuditAuthCwd

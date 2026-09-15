@@ -198,7 +198,7 @@ func TestServiceOps_RemovingACapabilityDoesNotPrompt(t *testing.T) {
 	if err := store.With(func(s *config.Settings) {
 		s.UpsertService(config.ServiceConfig{
 			ID: "relaytts", DisplayName: "relayTTS", Command: "/bin/tts",
-			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects},
+			Capabilities: []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels},
 		})
 	}); err != nil {
 		t.Fatalf("seed service: %v", err)
@@ -237,7 +237,7 @@ func TestServiceOps_AddingACapabilityIsGated(t *testing.T) {
 	assertNoErr(t, err, "NewGate")
 	ops := &ServiceOps{Store: store, Registry: &noopServiceManager{}, Gate: gate, Issuance: enabledIssuanceRecorder(t)}
 
-	caps := []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityProjects}
+	caps := []config.ServiceCapability{config.ServiceCapabilityManifest, config.ServiceCapabilityModels}
 	_, err = ops.Update(context.Background(), "relaytts", serviceFields{
 		DisplayName: "relayTTS", Command: "/bin/tts", Capabilities: &caps,
 	}, auditViaCLI, "")

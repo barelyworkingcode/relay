@@ -700,11 +700,11 @@ func TestRemoteServer_EveryNonToolRequestTypeIsUnreachable(t *testing.T) {
 	c := f.dial()
 
 	for _, typ := range []string{
-		bridge.ReqResolvePtyEnv,
 		bridge.ReqRegisterManifest,
-		bridge.ReqListProjects,
-		bridge.ReqGetProject,
-		bridge.ReqResolveProjectTemplate,
+		bridge.ReqRegisterModelHost,
+		bridge.ReqHello,
+		bridge.ReqDescribeProject,
+		bridge.ReqAdminOp,
 		bridge.ReqReconcileExternalMcps,
 		bridge.ReqReloadExternalMcp,
 		bridge.ReqReloadService,
