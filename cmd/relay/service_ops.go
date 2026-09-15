@@ -71,6 +71,11 @@ type serviceFields struct {
 	// identity may do; on Create it means the empty set. A non-nil pointer to
 	// an empty slice sets the empty set explicitly.
 	Capabilities *[]config.ServiceCapability `json:"capabilities,omitempty"`
+	// AllowedModels follows Capabilities' same nil-preserves-existing shape
+	// on Update; on Create nil means the empty grant (config.ServiceConfig's
+	// own default: no models). A non-nil pointer to an empty slice sets that
+	// same empty grant explicitly.
+	AllowedModels *[]string `json:"allowed_models,omitempty"`
 }
 
 // resolvedID is the id Create/Update commit under: the caller's explicit
@@ -108,15 +113,20 @@ func (f serviceFields) toConfig(id string) config.ServiceConfig {
 	if f.Capabilities != nil {
 		capabilities = append(capabilities, *f.Capabilities...)
 	}
+	var allowedModels []string
+	if f.AllowedModels != nil {
+		allowedModels = append(allowedModels, *f.AllowedModels...)
+	}
 	return config.ServiceConfig{
-		ID:           id,
-		DisplayName:  f.DisplayName,
-		Command:      f.Command,
-		Args:         f.Args,
-		WorkingDir:   workingDir,
-		Autostart:    autostart,
-		URL:          url,
-		Capabilities: capabilities,
+		ID:            id,
+		DisplayName:   f.DisplayName,
+		Command:       f.Command,
+		Args:          f.Args,
+		WorkingDir:    workingDir,
+		Autostart:     autostart,
+		URL:           url,
+		Capabilities:  capabilities,
+		AllowedModels: allowedModels,
 	}
 }
 
@@ -240,6 +250,12 @@ func serviceUpdateNeedsGate(existing config.ServiceConfig, f serviceFields) bool
 	if f.Capabilities != nil && serviceAddsCapability(existing.Capabilities, *f.Capabilities) {
 		return true
 	}
+	// AllowedModels has no established narrow/widen convention of its own
+	// here (unlike Capabilities): any actual change gates, the same
+	// conservative rule command/args/working_dir/url/autostart use.
+	if f.AllowedModels != nil && !slices.Equal(*f.AllowedModels, existing.AllowedModels) {
+		return true
+	}
 	return false
 }
 
@@ -300,6 +316,11 @@ func (f serviceFields) presenceDigest(id string) presence.Digest {
 		b.StringSeqField("capabilities", true, names)
 	} else {
 		b.StringSeqField("capabilities", false, nil)
+	}
+	if f.AllowedModels != nil {
+		b.StringSeqField("allowed_models", true, *f.AllowedModels)
+	} else {
+		b.StringSeqField("allowed_models", false, nil)
 	}
 	return b.Build()
 }
@@ -444,6 +465,9 @@ func (o *ServiceOps) Update(ctx context.Context, id string, f serviceFields, via
 		// zero value.
 		if f.Capabilities == nil {
 			cfg.Capabilities = existing.Capabilities
+		}
+		if f.AllowedModels == nil {
+			cfg.AllowedModels = existing.AllowedModels
 		}
 		if f.WorkingDir == nil {
 			cfg.WorkingDir = existing.WorkingDir

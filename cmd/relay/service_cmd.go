@@ -38,7 +38,9 @@ func serviceRegister(args []string) {
 	url := fs.String("url", "", "service URL")
 	autostart := fs.Bool("autostart", false, "start automatically")
 	var capabilityFlags stringSlice
-	fs.Var(&capabilityFlags, "capability", "grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool); none given means none held")
+	fs.Var(&capabilityFlags, "capability", "grant this service's launch identity a capability, repeatable: frontend (the frontend socket as read+configure+proxy), manifest (RegisterManifest), projects (ResolvePtyEnv, ResolveProjectTemplate, ListProjects, GetProject, service ListTools/CallTool), models (model-endpoint calls, limited by --allowed-model), model_host (RegisterModelHost); none given means none held")
+	var allowedModelFlags stringSlice
+	fs.Var(&allowedModelFlags, "allowed-model", "grant the models capability access to this model id, repeatable; omitted or none given means no models; pass \"*\" for every model")
 	fs.Parse(args)
 
 	if opts.Name == "" {
@@ -95,16 +97,24 @@ func serviceRegister(args []string) {
 		autostartSet = autostart
 	}
 
+	// This is deliberate, same as capabilities: a register names every model
+	// this service is allowed, always sent rather than left to Update's
+	// absent-preserves-existing merge, so repeating a register without
+	// --allowed-model narrows to none rather than silently keeping a grant
+	// nobody restated.
+	allowedModels := []string(allowedModelFlags)
+
 	fields := serviceFields{
-		ID:           opts.ID,
-		DisplayName:  opts.Name,
-		Command:      *command,
-		Args:         []string(opts.Args),
-		Env:          envValuesToWire(env),
-		WorkingDir:   workingDir,
-		Autostart:    autostartSet,
-		URL:          serviceURL,
-		Capabilities: &capabilities,
+		ID:            opts.ID,
+		DisplayName:   opts.Name,
+		Command:       *command,
+		Args:          []string(opts.Args),
+		Env:           envValuesToWire(env),
+		WorkingDir:    workingDir,
+		Autostart:     autostartSet,
+		URL:           serviceURL,
+		Capabilities:  &capabilities,
+		AllowedModels: &allowedModels,
 	}
 
 	client := requireService("relay service register")
@@ -125,6 +135,13 @@ func serviceRegister(args []string) {
 	fmt.Printf("  capabilities: %s\n", capabilitiesColumn(view.Capabilities))
 	if len(view.Capabilities) == 0 {
 		fmt.Println("  note: no capabilities: this service can start and say Hello, and can do nothing else through relay; pass --capability frontend|manifest|projects to grant one")
+	}
+	if slices.Contains(view.Capabilities, config.ServiceCapabilityModels) {
+		if len(view.AllowedModels) == 0 {
+			fmt.Println("  allowed models: none (note: an empty list means NO models for a service, the opposite of a project's default; pass --allowed-model ID, repeatable, or --allowed-model '*' for every model)")
+		} else {
+			fmt.Printf("  allowed models: %s\n", strings.Join(view.AllowedModels, ","))
+		}
 	}
 	if view.ProcessError != "" {
 		fmt.Printf("  note: %s\n", view.ProcessError)

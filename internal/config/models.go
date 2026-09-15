@@ -210,6 +210,16 @@ type ServiceConfig struct {
 	// LegacyFrontendConsumer is read only to migrate a record that predates
 	// Capabilities, and is never written back.
 	LegacyFrontendConsumer *bool `json:"frontend_consumer,omitempty"`
+
+	// AllowedModels grants a service holding the models capability which
+	// models it may call, read live on every model-endpoint request (docs/
+	// model-endpoint.md). Absent or empty means NO models — the opposite of
+	// a project's own AllowedModels default (spec-model-broker.md decision
+	// 4): a project with no list means "any model", but a service is
+	// deliberately opt-in, since a service (TTS, STT) is usually meant to
+	// reach exactly one model rather than everything relayLLM serves.
+	// ["*"] means every model, same spelling as a project's wildcard.
+	AllowedModels []string `json:"allowed_models,omitempty"`
 }
 
 // ServiceCapability names one thing a service's launch identity may do.
@@ -223,10 +233,20 @@ const (
 	// ServiceCapabilityProjects is ResolvePtyEnv, ResolveProjectTemplate,
 	// ListProjects, GetProject and service-scope ListTools/CallTool.
 	ServiceCapabilityProjects ServiceCapability = "projects"
+	// ServiceCapabilityModels grants model-endpoint calls (OpModelCall) and
+	// the unfiltered model list (OpModelList), limited by AllowedModels.
+	ServiceCapabilityModels ServiceCapability = "models"
+	// ServiceCapabilityModelHost grants RegisterModelHost: registering this
+	// service's router socket as the model endpoint's upstream. At most one
+	// host may be live at a time (docs/model-endpoint.md).
+	ServiceCapabilityModelHost ServiceCapability = "model_host"
 )
 
 // ServiceCapabilities is every capability relay knows.
-var ServiceCapabilities = []ServiceCapability{ServiceCapabilityFrontend, ServiceCapabilityManifest, ServiceCapabilityProjects}
+var ServiceCapabilities = []ServiceCapability{
+	ServiceCapabilityFrontend, ServiceCapabilityManifest, ServiceCapabilityProjects,
+	ServiceCapabilityModels, ServiceCapabilityModelHost,
+}
 
 // HasCapability reports whether the record grants want.
 func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
@@ -254,7 +274,7 @@ func (c *ServiceConfig) migrateCapabilities() {
 func (c *ServiceConfig) validateCapabilities() error {
 	for _, capability := range c.Capabilities {
 		if !slices.Contains(ServiceCapabilities, capability) {
-			return fmt.Errorf("service capability %q is unknown: use frontend, manifest or projects", capability)
+			return fmt.Errorf("service capability %q is unknown: use frontend, manifest, projects, models or model_host", capability)
 		}
 	}
 	return nil
@@ -798,4 +818,17 @@ type RemoteConfig struct {
 
 	EnrolmentRequests *bool  `json:"enrolment_requests,omitempty"`
 	EnrolmentListen   string `json:"enrolment_listen,omitempty"`
+}
+
+// ModelEndpointConfig configures the model endpoint's loopback TCP listener
+// (docs/model-endpoint.md, plan-broker-and-sessions.md decision b). Absent
+// means no TCP listener at all — model.sock is always served regardless —
+// the same "absent means closed" default RemoteConfig uses, and for the
+// same reason: opening a network door is something the operator's settings
+// say, never something a fresh install infers. A test-only Go seam
+// (cmd/relay's SetModelListenOverrideForTest) can override this value;
+// deliberately not an environment variable, which a production process's
+// own environment could also reach.
+type ModelEndpointConfig struct {
+	Listen string `json:"listen,omitempty"`
 }
