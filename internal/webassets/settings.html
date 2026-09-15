@@ -1812,6 +1812,17 @@ window.__RELAY_INIT__ = {
       return '<label class="toggle-row" style="padding:4px 0;margin:0;cursor:pointer"><span>' + esc(cap) + '</span><span class="switch"><input type="checkbox" id="svcCap_' + cap + '" aria-label="' + esc(cap) + ' capability" ' + (caps.indexOf(cap) >= 0 ? "checked" : "") + ' /><span class="slider"></span></span></label>';
     }).join("");
     html += "</div>";
+    if (caps.indexOf("models") >= 0) {
+      html += '<div class="proj-section">';
+      html += '<div class="proj-section-title">Allowed Models</div>';
+      html += `<p class="proj-section-help">Which models this service may reach through relay's model endpoint (docs/model-endpoint.md). An <strong>empty list means NO models</strong> -- the opposite of a project's own default, since a service like TTS or STT is normally meant to reach exactly one model, not everything relayLLM serves. A single <code>*</code> entry means every model.</p>`;
+      html += '<div id="svcModelsRows">' + renderServiceModelRows() + "</div>";
+      html += '<div style="display:flex;gap:6px;margin-top:8px">';
+      html += '<input type="text" id="svcModelNewId" placeholder="model id, or * for every model" style="flex:1" />';
+      html += '<button type="button" class="btn btn-sm" onclick="svcModelAddRow()">Add</button>';
+      html += "</div>";
+      html += "</div>";
+    }
     html += '<div class="proj-section">';
     html += '<div class="proj-section-title">Options</div>';
     html += `<div class="toggle-row" style="padding:4px 0;margin:0">
@@ -1832,7 +1843,7 @@ window.__RELAY_INIT__ = {
     html += "</div>";
     return html;
   }
-  var serviceCapabilityNames = ["frontend", "manifest", "projects"];
+  var serviceCapabilityNames = ["frontend", "manifest", "projects", "models", "model_host"];
   function renderServiceEnvRows() {
     const rows = state.svcEnvDraft || [];
     let html = "";
@@ -1906,6 +1917,39 @@ window.__RELAY_INIT__ = {
     }
     return env;
   }
+  function renderServiceModelRows() {
+    const rows = state.svcModelsDraft || [];
+    let html = "";
+    for (let i = 0; i < rows.length; i++) {
+      html += '<div class="svc-env-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">';
+      html += '<input type="text" value="' + esc(rows[i]) + '" style="flex:1" onchange="svcModelSetValue(' + i + ', this.value)" />';
+      html += '<button type="button" class="btn btn-sm btn-danger" ' + bind(svcModelRemoveRow, i) + ">Remove</button>";
+      html += "</div>";
+    }
+    if (rows.length === 0) html += '<div class="empty-state">No models: this service holds the models capability but can reach none until at least one model id (or *) is added.</div>';
+    return html;
+  }
+  function svcModelSetValue(i, value) {
+    const rows = state.svcModelsDraft || [];
+    if (i < 0 || i >= rows.length) return;
+    rows[i] = value;
+  }
+  function svcModelRemoveRow(i) {
+    const rows = state.svcModelsDraft || [];
+    if (i < 0 || i >= rows.length) return;
+    rows.splice(i, 1);
+    render();
+  }
+  function svcModelAddRow() {
+    const idEl = document.getElementById("svcModelNewId");
+    if (!idEl) return;
+    const id = idEl.value.trim();
+    if (!id) return;
+    if (!state.svcModelsDraft) state.svcModelsDraft = [];
+    state.svcModelsDraft.push(id);
+    idEl.value = "";
+    render();
+  }
   function svcFormValues() {
     const displayName = document.getElementById("svcDisplayName").value.trim();
     const command = document.getElementById("svcCommand").value.trim();
@@ -1919,11 +1963,16 @@ window.__RELAY_INIT__ = {
       const el = document.getElementById("svcCap_" + cap);
       return !!(el && el.checked);
     });
-    return { displayName, command, args, env, workingDir, autostart, url, capabilities };
+    const result = { displayName, command, args, env, workingDir, autostart, url, capabilities };
+    if (capabilities.indexOf("models") >= 0) {
+      result.allowedModels = (state.svcModelsDraft || []).slice();
+    }
+    return result;
   }
   function newService() {
     state.editingServiceId = "new";
     state.svcEnvDraft = [];
+    state.svcModelsDraft = [];
     render();
   }
   function addService() {
@@ -1939,7 +1988,8 @@ window.__RELAY_INIT__ = {
       working_dir: v.workingDir || null,
       autostart: v.autostart,
       url: v.url || null,
-      capabilities: v.capabilities
+      capabilities: v.capabilities,
+      allowed_models: v.allowedModels
     }));
     render();
   }
@@ -1949,11 +1999,13 @@ window.__RELAY_INIT__ = {
     state.svcEnvDraft = Object.keys(svc && svc.env || {}).sort().map(function(k) {
       return { key: k, mode: "keep", value: "" };
     });
+    state.svcModelsDraft = (svc && svc.allowed_models || []).slice();
     render();
   }
   function cancelServiceEdit() {
     state.editingServiceId = null;
     state.svcEnvDraft = null;
+    state.svcModelsDraft = null;
     render();
   }
   function saveServiceEdit() {
@@ -1969,7 +2021,8 @@ window.__RELAY_INIT__ = {
       working_dir: v.workingDir || null,
       autostart: v.autostart,
       url: v.url || null,
-      capabilities: v.capabilities
+      capabilities: v.capabilities,
+      allowed_models: v.allowedModels
     }));
     const svc = state.services.find((s) => s.id === state.editingServiceId);
     if (svc) {
@@ -1982,9 +2035,11 @@ window.__RELAY_INIT__ = {
       svc.autostart = v.autostart;
       svc.url = v.url || null;
       svc.capabilities = v.capabilities;
+      if (v.allowedModels !== void 0) svc.allowed_models = v.allowedModels;
     }
     state.editingServiceId = null;
     state.svcEnvDraft = null;
+    state.svcModelsDraft = null;
     render();
   }
   function removeService(id, name) {
@@ -5940,6 +5995,10 @@ That browser's credential stops authenticating on its next request and it has to
     svcEnvSetValue,
     svcEnvWireValue,
     svcFormValues,
+    svcModelAddRow,
+    svcModelRemoveRow,
+    svcModelSetValue,
+    renderServiceModelRows,
     toggleConfigSection,
     toggleProjTool,
     toggleProjectTokenVisible,

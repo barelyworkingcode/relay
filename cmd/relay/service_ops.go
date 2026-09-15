@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/presence"
@@ -113,9 +114,17 @@ func (f serviceFields) toConfig(id string) config.ServiceConfig {
 	if f.Capabilities != nil {
 		capabilities = append(capabilities, *f.Capabilities...)
 	}
+	// trimModelIDs runs here, the one place every door's AllowedModels
+	// funnels through on its way into a config.ServiceConfig, so a stray
+	// leading/trailing space from any caller never reaches storage.
+	// serviceWidensAllowedModels applies the same trim before comparing, so
+	// an untrimmed resend of an already-stored id reads as "unchanged," not
+	// "added." config.ServiceConfig.Validate independently refuses what
+	// trimming reduces to empty, so a whitespace-only entry is caught rather
+	// than silently dropped.
 	var allowedModels []string
 	if f.AllowedModels != nil {
-		allowedModels = append(allowedModels, *f.AllowedModels...)
+		allowedModels = trimModelIDs(*f.AllowedModels)
 	}
 	return config.ServiceConfig{
 		ID:            id,
@@ -216,6 +225,53 @@ func serviceAddsCapability(existing, requested []config.ServiceCapability) bool 
 	return false
 }
 
+// modelAllowedWildcard is the literal that means "every model" in an
+// AllowedModels list (docs/model-endpoint.md), matching internal/modelbroker's
+// own spelling. Not imported from that package: this file has no other
+// reason to depend on it, and the spelling is part of the wire contract, not
+// an implementation detail that package could change out from under this one.
+const modelAllowedWildcard = "*"
+
+// trimModelIDs trims every entry. The one funnel every door's AllowedModels
+// passes through on the way into a config.ServiceConfig (serviceFields.
+// toConfig) and the one this package's own widen check re-derives from
+// before comparing, so a caller's stray leading/trailing space never reads
+// as a different model id than the trimmed one already on record.
+func trimModelIDs(ids []string) []string {
+	if ids == nil {
+		return nil
+	}
+	out := make([]string, len(ids))
+	for i, m := range ids {
+		out[i] = strings.TrimSpace(m)
+	}
+	return out
+}
+
+// serviceWidensAllowedModels reports whether requested reaches any model
+// existing does not already grant, trimming both first so whitespace alone
+// never counts as a change. A wildcard entry anywhere in existing already
+// grants every model (the same "any occurrence, not just a sole element"
+// reading internal/modelbroker.Allowed gives the grant list), so nothing
+// requested can widen past it. Otherwise, requested widens if it adds the
+// wildcard (the literal switch to "every model") or any id existing did not
+// already list. Dropping ids, reordering them, or resending the identical
+// set is never a widen -- the same addition-only reading serviceAddsCapability
+// gives capabilities.
+func serviceWidensAllowedModels(existing, requested []string) bool {
+	existing = trimModelIDs(existing)
+	requested = trimModelIDs(requested)
+	if slices.Contains(existing, modelAllowedWildcard) {
+		return false
+	}
+	for _, m := range requested {
+		if !slices.Contains(existing, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // serviceUpdateNeedsGate decides whether an Update actually needs the
 // presence gate, judging each field against what f carries rather than
 // gating unconditionally the way every prior Update did. command, args,
@@ -250,10 +306,12 @@ func serviceUpdateNeedsGate(existing config.ServiceConfig, f serviceFields) bool
 	if f.Capabilities != nil && serviceAddsCapability(existing.Capabilities, *f.Capabilities) {
 		return true
 	}
-	// AllowedModels has no established narrow/widen convention of its own
-	// here (unlike Capabilities): any actual change gates, the same
-	// conservative rule command/args/working_dir/url/autostart use.
-	if f.AllowedModels != nil && !slices.Equal(*f.AllowedModels, existing.AllowedModels) {
+	// AllowedModels shares Capabilities' narrow/widen axis: adding a model
+	// id, or switching to the wildcard, is new reach and gates; dropping
+	// ids, or resending the exact set (the Settings window's Save button
+	// when the Allowed Models section was never opened), narrows or changes
+	// nothing and must not prompt.
+	if f.AllowedModels != nil && serviceWidensAllowedModels(existing.AllowedModels, *f.AllowedModels) {
 		return true
 	}
 	return false

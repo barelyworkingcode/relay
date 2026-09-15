@@ -280,6 +280,19 @@ func (c *ServiceConfig) validateCapabilities() error {
 	return nil
 }
 
+// validateAllowedModels refuses an entry that is empty or whitespace-only —
+// trimming here (rather than assuming a caller already did) is what makes
+// this the one place a stray " " id from any door (CLI, HTTP, the Settings
+// window) is caught, whether or not that door normalized its input first.
+func (c *ServiceConfig) validateAllowedModels() error {
+	for _, m := range c.AllowedModels {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("service allowed_models entry must not be empty or whitespace-only")
+		}
+	}
+	return nil
+}
+
 type ChatTemplate struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -715,7 +728,10 @@ func (c *ServiceConfig) Validate() error {
 			return fmt.Errorf("service env key %q is reserved: the RELAY_ prefix is relay's own", k)
 		}
 	}
-	return c.validateCapabilities()
+	if err := c.validateCapabilities(); err != nil {
+		return err
+	}
+	return c.validateAllowedModels()
 }
 
 // IsSafeID guards persisted IDs that are used as filenames by application
