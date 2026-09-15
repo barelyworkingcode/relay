@@ -751,18 +751,26 @@ func (o *EnrolmentOps) RemoteConfig() remoteConfigView {
 // remoteConfigChangedFields names, in a fixed order, every field whose
 // requested value genuinely differs from what is stored -- judged like
 // serviceUpdateNeedsGate (service_ops.go), field by field, rather than
-// gating the whole request unconditionally. Enabled and EnrolmentRequests
-// are the two fields with an obvious narrow/widen reading: turning either
-// OFF only closes a listener that was already reachable (decision 1's
-// "removal is not escalation"), so those two name themselves here only when
-// the request turns them ON. Listen and EnrolmentListen have no such
-// reading -- a bind address is exactly "the caller chooses what reaches the
-// host" (presence-gate.md's `configure`-subset argument), and there is no
-// generic rule for when one host:port string is narrower than another -- so
-// either address names itself on ANY actual change, in either direction.
-// f.Remove is not a field this function looks at: SetRemoteConfig never
-// calls it when Remove is set, because clearing the whole block is
-// strictly narrower than any state it could have replaced.
+// gating the whole request unconditionally. Listen and EnrolmentListen have
+// no narrow/widen reading -- a bind address is exactly "the caller chooses
+// what reaches the host" (presence-gate.md's `configure`-subset argument) --
+// so either address names itself on ANY actual change, in either direction.
+//
+// Enabled and EnrolmentRequests now gate on ANY change too, turning a
+// listener off included. An earlier revision of this function only gated
+// turning one ON, on the theory that closing a listener that was already
+// reachable is never escalation (decision 1's "removal is not escalation")
+// -- correct while only an operator-minted credential could reach this
+// route. Since eve's frontend launch identity was granted execute
+// (plan-broker-and-sessions.md's F1 decision), PUT /api/remote is reachable
+// by any frontend-capable service, and a service silently disabling relay's
+// remote listener is an availability exposure that widening a background
+// service's reach introduced -- gated now on the user's own explicit call
+// (STATUS-relay-security.md).
+//
+// f.Remove is still not a field this function looks at: SetRemoteConfig
+// gates it separately, with its own digest and reason, since clearing the
+// whole block isn't a per-field change this function's shape can name.
 func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListen string, f remoteConfigFields) []string {
 	var existingListen, existingEnrolListen string
 	var existingEnabled, existingEnrolRequests bool
@@ -776,13 +784,13 @@ func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListe
 	if listen != existingListen {
 		out = append(out, "listen")
 	}
-	if f.Enabled && !existingEnabled {
+	if f.Enabled != existingEnabled {
 		out = append(out, "enabled")
 	}
 	if enrolListen != existingEnrolListen {
 		out = append(out, "enrolment_listen")
 	}
-	if f.EnrolmentRequests && !existingEnrolRequests {
+	if f.EnrolmentRequests != existingEnrolRequests {
 		out = append(out, "enrolment_requests")
 	}
 	return out
@@ -792,9 +800,9 @@ func remoteConfigChangedFields(existing *config.RemoteConfig, listen, enrolListe
 // name remoteConfigChangedFields can produce.
 var remoteConfigFieldPhrase = map[string]string{
 	"listen":             "the remote listener's bind address",
-	"enabled":            "enabling the remote listener",
+	"enabled":            "turning the remote listener on or off",
 	"enrolment_listen":   "the enrolment-request listener's bind address",
-	"enrolment_requests": "enabling the enrolment-request listener",
+	"enrolment_requests": "turning the enrolment-request listener on or off",
 }
 
 // remoteConfigReason names only the fields remoteConfigChangedFields found
@@ -824,6 +832,17 @@ func (f remoteConfigFields) presenceDigest(listen, enrolListen string) presence.
 		Build()
 }
 
+// removePresenceDigest binds a remote.configure grant to "remove", distinct
+// from presenceDigest's field-shaped digest: a Remove request carries no
+// address or enabled values worth binding to (it wipes the whole block), so
+// this names the one thing being approved instead of encoding empty fields
+// that could otherwise look like a coincidentally-matching update request.
+func (f remoteConfigFields) removePresenceDigest() presence.Digest {
+	return presence.NewDigestBuilder("remote.configure").
+		BoolField("remove", true, true).
+		Build()
+}
+
 // SetRemoteConfig is the one core the HTTP door (PUT /api/remote) and the
 // Settings-window IPC door (update_remote_config) both call: gating it here
 // gates both, and any future CLI path to the same operation for free.
@@ -840,8 +859,17 @@ func (f remoteConfigFields) presenceDigest(listen, enrolListen string) presence.
 // requireIssuanceAuditor here would collapse two independent controls into
 // one and turn a benign save into a refusal with no obvious cause. Only
 // requireGate runs, and only when remoteConfigChangedFields finds a field
-// that actually needs it; a resend of the exact stored record, and Remove
-// (a pure narrowing to nothing), reach neither check.
+// that actually needs it, or the request is Remove; a resend of the exact
+// stored record reaches neither check.
+//
+// Remove now gates too (its own digest, removePresenceDigest). An earlier
+// revision treated it as "a pure narrowing to nothing" and let it bypass
+// the gate entirely -- correct while only an operator-minted credential
+// could reach this route. Since eve's frontend launch identity was granted
+// execute (plan-broker-and-sessions.md's F1 decision), any frontend-capable
+// service can wipe relay's whole remote configuration with no prompt --
+// availability exposure, gated now on the user's own explicit call
+// (STATUS-relay-security.md).
 func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields, via, credID string) (remoteConfigView, error) {
 	listen := strings.TrimSpace(f.Listen)
 	enrolListen := strings.TrimSpace(f.EnrolmentListen)
@@ -858,18 +886,52 @@ func (o *EnrolmentOps) SetRemoteConfig(ctx context.Context, f remoteConfigFields
 		}
 	}
 
+	// existing is read outside the store lock purely to decide whether this
+	// request needs the gate at all, the same read-outside/mutate-inside
+	// split ServiceOps.Update documents and accepts: a block created between
+	// this read and the write below would let a concurrent Remove through
+	// ungated. Narrow (it needs a second caller racing a create against this
+	// Remove) and not new to this change -- the field-level Update path had
+	// the identical shape before Remove was gated too.
 	existing := o.Store.Get().Remote
 	var changed []string
-	var presenceID string
-	if !f.Remove {
+	// needGate, digest and reason are computed for either shape (Remove or a
+	// field-level Update) and fed through the ONE requireGate call below --
+	// gate_structural_test.go's completeness scan expects exactly one call
+	// site per op, so this is one call expression with two ways to arm it,
+	// not two call expressions.
+	var needGate bool
+	var digest presence.Digest
+	var reason string
+	switch {
+	case f.Remove:
+		// Removing an already-absent block changes nothing, same as a resend
+		// of the exact stored record for an Update -- no gate either. When it
+		// does change something, name it in the audit log the same way an
+		// Update's changed fields are: without this, a gated Remove and an
+		// unchanged resend would both audit an identical empty field list,
+		// distinguishable only by the presence of a presence_id.
+		if existing != nil {
+			needGate = true
+			digest = f.removePresenceDigest()
+			reason = "remove relay's remote configuration entirely"
+			changed = []string{"remove"}
+		}
+	default:
 		changed = remoteConfigChangedFields(existing, listen, enrolListen, f)
 		if len(changed) > 0 {
-			grant, err := requireGate(o.Gate, ctx, "remote.configure", f.presenceDigest(listen, enrolListen), remoteConfigReason(changed))
-			if err != nil {
-				return remoteConfigView{}, err
-			}
-			presenceID = grant.ID()
+			needGate = true
+			digest = f.presenceDigest(listen, enrolListen)
+			reason = remoteConfigReason(changed)
 		}
+	}
+	var presenceID string
+	if needGate {
+		grant, err := requireGate(o.Gate, ctx, "remote.configure", digest, reason)
+		if err != nil {
+			return remoteConfigView{}, err
+		}
+		presenceID = grant.ID()
 	}
 
 	if err := o.Store.With(func(s *config.Settings) {
