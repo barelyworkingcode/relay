@@ -18,6 +18,14 @@ type fakeProvider struct {
 	mu    sync.Mutex
 	alive bool
 
+	// killed once true stays true — a real provider's underlying process,
+	// once signalled, does not un-die because Start() happens to still be
+	// in flight on another goroutine. Start checks this after any startGate
+	// wait so a Kill that lands while this instance is mid-spawn (the
+	// window a caller displacing it via SwapProvider must cover) can never
+	// be followed by this instance quietly reporting itself alive anyway.
+	killed bool
+
 	startGate chan struct{} // if non-nil, Start blocks here before completing
 	startErr  error
 
@@ -34,6 +42,9 @@ func (p *fakeProvider) Start() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.startCount++
+	if p.killed {
+		return errKilledDuringStart
+	}
 	if p.startErr != nil {
 		return p.startErr
 	}
@@ -56,6 +67,7 @@ func (p *fakeProvider) StopGeneration() {}
 func (p *fakeProvider) Kill() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.killed = true
 	p.alive = false
 	p.killCount++
 }
@@ -105,3 +117,9 @@ type notRunningError struct{}
 func (notRunningError) Error() string { return "fakeProvider: not running" }
 
 var errNotRunning = notRunningError{}
+
+type killedDuringStartError struct{}
+
+func (killedDuringStartError) Error() string { return "fakeProvider: killed during start" }
+
+var errKilledDuringStart = killedDuringStartError{}

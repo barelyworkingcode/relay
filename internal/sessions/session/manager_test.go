@@ -3,6 +3,7 @@ package session_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -375,6 +376,133 @@ func TestManager_Get_DuringInFlightResume_NoClobberOrOrphan(t *testing.T) {
 	}
 	if got := fp.Kills(); got != 1 {
 		t.Fatalf("provider Kill count = %d, want exactly 1 (StopAll must reach the one real provider, not a stale disk-loaded stand-in)", got)
+	}
+}
+
+// TestManager_ConcurrentSendMessageAndResume_NoOrphan is the fix-review's
+// Door 1 regression test: SendMessage (which calls Get) and
+// Create{Resume:true} racing for the same persisted-but-not-yet-live
+// session, over many iterations with no gate or sleep forcing any
+// particular interleaving. The bug this catches lives in the window
+// between Get committing to a disk load and that load completing — a
+// reservation Create makes during that window must never be overwritten by
+// Get's own disk-loaded object, on pain of two providers ending up spawned
+// for one session with only one of them reachable through the slot table.
+func TestManager_ConcurrentSendMessageAndResume_NoOrphan(t *testing.T) {
+	const iterations = 300
+	store := session.NewStore(t.TempDir())
+
+	for i := 0; i < iterations; i++ {
+		id := fmt.Sprintf("88888888-8888-8888-0000-%012d", i)
+		if err := store.Save(&sessionstypes.Session{ID: id, ProjectID: "", ProviderType: session.KindClaude}); err != nil {
+			t.Fatalf("iteration %d: Save: %v", i, err)
+		}
+
+		mgr := session.NewManager(session.Config{}, store, nil)
+		var mu sync.Mutex
+		var built []*fakeProvider
+		mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+			p := &fakeProvider{}
+			mu.Lock()
+			built = append(built, p)
+			mu.Unlock()
+			return p, nil
+		})
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = mgr.SendMessage(id, "hello", nil)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = mgr.Create(session.CreateSpec{SessionID: id, ProjectID: "", Kind: session.KindClaude, Resume: true})
+		}()
+		wg.Wait()
+
+		mgr.StopAll()
+
+		mu.Lock()
+		snapshot := append([]*fakeProvider(nil), built...)
+		mu.Unlock()
+		for j, p := range snapshot {
+			if p.Alive() {
+				t.Fatalf("iteration %d: provider #%d of %d is still alive after StopAll — orphaned outside the slot table", i, j, len(snapshot))
+			}
+		}
+	}
+}
+
+// TestManager_ConcurrentAdHocRespawnAndResume_NoOrphan is the fix-review's
+// Door 2 regression test: startProvider must Kill whatever provider it
+// displaces, even one still inside its own Start() and therefore reporting
+// Alive() == false. Gates the ad-hoc respawn's Start() so it is still in
+// flight when a concurrent Create{Resume:true} spawns and installs its own
+// provider, then releases the gate and asserts every provider this test
+// built — including the one that only finishes Start() after being
+// displaced — ends up dead once StopAll runs.
+func TestManager_ConcurrentAdHocRespawnAndResume_NoOrphan(t *testing.T) {
+	mgr, _ := newTestManager(t)
+
+	var mu sync.Mutex
+	var built []*fakeProvider
+	var buildCount int32
+	gate := make(chan struct{})
+	mgr.SetProviderFactory(func(*sessionstypes.Session, session.CreateSpec, sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		p := &fakeProvider{}
+		if atomic.AddInt32(&buildCount, 1) == 2 {
+			// The ad-hoc respawn's own provider (the second one built):
+			// gated so it is still inside Start() when the resume below
+			// installs its replacement.
+			p.startGate = gate
+		}
+		mu.Lock()
+		built = append(built, p)
+		mu.Unlock()
+		return p, nil
+	})
+
+	const id = "99999999-9999-9999-9999-999999999999"
+	sess, err := mgr.Create(session.CreateSpec{SessionID: id, ProjectID: "", Kind: session.KindClaude})
+	if err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+	sess.Provider().Kill()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- mgr.SendMessage(id, "hello", nil)
+	}()
+
+	// Let SendMessage observe the dead provider, build the ad-hoc respawn's
+	// replacement, swap it in, and block inside its Start().
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := mgr.Create(session.CreateSpec{SessionID: id, ProjectID: "", Kind: session.KindClaude, Resume: true}); err != nil {
+		t.Fatalf("resume Create: %v", err)
+	}
+
+	close(gate)
+
+	select {
+	case <-sendDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendMessage never returned after the gate was released")
+	}
+
+	mgr.StopAll()
+
+	mu.Lock()
+	snapshot := append([]*fakeProvider(nil), built...)
+	mu.Unlock()
+	if len(snapshot) != 3 {
+		t.Fatalf("providers built = %d, want 3 (initial, ad-hoc respawn, resume)", len(snapshot))
+	}
+	for j, p := range snapshot {
+		if p.Alive() {
+			t.Fatalf("provider #%d of %d is still alive after StopAll — orphaned outside the slot table", j, len(snapshot))
+		}
 	}
 }
 
