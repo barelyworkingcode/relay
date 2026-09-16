@@ -101,9 +101,10 @@ socket and bearer with relay in the first place.
 
 That is the "host side" — relay-sessions verifying the caller dialing *it*.
 The other direction, relay verifying the process it dials really is
-relay-sessions, is `dialVerifiedUnix` (`cmd/relay/sessionhost_client.go`,
-mirroring the identical pattern `cmd/relay/model_endpoint.go`'s
-`upstreamTransport` uses for relayLLM's router socket): on every `/launch`
+relay-sessions, is `dialVerifiedUnix` — defined once in
+`cmd/relay/model_endpoint.go` (the same helper `upstreamTransport` uses to
+verify relayLLM's router socket) and called directly, not reimplemented,
+from `cmd/relay/sessionhost_client.go`: on every `/launch`
 and `/terminate` call, `sessionHostClient.resolve` re-reads relay-sessions'
 currently bound `service`-kind launch identity fresh, never cached, and
 `dialVerifiedUnix` reads the *live* peer's own kernel-attested `(pid,
@@ -149,17 +150,20 @@ is the same no-op `/terminate` always was.
 ## The shim: `relay-sessions exec`
 
 Every pty session runs under a small process, `relay-sessions exec`, whose
-whole job is C6. A `claude`- or `pi`-kind session does not go through the
-shim at all today — see [Known gaps](#what-is-not-built-yet), gap 1. A
-`chat`-kind session's own provider process doesn't either: `ChatProvider`
-is an in-process HTTP client talking to relay's model broker, with no
-external CLI child at all (`internal/sessions/provider/chat_base.go`'s
-`ChatConfig` doc comment states this plainly). What *does* run under the
-shim is a chat session's **optional** relay-MCP tool child — spawned only
-when the session opts into `useRelayTools` and `RelayMCPCommand` is
-non-empty (`buildChatMCPManager`, `chat_base.go`) — because that child has
-no other process to serve as its own `project_session` root the way a
-terminal's shim-wrapped target does.
+whole job is C6. Today it runs **pty launches only**. A `claude`- or
+`pi`-kind session does not go through the shim at all — see [Known
+gaps](#what-is-not-built-yet), gap 1. A `chat`-kind session's own provider
+process doesn't either: `ChatProvider` is an in-process HTTP client talking
+to relay's model broker, with no external CLI child at all
+(`internal/sessions/provider/chat_base.go`'s `ChatConfig` doc comment states
+this plainly). `buildChatMCPManager` (`chat_base.go`) can in principle spawn
+a chat session's relay-MCP tool child through the shim — the code path
+exists, gated on the session opting into `useRelayTools` and `RelayMCPCommand`
+being non-empty — but `cfg.RelayMCPCommand` is never set in production:
+`cmd/relaysessions/main.go`'s own `ChatConfig` literal omits it entirely, and
+only test code ever sets it. `buildChatMCPManager` therefore always returns
+`nil` today, regardless of a session's own settings, so this tool child is
+never actually spawned, shim or otherwise.
 
 ```
 relay-sessions exec --session-id <id> [--identity] [--pty] \
@@ -274,15 +278,21 @@ once its own Hello confirms it was launched by relay, so relay's dispatch
 table and the created-terminal/session route reservation both come up
 correctly on every start rather than only after a manual re-register.
 
-`reason` is `"exit"` for an ordinary exit, `"closed"` when this host's own
-`/terminate` caused it, `"deleted"` for `session.Manager.DeleteSession`
-(never reached by `/terminate`, which only ever `EndSession`s — a
-graceful stop, not a data wipe). `"idle"` is a fourth reason C5 names but
-nothing in this repo can reach yet — see [Known gaps](#what-is-not-built-yet).
+`reason` is `"exit"` for an ordinary exit, or `"closed"` when this host's own
+`/terminate` marked the session terminating (`markTerminatingIfAlive`) before
+signalling it — `onTerminalExit`/`onSessionExit` (`internal/sessions/hostapi/server.go`)
+consume that flag once and report `"closed"` only if it was set, `"exit"`
+otherwise. These are the **only** two reasons any code in this repo actually
+produces. C5 also names `"idle"` and `"deleted"`, and relay's own consumer
+(`cmd/relay/router_sessions.go`) is prepared to handle both, but neither is
+reachable today: `session.Manager.DeleteSession` kills its target through
+this same exit path without ever marking it terminating, so it too reports
+`"exit"`, not `"deleted"` — and idle-close is covered by gap 4 below.
+`internal/sessions/hostapi/server.go`'s own comment says this plainly.
 
-On relay's side, `SessionExited` (`cmd/relay/audit_call.go`,
-`cmd/relay/router_sessions.go`) tears down whatever relay itself minted for
-that session — the launch identity (`sessionAccount.launch.End()`), any
+On relay's side, `SessionExited` (`cmd/relay/router_sessions.go`) tears down
+whatever relay itself minted for that session — the launch identity
+(`sessionAccount.launch.End()`), any
 model key (`ModelKeyTable.Revoke`), the sandbox profile file
 (`sandbox.Remove`) — updates the session ledger (`StateDormant`, or removed
 outright for `reason: "deleted"`), and writes a `session_end` audit event.
@@ -350,23 +360,36 @@ what works.
    here for a reader who does not start from the Go source. A chat-kind
    session's own provider process is unaffected by this gap in the same way
    it is exempt from the shim entirely (see [The shim](#the-shim-relay-sessions-exec))
-   — it has no external CLI child to sandbox or identify. Its **optional**
-   relay-MCP tool child, when the session opts into `useRelayTools`, carries
-   the `Sandbox` and `Identity` fields `ChatConfig` already has and is wired
-   through the shim like a terminal.
+   — it has no external CLI child to sandbox or identify. `ChatConfig`
+   already carries the `Sandbox` and `Identity` fields its optional
+   relay-MCP tool child would need to run through the shim like a terminal
+   (`buildChatMCPManager`), but that child is never actually spawned in
+   production today — see [The shim](#the-shim-relay-sessions-exec).
 2. **The eve-facing session HTTP/WS surface exists but is not reachable.**
-   `internal/sessions/api` (`HandleListSessions`, `HandleDeleteSession`, the
-   WS session/terminal handlers, `/api/permission`, `/api/generated/`,
-   `/api/models`) is real, tested code — but nothing in `cmd/relaysessions`
-   mounts it onto a real HTTP server, and it is never declared in the
-   manifest `RegisterManifest` sends (only `["/api/terminals/",
-   "/api/sessions/"]`, the two prefixes relay itself reserves for this
-   service). A request to any of these paths today either 404s inside
-   relay-sessions' own internal mux (which only serves `/launch` and
-   `/terminate`) or, for the two reserved prefixes, is handled by relay's
-   own minimal per-session HTTP routes (`cmd/relay/session_routes.go`),
-   not by this package. Wiring this surface up is a genuinely separate,
-   unbuilt unit.
+   `internal/sessions/api` (`HandleListSessions`, `HandleDeleteSession`,
+   `HandleSessionMessageSync`, `HandleListTerminals`, `HandleDeleteTerminal`,
+   `HandleTerminalLog`, `HandleModels` — relayLLM's original `/api/models` —
+   and the WS session/terminal handlers, including a `permissionResponse` WS
+   message) is real, tested code — but nothing in `cmd/relaysessions` mounts
+   any of it onto a real HTTP server. (There is no `/api/generated/` handler
+   anywhere in this package, and `/api/permission` is a distinct HTTP route
+   relayLLM used to serve, replaced by C6's own `/permission` hook socket —
+   neither belongs to this package.) Relay itself directly serves exactly
+   seven routes under the `/api/terminals` and `/api/sessions` prefixes
+   (`cmd/relay/session_routes.go`): the create/list/resume surface (`POST
+   /api/terminals[/]`, `POST /api/sessions[/]`, `POST
+   /api/sessions/{id}/resume`, `GET /api/terminals`, `GET /api/sessions`).
+   Everything else nested under a session's own id — WS upgrades, a
+   per-session GET/DELETE — is deliberately left unregistered by relay: the
+   create routes' `{$}` anchoring exists precisely so those nested paths
+   fall through relay's `/` catch-all instead of being captured by relay's
+   own handlers (`session_routes.go`'s own comment on why), reaching
+   relay-sessions' registered manifest instead (`RelaySessionsManifestRoutes`,
+   the same two prefixes) — which resolves to the *same internal socket*
+   that serves `/launch` and `/terminate`, and 404s there today, since
+   nothing routes a manifest request to `internal/sessions/api`'s handlers
+   at all. Wiring this surface up — giving it somewhere to be mounted that
+   the manifest can actually reach — is a genuinely separate, unbuilt unit.
 3. **`session_bound` is never emitted.** `internal/audit/audit.go` reserves
    the constant and the `AuditActorProjectSession`/`AuditAuthSession`
    vocabulary is real and wired for tool calls and model calls — but nothing
@@ -374,10 +397,17 @@ what works.
    that would mark a project_session launch identity successfully binding at
    Hello, distinct from the launch identity itself binding, which is
    unaudited today). See [`docs/audit-log.md`](audit-log.md#session-host-events).
-4. **`NotifyViewerChange`-driven idle close is unreachable.** `reason: "idle"`
-   on `SessionExited` depends on `terminal.Manager.NotifyViewerChange`, which
-   only the eve-facing WS handlers in gap 2 ever call. Until that surface is
-   mounted, a session never closes itself for being unwatched.
+4. **Idle close is unreachable, and would not report `reason: "idle"` even if
+   it were.** `terminal.Manager`'s idle callback (`onIdle`,
+   `internal/sessions/terminal/manager.go:114`) calls `m.Close(id)`
+   unconditionally, and nothing calls `NotifyViewerChange` at all today —
+   only the eve-facing WS handlers in gap 2 ever would — so this path never
+   runs. But `onIdle` never marks the session terminating first (the one
+   thing that turns `"exit"` into `"closed"`), so `m.Close` funnels through
+   the same exit report a natural process death does: even once
+   `NotifyViewerChange` is wired up, an idle-close reports `reason: "exit"`,
+   indistinguishable from any other exit. No code anywhere in this repo
+   constructs the literal `"idle"`.
 5. **`handleTerminate`'s existence-or-liveness probe gates the wrong thing.**
    `handleTerminate` (`internal/sessions/hostapi/server.go`) does call
    `Get`/check `Alive()`/`markTerminatingIfAlive` before signalling — but
@@ -389,10 +419,14 @@ what works.
    exit itself (`internal/sessions/terminal/manager.go`'s own comment on
    `SetExitHandler`) — so a `/terminate` naming an id whose process already
    exited on its own can still reach `Session.Close`
-   (`internal/sessions/terminal/session.go`), which unconditionally signals
-   `shimPID` and `-targetPID` with `SIGTERM`, then `SIGKILL` after
-   `terminateGrace` — against whatever process now holds that recycled pid.
-   This is not fixed here.
+   (`internal/sessions/terminal/session.go`), which unconditionally sends
+   `SIGTERM` to `shimPID` and, separately, to `-targetPID` — against
+   whatever process now holds that recycled pid. `Close`'s follow-up
+   `SIGKILL` does **not** fire in this exact scenario: it is gated by
+   `select { case <-s.waitDone: …; case <-clock.After(terminateGrace):
+   SIGKILL }`, and `waitDone` is already closed for a process that already
+   exited, so that branch wins immediately. The recycled-pid hazard here is
+   a stray `SIGTERM`, not a `SIGKILL`. This is not fixed here.
 6. **`/permission` is a hard-coded refusal, and a provider-hosted session
    has no membership entry to even reach it.** `handlePermission`
    (`internal/sessions/hostapi/server.go`) answers every admitted call
