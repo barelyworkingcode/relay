@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/migrate"
@@ -134,20 +135,11 @@ func runService(args []string) int {
 		},
 	}, store, permission.NewPermissionManager())
 
-	// F1 (security review): the internal bearer must never be an argv
-	// value — any same-uid process, including a sandboxed session target,
-	// can read another process's argv via ps(1). It is generated here, in
-	// memory, and handed to hostapi.Config directly; it never touches a
-	// flag, an environment variable, or a log line. Handing this bearer to
-	// relay belongs in a RegisterManifest call's InternalToken field (the
-	// same mechanism cmd/testservice's own sendRegisterManifest uses) —
-	// deferred here because bridge.Manifest.Validate rejects an empty
-	// Routes list, and this unit has no real manifest route to declare yet
-	// (only /launch and /terminate, which relay's manifest validation
-	// refuses to accept as routes at all, C5). Whichever unit adds
-	// relay-sessions' first real route (R-S9/R-S4b) should thread this
-	// generated bearer through as InternalToken instead of ever adding it
-	// back as a flag.
+	// The internal bearer must never be an argv value — any same-uid
+	// process, including a sandboxed session target, can read another
+	// process's argv via ps(1). It is generated here, in memory, and handed
+	// to hostapi.Config and to the RegisterManifest call below directly; it
+	// never touches a flag, an environment variable, or a log line.
 	internalBearer, err := generateBearer()
 	if err != nil {
 		log.Fatalf("relay-sessions: generate internal bearer: %v", err)
@@ -178,6 +170,36 @@ func runService(args []string) int {
 			log.Printf("relay-sessions: hook server: %v", err)
 		}
 	}()
+
+	// Without this, relay's EnhancedServiceRegistry never learns this host's
+	// internal socket or bearer, and every real /api/terminals or
+	// /api/sessions launch dead-ends at a 502 regardless of how healthy this
+	// process is. Skipped when this process was not itself launched by relay
+	// (dev/test -relay-pid override): RegisterManifest requires the manifest
+	// capability a real launch identity carries, which only a real Hello
+	// binds.
+	//
+	// /api/sessions/ and /api/terminals/ are the two prefixes relay's own
+	// route-conflict check (cmd/relay's EnhancedServiceRegistry) reserves
+	// specifically for this service's manifest even though it also serves
+	// POST /api/sessions and POST /api/terminals itself — relay's own
+	// handlers own the create/resume/list surface, this manifest owns
+	// everything nested under a session's own id. This is deliberate: the
+	// eve-facing handlers for that nested surface are not mounted yet
+	// (package doc), so declaring these routes now advertises reachability,
+	// not working endpoints — a request that lands here today gets whatever
+	// this process's internal mux answers (404, since only /launch and
+	// /terminate exist), never a silently wrong result.
+	if launched {
+		if err := bridge.NewClientAt(bridgeSock, "").RegisterManifest(bridge.RegisterManifestRequest{
+			ServiceID:      cfg.serviceName,
+			InternalSocket: cfg.internalSocket,
+			InternalToken:  internalBearer,
+			Manifest:       bridge.Manifest{Routes: config.RelaySessionsManifestRoutes},
+		}); err != nil {
+			log.Fatalf("relay-sessions: register manifest: %v", err)
+		}
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
