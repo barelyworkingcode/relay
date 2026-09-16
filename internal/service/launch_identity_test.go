@@ -372,9 +372,9 @@ func TestEndByParent_EndsOnlyMatchingLiveProjectSessions(t *testing.T) {
 		t.Fatalf("bind sess-2: %v", err)
 	}
 
-	n := table.EndByParent("relaysessions")
-	if n != 2 {
-		t.Fatalf("EndByParent ended %d launches, want 2", n)
+	ended, roots := table.EndByParent("relaysessions")
+	if ended != 2 {
+		t.Fatalf("EndByParent ended %d launches, want 2", ended)
 	}
 	if _, ok := table.Bound("sess-1"); ok {
 		t.Fatal("sess-1 survived EndByParent")
@@ -386,9 +386,84 @@ func TestEndByParent_EndsOnlyMatchingLiveProjectSessions(t *testing.T) {
 		t.Fatal("EndByParent ended a non-project_session launch that happens to share no ParentLaunch")
 	}
 
+	wantRoots := map[int32]bool{3000: true, 3001: true}
+	if len(roots) != len(wantRoots) {
+		t.Fatalf("EndByParent returned %d roots, want %d: %+v", len(roots), len(wantRoots), roots)
+	}
+	for _, root := range roots {
+		if !wantRoots[root.PID] {
+			t.Fatalf("EndByParent returned an unexpected root pid %d: %+v", root.PID, roots)
+		}
+		if root.StartSec != 1 {
+			t.Fatalf("root %d carries the wrong start time: %+v", root.PID, root)
+		}
+	}
+
 	// Idempotent: nothing left to end.
-	if n := table.EndByParent("relaysessions"); n != 0 {
-		t.Fatalf("a second EndByParent ended %d launches, want 0", n)
+	if ended, roots := table.EndByParent("relaysessions"); ended != 0 || len(roots) != 0 {
+		t.Fatalf("a second EndByParent ended %d launches with %d roots, want 0 and 0", ended, len(roots))
+	}
+}
+
+// TestEndByParent_UnboundSessionCountsButHasNoRoot pins the split between
+// EndByParent's two return values: a project_session launch that began but
+// never bound (no shim ever presented Hello) is still ended -- it must not
+// linger as a live launch once its parent is gone -- but it contributes no
+// entry to roots, since there is no real process to signal.
+func TestEndByParent_UnboundSessionCountsButHasNoRoot(t *testing.T) {
+	table := newProjectSessionTable(t, fakeRootSource{}, &fakeWatcher{})
+	beginProjectSession(t, table, "sess-unbound", "proj-a")
+
+	ended, roots := table.EndByParent("relaysessions")
+	if ended != 1 {
+		t.Fatalf("EndByParent ended %d launches, want 1", ended)
+	}
+	if len(roots) != 0 {
+		t.Fatalf("an unbound session produced a root to signal: %+v", roots)
+	}
+}
+
+// TestEndByParent_ReturnsMatchedRootOnSingleSession pins EndByParent's
+// return shape for one bound project_session: the count and the returned
+// root's pid and start time both match what was bound. EndByParent's own
+// doc comment is where the race this exists to close is actually closed --
+// by construction, one lock acquisition covering both the read and the end
+// -- a property no single-threaded test can exercise directly; this test
+// only pins the shape a caller sees, not the concurrent case.
+func TestEndByParent_ReturnsMatchedRootOnSingleSession(t *testing.T) {
+	table := newProjectSessionTable(t, fakeRootSource{
+		4000: {PID: 4000, StartSec: 1},
+	}, &fakeWatcher{})
+	secret, _ := beginProjectSession(t, table, "sess-race", "proj-a")
+	if _, err := table.BindKind("sess-race", secret, peertoken.ForProcessForTest(4000, 1), IdentityKindProjectSession); err != nil {
+		t.Fatalf("bind sess-race: %v", err)
+	}
+
+	ended, roots := table.EndByParent("relaysessions")
+	if ended != 1 || len(roots) != 1 || roots[0].PID != 4000 {
+		t.Fatalf("EndByParent lost the bound session under its own lock: ended=%d roots=%+v", ended, roots)
+	}
+	if _, ok := table.Bound("sess-race"); ok {
+		t.Fatal("sess-race survived EndByParent")
+	}
+}
+
+func TestRootStillAlive_MatchesPIDAndStartTime(t *testing.T) {
+	table := newProjectSessionTable(t, fakeRootSource{
+		5000: {PID: 5000, StartSec: 100, StartUsec: 7},
+	}, &fakeWatcher{})
+
+	if !table.RootStillAlive(5000, 100, 7) {
+		t.Fatal("a live pid with a matching start time was reported dead")
+	}
+	if table.RootStillAlive(5000, 100, 8) {
+		t.Fatal("a mismatched StartUsec (a recycled pid) was reported alive")
+	}
+	if table.RootStillAlive(5000, 99, 7) {
+		t.Fatal("a mismatched StartSec (a recycled pid) was reported alive")
+	}
+	if table.RootStillAlive(5001, 100, 7) {
+		t.Fatal("a pid the kernel does not report was reported alive")
 	}
 }
 

@@ -275,6 +275,24 @@ func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
 	return slices.Contains(c.Capabilities, want)
 }
 
+// sanitizeIfBuiltin clears the one field a stored record must never
+// control for the built-in RelaySessionsServiceID (SH §2.1): relay always
+// resolves that record's Command (and the Args that go with it) fresh, at
+// every start, from its own bundle path — never from settings.json.
+// DisplayName, Capabilities and Autostart are left alone; §2.1 names
+// Autostart as genuinely the operator's, and the others are inert without
+// a Command internal/service trusts (validateCapabilities already refuses
+// ServiceCapabilitySessions everywhere else). Runs on every load, so a
+// hand-edited or stale settings.json can never smuggle a Command past
+// internal/service's own synthesis.
+func (c *ServiceConfig) sanitizeIfBuiltin() {
+	if c.ID != RelaySessionsServiceID {
+		return
+	}
+	c.Command = ""
+	c.Args = nil
+}
+
 // migrateCapabilities converts a record that predates Capabilities, once, on
 // load: frontend_consumer unset or true becomes [frontend], false becomes
 // [manifest], the set each kind of service held before capabilities were

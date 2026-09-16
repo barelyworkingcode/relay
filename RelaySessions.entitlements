@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		relay-sessions receives a stream of project-session secrets over a
+		relay-launched fd and spawns each session's own target process; it
+		needs no personal-information entitlement (Calendar/Contacts/
+		Microphone stay with relay, which fires those prompts itself), no
+		Apple Events automation, and neither get-task-allow nor JIT.
+		Leaving them off hardened runtime's default posture is deliberate,
+		not an oversight (spec-session-host.md, section 2.1).
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
