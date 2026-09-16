@@ -50,7 +50,7 @@ func TestChatProvider_SendMessage_TextRoundTrip(t *testing.T) {
 	evCh := make(chan string, 32)
 	handler := func(eventType string, _ json.RawMessage) { evCh <- eventType }
 
-	p := NewChatProvider(sess, handler, ChatConfig{ModelSocket: sock})
+	p := NewChatProvider(sess, handler, ChatConfig{ModelSocket: sock, ModelKey: "test-key"})
 	if err := p.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestChatProvider_ToolCallRoundTrip(t *testing.T) {
 	evCh := make(chan string, 64)
 	handler := func(eventType string, _ json.RawMessage) { evCh <- eventType }
 
-	p := NewChatProvider(sess, handler, ChatConfig{ModelSocket: sock})
+	p := NewChatProvider(sess, handler, ChatConfig{ModelSocket: sock, ModelKey: "test-key"})
 	fake := testutil.NewFakeMCPClient(testutil.FakeTool{
 		Name: "echo",
 		Handler: func(args json.RawMessage) (string, error) {

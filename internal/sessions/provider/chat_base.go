@@ -32,10 +32,29 @@ type ChatConfig struct {
 	ModelKey string
 
 	// RelayMCPCommand is the absolute path to the command chat's own tool
-	// loop spawns for relay's tools, run as this process's own child and
-	// therefore a C3 member of this session's root -- no bearer travels in
-	// its config or env, mirroring ClaudeConfig.RelayMCPCommand exactly.
+	// loop spawns for relay's tools: unlike Claude/pi, a chat session has no
+	// other process to serve as this launch's project_session root, so this
+	// command is spawned through the shim (ShimBinary) rather than directly
+	// -- see buildChatMCPManager.
 	RelayMCPCommand string
+
+	// ShimBinary is the absolute path to relay-sessions' own binary, run in
+	// "exec" mode to wrap the tool child (buildChatMCPManager). Static
+	// across every session this host spawns, like ModelSocket.
+	ShimBinary string
+	// BridgeSocket is C5's RELAY_BRIDGE_SOCKET: the shim's own Hello dials
+	// it, not the tool child itself.
+	BridgeSocket string
+
+	// SandboxProfile is this launch's own absolute SBPL profile path (C7);
+	// "" runs the tool child unsandboxed. Never cached across calls, same
+	// rule as ModelKey and Identity below.
+	SandboxProfile string
+	// Identity is this launch's own project_session secret, presented by
+	// the shim to relay's bridge socket. nil for a launch with no identity
+	// to mint (ad-hoc, SSH-hosted) -- mirrors hostapi.LaunchRequest.Identity's
+	// own nullability rule.
+	Identity *sessionsmcp.IdentitySpec
 
 	// dial overrides how the transport reaches ModelSocket. Test-only seam;
 	// nil dials ModelSocket over a real Unix socket (see openai.go).
@@ -104,15 +123,13 @@ type ToolArgsEvent struct {
 }
 
 // BaseChatSettings holds the knobs a chat session's own Settings JSON may
-// carry. Trimmed relative to relayLLM's original: fields that only made
-// sense against a compat-server other than relay's own model broker
-// (top_k/min_p/repetition_penalty, the Strict body-shape gate) are dropped,
-// since every chat session now talks to exactly one upstream shape.
+// carry. A caller can never specify an MCP server to spawn here -- the only
+// MCP server a chat session ever runs is the fixed "relay" entry
+// buildChatMCPManager builds itself, gated by useRelayTools alone.
 type BaseChatSettings struct {
-	Temperature *float64                               `json:"temperature,omitempty"`
-	TopP        *float64                               `json:"top_p,omitempty"`
-	MaxTokens   *int                                   `json:"max_tokens,omitempty"`
-	MCPServers  map[string]sessionsmcp.MCPServerConfig `json:"mcpServers,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	MaxTokens   *int     `json:"max_tokens,omitempty"`
 }
 
 func parseBaseSettings(raw json.RawMessage) BaseChatSettings {
@@ -124,26 +141,34 @@ func parseBaseSettings(raw json.RawMessage) BaseChatSettings {
 	return s
 }
 
-// buildChatMCPManager returns nil when no MCP servers are configured (tool
-// calling disabled). The "relay" entry, when the session opts in via
-// useRelayTools, spawns cfg.RelayMCPCommand as this process's own child --
-// no project token, no bearer of any kind, matching ClaudeProvider's
-// relayMCPConfig exactly (see its doc comment for why: C3 ancestry is the
-// whole authentication story for that child).
+// buildChatMCPManager returns nil unless the session opted in via
+// useRelayTools -- no tool child is ever spawned speculatively. The single
+// "relay" entry it builds is always this process's own fixed,
+// relay-controlled command (cfg.RelayMCPCommand "mcp"); nothing decoded
+// from session.Settings ever reaches it.
+//
+// A chat session has no target process of its own -- ChatProvider is
+// purely an in-process HTTP client -- so unlike ClaudeProvider's
+// relayMCPConfig (a plain child of an already-rooted Claude process), this
+// tool child is spawned through the shim (ShimSpec) to become its own
+// project_session root: that is what makes relay's own ancestry-based tool
+// auth resolve for it at all, and what gets it C7's default sandbox.
 func buildChatMCPManager(cfg ChatConfig, session *sessionstypes.Session) sessionsmcp.MCPClient {
-	settings := parseBaseSettings(session.Settings)
-	servers := settings.MCPServers
-	if useRelayTools(session.Settings) && cfg.RelayMCPCommand != "" {
-		if servers == nil {
-			servers = make(map[string]sessionsmcp.MCPServerConfig)
-		}
-		servers["relay"] = sessionsmcp.MCPServerConfig{
+	if !useRelayTools(session.Settings) || cfg.RelayMCPCommand == "" {
+		return nil
+	}
+	servers := map[string]sessionsmcp.MCPServerConfig{
+		"relay": {
 			Command: cfg.RelayMCPCommand,
 			Args:    []string{"mcp"},
-		}
-	}
-	if len(servers) == 0 {
-		return nil
+			Shim: &sessionsmcp.ShimSpec{
+				Binary:         cfg.ShimBinary,
+				SessionID:      session.ID,
+				BridgeSocket:   cfg.BridgeSocket,
+				Identity:       cfg.Identity,
+				SandboxProfile: cfg.SandboxProfile,
+			},
+		},
 	}
 	return sessionsmcp.NewMCPManager(servers)
 }

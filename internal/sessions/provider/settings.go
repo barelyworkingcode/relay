@@ -27,9 +27,19 @@ func ProviderSettings() map[string][]SettingField {
 		},
 	}
 
+	chatFields := []SettingField{
+		{
+			Key:     "useRelayTools",
+			Label:   "Use Relay Tools",
+			Type:    "boolean",
+			Default: false,
+			Hint:    "Let this chat session call relay's own tools (email, calendar, ...).",
+		},
+	}
+
 	return map[string][]SettingField{
 		"claude": {},
 		"pi":     piFields,
-		"chat":   {},
+		"chat":   chatFields,
 	}
 }

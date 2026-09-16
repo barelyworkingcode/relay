@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,14 @@ import (
 
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
+
+// errChatModelKeyRequired is returned instead of ever sending a chat
+// request with no Authorization header: relay-sessions' own peer identity
+// on the model broker socket carries enough capability to make an
+// unauthenticated request succeed for the wrong reason (Ping's /v1/models
+// call, scoped by the *service* rather than the calling project), not
+// because the session is actually authorized.
+var errChatModelKeyRequired = errors.New("chat: model key is required")
 
 // dialFunc is the chat transport's single seam onto relay's model broker.
 // Every request the transport makes goes through exactly this function --
@@ -103,6 +112,9 @@ func (t *chatHTTPTransport) addAuth(req *http.Request) {
 }
 
 func (t *chatHTTPTransport) Ping(ctx context.Context) error {
+	if t.modelKey == "" {
+		return errChatModelKeyRequired
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chatBrokerBaseURL+"/v1/models", nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -221,6 +233,9 @@ func (t *chatHTTPTransport) BuildMessages(systemPrompt string, msgs []sessionsty
 
 // PostChat sends a streaming /v1/chat/completions request.
 func (t *chatHTTPTransport) PostChat(ctx context.Context, messages []map[string]any, tools []map[string]any) (*http.Response, error) {
+	if t.modelKey == "" {
+		return nil, errChatModelKeyRequired
+	}
 	body := t.buildChatBody(messages, tools)
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -268,6 +283,10 @@ func (t *chatHTTPTransport) buildChatBody(messages []map[string]any, tools []map
 		"model":    t.model,
 		"messages": messages,
 		"stream":   true,
+		// Required for relay's own audit trail: model_endpoint.go scans this
+		// same SSE stream for usage to build the model_call record's token
+		// counts, and an upstream only emits that chunk when asked.
+		"stream_options": map[string]any{"include_usage": true},
 	}
 	if t.settings.Temperature != nil {
 		body["temperature"] = *t.settings.Temperature
@@ -352,7 +371,7 @@ func (t *chatHTTPTransport) StreamChunks(resp *http.Response, startTime time.Tim
 
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			slog.Warn("chat: invalid SSE chunk", "error", err, "line", line)
+			slog.Warn("chat: invalid SSE chunk", "error", err, "lineBytes", len(line))
 			continue
 		}
 
