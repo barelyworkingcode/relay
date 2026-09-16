@@ -46,12 +46,18 @@ type Session struct {
 	CreatedAt  string
 
 	cmd *exec.Cmd
-	// ptmx is an atomic.Pointer, not a plain field under s.mu: Write must be
-	// able to perform its (potentially indefinitely blocking, in raw mode
-	// with a full input queue) pty write without holding s.mu, so Close can
-	// still reach in and close the fd — the only thing that unblocks a
-	// parked write — without waiting on that same mutex. Close swaps this to
-	// nil before it touches anything else.
+	// ptmx is an atomic.Pointer, not a plain field under s.mu: if Write had
+	// to hold s.mu across its own pty write syscall (potentially blocking
+	// indefinitely, in raw mode with a full input queue) in order to read
+	// this field safely, Close's own acquisition of s.mu to swap it to nil
+	// would queue up behind that same blocked write — and never get it,
+	// since the write can't return until something closes the fd Close is
+	// blocked trying to reach. atomic.Pointer lets Write Load() the current
+	// *os.File without taking s.mu at all, so Close's swap-and-close (also
+	// lock-free) can never be stuck behind it. Close swaps this to nil,
+	// and closes the fd, before it touches anything else — see Close for
+	// what actually unblocks a write already parked in the kernel; closing
+	// this fd alone is not it.
 	ptmx      atomic.Pointer[os.File]
 	targetPID int // the shim's own child (the real terminal target), for Close's belt-and-suspenders pgid signal
 
@@ -505,12 +511,24 @@ func (s *Session) Close() {
 		return
 	}
 	s.alive.Store(false)
-	// Closing the fd first, before acquiring s.mu (CancelIdleTimer does),
-	// is what breaks the deadlock: a Write in flight is blocked inside the
-	// pty write syscall while holding no lock of its own, and closing the
-	// fd out from under it is what wakes it with an I/O error. Reaching for
-	// s.mu before this point would instead wait on a mutex Write cannot
-	// release until this same Close unblocks it.
+	// Swapping and closing ptmx here, before CancelIdleTimer's s.mu
+	// acquisition, is what avoids the lock-ordering hazard ptmx's own doc
+	// comment names — but on this platform (macOS) the pty master fd is not
+	// registered with the runtime's netpoller, so this close alone does not
+	// wake a write already parked in the write(2) syscall: measured
+	// directly, a parked write stayed blocked 5+ seconds after this line
+	// ran in isolation. What actually unblocks it is the SIGTERM/SIGKILL
+	// below, which Close always performs unconditionally rather than
+	// gating on whether a write might currently be parked: killing the
+	// target drops the pty slave's last reference, and it's that drop —
+	// not this Close(2) — that finally delivers the parked write its EIO.
+	// The residual case this doesn't cover: a grandchild outside the
+	// target's own process group that independently holds the slave open
+	// keeps the pty alive regardless of the kill, so the write (and its
+	// goroutine, and this fd) can stay unreclaimed until that grandchild
+	// also exits — Go's fd refcounting defers ptmx's real close(2) until
+	// every in-flight I/O reference to it, including that parked write,
+	// has dropped.
 	if f := s.ptmx.Swap(nil); f != nil {
 		_ = f.Close()
 	}
