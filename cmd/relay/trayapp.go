@@ -920,8 +920,26 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	svcMap := make(map[int]string, len(s.Services))
 	for i, svc := range s.Services {
 		menuID := menuIDSvcBase + i
-		svcMap[menuID] = svc.ID
 		_, running := pidByID[svc.ID]
+
+		if svc.ID == config.RelaySessionsServiceID {
+			// This is deliberate: the built-in session host is started only
+			// by StartAllAutostart's own fully-populated synthesis, never by
+			// a hand click (ServiceOps.Start refuses it for the identical
+			// reason). The stored record is bare, so a toggle wired to it
+			// would turn "on" into a Registry.Start call that fails
+			// Validate() -- a one-way-off switch. Showing status text with
+			// no toggle avoids offering a control with no working "on" path,
+			// rather than building one that silently fails.
+			status := "stopped"
+			if running {
+				status = "running"
+			}
+			items = append(items, menuItem{Title: fmt.Sprintf("%s (%s)", svc.DisplayName, status), ID: 0})
+			continue
+		}
+
+		svcMap[menuID] = svc.ID
 		var aux string
 		if running {
 			aux = formatBytes(rss[svc.ID])
@@ -1184,6 +1202,15 @@ func (a *App) confirmAndResetSealedStore() {
 func (a *App) toggleService(menuItemID int) {
 	svcID, ok := a.svcMenuMap[menuItemID]
 	if !ok {
+		return
+	}
+	if svcID == config.RelaySessionsServiceID {
+		// Not reachable through a click today -- updateMenuWithSettings
+		// never puts this id in svcMenuMap -- but ServiceOps guards the
+		// identical Registry.Start hazard at every path that reaches it
+		// (Create, Update, Start), not just the ones currently wired up.
+		// Same discipline here.
+		slog.Error("service toggle refused: relaysessions is relay's built-in session host and cannot be toggled from the tray")
 		return
 	}
 	s := a.store.Get()

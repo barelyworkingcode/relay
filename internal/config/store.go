@@ -224,14 +224,20 @@ const defaultModelEndpointListen = "127.0.0.1:8180"
 // — a fresh install, or one written before this feature existed — sees it
 // applied.
 //
-// No production code calls this yet: writing the default only makes sense
-// once something actually depends on a live model endpoint (R-S4a/R-S4b),
-// so the call belongs in whichever unit adds that dependency, on a signal
-// that can distinguish a deliberate feature-build start from any process
-// that happens to construct this config package against a real config
-// dir — not unconditionally from every tray start, which would arm the TCP
-// listener on every later build that shares the same settings.json, feature
-// build or not.
+// This is deliberate: plan-broker-and-sessions.md's C8 and the R-S9 unit
+// row (§3.3) originally scoped R-S9 itself to call this function, from
+// runTrayApp, the first time a feature build starts. R-S9's own code
+// deliberately does not call it. The plan's trigger condition — "the first
+// time the feature build starts" — has no signal in this codebase that
+// tells that apart from any other process that happens to construct this
+// config package against a real config dir; calling it unconditionally
+// from runTrayApp did exactly that, and armed the TCP listener on a real,
+// shared settings.json during this unit's own build-validation run. Scope
+// was narrowed after that incident, on purpose, not left unfinished: the
+// call belongs in whichever unit first makes relay-sessions launch real
+// sessions against a live model endpoint (R-S4a or R-S4b), because that is
+// the first unit able to supply a genuine "this build now needs a live
+// endpoint" signal rather than "a process touched this package."
 func EnsureDefaultModelEndpoint(s *Settings) {
 	if s.ModelEndpoint != nil {
 		return
