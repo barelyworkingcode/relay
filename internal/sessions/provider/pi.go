@@ -194,8 +194,15 @@ func (p *PiProvider) buildPiArgs(sessionDir, skillDir, sysPromptPath string) []s
 	return args
 }
 
-func (p *PiProvider) Start() error {
+func (p *PiProvider) Start() (err error) {
 	p.cleanupSpawnFiles()
+	p.closeModelProxyAndOverlay()
+
+	defer func() {
+		if err != nil {
+			p.closeModelProxyAndOverlay()
+		}
+	}()
 
 	sessionDir := p.sessionDir()
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -299,6 +306,23 @@ func (p *PiProvider) cleanupSpawnFiles() {
 		_ = os.Remove(path)
 	}
 	p.spawnFiles = nil
+}
+
+// closeModelProxyAndOverlay tears down the model proxy listener and the
+// overlay directory (with it, the live model key at rest in models.json)
+// from any prior Start call. Called both at the top of Start — so a
+// re-Start without an intervening Kill can't orphan the previous listener —
+// and from Start's own error path, so a failed Start leaves neither a bound
+// listener nor a key-bearing overlay behind.
+func (p *PiProvider) closeModelProxyAndOverlay() {
+	if p.modelProxy != nil {
+		p.modelProxy.Close()
+		p.modelProxy = nil
+	}
+	if p.overlayDir != "" {
+		_ = os.RemoveAll(p.overlayDir)
+		p.overlayDir = ""
+	}
 }
 
 func (p *PiProvider) fetchInitialState() {
@@ -915,14 +939,7 @@ func (p *PiProvider) StopGeneration() {
 }
 
 func (p *PiProvider) Kill() {
-	if p.modelProxy != nil {
-		p.modelProxy.Close()
-		p.modelProxy = nil
-	}
-	if p.overlayDir != "" {
-		_ = os.RemoveAll(p.overlayDir)
-		p.overlayDir = ""
-	}
+	p.closeModelProxyAndOverlay()
 	p.cleanupSpawnFiles()
 
 	if p.cmd == nil || p.cmd.Process == nil {

@@ -2,11 +2,13 @@ package provider
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/barelyworkingcode/relay/internal/sessions/pioverlay"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -156,5 +158,112 @@ func TestPiProvider_RealSpawn_NoSecretsInRealEnvOrArgv_OverlayCarriesKey(t *test
 	p.Kill()
 	if _, err := os.Stat(overlayDir); !os.IsNotExist(err) {
 		t.Fatalf("overlay dir %s still present after Kill", overlayDir)
+	}
+}
+
+// TestPiProvider_Start_FailedStartClosesModelProxyAndOverlay is the fix for
+// the leak on every error path after the proxy/overlay are created: a
+// nonexistent pi binary makes cmd.Start() itself fail, the last of the
+// documented failure points, so this exercises the full unwind.
+func TestPiProvider_Start_FailedStartClosesModelProxyAndOverlay(t *testing.T) {
+	projectDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	modelSocket, _ := fakeModelBroker(t)
+	const modelKey = "rmk_" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+	session := &sessionstypes.Session{ID: "pi-sess-fail", Model: "claude-sonnet-4", Directory: projectDir}
+	p := NewPiProvider(session, func(string, json.RawMessage) {}, PiConfig{
+		Binary:      filepath.Join(t.TempDir(), "no-such-pi-binary"),
+		DataDir:     dataDir,
+		ModelSocket: modelSocket,
+		ModelKey:    modelKey,
+	})
+	defer p.Kill()
+
+	if err := p.Start(); err == nil {
+		t.Fatal("expected Start to fail for a nonexistent pi binary")
+	}
+
+	if p.modelProxy != nil {
+		t.Error("modelProxy still set on the provider after a failed Start")
+	}
+	if p.overlayDir != "" {
+		t.Error("overlayDir still set on the provider after a failed Start")
+	}
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("projectDir has leftover overlay entries after a failed Start: %v", entries)
+	}
+}
+
+// TestPiProvider_Start_ClosesStaleModelProxyAndOverlayFromPriorCall is the
+// fix for the second half of the leak: Start must close/remove any
+// modelProxy/overlayDir already attached to the provider before creating
+// its own, so a re-Start without an intervening Kill (the pattern
+// SetPermissionMode's Kill-then-Start idiom establishes, and pi will need
+// once SetModel lands) can't silently orphan the previous listener by
+// overwriting the pointer.
+//
+// This attaches the stale resources directly rather than by calling Start
+// twice: a second live Start on the same provider would race the first
+// call's still-running idleWatcher goroutine, a separate, pre-existing
+// concurrency gap in Start/idleWatcher's shared fields that is out of scope
+// for this fix (Start has never supported being called again on a live
+// provider without Kill in between; this fix only closes the resource leak
+// in that scenario, not the rest of the field races).
+func TestPiProvider_Start_ClosesStaleModelProxyAndOverlayFromPriorCall(t *testing.T) {
+	scratch := t.TempDir()
+	projectDir := t.TempDir()
+	dataDir := t.TempDir()
+	binDir := t.TempDir()
+
+	script := writeEnvArgvDumpScript(t, binDir)
+	envOut := filepath.Join(scratch, "env.out")
+	argvOut := filepath.Join(scratch, "argv.out")
+	t.Setenv("RH_TEST_OUT_ENV", envOut)
+	t.Setenv("RH_TEST_OUT_ARGV", argvOut)
+
+	modelSocket, _ := fakeModelBroker(t)
+	const modelKey = "rmk_" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+	session := &sessionstypes.Session{ID: "pi-sess-restart", Model: "claude-sonnet-4", Directory: projectDir}
+	p := NewPiProvider(session, func(string, json.RawMessage) {}, PiConfig{
+		Binary:      script,
+		DataDir:     dataDir,
+		ModelSocket: modelSocket,
+		ModelKey:    modelKey,
+	})
+	defer p.Kill()
+
+	staleBaseURL, staleProxy, err := startModelProxy(modelSocket)
+	if err != nil {
+		t.Fatalf("startModelProxy: %v", err)
+	}
+	staleAddr := staleProxy.listener.Addr().String()
+	p.modelProxy = staleProxy
+
+	staleOverlayDir, err := pioverlay.MaterializePiOverlay(projectDir, pioverlay.PiOverlayInputs{
+		ModelID:  "claude-sonnet-4",
+		ModelKey: modelKey,
+		BaseURL:  staleBaseURL + "/v1",
+	})
+	if err != nil {
+		t.Fatalf("MaterializePiOverlay: %v", err)
+	}
+	p.overlayDir = staleOverlayDir
+
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForFile(t, envOut)
+
+	if conn, err := net.DialTimeout("tcp", staleAddr, time.Second); err == nil {
+		conn.Close()
+		t.Fatalf("stale model proxy listener at %s is still accepting connections after Start", staleAddr)
 	}
 }

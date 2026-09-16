@@ -1,6 +1,9 @@
 // Package pioverlay materializes the per-project pi (pi.dev coding agent)
-// config overlay: a small .pi/ directory under the session's own project
-// carrying models.json and settings.json, pointed at by PI_CODING_AGENT_DIR.
+// config overlay: a small .pi-relay/ directory under the session's own
+// project carrying models.json and settings.json, pointed at by
+// PI_CODING_AGENT_DIR. The name is relay-owned, not pi's own ".pi"
+// convention, precisely because the caller removes this directory wholesale
+// when the session ends — see defaultOverlayDirName.
 //
 // C8's sealed rmk_ model key lands here, in models.json's apiKey field — SP9
 // confirmed pi sends it as `Authorization: Bearer <key>` to whatever baseUrl
@@ -31,6 +34,14 @@ const RelayProvider = "relay"
 // process's own uid may read it.
 const overlayFileMode = 0o600
 
+// defaultOverlayDirName is deliberately not ".pi": pi's own convention for
+// that name is a project's real, user-owned config directory (custom
+// settings, agent files), and Kill removes the overlay directory wholesale
+// when the session ends. A name only relay ever creates means that removal
+// can never take a user's own directory or its pre-existing contents with
+// it.
+const defaultOverlayDirName = ".pi-relay"
+
 // PiOverlayInputs bundles everything MaterializePiOverlay needs to write one
 // session's pi overlay. ModelKey is the LaunchSpec's C8 model key, resolved
 // by the caller (this package never mints or looks one up); BaseURL is the
@@ -38,7 +49,7 @@ const overlayFileMode = 0o600
 // from RELAY_MODEL_SOCKET (see provider.startModelProxy — the "how" of that
 // conversion is this port's one open judgment call, not this package's).
 type PiOverlayInputs struct {
-	DirName  string // overlay dir name under projectDir; "" defaults to ".pi"
+	DirName  string // overlay dir name under projectDir; "" defaults to defaultOverlayDirName
 	ModelID  string // the single model id this session is bound to
 	ModelKey string // LaunchSpec model key; "" disables the relay provider entry entirely
 	BaseURL  string // e.g. "http://127.0.0.1:PORT/v1"; required whenever ModelKey is set
@@ -81,7 +92,7 @@ func MaterializePiOverlay(projectDir string, inputs PiOverlayInputs) (string, er
 
 	dirName := inputs.DirName
 	if dirName == "" {
-		dirName = ".pi"
+		dirName = defaultOverlayDirName
 	}
 	overlayDir := filepath.Join(projectDir, dirName)
 

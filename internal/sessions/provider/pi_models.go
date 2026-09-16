@@ -61,6 +61,7 @@ func fetchPiListModelsCached(ctx context.Context, configuredPath string) []sessi
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, piPath, "--list-models")
+	cmd.Env = childBaseEnv()
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
