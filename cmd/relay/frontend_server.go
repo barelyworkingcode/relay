@@ -195,6 +195,7 @@ type frontendRouteDeps struct {
 	// to authorize a launch, reach relay-sessions and keep relay's ledger and
 	// model-key tables in sync (plan-broker-and-sessions.md §2 C5). Its zero
 	// value is a legitimate "session routes not wired" -- sessionRouteDeps.ready()
+	// (which does not require a session ledger; see sessionRoutesUnavailable)
 	// is what registerFrontendRoutes checks before registering anything.
 	sessionHost sessionRouteDeps
 	// issuance is derived once here from auditOps' recorder so the socket mux,
@@ -335,16 +336,14 @@ func registerFrontendRoutes(rr *control.RouteRegistrar, deps frontendRouteDeps) 
 // launches resolves a socket peer's launch identity (docs/launch-identity.md);
 // nil admits no caller by identity, only by bearer.
 //
-// sessionHost is variadic rather than a plain trailing parameter so every
-// call site built before R-S4b (this repo's own tests included) keeps
-// compiling unchanged: omitted, it is sessionRouteDeps{}, whose ready()
-// reads false and registers no session routes at all, the same "wired
-// nothing, refuses everything that needs it" default every other optional
-// dependency in this constructor already has (see projectOps/hostOps/
-// eveEnrolmentOps/evePasskeyOps's own nil-fallback comments above). A second
-// or later value is ignored -- there is exactly one session-host deps set
-// per server.
-func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost ...sessionRouteDeps) (*FrontendServer, error) {
+// sessionHost's zero value, sessionRouteDeps{}, is a legitimate "session
+// routes not wired": its ready() reads false and registerFrontendRoutes
+// registers no session routes at all, the same "wired nothing, refuses
+// everything that needs it" default every other optional dependency in this
+// constructor already has (see projectOps/hostOps/eveEnrolmentOps/
+// evePasskeyOps's own nil-fallback comments above). A caller not otherwise
+// concerned with session routes passes sessionRouteDeps{} explicitly.
+func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tools MCPToolsProvider, enum project.ContextEnumerator, frontend Endpoint, enhanced *EnhancedServiceRegistry, skillLister SkillLister, onProjectsChanged ProjectsChangedFn, ops *ServiceOps, enrolmentOps *EnrolmentOps, auditOps *audit.AuditOps, mcpOps *McpOps, projectOps *ProjectOps, hostOps *HostOps, eveEnrolmentOps *EveEnrolmentOps, evePasskeyOps *EvePasskeyOps, authz control.Authorizer, auditor control.ControlAuditor, launches *service.Launches, sessionHost sessionRouteDeps) (*FrontendServer, error) {
 	if frontend.Socket == "" {
 		return nil, errors.New("frontend socket path is empty")
 	}
@@ -364,10 +363,6 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		evePasskeyOps = &EvePasskeyOps{Store: store}
 	}
 
-	var sessionDeps sessionRouteDeps
-	if len(sessionHost) > 0 {
-		sessionDeps = sessionHost[0]
-	}
 	deps := frontendRouteDeps{
 		store:             store,
 		mcps:              mcps,
@@ -384,7 +379,7 @@ func NewFrontendServer(store config.SettingsStore, mcps McpSurfaceProvider, tool
 		eveEnrolmentOps:   eveEnrolmentOps,
 		evePasskeyOps:     evePasskeyOps,
 		enhanced:          enhanced,
-		sessionHost:       sessionDeps,
+		sessionHost:       sessionHost,
 		issuance:          issuanceAuditorOrNil(auditOps.Recorder()),
 	}
 
