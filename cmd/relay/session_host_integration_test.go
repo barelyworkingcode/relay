@@ -214,6 +214,10 @@ func TestHelperSessionHost(t *testing.T) {
 	// comment), so this small extra route is the only honest way a test in a
 	// different OS process can make one exit "on its own".
 	if controlSock := os.Getenv(envSHControlSock); controlSock != "" {
+		// A SIGKILL gives this process no chance to unlink its own socket
+		// file, so a restart must clear a stale one itself, same as
+		// hostapi.listenSocket already does for the internal/hook sockets.
+		_ = os.Remove(controlSock)
 		ln, err := net.Listen("unix", controlSock)
 		if err != nil {
 			fatal("listen control socket: %v", err)
