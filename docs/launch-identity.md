@@ -278,10 +278,23 @@ anything that target spawns in turn).
 
 `RELAY_PROJECT_TOKEN` is unaffected by this kind's existence: a project
 shell or agent CLI spawned outside the session-host path still gets one
-injected as before. A session-host-launched process instead relies on its
+injected as before. A session-host-launched `pty` instead relies on its
 bound `project_session` identity, or C3 membership if it is a descendant
 rather than the root — no project token is injected into a session-host
 child's environment at all.
+
+**This does not hold for a `claude`/`pi` launch.** Neither
+`provider.ClaudeConfig` nor `provider.PiConfig` (`internal/sessions/provider`)
+carries an `Identity` field, so neither process — nor anything it spawns —
+ever says Hello, and there is no bound `project_session` identity for it at
+all. Nor does C3 membership cover it: `(*service.Launches).RootByPID` only
+recognizes a pid as a membership root when it is bound in the launch table
+under `IdentityKindProjectSession`, so an unbound `claude`/`pi` launch is
+nobody's root — there is nothing for a descendant to authenticate against
+either. A `claude`/`pi` launch authenticates by neither mechanism today; see
+[`docs/session-host.md`](session-host.md#what-is-not-built-yet) gap 1 and
+[`docs/ssh-hosts.md`](ssh-hosts.md#the-session-host-never-sandboxes-a-host-projects-session),
+which already state this gap honestly.
 
 Full design of the binary that launches these identities, the internal API
 that authorizes a launch, and the shim that presents the secret:
