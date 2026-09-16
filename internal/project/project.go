@@ -416,7 +416,18 @@ func dirWithinProjectByIdentity(dir, projectPath string) (within, decided bool) 
 	if err != nil || !projInfo.IsDir() {
 		return false, false
 	}
-	cur := filepath.Clean(dir)
+	// This is subtle: dir is resolved through realpathBestEffort BEFORE the
+	// walk starts, not just stat'd as it climbs. os.Stat below follows a
+	// symlink to decide identity at each step, but filepath.Dir climbs the
+	// UNRESOLVED literal path — so a dir whose own leaf component is a
+	// symlink pointing outside projectPath would stat to somewhere else
+	// (correctly not projInfo), then climb via its literal parent straight
+	// back into projectPath's own ancestry on the next iteration, and read
+	// as contained. Resolving dir first means every stat in the walk below
+	// already reflects where symlinks actually point, so the climb can
+	// never re-enter the project through a leaf that only pointed there
+	// syntactically.
+	cur := realpathBestEffort(dir)
 	for {
 		info, err := os.Stat(cur)
 		if err == nil {
