@@ -20,8 +20,17 @@ type Client struct {
 // relies entirely on C3 membership, which the bridge resolves from the
 // connection's own peer credentials, not from anything this client says.
 func NewClient(token string) *Client {
+	return NewClientAt(SocketPath(), token)
+}
+
+// NewClientAt is NewClient with an explicit socket path, for a caller that
+// must not re-derive SocketPath()'s default — a process launched as a
+// separate binary (relay-sessions) never inherits relay's own ConfigDir
+// override across the exec boundary, so it has to reuse whatever socket
+// path it was actually launched with instead.
+func NewClientAt(sockPath, token string) *Client {
 	return &Client{
-		sockPath: SocketPath(),
+		sockPath: sockPath,
 		token:    token,
 	}
 }

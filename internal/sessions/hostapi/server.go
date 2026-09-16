@@ -100,6 +100,19 @@ func (s *Server) markTerminating(id string) {
 	s.exitMu.Unlock()
 }
 
+// markTerminatingIfAlive calls alive and, iff it reports true, marks id
+// terminating — both under the same exitMu critical section consumeTerminating
+// itself locks, so a concurrent exit report for id can never observe a state
+// between "checked alive" and "marked" (handleTerminate's own doc comment on
+// why that gap matters).
+func (s *Server) markTerminatingIfAlive(id string, alive func() bool) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if alive() {
+		s.terminating[id] = true
+	}
+}
+
 // consumeTerminating reports and clears whether id's exit was caused by this
 // host's own /terminate, so a later exit of a same-named session (impossible
 // in practice — ids are relay-minted UUIDs — but not this function's job to
@@ -347,6 +360,15 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 		return
 	}
 	s.table.put(&sessionEntry{id: req.SessionID, state: stateLive, shimPID: rootPID, rootStart: rootInfo})
+	// The shim can exit in the gap between Create returning and the line
+	// above — Info succeeding is not a guarantee it is still alive by the
+	// time this table entry is published. Left uncorrected, that entry
+	// would sit at stateLive forever: nothing else ever re-checks it, and
+	// onTerminalExit only runs on a future exit event this already-past one
+	// will never produce.
+	if !sess.Alive() {
+		s.table.markEnded(req.SessionID)
+	}
 
 	body, _ := json.Marshal(sess.CreatedBody())
 	w.Header().Set("Content-Type", "application/json")
@@ -401,20 +423,22 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		// Create's launching window) is the same no-op /terminate always
 		// was for an unrecognized id.
 		if term, ok := s.terminals.Get(req.SessionID); ok {
-			// markTerminating only when a live process actually exists to be
-			// killed: if the terminal already exited naturally, Close is a
-			// no-op (waitForExit already ran once and will not run again),
-			// so onTerminalExit will never fire to consume the mark — and an
-			// unconsumed mark is a permanent, if tiny, leak in a long-lived
-			// host process.
-			if term.Alive() {
-				s.markTerminating(req.SessionID)
-			}
+			// The aliveness check and the mark it gates run under one exitMu
+			// critical section (markTerminatingIfAlive), the same lock
+			// consumeTerminating uses: mark only when a live process
+			// actually exists to be killed (if the terminal already exited
+			// naturally, Close is a no-op — waitForExit already ran once and
+			// will not run again, so onTerminalExit will never fire to
+			// consume the mark, and an unconsumed mark is a permanent, if
+			// tiny, leak in a long-lived host process), with no gap between
+			// the check and the write for a racing onTerminalExit to land in.
+			s.markTerminatingIfAlive(req.SessionID, term.Alive)
 			s.terminals.Close(req.SessionID)
 		} else if sess, ok := s.sessions.Get(req.SessionID); ok {
-			if p := sess.Provider(); p != nil && p.Alive() {
-				s.markTerminating(req.SessionID)
-			}
+			s.markTerminatingIfAlive(req.SessionID, func() bool {
+				p := sess.Provider()
+				return p != nil && p.Alive()
+			})
 			s.sessions.EndSession(req.SessionID)
 		}
 	}
@@ -435,8 +459,8 @@ const maxPermissionBodyBytes = 1 << 20 // 1 MiB
 // host's own sessionTable via rootsAdapter, exactly as the plan's C3 section
 // names ("relay-sessions hook socket (against the host's own session
 // table)"). What is NOT real yet is the policy decision itself: no
-// PermissionManager is wired in (that needs a live provider session,
-// R-S7b/R-S7c), so an admitted call gets a fixed placeholder decision.
+// PermissionManager is wired in, so an admitted call gets a fixed
+// placeholder decision.
 //
 // Membership is resolved before the body is ever read: the peer pid and
 // accept time needed for Resolve both come from the connection itself
@@ -477,6 +501,6 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(permissionResponseBody{
 		Decision: "deny",
-		Reason:   "session host skeleton: no policy engine wired yet (R-S7b/R-S7c)",
+		Reason:   "session host: no policy engine wired yet",
 	})
 }

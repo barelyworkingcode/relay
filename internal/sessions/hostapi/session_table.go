@@ -26,14 +26,11 @@ const (
 // the session root" — see internal/sessions/shim's package doc). This is
 // what relay's own launch identity binds to as well, since the shim is
 // whoever said Hello (C6 step 3); host and relay must agree on one
-// convention for C5's SessionExited{root_pid} to reconcile correctly once
-// R-S4b wires it up. targetPID is kept only as an extra, best-effort signal
-// target for /terminate (F6) — it is never consulted for membership.
+// convention for C5's SessionExited{root_pid} to reconcile correctly.
 type sessionEntry struct {
 	id        string
 	state     sessionState
 	shimPID   int
-	targetPID int
 	rootStart membership.ProcInfo
 }
 
@@ -67,11 +64,6 @@ func (t *sessionTable) get(id string) (*sessionEntry, bool) {
 	return e, ok
 }
 
-func (t *sessionTable) exists(id string) bool {
-	_, ok := t.get(id)
-	return ok
-}
-
 func (t *sessionTable) put(e *sessionEntry) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -79,28 +71,6 @@ func (t *sessionTable) put(e *sessionEntry) {
 	if e.state == stateLive && e.shimPID != 0 {
 		t.byRootPID[e.shimPID] = e
 	}
-}
-
-// setLive atomically records a session's root once its shim has started:
-// state, shimPID, targetPID and rootStart all change together under one
-// critical section, so no reader — in particular rootByPID, consulted by
-// every in-flight /permission call — can ever observe stateLive with a
-// still-zero rootStart (that half-set window was a real gap; a hostile
-// racing membership check landing in it would have failed closed today
-// only by accident of rootStart's zero value never matching a real
-// process's start time).
-func (t *sessionTable) setLive(id string, shimPID, targetPID int, rootStart membership.ProcInfo) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	e, ok := t.byID[id]
-	if !ok {
-		return
-	}
-	e.state = stateLive
-	e.shimPID = shimPID
-	e.targetPID = targetPID
-	e.rootStart = rootStart
-	t.byRootPID[shimPID] = e
 }
 
 func (t *sessionTable) markEnded(id string) {

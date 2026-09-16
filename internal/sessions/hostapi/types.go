@@ -24,6 +24,16 @@
 // today every admitted call still gets a fixed "deny" — and mounting the
 // eve-facing manifest HTTP/WS surface (internal/sessions/api's Hub/handlers)
 // are both left to a later unit; neither is this package's job yet.
+//
+// A "claude"/"pi" launch dispatched through this package runs without the
+// sandbox profile or launch identity relay believes it minted for it:
+// provider.ClaudeConfig/PiConfig carry no Sandbox/Identity fields at all
+// (unlike ChatConfig, which does), and both providers spawn via a bare
+// exec.Command — no shim, no sandbox-exec, no identity presented anywhere.
+// relay's own launch-authorization path writes a real sandbox profile file
+// and mints a real launch secret for every claude/pi launch regardless, and
+// this package answers 201 as if both were applied. Wiring sandboxing and
+// identity into ClaudeConfig/PiConfig is out of scope here.
 package hostapi
 
 import "encoding/json"

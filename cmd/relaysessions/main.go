@@ -69,9 +69,6 @@ func runService(args []string) int {
 	}
 
 	bridgeSock := cfg.bridgeSocket
-	if bridgeSock == "" {
-		bridgeSock = os.Getenv(bridge.EnvBridgeSocket)
-	}
 
 	relayPID := cfg.relayPIDOverride
 	secret, launched, err := bridge.ReadLaunchSecret()
@@ -162,7 +159,9 @@ func runService(args []string) int {
 		RelayPID:       relayPID,
 		HookSocket:     cfg.hookSocket,
 	}, terminals, sessions)
-	srv.SetExitHandler(reportSessionExited)
+	srv.SetExitHandler(func(id string, rootPID, exitCode int, reason string) {
+		reportSessionExited(bridgeSock, id, rootPID, exitCode, reason)
+	})
 	if err := srv.ListenInternal(); err != nil {
 		log.Fatalf("relay-sessions: %v", err)
 	}
@@ -194,8 +193,20 @@ func runService(args []string) int {
 // per call, not a shared one: bridge.Client is a thin, stateless value
 // (sockPath + token) built for exactly this one-shot-call usage everywhere
 // else in this codebase calls it.
-func reportSessionExited(id string, rootPID, exitCode int, reason string) {
-	err := bridge.NewClient("").SessionExited(bridge.SessionExitedRequest{
+//
+// bridgeSock must be this process's own already-resolved bridge socket path
+// (runService's own bridgeSock, the same value threaded into every
+// manager/provider config), not bridge.NewClient("")'s rederived default:
+// this process never applies a ConfigDir override of its own (defaultDataDir's
+// doc comment explains why), so that default silently stops matching under
+// `relay --config-dir` even though every other socket this process dials is
+// still correct.
+func reportSessionExited(bridgeSock string, id string, rootPID, exitCode int, reason string) {
+	sock := bridgeSock
+	if sock == "" {
+		sock = bridge.SocketPath()
+	}
+	err := bridge.NewClientAt(sock, "").SessionExited(bridge.SessionExitedRequest{
 		SessionID:  id,
 		RootPID:    rootPID,
 		ExitStatus: exitCode,
@@ -232,17 +243,37 @@ func (c serviceConfig) relayLLMDataDir() string {
 }
 
 // defaultDataDir is C5's own named host data dir,
-// "~/Library/Application Support/relay/sessions" — bridge.ConfigDir()'s
-// value plus the one "sessions" segment C5 names, not a second
-// path-construction scheme: relay-sessions' two sockets already live
-// directly in bridge.ConfigDir() (internal/service/builtin_sessions.go),
-// so this reuses that same resolution rather than inventing another.
-func defaultDataDir() string {
+// "~/Library/Application Support/relay/sessions" — the directory
+// bridgeSock (this process's own already-resolved RELAY_BRIDGE_SOCKET,
+// flag or env) sits in, plus the one "sessions" segment C5 names. bridgeSock
+// is itself set from relay's own bridge.SocketPath() at launch time
+// (internal/service/service_registry.go), evaluated with relay's own
+// ConfigDir override already applied — an override this process never sees
+// any other way, since it never inherits relay's in-memory override across
+// the exec boundary. Re-deriving os.UserConfigDir() here instead, the way
+// this used to, silently drops that override: fine under the real default,
+// wrong under `relay --config-dir`. bridgeSock == "" only when this process
+// was not launched by relay at all (dev/test, -relay-pid override) — the
+// real default is the only sensible fallback there.
+func defaultDataDir(bridgeSock string) string {
+	if bridgeSock != "" {
+		return filepath.Join(filepath.Dir(bridgeSock), "sessions")
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir, _ = os.UserHomeDir()
 	}
 	return filepath.Join(dir, "relay", "sessions")
+}
+
+// defaultModelSocket mirrors defaultDataDir's own reasoning for
+// bridge.ModelSocketPath()'s fallback: reuse bridgeSock's directory rather
+// than re-deriving bridge.ConfigDir() fresh in this process.
+func defaultModelSocket(bridgeSock string) string {
+	if bridgeSock != "" {
+		return filepath.Join(filepath.Dir(bridgeSock), "model.sock")
+	}
+	return bridge.ModelSocketPath()
 }
 
 func parseServiceArgs(args []string) (serviceConfig, error) {
@@ -261,21 +292,27 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 	if *internalSocket == "" || *hookSocket == "" {
 		return serviceConfig{}, fmt.Errorf("-internal-socket and -hook-socket are required")
 	}
+
+	bridgeSock := *bridgeSocket
+	if bridgeSock == "" {
+		bridgeSock = os.Getenv(bridge.EnvBridgeSocket)
+	}
+
 	dir := *dataDir
 	if dir == "" {
-		dir = defaultDataDir()
+		dir = defaultDataDir(bridgeSock)
 	}
 	model := *modelSocket
 	if model == "" {
 		model = os.Getenv("RELAY_MODEL_SOCKET")
 	}
 	if model == "" {
-		model = bridge.ModelSocketPath()
+		model = defaultModelSocket(bridgeSock)
 	}
 	return serviceConfig{
 		internalSocket:   *internalSocket,
 		hookSocket:       *hookSocket,
-		bridgeSocket:     *bridgeSocket,
+		bridgeSocket:     bridgeSock,
 		shimBinary:       *shimBinary,
 		serviceName:      *serviceName,
 		relayPIDOverride: *relayPID,

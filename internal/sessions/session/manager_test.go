@@ -756,3 +756,121 @@ func TestManager_Create_Resume_DeadProvider_DifferentModelKey_NewProviderReceive
 		t.Fatal("resumed session should have a live provider")
 	}
 }
+
+// TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDownNewSession
+// reproduces the exact race a resume-with-a-different-key relaunch opens up:
+// Create's own relaunch.Kill() (B3's already-covered path) returns as soon as
+// the old provider's process is dead, but — mirroring claude.go/pi.go exactly
+// — its process_exited event fires afterward, on its own goroutine, gated
+// here so the test can land it after the resumed session already has a new,
+// live provider published. Before the fix, handleProviderEvent had no way to
+// tell that stale event apart from the new provider's own exit, so it
+// reported sess.ID as exited — which is exactly what would tear down the
+// resumed session's just-minted credentials at the relay layer.
+func TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDownNewSession(t *testing.T) {
+	mgr, _ := newTestManager(t)
+
+	exitGate := make(chan struct{})
+	delivered := make(chan struct{})
+	callCount := 0
+	var newProvider *fakeProvider
+	mgr.SetProviderFactory(func(_ *sessionstypes.Session, _ session.CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		callCount++
+		if callCount == 1 {
+			return &delayedExitProvider{handler: handler, exitGate: exitGate, delivered: delivered}, nil
+		}
+		newProvider = &fakeProvider{}
+		return newProvider, nil
+	})
+
+	var exitMu sync.Mutex
+	var exitedIDs []string
+	mgr.SetExitHandler(func(id string, _ int) {
+		exitMu.Lock()
+		exitedIDs = append(exitedIDs, id)
+		exitMu.Unlock()
+	})
+
+	sess, err := mgr.Create(session.CreateSpec{
+		SessionID: "11111111-1111-1111-1111-111111111111",
+		ProjectID: "proj-1",
+		Kind:      session.KindPi,
+		ModelKey:  "rmk_old",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resumed, err := mgr.Create(session.CreateSpec{
+		SessionID: sess.ID,
+		ProjectID: "proj-1",
+		Kind:      session.KindPi,
+		ModelKey:  "rmk_new",
+		Resume:    true,
+	})
+	if err != nil {
+		t.Fatalf("Create resume with changed key: %v", err)
+	}
+
+	// The old provider's own Kill() (inside the resume above) already
+	// returned; its delayed process_exited event has not fired yet. Let it
+	// land now, well after the resumed session's new provider is already
+	// published — exactly the scheduling this race depends on.
+	close(exitGate)
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale exit event from the replaced provider was never delivered")
+	}
+
+	exitMu.Lock()
+	got := append([]string(nil), exitedIDs...)
+	exitMu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("stale exit from the replaced provider must not be reported, got %v", got)
+	}
+	if p := resumed.Provider(); p == nil || !p.Alive() {
+		t.Fatal("resumed session's new provider must survive the old provider's delayed exit event")
+	}
+	if newProvider == nil || newProvider.Kills() != 0 {
+		t.Fatalf("resumed session's new provider must not be killed by the stale exit, kills = %d", newProvider.Kills())
+	}
+}
+
+// TestManager_EndSession_ChatKind_FiresExitHandler is F2's manager-level
+// regression: a chat session has no OS process, so nothing about ending one
+// through EndSession must depend on a waitForExit-shaped mechanism to reach
+// SetExitHandler's callback — the same one hostapi wires to its own
+// SessionExited report. syncExitProvider mirrors ChatProvider.Kill's real,
+// synchronous emission (chat_base_test.go's own
+// TestChatProvider_Kill_EmitsProcessExited covers that emission itself);
+// this test covers the manager noticing it.
+func TestManager_EndSession_ChatKind_FiresExitHandler(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	mgr.SetProviderFactory(func(_ *sessionstypes.Session, _ session.CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
+		return &syncExitProvider{handler: handler}, nil
+	})
+
+	exited := make(chan string, 1)
+	mgr.SetExitHandler(func(id string, _ int) { exited <- id })
+
+	sess, err := mgr.Create(session.CreateSpec{
+		SessionID: "33333333-3333-3333-3333-333333333333",
+		ProjectID: "proj-1",
+		Kind:      session.KindChat,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mgr.EndSession(sess.ID)
+
+	select {
+	case id := <-exited:
+		if id != sess.ID {
+			t.Fatalf("exit handler fired for %q, want %q", id, sess.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("EndSession on a chat-kind session never fired the exit handler — relay would never learn to revoke its identity/key/sandbox profile")
+	}
+}

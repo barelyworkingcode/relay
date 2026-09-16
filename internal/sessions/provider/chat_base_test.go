@@ -141,3 +141,54 @@ func TestChatProvider_ToolCallRoundTrip(t *testing.T) {
 		t.Fatalf("session.Messages = %+v, want at least one tool and one assistant message", msgs)
 	}
 }
+
+// TestChatProvider_Kill_EmitsProcessExited covers the gap a chat session's
+// Kill left open: unlike claude/pi, it has no underlying OS process and
+// therefore no waitForExit goroutine of its own to fire process_exited —
+// without Kill emitting it directly, ending a chat session this way never
+// reaches session.Manager's exit handler at all, so relay never learns to
+// revoke the session's launch identity, model key or sandbox profile.
+func TestChatProvider_Kill_EmitsProcessExited(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "model.sock")
+	fakeBroker(t, sock, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sess := &sessionstypes.Session{ID: "s1", Model: "sonnet"}
+	evCh := make(chan string, 8)
+	handler := func(eventType string, _ json.RawMessage) { evCh <- eventType }
+
+	p := NewChatProvider(sess, handler, ChatConfig{ModelSocket: sock, ModelKey: "test-key"})
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !p.Alive() {
+		t.Fatal("provider should be alive after Start")
+	}
+
+	p.Kill()
+
+	select {
+	case ev := <-evCh:
+		if ev != "process_exited" {
+			t.Fatalf("event = %q, want process_exited", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Kill never emitted process_exited")
+	}
+	if p.Alive() {
+		t.Fatal("provider should not be alive after Kill")
+	}
+
+	// A second Kill on an already-dead provider (StopAll and a redundant
+	// /terminate can both reach here) must not emit a second event: nothing
+	// downstream expects — or waits to consume — more than one exit report
+	// per session.
+	p.Kill()
+	select {
+	case ev := <-evCh:
+		t.Fatalf("second Kill emitted %q, want no further event", ev)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
