@@ -56,11 +56,15 @@ type LaunchRequest struct {
 	Env            map[string]string `json:"env,omitempty"`
 	PTY            *PTYSpec          `json:"pty"`
 	IdleTimeoutSec int               `json:"idle_timeout_sec,omitempty"`
-	Host           json.RawMessage   `json:"host"`
-	Sandbox        *SandboxSpec      `json:"sandbox"`
-	Identity       *IdentitySpec     `json:"identity"`
-	ModelKey       string            `json:"model_key,omitempty"`
-	SessionRequest json.RawMessage   `json:"session_request,omitempty"`
+	// omitempty is load-bearing: a caller that never sets Host (every
+	// non-hosted launch) must produce a request with no "host" key at all,
+	// not a literal JSON null — decodeHostSpec's own guard depends on that
+	// (dispatch.go).
+	Host           json.RawMessage `json:"host,omitempty"`
+	Sandbox        *SandboxSpec    `json:"sandbox"`
+	Identity       *IdentitySpec   `json:"identity"`
+	ModelKey       string          `json:"model_key,omitempty"`
+	SessionRequest json.RawMessage `json:"session_request,omitempty"`
 }
 
 // PTYSpec is C5's non-null "pty" object.
