@@ -45,8 +45,14 @@ type Session struct {
 	Host       *sessionstypes.HostSpec
 	CreatedAt  string
 
-	cmd       *exec.Cmd
-	ptmx      *os.File
+	cmd *exec.Cmd
+	// ptmx is an atomic.Pointer, not a plain field under s.mu: Write must be
+	// able to perform its (potentially indefinitely blocking, in raw mode
+	// with a full input queue) pty write without holding s.mu, so Close can
+	// still reach in and close the fd — the only thing that unblocks a
+	// parked write — without waiting on that same mutex. Close swaps this to
+	// nil before it touches anything else.
+	ptmx      atomic.Pointer[os.File]
 	targetPID int // the shim's own child (the real terminal target), for Close's belt-and-suspenders pgid signal
 
 	mu       sync.Mutex
@@ -94,6 +100,12 @@ var ErrIdentityRefused = errors.New("terminal: identity refused")
 // spawn_failed, 500) or never reported success within helloWait.
 var ErrSpawnFailed = errors.New("terminal: spawn failed")
 
+// ErrNoBridgeSocket is returned when spec.Identity is set but cfg carries no
+// real bridge socket for this launch: with nothing legitimate to Hello
+// against, proceeding would let whatever ends up in RELAY_BRIDGE_SOCKET —
+// including a caller-supplied one — decide where the launch secret goes.
+var ErrNoBridgeSocket = errors.New("terminal: identity requires a configured bridge socket")
+
 // startSession spawns the shim for spec and blocks (up to helloWait) until
 // its status events confirm the target is running, mirroring hostapi's own
 // spawnShim contract but adding real pty wiring end to end.
@@ -107,6 +119,9 @@ var ErrSpawnFailed = errors.New("terminal: spawn failed")
 func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode int), onIdle func(id string)) (*Session, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err
+	}
+	if spec.Identity != nil && cfg.BridgeSocket == "" {
+		return nil, ErrNoBridgeSocket
 	}
 
 	targetArgv := spec.Argv
@@ -187,7 +202,6 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 		Host:        spec.Host,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		cmd:         cmd,
-		ptmx:        ptmx,
 		targetPID:   outcome.targetPID,
 		cols:        cols,
 		rows:        rows,
@@ -199,6 +213,7 @@ func startSession(spec CreateSpec, cfg Config, onExit func(id string, exitCode i
 		onExit:      onExit,
 		onIdle:      onIdle,
 	}
+	s.ptmx.Store(ptmx)
 	s.alive.Store(true)
 
 	if cfg.LogDir != "" {
@@ -324,9 +339,19 @@ func childBaseEnv() []string {
 // non-empty value — the socket paths themselves are this host process's own
 // concern to resolve (cmd/relaysessions, a later wiring unit), not
 // something a bare Config in a unit test should have to fabricate.
+//
+// Every RELAY_-prefixed key in spec.Env is dropped before the merge, the
+// same prefix-not-denylist reasoning internal/config/templates.go's
+// EnvPassthrough check already uses: a caller/template must never be able to
+// *name* RELAY_BRIDGE_SOCKET (or any other RELAY_* key) and have that value
+// reach the child, even by the host simply having nothing of its own to
+// override it with.
 func buildShimEnv(spec CreateSpec, cfg Config) []string {
 	add := make(map[string]string, len(spec.Env)+3)
 	for k, v := range spec.Env {
+		if strings.HasPrefix(k, "RELAY_") {
+			continue
+		}
 		add[k] = v
 	}
 	add["RELAY_SESSION_ID"] = spec.SessionID
@@ -376,9 +401,15 @@ func readShimStatus(f *os.File) (*launchOutcome, error) {
 
 func (s *Session) readLoop() {
 	defer s.logger.Close() // nil-safe; flushes and syncs the log files.
+	// Loaded once: s.ptmx is only ever set here (startSession, before this
+	// goroutine starts) and swapped to nil by Close, never reassigned to a
+	// different live file, so the *os.File obtained here stays the correct
+	// one for this session's whole lifetime — Close()'ing it is exactly what
+	// makes the blocked Read below return.
+	f := s.ptmx.Load()
 	buf := make([]byte, terminalReadBufSize)
 	for {
-		n, err := s.ptmx.Read(buf)
+		n, err := f.Read(buf)
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
@@ -425,27 +456,35 @@ func (s *Session) waitForExit() {
 	}
 }
 
-// Write sends input data to the terminal PTY.
+// Write sends input data to the terminal PTY. Deliberately does not hold
+// s.mu across the actual pty write: a raw-mode target that has stopped
+// reading stdin (Ctrl-Z'd, wedged, a hung TUI) makes this write block
+// indefinitely once the pty's input queue fills, and Close must be able to
+// reach in and close the fd — the only thing that unblocks it — without
+// waiting on the same mutex this call would otherwise be holding.
 func (s *Session) Write(data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.alive.Load() {
 		return fmt.Errorf("terminal not running")
 	}
-	_, err := s.ptmx.Write(data)
+	f := s.ptmx.Load()
+	if f == nil {
+		return fmt.Errorf("terminal not running")
+	}
+	_, err := f.Write(data)
 	return err
 }
 
 // Resize changes the PTY window size.
 func (s *Session) Resize(cols, rows uint16) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ptmx == nil {
+	f := s.ptmx.Load()
+	if f == nil {
 		return fmt.Errorf("terminal not running")
 	}
+	s.mu.Lock()
 	s.cols = cols
 	s.rows = rows
-	return pty.Setsize(s.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+	s.mu.Unlock()
+	return pty.Setsize(f, &pty.Winsize{Rows: rows, Cols: cols})
 }
 
 // Size returns the current PTY dimensions.
@@ -466,10 +505,16 @@ func (s *Session) Close() {
 		return
 	}
 	s.alive.Store(false)
-	s.CancelIdleTimer()
-	if s.ptmx != nil {
-		_ = s.ptmx.Close()
+	// Closing the fd first, before acquiring s.mu (CancelIdleTimer does),
+	// is what breaks the deadlock: a Write in flight is blocked inside the
+	// pty write syscall while holding no lock of its own, and closing the
+	// fd out from under it is what wakes it with an I/O error. Reaching for
+	// s.mu before this point would instead wait on a mutex Write cannot
+	// release until this same Close unblocks it.
+	if f := s.ptmx.Swap(nil); f != nil {
+		_ = f.Close()
 	}
+	s.CancelIdleTimer()
 
 	shimPID := s.cmd.Process.Pid
 	_ = syscall.Kill(shimPID, syscall.SIGTERM)

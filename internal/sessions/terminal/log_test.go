@@ -84,6 +84,29 @@ func TestTerminalLogger_NilSafe(t *testing.T) {
 	lg.Close()
 }
 
+// TestNewTerminalLogger_RejectsBadID covers F5: the write path must enforce
+// the same id shape the read path (OpenTerminalLogReaders) already does — a
+// path-traversing id must never reach an O_CREATE|O_TRUNC open.
+func TestNewTerminalLogger_RejectsBadID(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"", "../evil", "not-a-uuid", "sess-dup"} {
+		if _, err := newTerminalLogger(dir, id); err == nil {
+			t.Errorf("newTerminalLogger(%q): want an error, got nil", id)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("newTerminalLogger wrote files despite refusing every id: %v", entries)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dir), "evil.head.log")); !os.IsNotExist(statErr) {
+		t.Fatal("a path-traversing id escaped the log directory")
+	}
+}
+
 func TestReadTerminalLog_RejectsBadID(t *testing.T) {
 	cases := []string{
 		"",

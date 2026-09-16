@@ -39,10 +39,23 @@ type Summary struct {
 	Host       map[string]string `json:"host,omitempty"`
 }
 
+// sessionSlot is one entry in Manager's table, including the window between
+// a Create reserving an id and startSession (up to helloWait) returning.
+// Mirrors internal/sessions/hostapi/session_table.go's stateLaunching
+// reservation: the existence check and the reservation must be the same
+// atomic step under Manager.mu, or two concurrent Creates for the same id
+// can both pass the check and both spawn a live, untracked process.
+type sessionSlot struct {
+	launching bool
+	stopping  bool          // a Close/StopAll arrived while still launching; the spawning Create must close its own result instead of publishing it
+	done      chan struct{} // closed once this slot leaves the launching state
+	session   *Session      // nil until the launch succeeds
+}
+
 // Manager owns the live set of terminal sessions this host is hosting.
 type Manager struct {
 	mu       sync.Mutex
-	sessions map[string]*Session
+	sessions map[string]*sessionSlot
 	cfg      Config
 	onExit   func(id string, exitCode int)
 }
@@ -50,7 +63,7 @@ type Manager struct {
 // NewManager constructs a Manager. cfg.ShimBinary must be set before Create
 // is ever called.
 func NewManager(cfg Config) *Manager {
-	return &Manager{sessions: make(map[string]*Session), cfg: cfg}
+	return &Manager{sessions: make(map[string]*sessionSlot), cfg: cfg}
 }
 
 // SetExitHandler installs fn to be called, on its own goroutine, whenever
@@ -66,13 +79,18 @@ func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 }
 
 // Create starts a new terminal session. Returns ErrSessionExists if spec's
-// id is already live or stopped-but-present in this manager's table.
+// id is already live, launching, or stopped-but-present in this manager's
+// table — the existence check and the reservation of spec.SessionID happen
+// under the same lock acquisition, so two concurrent Creates for the same
+// id can never both pass the check.
 func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 	m.mu.Lock()
 	if _, exists := m.sessions[spec.SessionID]; exists {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrSessionExists, spec.SessionID)
 	}
+	slot := &sessionSlot{launching: true, done: make(chan struct{})}
+	m.sessions[spec.SessionID] = slot
 	m.mu.Unlock()
 
 	onIdle := func(id string) { m.Close(id) }
@@ -85,13 +103,30 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 		}
 	}
 	s, err := startSession(spec, m.cfg, onExit, onIdle)
+
+	m.mu.Lock()
+	stopping := slot.stopping
+	slot.launching = false
+	if err != nil || stopping {
+		delete(m.sessions, spec.SessionID)
+	} else {
+		slot.session = s
+	}
+	close(slot.done)
+	m.mu.Unlock()
+
 	if err != nil {
 		return nil, err
 	}
-
-	m.mu.Lock()
-	m.sessions[spec.SessionID] = s
-	m.mu.Unlock()
+	if stopping {
+		// A Close/StopAll for this id arrived while the spawn was still in
+		// flight (the Hello-wait window): it found only the reservation, not
+		// a process to signal, so this goroutine — the one that actually
+		// knows the spawn succeeded — must finish the close itself instead
+		// of ever publishing the session as live.
+		s.Close()
+		return nil, fmt.Errorf("terminal: %s: closed while starting", spec.SessionID)
+	}
 	return s, nil
 }
 
@@ -101,21 +136,30 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 // no longer in this manager's live table's memory-only scrollback.
 func (m *Manager) LogDir() string { return m.cfg.LogDir }
 
-// Get returns a terminal session by ID.
+// Get returns a terminal session by ID. A session still in the launching
+// window (reserved, not yet spawned) is reported not-found — there is no
+// *Session for it to return yet.
 func (m *Manager) Get(id string) (*Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	return s, ok
+	slot, ok := m.sessions[id]
+	if !ok || slot.session == nil {
+		return nil, false
+	}
+	return slot.session, true
 }
 
-// ListSummary returns one Summary per session, sorted by ID for stable
-// iteration.
+// ListSummary returns one Summary per fully-launched session, sorted by ID
+// for stable iteration. A session still launching has no Summary yet.
 func (m *Manager) ListSummary() []Summary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]Summary, 0, len(m.sessions))
-	for _, s := range m.sessions {
+	for _, slot := range m.sessions {
+		if slot.session == nil {
+			continue
+		}
+		s := slot.session
 		state, exitCode := s.Snapshot()
 		out = append(out, Summary{
 			ID:         s.ID,
@@ -149,16 +193,28 @@ func (m *Manager) Resize(id string, cols, rows uint16) error {
 	return s.Resize(cols, rows)
 }
 
-// Close kills a terminal and removes it from the manager.
+// Close kills a terminal and removes it from the manager. A terminal still
+// in its launching window is marked stopping rather than deleted or
+// signaled directly — there is no process yet to signal, and deleting the
+// reservation here would let a concurrent Create race back in and spawn a
+// second one under the same id. The Create goroutine that placed the
+// reservation is the one that finishes the close once the spawn resolves.
 func (m *Manager) Close(id string) {
 	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if ok {
-		delete(m.sessions, id)
+	slot, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return
 	}
+	if slot.launching {
+		slot.stopping = true
+		m.mu.Unlock()
+		return
+	}
+	delete(m.sessions, id)
 	m.mu.Unlock()
-	if ok {
-		s.Close()
+	if slot.session != nil {
+		slot.session.Close()
 	}
 }
 
@@ -177,17 +233,31 @@ func (m *Manager) NotifyViewerChange(id string, viewers int) {
 	}
 }
 
-// StopAll closes every running terminal. Called during host shutdown.
+// StopAll closes every running terminal, including one still spawning:
+// a launch still in its Hello-wait window has no process yet for StopAll to
+// signal directly, so it is marked stopping (mirroring Close) and StopAll
+// waits on its done channel — bounded by startSession's own helloWait — so
+// shutdown does not return while a spawn it never accounted for is still
+// racing to completion. Called during host shutdown.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	sessions := make([]*Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		sessions = append(sessions, s)
+	pending := make([]chan struct{}, 0)
+	for id, slot := range m.sessions {
+		if slot.launching {
+			slot.stopping = true
+			pending = append(pending, slot.done)
+			continue
+		}
+		sessions = append(sessions, slot.session)
+		delete(m.sessions, id)
 	}
-	m.sessions = make(map[string]*Session)
 	m.mu.Unlock()
 
 	for _, s := range sessions {
 		s.Close()
+	}
+	for _, done := range pending {
+		<-done
 	}
 }

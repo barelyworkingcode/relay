@@ -54,6 +54,9 @@ func (s CreateSpec) validate() error {
 	if s.Host != nil && s.Identity != nil {
 		return errors.New("terminal: identity must be nil for a host (ssh) session")
 	}
+	if s.Sandbox != nil && s.Sandbox.ProfilePath == "" {
+		return errors.New("terminal: sandbox requested but profile path is empty")
+	}
 	return nil
 }
 
