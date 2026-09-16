@@ -16,6 +16,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
+	"github.com/barelyworkingcode/relay/internal/sessions/sandbox"
 )
 
 // sessionAccount is what relay itself minted for one live session: the
@@ -29,6 +30,9 @@ type sessionAccount struct {
 	projectID     string
 	modelKeyLabel string
 	launch        *service.Launch
+	// sandboxProfile is the SBPL file AuthorizeLaunch wrote for this
+	// session, "" when it is not sandboxed (C7: deleted on exit).
+	sandboxProfile string
 }
 
 // sessionAccounting is relay's own bookkeeping for a launch this process
@@ -109,6 +113,9 @@ func (a sessionAccount) end(modelKeys *ModelKeyTable) {
 	}
 	if a.modelKeyLabel != "" && modelKeys != nil {
 		modelKeys.Revoke(a.projectID, a.modelKeyLabel)
+	}
+	if err := sandbox.Remove(a.sandboxProfile); err != nil {
+		slog.Warn("session teardown: sandbox profile removal failed", "profile", a.sandboxProfile, "error", err)
 	}
 }
 
@@ -570,10 +577,14 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 		if result.Spec.ModelKey != "" {
 			d.modelKeys.RevokeKey(result.Spec.ModelKey)
 		}
+		if rmErr := sandbox.Remove(sandboxProfilePath(result)); rmErr != nil {
+			slog.Warn("session launch: sandbox profile removal failed", "session", result.SessionID, "error", rmErr)
+		}
 		return nil, err
 	}
 
-	acc := sessionAccount{projectID: result.AuditFields.ProjectID, modelKeyLabel: result.ModelKeyLabel, launch: launch}
+	acc := sessionAccount{projectID: result.AuditFields.ProjectID, modelKeyLabel: result.ModelKeyLabel, launch: launch,
+		sandboxProfile: sandboxProfilePath(result)}
 	d.accounting.track(result.SessionID, acc)
 	return resp, nil
 }
