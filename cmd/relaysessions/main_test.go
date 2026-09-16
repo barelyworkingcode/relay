@@ -10,9 +10,9 @@ import (
 	"github.com/barelyworkingcode/relay/internal/bridge"
 )
 
-// TestReportSessionExited_DialsConfiguredSocket_NotRederivedDefault is F3's
-// regression test: under a bridge socket path this process was actually
-// launched with — matching what a real `relay --config-dir` override
+// TestReportSessionExited_DialsConfiguredSocket_NotRederivedDefault: under
+// a bridge socket path this process was actually launched with — matching
+// what a real `relay --config-dir` override
 // produces — reportSessionExited must dial that path, not
 // bridge.SocketPath()'s own rederived default. wrongDir stands in for that
 // rederived default (bridge.ConfigDir()'s override, set here to a directory
@@ -61,9 +61,9 @@ func TestReportSessionExited_DialsConfiguredSocket_NotRederivedDefault(t *testin
 	}
 }
 
-// TestDefaultDataDir_ReusesBridgeSocketDir covers the same class of bug F3
-// names in defaultDataDir: given a non-default bridgeSock, the data dir must
-// sit beside it, not at a freshly rederived os.UserConfigDir().
+// TestDefaultDataDir_ReusesBridgeSocketDir: given a non-default bridgeSock,
+// the data dir must sit beside it, not at a freshly rederived
+// os.UserConfigDir().
 func TestDefaultDataDir_ReusesBridgeSocketDir(t *testing.T) {
 	got := defaultDataDir("/custom/cfg/relay.sock")
 	want := filepath.Join("/custom/cfg", "sessions")
@@ -85,8 +85,7 @@ func TestDefaultModelSocket_ReusesBridgeSocketDir(t *testing.T) {
 // TestParseServiceArgs_BridgeSocketFromEnv_PropagatesToDataDirAndModelSocket
 // proves parseServiceArgs itself resolves bridgeSock (flag, else env) before
 // computing the data-dir and model-socket defaults, rather than each
-// re-deriving its own — the specific wiring gap F3 names alongside
-// reportSessionExited's own.
+// re-deriving its own — the same wiring reportSessionExited relies on.
 func TestParseServiceArgs_BridgeSocketFromEnv_PropagatesToDataDirAndModelSocket(t *testing.T) {
 	t.Setenv(bridge.EnvBridgeSocket, "/custom/cfg/relay.sock")
 	t.Setenv("RELAY_MODEL_SOCKET", "")

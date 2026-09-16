@@ -837,8 +837,8 @@ func TestManager_ResumeDifferentKey_StaleExitFromReplacedProvider_DoesNotTearDow
 	}
 }
 
-// TestManager_EndSession_ChatKind_FiresExitHandler is F2's manager-level
-// regression: a chat session has no OS process, so nothing about ending one
+// TestManager_EndSession_ChatKind_FiresExitHandler: a chat session has no
+// OS process, so nothing about ending one
 // through EndSession must depend on a waitForExit-shaped mechanism to reach
 // SetExitHandler's callback — the same one hostapi wires to its own
 // SessionExited report. syncExitProvider mirrors ChatProvider.Kill's real,

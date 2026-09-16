@@ -167,12 +167,14 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 	return m.sink
 }
 
-// SetExitHandler installs fn to be called, on its own goroutine, whenever a
-// provider this manager owns reports its process has exited — mirrors
-// internal/sessions/terminal.Manager.SetExitHandler exactly (same signature,
-// same "own goroutine" discipline: handleProviderEvent's "process_exited"
-// case already runs on the provider's own waitForExit goroutine, never
-// inline with a caller's SendMessage/Create).
+// SetExitHandler installs fn to be called whenever a provider this manager
+// owns reports its process has exited — mirrors
+// internal/sessions/terminal.Manager.SetExitHandler's signature. For
+// claude/pi, handleProviderEvent's "process_exited" case runs on the
+// provider's own waitForExit goroutine, never inline with a caller's
+// SendMessage/Create; ChatProvider has no OS process to wait on, so its
+// Kill invokes fn synchronously on the caller's own goroutine instead — fn
+// must tolerate either.
 func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
 	m.mu.Lock()
 	m.onExit = fn
