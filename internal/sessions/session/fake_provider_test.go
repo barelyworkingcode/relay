@@ -112,6 +112,55 @@ func (p *fakeProvider) Sent() []string {
 	return out
 }
 
+// delayedExitProvider models claude.go's/pi.go's real Kill/exit-event
+// relationship: Kill() returns as soon as the process is considered dead,
+// but the process_exited event fires afterward, on its own goroutine — see
+// claude.go's waitForExit, which closes waitDone (what Kill's own wait
+// unblocks on) before calling p.handler. exitGate lets a test control
+// exactly when that delayed call lands, to land it after a resuming Create
+// has already published a replacement provider.
+type delayedExitProvider struct {
+	fakeProvider
+	handler  sessionstypes.EventHandler
+	exitGate chan struct{}
+	// delivered closes once handler has actually been called, independent
+	// of what the manager's own handling of that call decides to do with
+	// it — a test's only reliable signal that the delayed event has landed.
+	delivered chan struct{}
+}
+
+func (p *delayedExitProvider) Kill() {
+	p.fakeProvider.Kill()
+	go func() {
+		if p.exitGate != nil {
+			<-p.exitGate
+		}
+		data, _ := json.Marshal(map[string]any{"exitCode": 0})
+		p.handler("process_exited", data)
+		if p.delivered != nil {
+			close(p.delivered)
+		}
+	}()
+}
+
+// syncExitProvider models ChatProvider.Kill's own shape: no OS process, so
+// the process_exited event fires synchronously, inline in Kill, exactly once
+// per live-to-dead transition — never on a separate goroutine the way
+// claude.go/pi.go's waitForExit does.
+type syncExitProvider struct {
+	fakeProvider
+	handler sessionstypes.EventHandler
+}
+
+func (p *syncExitProvider) Kill() {
+	wasAlive := p.Alive()
+	p.fakeProvider.Kill()
+	if wasAlive {
+		data, _ := json.Marshal(map[string]any{"exitCode": 0})
+		p.handler("process_exited", data)
+	}
+}
+
 type notRunningError struct{}
 
 func (notRunningError) Error() string { return "fakeProvider: not running" }

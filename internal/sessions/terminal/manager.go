@@ -57,6 +57,19 @@ type sessionSlot struct {
 	session *Session // nil until the launch succeeds
 }
 
+// RootPID returns s's shim pid (SH §4.2's session root), or 0 if the shim
+// never started. Exported here rather than in session.go — the already-
+// reviewed spawn path this package's doc.go names as off limits to a caller
+// reaching past Manager's own public surface — so hostapi's dispatcher can
+// populate LaunchResponse.RootPID and a SessionExited report's root_pid
+// without touching Session's private cmd field itself.
+func (s *Session) RootPID() int {
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
 // Manager owns the live set of terminal sessions this host is hosting.
 type Manager struct {
 	mu       sync.Mutex
