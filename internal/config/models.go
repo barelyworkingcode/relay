@@ -270,6 +270,14 @@ var ServiceCapabilities = []ServiceCapability{
 // nothing else may ever be granted the capability.
 const RelaySessionsServiceID = "relaysessions"
 
+// RelaySessionsManifestRoutes are the two path prefixes relay-sessions
+// registers in its own manifest (cmd/relaysessions) and the only prefixes
+// cmd/relay's route-conflict check exempts for RelaySessionsServiceID
+// (sessionHostSharedPrefixes). One slice backing both sides means the
+// exception and the registration can never drift apart the way two
+// independently maintained literals could.
+var RelaySessionsManifestRoutes = []string{"/api/terminals/", "/api/sessions/"}
+
 // HasCapability reports whether the record grants want.
 func (c *ServiceConfig) HasCapability(want ServiceCapability) bool {
 	return slices.Contains(c.Capabilities, want)

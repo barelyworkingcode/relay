@@ -110,7 +110,7 @@ func (f *sessionRoutesFixture) registerFakeSessionsHost(t *testing.T, fs *FakeSe
 }
 
 func fakeSessionsManifest() bridge.Manifest {
-	return bridge.Manifest{Routes: []string{"/api/terminals/", "/api/sessions/"}}
+	return bridge.Manifest{Routes: config.RelaySessionsManifestRoutes}
 }
 
 // fakeLaunchHandler answers /launch 201 with C5's shape, using whatever

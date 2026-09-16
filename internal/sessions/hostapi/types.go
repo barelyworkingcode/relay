@@ -56,11 +56,21 @@ type LaunchRequest struct {
 	Env            map[string]string `json:"env,omitempty"`
 	PTY            *PTYSpec          `json:"pty"`
 	IdleTimeoutSec int               `json:"idle_timeout_sec,omitempty"`
-	Host           json.RawMessage   `json:"host"`
-	Sandbox        *SandboxSpec      `json:"sandbox"`
-	Identity       *IdentitySpec     `json:"identity"`
-	ModelKey       string            `json:"model_key,omitempty"`
-	SessionRequest json.RawMessage   `json:"session_request,omitempty"`
+	// omitempty and decodeHostSpec's explicit "null"-string guard
+	// (dispatch.go) are independent, both load-bearing: omitempty keeps a
+	// nil *HostSpec (every non-hosted launch, e.g. relay's own
+	// AuthorizeLaunch marshaling one) from putting a literal "host":null on
+	// the wire in the first place, but it only ever omits a zero-length
+	// json.RawMessage — it cannot stop some other caller's differently
+	// shaped encoding from producing the 4 literal bytes "null" some other
+	// way. decodeHostSpec checks for that string explicitly rather than
+	// trusting the sender, so the guard holds even if this tag is ever
+	// removed.
+	Host           json.RawMessage `json:"host,omitempty"`
+	Sandbox        *SandboxSpec    `json:"sandbox"`
+	Identity       *IdentitySpec   `json:"identity"`
+	ModelKey       string          `json:"model_key,omitempty"`
+	SessionRequest json.RawMessage `json:"session_request,omitempty"`
 }
 
 // PTYSpec is C5's non-null "pty" object.
