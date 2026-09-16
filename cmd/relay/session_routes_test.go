@@ -58,13 +58,14 @@ func newSessionRoutesFixture(t *testing.T, auditor ...*audit.AuditRecorder) *ses
 		rec = auditor[0]
 	}
 	deps := sessionRouteDeps{
-		store:      store,
-		launches:   service.NewLaunches(),
-		sessions:   newLaunchTestLedger(t),
-		modelKeys:  NewModelKeyTable(),
-		enhanced:   NewEnhancedServiceRegistry(nil),
-		auditor:    rec,
-		accounting: newSessionAccounting(),
+		store:       store,
+		launches:    service.NewLaunches(),
+		sessions:    newLaunchTestLedger(t),
+		modelKeys:   NewModelKeyTable(),
+		enhanced:    NewEnhancedServiceRegistry(nil),
+		auditor:     rec,
+		accounting:  newSessionAccounting(),
+		resumeGuard: newResumeGuard(),
 	}
 	mux := http.NewServeMux()
 	rr := &control.RouteRegistrar{Mux: mux, Transport: control.TransportSocket}

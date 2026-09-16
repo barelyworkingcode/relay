@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/control"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
+	"github.com/barelyworkingcode/relay/internal/membership"
+	"github.com/barelyworkingcode/relay/internal/peertoken"
 	"github.com/barelyworkingcode/relay/internal/service"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
@@ -38,12 +41,13 @@ func TestReviewFix_B1_RealFrontendRoutesCoexistWithRelaySessionsManifest(t *test
 	extMgr := mcpbroker.NewManager(nil)
 	enhanced := NewEnhancedServiceRegistry(nil)
 	sessionDeps := sessionRouteDeps{
-		store:      store,
-		launches:   service.NewLaunches(),
-		sessions:   newLaunchTestLedger(t),
-		modelKeys:  NewModelKeyTable(),
-		enhanced:   enhanced,
-		accounting: newSessionAccounting(),
+		store:       store,
+		launches:    service.NewLaunches(),
+		sessions:    newLaunchTestLedger(t),
+		modelKeys:   NewModelKeyTable(),
+		enhanced:    enhanced,
+		accounting:  newSessionAccounting(),
+		resumeGuard: newResumeGuard(),
 	}
 
 	sockDir := mkShortTempDir(t, "b1-fe-")
@@ -110,14 +114,16 @@ func modelKeysLiveForTest(mk *ModelKeyTable, projectID, label string) int {
 	return n
 }
 
-// TestReviewFix_B2_ConcurrentResumeDoesNotRevokeWinnersKey reproduces the
-// reviewer's exact scenario: two concurrent resumes of the same dormant
-// session both pass the resume handler's own ledger read and
-// AuthorizeLaunch's, both mint a key under the identical "session:<id>"
-// label, and race to relay-sessions' /launch. The fake host answers the
-// first arrival with 201 and every later one with 409 (session_exists),
-// exactly as C5 documents the real host does. After both requests finish,
-// the winner's key must still be the only one alive under that label.
+// TestReviewFix_B2_ConcurrentResumeDoesNotRevokeWinnersKey races two
+// concurrent resumes of the same dormant session against the resumeGuard: one
+// passes and reaches AuthorizeLaunch, mints a model key under "session:<id>",
+// and dials relay-sessions' /launch; the other is refused by the guard before
+// it ever reaches AuthorizeLaunch, so it never mints a second key to begin
+// with. The fake host's own 409 (session_exists) handling for a second
+// /launch arrival stays wired as a defense-in-depth check: it must never
+// actually fire, since the guard is what keeps a second attempt from getting
+// that far. After both requests finish, the winner's key must still be the
+// only one alive under that label.
 func TestReviewFix_B2_ConcurrentResumeDoesNotRevokeWinnersKey(t *testing.T) {
 	f := newSessionRoutesFixture(t)
 	assertNoErr(t, f.deps.sessions.Put(ledger.Record{
@@ -174,22 +180,130 @@ func TestReviewFix_B2_ConcurrentResumeDoesNotRevokeWinnersKey(t *testing.T) {
 	}
 	wg.Wait()
 
-	var okCount, gatewayCount int
+	var okCount, conflictCount int
 	for _, c := range codes {
 		switch c {
 		case http.StatusOK:
 			okCount++
-		case http.StatusBadGateway:
-			gatewayCount++
+		case http.StatusConflict:
+			conflictCount++
 		}
 	}
-	if okCount != 1 || gatewayCount != 1 {
-		t.Fatalf("resume outcomes = %v, want exactly one 200 and one 502", codes)
+	if okCount != 1 || conflictCount != 1 {
+		t.Fatalf("resume outcomes = %v, want exactly one 200 and one 409 (the resumeGuard refusing the loser)", codes)
 	}
 
 	if n := modelKeysLiveForTest(f.deps.modelKeys, f.proj.ID, "session:s1"); n != 1 {
 		t.Fatalf("live model keys under (project, session:s1) after both resumes = %d, want exactly 1 -- "+
 			"the winner's key must never be silently revoked by the loser's rollback", n)
+	}
+}
+
+// TestReviewFix_B2_WinningResumeSecretStillBindsAfterConcurrentLoser is the
+// deeper half of B2: Launches.Begin's own contract ends whatever launch was
+// previously recorded under a name before recording the new one, and both
+// concurrent resumes for the same dormant session name their launch identity
+// after the session id -- without resumeGuard serializing them, a losing
+// attempt's Begin call can end the winning attempt's launch identity, secret
+// included, before the winner's own host round trip even finishes, even
+// though the LOSING HTTP response is the one relay-sessions itself refused.
+// The fake host enforces the same per-session_id dedup C5 documents the real
+// host does (first /launch for a session_id wins, a concurrent second gets
+// session_exists), so exactly one of the two concurrent resume requests gets
+// eve's 200 -- exactly as in production. This races the real resume handler
+// the way the reviewer reproduced it, then asserts on the one fact that
+// actually matters: the secret relay-sessions received for the WINNING
+// (200-response) request still successfully binds afterward, not just that
+// one request got 200 and the other got refused.
+func TestReviewFix_B2_WinningResumeSecretStillBindsAfterConcurrentLoser(t *testing.T) {
+	f := newSessionRoutesFixture(t)
+	assertNoErr(t, f.deps.sessions.Put(ledger.Record{
+		SessionID: "s1", Kind: KindChat, ProjectID: f.proj.ID, Directory: f.proj.Path, State: ledger.StateDormant,
+		SessionRequest: json.RawMessage(`{"projectId":"` + f.proj.ID + `","directory":"` + f.proj.Path + `","model":"gpt-5"}`),
+	}), "seed dormant record")
+
+	// A project_session Bind reads the root process's real start time and
+	// registers a real ancestry watch; this test process has no pid of its
+	// own to stand in for the session's root, so a fake root source/watcher
+	// plays that part instead -- same discipline as
+	// TestReviewFix_R3_ProjectDeleteRevokesTerminalModelKey's "doomed"
+	// session above.
+	const rootPID = 424242
+	f.deps.launches.SetRootSourceForTest(fakeRootSource{rootPID: membership.ProcInfo{StartSec: 1}})
+	f.deps.launches.SetRootWatcherForTest(func(pid int, want membership.ProcInfo, onExit func()) (func(), error) {
+		return func() {}, nil
+	})
+
+	var mu sync.Mutex
+	claimed := false
+	var winnerSessionID, winnerSecret string
+	var fs *FakeService
+	fs = NewFakeService(t, FakeServiceOptions{
+		ServiceID: config.RelaySessionsServiceID,
+		Manifest:  fakeSessionsManifest(),
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/launch" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			var spec hostapi.LaunchRequest
+			_ = json.Unmarshal(fs.LastRequest().Body, &spec)
+
+			mu.Lock()
+			winner := !claimed
+			claimed = true
+			if winner && spec.Identity != nil {
+				winnerSessionID, winnerSecret = spec.SessionID, spec.Identity.Secret
+			}
+			mu.Unlock()
+
+			if !winner {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"session_exists","message":"session is already live"}`))
+				return
+			}
+			fakeLaunchHandler(&fs, func(id string) string { return `{"session_id":"` + id + `"}` })(w, r)
+		},
+	})
+	self := selfPeerToken(t)
+	f.registerFakeSessionsHost(t, fs, self.Process())
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil)
+	req1.SetPathValue("id", "s1")
+	req1 = f.withExecuteCredential(t, req1)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil)
+	req2.SetPathValue("id", "s1")
+	req2 = f.withExecuteCredential(t, req2)
+
+	codes := make([]int, 2)
+	var wg sync.WaitGroup
+	for i, req := range []*http.Request{req1, req2} {
+		wg.Add(1)
+		go func(i int, req *http.Request) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			f.mux.ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}(i, req)
+	}
+	wg.Wait()
+
+	okCount := 0
+	for _, c := range codes {
+		if c == http.StatusOK {
+			okCount++
+		}
+	}
+	if okCount != 1 {
+		t.Fatalf("resume outcomes = %v, want exactly one 200", codes)
+	}
+	if winnerSecret == "" {
+		t.Fatal("no winning /launch call was ever recorded")
+	}
+
+	if _, err := f.deps.launches.Bind(winnerSessionID, winnerSecret, peertoken.ForProcessForTest(rootPID, 1)); err != nil {
+		t.Fatalf("the winning (200-response) resume's own secret failed to bind afterward: %v", err)
 	}
 }
 
@@ -228,6 +342,92 @@ func TestReviewFix_R1_TrailingSlashCreateRoutesAreAuthorized(t *testing.T) {
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("%s with an execute credential and no host registered: status = %d, body = %s, want 502 (reached launchOnHost)",
 				path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestReviewFix_R1_SubtreePOSTsReachManifestProxyNotCreateHandler drives the
+// real NewFrontendServer/registerFrontendRoutes call, with relay-sessions'
+// own manifest registered as a live fake service, and asserts on the actual
+// destination a subtree POST reaches -- not just its status code. An open
+// "/api/sessions/" prefix pattern would route "/api/sessions/s1/message" into
+// handleCreateSession, minting a new session and dialing /launch, instead of
+// letting it fall through to the "/" catch-all and on to relay-sessions.
+func TestReviewFix_R1_SubtreePOSTsReachManifestProxyNotCreateHandler(t *testing.T) {
+	store := newLaunchTestStore(t)
+	enhanced := NewEnhancedServiceRegistry(nil)
+	sessionDeps := sessionRouteDeps{
+		store:       store,
+		launches:    service.NewLaunches(),
+		sessions:    newLaunchTestLedger(t),
+		modelKeys:   NewModelKeyTable(),
+		enhanced:    enhanced,
+		accounting:  newSessionAccounting(),
+		resumeGuard: newResumeGuard(),
+	}
+
+	fs := NewFakeService(t, FakeServiceOptions{
+		ServiceID: config.RelaySessionsServiceID,
+		Manifest:  fakeSessionsManifest(),
+	})
+	assertNoErr(t, enhanced.RegisterManifest(fs.ServiceID(), fs.Socket(), fs.Token(), fs.Manifest()), "RegisterManifest")
+
+	sockDir := mkShortTempDir(t, "r1-fe-")
+	const bearer = "r1-bearer"
+	extMgr := mcpbroker.NewManager(nil)
+	srv, err := NewFrontendServer(
+		store,
+		extMgr, extMgr, extMgr,
+		seededEndpoint(t, store, filepath.Join(sockDir, "frontend.sock"), bearer),
+		enhanced,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil,
+		sessionDeps,
+	)
+	assertNoErr(t, err, "NewFrontendServer")
+	go func() { _ = srv.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+
+	client := dialFrontendHTTP(filepath.Join(sockDir, "frontend.sock"))
+	get := func(method, path, body string) *http.Response {
+		req, err := http.NewRequest(method, "http://unix"+path, strings.NewReader(body))
+		assertNoErr(t, err, "build request")
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		resp, err := client.Do(req)
+		assertNoErr(t, err, method+" "+path)
+		return resp
+	}
+
+	cases := []struct{ method, path string }{
+		{http.MethodPost, "/api/sessions/s1/message"},
+		{http.MethodPost, "/api/terminals/t1/resize"},
+	}
+	for _, tc := range cases {
+		resp := get(tc.method, tc.path, `{"projectId":"whatever","model":"gpt-5"}`)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var echoed struct {
+			Service string `json:"service"`
+			Path    string `json:"path"`
+		}
+		if err := json.Unmarshal(body, &echoed); err != nil {
+			t.Fatalf("%s %s: response was not relay-sessions' own echo body (status %d, body %s): %v",
+				tc.method, tc.path, resp.StatusCode, body, err)
+		}
+		if echoed.Service != config.RelaySessionsServiceID || echoed.Path != tc.path {
+			t.Fatalf("%s %s: reached service %q path %q, want relay-sessions at the original path",
+				tc.method, tc.path, echoed.Service, echoed.Path)
+		}
+	}
+
+	for _, req := range fs.Requests() {
+		if req.Path == "/launch" {
+			t.Fatalf("a subtree POST reached relay-sessions' /launch: %+v", req)
 		}
 	}
 }
@@ -380,12 +580,13 @@ func TestReviewFix_R3_ProjectDeleteRevokesTerminalModelKey(t *testing.T) {
 func TestReviewFix_R4_LedgerUnavailableFailsClosedNotToCatchAll(t *testing.T) {
 	store := newLaunchTestStore(t)
 	deps := sessionRouteDeps{
-		store:      store,
-		launches:   service.NewLaunches(),
-		sessions:   nil, // the ledger-open failure this test simulates
-		modelKeys:  NewModelKeyTable(),
-		enhanced:   NewEnhancedServiceRegistry(nil),
-		accounting: newSessionAccounting(),
+		store:       store,
+		launches:    service.NewLaunches(),
+		sessions:    nil, // the ledger-open failure this test simulates
+		modelKeys:   NewModelKeyTable(),
+		enhanced:    NewEnhancedServiceRegistry(nil),
+		accounting:  newSessionAccounting(),
+		resumeGuard: newResumeGuard(),
 	}
 	if !deps.ready() {
 		t.Fatal("sessionRouteDeps.ready() must be true with only the ledger missing, or these routes never register at all")
