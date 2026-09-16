@@ -29,7 +29,7 @@ func TestMaterializePiOverlay_ApiKeyMatchesLaunchSpecKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MaterializePiOverlay: %v", err)
 	}
-	if overlayDir != filepath.Join(projectDir, ".pi") {
+	if overlayDir != filepath.Join(projectDir, defaultOverlayDirName) {
 		t.Errorf("overlayDir = %q", overlayDir)
 	}
 
@@ -113,7 +113,7 @@ func TestApplyPiOverlayEnv_SetsCodingAgentDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "PI_CODING_AGENT_DIR=" + filepath.Join(projectDir, ".pi")
+	want := "PI_CODING_AGENT_DIR=" + filepath.Join(projectDir, defaultOverlayDirName)
 	found := false
 	for _, e := range env {
 		if e == want {
@@ -134,5 +134,54 @@ func TestMaterializePiOverlay_EmptyOrRootProjectDirNoop(t *testing.T) {
 		if got != "" {
 			t.Fatalf("dir=%q: expected no overlay, got %q", dir, got)
 		}
+	}
+}
+
+// TestMaterializePiOverlay_DoesNotTouchUsersRealPiDirectory is the fix for
+// the overlay clobbering a user's own pi config: the overlay must land
+// somewhere only relay ever creates, never at <projectDir>/.pi — pi's own
+// convention for a project's real config directory — so that a caller
+// RemoveAll-ing the returned overlayDir (PiProvider.Kill's real-world
+// counterpart, exercised below) can never take a user's pre-existing
+// directory or its contents with it.
+func TestMaterializePiOverlay_DoesNotTouchUsersRealPiDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	realPiDir := filepath.Join(projectDir, ".pi")
+	if err := os.MkdirAll(realPiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(realPiDir, "AGENTS.md")
+	if err := os.WriteFile(userFile, []byte("the user's own pi config"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	overlayDir, err := MaterializePiOverlay(projectDir, PiOverlayInputs{
+		ModelID:  "claude-sonnet-4",
+		ModelKey: testModelKey,
+		BaseURL:  "http://127.0.0.1:5555/v1",
+	})
+	if err != nil {
+		t.Fatalf("MaterializePiOverlay: %v", err)
+	}
+	if overlayDir == realPiDir {
+		t.Fatalf("overlay dir must never be the user's real .pi directory, got %q", overlayDir)
+	}
+
+	data, err := os.ReadFile(userFile)
+	if err != nil {
+		t.Fatalf("user's .pi/AGENTS.md was removed or made unreadable: %v", err)
+	}
+	if string(data) != "the user's own pi config" {
+		t.Errorf("user's .pi/AGENTS.md content changed: %q", data)
+	}
+
+	// PiProvider.Kill's teardown is os.RemoveAll(overlayDir). Exercising that
+	// here proves the end-to-end property: it can only ever remove relay's
+	// own directory, never realPiDir, because the two paths are distinct.
+	if err := os.RemoveAll(overlayDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(realPiDir); err != nil {
+		t.Fatalf("user's .pi directory did not survive a Kill-equivalent RemoveAll(overlayDir): %v", err)
 	}
 }

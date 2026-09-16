@@ -36,6 +36,7 @@ var runSSHCommand = func(argv []string, timeout time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = childBaseEnv()
 	return cmd.Output()
 }
 

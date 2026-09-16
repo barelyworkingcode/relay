@@ -24,13 +24,31 @@ import (
 // a loopback-only, ephemeral-port reverse proxy, started per pi session and
 // torn down with it, that forwards every request (headers included, so
 // pi's own `Authorization: Bearer <rmk_key>` reaches the broker unmodified)
-// straight through to the socket. The broker's own auth order checks the
-// bearer first regardless of transport, so this proxy adds no privilege of
-// its own — a caller without the session's key gets exactly the 401 it
-// would get dialing the socket directly.
+// straight through to the socket.
+//
+// This is subtle: the socket's own auth is peer-authenticated, and the peer
+// on every request is always this proxy process, never the original TCP
+// caller. Forwarding a tokenless request as-is would authenticate it as
+// relay-sessions itself, which holds far broader grants than any individual
+// session's key. requireAPIKeyHeader closes that gap in front of the dial,
+// not behind it: a request with neither Authorization nor x-api-key gets a
+// 401 straight from this proxy and the Unix socket is never touched.
 type modelProxy struct {
 	listener net.Listener
 	server   *http.Server
+}
+
+// requireAPIKeyHeader rejects a request before rp ever forwards it (and
+// therefore before the Unix socket is dialed) unless the request carries an
+// Authorization or x-api-key header.
+func requireAPIKeyHeader(rp http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" && r.Header.Get("x-api-key") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		rp.ServeHTTP(w, r)
+	})
 }
 
 // startModelProxy binds 127.0.0.1:0 and starts forwarding to socketPath.
@@ -63,7 +81,7 @@ func startModelProxy(socketPath string) (string, *modelProxy, error) {
 		Transport: transport,
 	}
 
-	srv := &http.Server{Handler: rp}
+	srv := &http.Server{Handler: requireAPIKeyHeader(rp)}
 	go func() { _ = srv.Serve(ln) }()
 
 	return "http://" + ln.Addr().String(), &modelProxy{listener: ln, server: srv}, nil

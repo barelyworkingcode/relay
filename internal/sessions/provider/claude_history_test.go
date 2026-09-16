@@ -2,8 +2,11 @@ package provider
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseClaudeHistoryJSONL_UserAndAssistantTurns(t *testing.T) {
@@ -57,5 +60,32 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 	want := "-Users-me-source-project"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRunSSHCommand_ChildEnvStripsRelaySecrets is the fix for the ssh exec
+// bypassing childBaseEnv entirely: this is the SSH path, so the leak would
+// otherwise reach a locally-spawned ssh process's environment.
+func TestRunSSHCommand_ChildEnvStripsRelaySecrets(t *testing.T) {
+	dir := t.TempDir()
+	envOut := filepath.Join(dir, "env.out")
+	script := filepath.Join(dir, "fake-ssh.sh")
+	content := "#!/bin/sh\nenv > " + envOut + "\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("RELAY_PROJECT_TOKEN", "leaked-project-token")
+
+	if _, err := runSSHCommand([]string{script}, 5*time.Second); err != nil {
+		t.Fatalf("runSSHCommand: %v", err)
+	}
+
+	data, err := os.ReadFile(envOut)
+	if err != nil {
+		t.Fatalf("read env dump: %v", err)
+	}
+	if strings.Contains(string(data), "RELAY_PROJECT_TOKEN") {
+		t.Fatalf("ambient RELAY_PROJECT_TOKEN reached the locally-spawned ssh child:\n%s", data)
 	}
 }
