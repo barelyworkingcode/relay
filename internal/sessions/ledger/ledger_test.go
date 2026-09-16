@@ -90,7 +90,7 @@ func TestLedger_Remove(t *testing.T) {
 	}
 }
 
-func TestLedger_AllIsSortedAndNeverPersistsTerminals(t *testing.T) {
+func TestLedger_AllIsSorted(t *testing.T) {
 	dir := t.TempDir()
 	l := mustOpen(t, dir)
 	for _, id := range []string{"zzz", "aaa", "mmm"} {
