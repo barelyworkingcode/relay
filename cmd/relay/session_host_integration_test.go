@@ -51,6 +51,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/audit"
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/config"
+	"github.com/barelyworkingcode/relay/internal/jsonrpc"
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/service"
@@ -792,17 +793,25 @@ func TestSessionHost_DetachedDescendantIsRefused(t *testing.T) {
 
 	f.createTerminal(t, proj.ID, "rs10-detached")
 
-	marker := rs10ReadMarker(t, proj.Path)
-	if !processAlive(marker.PID) {
-		t.Fatalf("target is not alive: %+v", marker)
-	}
-
+	// The top-level target's detach branch starts the grandchild and exits
+	// immediately, well before any liveness check here could observe it --
+	// the grandchild is the process actually making (and being refused) the
+	// call, and it blocks forever after writing this result, so its pid is
+	// the one to check.
 	result := rs10ReadCallToolResult(t, proj.Path)
+	if !processAlive(result.PID) {
+		t.Fatalf("detached descendant is not alive: %+v", result)
+	}
 	if result.OK {
 		t.Fatalf("a detached (double-forked, setsid'd) descendant's CallTool succeeded: %+v", result)
 	}
-	if !strings.Contains(strings.ToLower(result.Error), "unauthoriz") {
-		t.Fatalf("detached caller's refusal = %q, want an unauthorized error", result.Error)
+	// resolveAuth's refusal text is "no token provided" (config.ErrNoToken),
+	// not the word "unauthorized" -- membership_auth_darwin_test.go checks
+	// this same C3 refusal by RPC code for that reason, and this is the
+	// bridge client's rendering of that code (internal/bridge/client.go).
+	wantCode := fmt.Sprintf("code %d", jsonrpc.CodeUnauthorized)
+	if !strings.Contains(result.Error, wantCode) {
+		t.Fatalf("detached caller's refusal = %q, want %q (CodeUnauthorized)", result.Error, wantCode)
 	}
 }
 
