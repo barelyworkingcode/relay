@@ -200,3 +200,52 @@ func TestServiceConfig_ValidateRestrictsSessionsToTheBuiltinRecord(t *testing.T)
 		t.Fatalf("the built-in relaysessions record was refused sessions: %v", err)
 	}
 }
+
+// TestServiceConfig_StoredCommandIgnoredForBuiltinRelaySessions pins R-S9's
+// own requirement (spec-session-host.md §2.1): settings.json may hold
+// enable/disable and autostart for the built-in relaysessions record, but a
+// stored Command (and the Args that go with it) must never reach anything
+// that would exec it — internal/service always resolves its own, from
+// relay's bundle path, never from disk.
+func TestServiceConfig_StoredCommandIgnoredForBuiltinRelaySessions(t *testing.T) {
+	dir := mkEmptySandboxRelayHome(t)
+	store := sealedSettingsStoreAt(dir)
+	if err := store.EnsureInitialized(); err != nil {
+		t.Fatalf("EnsureInitialized: %v", err)
+	}
+	path := filepath.Join(dir, "settings.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse settings.json: %v", err)
+	}
+	doc["services"] = json.RawMessage(`[{
+		"id": "` + RelaySessionsServiceID + `",
+		"display_name": "Session Host",
+		"command": "/tmp/evil-relay-sessions",
+		"args": ["--do-something-bad"],
+		"autostart": false
+	}]`)
+	raw, _ = json.Marshal(doc)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write edited settings.json: %v", err)
+	}
+
+	s := store.Reload()
+	svc, idx := FindServiceByID(s, RelaySessionsServiceID)
+	if idx < 0 || svc == nil {
+		t.Fatal("the built-in relaysessions record did not survive load")
+	}
+	if svc.Command != "" {
+		t.Fatalf("stored command was NOT ignored: got %q", svc.Command)
+	}
+	if len(svc.Args) != 0 {
+		t.Fatalf("stored args were NOT ignored: got %v", svc.Args)
+	}
+	if svc.Autostart {
+		t.Fatal("autostart, the one field the operator may set, was not honoured")
+	}
+}

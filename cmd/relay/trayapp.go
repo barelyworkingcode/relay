@@ -230,6 +230,26 @@ func runTrayApp() {
 		slog.Error("failed to initialize settings", "error", err)
 		os.Exit(1)
 	}
+	// SH §2.1: persist a bare, autostart-only relaysessions record the first
+	// time settings.json has never held one. List, SetAutostart and Start
+	// (cmd/relay/service_ops.go) all read the store directly, never through
+	// EnsureBuiltinRelaySessionsService's in-memory synthesis below, so
+	// without this write there is no record for any of them to act on, and
+	// no supported way to turn autostart back off. Command and Args are
+	// never written here; sanitizeIfBuiltin strips them from whatever is
+	// stored on every load regardless. Best-effort: a degraded store simply
+	// cannot write yet, same as every other write on one.
+	errRelaySessionsRecordAlreadyPersisted := errors.New("relaysessions record already persisted")
+	err = config.WithDeclinable(store, func(s *config.Settings) error {
+		if svc, _ := config.FindServiceByID(s, config.RelaySessionsServiceID); svc != nil {
+			return errRelaySessionsRecordAlreadyPersisted
+		}
+		service.EnsureBuiltinRelaySessionsRecord(s)
+		return nil
+	})
+	if err != nil && !errors.Is(err, errRelaySessionsRecordAlreadyPersisted) {
+		slog.Warn("could not persist the default relaysessions record", "error", err)
+	}
 	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
 		// §5.6: the read half works in full from here on — relay grant,
@@ -502,6 +522,21 @@ func runTrayApp() {
 	registry.Launches = launches
 	router.launches = launches
 
+	// SP3/R-S9: relay-sessions is the one service whose code identity is
+	// pinned, both before it is spawned and again at its own Hello. Only a
+	// build carrying an embedded helper cdhash (build.sh's Helpers step) can
+	// construct the real verifier; a plain `go build` leaves both nil and
+	// simply does not gate this service any more strictly than any other --
+	// exactly this repo's own hermetic test suite and a developer checkout.
+	if HelperCDHash != "" {
+		if v, err := service.NewDarwinHelperVerifier(HelperTeam, HelperCDHash); err != nil {
+			slog.Error("relay-sessions helper verifier could not be constructed; the built-in session host will not start", "error", err)
+		} else {
+			registry.HelperVerifier = v
+			launches.SetHelperVerifier(v)
+		}
+	}
+
 	// The model endpoint's own tables: at most one live upstream, and the
 	// model keys minted for it (docs/model-endpoint.md). Wired onto the
 	// router so RegisterModelHost can reach modelHosts under the same launch
@@ -619,6 +654,13 @@ func runTrayApp() {
 	// Runs after StartAll (MCP handshakes have completed) so tool lists are
 	// populated; best-effort — errors are logged inside regenProjectSkills.
 	router.regenProjectSkills(ctx, settings)
+	// The built-in relay-sessions record (SH §2.1): synthesized here, every
+	// start, never read from settings.json beyond the autostart bit --
+	// internal/config's sanitizeIfBuiltin already stripped any stored
+	// Command, this is what puts the real one in. settings is store.Get()'s
+	// own clone, so mutating it here never touches the file.
+	settings.Services = service.EnsureBuiltinRelaySessionsService(settings.Services, resolveRelayBin(), configDir)
+
 	// Reclaim orphans from a previous tray session that was killed before
 	// the reaper could SIGTERM its children. Without this, autostart of any
 	// port-binding service (scheduler, kokoro, whisper, comfy) fails with
@@ -878,8 +920,26 @@ func (a *App) updateMenuWithSettings(s *config.Settings) {
 	svcMap := make(map[int]string, len(s.Services))
 	for i, svc := range s.Services {
 		menuID := menuIDSvcBase + i
-		svcMap[menuID] = svc.ID
 		_, running := pidByID[svc.ID]
+
+		if svc.ID == config.RelaySessionsServiceID {
+			// This is deliberate: the built-in session host is started only
+			// by StartAllAutostart's own fully-populated synthesis, never by
+			// a hand click (ServiceOps.Start refuses it for the identical
+			// reason). The stored record is bare, so a toggle wired to it
+			// would turn "on" into a Registry.Start call that fails
+			// Validate() -- a one-way-off switch. Showing status text with
+			// no toggle avoids offering a control with no working "on" path,
+			// rather than building one that silently fails.
+			status := "stopped"
+			if running {
+				status = "running"
+			}
+			items = append(items, menuItem{Title: fmt.Sprintf("%s (%s)", svc.DisplayName, status), ID: 0})
+			continue
+		}
+
+		svcMap[menuID] = svc.ID
 		var aux string
 		if running {
 			aux = formatBytes(rss[svc.ID])
@@ -1142,6 +1202,15 @@ func (a *App) confirmAndResetSealedStore() {
 func (a *App) toggleService(menuItemID int) {
 	svcID, ok := a.svcMenuMap[menuItemID]
 	if !ok {
+		return
+	}
+	if svcID == config.RelaySessionsServiceID {
+		// Not reachable through a click today -- updateMenuWithSettings
+		// never puts this id in svcMenuMap -- but ServiceOps guards the
+		// identical Registry.Start hazard at every path that reaches it
+		// (Create, Update, Start), not just the ones currently wired up.
+		// Same discipline here.
+		slog.Error("service toggle refused: relaysessions is relay's built-in session host and cannot be toggled from the tray")
 		return
 	}
 	s := a.store.Get()
