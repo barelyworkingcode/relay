@@ -131,9 +131,10 @@ func writeCallToolResult(path string, r callToolResult) {
 // runCallTool makes a real, tokenless bridge.Client.CallTool request —
 // admitted, if at all, purely by the kernel's account of this process's
 // ancestry (C3) — and writes the outcome to out. viaChild inserts one
-// ordinary ancestry hop before the call; detach severs ancestry first
-// (double fork plus setsid, SP5's shape) so the eventual caller is a real
-// process the kernel no longer places under the session root at all.
+// ordinary ancestry hop before the call; detach severs ancestry first (one
+// fork plus setsid, with this process exiting immediately after starting
+// it, SP5's shape) so the eventual caller is a real process the kernel no
+// longer places under the session root at all.
 func runCallTool(out, tool string, viaChild, detach bool) {
 	switch {
 	case detach:

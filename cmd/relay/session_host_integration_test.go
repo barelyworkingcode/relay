@@ -2,23 +2,20 @@
 
 package main
 
-// R-S10: the capstone integration test for the whole session-host feature
-// (plan-broker-and-sessions.md). Every package this test drives through --
-// AuthorizeLaunch/session_routes.go, sessionhost_client.go, hostapi,
-// terminal.Manager, session.Manager, shim, membership -- is already merged
-// and already reviewed; this file's only job is proving those pieces are
-// wired to each other correctly, the way a real launch actually exercises
-// them, not re-proving any one of their own already-reviewed internals.
+// R-S10: the capstone integration test for the session-host feature
+// (plan-broker-and-sessions.md). It drives AuthorizeLaunch/session_routes.go,
+// sessionhost_client.go, hostapi, terminal.Manager, session.Manager, shim and
+// membership together, the way a real launch actually exercises them, rather
+// than re-proving any one of their own internals in isolation.
 //
 // TestHelperSessionHost stands in for `relay-sessions service`, re-exec'd as
 // its own OS process the same way membership_auth_darwin_test.go's
 // TestHelperBridgeCaller already re-execs this package's own test binary. It
-// is not a rewrite of runService (cmd/relaysessions/main.go): it builds the
-// exact same hostapi.Server/terminal.Manager/session.Manager plumbing, over
-// the exact same real, compiled relay-sessions binary as its shim. The one
-// thing it does that runService does not is call bridge.Client.RegisterManifest
-// -- see TestRealRelaySessionsBinary_NeverRegistersItsManifest below, which
-// pins that gap against the real, unmodified binary.
+// builds the same hostapi.Server/terminal.Manager/session.Manager plumbing
+// runService (cmd/relaysessions/main.go) does, over the same real, compiled
+// relay-sessions binary as its shim -- but is a standalone harness rather
+// than a call into runService itself, so it makes its own
+// bridge.Client.RegisterManifest call directly rather than inheriting one.
 //
 // A real control channel (RS10_CONTROL_SOCK) lets this file end a chat
 // session's provider without a literal OS process to signal or kill: a chat
@@ -68,44 +65,57 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	rs10BuildOnce  sync.Once
+	rs10BuildMu          sync.Mutex
 	rs10RelaySessionsBin string
 	rs10TestTargetBin    string
-	rs10BuildErr   error
 )
 
-// rs10Binaries builds the real cmd/relaysessions and cmd/testtarget binaries
-// once per test run, mirroring internal/sessions/hostapi/support_test.go's
-// own buildBinaries: a _test.go file's symbols do not cross a package
-// boundary, so this is a small, deliberate duplicate rather than an import.
+// rs10Binaries builds the real cmd/relaysessions and cmd/testtarget binaries,
+// mirroring internal/sessions/hostapi/support_test.go's own buildBinaries: a
+// _test.go file's symbols do not cross a package boundary, so this is a
+// small, deliberate duplicate rather than an import.
+//
+// This is subtle: a plain sync.Once shared across this file's independent
+// top-level tests cannot also own a t.Cleanup, because Cleanup fires when
+// the test that registered it returns -- before the next top-level test
+// runs -- which would delete the binaries out from under every test after
+// the first. Guarding the cached paths with a stat instead rebuilds (cheap:
+// go's own build cache does the work) whenever a prior test's cleanup
+// already reclaimed them, so every build directory is still owned by
+// exactly the test that made it.
 func rs10Binaries(t *testing.T) (relaySessionsBin, testTargetBin string) {
 	t.Helper()
-	rs10BuildOnce.Do(func() {
-		dir, err := os.MkdirTemp("/tmp", "rs10-bin-")
-		if err != nil {
-			rs10BuildErr = err
-			return
+	rs10BuildMu.Lock()
+	defer rs10BuildMu.Unlock()
+
+	if rs10RelaySessionsBin != "" {
+		if _, err := os.Stat(rs10RelaySessionsBin); err == nil {
+			return rs10RelaySessionsBin, rs10TestTargetBin
 		}
-		rs10RelaySessionsBin = filepath.Join(dir, "relay-sessions")
-		rs10TestTargetBin = filepath.Join(dir, "testtarget")
-		root := repoRoot(t)
-		for _, b := range []struct{ out, pkg string }{
-			{rs10RelaySessionsBin, "./cmd/relaysessions"},
-			{rs10TestTargetBin, "./cmd/testtarget"},
-		} {
-			cmd := exec.Command("go", "build", "-o", b.out, b.pkg)
-			cmd.Dir = root
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				rs10BuildErr = fmt.Errorf("build %s: %w", b.pkg, err)
-				return
-			}
-		}
-	})
-	if rs10BuildErr != nil {
-		t.Fatalf("build integration binaries: %v", rs10BuildErr)
 	}
-	return rs10RelaySessionsBin, rs10TestTargetBin
+
+	dir, err := os.MkdirTemp("/tmp", "rs10-bin-")
+	if err != nil {
+		t.Fatalf("build integration binaries: mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	relaySessionsBin = filepath.Join(dir, "relay-sessions")
+	testTargetBin = filepath.Join(dir, "testtarget")
+	root := repoRoot(t)
+	for _, b := range []struct{ out, pkg string }{
+		{relaySessionsBin, "./cmd/relaysessions"},
+		{testTargetBin, "./cmd/testtarget"},
+	} {
+		cmd := exec.Command("go", "build", "-o", b.out, b.pkg)
+		cmd.Dir = root
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("build integration binaries: build %s: %v", b.pkg, err)
+		}
+	}
+	rs10RelaySessionsBin, rs10TestTargetBin = relaySessionsBin, testTargetBin
+	return relaySessionsBin, testTargetBin
 }
 
 // ---------------------------------------------------------------------------
@@ -196,11 +206,11 @@ func TestHelperSessionHost(t *testing.T) {
 	go func() { _ = srv.ServeInternal() }()
 	go func() { _ = srv.ServeHook() }()
 
-	// The one call cmd/relaysessions/main.go's runService never makes (see
-	// this file's package comment and TestRealRelaySessionsBinary_
-	// NeverRegistersItsManifest) -- without it relay's EnhancedServiceRegistry
-	// never learns this process's internal socket or bearer, and every real
-	// /api/terminals or /api/sessions launch dead-ends at a 502.
+	// This harness stands in for relay-sessions' own process without calling
+	// runService itself, so it registers its manifest directly here --
+	// without it relay's EnhancedServiceRegistry never learns this process's
+	// internal socket or bearer, and every real /api/terminals or
+	// /api/sessions launch dead-ends at a 502.
 	if err := bridge.NewClientAt(bridgeSock, "").RegisterManifest(bridge.RegisterManifestRequest{
 		ServiceID:      config.RelaySessionsServiceID,
 		InternalSocket: os.Getenv(envSHInternalSock),
@@ -252,24 +262,24 @@ func TestHelperSessionHost(t *testing.T) {
 const rs10Timeout = 20 * time.Second
 
 type sessionHostFixture struct {
-	t         *testing.T
-	store     config.SettingsStore
-	launches  *service.Launches
-	enhanced  *EnhancedServiceRegistry
-	tools     *mcpbroker.Manager
-	ledgerDB  *ledger.Ledger
-	modelKeys *ModelKeyTable
+	t          *testing.T
+	store      config.SettingsStore
+	launches   *service.Launches
+	enhanced   *EnhancedServiceRegistry
+	tools      *mcpbroker.Manager
+	ledgerDB   *ledger.Ledger
+	modelKeys  *ModelKeyTable
 	accounting *sessionAccounting
-	auditPath string
+	auditPath  string
 
-	bridgeSock   string
-	registry     *service.Registry
+	bridgeSock       string
+	registry         *service.Registry
 	relaySessionsBin string
 	testTargetBin    string
-	internalSock string
-	hookSock     string
-	controlSock  string
-	dataDir      string
+	internalSock     string
+	hookSock         string
+	controlSock      string
+	dataDir          string
 
 	frontendSock string
 	eveBearer    string
@@ -564,7 +574,6 @@ func (f *sessionHostFixture) createTerminal(t *testing.T, projectID, templateID 
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		f.skipIfKnownHostNullBug(t)
 		t.Fatalf("POST /api/terminals: status = %d, body = %s", resp.StatusCode, data)
 	}
 	var body terminal.CreatedBody
@@ -585,7 +594,6 @@ func (f *sessionHostFixture) createSession(t *testing.T, projectID, model string
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		f.skipIfKnownHostNullBug(t)
 		t.Fatalf("POST /api/sessions: status = %d, body = %s", resp.StatusCode, data)
 	}
 	var sess struct {
@@ -610,48 +618,6 @@ func (f *sessionHostFixture) resumeSession(t *testing.T, id string) (status int,
 	}
 	_ = json.Unmarshal(data, &body)
 	return resp.StatusCode, body.Resumed
-}
-
-// skipIfKnownHostNullBug inspects relay's own audit log -- eve's HTTP
-// response never carries relay-sessions' own error text, only a generic
-// "launch failed" (session_routes.go's launchAndRespond, deliberately: C5's
-// every non-201 collapses to 502) -- for the exact refusal
-// TestKnownBug_LaunchRequestHostNullBreaksLocalIdentityLaunches pins, and
-// skips with a message naming it rather than failing opaquely. Any OTHER
-// failure reason still falls through to the caller's own t.Fatalf.
-func (f *sessionHostFixture) skipIfKnownHostNullBug(t *testing.T) {
-	t.Helper()
-	// The recorder writes asynchronously (audit.AuditRecorder.Record just
-	// enqueues), so the record this failed launch just produced may not be
-	// on disk yet -- a short poll, not a fixed sleep, waits out exactly that
-	// and no more.
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		data, err := os.ReadFile(f.auditPath)
-		if err == nil {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			for i := len(lines) - 1; i >= 0; i-- {
-				var ev struct {
-					Event string `json:"event"`
-					Error string `json:"error"`
-				}
-				if json.Unmarshal([]byte(lines[i]), &ev) != nil {
-					continue
-				}
-				if ev.Event != audit.AuditEventSessionLaunch {
-					continue
-				}
-				if strings.Contains(ev.Error, "identity must be nil for a host") {
-					t.Skipf("blocked on a real, already-merged bug, not this test: %v (see TestKnownBug_LaunchRequestHostNullBreaksLocalIdentityLaunches)", ev.Error)
-				}
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -784,6 +750,48 @@ func TestSessionHost_RealLaunchMembershipAndAudit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. A sandboxed launch's real OS-level write outside the project directory
+//     is actually denied by the kernel, not merely marked "sandbox: true" in
+//     the audit log. Sandboxing is only actually wired through for pty
+//     launches today, so this drives the pty path (rs10-sandboxed).
+// ---------------------------------------------------------------------------
+
+func TestSessionHost_SandboxedLaunchDeniesRealWriteOutsideProject(t *testing.T) {
+	f := newSessionHostFixture(t)
+	proj := f.newProject(t, "rs10-psandbox", nil)
+
+	f.createTerminal(t, proj.ID, "rs10-sandboxed")
+
+	marker := rs10ReadMarker(t, proj.Path)
+	if marker.PID <= 0 || !processAlive(marker.PID) {
+		t.Fatalf("sandboxed target marker/pid is not a real live process: %+v", marker)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	assertNoErr(t, err, "UserHomeDir")
+	probePath := filepath.Join(homeDir, "rs10-sandbox-probe-"+proj.ID+".txt")
+	t.Cleanup(func() { _ = os.Remove(probePath) })
+
+	resultData := rs10WaitForFile(t, filepath.Join(proj.Path, "rs10-write-result.txt"))
+	result := string(resultData)
+
+	// The assertion is on what the OS actually did, never on the audit
+	// log's own "sandbox: true" field: the probe target sits outside every
+	// write-allow rule the profile renders (project path, toolchain caches,
+	// temp dirs), so seatbelt's blanket (deny file-write*) is what must
+	// have answered, not this test's own bookkeeping.
+	if !strings.HasPrefix(result, "denied:") {
+		t.Fatalf("sandboxed write outside the project succeeded (result = %q), want a real OS denial", result)
+	}
+	if !strings.Contains(strings.ToLower(result), "operation not permitted") {
+		t.Fatalf("write-outside denial = %q, want an EPERM-shaped OS refusal (%q)", result, "operation not permitted")
+	}
+	if _, err := os.Stat(probePath); !os.IsNotExist(err) {
+		t.Fatalf("probe file %s exists after a denied write (stat err = %v), want it absent", probePath, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 2. A detached descendant is refused.
 // ---------------------------------------------------------------------------
 
@@ -799,8 +807,16 @@ func TestSessionHost_DetachedDescendantIsRefused(t *testing.T) {
 	// call, and it blocks forever after writing this result, so its pid is
 	// the one to check.
 	result := rs10ReadCallToolResult(t, proj.Path)
+	// This is deliberate: the detached grandchild is setsid'd specifically
+	// so the host's group-kill can never reach it -- that is the property
+	// under test -- which means nothing else reaps it either. Without this,
+	// every run of this test leaves an immortal orphan process behind.
+	t.Cleanup(func() { _ = syscall.Kill(result.PID, syscall.SIGKILL) })
 	if !processAlive(result.PID) {
 		t.Fatalf("detached descendant is not alive: %+v", result)
+	}
+	if result.PPID != 1 {
+		t.Fatalf("detached descendant's ppid = %d, want 1 (genuinely reparented to init, not merely unreachable by pgid)", result.PPID)
 	}
 	if result.OK {
 		t.Fatalf("a detached (double-forked, setsid'd) descendant's CallTool succeeded: %+v", result)
@@ -832,6 +848,9 @@ func TestSessionHost_CrossProjectToolIsRefused(t *testing.T) {
 	if resultA.OK {
 		t.Fatalf("project A's session called a tool ('b-only') scoped only to project B and it succeeded: %+v", resultA)
 	}
+	if !strings.Contains(resultA.Error, "access denied") {
+		t.Fatalf("cross-project refusal = %q, want it to contain %q", resultA.Error, "access denied")
+	}
 
 	resultB := rs10ReadCallToolResult(t, projB.Path)
 	if !resultB.OK {
@@ -847,74 +866,28 @@ func TestSessionHost_CrossProjectToolIsRefused(t *testing.T) {
 func TestSessionHost_LaunchFromNonRelayProcessIsRefused(t *testing.T) {
 	f := newSessionHostFixture(t)
 
+	rec := f.enhanced.Get(config.RelaySessionsServiceID)
+	if rec == nil || rec.InternalToken == "" {
+		t.Fatal("relay-sessions has no registered internal token to test against")
+	}
+
 	// curl is a genuine, separate OS process -- not this test binary (which
 	// is bound to relay's own bridge identities) and not relay-sessions
 	// itself, so its peer pid on the internal socket can never equal
-	// hostapi.Config.RelayPID.
+	// hostapi.Config.RelayPID. It carries the CORRECT bearer, isolating the
+	// peer-pid half of checkInternalPeer's conjunction: a wrong process with
+	// a right bearer must still be refused, or this property is only
+	// proving bearer auth under a name that claims otherwise.
 	out, err := exec.Command("curl", "--unix-socket", f.internalSock, "-s", "-o", "/dev/null",
-		"-w", "%{http_code}", "-X", "POST", "-H", "Content-Type: application/json",
+		"-w", "%{http_code}", "-X", "POST",
+		"-H", "Authorization: Bearer "+rec.InternalToken,
+		"-H", "Content-Type: application/json",
 		"--data", `{"v":1,"session_id":"attacker","kind":"pty","argv":["/bin/true"]}`,
 		"http://h/launch").Output()
 	assertNoErr(t, err, "curl")
 	if got := strings.TrimSpace(string(out)); got != "403" {
-		t.Fatalf("a direct /launch from curl (not relay) got status %q, want 403", got)
+		t.Fatalf("a direct /launch from curl (not relay), with a correct bearer, got status %q, want 403", got)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// A real, critical, already-merged bug this suite's own real wire round
-// trip found: every local (non-SSH) project's launch that requests a launch
-// identity -- which is every real pty/chat/claude/pi launch AuthorizeLaunch
-// ever mints an identity for -- is refused by the real relay-sessions host.
-//
-// AuthorizeLaunch (cmd/relay/session_launch.go) never sets hostapi.
-// LaunchRequest.Host for a non-hosted project, leaving it Go-nil. But
-// LaunchRequest.Host (internal/sessions/hostapi/types.go) carries no
-// `omitempty`, so relay's real marshal of that request over the wire
-// (sessionhost_client.go's Launch, exactly what this suite's other tests
-// drive through) writes a literal "host":null. On the host side,
-// decodeHostSpec's `len(raw) == 0` guard (internal/sessions/hostapi/
-// dispatch.go) does not treat that literal null as absent: unmarshaling
-// JSON null into a non-pointer struct is a documented Go encoding/json
-// no-op, not an error, so decodeHostSpec returns a non-nil, zero-value
-// *HostSpec instead of nil. terminal.CreateSpec.validate() then reads a
-// non-nil Host exactly as a hosted (SSH) session and refuses it outright
-// because Identity is also set (internal/sessions/terminal/types.go's
-// `s.Host != nil && s.Identity != nil` check) -- even though this was never
-// an SSH launch.
-//
-// Neither side's own existing tests catch this: internal/sessions/hostapi's
-// launch_test.go hand-builds request bodies as map[string]any literals that
-// never include a "host" key at all (so raw is genuinely empty), and
-// cmd/relay's own TestSessionRoutes_CreateTerminal_GoldenLaunchSpec compares
-// two independently-marshaled Go values against each other and never decodes
-// the result back into a struct the way a real host receiving real bytes
-// does. This is exactly the class of bug a real, full marshal-send-decode
-// round trip catches and a hand-built fixture cannot.
-//
-// This is the single blocking precondition for every one of this file's
-// other properties beyond #6: see rs10SkipIfKnownHostNullBug, which every
-// launch helper in this file consults so a run against a fixed relay-sessions
-// reports real pass/fail instead of a stale skip.
-func TestKnownBug_LaunchRequestHostNullBreaksLocalIdentityLaunches(t *testing.T) {
-	req := hostapi.LaunchRequest{V: 1, SessionID: "x", Kind: "pty", Identity: &hostapi.IdentitySpec{Secret: "irrelevant"}}
-	wire, err := json.Marshal(req)
-	assertNoErr(t, err, "marshal LaunchRequest")
-	if !bytes.Contains(wire, []byte(`"host":null`)) {
-		t.Skipf("this Go version's encoding/json no longer marshals a nil json.RawMessage field with no omitempty as literal null (%s) -- the bug this test pins may already be gone", wire)
-	}
-
-	var decoded hostapi.LaunchRequest
-	assertNoErr(t, json.Unmarshal(wire, &decoded), "unmarshal the real wire bytes back")
-	if len(decoded.Host) == 0 {
-		t.Fatal("bug appears fixed: decoding the real wire bytes now leaves Host empty -- this pinning test (and sessionHostFixture.skipIfKnownHostNullBug above) can be deleted")
-	}
-	// decodeHostSpec's own len(raw) == 0 guard (internal/sessions/hostapi/
-	// dispatch.go) is exactly what decoded.Host's non-zero length now
-	// bypasses -- the consequence (a real /launch refused as "identity must
-	// be nil for a host (ssh) session") is this suite's own
-	// TestSessionHost_RealLaunchMembershipAndAudit, driven through the real
-	// process, not reproduced a second time here.
 }
 
 // ---------------------------------------------------------------------------
