@@ -13,6 +13,7 @@ for the project-token brokering model.
 | **Admin secret** | `settings.json` field `admin_secret` | Gates admin-only bridge ops: `ReconcileExternalMcps`, `ReloadExternalMcp`, `ReloadService`. | Administrative control-plane. | Auto-generated on first run; constant-time compared via `ValidateAdmin` at the bridge layer. Sealed on disk; only the tray, which holds the keychain key, ever reads it back (see [`docs/sealed-config.md`](sealed-config.md)). |
 | **OAuth 2.1 tokens** | per HTTP MCP (`internal/mcpbroker/oauth.go`) | Authenticate relay to **upstream** HTTP MCP servers (PKCE, dynamic registration, auto-refresh). | The upstream provider, not relay's own boundary. | Access token, refresh token and client secret stored per-MCP (`OAuthState` in `settings.json`), sealed on disk; `client_id` and `token_expiry` stay clear. |
 | **eve session token** | `eve_session` (browser localStorage) | Authenticates a human/browser user to **eve itself** — *not* a relay credential; listed to disambiguate. | eve's own app auth. | Independent of relay. |
+| **Model key** *(not a bearer relay issues generally — a per-session credential)* | `rmk_` + 64 lowercase hex, presented as a bearer on `model.sock` | Lets a spawned session call the model endpoint without holding the project's own token: `AuthorizeLaunch` (`cmd/relay/session_launch.go`) mints one for every `pi`/`chat` session launch and any `pty` template opting in (`ModelKey: true`), scoped to the launching project. | **Scoped to one project**, same `allowed_models` a project token gets — see [`docs/model-endpoint.md`](model-endpoint.md#model-keys). | Held only as a SHA-256 in relay's memory (`ModelKeyTable`, `cmd/relay/model_keys.go`); the plaintext is returned once, at mint, in the `LaunchSpec` relay hands relay-sessions. Revoked when the session ends (`sessionAccount.end`) or its project is deleted. Nothing persists it to disk. |
 
 Notes:
 
@@ -757,5 +758,45 @@ Its replacement is C3's membership check: a tokenless caller authenticates
 only by *being* a real, kernel-verified descendant of a live project
 session's root process (ancestry walked via `proc_pidinfo`, matched on pid
 and exact process start time) — never by presenting or asserting anything
-of its own. See [`plan-broker-and-sessions.md`](../plan-broker-and-sessions.md)
-§2 C3 and [`docs/launch-identity.md`](launch-identity.md) for the mechanism.
+of its own. This is live in `cmd/relay/router.go`'s `resolveAuth` (its third
+and last step, tried only once a token is absent and the peer holds no
+launch identity of its own) and covered here as the retirement it caused;
+the session-host system that gives a tokenless caller something to be a
+descendant *of* — the `project_session` launch identity kind, the shim that
+roots a session, and the internal API that authorizes launching one — is
+[`docs/session-host.md`](session-host.md). See
+[`plan-broker-and-sessions.md`](../plan-broker-and-sessions.md) §2 C3 and
+[`docs/launch-identity.md`](launch-identity.md#project_session-the-session-host-identity-kind)
+for the mechanism.
+
+## What determines a caller's authority now
+
+Summarizing the state this document's history led to, in the order
+`resolveAuth` (`cmd/relay/router.go`) actually checks them — every one of
+these is real and reachable today, not aspirational:
+
+1. **A project token** (`RELAY_PROJECT_TOKEN`), if presented, resolves to
+   its project's grant. Present-but-invalid is a hard refusal; it never
+   falls through to a later step.
+2. **A bound launch identity** on the peer's own kernel-attested connection
+   — either a `service`-kind identity's fixed capability set
+   ([`docs/launch-identity.md`](launch-identity.md#identity-kinds-and-capabilities)),
+   or a `project_session`-kind identity (the session-host root process
+   itself) acting under its named project's own live grant.
+3. **C3 membership**: no token, no bound identity of the peer's own, but the
+   peer is a kernel-verified process-tree descendant of a live
+   `project_session`'s root — the mechanism directly above.
+4. Otherwise, unauthorized.
+
+`RELAY_TOKEN` (the pre-migration alias) and `allow_cwd_auth` are both fully
+retired from this list: nothing in this repo reads either one to authenticate
+a caller any more (`RELAY_TOKEN` is stripped, never read, everywhere under
+`internal/sessions/`; `resolveMcpToken` in `cmd/relay/exec_cmd.go` never
+reads it either). `RELAY_PROJECT_TOKEN` remains exactly where it always was:
+injected into a project shell, an agent CLI, or the `relay mcp` child that
+isn't reached through the session-host path at all. A per-launch **model
+key** (`rmk_…`, the inventory table above,
+[`docs/model-endpoint.md`](model-endpoint.md#model-keys)) is a fourth,
+narrower alternative again: not for reaching the bridge's tool surface at
+all, but for a spawned session to call the model endpoint without holding
+its project's own token.
