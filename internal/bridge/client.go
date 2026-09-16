@@ -109,6 +109,27 @@ func (c *Client) RegisterManifest(req RegisterManifestRequest) error {
 	return checkError(resp)
 }
 
+// SessionExited sends C5's advisory, tokenless SessionExited report: this
+// client's own token travels as-is (empty for relay-sessions' real caller,
+// which relies entirely on C3 membership over the connection's own peer
+// credentials, not on anything this request asserts — see NewClient's own
+// doc comment).
+func (c *Client) SessionExited(req SessionExitedRequest) error {
+	args, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal session exited: %w", err)
+	}
+	resp, err := c.send(BridgeRequest{
+		Type:      ReqSessionExited,
+		Arguments: args,
+		Token:     c.token,
+	})
+	if err != nil {
+		return fmt.Errorf("session exited: %w", err)
+	}
+	return checkError(resp)
+}
+
 // AdminOp sends one brokered admin operation by name. It carries no token
 // and no cwd: brokered mutation is gated at the operation core the tray
 // dispatches into, not by anything a caller can present at this 0600 socket

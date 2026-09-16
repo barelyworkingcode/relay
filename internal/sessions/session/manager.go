@@ -109,6 +109,12 @@ type Manager struct {
 
 	sink sessionstypes.EventSink
 
+	// onExit mirrors internal/sessions/terminal.Manager's own field of the
+	// same name and purpose: a later unit's SessionExited bridge hook, fired
+	// from handleProviderEvent's "process_exited" case on the provider's own
+	// waitForExit goroutine — never synchronously inside a caller's request.
+	onExit func(id string, exitCode int)
+
 	collMu     sync.Mutex
 	collectors map[string]*ResponseCollector
 
@@ -159,6 +165,24 @@ func (m *Manager) eventSink() sessionstypes.EventSink {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sink
+}
+
+// SetExitHandler installs fn to be called, on its own goroutine, whenever a
+// provider this manager owns reports its process has exited — mirrors
+// internal/sessions/terminal.Manager.SetExitHandler exactly (same signature,
+// same "own goroutine" discipline: handleProviderEvent's "process_exited"
+// case already runs on the provider's own waitForExit goroutine, never
+// inline with a caller's SendMessage/Create).
+func (m *Manager) SetExitHandler(fn func(id string, exitCode int)) {
+	m.mu.Lock()
+	m.onExit = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) exitHandler() func(id string, exitCode int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onExit
 }
 
 // CreateSpec is what a caller supplies to start or resume one session. It is
@@ -844,6 +868,13 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, eventType str
 		sess.SetProcessing(false)
 		msg = map[string]any{"type": events.WSMsgProcessExited, "sessionId": sess.ID}
 		m.persist(sess)
+		if fn := m.exitHandler(); fn != nil {
+			var payload struct {
+				ExitCode int `json:"exitCode"`
+			}
+			_ = json.Unmarshal(data, &payload)
+			fn(sess.ID, payload.ExitCode)
+		}
 
 	case "raw_output":
 		msg = map[string]any{"type": events.WSMsgRawOutput, "sessionId": sess.ID, "text": string(data)}

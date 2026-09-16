@@ -52,6 +52,10 @@ type stubRouter struct {
 	adminOpArgs  []json.RawMessage
 	adminOpResp  json.RawMessage
 	adminOpErr   error
+
+	sessionExitedReqs []SessionExitedRequest
+	sessionExitedToks []string
+	sessionExitedErr  error
 }
 
 func (s *stubRouter) ListTools(ctx context.Context, token string) (json.RawMessage, error) {
@@ -134,8 +138,12 @@ func (s *stubRouter) RegisterModelHost(_ context.Context, _ RegisterModelHostReq
 	return nil
 }
 
-func (s *stubRouter) SessionExited(_ context.Context, _ SessionExitedRequest, _ string) error {
-	return nil
+func (s *stubRouter) SessionExited(_ context.Context, req SessionExitedRequest, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionExitedReqs = append(s.sessionExitedReqs, req)
+	s.sessionExitedToks = append(s.sessionExitedToks, token)
+	return s.sessionExitedErr
 }
 
 func (s *stubRouter) AdminOp(_ context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
@@ -297,6 +305,29 @@ func TestContract_RegisterManifest(t *testing.T) {
 	got := router.registerReqs[0]
 	if got.ServiceID != "svc-foo" || got.InternalSocket != "/tmp/foo.sock" || got.InternalToken != "internal-token" {
 		t.Fatalf("manifest fields wrong: %+v", got)
+	}
+}
+
+// TestContract_SessionExited covers the host's own send side (relay-sessions
+// -> relay): a tokenless report that reaches the router with the wire shape
+// this unit's Client.SessionExited builds.
+func TestContract_SessionExited(t *testing.T) {
+	router := &stubRouter{}
+	sock := startTestBridge(t, router)
+	c := &Client{sockPath: sock, token: ""}
+
+	req := SessionExitedRequest{SessionID: "sess-1", RootPID: 4242, ExitStatus: 7, Reason: "exit"}
+	if err := c.SessionExited(req); err != nil {
+		t.Fatalf("SessionExited: %v", err)
+	}
+	if len(router.sessionExitedReqs) != 1 {
+		t.Fatalf("expected 1 SessionExited call, got %d", len(router.sessionExitedReqs))
+	}
+	if got := router.sessionExitedReqs[0]; got != req {
+		t.Fatalf("request = %+v, want %+v", got, req)
+	}
+	if router.sessionExitedToks[0] != "" {
+		t.Fatalf("token = %q, want empty (tokenless)", router.sessionExitedToks[0])
 	}
 }
 

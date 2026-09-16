@@ -1,14 +1,13 @@
 // Command relay-sessions is the session-hosting binary plan-broker-and-
 // sessions.md's contracts C5 and C6 describe: relay launches one instance of
 // it (mode "service"), which in turn spawns one `relay-sessions exec` shim
-// (mode "exec") per terminal or provider session, and Claude Code's
-// PreToolUse hook runs `relay-sessions hook` (mode "hook") once per tool
-// call.
+// (mode "exec") per pty session and one direct claude/pi/chat process per
+// provider session, and Claude Code's PreToolUse hook runs
+// `relay-sessions hook` (mode "hook") once per tool call.
 //
-// This unit (R-S5, "sh/host-skeleton") builds all three modes' skeleton: a
-// service that can accept the internal API connection and hold a session
-// table, a fully working exec shim, and a fully working hook client. Real
-// terminal, Claude and pi hosting land in later units on top of this.
+// "service" mode wires hostapi.Server as a thin dispatcher over a real
+// terminal.Manager and session.Manager — see internal/sessions/hostapi's
+// package doc for why the dispatcher itself no longer spawns anything.
 package main
 
 import (
@@ -17,14 +16,21 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
+	"github.com/barelyworkingcode/relay/internal/sessions/migrate"
+	"github.com/barelyworkingcode/relay/internal/sessions/permission"
+	"github.com/barelyworkingcode/relay/internal/sessions/provider"
+	"github.com/barelyworkingcode/relay/internal/sessions/session"
 	"github.com/barelyworkingcode/relay/internal/sessions/shim"
+	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 )
 
 func main() {
@@ -50,17 +56,21 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: relay-sessions <service|exec|hook> [flags]")
 }
 
-// runService is the "service" mode's skeleton: it performs its own launch
-// Hello (the existing, unmodified bridge.SendHello — this is a plain
-// "service" kind Hello, not a project_session one, so it needs none of the
-// "kind" wire addition R-S1 is adding this wave), then serves C5's internal
-// API and C6's hook socket. No real terminal/session/provider hosting sits
-// behind /launch yet; see internal/sessions/hostapi's package doc.
+// runService performs this host's own launch Hello (the existing,
+// unmodified bridge.SendHello — a plain "service" kind Hello, not a
+// project_session one), runs the one-time relayLLM data migration, builds
+// the real terminal.Manager/session.Manager, and serves C5's internal API
+// and C6's hook socket on top of them.
 func runService(args []string) int {
 	cfg, err := parseServiceArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "relay-sessions service: %v\n", err)
 		return 2
+	}
+
+	bridgeSock := cfg.bridgeSocket
+	if bridgeSock == "" {
+		bridgeSock = os.Getenv(bridge.EnvBridgeSocket)
 	}
 
 	relayPID := cfg.relayPIDOverride
@@ -69,10 +79,6 @@ func runService(args []string) int {
 		log.Fatalf("relay-sessions: launch fd: %v", err)
 	}
 	if launched {
-		bridgeSock := cfg.bridgeSocket
-		if bridgeSock == "" {
-			bridgeSock = os.Getenv(bridge.EnvBridgeSocket)
-		}
 		if bridgeSock == "" {
 			log.Fatal("relay-sessions: launched by relay with no RELAY_BRIDGE_SOCKET")
 		}
@@ -94,6 +100,42 @@ func runService(args []string) int {
 		}
 		shimBinary = self
 	}
+
+	if err := migrate.Run(cfg.relayLLMDataDir(), cfg.dataDir); err != nil {
+		// Best-effort, not fatal: a migration failure leaves relayLLM's old
+		// data where it was (copyTree never deletes a source), so the worst
+		// outcome is a fresh host that can't see pre-existing sessions this
+		// run, not data loss. Fatal-ing here would turn "relayLLM's old
+		// sessions dir has a permissions problem" into "the host never
+		// starts at all".
+		slog.Warn("relay-sessions: relayLLM data migration failed", "error", err)
+	}
+
+	terminals := terminal.NewManager(terminal.Config{
+		ShimBinary:   shimBinary,
+		LogDir:       filepath.Join(cfg.dataDir, "terminal_logs"),
+		BridgeSocket: bridgeSock,
+		ModelSocket:  cfg.modelSocket,
+	})
+	store := session.NewStore(filepath.Join(cfg.dataDir, "sessions"))
+	sessions := session.NewManager(session.Config{
+		Claude: provider.ClaudeConfig{
+			HookSocket:      cfg.hookSocket,
+			HookCommandPath: shimBinary,
+			BridgeSocket:    bridgeSock,
+			ModelSocket:     cfg.modelSocket,
+		},
+		Pi: provider.PiConfig{
+			DataDir:      cfg.dataDir,
+			BridgeSocket: bridgeSock,
+			ModelSocket:  cfg.modelSocket,
+		},
+		Chat: provider.ChatConfig{
+			ModelSocket:  cfg.modelSocket,
+			ShimBinary:   shimBinary,
+			BridgeSocket: bridgeSock,
+		},
+	}, store, permission.NewPermissionManager())
 
 	// F1 (security review): the internal bearer must never be an argv
 	// value — any same-uid process, including a sandboxed session target,
@@ -119,8 +161,8 @@ func runService(args []string) int {
 		InternalBearer: internalBearer,
 		RelayPID:       relayPID,
 		HookSocket:     cfg.hookSocket,
-		ShimBinary:     shimBinary,
-	})
+	}, terminals, sessions)
+	srv.SetExitHandler(reportSessionExited)
 	if err := srv.ListenInternal(); err != nil {
 		log.Fatalf("relay-sessions: %v", err)
 	}
@@ -145,6 +187,25 @@ func runService(args []string) int {
 	return 0
 }
 
+// reportSessionExited is hostapi.Server's exit hook: send C5's advisory,
+// tokenless SessionExited report over relay's bridge (bridge.Client's own
+// doc comment on NewClient("") — a tokenless caller relies entirely on C3
+// membership over the connection's own peer credentials). A fresh Client
+// per call, not a shared one: bridge.Client is a thin, stateless value
+// (sockPath + token) built for exactly this one-shot-call usage everywhere
+// else in this codebase calls it.
+func reportSessionExited(id string, rootPID, exitCode int, reason string) {
+	err := bridge.NewClient("").SessionExited(bridge.SessionExitedRequest{
+		SessionID:  id,
+		RootPID:    rootPID,
+		ExitStatus: exitCode,
+		Reason:     reason,
+	})
+	if err != nil {
+		slog.Warn("relay-sessions: SessionExited report failed", "session", id, "error", err)
+	}
+}
+
 type serviceConfig struct {
 	internalSocket   string
 	hookSocket       string
@@ -152,6 +213,36 @@ type serviceConfig struct {
 	shimBinary       string
 	serviceName      string
 	relayPIDOverride int
+	dataDir          string
+	modelSocket      string
+}
+
+// relayLLMDataDir is relayLLM's own data directory, the migration's copy
+// source (internal/sessions/migrate's doc comment) — resolved the same way
+// relayLLM/internal/app/app.go resolves its own default *dataDir, since
+// that is the layout on disk this is migrating from. relayLLM is a separate
+// module, not importable from here, so this is a small, deliberate
+// re-derivation of that one path, not a port of its config loading.
+func (c serviceConfig) relayLLMDataDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir, _ = os.UserHomeDir()
+	}
+	return filepath.Join(dir, "relayLLM")
+}
+
+// defaultDataDir is C5's own named host data dir,
+// "~/Library/Application Support/relay/sessions" — bridge.ConfigDir()'s
+// value plus the one "sessions" segment C5 names, not a second
+// path-construction scheme: relay-sessions' two sockets already live
+// directly in bridge.ConfigDir() (internal/service/builtin_sessions.go),
+// so this reuses that same resolution rather than inventing another.
+func defaultDataDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir, _ = os.UserHomeDir()
+	}
+	return filepath.Join(dir, "relay", "sessions")
 }
 
 func parseServiceArgs(args []string) (serviceConfig, error) {
@@ -162,11 +253,24 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 	shimBinary := fs.String("shim-binary", "", "override the exec-mode binary path (default: this binary's own path)")
 	serviceName := fs.String("service-name", "relaysessions", "launch name for this process's own Hello")
 	relayPID := fs.Int("relay-pid", 0, "dev/test only: relay's pid, when this process was not itself launched by relay")
+	dataDir := fs.String("data-dir", "", "override this host's own data dir (default: ~/Library/Application Support/relay/sessions)")
+	modelSocket := fs.String("model-socket", "", "override RELAY_MODEL_SOCKET for every spawned session (default: env, then relay's own model.sock)")
 	if err := fs.Parse(args); err != nil {
 		return serviceConfig{}, err
 	}
 	if *internalSocket == "" || *hookSocket == "" {
 		return serviceConfig{}, fmt.Errorf("-internal-socket and -hook-socket are required")
+	}
+	dir := *dataDir
+	if dir == "" {
+		dir = defaultDataDir()
+	}
+	model := *modelSocket
+	if model == "" {
+		model = os.Getenv("RELAY_MODEL_SOCKET")
+	}
+	if model == "" {
+		model = bridge.ModelSocketPath()
 	}
 	return serviceConfig{
 		internalSocket:   *internalSocket,
@@ -175,6 +279,8 @@ func parseServiceArgs(args []string) (serviceConfig, error) {
 		shimBinary:       *shimBinary,
 		serviceName:      *serviceName,
 		relayPIDOverride: *relayPID,
+		dataDir:          dir,
+		modelSocket:      model,
 	}, nil
 }
 
