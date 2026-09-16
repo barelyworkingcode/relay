@@ -501,6 +501,41 @@ with its last exit code after `ServiceRestartMaxAttempts` consecutive
 failures — never a service the operator stopped. Restart supervision:
 [`docs/service-manifest.md#restart-supervision`](docs/service-manifest.md#restart-supervision).
 
+## Session host
+
+`relay-sessions` (`cmd/relaysessions`, built into `Contents/Helpers/` beside
+the app) hosts every terminal, Claude Code, pi and chat session: a built-in
+service record (`internal/service/builtin_sessions.go`, capabilities
+`manifest` + `sessions`) relay launches and supervises like any other,
+talking to relay over a peer-verified internal API (`POST /launch`, `POST
+/terminate`) rather than the manifest dispatcher's proxied surface. Sessions
+launch under `relay-sessions exec`, a shim whose own pid is the session's
+root — what relay's launch identity binds to, and what C3's process-ancestry
+membership walk (`internal/membership`) treats as the root a caller must
+descend from to be admitted tokenlessly. A `project_session`-kind launch
+identity ([`docs/launch-identity.md`](docs/launch-identity.md#project_session-the-session-host-identity-kind))
+is the session-host root's own credential; it and C3 membership together are
+what replaced the retired `allow_cwd_auth` directory-auth fallback.
+
+```
+internal/sessions/
+  hostapi/     the internal API server: /launch, /terminate, /permission
+  shim/        `relay-sessions exec` (C6)
+  hook/        `relay-sessions hook`, Claude Code's PreToolUse client
+  terminal/    pty session lifecycle
+  session/     claude/pi/chat session lifecycle, resume-on-user-action (SH-6)
+  provider/    the Claude Code and pi CLI process adapters
+  sandbox/     C7 SBPL profile rendering
+  api/         eve-facing HTTP/WS handlers — built, not yet mounted (a real gap)
+  ledger/      the claude/pi/chat session record relay itself persists
+```
+
+Full design, the internal API's mutual peer verification, the shim's exact
+behavior, the host data directory layout, and the honest list of what is
+built but not yet wired together (unsandboxed claude/pi launches, the
+unmounted eve-facing surface, the unemitted `session_bound` audit event):
+[`docs/session-host.md`](docs/session-host.md).
+
 ## Security
 
 The five-credential model (full inventory: [`docs/tokens.md`](docs/tokens.md);
@@ -508,7 +543,7 @@ the flow end to end, with worked examples:
 [`docs/auth-flow.html`](docs/auth-flow.html); brokering rationale: ADR-007):
 
 - **Project token** (`RELAY_PROJECT_TOKEN`) — the security boundary, scoped to a project's allowed MCPs/tools. Sealed at rest (ADR-017; `docs/sealed-config.md`) alongside a clear SHA-256 hash inline in the project. **Relay is the sole broker:** Eve references projects by id only (the DTO strips the token from every response except rotate); relayLLM resolves the token just-in-time from the bridge by `projectId`, injects it into spawned children, and never stores it or accepts it from Eve.
-- **Launch identity** (not a bearer; [`docs/launch-identity.md`](docs/launch-identity.md)) — **no relay credential is in any service's environment**, because any same-user process can read another's startup environment. Relay passes a single-use 64-hex secret on fd 3; the service's bridge `Hello` binds that launch to its peer audit token (pid + pidversion, `LOCAL_PEERTOKEN`); later tokenless requests from that exact process authenticate by it, until the registry sees the launch end. The record carries a `kind` (today only `service`) so a project-session kind slots into the same mechanism. What an identity may do is the service record's `capabilities` set, decided by one function (`service.Allowed`): `frontend` is the frontend socket as `read`+`configure`+`proxy` with no `Authorization` header (and the only way to be told `RELAY_FRONTEND_SOCKET`), `manifest` is `RegisterManifest` under its own id, `projects` is `ResolvePtyEnv`/`ResolveProjectTemplate`/`ListProjects`/`GetProject` and service-scope `ListTools`/`CallTool`; the empty set reaches only `Hello`. An unknown capability name fails validation and relay will not start the record; a record written before the field is migrated once on load (`frontend_consumer` unset/true → `[frontend]`, false → `[manifest, projects]`). Relay scrubs `RELAY_SERVICE_TOKEN`, `RELAY_MCP_TOKEN` and `RELAY_FRONTEND_TOKEN` from every service environment, and deletes any `legacy-frontend-token` credential on start. If a project token can't be resolved, a spawned child gets no token (fail closed).
+- **Launch identity** (not a bearer; [`docs/launch-identity.md`](docs/launch-identity.md)) — **no relay credential is in any service's environment**, because any same-user process can read another's startup environment. Relay passes a single-use 64-hex secret on fd 3; the service's bridge `Hello` binds that launch to its peer audit token (pid + pidversion, `LOCAL_PEERTOKEN`); later tokenless requests from that exact process authenticate by it, until the registry sees the launch end. The record carries a `kind`: `service`, whose authority is its own fixed `capabilities` set, and `project_session` ([`docs/session-host.md`](docs/session-host.md)) — the session host's own root process, whose authority is its one named project's live grant instead of a capability list. What a `service` identity may do is decided by one function (`service.Allowed`): `frontend` is the frontend socket as `read`+`configure`+`proxy`+`execute` (never `grant`) with no `Authorization` header (and the only way to be told `RELAY_FRONTEND_SOCKET`), `manifest` is `RegisterManifest` under its own id, `models`/`model_host` are model-endpoint calls and `RegisterModelHost`, `sessions` (built-in `relaysessions` record only) is `SessionExited` and the unfiltered model list; the empty set reaches only `Hello`. The retired `projects` capability (`ResolvePtyEnv`/`ResolveProjectTemplate`/`ListProjects`/`GetProject`, tokenless cross-MCP `ListTools`/`CallTool`) no longer exists — a stored record naming it has the name silently dropped on load, never refused. An unknown capability name fails validation and relay will not start the record; a record written before the field existed is migrated once on load (`frontend_consumer` unset/true → `[frontend]`, false → `[manifest]`). Relay scrubs `RELAY_SERVICE_TOKEN`, `RELAY_MCP_TOKEN` and `RELAY_FRONTEND_TOKEN` from every service environment, and deletes any `legacy-frontend-token` credential on start. If a project token can't be resolved, a spawned child gets no token (fail closed).
 - **Control-plane credential** (`settings.json` → `api_credentials`) — the API's authenticator (ADR-015). Names an explicit set of `read` / `configure` / `grant` / `execute` / `proxy`; absent means **nothing**, never everything. `frontendCredentialAuth` resolves any bearer to one of these before a handler runs (no credentials at all fails closed), and `RouteRegistrar` then checks the route's class — the first asks "is this anyone?", the second "may they do this?". `execute` and `proxy` routes are absent from the TCP mux entirely, not refused on it. Mint with `relay credential mint --name N --class read [--class …]`; the plaintext is printed **once**. A consumer that needs `grant` — including `POST /api/projects/{id}/rotate_token` — or `execute` over HTTP must mint its own.
 - **Enhanced internal bearer** — each service picks its own internal socket + token and declares both via the manifest; relay strips inbound `Authorization` and injects the service-declared token when proxying.
 
