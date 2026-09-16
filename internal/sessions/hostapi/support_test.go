@@ -13,7 +13,29 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/relay/internal/sessions/session"
+	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 )
+
+// buildManagers constructs a real terminal.Manager and session.Manager
+// rooted under a fresh temp dir, ShimBinary set to the built relay-sessions
+// binary — enough for a hermetic /launch dispatch test to spawn a real pty
+// session, or a session-kind one via session.Manager.SetProviderFactory
+// (session.Manager's own test-only seam, doc.go's package comment).
+func buildManagers(t *testing.T) (*terminal.Manager, *session.Manager) {
+	t.Helper()
+	relaySessionsBin, _ := buildBinaries(t)
+	dataDir := mkShortTempDir(t, "hostapi-data-")
+
+	terminals := terminal.NewManager(terminal.Config{
+		ShimBinary: relaySessionsBin,
+		LogDir:     filepath.Join(dataDir, "terminal_logs"),
+	})
+	store := session.NewStore(filepath.Join(dataDir, "sessions"))
+	sessions := session.NewManager(session.Config{}, store, nil)
+	return terminals, sessions
+}
 
 var (
 	buildOnce        sync.Once

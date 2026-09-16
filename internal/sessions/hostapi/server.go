@@ -9,32 +9,42 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/membership"
 	"github.com/barelyworkingcode/relay/internal/peertoken"
+	"github.com/barelyworkingcode/relay/internal/sessions/session"
+	"github.com/barelyworkingcode/relay/internal/sessions/terminal"
 )
 
 // Config is what a running relay-sessions host needs to serve C5's internal
 // API and C6's hook socket. RelayPID is fixed at construction: it comes from
 // this host's own Hello to relay's bridge (kind "service", the existing,
 // unmodified bridge.SendHello — see cmd/relaysessions/main.go), done once at
-// startup. A relay restart mid-life is out of scope for this skeleton.
+// startup. A relay restart mid-life is out of scope.
 type Config struct {
 	InternalSocket string // relay dials this; POST /launch, POST /terminate
 	InternalBearer string // the bearer relay must present, per its own RegisterManifest
 	RelayPID       int    // relay's pid, from this host's own Hello OK
 	HookSocket     string // `relay-sessions hook` dials this; POST /permission
-	ShimBinary     string // absolute path to the relay-sessions binary (argv[0] re-exec for `exec`)
 }
 
-// Server is relay-sessions' internal API host. Its session table is a
-// skeleton (session_table.go's doc comment): enough bookkeeping to make
-// /launch, /terminate and /permission meaningful, no real terminal/Claude/pi
-// hosting.
+// Server is relay-sessions' internal API host: a thin dispatcher over
+// Terminals/Sessions (types.go's package doc explains why it owns no
+// spawning of its own anymore). Its session table now exists only to answer
+// /permission's C3 membership walk for pty sessions and to recall a
+// terminal session's root pid at exit time (session_table.go's doc
+// comment).
 type Server struct {
-	cfg   Config
-	table *sessionTable
+	cfg       Config
+	table     *sessionTable
+	terminals *terminal.Manager
+	sessions  *session.Manager
+
+	exitMu      sync.Mutex
+	exitHandler func(id string, rootPID, exitCode int, reason string)
+	terminating map[string]bool // session ids this host's own /terminate is closing; read/cleared by the exit callback to tell "closed" apart from an unrelated "exit"
 
 	internalLn  net.Listener
 	internalSrv *http.Server
@@ -42,10 +52,93 @@ type Server struct {
 	hookSrv     *http.Server
 }
 
-// New constructs a Server. Call ListenInternal/ListenHook then
+// New constructs a Server dispatching onto terminals (pty) and sessions
+// (claude/pi/chat). Call ListenInternal/ListenHook then
 // ServeInternal/ServeHook (typically each in its own goroutine).
-func New(cfg Config) *Server {
-	return &Server{cfg: cfg, table: newSessionTable()}
+func New(cfg Config, terminals *terminal.Manager, sessions *session.Manager) *Server {
+	s := &Server{
+		cfg:         cfg,
+		table:       newSessionTable(),
+		terminals:   terminals,
+		sessions:    sessions,
+		terminating: make(map[string]bool),
+	}
+	terminals.SetExitHandler(s.onTerminalExit)
+	sessions.SetExitHandler(s.onSessionExit)
+	return s
+}
+
+// SetExitHandler installs fn to be called, on its own goroutine, whenever a
+// session this server dispatched to exits — the hook cmd/relaysessions uses
+// to send C5's SessionExited bridge report. rootPID is 0 for a claude/pi/
+// chat session (types.go's package doc: no provider.Provider pid is
+// exposed to key one on); reason is "closed" when this host's own
+// /terminate caused the exit, "exit" otherwise — C5 also names "idle" and
+// "deleted", neither reachable here yet: idle-close is driven by
+// NotifyViewerChange, which nothing calls without the eve-facing manifest
+// surface this unit does not mount (types.go's package doc), and "deleted"
+// is session.Manager.DeleteSession, a path /terminate never takes (it only
+// ever calls EndSession, C5's own "SIGTERM ... SIGKILL" — not a data wipe).
+func (s *Server) SetExitHandler(fn func(id string, rootPID, exitCode int, reason string)) {
+	s.exitMu.Lock()
+	s.exitHandler = fn
+	s.exitMu.Unlock()
+}
+
+func (s *Server) reportExit(id string, rootPID, exitCode int, reason string) {
+	s.exitMu.Lock()
+	fn := s.exitHandler
+	s.exitMu.Unlock()
+	if fn != nil {
+		fn(id, rootPID, exitCode, reason)
+	}
+}
+
+func (s *Server) markTerminating(id string) {
+	s.exitMu.Lock()
+	s.terminating[id] = true
+	s.exitMu.Unlock()
+}
+
+// consumeTerminating reports and clears whether id's exit was caused by this
+// host's own /terminate, so a later exit of a same-named session (impossible
+// in practice — ids are relay-minted UUIDs — but not this function's job to
+// assume) never reads a stale entry.
+func (s *Server) consumeTerminating(id string) bool {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	closed := s.terminating[id]
+	delete(s.terminating, id)
+	return closed
+}
+
+// onTerminalExit is terminal.Manager's exit hook: read this session's shim
+// pid from the table before marking it ended (session_table.go's markEnded
+// removes the byRootPID entry, not the byID one, so table.get still answers
+// after this — but reading first, not after, is what keeps this correct
+// even if a later change ever made markEnded remove byID too).
+func (s *Server) onTerminalExit(id string, exitCode int) {
+	rootPID := 0
+	if e, ok := s.table.get(id); ok {
+		rootPID = e.shimPID
+	}
+	s.table.markEnded(id)
+	reason := "exit"
+	if s.consumeTerminating(id) {
+		reason = "closed"
+	}
+	s.reportExit(id, rootPID, exitCode, reason)
+}
+
+// onSessionExit is session.Manager's exit hook. No table entry exists for a
+// provider-hosted session (New's own doc comment), so there is nothing to
+// look up beyond the id and exit code the callback already carries.
+func (s *Server) onSessionExit(id string, exitCode int) {
+	reason := "exit"
+	if s.consumeTerminating(id) {
+		reason = "closed"
+	}
+	s.reportExit(id, 0, exitCode, reason)
 }
 
 // connInfo is what this package's ConnContext hook captures per accepted
@@ -146,8 +239,11 @@ func (s *Server) ServeHook() error {
 	return nil
 }
 
-// Close shuts down both sockets. Safe to call even if only one was listened
-// on.
+// Close shuts down both sockets and every live session this server
+// dispatched to. Safe to call even if only one socket was listened on.
+// Sockets close first: a relay or hook peer mid-request against a socket
+// that's about to disappear underneath it should see the connection drop,
+// not a session teardown it raced against being interrupted by that drop.
 func (s *Server) Close() {
 	if s.internalSrv != nil {
 		_ = s.internalSrv.Close()
@@ -155,6 +251,8 @@ func (s *Server) Close() {
 	if s.hookSrv != nil {
 		_ = s.hookSrv.Close()
 	}
+	s.terminals.StopAll()
+	s.sessions.StopAll()
 }
 
 // checkInternalPeer implements C5's "Host side" mutual check: the accepted
@@ -176,12 +274,12 @@ func writeErr(w http.ResponseWriter, code int, errCode, message string) {
 	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: errCode, Message: message})
 }
 
-// handleLaunch implements C5's POST /launch. This unit's own scope stops at
-// the API surface, the shim invocation and this bookkeeping layer: it has no
-// provider-specific argv builder (R-S7b), no template resolution (R-S3), no
-// sandbox profile generation (R-S8) and no real PTY host (R-S6) — so it
-// requires the caller to supply a ready-to-run argv, and refuses pty and
-// resume requests outright rather than pretending to support them.
+// handleLaunch implements C5's POST /launch: peer-check, decode, route by
+// kind to terminal.Manager or session.Manager, translate whichever Session
+// comes back into C5's 201 body. Neither manager is spawned by this method —
+// each owns its own shim-spawn (or direct-spawn) and Hello-wait mechanics
+// end to end (types.go's package doc), so this handler's only remaining job
+// once the spec is built is to call Create and map the result.
 func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -203,71 +301,85 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "v, session_id and kind are required")
 		return
 	}
-	if req.PTY != nil {
-		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "pty sessions need a real terminal host (R-S6), not implemented by this skeleton")
-		return
-	}
-	if len(req.Argv) == 0 {
-		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, "argv is required: this skeleton has no provider argv builder (R-S7b)")
-		return
-	}
-	if s.table.exists(req.SessionID) {
-		writeErr(w, http.StatusConflict, ErrSessionExists, "session_id already launched")
-		return
-	}
 
-	s.table.put(&sessionEntry{id: req.SessionID, state: stateLaunching})
+	switch {
+	case req.Kind == kindPTY:
+		s.launchTerminal(w, req)
+	case isProviderKind(req.Kind):
+		s.launchSession(w, req)
+	default:
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, fmt.Sprintf("kind %q is not one of pty, claude, pi, chat", req.Kind))
+	}
+}
 
-	cmd, outcome, err := s.spawnShim(req.SessionID, req)
+func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
+	spec, err := buildTerminalSpec(req)
 	if err != nil {
-		// The shim process itself never started: nothing for reapShim to
-		// wait on, so this is the one failure path that must mark the
-		// session ended itself.
-		s.table.markEnded(req.SessionID)
-		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, err.Error())
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, err.Error())
 		return
 	}
-	shimPID := cmd.Process.Pid
-	go s.reapShim(req.SessionID, cmd)
-
-	if outcome.identityRefused {
-		_ = cmd.Process.Kill() // C5: "502 identity_refused (the host kills the shim)"
-		writeErr(w, http.StatusBadGateway, ErrIdentityRefused, "the shim's Hello was refused")
-		return
-	}
-	if !outcome.started || outcome.spawnFailed {
-		// F5: giving up here must not leave an orphaned shim behind — a
-		// caller that gave up waiting has no other way to learn this shim
-		// exists, and a spawn that "succeeds after relay already gave up"
-		// would otherwise run a target nothing ever asked for anymore.
-		_ = cmd.Process.Kill()
-		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, fmt.Sprintf("target spawn failed (errno=%d)", outcome.spawnErrno))
+	sess, err := s.terminals.Create(spec)
+	if err != nil {
+		status, code := terminalLaunchStatus(err)
+		writeErr(w, status, code, err.Error())
 		return
 	}
 
-	// SH §4.2: the shim itself is this session's root, matching what
-	// relay's own launch identity binds to (whoever said Hello). Read the
-	// shim's start time and record it as the session's live root in one
-	// critical section (sessionTable.setLive) so no /permission call can
-	// ever observe stateLive with a not-yet-populated rootStart.
-	rootInfo, ok := membership.NewSource().Info(shimPID)
+	rootPID := sess.RootPID()
+	// SH §4.2: the shim is this session's root, matching what relay's own
+	// launch identity binds to (whoever said Hello). Registered as already
+	// stateLive in one step (put, not put-then-setLive): terminal.Manager's
+	// own Create has already blocked until the session is fully live or
+	// returned an error, so there is no "launching" window left for this
+	// table to observe by the time it ever sees this id.
+	//
+	// A failed Info read here (the shim exited in the narrow window between
+	// Create returning and this line) is not papered over with a zero-value
+	// rootStart: session_table.go's own setLive doc comment names exactly
+	// this — a half-set root a hostile racing /permission call could match
+	// by accident of a zero start time — as a real gap this table must never
+	// reopen, so this session is torn down and reported failed instead of
+	// published with a membership root nothing can actually verify.
+	rootInfo, ok := membership.NewSource().Info(rootPID)
 	if !ok {
-		// The shim already exited in the brief window since Start() —
-		// nothing left to record as a live root.
-		_ = cmd.Process.Kill()
+		s.terminals.Close(req.SessionID)
 		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, "shim exited before its start time could be read")
 		return
 	}
-	s.table.setLive(req.SessionID, shimPID, outcome.targetPID, rootInfo)
+	s.table.put(&sessionEntry{id: req.SessionID, state: stateLive, shimPID: rootPID, rootStart: rootInfo})
 
-	body, _ := json.Marshal(map[string]any{"session_id": req.SessionID, "kind": req.Kind})
+	body, _ := json.Marshal(sess.CreatedBody())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(LaunchResponse{
-		SessionID: req.SessionID,
-		RootPID:   shimPID,
-		Body:      body,
-	})
+	_ = json.NewEncoder(w).Encode(LaunchResponse{SessionID: req.SessionID, RootPID: rootPID, Body: body})
+}
+
+func (s *Server) launchSession(w http.ResponseWriter, req LaunchRequest) {
+	spec, err := buildSessionSpec(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, ErrInvalidSpec, err.Error())
+		return
+	}
+	sess, err := s.sessions.Create(spec)
+	if err != nil {
+		status, code := sessionLaunchStatus(err)
+		writeErr(w, status, code, err.Error())
+		return
+	}
+
+	// No membership table entry: a provider-hosted session's PreToolUse hook
+	// authenticates with a hook token, not process ancestry (types.go's
+	// package doc), and provider.Provider exposes no pid this handler could
+	// register as a root even if it wanted to — root_pid is 0 here, same as
+	// SessionExited's for this kind (server.go's SetExitHandler doc comment).
+	body, err := json.Marshal(sess)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, ErrSpawnFailed, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(LaunchResponse{SessionID: req.SessionID, RootPID: 0, Body: body})
 }
 
 // handleTerminate implements C5's POST /terminate.
@@ -281,9 +393,29 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req TerminateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-		if e, ok := s.table.get(req.SessionID); ok && e.shimPID != 0 {
-			terminateShim(e.shimPID, e.targetPID)
+	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.SessionID != "" {
+		// Which manager owns req.SessionID is resolved by asking each in
+		// turn, not by a third table recording it redundantly: terminal.
+		// Manager and session.Manager already are the live set each owns,
+		// and an id landing in neither (unknown, or still in its own
+		// Create's launching window) is the same no-op /terminate always
+		// was for an unrecognized id.
+		if term, ok := s.terminals.Get(req.SessionID); ok {
+			// markTerminating only when a live process actually exists to be
+			// killed: if the terminal already exited naturally, Close is a
+			// no-op (waitForExit already ran once and will not run again),
+			// so onTerminalExit will never fire to consume the mark — and an
+			// unconsumed mark is a permanent, if tiny, leak in a long-lived
+			// host process.
+			if term.Alive() {
+				s.markTerminating(req.SessionID)
+			}
+			s.terminals.Close(req.SessionID)
+		} else if sess, ok := s.sessions.Get(req.SessionID); ok {
+			if p := sess.Provider(); p != nil && p.Alive() {
+				s.markTerminating(req.SessionID)
+			}
+			s.sessions.EndSession(req.SessionID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
