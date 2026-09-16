@@ -74,13 +74,24 @@ func (c Config) clockOrDefault() clock.Clock {
 // the same name and purpose: the existence check and the reservation of a
 // session id happen under the same lock acquisition (Create), so two
 // concurrent Creates for the same id can never both pass the check and both
-// spawn a live, untracked provider process — the exact bug class R-S6's
-// reviewer found and required a fix for in the sibling terminal package.
+// spawn a live, untracked provider process. A slot with sess == nil and
+// launching == true is a live reservation, not an empty entry — any other
+// path that touches m.slots[id] (Get's lazy load included) must wait for it
+// or fail closed, never overwrite it with an unrelated *sessionSlot.
 type sessionSlot struct {
 	launching bool
 	stopping  bool
 	done      chan struct{}
 	sess      *sessionstypes.Session // nil until Create's spawn resolves
+
+	// spec is the CreateSpec that produced sess — the authorizing identity
+	// (ModelKey included) this slot's provider was actually launched with.
+	// A manager-internal restart (ClearSession, SendMessage's ad-hoc
+	// respawn) reuses it via respawnSpec rather than building a spec from
+	// nothing, so a respawned process never loses the key it was launched
+	// with. Zero value for a slot Get filled from a lazy disk load — this
+	// process never authorized that session's launch.
+	spec CreateSpec
 }
 
 // Manager owns the set of sessions this host is hosting: live ones with a
@@ -208,6 +219,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 
 	m.mu.Lock()
 	existing, exists := m.slots[spec.SessionID]
+	var relaunch sessionstypes.Provider
 	if exists {
 		if !spec.Resume {
 			m.mu.Unlock()
@@ -219,8 +231,17 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		}
 		if existing.sess != nil {
 			if p := existing.sess.Provider(); p != nil && p.Alive() {
-				m.mu.Unlock()
-				return existing.sess, nil // already live: resume is a no-op
+				if existing.spec.ModelKey == spec.ModelKey {
+					m.mu.Unlock()
+					return existing.sess, nil // already live, same key: resume is a no-op
+				}
+				// C8: this resume carries a different key than the one the
+				// running provider was actually launched with — continuing
+				// silently would leave the process on a key relay may
+				// already be revoking. Kill it and fall through to the
+				// ordinary reservation+spawn path below, exactly like
+				// resuming a dead provider.
+				relaunch = p
 			}
 		}
 	}
@@ -232,6 +253,10 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 	slot := &sessionSlot{launching: true, done: make(chan struct{})}
 	m.slots[spec.SessionID] = slot
 	m.mu.Unlock()
+
+	if relaunch != nil {
+		relaunch.Kill()
+	}
 
 	sess, err := m.resolveSessionForCreate(spec, reused)
 	if err == nil {
@@ -245,6 +270,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		delete(m.slots, spec.SessionID)
 	} else {
 		slot.sess = sess
+		slot.spec = spec
 	}
 	m.mu.Unlock()
 
@@ -377,6 +403,25 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 	return p.Start()
 }
 
+// respawnSpec returns the CreateSpec Create was last called with for sess's
+// id, so a manager-internal restart (ClearSession, SendMessage's ad-hoc
+// respawn) carries forward the same identity — ModelKey included — rather
+// than launching with a zero-value CreateSpec. Kind always comes from the
+// persisted session, not the stored spec: sess.ProviderType is the
+// authoritative provider kind once a session exists, including for a
+// lazy-loaded session with no stored spec at all.
+func (m *Manager) respawnSpec(sess *sessionstypes.Session) CreateSpec {
+	m.mu.Lock()
+	slot, ok := m.slots[sess.ID]
+	m.mu.Unlock()
+	var spec CreateSpec
+	if ok {
+		spec = slot.spec
+	}
+	spec.Kind = sess.ProviderType
+	return spec
+}
+
 func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, handler sessionstypes.EventHandler) (sessionstypes.Provider, error) {
 	switch spec.Kind {
 	case KindClaude:
@@ -394,13 +439,36 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 // (relayLLM's own GetSession behavior) lazy-loaded from disk. A session
 // found only on disk is returned with a nil Provider — Alive() callers must
 // treat that as "not live", not "not found".
+//
+// A slot already reserved by an in-flight Create (sess == nil, launching)
+// is not a miss: Get waits for that Create to resolve rather than racing a
+// disk load against it, so a join_session arriving mid-resume can never
+// observe a stale/nil-provider session while the real one is spawning, and
+// never overwrites the reservation Create still owns.
 func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
 	m.mu.Lock()
-	if slot, ok := m.slots[id]; ok && slot.sess != nil {
+	slot, ok := m.slots[id]
+	if ok && slot.sess != nil {
 		m.mu.Unlock()
 		return slot.sess, true
 	}
+	var reservation chan struct{}
+	if ok {
+		reservation = slot.done
+	}
 	m.mu.Unlock()
+
+	if reservation != nil {
+		<-reservation
+		m.mu.Lock()
+		if slot, ok := m.slots[id]; ok && slot.sess != nil {
+			m.mu.Unlock()
+			return slot.sess, true
+		}
+		m.mu.Unlock()
+		// Create's spawn failed or was cancelled while this call waited —
+		// fall through to the disk load below like any other miss.
+	}
 
 	sess, err := m.store.Load(id)
 	if err != nil {
@@ -408,12 +476,18 @@ func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
 	}
 
 	m.mu.Lock()
-	if slot, ok := m.slots[id]; ok && slot.sess != nil {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+	if slot, ok := m.slots[id]; ok {
+		// Insert into the slot Create (or a concurrent Get) already owns
+		// instead of replacing it, so a write that lands on this pointer
+		// later — Create's slot.sess = sess included — still lands on
+		// something reachable from m.slots.
+		if slot.sess == nil {
+			slot.sess = sess
+		}
 		return slot.sess, true
 	}
 	m.slots[id] = &sessionSlot{sess: sess}
-	m.mu.Unlock()
 	return sess, true
 }
 
@@ -477,9 +551,9 @@ func (m *Manager) DeleteSession(id string) {
 // StopAll tears down every live and in-flight session. Every provider Kill
 // call — the one that can block on a subprocess's own shutdown grace period
 // — completes before StopAll returns, mirroring
-// internal/sessions/terminal.Manager.StopAll's own discipline (that
-// package's reviewer found and required a fix for exactly the gap of
-// returning too early here).
+// internal/sessions/terminal.Manager.StopAll's own discipline: shutdown
+// must never return while a process it is responsible for might still be
+// alive or still exiting.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	var live []*sessionstypes.Session
@@ -528,7 +602,7 @@ func (m *Manager) SendMessage(id, text string, files []sessionstypes.FileAttachm
 			sess.SetProcessing(false)
 			return ErrResumeRequired
 		}
-		if err := m.startProvider(sess, CreateSpec{Kind: sess.ProviderType}); err != nil {
+		if err := m.startProvider(sess, m.respawnSpec(sess)); err != nil {
 			sess.SetProcessing(false)
 			return fmt.Errorf("session: respawn failed: %w", err)
 		}
@@ -615,10 +689,15 @@ func (m *Manager) StopGeneration(id string) error {
 	return nil
 }
 
-// ClearSession kills the provider, clears history/stats, and restarts the
-// provider fresh (same session id and directory, empty history) — this is
-// a synchronous user action, not a respawn-on-demand, so it is unaffected
-// by SH-6.
+// ClearSession kills the provider and clears history/stats. A project-bound
+// session (ProjectID != "") is left dead afterward and returns
+// ErrResumeRequired instead of restarting — a manager-internal restart has
+// no authorizing CreateSpec of its own to launch with, and doc.go's
+// guarantee that this package never respawns a project-bound session's dead
+// provider on its own must hold for every internal path, clear_session
+// included, not only SendMessage. An ad-hoc session (ProjectID == "") still
+// restarts fresh, same session id and directory, empty history, carrying
+// forward the ModelKey it was originally launched with.
 func (m *Manager) ClearSession(id string) error {
 	sess, ok := m.Get(id)
 	if !ok {
@@ -638,14 +717,17 @@ func (m *Manager) ClearSession(id string) error {
 	}
 	m.persist(sess)
 
-	if err := m.startProvider(sess, CreateSpec{Kind: sess.ProviderType}); err != nil {
-		return fmt.Errorf("session: restart provider: %w", err)
-	}
-
 	if sink := m.eventSink(); sink != nil {
 		sink.SendToSession(id, map[string]any{"type": events.WSMsgClearMessages, "sessionId": id})
 		sink.SendToSession(id, map[string]any{"type": events.HandlerStatsUpdate, "sessionId": id, "stats": sessionstypes.SessionStats{}})
 		sink.SendToSession(id, map[string]any{"type": events.WSMsgSystemMessage, "sessionId": id, "message": "Conversation history cleared"})
+	}
+
+	if sess.ProjectID != "" {
+		return ErrResumeRequired
+	}
+	if err := m.startProvider(sess, m.respawnSpec(sess)); err != nil {
+		return fmt.Errorf("session: restart provider: %w", err)
 	}
 	return nil
 }

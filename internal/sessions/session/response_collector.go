@@ -51,10 +51,14 @@ func (c *ResponseCollector) HandleEvent(msg map[string]any) {
 		c.doneOnce.Do(func() { close(c.done) })
 	case events.WSMsgError:
 		msgText, _ := msg["message"].(string)
+		c.mu.Lock()
 		c.err = fmt.Errorf("%s", msgText)
+		c.mu.Unlock()
 		c.doneOnce.Do(func() { close(c.done) })
 	case events.WSMsgProcessExited:
+		c.mu.Lock()
 		c.err = fmt.Errorf("session: provider process exited unexpectedly")
+		c.mu.Unlock()
 		c.doneOnce.Do(func() { close(c.done) })
 	}
 }

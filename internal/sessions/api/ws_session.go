@@ -100,49 +100,59 @@ func (sh *SessionHandlers) handleJoinSession(c *Conn, raw []byte) {
 	sh.bound[c.ID][req.SessionID] = true
 	sh.mu.Unlock()
 
+	// One locked snapshot for every field RenameSession/SetSessionFolder/
+	// Manager.persist can mutate concurrently (matches Manager.summarize's
+	// own single-snapshot pattern) — reading them individually, each under
+	// its own lock or no lock at all, would let a rename or folder change
+	// land mid-read and mix an old and a new field into one response.
+	sess.Lock()
+	providerState := sess.ProviderState
+	directory := sess.Directory
+	model := sess.Model
+	name := sess.Name
+	folder := sess.Folder
+	headless := sess.Headless
+	stats := sess.Stats
+	messages := make([]sessionstypes.Message, len(sess.Messages))
+	copy(messages, sess.Messages)
+	sess.Unlock()
+
 	// Claude CLI's own JSONL transcript has both user + assistant turns and
 	// is the more complete replay when available; fall back to the
 	// session's own in-memory/persisted Messages otherwise (relayLLM's
 	// handleJoinSession, ported unchanged).
 	var history []sessionstypes.Message
 	var claudeSessionID string
-	if sess.ProviderState != nil {
+	if providerState != nil {
 		var ps struct {
 			ClaudeSessionID string `json:"claudeSessionId"`
 		}
-		_ = json.Unmarshal(sess.ProviderState, &ps)
+		_ = json.Unmarshal(providerState, &ps)
 		claudeSessionID = ps.ClaudeSessionID
 	}
 	if claudeSessionID != "" {
-		if h, err := provider.ReadClaudeHistory(sess.Directory, sess.GetHost(), claudeSessionID); err == nil && len(h) > 0 {
+		if h, err := provider.ReadClaudeHistory(directory, sess.GetHost(), claudeSessionID); err == nil && len(h) > 0 {
 			history = h
 		} else if err != nil {
 			slog.Debug("claude history unavailable, using session messages", "session", req.SessionID, "error", err)
 		}
 	}
 	if history == nil {
-		sess.Lock()
-		history = make([]sessionstypes.Message, len(sess.Messages))
-		copy(history, sess.Messages)
-		sess.Unlock()
+		history = messages
 	}
-
-	sess.Lock()
-	stats := sess.Stats
-	sess.Unlock()
 
 	p := sess.Provider()
 	c.Write(mustJSON(map[string]any{
 		"type":            events.WSMsgSessionJoined,
 		"sessionId":       sess.ID,
 		"projectId":       sess.ProjectID,
-		"directory":       sess.Directory,
-		"model":           sess.Model,
-		"name":            sess.Name,
-		"folder":          sess.Folder,
+		"directory":       directory,
+		"model":           model,
+		"name":            name,
+		"folder":          folder,
 		"history":         history,
 		"stats":           stats,
-		"headless":        sess.Headless,
+		"headless":        headless,
 		"protocolVersion": events.ProtocolVersion,
 		"host":            sess.GetHost(),
 		// live is SH-6's addition: a caller must be able to tell, from
@@ -273,9 +283,15 @@ func (sh *SessionHandlers) handleClearSession(c *Conn, raw []byte) {
 		sendWSError(c, "sessionId required")
 		return
 	}
-	if err := sh.mgr.ClearSession(req.SessionID); err != nil {
-		sendWSError(c, err.Error())
+	err := sh.mgr.ClearSession(req.SessionID)
+	if err == nil {
+		return
 	}
+	if errors.Is(err, session.ErrResumeRequired) {
+		sendResumeRequired(c, req.SessionID)
+		return
+	}
+	sendWSError(c, err.Error())
 }
 
 func (sh *SessionHandlers) handleSetPermissionMode(c *Conn, raw []byte) {
