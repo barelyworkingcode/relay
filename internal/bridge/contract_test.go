@@ -134,6 +134,10 @@ func (s *stubRouter) RegisterModelHost(_ context.Context, _ RegisterModelHostReq
 	return nil
 }
 
+func (s *stubRouter) SessionExited(_ context.Context, _ SessionExitedRequest, _ string) error {
+	return nil
+}
+
 func (s *stubRouter) AdminOp(_ context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

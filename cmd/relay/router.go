@@ -19,6 +19,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/mcpbroker"
 	"github.com/barelyworkingcode/relay/internal/project"
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 )
 
 type ToolProvider interface {
@@ -215,6 +216,16 @@ type appRouter struct {
 	// registration (docs/model-endpoint.md). Nil means RegisterModelHost is
 	// refused outright, the same fail-closed shape a nil launches gives Hello.
 	modelHosts *ModelHostRegistry
+
+	// sessions, modelKeys and sessionAccounts back SessionExited
+	// (router_sessions.go, plan-broker-and-sessions.md §2 C5): the ledger
+	// entry, the model key, and the launch identity a launch this process
+	// itself minted for a session. Nil sessions/modelKeys make SessionExited
+	// a no-op past its own capability check; a nil sessionAccounts makes it
+	// unable to find anything to end or revoke.
+	sessions        *ledger.Ledger
+	modelKeys       *ModelKeyTable
+	sessionAccounts *sessionAccounting
 
 	// The six S5 op cores admin_op dispatches into (ADR-017 implementation
 	// spec §7.2). These are the SAME instances the IPC and HTTP doors hold

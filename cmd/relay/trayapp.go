@@ -23,6 +23,7 @@ import (
 	"github.com/barelyworkingcode/relay/internal/presence"
 	"github.com/barelyworkingcode/relay/internal/sealed"
 	"github.com/barelyworkingcode/relay/internal/service"
+	"github.com/barelyworkingcode/relay/internal/sessions/ledger"
 )
 
 // appInstance is the singleton tray app, set by runTrayApp and read by Cocoa
@@ -173,6 +174,34 @@ func (a *App) goFunc(fn func()) {
 const cleanupWaitGroupTimeout = 5 * time.Second
 
 // waitWithTimeout reports whether wg finished within d.
+// importSessionLedgerFromRelayLLM runs once, on a feature build's first
+// start with no ledger file yet (plan-broker-and-sessions.md §2 C5): every
+// dormant session ImportFromRelayLLM finds in relayLLM's own on-disk
+// session store is written into l. Best-effort throughout -- a user with no
+// relayLLM install, or whose home directory can't be resolved, simply gets
+// an empty ledger, not a failed relay start.
+func importSessionLedgerFromRelayLLM(l *ledger.Ledger) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		slog.Warn("session ledger: could not resolve home directory for relayLLM import", "error", err)
+		return
+	}
+	dir := filepath.Join(home, "Library", "Application Support", "relayLLM", "sessions")
+	records, err := ledger.ImportFromRelayLLM(dir)
+	if err != nil {
+		slog.Warn("session ledger: relayLLM import failed", "dir", dir, "error", err)
+		return
+	}
+	for _, rec := range records {
+		if err := l.Put(rec); err != nil {
+			slog.Warn("session ledger: import write failed", "session", rec.SessionID, "error", err)
+		}
+	}
+	if len(records) > 0 {
+		slog.Info("session ledger: imported dormant sessions from relayLLM", "count", len(records))
+	}
+}
+
 func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
@@ -549,6 +578,43 @@ func runTrayApp() {
 		recordModelCall(rec, ev)
 	}
 
+	// The session ledger (plan-broker-and-sessions.md §2 C5): relay's only
+	// on-disk record of a claude/pi/chat session, never a terminal (never
+	// persisted) and never a secret or key. A first start with no ledger
+	// file yet imports relayLLM's own dormant sessions once, so an upgrade
+	// does not silently drop every resumable session a user already had.
+	sessLedgerIsFirstRun := !ledger.Exists(configDir)
+	sessLedger, err := ledger.Open(configDir)
+	if err != nil {
+		slog.Error("failed to open session ledger; session resume will be unavailable this run", "error", err)
+		sessLedger = nil
+	} else if sessLedgerIsFirstRun {
+		importSessionLedgerFromRelayLLM(sessLedger)
+	}
+
+	// sessionAccounts is the launch-identity/model-key bookkeeping SessionExited
+	// (router_sessions.go) and project-delete cleanup (project_ops.go) both
+	// need, since neither the ledger nor *service.Launches carries it (see
+	// sessionAccounting's own doc comment, session_routes.go).
+	sessionAccounts := newSessionAccounting()
+	router.sessions = sessLedger
+	router.modelKeys = modelKeys
+	router.sessionAccounts = sessionAccounts
+
+	// sessionDeps is the one instance RegisterSessionRoutes, ProjectOps'
+	// delete cleanup and appRouter.SessionExited all share, so a create, a
+	// resume, an advisory exit report and a project delete can never observe
+	// a different ledger, launch table or accounting map than each other.
+	sessionDeps := sessionRouteDeps{
+		store:      store,
+		launches:   launches,
+		sessions:   sessLedger,
+		modelKeys:  modelKeys,
+		enhanced:   enhancedRegistry,
+		auditor:    rec,
+		accounting: sessionAccounts,
+	}
+
 	frontendChannel := NewFrontendChannel()
 	app.frontendChannel = frontendChannel
 	registry.FrontendEnv = func() (map[string]string, error) {
@@ -604,6 +670,7 @@ func runTrayApp() {
 		OnChange: func() {
 			app.platform.DispatchToMain(app.pushFullProjects)
 		},
+		SessionCleanup: sessionDeps,
 	}
 	app.ipcCtx.ProjectOps = projectOps
 	// hostOps is the one core behind both the Hosts tab (via
@@ -619,7 +686,7 @@ func runTrayApp() {
 		OnChange: onProjectsChanged,
 	}
 	app.ipcCtx.HostOps = hostOps
-	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches)
+	frontend, err := NewFrontendServer(store, extMgr, extMgr, extMgr, frontendEndpoint, enhancedRegistry, router, onProjectsChanged, serviceOps, enrolmentOps, auditOps, mcpOps, projectOps, hostOps, eveEnrolmentOps, evePasskeyOps, NewCredentialAuthorizer(store), audit.ControlAuditorOrNil(rec), launches, sessionDeps)
 	if err != nil {
 		slog.Error("failed to start frontend server", "error", err)
 		os.Exit(1)
