@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/sessions/hook"
 	"github.com/barelyworkingcode/relay/internal/sessions/hostapi"
 	"github.com/barelyworkingcode/relay/internal/sessions/migrate"
@@ -194,7 +195,7 @@ func runService(args []string) int {
 			ServiceID:      cfg.serviceName,
 			InternalSocket: cfg.internalSocket,
 			InternalToken:  internalBearer,
-			Manifest:       bridge.Manifest{Routes: []string{"/api/terminals/", "/api/sessions/"}},
+			Manifest:       bridge.Manifest{Routes: config.RelaySessionsManifestRoutes},
 		}); err != nil {
 			log.Fatalf("relay-sessions: register manifest: %v", err)
 		}
