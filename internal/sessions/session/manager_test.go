@@ -287,9 +287,9 @@ func TestManager_DeleteSession_RemovesPersistedFile(t *testing.T) {
 
 func TestManager_Create_UnsupportedKind_Refused(t *testing.T) {
 	mgr, _ := newTestManager(t)
-	_, err := mgr.Create(session.CreateSpec{SessionID: "11111111-1111-1111-1111-111111111111", ProjectID: "proj-1", Kind: session.KindChat})
+	_, err := mgr.Create(session.CreateSpec{SessionID: "11111111-1111-1111-1111-111111111111", ProjectID: "proj-1", Kind: "bogus"})
 	if err == nil {
-		t.Fatal("chat kind has no provider wired yet: want an explicit error, got nil")
+		t.Fatal("unsupported kind: want an explicit error, got nil")
 	}
 }
 
