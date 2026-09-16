@@ -13,20 +13,19 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
 )
 
 // Session kinds this manager can actually spawn a provider for. Mirrors
-// cmd/relay/session_launch.go's KindClaude/KindPi wire values (that package
-// cannot be imported from here — cmd depends on internal, never the other
-// way — so the strings are the shared contract, not a Go symbol).
-// KindChat has no provider under internal/sessions/provider yet (R-S7b
-// ported claude.go and pi.go only, not relayLLM's chat-base/ollama/openai/
-// llama/mlx providers) — Create refuses it explicitly rather than silently
-// mis-routing it, the same choice hostapi's own handleLaunch already makes
-// for pty (launch.go's own doc comment).
+// cmd/relay/session_launch.go's KindClaude/KindPi/KindChat wire values
+// (that package cannot be imported from here — cmd depends on internal,
+// never the other way — so the strings are the shared contract, not a Go
+// symbol). A kind outside this set is refused explicitly by Create rather
+// than silently mis-routed, the same choice hostapi's own handleLaunch
+// already makes for pty (launch.go's own doc comment).
 const (
 	KindClaude = "claude"
 	KindPi     = "pi"
@@ -60,6 +59,7 @@ var (
 type Config struct {
 	Claude provider.ClaudeConfig
 	Pi     provider.PiConfig
+	Chat   provider.ChatConfig
 	Clock  clock.Clock
 }
 
@@ -181,12 +181,23 @@ type CreateSpec struct {
 
 	Host *sessionstypes.HostSpec
 
-	// ModelKey is C8's per-launch-or-resume model key (pi only; empty
-	// disables pi's relay-model overlay). Never cached across calls: every
-	// Create spawns a brand new PiProvider with exactly the ModelKey this
-	// call supplied, so a resumed session's process is never handed a
-	// stale key left over from before it died.
+	// ModelKey is C8's per-launch-or-resume model key (pi and chat only;
+	// empty disables pi's relay-model overlay / chat's own model broker
+	// auth). Never cached across calls: every Create spawns a brand new
+	// PiProvider/ChatProvider with exactly the ModelKey this call supplied,
+	// so a resumed session's process is never handed a stale key left over
+	// from before it died.
 	ModelKey string
+
+	// Identity is this launch's own project_session secret (chat only
+	// today: its MCP tool child is the only provider-spawned process this
+	// package hands off to the shim). nil for a launch with no identity to
+	// mint (ad-hoc, SSH-hosted). Never cached across calls, same rule as
+	// ModelKey.
+	Identity *sessionsmcp.IdentitySpec
+	// SandboxProfile is this launch's own absolute SBPL profile path (C7),
+	// threaded to chat's MCP tool child. "" runs it unsandboxed.
+	SandboxProfile string
 
 	// Resume is true for relay's POST /launch resume:true (SH §3.4 driven
 	// by relay's own POST /api/sessions/{id}/resume, never by this host):
@@ -196,7 +207,7 @@ type CreateSpec struct {
 }
 
 func (m *Manager) providerKindSupported(kind string) bool {
-	return kind == KindClaude || kind == KindPi
+	return kind == KindClaude || kind == KindPi || kind == KindChat
 }
 
 // Create starts (or, with CreateSpec.Resume, reattaches) one session.
@@ -214,7 +225,7 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 		return nil, errors.New("session: session id is required")
 	}
 	if m.getProviderFactory() == nil && !m.providerKindSupported(spec.Kind) {
-		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi only)", spec.Kind)
+		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi/chat only)", spec.Kind)
 	}
 
 	m.mu.Lock()
@@ -447,8 +458,14 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 		picfg := m.cfg.Pi
 		picfg.ModelKey = spec.ModelKey
 		return provider.NewPiProvider(sess, handler, picfg), nil
+	case KindChat:
+		chatcfg := m.cfg.Chat
+		chatcfg.ModelKey = spec.ModelKey
+		chatcfg.Identity = spec.Identity
+		chatcfg.SandboxProfile = spec.SandboxProfile
+		return provider.NewChatProvider(sess, handler, chatcfg), nil
 	default:
-		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi only)", spec.Kind)
+		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi/chat only)", spec.Kind)
 	}
 }
 

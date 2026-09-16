@@ -1,13 +1,124 @@
 package provider
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+// relaySessionsBin is built once per test run into a short /tmp dir (macOS
+// caps sun_path at 104 chars), mirroring internal/sessions/terminal and
+// internal/sessions/hostapi's own buildBinaries convention.
+var (
+	buildRelaySessionsOnce sync.Once
+	relaySessionsBin       string
+	buildRelaySessionsErr  error
+)
+
+// buildRelaySessionsBinary returns the path to a real, freshly built
+// relay-sessions binary -- used to exercise buildChatMCPManager's tool
+// child against the actual `relay-sessions exec` shim, not a stand-in.
+func buildRelaySessionsBinary(t *testing.T) string {
+	t.Helper()
+	buildRelaySessionsOnce.Do(func() {
+		dir, err := os.MkdirTemp("/tmp", "rh-provider-bin-")
+		if err != nil {
+			buildRelaySessionsErr = err
+			return
+		}
+		relaySessionsBin = filepath.Join(dir, "relay-sessions")
+		root := repoRoot(t)
+		cmd := exec.Command("go", "build", "-o", relaySessionsBin, "./cmd/relaysessions")
+		cmd.Dir = root
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			buildRelaySessionsErr = fmt.Errorf("build relay-sessions: %w", err)
+		}
+	})
+	if buildRelaySessionsErr != nil {
+		t.Fatalf("build relay-sessions binary: %v", buildRelaySessionsErr)
+	}
+	return relaySessionsBin
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// internal/sessions/provider -> repo root is three levels up.
+	return filepath.Join(dir, "..", "..", "..")
+}
+
+type capturedHello struct {
+	Type  string `json:"type"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+// startFakeBridge serves the Hello wire shape C6 step 3 sends
+// ({"type":"Hello","kind":"project_session","name":"<id>","token":"<secret>"}),
+// always answering OK -- the one mode this package's own shim-spawn test
+// needs. Mirrors internal/sessions/terminal's own startFakeBridge
+// (duplicated rather than shared: a cross-package test helper isn't worth
+// the added surface for a few lines).
+func startFakeBridge(t *testing.T) (sockPath string, received chan capturedHello) {
+	t.Helper()
+	dir := shortTempDir(t)
+	sockPath = filepath.Join(dir, "bridge.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("fake bridge listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	received = make(chan capturedHello, 8)
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveFakeBridgeConn(conn, received)
+		}
+	}()
+	return sockPath, received
+}
+
+func serveFakeBridgeConn(conn net.Conn, received chan capturedHello) {
+	defer func() { _ = conn.Close() }()
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return
+	}
+	var req capturedHello
+	if err := json.Unmarshal([]byte(line), &req); err != nil {
+		return
+	}
+	received <- req
+
+	resp := map[string]any{
+		"type": "OK",
+		"data": map[string]any{
+			"kind":       "project_session",
+			"service_id": req.Name,
+			"relay_pid":  os.Getpid(),
+		},
+	}
+	b, _ := json.Marshal(resp)
+	b = append(b, '\n')
+	_, _ = conn.Write(b)
+}
 
 // shortTempDir returns a fresh directory directly under /tmp, short enough
 // to hold a Unix socket path under macOS's ~104-byte sun_path limit — t.TempDir()
