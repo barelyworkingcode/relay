@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -401,51 +405,96 @@ func TestManager_Create_ConcurrentDuplicateID_NoOrphan(t *testing.T) {
 
 // TestManager_StopAll_DuringLaunch_LeavesNoOrphan covers the second half of
 // F2: a StopAll landing while a Create is still in the Hello-wait window
-// (spawned but not yet published to the table) must still end up closing
-// that process, not merely ignore it because it wasn't "fully created" yet.
+// (spawned but not yet published to the table) must not return until the
+// resulting process is actually dead, not merely once the table entry is
+// resolved. The shim's own pid is found via pgrep, not read back from
+// Session (there is no *Session on this path — Create never publishes one):
+// the shim is a real OS process that has been running (and Hello'ing) for
+// most of the fake bridge's artificial delay by the time StopAll lands, so
+// its pid is reliably discoverable while alive, unlike the target process
+// Close() goes on to kill within (empirically) far less than a millisecond
+// of spawning — too fast for the target to reliably win a race to write its
+// own marker first. syscall.Kill(pid, 0) right after StopAll returns — no
+// further waiting — is what proves the OS agrees the shim is gone; asserting
+// only "absent from ListSummary" would pass even if it were still alive.
 func TestManager_StopAll_DuringLaunch_LeavesNoOrphan(t *testing.T) {
 	bridgeSock, _ := startFakeBridge(t, fakeBridgeSlowOK)
 	relaySessionsBin, _ := buildBinaries(t)
 	cfg := Config{ShimBinary: relaySessionsBin, LogDir: t.TempDir(), BridgeSocket: bridgeSock}
 	mgr := NewManager(cfg)
 
+	sessionID := fmt.Sprintf("sess-stopall-race-%d", time.Now().UnixNano())
 	secret := strings.Repeat("c", 64)
 	createErrCh := make(chan error, 1)
-	createSessCh := make(chan *Session, 1)
 	go func() {
-		s, err := mgr.Create(CreateSpec{
-			SessionID: "sess-stopall-race",
+		_, err := mgr.Create(CreateSpec{
+			SessionID: sessionID,
 			Directory: t.TempDir(),
 			Argv:      []string{"/bin/sh", "-c", "sleep 5"},
 			Identity:  &IdentitySpec{Secret: secret},
 		})
 		createErrCh <- err
-		createSessCh <- s
 	}()
 
-	// Land inside the fake bridge's artificial delay, i.e. while the slot is
-	// still marked launching and there is no *Session in the table yet.
-	time.Sleep(100 * time.Millisecond)
+	// The shim starts within milliseconds of Create, long before the fake
+	// bridge's 800ms Hello delay elapses, which is what guarantees this
+	// lands well inside the launching window rather than racing it.
+	shimPID := findPID(t, 2*time.Second, sessionID)
+
 	mgr.StopAll()
 
-	var err error
+	// Checked immediately on StopAll's return, before anything else
+	// (including draining createErrCh, which — in both the buggy and fixed
+	// code — only resolves after Create's own goroutine has already called
+	// s.Close(), so waiting on it first would launder exactly the ordering
+	// bug this test exists to catch).
+	if err := syscall.Kill(shimPID, 0); err == nil {
+		t.Fatalf("shim pid %d is still alive right after StopAll returned: a spawn caught mid-launch was orphaned", shimPID)
+	}
+
 	select {
-	case err = <-createErrCh:
+	case err := <-createErrCh:
+		// stopping is the only branch this scenario can take: the fake
+		// bridge's delay guarantees StopAll lands before startSession
+		// returns, so slot.stopping is always set by the time Create
+		// resolves. A nil error here would mean the race window missed.
+		if err == nil {
+			t.Fatal("Create racing StopAll during launch must report closed-while-starting, not succeed")
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Create never returned after racing StopAll")
-	}
-	sess := <-createSessCh
-
-	if err == nil {
-		if _, ok := mgr.Get(sess.ID); ok {
-			t.Fatal("a session created during StopAll must not remain live in the table")
-		}
-		testutil.WaitFor(t, 5*time.Second, func() bool { return !sess.Alive() })
 	}
 
 	if got := mgr.ListSummary(); len(got) != 0 {
 		t.Fatalf("table not empty after StopAll raced a launch: %+v", got)
 	}
+}
+
+// findPID polls pgrep for a process whose command line contains pattern,
+// returning its pid once found. Used instead of any handle this package's
+// own types could return, for callers that need a real, independently
+// checkable pid for a process Manager/Session never publishes (e.g. one
+// caught and torn down mid-launch).
+func findPID(t *testing.T, timeout time.Duration, pattern string) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// "--" ends pgrep's own option parsing: without it, a pattern that
+		// happens to start with "-" (the shim's own argv, e.g. "--session-id
+		// <id>", would be one) is read as an invalid pgrep flag instead of
+		// the search pattern, and pgrep exits nonzero before ever searching.
+		out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
+		if err == nil {
+			for _, f := range strings.Fields(string(out)) {
+				if pid, perr := strconv.Atoi(f); perr == nil {
+					return pid
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for a process matching %q", pattern)
+	return 0
 }
 
 // TestManager_Create_IdentityWithoutBridgeSocket_Refused covers F3's second

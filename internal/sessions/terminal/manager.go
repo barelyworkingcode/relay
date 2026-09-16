@@ -47,9 +47,14 @@ type Summary struct {
 // can both pass the check and both spawn a live, untracked process.
 type sessionSlot struct {
 	launching bool
-	stopping  bool          // a Close/StopAll arrived while still launching; the spawning Create must close its own result instead of publishing it
-	done      chan struct{} // closed once this slot leaves the launching state
-	session   *Session      // nil until the launch succeeds
+	stopping  bool // a Close/StopAll arrived while still launching; the spawning Create must close its own result instead of publishing it
+	// done is closed only once this slot's fate is fully settled, including
+	// any teardown Create had to perform itself (the stopping branch): a
+	// waiter (StopAll) must be able to trust that a closed done means the
+	// process, if one was ever spawned, is no longer live — not merely that
+	// the table entry has been resolved.
+	done    chan struct{}
+	session *Session // nil until the launch succeeds
 }
 
 // Manager owns the live set of terminal sessions this host is hosting.
@@ -112,10 +117,17 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 	} else {
 		slot.session = s
 	}
-	close(slot.done)
 	m.mu.Unlock()
 
+	// done closes only once this branch's own outcome is fully final — for
+	// the stopping branch that means after s.Close() below returns, not
+	// here — so a StopAll blocked on <-slot.done never observes done closed
+	// while a process it's responsible for is still alive. m.mu is not held
+	// across any of this: StopAll's own wait on done runs lock-free, so
+	// nothing this goroutine does while resolving its outcome can deadlock
+	// against it.
 	if err != nil {
+		close(slot.done)
 		return nil, err
 	}
 	if stopping {
@@ -125,8 +137,10 @@ func (m *Manager) Create(spec CreateSpec) (*Session, error) {
 		// knows the spawn succeeded — must finish the close itself instead
 		// of ever publishing the session as live.
 		s.Close()
+		close(slot.done)
 		return nil, fmt.Errorf("terminal: %s: closed while starting", spec.SessionID)
 	}
+	close(slot.done)
 	return s, nil
 }
 
@@ -236,9 +250,10 @@ func (m *Manager) NotifyViewerChange(id string, viewers int) {
 // StopAll closes every running terminal, including one still spawning:
 // a launch still in its Hello-wait window has no process yet for StopAll to
 // signal directly, so it is marked stopping (mirroring Close) and StopAll
-// waits on its done channel — bounded by startSession's own helloWait — so
-// shutdown does not return while a spawn it never accounted for is still
-// racing to completion. Called during host shutdown.
+// waits on its done channel — bounded by startSession's own helloWait plus
+// that Create's own teardown of whatever it finds — so shutdown does not
+// return while a process it never accounted for is still alive or still
+// being killed. Called during host shutdown.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	sessions := make([]*Session, 0, len(m.sessions))
