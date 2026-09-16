@@ -61,6 +61,7 @@ func accNewServer(t *testing.T, store config.SettingsStore, bearer string) *accS
 		NewEnhancedServiceRegistry(nil), nil, nil,
 		ops, enrolOps, &audit.AuditOps{}, mcpOps, projOps, nil, nil, nil,
 		NewCredentialAuthorizer(store), nil, nil,
+		sessionRouteDeps{},
 	)
 	assertNoErr(t, err, "NewFrontendServer")
 	go func() { _ = srv.Serve() }()

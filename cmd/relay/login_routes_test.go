@@ -90,6 +90,7 @@ func lrNewServer(t *testing.T) *lrServer {
 		nil,
 		nil,
 		NewCredentialAuthorizer(store), auditor, nil,
+		sessionRouteDeps{},
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

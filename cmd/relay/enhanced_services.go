@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/relay/internal/bridge"
+	"github.com/barelyworkingcode/relay/internal/config"
 	"github.com/barelyworkingcode/relay/internal/service"
 )
 
@@ -119,6 +120,14 @@ func (r *EnhancedServiceRegistry) Get(serviceID string) *EnhancedService {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.services[serviceID]
+}
+
+// ServeHTTP forwards to this service's own reverse proxy -- the same one
+// LookupByPath's manifest-driven dispatch uses, exposed here for a caller
+// (session_routes.go's bare GET /api/terminals and GET /api/sessions, SP6)
+// that already knows which service it wants by id rather than by path.
+func (es *EnhancedService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	es.proxy.ServeHTTP(w, r)
 }
 
 // All sorts by serviceID for stable UI iteration.
@@ -243,6 +252,21 @@ func (r *EnhancedServiceRegistry) collidingRelayRouteLocked(route string) string
 	return ""
 }
 
+// sessionHostSharedPrefixes are the two path prefixes C5 splits between
+// relay's own routes (create, resume, the bare list proxies) and
+// relay-sessions' own manifest (every other per-session operation
+// underneath them, e.g. GET /api/sessions/{id}). Relay's own patterns are
+// always registered directly on the mux, never through the manifest
+// dispatcher's "/" catch-all, so http.ServeMux resolves a request matching
+// one of them before relay-sessions' manifest is ever consulted — the two
+// claims cannot actually collide at request time, only in this
+// defense-in-depth check, which is why only the one service the split
+// names may claim them.
+var sessionHostSharedPrefixes = map[string]struct{}{
+	"/api/sessions/":  {},
+	"/api/terminals/": {},
+}
+
 // checkRouteConflictsLocked flags any duplicate route string between two
 // distinct serviceIDs, and refuses relay's own routes outright.
 // Caller must hold r.mu.Lock().
@@ -259,6 +283,9 @@ func (r *EnhancedServiceRegistry) checkRouteConflictsLocked(serviceID string, ro
 			return fmt.Errorf("manifest registry: route %q is reserved to relay (%s)", route, relayReservedPrefix)
 		}
 		if claimed := r.collidingRelayRouteLocked(route); claimed != "" {
+			if _, shared := sessionHostSharedPrefixes[claimed]; shared && serviceID == config.RelaySessionsServiceID {
+				continue
+			}
 			return fmt.Errorf("manifest registry: route %q collides with %q, which relay serves", route, claimed)
 		}
 	}
