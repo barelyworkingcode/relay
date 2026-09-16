@@ -21,7 +21,9 @@ import (
 func TestSessionRouteClasses_MatchesTheC1Table(t *testing.T) {
 	want := map[string]control.CapabilityClass{
 		"POST /api/terminals":              control.ClassExecute,
+		"POST /api/terminals/{$}":          control.ClassExecute,
 		"POST /api/sessions":               control.ClassExecute,
+		"POST /api/sessions/{$}":           control.ClassExecute,
 		"POST /api/sessions/{id}/resume":   control.ClassExecute,
 		"GET /api/terminal/templates":      control.ClassRead,
 		"GET /api/terminal/templates/{id}": control.ClassRead,
