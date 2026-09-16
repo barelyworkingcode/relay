@@ -13,6 +13,7 @@ import (
 
 	"github.com/barelyworkingcode/relay/internal/sessions/clock"
 	"github.com/barelyworkingcode/relay/internal/sessions/events"
+	sessionsmcp "github.com/barelyworkingcode/relay/internal/sessions/mcp"
 	"github.com/barelyworkingcode/relay/internal/sessions/permission"
 	"github.com/barelyworkingcode/relay/internal/sessions/provider"
 	sessionstypes "github.com/barelyworkingcode/relay/internal/sessions/types"
@@ -187,6 +188,16 @@ type CreateSpec struct {
 	// so a resumed session's process is never handed a stale key left over
 	// from before it died.
 	ModelKey string
+
+	// Identity is this launch's own project_session secret (chat only
+	// today: its MCP tool child is the only provider-spawned process this
+	// package hands off to the shim). nil for a launch with no identity to
+	// mint (ad-hoc, SSH-hosted). Never cached across calls, same rule as
+	// ModelKey.
+	Identity *sessionsmcp.IdentitySpec
+	// SandboxProfile is this launch's own absolute SBPL profile path (C7),
+	// threaded to chat's MCP tool child. "" runs it unsandboxed.
+	SandboxProfile string
 
 	// Resume is true for relay's POST /launch resume:true (SH §3.4 driven
 	// by relay's own POST /api/sessions/{id}/resume, never by this host):
@@ -450,6 +461,8 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 	case KindChat:
 		chatcfg := m.cfg.Chat
 		chatcfg.ModelKey = spec.ModelKey
+		chatcfg.Identity = spec.Identity
+		chatcfg.SandboxProfile = spec.SandboxProfile
 		return provider.NewChatProvider(sess, handler, chatcfg), nil
 	default:
 		return nil, fmt.Errorf("session: kind %q has no provider wired (claude/pi/chat only)", spec.Kind)

@@ -49,7 +49,13 @@ func (c ModelsConfig) dialer() func(ctx context.Context) (net.Conn, error) {
 // branch). Returns nil on any failure -- a model listing degrades by
 // omission, the same convention FetchPiModels already uses for a missing pi
 // binary.
-func fetchBrokerModels(ctx context.Context, cfg ModelsConfig) []sessionstypes.ModelInfo {
+//
+// taken names any Value already claimed by an earlier source (the static
+// Claude aliases) -- a broker row sharing one of those ids is dropped
+// rather than merged in under a colliding Value, since eve resolves a
+// model by first Value match and an unselectable second entry would just
+// silently launch as the wrong kind.
+func fetchBrokerModels(ctx context.Context, cfg ModelsConfig, taken map[string]bool) []sessionstypes.ModelInfo {
 	if cfg.ModelSocket == "" && cfg.dial == nil {
 		return nil
 	}
@@ -84,6 +90,9 @@ func fetchBrokerModels(ctx context.Context, cfg ModelsConfig) []sessionstypes.Mo
 
 	models := make([]sessionstypes.ModelInfo, 0, len(parsed.Data))
 	for _, row := range parsed.Data {
+		if taken[row.ID] {
+			continue
+		}
 		models = append(models, sessionstypes.ModelInfo{
 			Label:    row.ID,
 			Value:    row.ID,
@@ -109,7 +118,12 @@ func HandleModels(cfg ModelsConfig, w http.ResponseWriter, r *http.Request) {
 
 	models := append([]sessionstypes.ModelInfo{}, staticClaudeModels...)
 	models = append(models, provider.FetchPiModels(r.Context(), cfg.PiBinary)...)
-	models = append(models, fetchBrokerModels(r.Context(), cfg)...)
+
+	taken := make(map[string]bool, len(models))
+	for _, m := range models {
+		taken[m.Value] = true
+	}
+	models = append(models, fetchBrokerModels(r.Context(), cfg, taken)...)
 
 	for i := range models {
 		caps := sessionstypes.CapabilitiesForProvider(models[i].Provider)

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -40,6 +41,33 @@ func TestChatHTTPTransport_PostChat_SendsBearerModelKey(t *testing.T) {
 	}
 }
 
+// TestChatHTTPTransport_EmptyModelKey_Refused is the required F3 test: an
+// empty model key must refuse outright, never proceed with an unauthenticated
+// request the broker might otherwise honor by accident (a tokenless request
+// succeeds against relay-sessions' own `sessions` capability today).
+func TestChatHTTPTransport_EmptyModelKey_Refused(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "model.sock")
+
+	var hit atomic.Bool
+	fakeBroker(t, sock, func(w http.ResponseWriter, r *http.Request) {
+		hit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock}, "sonnet", nil)
+
+	if err := transport.Ping(context.Background()); !errors.Is(err, errChatModelKeyRequired) {
+		t.Fatalf("Ping err = %v, want errChatModelKeyRequired", err)
+	}
+	if _, err := transport.PostChat(context.Background(), nil, nil); !errors.Is(err, errChatModelKeyRequired) {
+		t.Fatalf("PostChat err = %v, want errChatModelKeyRequired", err)
+	}
+	if hit.Load() {
+		t.Fatal("request reached the broker with no model key set")
+	}
+}
+
 // TestChatHTTPTransport_DialsProductionSocket confirms that with no dial
 // override, the transport reaches exactly ModelSocket.
 func TestChatHTTPTransport_DialsProductionSocket(t *testing.T) {
@@ -52,7 +80,7 @@ func TestChatHTTPTransport_DialsProductionSocket(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock}, "sonnet", nil)
+	transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock, ModelKey: "test-key"}, "sonnet", nil)
 	if err := transport.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
@@ -79,7 +107,7 @@ func TestChatHTTPTransport_NoDirectEndpointDial(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	cfg := ChatConfig{ModelSocket: neverListened}
+	cfg := ChatConfig{ModelSocket: neverListened, ModelKey: "test-key"}
 	cfg.dial = unixDialer(fakeSock)
 
 	transport := newChatHTTPTransport(cfg, "sonnet", nil)
@@ -116,7 +144,7 @@ func TestChatHTTPTransport_ManagedAliasPrefixStripped(t *testing.T) {
 				_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			})
 
-			transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock}, tc.model, nil)
+			transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock, ModelKey: "test-key"}, tc.model, nil)
 			resp, err := transport.PostChat(context.Background(), nil, nil)
 			if err != nil {
 				t.Fatalf("PostChat: %v", err)
@@ -145,7 +173,7 @@ func TestChatHTTPTransport_StreamChunks_TextAndUsage(t *testing.T) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 
-	transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock}, "sonnet", nil)
+	transport := newChatHTTPTransport(ChatConfig{ModelSocket: sock, ModelKey: "test-key"}, "sonnet", nil)
 	resp, err := transport.PostChat(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("PostChat: %v", err)
