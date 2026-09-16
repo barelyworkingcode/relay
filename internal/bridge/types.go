@@ -51,6 +51,12 @@ const (
 	ReqDescribeGrant = "DescribeGrant"
 	ReqNarrowGrant   = "NarrowGrant"
 
+	// ReqSessionExited is relay-sessions' advisory, tokenless report that one
+	// of its sessions is gone (plan-broker-and-sessions.md §2 C5). Requires
+	// the caller's launch identity to hold the sessions capability, which
+	// config restricts to the built-in relay-sessions service.
+	ReqSessionExited = "SessionExited"
+
 	// ReqMountAttach is the mount plane's one request type: the single
 	// preamble line a relay-9p/1 connection sends before the 9P stream
 	// begins. It is deliberately absent from BOTH of remote_server.go's
@@ -144,6 +150,25 @@ func (r *RegisterModelHostRequest) Validate() error {
 	}
 	if !filepath.IsAbs(r.RouterSocket) {
 		return fmt.Errorf("register_model_host: router_socket must be an absolute path")
+	}
+	return nil
+}
+
+// SessionExitedRequest is the Arguments payload for a ReqSessionExited
+// report: C5's exact wire shape (session_id, root_pid, exit_status, reason).
+// It carries no project id — the caller (relay itself, cmd/relay's
+// router_sessions.go) resolves that from its own launch/ledger bookkeeping,
+// never from anything the host asserts.
+type SessionExitedRequest struct {
+	SessionID  string `json:"session_id"`
+	RootPID    int    `json:"root_pid"`
+	ExitStatus int    `json:"exit_status"`
+	Reason     string `json:"reason"`
+}
+
+func (r *SessionExitedRequest) Validate() error {
+	if r.SessionID == "" {
+		return fmt.Errorf("session_exited: session_id is empty")
 	}
 	return nil
 }
@@ -302,6 +327,10 @@ type ToolRouter interface {
 	// are opaque to the transport; the implementation resolves name against
 	// its own inner table and decides whether it exists at all.
 	AdminOp(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+	// SessionExited handles relay-sessions' advisory SessionExited report.
+	// Requires a launch identity holding the sessions capability; token is
+	// always empty on this wire (tokenless, like RegisterModelHost).
+	SessionExited(ctx context.Context, req SessionExitedRequest, token string) error
 }
 
 func NewScanner(r io.Reader) *bufio.Scanner {

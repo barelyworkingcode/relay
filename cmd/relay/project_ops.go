@@ -40,6 +40,10 @@ type ProjectOps struct {
 	// dependency §7.4 checks before Gate.
 	Issuance IssuanceAuditor
 	OnChange func()
+	// SessionCleanup ends and terminates a deleted project's live sessions
+	// (plan-broker-and-sessions.md §2 C5). Its zero value is a legitimate
+	// "no session-host wiring" -- see cleanupProject's own ready() guard.
+	SessionCleanup sessionRouteDeps
 }
 
 // errProjectSaveFailed distinguishes an internal settings-write failure
@@ -332,6 +336,13 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 			slog.Warn("project skill remove failed", "project", removed.Name, "error", err)
 		}
 	}
+	// Best-effort, after the project record itself is already gone: every
+	// live session belonging to it gets /terminate'd on the host and its
+	// launch identity, model key and ledger record cleaned up
+	// (plan-broker-and-sessions.md §2 C5's model-key "revoked on ... project
+	// delete"). A zero SessionCleanup (every caller predating R-S4b) is a
+	// no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
+	o.SessionCleanup.cleanupProject(id)
 	o.notify()
 	return removed, true, nil
 }

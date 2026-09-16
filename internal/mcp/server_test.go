@@ -74,6 +74,9 @@ func (s *stubRouter) RegisterManifest(context.Context, bridge.RegisterManifestRe
 func (s *stubRouter) RegisterModelHost(context.Context, bridge.RegisterModelHostRequest, string) error {
 	return nil
 }
+func (s *stubRouter) SessionExited(context.Context, bridge.SessionExitedRequest, string) error {
+	return nil
+}
 func (s *stubRouter) AdminOp(context.Context, string, json.RawMessage) (json.RawMessage, error) {
 	return nil, nil
 }

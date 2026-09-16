@@ -115,6 +115,32 @@ func TestManifestValidate_EmptyRoutesRejected(t *testing.T) {
 	}
 }
 
+// TestManifestValidate_SessionHostRoutesRejected is C5's manifest-validation
+// rule: /launch and /terminate are relay-sessions' internal API, dialed only
+// by relay itself over a peer-verified connection (cmd/relay/sessionhost_client.go)
+// -- never through the manifest-driven front-door proxy, which injects only
+// a bearer, not a peer check. A manifest that could claim either would let
+// any ordinary frontend caller reach them through the unverified proxy path
+// instead.
+func TestManifestValidate_SessionHostRoutesRejected(t *testing.T) {
+	for _, route := range []string{"/launch", "/terminate", "/launch/", "/terminate/sub"} {
+		m := Manifest{Routes: []string{"/api/terminals/", route}}
+		if err := m.Validate(); err == nil {
+			t.Errorf("manifest declaring route %q was accepted", route)
+		}
+	}
+}
+
+// A route that merely starts with the same letters as a reserved one, but
+// isn't actually reserved, must still validate -- the check is route-space
+// containment, not a substring match.
+func TestManifestValidate_SessionHostRoutesRejected_NoOverMatch(t *testing.T) {
+	m := Manifest{Routes: []string{"/launchpad/", "/terminated-sessions/"}}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("unrelated routes sharing a prefix with /launch or /terminate were rejected: %v", err)
+	}
+}
+
 func TestManifestValidate_NoConfigStillValidates(t *testing.T) {
 	m := Manifest{Routes: []string{"/api/"}}
 	if err := m.Validate(); err != nil {

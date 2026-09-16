@@ -121,6 +121,14 @@ func (r *EnhancedServiceRegistry) Get(serviceID string) *EnhancedService {
 	return r.services[serviceID]
 }
 
+// ServeHTTP forwards to this service's own reverse proxy -- the same one
+// LookupByPath's manifest-driven dispatch uses, exposed here for a caller
+// (session_routes.go's bare GET /api/terminals and GET /api/sessions, SP6)
+// that already knows which service it wants by id rather than by path.
+func (es *EnhancedService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	es.proxy.ServeHTTP(w, r)
+}
+
 // All sorts by serviceID for stable UI iteration.
 func (r *EnhancedServiceRegistry) All() []*EnhancedService {
 	r.mu.RLock()

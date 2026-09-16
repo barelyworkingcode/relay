@@ -237,6 +237,7 @@ var bridgeHandlers = map[string]bridgeHandler{
 	ReqRegisterManifest:      {handle: handleRegisterManifest},
 	ReqRegisterModelHost:     {handle: handleRegisterModelHost},
 	ReqHello:                 {handle: handleHello},
+	ReqSessionExited:         {handle: handleSessionExited},
 
 	// This is deliberate: unlike every requireAdmin entry above, admin_op
 	// carries no bearer. ADR-015 and ADR-016 both refuse to spend the 0600
@@ -365,6 +366,23 @@ func handleRegisterModelHost(ctx context.Context, req *BridgeRequest, router Too
 		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
 	}
 	if err := router.RegisterModelHost(ctx, r, req.Token); err != nil {
+		return bridgeError(classifyErrorCode(err), err.Error())
+	}
+	return BridgeResponse{Type: RespOK}
+}
+
+func handleSessionExited(ctx context.Context, req *BridgeRequest, router ToolRouter) BridgeResponse {
+	if len(req.Arguments) == 0 {
+		return bridgeError(jsonrpc.CodeInvalidParams, "session_exited: missing arguments")
+	}
+	var r SessionExitedRequest
+	if err := json.Unmarshal(req.Arguments, &r); err != nil {
+		return bridgeError(jsonrpc.CodeParseError, "session_exited: "+err.Error())
+	}
+	if err := r.Validate(); err != nil {
+		return bridgeError(jsonrpc.CodeInvalidParams, err.Error())
+	}
+	if err := router.SessionExited(ctx, r, req.Token); err != nil {
 		return bridgeError(classifyErrorCode(err), err.Error())
 	}
 	return BridgeResponse{Type: RespOK}
