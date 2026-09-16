@@ -140,8 +140,8 @@ const (
 // wired it up exactly as it would for the production binary), Hellos onto
 // relay's real bridge socket, serves hostapi's real internal/hook APIs over
 // real sockets on top of real terminal.Manager/session.Manager instances,
-// and -- unlike cmd/relaysessions/main.go's runService -- actually tells
-// relay how to reach it.
+// and -- since this harness never runs runService itself -- registers its
+// own manifest so relay can reach it.
 func TestHelperSessionHost(t *testing.T) {
 	if os.Getenv(envSessionHostGuard) != "1" {
 		return
@@ -752,8 +752,10 @@ func TestSessionHost_RealLaunchMembershipAndAudit(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 1b. A sandboxed launch's real OS-level write outside the project directory
 //     is actually denied by the kernel, not merely marked "sandbox: true" in
-//     the audit log. Sandboxing is only actually wired through for pty
-//     launches today, so this drives the pty path (rs10-sandboxed).
+//     the audit log. Only pty launches confine the launched target itself
+//     today (claude/pi run unsandboxed, per hostapi's own package doc; chat's
+//     profile reaches only its MCP tool child) -- so this drives the pty path
+//     (rs10-sandboxed).
 // ---------------------------------------------------------------------------
 
 func TestSessionHost_SandboxedLaunchDeniesRealWriteOutsideProject(t *testing.T) {
