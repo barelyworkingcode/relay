@@ -1,18 +1,29 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/barelyworkingcode/relay/internal/sessions/shim"
 )
+
+// shimHelloWait bounds how long buildShimCommand's status-event reader
+// waits for the shim to report its identity/spawn outcome before giving up
+// on logging it. A slow or hung shim is caught by the MCP handshake timeout
+// in Start's own caller, not by this reader.
+const shimHelloWait = 10 * time.Second
 
 // relaySecretEnvKeys must never be inherited by a spawned MCP server child: a
 // child gets only the project-scoped token set explicitly in its config's
@@ -51,11 +62,40 @@ func childBaseEnv() []string {
 	return out
 }
 
-// MCPServerConfig mirrors the JSON config format for a single MCP server.
+// MCPServerConfig describes a single MCP server to spawn. Built only by
+// relay's own code, from a fixed, relay-controlled entry -- never decoded
+// from a session's caller-supplied settings (see provider.buildChatMCPManager).
 type MCPServerConfig struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env"`
+
+	// Shim, when set, routes this server's spawn through `relay-sessions
+	// exec` instead of a direct exec.Command -- making the server itself a
+	// project_session root with a real launch identity and (when
+	// SandboxProfile is set) a sandbox-exec wrapper, the same mechanism
+	// every other identity-bearing launch in this codebase uses to reach
+	// its target. json:"-": this must never round-trip through anything
+	// decoded from outside this process.
+	Shim *ShimSpec `json:"-"`
+}
+
+// IdentitySpec carries the 64-hex launch secret a shim-spawned server
+// presents over the bridge socket. Mirrors hostapi.IdentitySpec /
+// terminal.IdentitySpec's shape rather than importing either -- this
+// package depends on neither.
+type IdentitySpec struct {
+	Secret string
+}
+
+// ShimSpec is what buildShimCommand needs to wrap a server's Command/Args
+// as the target argv of a `relay-sessions exec` invocation.
+type ShimSpec struct {
+	Binary         string
+	SessionID      string
+	BridgeSocket   string
+	Identity       *IdentitySpec
+	SandboxProfile string
 }
 
 // MCPTool pairs a tool definition with its source server for call routing.
@@ -150,18 +190,23 @@ func (m *MCPManager) Start(ctx context.Context) error {
 			continue
 		}
 
-		cmd := exec.Command(cfg.Command, cfg.Args...)
-		// ChildBaseEnv strips every relay credential name, including inherited
-		// project tokens, so the relay mcp child holds only the project token
-		// set in cfg.Env.
-		cmd.Env = childBaseEnv()
-		for k, v := range cfg.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
+		cmd, extraFiles, err := buildServerCommand(cfg)
+		if err != nil {
+			slog.Error("mcp: failed to build server command", "server", name, "error", err)
+			continue
 		}
 		cmd.Stderr = os.Stderr
 
 		transport := &mcp.CommandTransport{Command: cmd}
 		session, err := client.Connect(ctx, transport, nil)
+		// The parent's own copies of fds duplicated into the child (identity
+		// secret read end, status write end): closing them here, after
+		// Connect has started the process, is what lets the child's own
+		// copies be the only ones left -- mirrors internal/sessions/terminal's
+		// buildShimCmd caller exactly.
+		for _, f := range extraFiles {
+			_ = f.Close()
+		}
 		if err != nil {
 			slog.Error("mcp: failed to connect to server", "server", name, "error", err)
 			continue
@@ -193,6 +238,123 @@ func (m *MCPManager) Start(ctx context.Context) error {
 
 	slog.Info("mcp: ready", "servers", len(m.servers), "tools", len(m.tools))
 	return nil
+}
+
+// buildServerCommand returns the *exec.Cmd to hand to mcp.CommandTransport
+// for cfg, plus any fds the caller must close once the transport has
+// started it (nil when cfg.Shim is unset). A direct spawn's env is
+// childBaseEnv() plus cfg.Env, matching this package's original behavior;
+// a shimmed spawn's env is built by buildShimCommand instead.
+func buildServerCommand(cfg MCPServerConfig) (*exec.Cmd, []*os.File, error) {
+	if cfg.Shim != nil {
+		return buildShimCommand(cfg)
+	}
+	cmd := exec.Command(cfg.Command, cfg.Args...)
+	// ChildBaseEnv strips every relay credential name, including inherited
+	// project tokens, so the child holds only the project token set in
+	// cfg.Env.
+	cmd.Env = childBaseEnv()
+	for k, v := range cfg.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return cmd, nil, nil
+}
+
+// buildShimCommand wraps cfg's Command/Args as the target argv of a
+// `relay-sessions exec` invocation, mirroring internal/sessions/terminal's
+// buildShimCmd: an identity secret pipe (fd 3, iff Shim.Identity is set), a
+// status pipe (always), --sandbox-profile when set, then `-- <target>`. The
+// returned extraFiles are the parent's own copies of the fds duplicated
+// into the child (identity secret read end, status write end) -- the
+// caller must close them once the transport has started the process, the
+// same convention buildShimCmd's own caller follows.
+func buildShimCommand(cfg MCPServerConfig) (*exec.Cmd, []*os.File, error) {
+	spec := cfg.Shim
+	args := []string{"exec", "--session-id", spec.SessionID}
+	statusFDNum := 3
+	var extraFiles []*os.File
+
+	if spec.Identity != nil {
+		secretR, secretW, err := os.Pipe()
+		if err != nil {
+			return nil, nil, fmt.Errorf("identity pipe: %w", err)
+		}
+		if _, err := secretW.WriteString(spec.Identity.Secret); err != nil {
+			_ = secretR.Close()
+			_ = secretW.Close()
+			return nil, nil, fmt.Errorf("write identity secret: %w", err)
+		}
+		if err := secretW.Close(); err != nil {
+			_ = secretR.Close()
+			return nil, nil, fmt.Errorf("close identity pipe write end: %w", err)
+		}
+		args = append(args, "--identity")
+		extraFiles = append(extraFiles, secretR)
+		statusFDNum = 4
+	}
+
+	if spec.SandboxProfile != "" {
+		args = append(args, "--sandbox-profile", spec.SandboxProfile)
+	}
+
+	statusR, statusW, err := os.Pipe()
+	if err != nil {
+		for _, f := range extraFiles {
+			_ = f.Close()
+		}
+		return nil, nil, fmt.Errorf("status pipe: %w", err)
+	}
+	extraFiles = append(extraFiles, statusW)
+	args = append(args, "--status-fd", strconv.Itoa(statusFDNum), "--", cfg.Command)
+	args = append(args, cfg.Args...)
+
+	cmd := exec.Command(spec.Binary, args...)
+	cmd.ExtraFiles = extraFiles
+
+	add := map[string]string{"RELAY_SESSION_ID": spec.SessionID}
+	if spec.BridgeSocket != "" {
+		add["RELAY_BRIDGE_SOCKET"] = spec.BridgeSocket
+	}
+	env := childBaseEnv()
+	for k, v := range add {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+
+	go logShimOutcome(statusR, spec.SessionID)
+
+	return cmd, extraFiles, nil
+}
+
+// logShimOutcome reads a shim-spawned server's fd-4 status events far
+// enough to log an identity refusal or spawn failure, then stops -- it
+// never gates the MCP connection itself, which surfaces a failed spawn on
+// its own (the handshake never completes over a stdout that never opens).
+// Mirrors hostapi's and internal/sessions/terminal's own readShimStatus
+// event set, but log-only: neither package's synchronous "block until
+// started" contract applies here, since Start() has no HTTP response to
+// hold open waiting for it.
+func logShimOutcome(f *os.File, sessionID string) {
+	defer f.Close()
+	_ = f.SetReadDeadline(time.Now().Add(shimHelloWait))
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var ev shim.StatusEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		switch ev.Event {
+		case "hello_refused", "bad_secret":
+			slog.Error("mcp: shim identity refused", "session", sessionID)
+			return
+		case "spawn_failed":
+			slog.Error("mcp: shim spawn failed", "session", sessionID, "errno", ev.Errno)
+			return
+		case "started":
+			return
+		}
+	}
 }
 
 // ChatToolDefs converts discovered tools into the {type:"function",
