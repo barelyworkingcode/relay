@@ -67,7 +67,11 @@ func buildTerminalSpec(req LaunchRequest) (terminal.CreateSpec, error) {
 		spec.Cols = uint16(req.PTY.Cols)
 		spec.Rows = uint16(req.PTY.Rows)
 	}
-	if req.Sandbox != nil && req.Sandbox.ProfilePath != "" {
+	// Carried through unconditionally, empty ProfilePath included: laundering
+	// an empty-but-present profile path into a nil Sandbox here would disable
+	// CreateSpec.validate()'s own fail-closed refusal for exactly that case
+	// before it ever runs.
+	if req.Sandbox != nil {
 		spec.Sandbox = &terminal.SandboxSpec{ProfilePath: req.Sandbox.ProfilePath}
 	}
 	if req.Identity != nil {
@@ -129,7 +133,15 @@ func buildSessionSpec(req LaunchRequest) (session.CreateSpec, error) {
 		ModelKey:       req.ModelKey,
 		Resume:         req.Resume,
 	}
+	// session.CreateSpec has no validate() of its own to lean on the way
+	// terminal.CreateSpec does (buildTerminalSpec's own comment): an empty
+	// ProfilePath on a non-nil Sandbox is refused here instead, rather than
+	// silently becoming SandboxProfile == "" — indistinguishable from "no
+	// sandbox requested at all" the moment it reaches ChatConfig.
 	if req.Sandbox != nil {
+		if req.Sandbox.ProfilePath == "" {
+			return session.CreateSpec{}, errors.New("hostapi: sandbox requested but profile path is empty")
+		}
 		spec.SandboxProfile = req.Sandbox.ProfilePath
 	}
 	if req.Identity != nil {

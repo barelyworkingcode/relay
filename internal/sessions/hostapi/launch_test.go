@@ -356,6 +356,66 @@ func TestLaunch_SessionKind_DispatchesToSessionManager(t *testing.T) {
 	}
 }
 
+// TestLaunch_PTY_SandboxEmptyProfilePath_Refused covers F4's pty-path fix: a
+// non-nil sandbox object with an empty profile_path must be a hard refusal,
+// not a silently unsandboxed launch — terminal.CreateSpec.validate()'s own
+// fail-closed check for exactly this case must actually run, which requires
+// buildTerminalSpec to carry the empty ProfilePath through rather than
+// normalizing it away to a nil Sandbox first.
+func TestLaunch_PTY_SandboxEmptyProfilePath_Refused(t *testing.T) {
+	_, target := buildBinaries(t)
+	_, internalSock, _, bearer := startServer(t, os.Getpid())
+	client := unixClient(internalSock)
+
+	body := launchBody("sess-sandbox-empty", []string{target})
+	body["sandbox"] = map[string]any{"profile_path": ""}
+
+	resp := postJSON(t, client, "http://h/launch", bearer, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (a non-nil sandbox with an empty profile_path must be refused, not silently unsandboxed)", resp.StatusCode)
+	}
+	var errBody hostapi.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error != hostapi.ErrInvalidSpec {
+		t.Fatalf("error = %q, want %q", errBody.Error, hostapi.ErrInvalidSpec)
+	}
+}
+
+// TestLaunch_SessionKind_SandboxEmptyProfilePath_Refused is
+// TestLaunch_PTY_SandboxEmptyProfilePath_Refused's provider-path mirror:
+// session.CreateSpec has no validate() of its own to lean on, so
+// buildSessionSpec must refuse this case explicitly itself.
+func TestLaunch_SessionKind_SandboxEmptyProfilePath_Refused(t *testing.T) {
+	_, internalSock, _, bearer := startServer(t, os.Getpid())
+	client := unixClient(internalSock)
+
+	body := map[string]any{
+		"v":          1,
+		"session_id": "11111111-1111-1111-1111-111111111111",
+		"kind":       "claude",
+		"sandbox":    map[string]any{"profile_path": ""},
+		"session_request": map[string]any{
+			"projectId": "proj-1",
+			"directory": "/tmp/proj",
+		},
+	}
+	resp := postJSON(t, client, "http://h/launch", bearer, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (a non-nil sandbox with an empty profile_path must be refused, not silently unsandboxed)", resp.StatusCode)
+	}
+	var errBody hostapi.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error != hostapi.ErrInvalidSpec {
+		t.Fatalf("error = %q, want %q", errBody.Error, hostapi.ErrInvalidSpec)
+	}
+}
+
 func waitForFile(t *testing.T, path string, timeoutSeconds int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)

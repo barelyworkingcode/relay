@@ -418,8 +418,18 @@ func buildNewSession(spec CreateSpec, now time.Time) *sessionstypes.Session {
 // process died (this package's own security framing: identity continuity
 // is "launched exactly like a fresh one", not "specially reused").
 func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) error {
+	// self is read by handler only from a goroutine the provider itself
+	// spawns inside Start() (claude.go/pi.go's waitForExit, ChatProvider's
+	// runToolLoop), never before — so the write below, sequenced before any
+	// such goroutine is created, happens-before every read of it. This is
+	// what lets handleProviderEvent tell "this provider's own exit" apart
+	// from a stale event a just-displaced provider fires after Kill()
+	// already returned (Kill() unblocks on the process dying; the event
+	// arrives after, on the exiting provider's own goroutine — a resumed
+	// session's brand new provider can already be live by then).
+	var self sessionstypes.Provider
 	handler := func(eventType string, data json.RawMessage) {
-		m.handleProviderEvent(sess, eventType, data)
+		m.handleProviderEvent(sess, self, eventType, data)
 	}
 
 	var p sessionstypes.Provider
@@ -432,6 +442,7 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 	if err != nil {
 		return err
 	}
+	self = p
 
 	// Applied uniformly, factory or built-in: a resumed session's fresh
 	// provider instance picks up the persisted ProviderState (e.g. Claude's
@@ -746,8 +757,11 @@ func (m *Manager) StopGeneration(id string) error {
 	}
 	// message_complete tells clients the turn is definitively over even
 	// though the provider's own (now-discarded) goroutine may still emit
-	// its own — matches relayLLM's StopGeneration.
-	m.handleProviderEvent(sess, events.HandlerMessageComplete, nil)
+	// its own — matches relayLLM's StopGeneration. Not a provider-sourced
+	// event, so there is no provider identity to compare against — the
+	// case this manufactures is never "process_exited", the only case that
+	// check applies to.
+	m.handleProviderEvent(sess, nil, events.HandlerMessageComplete, nil)
 	return nil
 }
 
@@ -841,7 +855,15 @@ func (m *Manager) persist(sess *sessionstypes.Session) {
 	}
 }
 
-func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, eventType string, data json.RawMessage) {
+// handleProviderEvent processes one event from source, the provider
+// instance that actually emitted it (nil for the synthetic message_complete
+// StopGeneration manufactures itself). source is only consulted in the
+// "process_exited" case: a provider Create already displaced via
+// CreateSpec.Resume's relaunch path can still fire its own delayed exit
+// event afterward (startProvider's own doc comment on self) — reporting
+// that as sess's exit would tear down the replacement provider's own,
+// already-live credentials, not the dead one's.
+func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, source sessionstypes.Provider, eventType string, data json.RawMessage) {
 	var msg map[string]any
 
 	switch eventType {
@@ -865,6 +887,9 @@ func (m *Manager) handleProviderEvent(sess *sessionstypes.Session, eventType str
 		m.persist(sess)
 
 	case "process_exited":
+		if sess.Provider() != source {
+			return
+		}
 		sess.SetProcessing(false)
 		msg = map[string]any{"type": events.WSMsgProcessExited, "sessionId": sess.ID}
 		m.persist(sess)
