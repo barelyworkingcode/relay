@@ -256,6 +256,12 @@ func (m *Manager) Create(spec CreateSpec) (*sessionstypes.Session, error) {
 
 	if relaunch != nil {
 		relaunch.Kill()
+		// Cleared, not left dangling: startProvider below also kills
+		// whatever provider it displaces (the same guard that protects a
+		// concurrent ad-hoc respawn), and reused is the same *Session this
+		// relaunch was read from — leaving the field set would hand
+		// startProvider a reference this call already tore down itself.
+		reused.SetProvider(nil)
 	}
 
 	sess, err := m.resolveSessionForCreate(spec, reused)
@@ -399,7 +405,18 @@ func (m *Manager) startProvider(sess *sessionstypes.Session, spec CreateSpec) er
 	if sess.ProviderState != nil {
 		p.RestoreState(sess.ProviderState)
 	}
-	sess.SetProvider(p)
+
+	// SwapProvider, not SetProvider: a second startProvider for the same
+	// session (SendMessage's ad-hoc respawn racing a Create{Resume:true})
+	// can reach here while the first provider is still inside its own
+	// Start() and therefore reports Alive() == false — that provider is not
+	// "empty", it is a reservation of its own, and overwriting sess's
+	// provider field out from under it would leave it running with nothing
+	// in the table pointing at it. Kill whatever was there before this call
+	// ever gets to claim the field.
+	if old := sess.SwapProvider(p); old != nil {
+		old.Kill()
+	}
 	return p.Start()
 }
 
@@ -445,50 +462,54 @@ func (m *Manager) buildProvider(sess *sessionstypes.Session, spec CreateSpec, ha
 // disk load against it, so a join_session arriving mid-resume can never
 // observe a stale/nil-provider session while the real one is spawning, and
 // never overwrites the reservation Create still owns.
+//
+// The same reservation can appear *after* Get has already committed to a
+// disk load — Create racing in during the load, not before it. Get must
+// still never write its own disk-loaded object into a slot it did not
+// reserve itself: that object and Create's spawned one are different
+// *sessionstypes.Session values, and a caller (SendMessage's ad-hoc
+// respawn included) holding the one Get handed out would end up acting on
+// an object no slot in the table actually references once Create finishes
+// and overwrites slot.sess with its own. So every path that meets a
+// reservation it does not own — found immediately, or found only after the
+// load completes — discards what it has and waits for that reservation,
+// then retries the whole lookup from the top.
 func (m *Manager) Get(id string) (*sessionstypes.Session, bool) {
-	m.mu.Lock()
-	slot, ok := m.slots[id]
-	if ok && slot.sess != nil {
-		m.mu.Unlock()
-		return slot.sess, true
-	}
-	var reservation chan struct{}
-	if ok {
-		reservation = slot.done
-	}
-	m.mu.Unlock()
-
-	if reservation != nil {
-		<-reservation
+	for {
 		m.mu.Lock()
-		if slot, ok := m.slots[id]; ok && slot.sess != nil {
+		slot, ok := m.slots[id]
+		if ok && slot.sess != nil {
 			m.mu.Unlock()
 			return slot.sess, true
 		}
-		m.mu.Unlock()
-		// Create's spawn failed or was cancelled while this call waited —
-		// fall through to the disk load below like any other miss.
-	}
-
-	sess, err := m.store.Load(id)
-	if err != nil {
-		return nil, false
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if slot, ok := m.slots[id]; ok {
-		// Insert into the slot Create (or a concurrent Get) already owns
-		// instead of replacing it, so a write that lands on this pointer
-		// later — Create's slot.sess = sess included — still lands on
-		// something reachable from m.slots.
-		if slot.sess == nil {
-			slot.sess = sess
+		if ok {
+			reservation := slot.done
+			m.mu.Unlock()
+			<-reservation
+			continue
 		}
-		return slot.sess, true
+		m.mu.Unlock()
+
+		sess, err := m.store.Load(id)
+		if err != nil {
+			return nil, false
+		}
+
+		m.mu.Lock()
+		if slot, ok := m.slots[id]; ok {
+			if slot.sess != nil {
+				m.mu.Unlock()
+				return slot.sess, true
+			}
+			reservation := slot.done
+			m.mu.Unlock()
+			<-reservation
+			continue
+		}
+		m.slots[id] = &sessionSlot{sess: sess}
+		m.mu.Unlock()
+		return sess, true
 	}
-	m.slots[id] = &sessionSlot{sess: sess}
-	return sess, true
 }
 
 // stopSlot removes id from the live table and returns the session to tear
