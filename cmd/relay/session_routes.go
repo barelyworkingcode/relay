@@ -112,6 +112,51 @@ func (a sessionAccount) end(modelKeys *ModelKeyTable) {
 	}
 }
 
+// resumeGuard serializes concurrent resume attempts for the same session id.
+// Launches.Begin's own contract ends whatever launch was previously recorded
+// under a name before recording the new one -- two concurrent resumes for
+// the same dormant session both name that session's id, so without this
+// guard the second call to reach Begin silently ends the first's launch
+// identity, secret included, regardless of which of the two eventually wins
+// the host round trip. Held for the whole resume attempt (AuthorizeLaunch
+// through commitLaunch), not just around Begin: releasing any earlier would
+// only move the race to launchOnHost's host round trip instead of closing
+// it.
+type resumeGuard struct {
+	mu   sync.Mutex
+	busy map[string]struct{}
+}
+
+func newResumeGuard() *resumeGuard {
+	return &resumeGuard{busy: make(map[string]struct{})}
+}
+
+// tryAcquire reports whether sessionID was free and, if so, claims it. A nil
+// guard always succeeds: every construction site in this package that builds
+// a live sessionRouteDeps sets one, so nil only ever appears in a zero-value
+// fixture whose ready() already refuses to register these routes at all.
+func (g *resumeGuard) tryAcquire(sessionID string) bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, busy := g.busy[sessionID]; busy {
+		return false
+	}
+	g.busy[sessionID] = struct{}{}
+	return true
+}
+
+func (g *resumeGuard) release(sessionID string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.busy, sessionID)
+}
+
 // sessionRouteDeps bundles what every session-host-facing door in this unit
 // needs: authorizing a launch (AuthorizeLaunch's own parameters), reaching
 // relay-sessions (sessionHostClient's ingredients), and keeping relay's own
@@ -120,13 +165,14 @@ func (a sessionAccount) end(modelKeys *ModelKeyTable) {
 // and ProjectOps (project-delete cleanup) so all three read and write the
 // same ledger, launch table and accounting map.
 type sessionRouteDeps struct {
-	store      config.SettingsStore
-	launches   *service.Launches
-	sessions   *ledger.Ledger
-	modelKeys  *ModelKeyTable
-	enhanced   *EnhancedServiceRegistry
-	auditor    *audit.AuditRecorder
-	accounting *sessionAccounting
+	store       config.SettingsStore
+	launches    *service.Launches
+	sessions    *ledger.Ledger
+	modelKeys   *ModelKeyTable
+	enhanced    *EnhancedServiceRegistry
+	auditor     *audit.AuditRecorder
+	accounting  *sessionAccounting
+	resumeGuard *resumeGuard
 }
 
 // ready reports whether every field a route handler needs, other than the
@@ -138,7 +184,8 @@ type sessionRouteDeps struct {
 // fail-closed 503, rather than an unwired one that registers none at all
 // and falls through to the legacy, unauthorized catch-all underneath them.
 func (d sessionRouteDeps) ready() bool {
-	return d.store != nil && d.launches != nil && d.modelKeys != nil && d.enhanced != nil && d.accounting != nil
+	return d.store != nil && d.launches != nil && d.modelKeys != nil && d.enhanced != nil &&
+		d.accounting != nil && d.resumeGuard != nil
 }
 
 // sessionRoutesUnavailable answers a 503 and reports true when the session
@@ -171,11 +218,19 @@ func (d sessionRouteDeps) host() *sessionHostClient {
 // reach relay-sessions with none of AuthorizeLaunch's checks ever run
 // (frontend_model_guard.go's newSessionModelGuard documents the same
 // ServeMux behavior for the route it guards).
+//
+// Both are anchored with ServeMux's "{$}" end-of-path wildcard rather than a
+// bare trailing slash: a bare "/api/sessions/" is an open prefix pattern and
+// would capture the entire subtree underneath it (every non-create
+// "/api/sessions/{id}/..." route relay-sessions itself owns), routing them
+// into this create handler instead of letting them fall through to the "/"
+// catch-all and on to relay-sessions' manifest. "{$}" matches the trailing
+// slash exactly and nothing beyond it.
 func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("POST", "/api/terminals"), "POST /api/terminals", deps.handleCreateTerminal)
-	rr.Handle(classFor("POST", "/api/terminals/"), "POST /api/terminals/", deps.handleCreateTerminal)
+	rr.Handle(classFor("POST", "/api/terminals/{$}"), "POST /api/terminals/{$}", deps.handleCreateTerminal)
 	rr.Handle(classFor("POST", "/api/sessions"), "POST /api/sessions", deps.handleCreateSession)
-	rr.Handle(classFor("POST", "/api/sessions/"), "POST /api/sessions/", deps.handleCreateSession)
+	rr.Handle(classFor("POST", "/api/sessions/{$}"), "POST /api/sessions/{$}", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{id}/resume"), "POST /api/sessions/{id}/resume", deps.handleResumeSession)
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
@@ -349,9 +404,9 @@ type resumeResponseBody struct {
 // handleResumeSession implements POST /api/sessions/{id}/resume (C5,
 // C11). AuthorizeLaunch's own Resume=true path cannot by itself distinguish
 // "already live" (a success, not a refusal) from "unknown" from "wrong
-// project" -- R-S4a's own reviewer flagged this forward -- so this handler
-// reads the ledger once itself, before ever calling AuthorizeLaunch, to
-// produce C5's three-way HTTP outcome without duplicating AuthorizeLaunch's
+// project", since it has no notion of a three-way HTTP outcome -- so this
+// handler reads the ledger once itself, before ever calling AuthorizeLaunch,
+// to produce C5's three-way HTTP outcome without duplicating AuthorizeLaunch's
 // own dormant/live/project-match logic.
 func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	if d.sessionRoutesUnavailable(w) {
@@ -376,6 +431,17 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusOK, resumeResponseBody{SessionID: id, Resumed: false})
 		return
 	}
+
+	// Claimed for the rest of this handler, past every remaining return
+	// path: a second resume for the same id must fail fast here rather than
+	// reach launchOnHost's Begin call, which would otherwise silently end
+	// this attempt's launch identity out from under it (or vice versa).
+	if !d.resumeGuard.tryAcquire(id) {
+		d.auditResume(actor, id, rec.ProjectID, rec.Kind, audit.AuditOutcomeError, "resume already in progress")
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a resume for this session is already in progress"})
+		return
+	}
+	defer d.resumeGuard.release(id)
 
 	sessionReq, err := decodeStoredSessionRequest(rec)
 	if err != nil {
