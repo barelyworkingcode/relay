@@ -69,15 +69,22 @@ from anything the caller asserted:
 
 - `project_id` / `project_name` are taken from the authenticated `StoredToken`,
   the same value relay injects into `_meta.project_id`.
-- `auth` is how the caller was identified: `token` (a project token was
-  presented), `service` (a launch identity holding a fixed capability; the
-  record carries the kernel `pid`, not the service id), `session` (a
-  `project_session` launch identity, or a kernel-verified C3 descendant of
-  one — see immediately below), or `mtls` (a client certificate on the
-  remote listener). The retired token-less directory-auth mechanism (`cwd`,
-  keyed on a caller-asserted working directory) is gone from every path that
-  writes a record; the field name is kept only so an old on-disk record
-  still reads correctly.
+- `auth` is how the caller was identified for a tool call: `token` (a
+  project token was presented), `session` (a `project_session` launch
+  identity, or a kernel-verified C3 descendant of one — see immediately
+  below), or `mtls` (a client certificate on the remote listener). There is
+  no `service`-auth tool-call actor: `resolveAuth` (`cmd/relay/router.go`)
+  refuses outright any bound launch identity whose kind isn't
+  `project_session`, so a service identity never reaches
+  `appRouter.CallTool` to be recorded here. A `service`-kind actor is real
+  on the model endpoint's own records (`model_call`/`model_list`,
+  [below](#the-model-endpoint)) and on `session_end`
+  ([below](#session-host-events)); there it carries `actor.service_id`,
+  never a pid — attribution by pid is for a per-call caller, and a service
+  identity is a fixed name relay resolved, not a process. The retired
+  token-less directory-auth mechanism (`cwd`, keyed on a caller-asserted
+  working directory) is gone from every path that writes a record; the
+  field name is kept only so an old on-disk record still reads correctly.
 - **`session` auth and the `project_session` actor kind are real and live**
   (plan-broker-and-sessions.md §2 C3, [`docs/session-host.md`](session-host.md)):
   a tokenless caller admitted either as a session-host root process's own
@@ -587,9 +594,9 @@ works would misstate exactly the fact this section exists to get right.
 
 | event | written by | when |
 |---|---|---|
-| `session_launch` | `cmd/relay/session_launch.go`'s `AuthorizeLaunch` (every refusal) and `cmd/relay/session_routes.go` (an accepted launch, once relay-sessions' own `/launch` round trip completes) | every `POST /api/terminals` or `POST /api/sessions` request, allowed or refused |
+| `session_launch` | *built* by `cmd/relay/session_launch.go`'s `AuthorizeLaunch`/`newSessionLaunchAuditEvent`; *written* by `cmd/relay/session_routes.go`'s `launchAndRespond` (`d.auditor.Record`) | every `POST /api/terminals` or `POST /api/sessions` create request that reaches `AuthorizeLaunch`, allowed or refused — with two exceptions: a refusal on the *resume* path is restamped `session_resume` instead (`resumeAuditEvent`), never `session_launch`; and two early refusals that never reach `AuthorizeLaunch` at all — a pre-authorize `503` when the session ledger isn't wired (`sessionRoutesUnavailable`) and a request-body decode failure (`400`/`413`, `decodeSessionBody`) — write no record of either kind |
 | `session_bound` | **nobody.** The constant exists in `internal/audit/audit.go`; nothing in this repo constructs one. A known, real gap — see below. | — |
-| `session_end` | `cmd/relay/audit_call.go`'s `recordSessionExited`, on relay's `SessionExited` bridge handler | every time relay-sessions reports one of its sessions gone |
+| `session_end` | `cmd/relay/router_sessions.go`'s `recordSessionExited`, called from the `SessionExited` bridge handler in the same file | every time relay-sessions reports one of its sessions gone |
 | `session_resume` | `cmd/relay/session_routes.go` (`resumeAuditEvent`, `auditResume`) | every `POST /api/sessions/{id}/resume`, allowed or refused, including the two outcomes `AuthorizeLaunch` never sees at all (unknown/deleted session, already-live session) |
 
 `session_launch` and `session_resume` share one args shape
@@ -605,9 +612,17 @@ launch — this is the *caller*, e.g. eve, never the session itself):
  "outcome":"ok"}
 {"id":"…","ts":"…","event":"session_resume",
  "actor":{"kind":"control","auth":"token","cred_id":"launch:service:eve","project_id":"proj_7f2a"},
- "args":{"session_id":"3af1…","session_kind":"claude","sandbox":true},
+ "args":{"session_kind":"claude","sandbox":false},
  "outcome":"denied","error":"session is not a dormant session of this project"}
 ```
+
+The `session_resume` example above is `session_not_resumable`, the
+refusal `AuthorizeLaunch` (`cmd/relay/session_launch.go`) raises before it
+ever sets `baseFields.Sandbox` or `baseFields.SessionID` — so the real args
+for this particular refusal never carry `session_id` (an `omitempty` field,
+left unset) or a `sandbox` value truer than its `false` zero value; a
+resume that gets further before being refused, or one that succeeds, can
+carry both.
 
 `session_end` carries a `service` actor — relay-sessions itself reported
 this, tokenlessly, through the `sessions` capability its own built-in
@@ -628,13 +643,12 @@ have to edit that file again — but the event itself, which would mark a
 `project_session` launch identity successfully binding at Hello (distinct
 from `session_launch`, which records relay *authorizing* a launch before
 relay-sessions has even spawned anything), has no writer anywhere in this
-tree. This was flagged by this session's own review of the session-host
-work and left open deliberately — see
+tree — a real, open gap, not an oversight, per
 [`docs/session-host.md`](session-host.md#what-is-not-built-yet).
 
 ```
 relay audit --event session_launch                 # every launch attempt, allowed or refused
-relay audit --event session_end --grep relaysessions
+relay audit --event session_end                     # every relay-sessions exit report
 relay audit --kind project_session                  # every tool/model call made from inside a session
 ```
 

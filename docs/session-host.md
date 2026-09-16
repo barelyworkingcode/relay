@@ -43,7 +43,7 @@ capability grants (see [`docs/launch-identity.md`](launch-identity.md#identity-k
 A build carrying an embedded helper cdhash (`build.sh`'s Helpers signing
 step) additionally pins the process that binds this launch's Hello to the
 signed relay-sessions binary specifically, not merely to whatever process
-guessed the launch secret: `service.SetHelperVerifier` installs a
+guessed the launch secret: `(*service.Launches).SetHelperVerifier` installs a
 `HelperVerifier` that `Launches.BindKind` calls, for a `service`-kind launch
 named `relaysessions` only, immediately before the secret is accepted as
 spent (`internal/service/launch_identity.go`, `internal/service/codesign_darwin.go`).
@@ -99,6 +99,21 @@ refuses a `serviceId` other than the identity's own name, so only the one
 process that said Hello as `relaysessions` can ever register this host's
 socket and bearer with relay in the first place.
 
+That is the "host side" — relay-sessions verifying the caller dialing *it*.
+The other direction, relay verifying the process it dials really is
+relay-sessions, is `dialVerifiedUnix` (`cmd/relay/sessionhost_client.go`,
+mirroring the identical pattern `cmd/relay/model_endpoint.go`'s
+`upstreamTransport` uses for relayLLM's router socket): on every `/launch`
+and `/terminate` call, `sessionHostClient.resolve` re-reads relay-sessions'
+currently bound `service`-kind launch identity fresh, never cached, and
+`dialVerifiedUnix` reads the *live* peer's own kernel-attested `(pid,
+pidversion)` off the freshly dialed connection and refuses unless it
+matches that identity's process exactly — so a same-uid process that merely
+learned the internal socket path, or a relay-sessions that died and was
+replaced between calls, cannot answer for `/launch` or `/terminate` either.
+Both halves are mutual: relay-sessions checks the pid making the request,
+and relay checks the pid answering it, on every call.
+
 ### `POST /launch`
 
 Body is `hostapi.LaunchRequest` (v1). `handleLaunch` is a thin dispatcher —
@@ -115,7 +130,7 @@ Error codes C5 names explicitly, each mapped from a manager error:
 
 | HTTP | code | meaning |
 |---|---|---|
-| 400 | `invalid_spec` | malformed or self-contradictory request (the default for an unnamed error too) |
+| 400 | `invalid_spec` | malformed or self-contradictory request (the default for an unnamed error on a `pty` launch; a `claude`/`pi`/`chat` launch instead defaults an unnamed error to `500`/`spawn_failed` — `terminalLaunchStatus` and `sessionLaunchStatus`, `internal/sessions/hostapi/dispatch.go`, disagree on this) |
 | 409 | `session_exists` | this session id is already live |
 | 502 | `identity_refused` | the shim's Hello did not bind |
 | 500 | `spawn_failed` | the target process could not be started |
@@ -125,17 +140,26 @@ Error codes C5 names explicitly, each mapped from a manager error:
 Body is `{session_id, reason}`. Resolves the id against `terminal.Manager`
 then `session.Manager` (whichever owns it), marks it terminating (so its own
 exit report reads `reason: "closed"` rather than `"exit"`), and closes it —
-SIGTERM then SIGKILL on the shim's process group for a pty session, the
-provider's own `Kill()` for a provider-hosted one. Always `204`, including
-for an id neither manager recognizes: an unrecognized id is the same
-no-op `/terminate` always was.
+for a pty session, SIGTERM then SIGKILL sent to the shim's own pid and,
+separately, to `-targetPID` (the target's whole process group, not the
+shim's) — the provider's own `Kill()` for a provider-hosted one. Always
+`204`, including for an id neither manager recognizes: an unrecognized id
+is the same no-op `/terminate` always was.
 
 ## The shim: `relay-sessions exec`
 
-Every pty session, and every `chat`-kind provider session, runs under a
-small process, `relay-sessions exec`, whose whole job is C6. (A `claude`- or
-`pi`-kind session does not go through the shim at all today — see
-[Known gaps](#what-is-not-built-yet), gap 1.)
+Every pty session runs under a small process, `relay-sessions exec`, whose
+whole job is C6. A `claude`- or `pi`-kind session does not go through the
+shim at all today — see [Known gaps](#what-is-not-built-yet), gap 1. A
+`chat`-kind session's own provider process doesn't either: `ChatProvider`
+is an in-process HTTP client talking to relay's model broker, with no
+external CLI child at all (`internal/sessions/provider/chat_base.go`'s
+`ChatConfig` doc comment states this plainly). What *does* run under the
+shim is a chat session's **optional** relay-MCP tool child — spawned only
+when the session opts into `useRelayTools` and `RelayMCPCommand` is
+non-empty (`buildChatMCPManager`, `chat_base.go`) — because that child has
+no other process to serve as its own `project_session` root the way a
+terminal's shim-wrapped target does.
 
 ```
 relay-sessions exec --session-id <id> [--identity] [--pty] \
@@ -203,7 +227,9 @@ in-memory override across the exec boundary.
   sessions/
     terminal_logs/                # pty session logs
     sessions/                     # session.Store's persisted claude/pi/chat records
+    pi-sessions/                  # pi's own JSONL transcripts (internal/sessions/provider/pi.go)
     profiles/<session id>.sb      # C7 SBPL sandbox profiles, one per sandboxed launch
+    .migrated-from-relayllm       # migrate.Run's idempotency marker, written once
 ```
 
 The `sessions/profiles/` directory is written by **relay itself**
@@ -233,12 +259,16 @@ srv.SetExitHandler(func(id string, rootPID, exitCode int, reason string) {
 ```
 
 `reportSessionExited` sends relay's `SessionExited` bridge request — a
-fresh, tokenless `bridge.Client` per call, relying entirely on C3 membership
-over the connection's own peer credentials (this process is itself a `service`-kind
-identity, and `SessionExited` is gated on the `sessions` capability that
-identity holds; `router.go`'s `requireServiceIdentity` is the check). This is
-the **real, current sender**: `runService` builds and wires it directly, and
-also — the fix landed this session — actually calls `RegisterManifest`
+fresh, tokenless `bridge.Client` per call, authenticated by this process's
+own bound `service`-kind launch identity rather than by C3 membership:
+`SessionExited` is gated on the `sessions` capability that identity holds,
+checked by `router_sessions.go`'s `SessionExited` handler via
+`requireServiceIdentity` (`router.go`) — a path that deliberately never
+consults `resolveAuth`'s C3-membership step at all, since every step there
+resolves to a project and a service identity is not one
+([`docs/tokens.md`](tokens.md#what-determines-a-callers-authority-now)).
+This is the **real, current sender**: `runService` builds and wires it
+directly, and also calls `RegisterManifest`
 (`config.RelaySessionsManifestRoutes`, `["/api/terminals/", "/api/sessions/"]`)
 once its own Hello confirms it was launched by relay, so relay's dispatch
 table and the created-terminal/session route reservation both come up
@@ -275,21 +305,30 @@ another project's name this way.
 Only an **ad-hoc** session (`ProjectID == ""`, pty-only per SH §3.1's own
 rule) still auto-respawns; SH-6's restriction is specific to a project-bound
 session, which carries real authority (a model key, a permission policy) an
-automatic respawn should not be trusted to re-establish silently.
+automatic respawn should not be trusted to re-establish silently. In
+practice this carve-out is currently unreachable: `AuthorizeLaunch` refuses
+a project-less launch outright for every kind but `pty`
+(`req.ProjectID == "" && req.Kind != KindPTY`), and `SendMessage`/
+`ErrResumeRequired` is `session.Manager`'s own mechanism — a `pty` session
+never goes through it — so no session that could exist today both
+auto-respawns and carries the authority this paragraph is warning about.
 
 A resumed launch runs the whole `AuthorizeLaunch` gauntlet again, including
 re-merging the *current* project permission policy — a policy edited since
 the original launch governs the resumed session, not whatever was merged in
 originally — and mints a fresh launch identity secret and (if the kind wants
 one) a fresh model key, exactly as a brand-new launch does. `internal/sessions/api/ws_session.go`'s
-`sendResumeRequired` is the frame a live WS viewer sees when it asks to send
-a message to a session that needs this before it can continue.
+`sendResumeRequired` is the frame a live WS viewer would see when it asks
+to send a message to a session that needs this before it can continue —
+"would", because `internal/sessions/api` is itself gap 2 below: nothing
+mounts it onto a real HTTP/WS server today, so no viewer can actually reach
+this frame yet.
 
 ## What is not built yet
 
-These are real, current gaps this session's own reviews found and did not
-close. Documenting them precisely — not smoothing them into "future work" —
-is this document's job as much as describing what works.
+These are real, current gaps. Documenting them precisely — not smoothing
+them into "future work" — is this document's job as much as describing
+what works.
 
 1. **Claude/pi launches run with no sandbox and no launch identity, despite
    relay believing otherwise.** `provider.ClaudeConfig`/`provider.PiConfig`
@@ -298,14 +337,23 @@ is this document's job as much as describing what works.
    via a bare `exec.Command`: no shim, no `sandbox-exec` wrapping, no
    identity presented anywhere. Meanwhile relay's own `AuthorizeLaunch`
    (`cmd/relay/session_launch.go`) writes a real SBPL profile file to disk
-   and mints a real launch secret for **every** claude/pi launch (`wantsSandbox`
-   returns `true` unconditionally for `claude`/`pi`/`chat`), and
-   `internal/sessions/hostapi`'s `launchSession` answers `201` as if both
-   were applied. `internal/sessions/hostapi/types.go`'s own package doc
-   states this plainly in code; this is the same fact surfaced here for a
-   reader who does not start from the Go source. A chat-kind session is
-   unaffected — `ChatConfig` already has the fields and is wired through
-   the shim like a terminal.
+   for every local-project (non-SSH) claude/pi launch (`wantsSandbox`
+   returns `true` unconditionally for `claude`/`pi`/`chat`, and `sandbox` is
+   cleared only for a hosted project's session); the launch secret itself is
+   minted separately, by `launchOnHost` (`cmd/relay/session_routes.go`),
+   gated on `needsIdentity` — a project and no SSH host — so a hosted
+   project's claude/pi launch gets neither a profile nor a secret.
+   `internal/sessions/hostapi`'s `launchSession` answers `201` as if a
+   sandbox and an identity were actually applied to the claude/pi target
+   itself, which they never are. `internal/sessions/hostapi/types.go`'s own
+   package doc states this plainly in code; this is the same fact surfaced
+   here for a reader who does not start from the Go source. A chat-kind
+   session's own provider process is unaffected by this gap in the same way
+   it is exempt from the shim entirely (see [The shim](#the-shim-relay-sessions-exec))
+   — it has no external CLI child to sandbox or identify. Its **optional**
+   relay-MCP tool child, when the session opts into `useRelayTools`, carries
+   the `Sandbox` and `Identity` fields `ChatConfig` already has and is wired
+   through the shim like a terminal.
 2. **The eve-facing session HTTP/WS surface exists but is not reachable.**
    `internal/sessions/api` (`HandleListSessions`, `HandleDeleteSession`, the
    WS session/terminal handlers, `/api/permission`, `/api/generated/`,
@@ -330,13 +378,37 @@ is this document's job as much as describing what works.
    on `SessionExited` depends on `terminal.Manager.NotifyViewerChange`, which
    only the eve-facing WS handlers in gap 2 ever call. Until that surface is
    mounted, a session never closes itself for being unwatched.
-5. **`handleTerminate` has no existence-or-liveness probe before signalling.**
-   A `/terminate` naming a long-dead session id (past the point its own exit
-   was already reported and consumed) can SIGTERM/SIGKILL whatever process
-   or process group now holds that recycled pid, if it names an id whose
-   bookkeeping was already cleared incorrectly. This was flagged by this
-   session's own review of `internal/sessions/hostapi` and is not fixed
-   here — flagged, not silently patched, per this unit's own instructions.
+5. **`handleTerminate`'s existence-or-liveness probe gates the wrong thing.**
+   `handleTerminate` (`internal/sessions/hostapi/server.go`) does call
+   `Get`/check `Alive()`/`markTerminatingIfAlive` before signalling — but
+   that check only decides whether the session's own exit report reads
+   `reason: "closed"` instead of `"exit"`; it never decides whether a
+   signal is sent. The real hazard is bookkeeping that outlives the process
+   it describes: a terminal session stays in `terminal.Manager`'s table
+   after a natural exit — only `Close` removes the table entry, never the
+   exit itself (`internal/sessions/terminal/manager.go`'s own comment on
+   `SetExitHandler`) — so a `/terminate` naming an id whose process already
+   exited on its own can still reach `Session.Close`
+   (`internal/sessions/terminal/session.go`), which unconditionally signals
+   `shimPID` and `-targetPID` with `SIGTERM`, then `SIGKILL` after
+   `terminateGrace` — against whatever process now holds that recycled pid.
+   This is not fixed here.
+6. **`/permission` is a hard-coded refusal, and a provider-hosted session
+   has no membership entry to even reach it.** `handlePermission`
+   (`internal/sessions/hostapi/server.go`) answers every admitted call
+   `{"decision":"deny","reason":"session host: no policy engine wired
+   yet"}` — a fixed placeholder, not a policy engine. Worse, `launchSession`
+   (`internal/sessions/hostapi/server.go`) deliberately registers no
+   membership table entry for a claude/pi/chat launch at all: a
+   provider-hosted session gives `handlePermission`'s C3 ancestry walk
+   (`internal/membership.Resolve`) no pid to ever resolve a root from, even
+   once a real policy engine exists. A Claude Code hook call for one of
+   these sessions is therefore refused with a `403` before it ever reaches
+   the hard-coded deny, and `internal/sessions/hook.Run` fails open on that
+   `403` — a non-`200` response returns exit code `0`, the same as an
+   explicit allow. The net effect: every `PreToolUse` hook call from a
+   claude/pi/chat session today is silently allowed through, gated by
+   nothing at all.
 
 ## Code map
 

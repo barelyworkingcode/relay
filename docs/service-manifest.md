@@ -198,16 +198,39 @@ that capability also grants
 
 Separately, `relaysessions`' manifest declares two path **prefixes**,
 `/api/terminals/` and `/api/sessions/` (`config.RelaySessionsManifestRoutes`)
-— and relay itself already registers the *bare* `POST /api/terminals` and
-`POST /api/sessions` (create) and `GET` (list) on those same two paths
-directly, ahead of the manifest dispatcher. Ordinarily a manifest route that
-overlaps a path relay itself serves is refused (the relay-route-conflict
+— and relay itself already registers several routes under those same two
+paths directly, ahead of the manifest dispatcher: the bare creates
+(`POST /api/terminals`, `POST /api/sessions`), the bare lists (`GET`), and
+three of relay's own wildcard patterns, `POST /api/sessions/{$}`,
+`POST /api/sessions/{id}/resume` and `POST /api/terminals/{$}`.
+`relayRoutePath` (`cmd/relay/enhanced_services.go`) truncates each
+registered pattern at its first `{`, so those wildcards reserve relay's own
+subtree as `/api/sessions/` and `/api/terminals/` — the identical two
+prefixes `relaysessions`' manifest declares. Ordinarily a manifest route
+that overlaps a path relay itself serves is refused (the relay-route-conflict
 rule above); `relaysessions` is the one, named exception
-(`sessionHostSharedPrefixes` in `cmd/relay/enhanced_services.go`), because
-`http.ServeMux` always resolves relay's own more specific registrations
-first — the two claims cannot actually collide at request time, only in
-this defense-in-depth check, which is why it is narrowed to the one service
-the split names rather than opened for anyone. Concretely: `POST
+(`sessionHostSharedPrefixes` in `cmd/relay/enhanced_services.go`), keyed on
+the *colliding relay route* being one of those two reserved prefixes — not
+on the manifest route itself matching one of them exactly — so `relaysessions`
+is exempt across that entire subtree and could legally declare something
+like `/api/sessions/foo`, not only the two literal prefix strings.
+
+The exemption largely holds in practice: for a (method, path) pair both
+relay and `http.ServeMux` route to relay's own pattern, relay's more
+specific registration wins over the manifest dispatcher's `/` catch-all, so
+the create route and the manifest's identically-shaped route do not fight
+over the same request. That precedence is narrower than "the two claims
+cannot collide," though: it is scoped to the exact (method, path) pairs
+relay itself registers — `GET /api/sessions/{id}` matches no relay pattern
+at all and falls through to the manifest dispatcher genuinely, not just in
+this check — and it holds only while relay's session routes are registered
+in the first place. `RegisterSessionRoutes` runs only
+`if deps.sessionHost.ready()` (`cmd/relay/frontend_server.go`); when that's
+false, relay registers and reserves nothing under `/api/sessions/` or
+`/api/terminals/`, so there is no "relay wins" precedence to fall back on
+in that state — a request there reaches whatever the manifest dispatcher
+resolves, unguarded by `AuthorizeLaunch`. This is exactly why the check
+above is defense-in-depth rather than provably redundant. Concretely: `POST
 /api/sessions` (create) is relay's; `GET /api/sessions/{id}` (once that
 handler exists — see the gap below) is `relaysessions`' own manifest route.
 This is the same split C5 describes as "relay's own routes (create, resume,
