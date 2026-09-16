@@ -129,7 +129,10 @@ func TestRealRelaySessionsBinary_RegistersItsManifest(t *testing.T) {
 	if es.InternalToken == "" {
 		t.Fatal("registered manifest carries no internal token")
 	}
-	wantRoutes := map[string]bool{"/api/terminals/": true, "/api/sessions/": true}
+	wantRoutes := make(map[string]bool, len(config.RelaySessionsManifestRoutes))
+	for _, r := range config.RelaySessionsManifestRoutes {
+		wantRoutes[r] = true
+	}
 	if len(es.Manifest.Routes) != len(wantRoutes) {
 		t.Fatalf("registered routes = %v, want exactly %v", es.Manifest.Routes, wantRoutes)
 	}
@@ -145,5 +148,17 @@ func TestRealRelaySessionsBinary_RegistersItsManifest(t *testing.T) {
 	client := &sessionHostClient{enhanced: enhanced, launches: launches}
 	if _, _, err := client.resolve(); err != nil {
 		t.Fatalf("sessionHostClient.resolve() after registration: %v", err)
+	}
+
+	// A real round trip through the registered socket and bearer, not just
+	// their presence: handleTerminate answers 204 for an unknown session id,
+	// so this only succeeds if InternalToken is the token the real
+	// relay-sessions binary actually checks Authorization against, and this
+	// test process (the bridge's owner, standing in for relay) passes
+	// checkInternalPeer's RelayPID check. A manifest that registered a
+	// non-matching token would fail here with a 403, even though every
+	// assertion above it already passed.
+	if err := client.Terminate(context.Background(), "no-such-session", "probe"); err != nil {
+		t.Fatalf("Terminate through the registered socket+bearer: %v", err)
 	}
 }

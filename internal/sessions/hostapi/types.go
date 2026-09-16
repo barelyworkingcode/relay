@@ -56,10 +56,16 @@ type LaunchRequest struct {
 	Env            map[string]string `json:"env,omitempty"`
 	PTY            *PTYSpec          `json:"pty"`
 	IdleTimeoutSec int               `json:"idle_timeout_sec,omitempty"`
-	// omitempty is load-bearing: a caller that never sets Host (every
-	// non-hosted launch) must produce a request with no "host" key at all,
-	// not a literal JSON null — decodeHostSpec's own guard depends on that
-	// (dispatch.go).
+	// omitempty and decodeHostSpec's explicit "null"-string guard
+	// (dispatch.go) are independent, both load-bearing: omitempty keeps a
+	// nil *HostSpec (every non-hosted launch, e.g. relay's own
+	// AuthorizeLaunch marshaling one) from putting a literal "host":null on
+	// the wire in the first place, but it only ever omits a zero-length
+	// json.RawMessage — it cannot stop some other caller's differently
+	// shaped encoding from producing the 4 literal bytes "null" some other
+	// way. decodeHostSpec checks for that string explicitly rather than
+	// trusting the sender, so the guard holds even if this tag is ever
+	// removed.
 	Host           json.RawMessage `json:"host,omitempty"`
 	Sandbox        *SandboxSpec    `json:"sandbox"`
 	Identity       *IdentitySpec   `json:"identity"`
