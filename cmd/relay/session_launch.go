@@ -324,7 +324,10 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		return nil, forbidden("model_not_allowed", "model is not allowed for this project", baseFields)
 	}
 
-	sandbox := wantsSandbox(req.Kind, tmpl)
+	// An SSH-hosted project's target runs on the far end, where a profile
+	// written on this disk confines nothing — and sandboxing the local `ssh`
+	// client instead only breaks it (SH §5.2: "SSH host terminal: off").
+	sandbox := wantsSandbox(req.Kind, tmpl) && !(proj != nil && proj.IsHosted())
 	baseFields.Sandbox = sandbox
 
 	sessionRequest, refusal := buildSessionRequest(req, proj, directory, baseFields)
@@ -348,6 +351,14 @@ func AuthorizeLaunch(store config.SettingsStore, modelKeys *ModelKeyTable, sessi
 		ExtraArgs:      req.ExtraArgs,
 		IdleTimeoutSec: 86400,
 		SessionRequest: sessionRequest,
+	}
+
+	if sandbox {
+		profilePath, err := writeSessionSandboxProfile(settings, proj, directory, sessionID)
+		if err != nil {
+			return nil, invalidRequest("sandbox_unavailable", err.Error(), baseFields)
+		}
+		spec.Sandbox = &hostapi.SandboxSpec{ProfilePath: profilePath}
 	}
 
 	if proj != nil {

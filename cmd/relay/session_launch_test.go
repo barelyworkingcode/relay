@@ -550,8 +550,11 @@ func TestAuthorizeLaunch_ClaudeLaunchSpecGolden(t *testing.T) {
 	if result.Spec.Identity != nil {
 		t.Fatal("Identity must stay nil out of AuthorizeLaunch — minting it is R-S4b's job")
 	}
-	if result.Spec.Sandbox != nil {
-		t.Fatal("Sandbox must stay nil out of AuthorizeLaunch — R-S8's extension point")
+	// A claude session is sandboxed by default (C7), so AuthorizeLaunch has
+	// already written the profile the shim will hand sandbox-exec; what that
+	// file contains is session_sandbox_test.go's subject.
+	if result.Spec.Sandbox == nil || !filepath.IsAbs(result.Spec.Sandbox.ProfilePath) {
+		t.Fatalf("Sandbox = %+v, want an absolute profile path", result.Spec.Sandbox)
 	}
 	if !result.AuditFields.Sandbox {
 		t.Fatal("claude sessions must want sandboxing per C7's default table")
