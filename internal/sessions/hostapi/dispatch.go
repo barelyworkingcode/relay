@@ -32,8 +32,16 @@ func isProviderKind(kind string) bool {
 // decodeHostSpec decodes LaunchRequest.Host (empty for a console session)
 // into the *sessionstypes.HostSpec both terminal.CreateSpec and
 // session.CreateSpec want.
+//
+// This is subtle: unmarshaling the JSON literal null into a non-pointer
+// destination (h below) is a documented encoding/json no-op, not an error —
+// it leaves h at its zero value rather than producing a nil *HostSpec. A
+// caller that sends the literal "null" rather than omitting the key
+// entirely is checked for explicitly so this never returns a non-nil,
+// zero-value HostSpec that terminal.CreateSpec.validate() would then read as
+// a real (if empty) SSH host.
 func decodeHostSpec(raw json.RawMessage) (*sessionstypes.HostSpec, error) {
-	if len(raw) == 0 {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
 	var h sessionstypes.HostSpec
