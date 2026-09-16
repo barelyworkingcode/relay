@@ -348,10 +348,9 @@ func (s *Server) launchTerminal(w http.ResponseWriter, req LaunchRequest) {
 	//
 	// A failed Info read here (the shim exited in the narrow window between
 	// Create returning and this line) is not papered over with a zero-value
-	// rootStart: session_table.go's own setLive doc comment names exactly
-	// this — a half-set root a hostile racing /permission call could match
-	// by accident of a zero start time — as a real gap this table must never
-	// reopen, so this session is torn down and reported failed instead of
+	// rootStart: a half-set root is exactly what a hostile racing /permission
+	// call could match by accident of a zero start time, so this session is
+	// torn down and reported failed instead of
 	// published with a membership root nothing can actually verify.
 	rootInfo, ok := membership.NewSource().Info(rootPID)
 	if !ok {

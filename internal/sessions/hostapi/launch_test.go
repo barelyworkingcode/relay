@@ -356,8 +356,8 @@ func TestLaunch_SessionKind_DispatchesToSessionManager(t *testing.T) {
 	}
 }
 
-// TestLaunch_PTY_SandboxEmptyProfilePath_Refused covers F4's pty-path fix: a
-// non-nil sandbox object with an empty profile_path must be a hard refusal,
+// TestLaunch_PTY_SandboxEmptyProfilePath_Refused: a non-nil sandbox object
+// with an empty profile_path must be a hard refusal,
 // not a silently unsandboxed launch — terminal.CreateSpec.validate()'s own
 // fail-closed check for exactly this case must actually run, which requires
 // buildTerminalSpec to carry the empty ProfilePath through rather than
