@@ -240,22 +240,52 @@ set, but a save that sends it, however it's spelled, names every capability
 the service holds after that save — there is no partial "add one, leave the
 rest" shape on the wire.
 
-### Later kinds
+### `project_session`: the session-host identity kind
 
 `project_session` is the second `kind` value, bound by this same launch fd,
-Hello and audit-token check. Unlike `service`, its authority is not a fixed
-capability set but the named project's own live grant — `service.Allowed`
-grants it a fixed operation set (`ListTools`/`CallTool`, `DescribeProject`,
-`ListSkillBuckets`, model-endpoint calls, all scoped by the project itself,
-never a service capability). `Bind` additionally pins the root process's
-exact kernel start time and registers an ancestry-exit watch
-(`internal/membership`) so the identity ends when its root process does.
-Root-vs-descendant membership (a caller reaching a `project_session`'s grant
-by being a process tree descendant of its root, never by presenting a
-secret) is not implemented yet — that is `resolveAuth`'s job in
-`cmd/relay/router.go`, still to land. `RELAY_PROJECT_TOKEN` is still
-injected into project shells today; that path is unaffected by this kind's
-existence so far.
+Hello and audit-token check — a session-host root process (a
+`relay-sessions exec` shim, per C2 and C6) rather than a registered service.
+Unlike `service`, its authority is not a fixed capability set but the named
+project's own live grant: `service.Allowed(IdentityKindProjectSession, nil,
+op)` grants a fixed operation set — `Hello`, `ListTools`/`CallTool`
+(`OpProjectTools`), `DescribeProject`, `ListSkillBuckets`, and model-endpoint
+calls/listing (`OpModelCall`/`OpModelList`) — scoped at call time by the
+project itself, never by a capability list on the identity. `BindKind`
+additionally pins the root process's exact kernel start time
+(`RootStartSec`/`RootStartUsec`) and registers an ancestry-exit watch
+(`internal/membership.WatchExit`) so the identity ends the moment its root
+process does, not only when the service registry notices a launch end.
+
+**Root-vs-descendant membership is implemented and live**: a tokenless
+caller reaching a `project_session`'s grant by being a real, kernel-verified
+process-tree descendant of its root — never by presenting a secret of its
+own — is `resolveAuth`'s C3 step (`cmd/relay/router.go`), consulted only
+once a token is absent and the peer holds no bound launch identity of its
+own. `internal/membership.Resolve` walks the caller's ancestry via
+`proc_pidinfo`, matching a candidate root by pid **and** its exact process
+start time (a pid number alone is reused too often to trust), up to a
+`relay-sessions exec` shim or relay's own host pid, whichever it meets
+first. A caller admitted this way authenticates as `AuditAuthSession`
+(`internal/audit/audit.go`) with `AuditActorProjectSession`, carrying the
+session id that vouched for it — this is what replaced the retired
+`allow_cwd_auth` mechanism (see [`docs/tokens.md`](tokens.md#directory-auth-allow_cwd_auth-retired)).
+
+The session's root process itself — the shim that said Hello — is
+authenticated as the bound `project_session` identity directly, the same
+peer-audit-token match every launch identity uses; C3's ancestry walk is
+only consulted for its *descendants* (the target the shim spawned, and
+anything that target spawns in turn).
+
+`RELAY_PROJECT_TOKEN` is unaffected by this kind's existence: a project
+shell or agent CLI spawned outside the session-host path still gets one
+injected as before. A session-host-launched process instead relies on its
+bound `project_session` identity, or C3 membership if it is a descendant
+rather than the root — no project token is injected into a session-host
+child's environment at all.
+
+Full design of the binary that launches these identities, the internal API
+that authorizes a launch, and the shim that presents the secret:
+[`docs/session-host.md`](session-host.md).
 
 Code: `internal/service/launch_identity.go` (the table and `Identity`),
 `internal/peertoken` (the audit token), `internal/bridge/launch.go` (the Go
