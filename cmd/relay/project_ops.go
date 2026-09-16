@@ -42,7 +42,8 @@ type ProjectOps struct {
 	OnChange func()
 	// SessionCleanup ends and terminates a deleted project's live sessions
 	// (plan-broker-and-sessions.md §2 C5). Its zero value is a legitimate
-	// "no session-host wiring" -- see cleanupProject's own ready() guard.
+	// "no session-host wiring" -- see cleanupProject's own ready() guard,
+	// which every caller not wiring session routes relies on.
 	SessionCleanup sessionRouteDeps
 }
 
@@ -340,8 +341,8 @@ func (o *ProjectOps) Remove(id string) (removed config.Project, found bool, err 
 	// live session belonging to it gets /terminate'd on the host and its
 	// launch identity, model key and ledger record cleaned up
 	// (plan-broker-and-sessions.md §2 C5's model-key "revoked on ... project
-	// delete"). A zero SessionCleanup (every caller predating R-S4b) is a
-	// no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
+	// delete"). A zero SessionCleanup (a caller with no session-host wiring)
+	// is a no-op, guarded by sessionRouteDeps.ready() inside cleanupProject.
 	o.SessionCleanup.cleanupProject(id)
 	o.notify()
 	return removed, true, nil

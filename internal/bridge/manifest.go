@@ -137,9 +137,14 @@ func (m *Manifest) Validate() error {
 		}
 		// C5: /launch and /terminate are relay-sessions' internal API, dialed
 		// only by relay itself over a peer-verified connection, never through
-		// the manifest-driven front-door proxy. A manifest declaring either as
-		// a route would let any ordinary frontend caller reach them through
-		// newServiceProxy's unverified reverse proxy instead.
+		// the manifest-driven front-door proxy. The risk this refuses is
+		// relay-sessions declaring either in its OWN public manifest: a
+		// manifest is proxied straight to the socket that registered it, so
+		// that would expose its own peer-verification-free /launch or
+		// /terminate to any ordinary frontend caller through
+		// newServiceProxy's unverified reverse proxy. A different service
+		// declaring the same route string only ever reaches its own,
+		// unrelated socket.
 		if isSessionHostReservedRoute(r) {
 			return fmt.Errorf("manifest: routes[%d] %q is reserved to relay's internal session-host API", i, r)
 		}

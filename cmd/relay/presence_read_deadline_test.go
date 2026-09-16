@@ -88,6 +88,7 @@ func newRotateTokenTestServer(t *testing.T, store config.SettingsStore, ops *Pro
 		nil, nil, nil, nil, nil, nil,
 		ops,
 		nil, nil, nil, nil, nil, nil,
+		sessionRouteDeps{},
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)
@@ -180,6 +181,7 @@ func TestSlowBodyUpload_StillHitsReadDeadlineOnUngatedRoute(t *testing.T) {
 		nil, nil, nil, nil,
 		auditOps,
 		nil, nil, nil, nil, nil, nil, nil, nil,
+		sessionRouteDeps{},
 	)
 	if err != nil {
 		t.Fatalf("NewFrontendServer: %v", err)

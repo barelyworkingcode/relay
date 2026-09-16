@@ -77,6 +77,28 @@ func (t *sessionAccounting) take(sessionID string) (sessionAccount, bool) {
 	return acc, ok
 }
 
+// takeByProject removes and returns every account tracked under projectID,
+// keyed by session id. A terminal is never in the ledger (C5), so a live
+// one with a model-key-minting template is otherwise invisible to a
+// project-delete sweep that only walks ledger records; this is the same
+// one-shot guarantee take gives a single session, extended to "every
+// session this process still holds bookkeeping for, under this project".
+func (t *sessionAccounting) takeByProject(projectID string) map[string]sessionAccount {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]sessionAccount)
+	for id, acc := range t.byID {
+		if acc.projectID == projectID {
+			out[id] = acc
+			delete(t.byID, id)
+		}
+	}
+	return out
+}
+
 // end tears down whatever acc holds: the identity (safe to call more than
 // once, per *service.Launch.End's own contract) and the model key. Shared by
 // SessionExited and project-delete cleanup so the two cannot drift on what
@@ -107,12 +129,28 @@ type sessionRouteDeps struct {
 	accounting *sessionAccounting
 }
 
-// ready reports whether every field a route handler needs is actually
-// wired -- a zero-value sessionRouteDeps (every test that builds a
-// frontendRouteDeps without knowing about session routes) must not panic,
-// only decline to register anything.
+// ready reports whether every field a route handler needs, other than the
+// session ledger itself, is actually wired -- a zero-value sessionRouteDeps
+// (every test that builds a frontendRouteDeps without knowing about session
+// routes) must not panic, only decline to register anything. sessions is
+// checked separately (sessionRoutesUnavailable): a ledger-open failure is a
+// wired-but-degraded state that still registers these routes, answering a
+// fail-closed 503, rather than an unwired one that registers none at all
+// and falls through to the legacy, unauthorized catch-all underneath them.
 func (d sessionRouteDeps) ready() bool {
-	return d.store != nil && d.launches != nil && d.sessions != nil && d.modelKeys != nil && d.enhanced != nil && d.accounting != nil
+	return d.store != nil && d.launches != nil && d.modelKeys != nil && d.enhanced != nil && d.accounting != nil
+}
+
+// sessionRoutesUnavailable answers a 503 and reports true when the session
+// ledger failed to open at startup. Every handler in this file calls this
+// first: registration is gated on ready() alone (session ledger aside), so
+// a nil ledger must never reach sessions.Get/Put/etc, which would panic.
+func (d sessionRouteDeps) sessionRoutesUnavailable(w http.ResponseWriter) bool {
+	if d.sessions != nil {
+		return false
+	}
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session host ledger unavailable"})
+	return true
 }
 
 func (d sessionRouteDeps) host() *sessionHostClient {
@@ -124,9 +162,20 @@ func (d sessionRouteDeps) host() *sessionHostClient {
 // deps.ready() is checked by the caller (frontend_server.go); called here
 // only via the same pattern every other conditional registrar in
 // registerFrontendRoutes uses.
+//
+// The trailing-slash forms of the two create routes are registered
+// explicitly, through the same authorizing handler as their non-slash
+// counterparts: Go's ServeMux does not redirect "/api/sessions/" to
+// "/api/sessions" (they are different patterns), so without its own
+// registration a trailing-slash create would fall to the "/" catch-all and
+// reach relay-sessions with none of AuthorizeLaunch's checks ever run
+// (frontend_model_guard.go's newSessionModelGuard documents the same
+// ServeMux behavior for the route it guards).
 func RegisterSessionRoutes(rr *control.RouteRegistrar, deps sessionRouteDeps) {
 	rr.Handle(classFor("POST", "/api/terminals"), "POST /api/terminals", deps.handleCreateTerminal)
+	rr.Handle(classFor("POST", "/api/terminals/"), "POST /api/terminals/", deps.handleCreateTerminal)
 	rr.Handle(classFor("POST", "/api/sessions"), "POST /api/sessions", deps.handleCreateSession)
+	rr.Handle(classFor("POST", "/api/sessions/"), "POST /api/sessions/", deps.handleCreateSession)
 	rr.Handle(classFor("POST", "/api/sessions/{id}/resume"), "POST /api/sessions/{id}/resume", deps.handleResumeSession)
 	rr.Handle(classFor("GET", "/api/terminals"), "GET /api/terminals", deps.handleProxyList)
 	rr.Handle(classFor("GET", "/api/sessions"), "GET /api/sessions", deps.handleProxyList)
@@ -141,6 +190,9 @@ const maxSessionCreateBodyBytes = 1 << 20
 // (both are bare, no trailing id), so LookupByPath's longest-prefix match
 // never reaches them on its own.
 func (d sessionRouteDeps) handleProxyList(w http.ResponseWriter, r *http.Request) {
+	if d.sessionRoutesUnavailable(w) {
+		return
+	}
 	es := d.enhanced.Get(config.RelaySessionsServiceID)
 	if es == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session host unavailable"})
@@ -161,6 +213,9 @@ type createTerminalWireBody struct {
 }
 
 func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Request) {
+	if d.sessionRoutesUnavailable(w) {
+		return
+	}
 	var body createTerminalWireBody
 	if !decodeSessionBody(w, r, &body) {
 		return
@@ -179,6 +234,9 @@ func (d sessionRouteDeps) handleCreateTerminal(w http.ResponseWriter, r *http.Re
 }
 
 func (d sessionRouteDeps) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	if d.sessionRoutesUnavailable(w) {
+		return
+	}
 	var body eveSessionRequestBody
 	if !decodeSessionBody(w, r, &body) {
 		return
@@ -273,7 +331,11 @@ func (d sessionRouteDeps) launchAndRespond(ctx context.Context, w http.ResponseW
 		return
 	}
 
-	d.commitLaunch(result)
+	if !d.commitLaunch(ctx, result) {
+		d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists"))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
+		return
+	}
 	d.auditor.Record(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, ""))
 	writeCreatedBody(w, resp.Body)
 }
@@ -292,6 +354,9 @@ type resumeResponseBody struct {
 // produce C5's three-way HTTP outcome without duplicating AuthorizeLaunch's
 // own dormant/live/project-match logic.
 func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Request) {
+	if d.sessionRoutesUnavailable(w) {
+		return
+	}
 	id := r.PathValue("id")
 	caller := resolveLaunchCaller(r, d.store)
 	actor := callerAuditActor(caller)
@@ -341,7 +406,11 @@ func (d sessionRouteDeps) handleResumeSession(w http.ResponseWriter, r *http.Req
 	}
 	_ = resp // C5's resume success body is the small envelope below, not the host's create body.
 
-	d.commitLaunch(result)
+	if !d.commitLaunch(r.Context(), result) {
+		d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeError, "project no longer exists")))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "launch failed"})
+		return
+	}
 	d.auditor.Record(resumeAuditEvent(newSessionLaunchAuditEvent(result.AuditFields, audit.AuditOutcomeOK, "")))
 	writeJSON(w, http.StatusOK, resumeResponseBody{SessionID: result.SessionID, Resumed: true})
 }
@@ -364,14 +433,12 @@ func decodeStoredSessionRequest(rec ledger.Record) (eveSessionRequestBody, error
 	return body, nil
 }
 
-// resumeAuditEvent restamps ev's Event to session_resume. AuthorizeLaunch's
-// own audit builder (newSessionLaunchAuditEvent, session_launch.go)
-// hardcodes AuditEventSessionLaunch regardless of req.Resume -- correct for
-// item 1's create routes, but C5 wants session_resume specifically for this
-// route. session_launch.go is R-S4a's, reviewed and merged, and not touched
-// here; every field this route's audit needs (actor, project, session id,
-// kind, sandbox) is already computed correctly by newSessionLaunchAuditEvent,
-// so this only ever changes the one field that names which route produced it.
+// resumeAuditEvent restamps ev's Event to session_resume. newSessionLaunchAuditEvent
+// (session_launch.go) always builds a session_launch event, since it has no
+// way to know which of relay's routes called it; every field this route's
+// audit needs (actor, project, session id, kind, sandbox) is already
+// computed correctly there, so this only ever changes the one field that
+// names which route produced it.
 func resumeAuditEvent(ev audit.AuditEvent) audit.AuditEvent {
 	ev.Event = audit.AuditEventSessionResume
 	return ev
@@ -428,8 +495,14 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 		if launch != nil {
 			launch.End()
 		}
-		if result.ModelKeyLabel != "" {
-			d.modelKeys.Revoke(result.AuditFields.ProjectID, result.ModelKeyLabel)
+		// RevokeKey, not Revoke(project, label): two concurrent resumes for
+		// the same dormant session both pass AuthorizeLaunch and both mint a
+		// key under the identical "session:<id>" label before either dials
+		// the host, so the label alone does not name only THIS attempt's
+		// key. Revoking by label would delete a concurrent winner's
+		// still-live key along with this rollback's own.
+		if result.Spec.ModelKey != "" {
+			d.modelKeys.RevokeKey(result.Spec.ModelKey)
 		}
 		return nil, err
 	}
@@ -440,17 +513,49 @@ func (d sessionRouteDeps) launchOnHost(ctx context.Context, result *LaunchResult
 }
 
 // commitLaunch persists the ledger record a successful host round trip
-// earns (C5: "Puts it only after relay-sessions actually answers 201").
-// Best-effort: a ledger write failure loses only the ability to OFFER this
-// session for resume later, never the session itself, which the host has
-// already spawned -- failing the eve-facing response now would be strictly
-// worse.
-func (d sessionRouteDeps) commitLaunch(result *LaunchResult) {
+// earns (C5: "Puts it only after relay-sessions actually answers 201"), and
+// reports whether it did. It re-checks the project still exists immediately
+// before that write: launchOnHost's own round trip to relay-sessions can
+// run for up to sessionHostRequestTimeout, long enough for a concurrent
+// project delete's cleanupProject sweep to run and finish BEFORE this
+// session ever appears in the ledger for it to find -- the one place left
+// that can still catch that race is here, right before the record would
+// otherwise be written as live. A gone project aborts exactly what
+// launchOnHost minted (the host session, the launch identity, the model
+// key) rather than leaving them live against a project id that no longer
+// exists.
+//
+// Best-effort on the write itself: a ledger write failure loses only the
+// ability to OFFER this session for resume later, never the session itself,
+// which the host has already spawned -- failing the eve-facing response now
+// would be strictly worse.
+func (d sessionRouteDeps) commitLaunch(ctx context.Context, result *LaunchResult) bool {
+	if result.AuditFields.ProjectID != "" {
+		if p, _ := config.FindProjectByID(config.FreshSettings(d.store), result.AuditFields.ProjectID); p == nil {
+			d.abortLaunch(ctx, result.SessionID)
+			return false
+		}
+	}
 	if result.Ledger == nil {
-		return
+		return true
 	}
 	if err := d.sessions.Put(*result.Ledger); err != nil {
 		slog.Warn("session launch: ledger write failed", "session", result.SessionID, "error", err)
+	}
+	return true
+}
+
+// abortLaunch undoes what launchOnHost minted for sessionID when
+// commitLaunch finds the project gone: best-effort /terminate on the host,
+// then this process's own bookkeeping (identity, model key) -- the same
+// two steps cleanupProject's own sweep takes for a session it finds live in
+// the ledger, applied here to one that never reached the ledger at all.
+func (d sessionRouteDeps) abortLaunch(ctx context.Context, sessionID string) {
+	if err := d.host().Terminate(ctx, sessionID, "project_deleted"); err != nil {
+		slog.Warn("session launch: abort terminate failed", "session", sessionID, "error", err)
+	}
+	if acc, ok := d.accounting.take(sessionID); ok {
+		acc.end(d.modelKeys)
 	}
 }
 
@@ -463,18 +568,26 @@ func writeCreatedBody(w http.ResponseWriter, body json.RawMessage) {
 	_, _ = w.Write(body)
 }
 
-// cleanupProject ends every live session the ledger knows about for
-// projectID (C5's model-key "revoked on ... project delete", and the
-// task's own "for every live session belonging to the deleted project, call
-// /terminate and EndByProject"): best-effort /terminate on the host, then
-// this process's own bookkeeping (identity, model key), then the ledger
-// record itself is removed -- a deleted project has no session left to
-// offer for resume. EndByProject is called once at the end regardless, so a
-// terminal's identity (terminals are never in the ledger, C5) is still
-// ended even though relay has no session id left to hand the host a
-// /terminate for.
+// cleanupProject ends every live session relay knows about for projectID
+// (C5's model-key "revoked on ... project delete", and the task's own "for
+// every live session belonging to the deleted project, call /terminate and
+// EndByProject"): best-effort /terminate on the host, then this process's
+// own bookkeeping (identity, model key), then the ledger record itself is
+// removed -- a deleted project has no session left to offer for resume.
+//
+// Two sweeps, because a terminal is never in the ledger (C5) and so is
+// invisible to the first one: the ledger sweep covers claude/pi/chat, and
+// the accounting sweep afterward covers whatever it left behind, which for
+// a project's live terminals is a model key (a pty template's own ModelKey
+// flag) and a launch identity, keyed only by relay's own accounting table.
+// A session the first sweep already handled is gone from that table by the
+// time the second one runs (sessionAccounting.take is one-shot), so the two
+// sweeps cannot double up on the same session. EndByProject is called once
+// at the end regardless, so a plain terminal's identity (no model key, so
+// invisible to both sweeps above) is still ended even though relay has no
+// session id left to hand the host a /terminate for.
 func (d sessionRouteDeps) cleanupProject(projectID string) {
-	if !d.ready() {
+	if !d.ready() || d.sessions == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionHostRequestTimeout)
@@ -493,6 +606,12 @@ func (d sessionRouteDeps) cleanupProject(projectID string) {
 		if err := d.sessions.Remove(rec.SessionID); err != nil {
 			slog.Warn("project delete: ledger remove failed", "session", rec.SessionID, "error", err)
 		}
+	}
+	for sessionID, acc := range d.accounting.takeByProject(projectID) {
+		if err := d.host().Terminate(ctx, sessionID, "project_deleted"); err != nil {
+			slog.Warn("project delete: /terminate failed", "session", sessionID, "error", err)
+		}
+		acc.end(d.modelKeys)
 	}
 	d.launches.EndByProject(projectID)
 }

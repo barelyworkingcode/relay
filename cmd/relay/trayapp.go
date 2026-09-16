@@ -173,7 +173,6 @@ func (a *App) goFunc(fn func()) {
 // not resumed.
 const cleanupWaitGroupTimeout = 5 * time.Second
 
-// waitWithTimeout reports whether wg finished within d.
 // importSessionLedgerFromRelayLLM runs once, on a feature build's first
 // start with no ledger file yet (plan-broker-and-sessions.md §2 C5): every
 // dormant session ImportFromRelayLLM finds in relayLLM's own on-disk
@@ -202,6 +201,7 @@ func importSessionLedgerFromRelayLLM(l *ledger.Ledger) {
 	}
 }
 
+// waitWithTimeout reports whether wg finished within d.
 func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	done := make(chan struct{})
 	go func() {

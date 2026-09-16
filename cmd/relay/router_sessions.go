@@ -61,11 +61,10 @@ type sessionExitedAuditArgs struct {
 }
 
 // recordSessionExited records the session_end event C5's audit constants
-// were provisioned for (internal/audit/audit.go's AuditEventSessionEnd) --
-// nothing in this repo constructed one before this unit. The actor is a
-// service actor (relay-sessions itself reported this, tokenlessly), never a
-// project or a session: SessionExited names the session that ended, not the
-// caller's own scope.
+// were provisioned for (internal/audit/audit.go's AuditEventSessionEnd).
+// The actor is a service actor (relay-sessions itself reported this,
+// tokenlessly), never a project or a session: SessionExited names the
+// session that ended, not the caller's own scope.
 func (r *appRouter) recordSessionExited(req bridge.SessionExitedRequest) {
 	args, _ := json.Marshal(sessionExitedAuditArgs{
 		SessionID: req.SessionID, RootPID: req.RootPID, ExitStatus: req.ExitStatus, Reason: req.Reason,
