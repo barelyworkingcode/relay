@@ -448,40 +448,70 @@ func (t *Launches) Len() int {
 	return len(t.byName)
 }
 
-// EndByParent ends every live project_session launch whose ParentLaunch is
-// name, and reports how many it ended. Meant to run from the relaysessions
-// launch's own End (R-S9 wires this): when the host process that launched
-// every session under it goes away, those sessions' identities go with it.
-// R-S9 also SIGKILLs each root's process group — this function only clears
-// the identity table's view of them, since Launches has no process-group
-// bookkeeping of its own.
-func (t *Launches) EndByParent(name string) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.endWhereLocked(func(l *Launch) bool {
-		return l.id.Kind == IdentityKindProjectSession && l.id.ParentLaunch == name
-	})
+// EndedRoot is one project_session root process a call to EndByParent just
+// stopped tracking: enough for a caller to re-validate liveness (via
+// RootStillAlive) before signalling its process group, since a bare pid is
+// reused too often to trust alone (see Identity.RootStartSec/RootStartUsec's
+// own doc comment).
+type EndedRoot struct {
+	PID       int32
+	StartSec  int64
+	StartUsec int32
 }
 
-// RootPIDsByParent reports the root pid of every live, bound project_session
-// launch whose ParentLaunch is name. internal/service's registry (R-S9)
-// reads this immediately before calling EndByParent, so it knows exactly
-// which process groups to SIGKILL once the identities themselves are gone —
-// see EndByParent's own doc comment for why the killing itself does not
-// happen here.
-func (t *Launches) RootPIDsByParent(name string) []int32 {
+// EndByParent ends every live project_session launch whose ParentLaunch is
+// name, and reports how many it ended and the root process of each one that
+// had already bound. Meant to run from the relaysessions launch's own End
+// (R-S9 wires this): when the host process that launched every session
+// under it goes away, those sessions' identities go with it. R-S9 also
+// SIGKILLs each returned root's process group — this function only clears
+// the identity table's view of them, since Launches has no process-group
+// bookkeeping of its own.
+//
+// This is deliberate: reading which roots exist and ending their identities
+// happen under the same lock acquisition, in this one call, rather than a
+// caller enumerating roots first and ending identities in a second call. A
+// project_session that binds in the gap between two separate calls would be
+// invisible to the first (not yet bound) but torn down by the second — its
+// identity ended with no root pid ever handed to anything that could signal
+// its process group, leaving it orphaned. One locked operation closes that
+// gap by construction.
+func (t *Launches) EndByParent(name string) (ended int, roots []EndedRoot) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	var pids []int32
+	var matched []*Launch
 	for _, l := range t.byName {
-		if l.ended || l.id.Kind != IdentityKindProjectSession || l.id.ParentLaunch != name {
-			continue
-		}
-		if l.spent && l.id.Process.PID != 0 {
-			pids = append(pids, l.id.Process.PID)
+		if !l.ended && l.id.Kind == IdentityKindProjectSession && l.id.ParentLaunch == name {
+			matched = append(matched, l)
 		}
 	}
-	return pids
+	for _, l := range matched {
+		if l.spent && l.id.Process.PID != 0 {
+			roots = append(roots, EndedRoot{
+				PID:       l.id.Process.PID,
+				StartSec:  l.id.RootStartSec,
+				StartUsec: l.id.RootStartUsec,
+			})
+		}
+		t.endLocked(l)
+	}
+	return len(matched), roots
+}
+
+// RootStillAlive re-validates (pid, startSec, startUsec) against the live
+// process table immediately before a caller signals the process group it
+// names. Guards against pid recycling: the process EndByParent reported has
+// no exit watch left once its launch is ended, so nothing stops the OS from
+// reusing its pid for an unrelated process group leader before the caller
+// gets around to killing it. Reports false for a pid the kernel no longer
+// reports, or reports with a different start time -- either way, the
+// original process is gone and signalling the pid now would hit whatever
+// took its place.
+func (t *Launches) RootStillAlive(pid int32, startSec int64, startUsec int32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	info, ok := t.rootSource.Info(int(pid))
+	return ok && info.StartSec == startSec && info.StartUsec == startUsec
 }
 
 // EndByProject ends every live project_session launch bound to projectID,

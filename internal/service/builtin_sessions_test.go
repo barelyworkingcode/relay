@@ -55,3 +55,47 @@ func TestEnsureBuiltinRelaySessionsService_PreservesAutostartAndDropsStoredField
 		t.Fatalf("an unrelated service was disturbed: %+v", out[0])
 	}
 }
+
+// TestEnsureBuiltinRelaySessionsRecord_AddsBareRecordIfAbsent is RF4's proof
+// that a settings.json which has never seen a relaysessions record gets one
+// persisted with an off switch a caller can act on -- List and SetAutostart
+// (cmd/relay/service_ops.go) both read s.Services directly, so without this
+// write neither has anything to find.
+func TestEnsureBuiltinRelaySessionsRecord_AddsBareRecordIfAbsent(t *testing.T) {
+	s := &config.Settings{}
+	EnsureBuiltinRelaySessionsRecord(s)
+
+	svc, _ := config.FindServiceByID(s, config.RelaySessionsServiceID)
+	if svc == nil {
+		t.Fatal("no relaysessions record was persisted")
+	}
+	if !svc.Autostart {
+		t.Fatal("the persisted record should default autostart true")
+	}
+	if svc.Command != "" || svc.Args != nil {
+		t.Fatalf("the persisted record carries Command/Args it should leave to synthesis: %+v", svc)
+	}
+	if !svc.HasCapability(config.ServiceCapabilityManifest) || !svc.HasCapability(config.ServiceCapabilitySessions) {
+		t.Fatalf("capabilities = %v, want manifest+sessions", svc.Capabilities)
+	}
+}
+
+// TestEnsureBuiltinRelaySessionsRecord_LeavesAnExistingRecordAlone pins the
+// other half of the off switch: once an operator (or a prior tray start) has
+// a stored record, EnsureBuiltinRelaySessionsRecord must never touch it
+// again, including an explicit autostart=false -- the same "operator's own
+// choice is never re-decided" discipline EnsureDefaultModelEndpoint applies
+// to model_endpoint.
+func TestEnsureBuiltinRelaySessionsRecord_LeavesAnExistingRecordAlone(t *testing.T) {
+	s := &config.Settings{Services: []config.ServiceConfig{
+		{ID: config.RelaySessionsServiceID, DisplayName: "Session Host", Autostart: false},
+	}}
+	EnsureBuiltinRelaySessionsRecord(s)
+
+	if len(s.Services) != 1 {
+		t.Fatalf("len(s.Services) = %d, want 1", len(s.Services))
+	}
+	if s.Services[0].Autostart {
+		t.Fatal("an operator's own autostart=false was overwritten")
+	}
+}

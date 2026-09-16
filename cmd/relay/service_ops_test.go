@@ -76,6 +76,25 @@ func TestServiceOps_Create_RefusesTheBuiltinRelaySessionsID(t *testing.T) {
 	}
 }
 
+// TestServiceOps_Start_RefusesTheBuiltinRelaySessionsID pins the third site
+// ServiceConfig.Validate's Command requirement reaches: Registry.Start,
+// behind the tray's "Start" button and `relay service start`. Without this
+// refusal, starting the bare record EnsureBuiltinRelaySessionsRecord
+// persists hits Validate() directly and surfaces "service command is
+// required" -- true, but not a caller's fault to decode.
+func TestServiceOps_Start_RefusesTheBuiltinRelaySessionsID(t *testing.T) {
+	store := newCLISandboxStore(t)
+	r := newBrokerRouter(t, store, nil)
+
+	err := r.serviceOps.Start(config.RelaySessionsServiceID)
+	if err == nil {
+		t.Fatal("expected starting the reserved relaysessions id manually to be refused")
+	}
+	if !errors.Is(err, errServiceInvalid) {
+		t.Fatalf("Start(%q) error = %v, want errServiceInvalid", config.RelaySessionsServiceID, err)
+	}
+}
+
 // TestServiceOps_Create_CapabilitySessionsRefusedForAnyOtherID is the other
 // half: naming ANY id but the reserved one and asking for the sessions
 // capability is refused too (ServiceConfig.Validate, exercised here through

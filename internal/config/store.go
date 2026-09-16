@@ -206,13 +206,13 @@ func (ss *FileSettingsStore) path() string {
 
 const CurrentSettingsVersion = 1
 
-// defaultModelEndpointListen is the loopback address R-S9 turns the model
-// endpoint's TCP listener on for (plan-broker-and-sessions.md C8): the
-// block itself predates this feature and defaults to absent/disabled
-// (model.sock is served regardless), but a build that carries the session
-// host needs relayLLM and the session host to reach models over the same
-// broker, so ensureDefaultModelEndpoint writes this in once, the first
-// time such a build starts, exactly as Audit's own default is written
+// defaultModelEndpointListen is the loopback address EnsureDefaultModelEndpoint
+// writes in for the model endpoint's TCP listener (plan-broker-and-sessions.md
+// C8): the block itself predates the session host and defaults to
+// absent/disabled (model.sock is served regardless), but relayLLM and the
+// session host need to reach models over the same broker, so a build that
+// carries them is meant to turn this on by default the first time it truly
+// starts serving that pairing, exactly as Audit's own default is written
 // explicitly below. Loopback only, same reasoning as remote.listen.
 const defaultModelEndpointListen = "127.0.0.1:8180"
 
@@ -222,12 +222,16 @@ const defaultModelEndpointListen = "127.0.0.1:8180"
 // non-nil block from then on, so this never re-fires and never undoes that
 // choice; only a settings.json that has genuinely never decided the block
 // — a fresh install, or one written before this feature existed — sees it
-// applied. Deliberately NOT wired into EnsureInitialized: that runs from
-// several hermetic tests that expect an absent block, via the CLI reset
-// path and via the model endpoint's own test setup, none of which are "the
-// feature build starts" (spec-session-host.md's own phrase) — only
-// runTrayApp is, and it is the only production caller of this function
-// (cmd/relay's own startup wiring), which the hermetic suite never reaches.
+// applied.
+//
+// No production code calls this yet: writing the default only makes sense
+// once something actually depends on a live model endpoint (R-S4a/R-S4b),
+// so the call belongs in whichever unit adds that dependency, on a signal
+// that can distinguish a deliberate feature-build start from any process
+// that happens to construct this config package against a real config
+// dir — not unconditionally from every tray start, which would arm the TCP
+// listener on every later build that shares the same settings.json, feature
+// build or not.
 func EnsureDefaultModelEndpoint(s *Settings) {
 	if s.ModelEndpoint != nil {
 		return

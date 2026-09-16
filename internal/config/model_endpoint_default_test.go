@@ -28,14 +28,12 @@ func TestEnsureDefaultModelEndpoint_SetsOnlyWhenAbsent(t *testing.T) {
 }
 
 // TestEnsureInitialized_NeverWritesTheModelEndpointDefaultItself guards the
-// split R-S9 makes on purpose: EnsureInitialized (called directly by
-// several existing hermetic tests, and by `relay`'s sealed-store reset
-// path) must keep producing an absent model_endpoint block exactly as it
-// did before this feature -- only runTrayApp's own explicit call to
-// EnsureDefaultModelEndpoint (cmd/relay/trayapp.go, unreached by the
-// hermetic suite) turns the default on. TestModelEndpoint_
-// ReconcileBindsAndClosesLoopback (cmd/relay) is what first caught this
-// coupled the wrong way.
+// split this package makes on purpose: EnsureInitialized (called directly by
+// several existing hermetic tests, and by `relay`'s sealed-store reset path)
+// must keep producing an absent model_endpoint block exactly as it did
+// before this feature -- only a caller that explicitly needs a live model
+// endpoint may turn the default on, and EnsureInitialized is not that
+// caller.
 func TestEnsureInitialized_NeverWritesTheModelEndpointDefaultItself(t *testing.T) {
 	dir := mkEmptySandboxRelayHome(t)
 	store := sealedSettingsStoreAt(dir)

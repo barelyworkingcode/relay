@@ -230,14 +230,25 @@ func runTrayApp() {
 		slog.Error("failed to initialize settings", "error", err)
 		os.Exit(1)
 	}
-	// C8: this build carries the session host and model broker, so the
-	// model_endpoint block's own "absent means disabled" default (which
-	// predates both) is turned on the first time such a build starts --
-	// once written, an operator's own choice (including clearing it back
-	// to disabled) is never touched again. Best-effort: a degraded store
-	// simply cannot write yet, same as every other write on one.
-	if err := store.With(func(s *config.Settings) { config.EnsureDefaultModelEndpoint(s) }); err != nil {
-		slog.Warn("could not write the default model_endpoint block", "error", err)
+	// SH §2.1: persist a bare, autostart-only relaysessions record the first
+	// time settings.json has never held one. List, SetAutostart and Start
+	// (cmd/relay/service_ops.go) all read the store directly, never through
+	// EnsureBuiltinRelaySessionsService's in-memory synthesis below, so
+	// without this write there is no record for any of them to act on, and
+	// no supported way to turn autostart back off. Command and Args are
+	// never written here; sanitizeIfBuiltin strips them from whatever is
+	// stored on every load regardless. Best-effort: a degraded store simply
+	// cannot write yet, same as every other write on one.
+	errRelaySessionsRecordAlreadyPersisted := errors.New("relaysessions record already persisted")
+	err = config.WithDeclinable(store, func(s *config.Settings) error {
+		if svc, _ := config.FindServiceByID(s, config.RelaySessionsServiceID); svc != nil {
+			return errRelaySessionsRecordAlreadyPersisted
+		}
+		service.EnsureBuiltinRelaySessionsRecord(s)
+		return nil
+	})
+	if err != nil && !errors.Is(err, errRelaySessionsRecordAlreadyPersisted) {
+		slog.Warn("could not persist the default relaysessions record", "error", err)
 	}
 	var sealStatus string
 	if reason := store.SealStatus(); reason != nil {
